@@ -59,7 +59,12 @@ jobs:
           chmod +x "${HOME}/.local/bin/shellcheck"
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       - name: Run shellcheck
-        run: shellcheck bin/* install.sh
+        # -x: follow `source` calls. bin/pi-issue-run sources lib/seat-lib.sh
+        # through a variable (PI_PACKET_SEAT_LIB override), and the canonical
+        # source file lives in the repo (the install symlinks it). Without
+        # -x, shellcheck can't resolve the include and emits SC1091 — which
+        # is the documented case shellcheck -x exists for.
+        run: shellcheck -x bin/* install.sh
 
   unit-verify:
     name: systemd-analyze
@@ -85,6 +90,7 @@ jobs:
           # create the VPS paths the units reference.
           for p in \
             /home/nish/.local/bin/pi \
+            /home/nish/.local/bin/pi-issue-run \
             /home/nish/.local/bin/siterep-deploy \
             /home/nish/.local/bin/siterep-deploy-verify \
             /home/nish/.local/bin/siterep-deploy-rollback \

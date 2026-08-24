@@ -9,13 +9,17 @@ Hard rules:
 
 Steps:
 1. List ready work: `gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number,title --limit 10`. If empty, print "no ready issues", exit 0.
-2. Capacity (fleet-wide Devin worker cap = 4, across ALL repos): count active workers with
-   `systemctl --user list-units 'pi-issue-*' --state=active,activating --no-legend --plain | wc -l`.
-   slots = 4 minus that count. If slots <= 0, print "at capacity", exit 0.
+2. Capacity (P4-A — fleet-ops config/seat-caps.json, NOT a hardcoded "4 Devin"):
+   a. Source the shared seat logic so the same accounting the run wrapper uses is what the intake tick sees:
+      `. /home/nish/.local/lib/pi-packet/seat-lib.sh`
+   b. Read the configured ceiling (sum of provider caps) and the RAM governor (MemAvailable-based) — pick the smaller:
+      `caps_sum=$(total_seat_cap); ram_cap=$(ram_governor_cap); if (( caps_sum > 0 && caps_sum < ram_cap )); then total_cap=$caps_sum; else total_cap=$ram_cap; fi`
+   c. Count currently active workers across the whole fleet (pi-issue-* and pi-packet-* — both consume seats):
+      `active=$(count_active_total)`
+   d. `slots = total_cap - active`. If slots <= 0, print "at capacity (total_cap=$total_cap, active=$active)", exit 0. If the cap map is missing, total_cap = ram_cap and the fleet still gets a sensible ceiling.
 3. For each ready issue N in ascending issue-number order, while slots remain:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
-   b. Hard claim — atomic create-only push; the claim branch IS the work branch.
-      First verify the claim is still free (git push --force-with-lease short-circuits to "Everything up-to-date" when the source commit already matches the target, so the lease alone cannot reject a second claimant with the same origin/main — the ls-remote pre-check closes that hole; the lease still catches any race that wins between the ls-remote and the push when the commits differ):
+   b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.
       Otherwise push:
@@ -24,8 +28,11 @@ Steps:
    c. Mark it:
       `gh issue edit N -R Nishfleet/<repo> --remove-label agent-ready --add-label agent-in-progress`
       `gh issue comment N -R Nishfleet/<repo> --body "claimed by pi-issue-<repo>-N at $(date -u +%FT%TZ)"`
-   d. Spawn exactly one worker unit:
-      `systemd-run --user --unit=pi-issue-<repo>-N --property=Restart=on-failure --property=RestartSec=240 --property=StartLimitBurst=3 --property=RuntimeMaxSec=3600 --property=Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin --working-directory=/home/nish /bin/sh -c "{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N; } | /home/nish/.local/bin/pi --print --provider devin --model glm-5-2"`
-      If systemd-run refuses because the unit already exists, that worker is already live — skip.
-   e. slots = slots - 1.
+   d. Write the worker prompt to a packet file so pi-issue-run (the seat-rotating wrapper) can pick its own seat at run time:
+      `mkdir -p /home/nish/.local/state/pi-issues`
+      `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
+   e. Activate the template unit. pi-issue@.service runs pi-issue-run, which calls pick_seat (devin -> cursor -> cline -> free -> minimax) honouring the per-seat and per-model caps from seat-caps.json. systemd's Restart=on-failure + OnFailure=pi-issue-failed@ re-seats on failure and stops cleanly when retries are exhausted.
+      `systemctl --user start pi-issue@<repo>-N.service 2>&1 || { echo "spawn failed for <repo>-N: $?"; skip; }`
+      If the unit already exists, that worker is already live — skip.
+   f. slots = slots - 1.
 4. Print one line per issue (claimed+spawned / skipped-claim-lost / skipped-capacity), exit 0.

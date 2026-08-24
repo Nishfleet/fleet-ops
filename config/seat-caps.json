@@ -1,0 +1,76 @@
+{
+  "_comment_": "P4-A: per-seat capacity map. Replaces the legacy single '4 Devin workers' cap with per-provider + per-model caps, a RAM governor, and a metered-seat class so subscription seats are exhausted before paid-per-token ones.",
+  "_comment_order": "Expiry-first selection order (Nish, 2026-08-22): devin -> cursor -> cline -> free -> minimax (metered). Implemented in seat-lib.sh pick_seat; this file is data only.",
+  "_comment_ram_governor": "Effective fleet ceiling = min(sum_of_provider_caps, floor(MemAvailable_GB / ram_gb_per_worker)). Read at spawn time in intake.md; seat-lib.sh also exposes seat_max_concurrent().",
+  "_comment_zenmux": "zenmux cap=0 — excluded by code in seat-lib.sh (standing constraint: free tier exhausted). Recorded here so the map is the whole truth and a future relaxation is one config edit.",
+  "_comment_cursor_grok": "cursor/cursor-grok-4.6-high: probe-and-exclude. One strike already (spawnSync ETIMEDOUT at 2026-08-25 00:47 IST). Probed twice after the strike and it responds healthy; cap held at 1 to limit blast radius. Raise to 2 if it stays clean for a week.",
+  "_comment_minimax": "minimax direct (MiniMax-M3) classified as 'metered' per models.json cost field (input $0.30/M, output $1.20/M) even though the model name says 'Yearly Plus' — the cost field is the source of truth and 'Yearly Plus' is just a tier label. Selection order puts it LAST so subscription seats burn down first.",
+  "_comment_ollama_rule": "ollama cap only covers deepseek-v4-flash:0731 — the DeepSeek-flash-only standing rule bans ollama/kimi-k2.7-code, ollama/deepseek-v4-pro:0813, and ollama/gpt-oss:20b. seat-lib.sh enumerate_seats() emits every model in models.json; the cap map here is the allowlist by being the only entries listed. (Code-level enforcement is a follow-up if the rule is ever loosened.)",
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": {
+      "cap": 4,
+      "class": "subscription",
+      "models": {
+        "glm-5-2": 2,
+        "swe-1-7": 2
+      }
+    },
+    "cursor": {
+      "cap": 1,
+      "class": "subscription",
+      "models": {
+        "composer-2.5": 1,
+        "cursor-grok-4.6-high": 1
+      }
+    },
+    "cline": {
+      "cap": 2,
+      "class": "subscription",
+      "models": {
+        "cline-pass/minimax-m3": 2,
+        "cline-pass/deepseek-v4-flash": 2
+      }
+    },
+    "minimax": {
+      "cap": 2,
+      "class": "metered",
+      "models": {
+        "MiniMax-M3": 2
+      }
+    },
+    "ollama": {
+      "cap": 2,
+      "class": "free",
+      "models": {
+        "deepseek-v4-flash:0731": 2
+      }
+    },
+    "commandcode": {
+      "cap": 2,
+      "class": "free",
+      "models": {
+        "deepseek/deepseek-v4-flash": 2
+      }
+    },
+    "hetzner": {
+      "cap": 1,
+      "class": "free",
+      "models": {
+        "Qwen/Qwen3.6-35B-A3B-FP8": 1
+      }
+    },
+    "zenmux": {
+      "cap": 0,
+      "class": "free",
+      "models": {}
+    }
+  },
+  "free_providers_in_order": [
+    "ollama",
+    "commandcode",
+    "hetzner"
+  ],
+  "_comment_cursor": "cursor provider cap=1 (2026-08-25): cursor flakes with spawnSync ETIMEDOUT on long-running jobs; short probes are fine. The provider cap holds the fleet to one cursor worker at a time, and the code-level capable-provider whitelist in seat-lib.sh keeps cursor out of the heavy-task rotation. Raise to 2 if cursor stays clean on long jobs for a week.",
+  "_comment_devin": "devin provider cap=4 (2026-08-25): devin hit its message rate limit at ~01:30 IST tonight. Auto-restart backoff in pi-issue@.service (Restart=on-failure, RestartSteps=3, ~6 min effective retry) handles the recovery, so the cap stays at 4. If rate-limit hits become daily, lower to 3."
+}
