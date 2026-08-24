@@ -1,0 +1,33 @@
+[Unit]
+Description=Pi fleet issue worker %i
+# P4-A: seat rotation on retry. pi-issue-run picks a DIFFERENT seat on each
+# Restart=, so a timeout on devin/swe-1-7 lands the next try on cursor or
+# cline instead of repeating the failing call. systemd's own retry policy
+# (RestartSec / RestartSteps / StartLimitBurst) drives the timing.
+OnFailure=pi-issue-failed@%i.service
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PI_UNIT_INSTANCE=%i
+WorkingDirectory=/home/nish
+StandardInput=file:/home/nish/.local/state/pi-issues/%i.in
+StandardOutput=file:/home/nish/.local/state/pi-issues/%i.out
+StandardError=file:/home/nish/.local/state/pi-issues/%i.err
+# ExecStart = seat-rotation wrapper. Mirrors pi-packet-run. %i is the unit
+# instance name (e.g. 0509-915); the wrapper reads its packet + tries from
+# state and rotates seat via pick_seat on every restart.
+ExecStart=/home/nish/.local/bin/pi-issue-run %i
+
+# Retry policy - systemd's own, not a counter in bash.
+Restart=on-failure
+RestartSec=240
+RestartSteps=3
+RestartMaxDelaySec=30min
+# Hang detection: a worker active longer than this is terminated into `failed`.
+# (TimeoutStartSec, not RuntimeMaxSec: systemd ignores RuntimeMaxSec on Type=oneshot.)
+TimeoutStartSec=45min
