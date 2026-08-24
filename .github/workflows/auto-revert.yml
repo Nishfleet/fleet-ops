@@ -1,0 +1,121 @@
+name: Auto revert
+
+# Reversibility over gating (Nish, canonical): a merge must be as undoable as
+# a deploy. When a push-to-main CI workflow goes red, this opens a revert PR
+# that restores the last green state with no human. Platform primitives only:
+# `workflow_run` fires on completion; `git revert` builds the undo; armed
+# auto-merge lands it only if the four required checks pass on the revert
+# (restoring green IS the proof the revert is correct). Git itself is the
+# record of last-good — no SHA ledger, no state file, no polling.
+#
+# One level of automatic undo only. If the revert commit itself is red on
+# main, the loop guard files a loud halt issue and stops: a red revert is a
+# structural problem, not a loop. If something else landed between the failing
+# commit and now, the freshness guard files a halt issue naming both SHAs and
+# stops: that is a human-order problem.
+#
+# The PR is opened with the workflow's GITHUB_TOKEN. NOTE: a PR opened by
+# GITHUB_TOKEN does not itself trigger `pull_request` workflows, so the four
+# required checks will not report on the revert PR and armed auto-merge will
+# not fire until a PAT (secret AUTO_REVERT_PAT) is wired in. Until then the
+# PR sits open and loud — the mechanism still builds and opens the correct
+# revert; a human (or the PAT) lands it. This is flagged, not silent.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Parallel failures serialize: two red workflows for the same push (or two
+# pushes close together) must not race to revert. One at a time, in arrival
+# order; the freshness guard handles whatever landed in between.
+concurrency:
+  group: auto-revert
+  cancel-in-progress: false
+
+jobs:
+  auto-revert:
+    name: auto-revert
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.workflow_run.conclusion == 'failure'
+    steps:
+      - name: Checkout main (full history for the revert)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Revert or halt
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT || secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          short="$(git rev-parse --short=7 "$HEAD_SHA")"
+          subject="$(git log --format=%s -n 1 "$HEAD_SHA")"
+          parents="$(git rev-list --parents -n 1 "$HEAD_SHA")"
+          merge_flag=()
+          [ "$(printf '%s' "$parents" | wc -w)" -gt 2 ] && merge_flag=(-m 1)
+          gh label create auto-revert-halt --repo "$REPO" --color B60205 \
+            --description "Auto-revert halted — a human must look" --force >/dev/null 2>&1 || true
+          halt () {
+            title="$1"; body="$2"
+            num="$(gh issue list --repo "$REPO" --state open --label auto-revert-halt \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+            if [ -n "$num" ]; then
+              gh issue comment "$num" --repo "$REPO" --body "$body"
+            else
+              gh issue create --repo "$REPO" --title "$title" --body "$body" --label auto-revert-halt
+            fi
+          }
+          case "$subject" in
+            revert:*|Revert*)
+              halt "AUTO-REVERT HALT: revert commit itself is red on main" "The failing run's head commit is itself a revert, so an automatic revert would loop.
+
+          - Failing run: $RUN_NAME — $RUN_URL
+          - Red commit: \`$HEAD_SHA\` — \`$subject\`
+
+          One level of automatic undo only. A red revert is a structural stop; a human must look."
+              exit 1
+              ;;
+          esac
+          main_head="$(git rev-parse HEAD)"
+          if [ "$main_head" != "$HEAD_SHA" ]; then
+            halt "AUTO-REVERT HALT: main moved after the red commit" "main's HEAD no longer matches the failing commit, so a blind revert could restore the wrong state.
+
+          - Failing run: $RUN_NAME — $RUN_URL
+          - Red commit: \`$HEAD_SHA\` — \`$subject\`
+          - main HEAD now: \`$main_head\`
+
+          Human-order problem; a human must decide the revert order."
+            exit 1
+          fi
+          failing="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" --paginate \
+            --jq '.check_runs[] | select(.conclusion=="failure") | .name' 2>/dev/null \
+            | sort -u | paste -sd', ' - || true)"
+          [ -z "$failing" ] && failing="(see run — no failed check-runs listed by the API)"
+          branch="revert/$short"
+          git config user.name "Nish"
+          git config user.email "257724087+nish3451@users.noreply.github.com"
+          git revert --no-edit "${merge_flag[@]}" "$HEAD_SHA"
+          git checkout -b "$branch"
+          git push origin "$branch"
+          gh pr create --repo "$REPO" --base main --head "$branch" \
+            --title "revert: auto-restore green main (reverts $short)" \
+            --body "Automatic revert opened because a push-to-main CI workflow went red.
+
+          - Failing run: $RUN_NAME — $RUN_URL
+          - Reverts commit \`$short\`: \`$subject\`
+          - Failing checks: $failing
+
+          Automatic revert per the reversibility principle (FABLE-VERDICT §17); if this PR fails checks it will sit unmerged and loud."
+          gh pr merge --auto --squash --repo "$REPO" "$branch"
