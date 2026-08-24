@@ -6,6 +6,6 @@ OnFailure=pi-scout-repair@%i.service
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; n=$$(printf "%s" "$$out" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))"); [ "$$n" -lt 6 ]'
+ExecCondition=/bin/sh -c 'n=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number --jq length 2>&1) || { echo "gh failed: $$n" >&2; exit 255; }; [ "$$n" -lt 6 ]'
 ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/scout.md; echo; echo "TARGET REPO: Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider minimax --model MiniMax-M3'
 TimeoutStartSec=1800
