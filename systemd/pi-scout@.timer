@@ -1,0 +1,12 @@
+[Unit]
+Description=Pi fleet product scout schedule for Nishfleet/%i (work supply for autonomous lanes; event-driven intake exists for claiming, but generation needs periodic product inspection)
+
+[Timer]
+OnCalendar=03:17
+OnCalendar=11:23
+OnCalendar=19:41
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
