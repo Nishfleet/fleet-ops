@@ -81,6 +81,8 @@ jobs:
         # their target host.
         run: |
           set -euo pipefail
+          # Hosted runners run as user 'runner', not 'nish' — use sudo to
+          # create the VPS paths the units reference.
           for p in \
             /home/nish/.local/bin/pi \
             /home/nish/.local/bin/siterep-deploy \
@@ -90,7 +92,7 @@ jobs:
             /home/nish/.local/bin/siterep-uptime \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
-            install -D -m 0755 /dev/null "$p"
+            sudo install -D -m 0755 /dev/null "$p"
           done
       - name: Verify unit files
         # Proven to catch breakage: a malformed unit (bad section header /
