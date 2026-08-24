@@ -41,9 +41,12 @@ set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 
-# Source shared seat logic.
+# Source shared seat logic. SEAT_LIB defaults to the install symlink; tests
+# may override via PI_PACKET_SEAT_LIB. The directive points to the canonical
+# source file in the repo (the install symlinks this same file), so static
+# analysis can resolve the include.
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
-# shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-256}"

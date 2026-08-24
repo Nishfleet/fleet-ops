@@ -155,8 +155,15 @@ seat_max_concurrent() {
 # A seat is "capable" (safe for a heavy code-editing packet) iff ANY of:
 #   - the model has reasoning=true
 #   - contextWindow >= 200000
-#   - the provider is one of the known flagship lanes (devin, cursor,
-#     opencode-anthropic) whose cheapest seat is already a real coder
+#   - the provider is one of the known flagship lanes (devin, opencode-anthropic)
+#     whose cheapest seat is already a real coder
+#
+# cursor is NOT in the capable whitelist (2026-08-25): cursor flakes on long
+# jobs (spawnSync ETIMEDOUT). It still works fine for short probes, so
+# heavy-task routing skips cursor — devin/cline carry the heavy load and
+# cursor only fills in when the task is light and the higher-priority seats
+# are full. cursor's only heavy-capable model (cursor-grok-4.6-high) remains
+# eligible through the contextWindow branch.
 #
 # Filtering rules:
 #   - zenmux is hard-skipped (free tier exhausted; standing constraint).
@@ -174,7 +181,7 @@ enumerate_seats() {
           (if ((.cost.input // 1) == 0) then "1" else "0" end),
           (if ( ((.reasoning // false) == true)
                 or ((.contextWindow // 0) >= 200000)
-                or ($p | IN("devin","cursor","opencode-anthropic")) )
+                or ($p | IN("devin","opencode-anthropic")) )
            then "1" else "0" end)
         ]
       ),
@@ -183,7 +190,7 @@ enumerate_seats() {
         [ $p, .key, "0",
           (if ( ((.value.reasoning // false) == true)
                 or ((.value.contextWindow // 0) >= 200000)
-                or ($p | IN("devin","cursor","opencode-anthropic")) )
+                or ($p | IN("devin","opencode-anthropic")) )
            then "1" else "0" end)
         ]
       )
