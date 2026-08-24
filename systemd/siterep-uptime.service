@@ -1,6 +1,5 @@
 [Unit]
 Description=Uptime probe for siterep.net (every 2 min, T1)
-Documentation=file:/home/nish/.local/bin/siterep-uptime
 OnFailure=siterep-uptime-repair.service
 
 [Service]
@@ -8,6 +7,11 @@ Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-/home/nish/.config/siterep-uptime/hc.env
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/siterep-uptime
+# Site check is decisive: HTTP 200 (curl -f) + TLS verified + stable <title>
+# marker present. Failure exits 1 and fails the unit.
+# hc-ping (healthchecks.io dead-man) and gist heartbeat publish are
+# best-effort: guarded by `|| true` so they never fail the probe. Gist
+# failure is non-fatal (the external observer catches staleness).
+ExecStart=/bin/sh -c 'curl -fsS -m 15 https://siterep.net | grep -qF "<title>Site Rep | Source-backed website rep</title>" || exit 1; { [ -n "$$HC_URL" ] && curl -fsS -m 10 "$$HC_URL" >/dev/null 2>&1 || true; }; gh api gists/d26c163b894322b70b3a21f4bc10e50d -X PATCH -f "files[heartbeat.json][content]={\\\"status\\\":\\\"ok\\\",\\\"utc\\\":\\\"$$(date -u +%%FT%%TZ)\\\"}" >/dev/null 2>&1 || true'
 TimeoutStartSec=60
 Restart=no
