@@ -1,0 +1,16 @@
+# shellcheckrc for fleet-ops
+# These scripts are copies of production scripts that use intentional patterns.
+# Each disabled code is a deliberate choice, not an oversight.
+
+disable:
+  # SC1090: Can't follow non-constant source. siterep-deploy and
+  # siterep-deploy-rollback source $CREDS_FILE for wrangler credentials.
+  # The path is intentionally variable; values are never printed.
+  - SC1090
+  # SC2016: Expressions don't expand in single quotes. siterep-deploy-rollback
+  # builds a gh issue body with literal backtick fences (markdown), not command
+  # substitution. The single quotes are correct.
+  - SC2016
+  # SC2164: cd without || exit. Every script uses `set -euo pipefail`, so a
+  # failed cd exits the script already. Adding || exit would be redundant.
+  - SC2164

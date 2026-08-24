@@ -70,16 +70,37 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify unit files
-        # Hosted runners ship systemd-analyze but no running user manager.
-        # `systemd-analyze verify` accepts file paths and parses them against
-        # the default unit path without needing a manager. Proven to catch
-        # breakage: a malformed unit (bad section header / missing '=') makes
-        # verify exit nonzero with a clear "failed to load properly" message.
+      - name: Stub VPS executables
+        # `systemd-analyze verify` checks that ExecStart commands exist. The
+        # units reference VPS-specific paths (/home/nish/.local/bin/pi, the
+        # siterep-* scripts, fleet-console-pi/push.sh) that do not exist on a
+        # hosted runner. Create empty executable stubs so verify can check the
+        # unit SYNTAX (section headers, directives, key=value validity) without
+        # false-positiving on missing host binaries. This is the stubbed
+        # environment the packet specifies for verifying unit FILES outside
+        # their target host.
         run: |
           set -euo pipefail
+          for p in \
+            /home/nish/.local/bin/pi \
+            /home/nish/.local/bin/siterep-deploy \
+            /home/nish/.local/bin/siterep-deploy-verify \
+            /home/nish/.local/bin/siterep-deploy-rollback \
+            /home/nish/.local/bin/siterep-live-canary \
+            /home/nish/.local/bin/siterep-uptime \
+            /home/nish/workspaces/tooling/fleet-console-pi/push.sh
+          do
+            install -D -m 0755 /dev/null "$p"
+          done
+      - name: Verify unit files
+        # Proven to catch breakage: a malformed unit (bad section header /
+        # missing '=') makes verify exit nonzero with a clear "failed to load
+        # properly" message. Demonstrated locally before this commit.
+        run: |
+          set -uo pipefail
           systemd-analyze --version
           # Verify each file individually so a failure names the bad file.
+          # Do NOT use set -e: we want to collect all failures, then exit.
           shopt -s nullglob
           rc=0
           for f in systemd/*.service systemd/*.timer; do
