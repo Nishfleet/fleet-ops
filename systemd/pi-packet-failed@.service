@@ -1,0 +1,9 @@
+[Unit]
+Description=Record that pi packet %i exhausted its retry policy
+
+[Service]
+Type=oneshot
+# Deliberately does nothing but record. Retry, backoff and give-up already happened
+# in pi-packet@.service's own policy. Anything more would be re-growing the thing
+# Nish forbade on 2026-08-24 ("No hand-built orchestration. Ever.").
+ExecStart=/usr/bin/logger -t pi-packet-failed -p user.err "packet %i exhausted StartLimitBurst - needs a human or a council, not another retry"

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# siterep-live-canary
+#
+# Replaces the GitHub Actions "Live canary" workflow for siterep. Moved off
+# Actions minutes onto this VPS user timer (Nish, 2026-08-24): the Actions job
+# ran every 6h on a private repo whose included Actions minutes are exhausted,
+# and each run did npm ci + Playwright browser install + live clicks. This
+# script runs the EXACT same checks (`npm run smoke:public-layout` on chromium
+# AND firefox, then `npm run monitor:live`) from a dedicated main worktree on
+# this VPS, outside Actions entirely.
+#
+# It does NOT weaken verification: the same scripts, the same two browsers, the
+# same live target (https://siterep.net), the same synthetic monitor that pins
+# the release marker from worker/index.js. The only change is where they run.
+#
+# Watchdog discipline (standing order, Nish 2026-08-24): never page Nish. A
+# failure leaves the systemd unit failed so the next pass and the next agent
+# see it; it does not email or message.
+#
+# Exit codes (SuccessExitStatus=0 1 in the service unit):
+#   0 = clean - both browser smokes + synthetic passed.
+#   1 = finding - one or more checks failed.
+#   2 = bad env (worktree missing, npm/node missing).
+set -uo pipefail
+
+WORKTREE="${SITEREP_CANARY_WORKTREE:-/home/nish/workspaces/agent-state/meta-ci-offload/ops/siterep}"
+BASE_URL="${SITEREP_LAYOUT_SMOKE_BASE_URL:-https://siterep.net}"
+TIMEOUT_MS="${SITEREP_LAYOUT_SMOKE_TIMEOUT_MS:-240000}"
+
+[[ -e "$WORKTREE/.git" ]] || { printf 'siterep-live-canary: worktree missing at %s - failing loud\n' "$WORKTREE" >&2; exit 2; }
+command -v node >/dev/null 2>&1 || { printf 'siterep-live-canary: no node on PATH - failing loud\n' >&2; exit 2; }
+command -v npm >/dev/null 2>&1 || { printf 'siterep-live-canary: no npm on PATH - failing loud\n' >&2; exit 2; }
+
+cd "$WORKTREE"
+
+# Stay on origin/main so the canary reflects shipped production, not a stale
+# worktree. git reset --hard is safe here: this is a dedicated detached
+# worktree with no local edits (the timer owns it).
+git fetch --quiet origin main || { printf 'siterep-live-canary: git fetch failed - failing loud\n' >&2; exit 1; }
+git reset --hard --quiet origin/main || { printf 'siterep-live-canary: git reset failed - failing loud\n' >&2; exit 1; }
+
+# Keep deps current with main. npm install is incremental (fast when the
+# lockfile is unchanged); npm ci would wipe node_modules and the Playwright
+# browser symlinks on every run, which is wasteful and fragile.
+npm install --ignore-scripts --no-audit --no-fund >/dev/null 2>&1 \
+  || { printf 'siterep-live-canary: npm install failed - failing loud\n' >&2; exit 1; }
+
+rc=0
+
+export SITEREP_LAYOUT_SMOKE_BASE_URL="$BASE_URL"
+export SITEREP_LAYOUT_SMOKE_TIMEOUT_MS="$TIMEOUT_MS"
+
+for browser in chromium firefox; do
+  export SITEREP_LAYOUT_SMOKE_BROWSER="$browser"
+  printf '[siterep-live-canary] smoke:public-layout (%s)\n' "$browser"
+  # Capture output: a canary that fails without saying WHY is the silenced-seam
+  # pattern - it tells you something is wrong and nothing about what (2026-08-24).
+  if smoke_out=$(npm run smoke:public-layout 2>&1); then
+    printf '[siterep-live-canary] %s smoke passed\n' "$browser"
+  else
+    printf '[siterep-live-canary] %s smoke FAILED - failing loud. Output follows:\n' "$browser" >&2
+    printf '%s\n' "$smoke_out" | tail -40 >&2
+    rc=1
+  fi
+done
+
+printf '[siterep-live-canary] monitor:live (synthetic)\n'
+if mon_out=$(npm run monitor:live 2>&1); then
+  printf '[siterep-live-canary] synthetic monitor passed\n'
+else
+  printf '[siterep-live-canary] synthetic monitor FAILED - failing loud. Output follows:\n' >&2
+  printf '%s\n' "$mon_out" | tail -40 >&2
+  rc=1
+fi
+
+exit $rc

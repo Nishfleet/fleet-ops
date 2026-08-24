@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify siterep.net deploy: poll live SHA == target, then canary
+Documentation=file:/home/nish/.local/bin/siterep-deploy-verify
+OnFailure=siterep-deploy-rollback.service
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/siterep-deploy-verify
+TimeoutStartSec=600
+Restart=no

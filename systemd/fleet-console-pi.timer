@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet Console (Pi) — refresh every 12 minutes
+# Named reason for a schedule (vault: "a schedule needs a NAMED reason"):
+# Nish reads this page; GitHub PR/CI state drifts continuously; 12 min keeps
+# the page current inside the 5,000/hr gh API budget. Event-driven webhooks
+# would need a new receiver + auth + secret — more machinery than warranted.
+
+[Timer]
+OnCalendar=*:0/12:00
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

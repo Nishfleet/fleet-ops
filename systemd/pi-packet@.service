@@ -1,0 +1,27 @@
+[Unit]
+Description=Pi worker packet %i
+# Escalation is event-driven: systemd activates this when the unit lands in `failed`.
+# Replaces the 60-second poll loop that used to do this in bash.
+OnFailure=pi-packet-failed@%i.service
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+StandardInput=file:/home/nish/.local/state/pi-packets/%i.in
+StandardOutput=file:/home/nish/.local/state/pi-packets/%i.out
+StandardError=file:/home/nish/.local/state/pi-packets/%i.err
+ExecStart=/home/nish/.local/bin/pi --print --provider ${PI_PROVIDER} --model ${PI_MODEL}
+
+# Retry policy - systemd's own, not a counter in bash.
+Restart=on-failure
+RestartSec=240
+RestartSteps=3
+RestartMaxDelaySec=30min
+# Hang detection: a worker active longer than this is terminated into `failed`.
+# (TimeoutStartSec, not RuntimeMaxSec: systemd ignores RuntimeMaxSec on Type=oneshot.)
+TimeoutStartSec=45min
