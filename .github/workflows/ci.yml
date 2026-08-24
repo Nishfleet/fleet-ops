@@ -62,7 +62,7 @@ jobs:
         run: shellcheck bin/* install.sh
 
   unit-verify:
-    name: systemd-analyze verify
+    name: systemd-analyze
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
