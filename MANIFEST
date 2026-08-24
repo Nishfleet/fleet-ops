@@ -1,6 +1,9 @@
 systemd/pi-intake@.service /home/nish/.config/systemd/user/pi-intake@.service
 systemd/pi-intake@.timer /home/nish/.config/systemd/user/pi-intake@.timer
 systemd/pi-intake-repair@.service /home/nish/.config/systemd/user/pi-intake-repair@.service
+systemd/pi-scout@.service /home/nish/.config/systemd/user/pi-scout@.service
+systemd/pi-scout@.timer /home/nish/.config/systemd/user/pi-scout@.timer
+systemd/pi-scout-repair@.service /home/nish/.config/systemd/user/pi-scout-repair@.service
 systemd/pi-packet@.service /home/nish/.config/systemd/user/pi-packet@.service
 systemd/pi-packet-failed@.service /home/nish/.config/systemd/user/pi-packet-failed@.service
 systemd/siterep-deploy.service /home/nish/.config/systemd/user/siterep-deploy.service
@@ -21,4 +24,6 @@ bin/siterep-uptime /home/nish/.local/bin/siterep-uptime
 prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
 prompts/intake-repair.md /home/nish/.pi/agent/prompts/intake-repair.md
+prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
+prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
