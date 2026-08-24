@@ -1,0 +1,18 @@
+[Unit]
+Description=Deploy siterep.net from a pristine origin/main worktree (DISABLED — timer not enabled)
+Documentation=file:/home/nish/.local/bin/siterep-deploy
+OnSuccess=siterep-deploy-verify.service
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/nish
+# ExecCondition drift check — 0/1/255 discipline:
+#   live release SHA vs `git ls-remote origin refs/heads/main`
+#   DIFFER  → exit 0 (deploy)
+#   EQUAL   → exit 1 (skip, not failed)
+#   ERROR   → exit 255 (unit fails, visible)
+ExecCondition=/bin/sh -c 'live=$$(curl -fsS -m 15 https://siterep.net/api/public/release-status 2>/dev/null | jq -r ".release.commit // empty" 2>/dev/null); if [ -z "$$live" ]; then echo "siterep-deploy: drift check ERROR — live SHA unavailable" >&2; exit 255; fi; main=$$(git ls-remote https://github.com/Nishfleet/siterep-public.git refs/heads/main | awk "{print \\$$1}"); if [ -z "$$main" ]; then echo "siterep-deploy: drift check ERROR — origin/main SHA unavailable" >&2; exit 255; fi; if [ "$$live" = "$$main" ]; then echo "siterep-deploy: drift check SKIP — live ($$live) == main ($$main)"; exit 1; fi; echo "siterep-deploy: drift check DEPLOY — live ($$live) != main ($$main)"; exit 0'
+ExecStart=/home/nish/.local/bin/siterep-deploy
+TimeoutStartSec=900
+Restart=no

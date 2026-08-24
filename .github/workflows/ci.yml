@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install semgrep (pinned)
+        run: |
+          set -euo pipefail
+          # Pinned to a release >7 days old. Bump SEMGREP_VERSION after vetting.
+          SEMGREP_VERSION="1.170.0"
+          python3 -m pip install --no-input "semgrep==${SEMGREP_VERSION}"
+      # TODO(fleet-ops): add the fleet's orchestration rules config from
+      # Nishfleet/siterep-public .semgrep/no-hand-built-orchestration.yml at an
+      # exact commit SHA, once packet p56 merges it. Until then, p/default only.
+      # Flagged loudly: the orchestration-specific ruleset is NOT yet applied.
+      - name: Run semgrep
+        run: semgrep --config p/default --error .
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install shellcheck (pinned binary + sha256)
+        run: |
+          set -euo pipefail
+          SHELLCHECK_VERSION="v0.11.0"
+          SHELLCHECK_SHA256="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+          ARCHIVE="shellcheck-v0.11.0.linux.x86_64.tar.xz"
+          URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${ARCHIVE}"
+          curl -fsSL -o "${ARCHIVE}" "${URL}"
+          echo "${SHELLCHECK_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          install -d "${HOME}/.local/bin"
+          tar -xJf "${ARCHIVE}" -C "${HOME}/.local/bin" --strip-components=1 "shellcheck-v0.11.0/shellcheck"
+          chmod +x "${HOME}/.local/bin/shellcheck"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Run shellcheck
+        run: shellcheck bin/* install.sh
+
+  unit-verify:
+    name: systemd-analyze verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Stub VPS executables
+        # `systemd-analyze verify` checks that ExecStart commands exist. The
+        # units reference VPS-specific paths (/home/nish/.local/bin/pi, the
+        # siterep-* scripts, fleet-console-pi/push.sh) that do not exist on a
+        # hosted runner. Create empty executable stubs so verify can check the
+        # unit SYNTAX (section headers, directives, key=value validity) without
+        # false-positiving on missing host binaries. This is the stubbed
+        # environment the packet specifies for verifying unit FILES outside
+        # their target host.
+        run: |
+          set -euo pipefail
+          # Hosted runners run as user 'runner', not 'nish' — use sudo to
+          # create the VPS paths the units reference.
+          for p in \
+            /home/nish/.local/bin/pi \
+            /home/nish/.local/bin/siterep-deploy \
+            /home/nish/.local/bin/siterep-deploy-verify \
+            /home/nish/.local/bin/siterep-deploy-rollback \
+            /home/nish/.local/bin/siterep-live-canary \
+            /home/nish/.local/bin/siterep-uptime \
+            /home/nish/workspaces/tooling/fleet-console-pi/push.sh
+          do
+            sudo install -D -m 0755 /dev/null "$p"
+          done
+      - name: Verify unit files
+        # Proven to catch breakage: a malformed unit (bad section header /
+        # missing '=') makes verify exit nonzero with a clear "failed to load
+        # properly" message. Demonstrated locally before this commit.
+        run: |
+          set -uo pipefail
+          systemd-analyze --version
+          # Verify each file individually so a failure names the bad file.
+          # Do NOT use set -e: we want to collect all failures, then exit.
+          shopt -s nullglob
+          rc=0
+          for f in systemd/*.service systemd/*.timer; do
+            if ! systemd-analyze verify --man=no "$f"; then
+              rc=1
+            fi
+          done
+          exit "$rc"
+
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (pinned binary + sha256)
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="v8.30.1"
+          GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          ARCHIVE="gitleaks_8.30.1_linux_x64.tar.gz"
+          URL="https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/${ARCHIVE}"
+          curl -fsSL -o "${ARCHIVE}" "${URL}"
+          echo "${GITLEAKS_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          install -d "${HOME}/.local/bin"
+          tar -xzf "${ARCHIVE}" -C "${HOME}/.local/bin" gitleaks
+          chmod +x "${HOME}/.local/bin/gitleaks"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Scan repository
+        run: gitleaks git --redact --verbose

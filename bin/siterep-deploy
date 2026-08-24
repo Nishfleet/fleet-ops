@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# siterep-deploy — deterministic deploy of siterep.net from a pristine origin/main worktree.
+#
+# No LLM anywhere in this path. Reproducible by construction.
+#
+# Steps:
+#   1. Read the live release SHA from https://siterep.net/api/public/release-status
+#      and echo it as PRE_DEPLOY_LIVE_SHA=<sha> (evidence in the journal).
+#   2. Recreate a PRISTINE worktree of origin/main at its exact SHA under
+#      /home/nish/workspaces/agent-worktrees/deploy-siterep. Never deploy from
+#      the shared checkout (it sits on a scout branch).
+#   3. npm ci.
+#   4. npm run deploy:cloudflare (real) or npm run cf:check (--dry-run).
+#   5. Echo DEPLOYED_TARGET_SHA=<sha>.
+#
+# Credentials: /home/nish/.config/cloudflare/deploy.env is sourced for wrangler.
+# Its values are NEVER printed.
+#
+# --dry-run: everything except the actual `wrangler deploy`. Uses
+# `npm run cf:check` (which is `wrangler deploy --dry-run`). This is the only
+# execution path allowed during packet validation.
+set -euo pipefail
+
+DRY_RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help)
+      cat <<EOF
+Usage: siterep-deploy [--dry-run]
+  --dry-run  Run build + wrangler deploy --dry-run (no live deploy).
+EOF
+      exit 0
+      ;;
+    *) printf 'siterep-deploy: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+REPO_URL="https://github.com/Nishfleet/siterep-public.git"
+LIVE_STATUS_URL="https://siterep.net/api/public/release-status"
+# The shared checkout registers the worktree (git worktree add must run from
+# inside a repo). The worktree itself is a PRISTINE detached HEAD at the exact
+# target SHA — we never build or deploy from the shared checkout's working tree.
+SHARED_CHECKOUT="/home/nish/workspaces/products/siterep-public"
+WORKTREE_DIR="/home/nish/workspaces/agent-worktrees/deploy-siterep"
+CREDS_FILE="/home/nish/.config/cloudflare/deploy.env"
+
+log() { printf '[siterep-deploy] %s\n' "$*"; }
+die() { printf '[siterep-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
+
+command -v git >/dev/null 2>&1 || die "git not on PATH"
+command -v node >/dev/null 2>&1 || die "node not on PATH"
+command -v npm >/dev/null 2>&1 || die "npm not on PATH"
+command -v jq >/dev/null 2>&1 || die "jq not on PATH"
+command -v curl >/dev/null 2>&1 || die "curl not on PATH"
+[[ -f "$CREDS_FILE" ]] || die "credentials file missing: $CREDS_FILE (never print its values)"
+
+# 1. Read the live release SHA (evidence in journal). A failure here is NOT
+#    fatal to a deploy — the site may be down precisely because we need to
+#    deploy — but it IS loud: we record the failure and continue with an
+#    empty marker so the journal still shows we tried.
+PRE_DEPLOY_LIVE_SHA=""
+if live_json=$(curl -fsS -m 15 "$LIVE_STATUS_URL" 2>/dev/null); then
+  PRE_DEPLOY_LIVE_SHA=$(printf '%s' "$live_json" | jq -r '.release.commit // empty' 2>/dev/null || true)
+fi
+if [[ -n "$PRE_DEPLOY_LIVE_SHA" ]]; then
+  log "PRE_DEPLOY_LIVE_SHA=${PRE_DEPLOY_LIVE_SHA}"
+else
+  log "PRE_DEPLOY_LIVE_SHA=<unavailable: live status endpoint unreachable or commit missing; continuing>"
+fi
+
+# 2. Resolve origin/main exact SHA, then build a pristine worktree at that SHA.
+TARGET_SHA=$(git ls-remote "$REPO_URL" refs/heads/main | awk '{print $1}')
+[[ -n "$TARGET_SHA" ]] || die "could not resolve origin/main SHA from $REPO_URL"
+log "DEPLOYED_TARGET_SHA=${TARGET_SHA}"
+
+# Recreate the worktree fresh each run. Never deploy from the shared checkout.
+# Fetch the target SHA into the shared checkout's object database first (the
+# shared checkout may sit on a scout branch and not have main's latest objects).
+git -C "$SHARED_CHECKOUT" fetch --quiet origin main \
+  || die "git fetch origin main failed (cannot resolve target SHA $TARGET_SHA)"
+git -C "$SHARED_CHECKOUT" fetch --quiet origin "$TARGET_SHA" 2>/dev/null || true
+if [[ -e "$WORKTREE_DIR" ]]; then
+  git -C "$SHARED_CHECKOUT" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+fi
+git -C "$SHARED_CHECKOUT" worktree add --detach "$WORKTREE_DIR" "$TARGET_SHA" \
+  || die "git worktree add failed for $TARGET_SHA"
+
+cd "$WORKTREE_DIR"
+# Pin the detached HEAD to the exact SHA (defensive; worktree add already did).
+git checkout --quiet "$TARGET_SHA" || die "git checkout $TARGET_SHA failed"
+
+# 3. Install deps exactly as the lockfile pins.
+log "npm ci"
+npm ci --no-audit --no-fund || die "npm ci failed"
+
+# 4. Source credentials for wrangler (values never printed).
+# shellcheck source=/dev/null
+set -a; . "$CREDS_FILE"; set +a
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  log "DRY RUN: npm run build && npm run cf:check (wrangler deploy --dry-run, no live deploy)"
+  npm run build || die "npm run build failed (dry-run)"
+  npm run cf:check || die "cf:check (wrangler deploy --dry-run) failed"
+  log "DRY RUN complete — nothing was deployed"
+else
+  log "REAL DEPLOY: npm run deploy:cloudflare"
+  npm run deploy:cloudflare || die "deploy:cloudflare failed"
+  log "REAL DEPLOY complete — DEPLOYED_TARGET_SHA=${TARGET_SHA}"
+fi
+
+exit 0

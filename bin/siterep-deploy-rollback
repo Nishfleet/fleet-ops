@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# siterep-deploy-rollback — wrangler-native rollback + post-rollback canary + gh incident.
+#
+# No LLM. Deterministic.
+#
+# Triggered by OnFailure of siterep-deploy-verify.service. The verify unit it
+# responded to STAYS failed regardless — that is the LOUD signal. This script
+# only exits 0 when rollback + post-rollback canary succeeded.
+#
+# Steps:
+#   1. Use the repo's pinned wrangler (npx) inside the deploy worktree to run
+#      `wrangler rollback -y` (auto-accept the previous-version rollback).
+#      Source the credentials env file for wrangler.
+#   2. Run siterep-deploy-verify --post-rollback (canary only; live SHA is the
+#      OLD sha by design, so we do NOT check sha-equality).
+#   3. File a gh incident in Nishfleet/siterep-public so it is queued and visible.
+#
+# Exit codes:
+#   0 = rollback + post-rollback canary succeeded (the verify unit still failed)
+#   1 = rollback or post-rollback canary failed
+#   2 = bad env / config
+set -euo pipefail
+
+REPO_SLUG="Nishfleet/siterep-public"
+WORKTREE_DIR="/home/nish/workspaces/agent-worktrees/deploy-siterep"
+CREDS_FILE="/home/nish/.config/cloudflare/deploy.env"
+VERIFY="/home/nish/.local/bin/siterep-deploy-verify"
+ROLLBACK_MSG="AUTO-ROLLBACK: deploy verification failed (siterep-deploy-verify.service OnFailure)"
+
+log() { printf '[siterep-deploy-rollback] %s\n' "$*"; }
+die() { printf '[siterep-deploy-rollback] ERROR: %s\n' "$*" >&2; exit 2; }
+
+# File a gh incident so the failure is queued and visible. Never masks the
+# rollback verdict: logs loudly and continues if gh fails.
+file_incident() {
+  local body_prefix="$1"
+  local evidence="$2"
+  local title="AUTO-ROLLBACK: deploy verification failed at ${TS}"
+  local body
+  body=$(printf '%s\n\nEvidence (no secrets):\n```\n%s\n```\n\n%s\n' \
+    "$body_prefix" \
+    "$(printf '%s' "$evidence" | tail -40)" \
+    "Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback")
+  if gh issue create -R "$REPO_SLUG" --title "$title" --body "$body" >/dev/null 2>&1; then
+    log "incident filed: $title"
+  else
+    printf '[siterep-deploy-rollback] WARN: gh issue create failed; incident NOT filed but verdict stands\n' >&2
+  fi
+}
+
+command -v gh >/dev/null 2>&1 || die "gh not on PATH"
+command -v npx >/dev/null 2>&1 || die "npx not on PATH"
+[[ -f "$CREDS_FILE" ]] || die "credentials file missing: $CREDS_FILE (never print its values)"
+[[ -x "$VERIFY" ]] || die "verify script missing or not executable: $VERIFY"
+
+# The deploy worktree must exist (created by siterep-deploy). If it does not,
+# we cannot run the pinned wrangler there; fail loud.
+if [[ ! -d "$WORKTREE_DIR" ]] || [[ ! -e "$WORKTREE_DIR/.git" ]]; then
+  die "deploy worktree missing at $WORKTREE_DIR — cannot run pinned wrangler rollback"
+fi
+
+cd "$WORKTREE_DIR"
+
+# Source credentials for wrangler (values never printed).
+# shellcheck source=/dev/null
+set -a; . "$CREDS_FILE"; set +a
+
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# 1. wrangler-native rollback to the previous deployed version.
+# `wrangler rollback -y` rolls back to the previous version and auto-accepts
+# prompts. Doc source: `wrangler rollback --help` (pinned wrangler in this
+# worktree) — "Rollback a deployment for a Worker", positional [version-id]
+# optional (defaults to previous), `-y` auto-accept, `-m` message.
+log "wrangler rollback -y -m \"${ROLLBACK_MSG}\""
+if ! rb_out=$(npx wrangler rollback -y -m "$ROLLBACK_MSG" 2>&1); then
+  rc=$?
+  printf '[siterep-deploy-rollback] FAILED: wrangler rollback exit %s. Output tail follows:\n' "$rc" >&2
+  printf '%s\n' "$rb_out" | tail -40 >&2
+  # Still file the incident so the failure is queued and visible.
+  file_incident "ROLLBACK ITSELF FAILED: wrangler rollback exit ${rc}. Verify unit stays failed. Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback" "$rb_out"
+  exit 1
+fi
+log "wrangler rollback succeeded"
+printf '%s\n' "$rb_out" | tail -20
+
+# 2. Post-rollback canary (canary only; live SHA is the OLD sha by design).
+log "post-rollback canary"
+if ! v_out=$("$VERIFY" --post-rollback 2>&1); then
+  rc=$?
+  printf '[siterep-deploy-rollback] FAILED: post-rollback canary exit %s. Output tail follows:\n' "$rc" >&2
+  printf '%s\n' "$v_out" | tail -40 >&2
+  file_incident "AUTO-ROLLBACK applied but post-rollback canary FAILED (exit ${rc}). Verify unit stays failed. Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback" "$v_out"
+  exit 1
+fi
+log "post-rollback canary passed"
+printf '%s\n' "$v_out" | tail -10
+
+# 3. File the incident (queued + visible). The verify unit it responded to
+# stays failed regardless — that is the LOUD signal.
+file_incident "AUTO-ROLLBACK: deploy verification failed at ${TS}. Rolled back to previous wrangler version via \`wrangler rollback -y\`. Post-rollback canary passed. The triggering siterep-deploy-verify.service unit stays FAILED as the loud signal. Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback" "$rb_out"
+
+log "rollback complete; incident filed"
+exit 0

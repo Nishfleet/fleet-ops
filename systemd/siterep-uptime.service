@@ -1,0 +1,13 @@
+[Unit]
+Description=Uptime probe for siterep.net (every 2 min, T1)
+Documentation=file:/home/nish/.local/bin/siterep-uptime
+OnFailure=siterep-uptime-repair.service
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/nish/.config/siterep-uptime/hc.env
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/siterep-uptime
+TimeoutStartSec=60
+Restart=no

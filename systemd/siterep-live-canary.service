@@ -1,0 +1,12 @@
+[Unit]
+Description=Live canary for siterep.net: chromium+firefox layout smoke + synthetic monitor
+Documentation=file:/home/nish/.local/bin/siterep-live-canary
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/siterep-live-canary
+# Exit 1 = a live check failed (real production regression). Leave the unit
+# FAILED so the next pass/agent sees it (fail loud). Exit 0 = all checks green.
+SuccessExitStatus=0
+TimeoutStartSec=900
+Restart=no

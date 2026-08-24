@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# siterep-uptime — T1 uptime probe for https://siterep.net (every 2 min, live).
+#
+# No LLM. Deterministic.
+#
+# Single `curl -fsS -m 15` of https://siterep.net; assert HTTP 200 (curl -f),
+# TLS implicitly verified, and one stable content marker present in the HTML
+# (the <title> tag, which carries the product name — durable across copy tweaks
+# to body text). Success → exit 0; any failure → nonzero with the reason on
+# stderr.
+#
+# On success ONLY, if HC_URL is set (healthchecks.io dead-man), ping it
+# best-effort. The ping never affects the check result.
+#
+# Override SITEREP_UPTIME_URL to point the probe at a different URL (used by
+# the failure-path proof in V8 — an unreachable URL must yield nonzero).
+set -euo pipefail
+
+URL="${SITEREP_UPTIME_URL:-https://siterep.net}"
+# Stable marker: the <title> tag carries the product name and is durable across
+# body-copy tweaks. Read from the live page once to choose it; verified present.
+MARKER="<title>Site Rep | Source-backed website rep</title>"
+HC_TIMEOUT=10
+PROBE_TIMEOUT=15
+
+# 1. Fetch + assert HTTP 200 (curl -f) + TLS implicitly verified.
+if ! body=$(curl -fsS -m "$PROBE_TIMEOUT" "$URL" 2>/tmp/siterep-uptime-curl-err); then
+  curl_err=$(cat /tmp/siterep-uptime-curl-err 2>/dev/null || true)
+  rm -f /tmp/siterep-uptime-curl-err
+  printf '[siterep-uptime] FAILED: curl to %s did not return HTTP 200. curl: %s\n' \
+    "$URL" "${curl_err:-<no stderr>}" >&2
+  exit 1
+fi
+rm -f /tmp/siterep-uptime-curl-err
+
+# 2. Assert the stable content marker is present.
+if ! grep -qF -- "$MARKER" <<<"$body"; then
+  printf '[siterep-uptime] FAILED: HTTP 200 from %s but marker missing (title tag changed?). Expected: %s\n' \
+    "$URL" "$MARKER" >&2
+  exit 1
+fi
+
+# 3. Best-effort healthchecks.io dead-man ping (only on success, only if wired).
+if [[ -n "${HC_URL:-}" ]]; then
+  curl -fsS -m "$HC_TIMEOUT" "$HC_URL" >/dev/null 2>&1 || true
+fi
+
+# 4. Best-effort heartbeat publish to a public gist, observed by the
+# vps-heartbeat GitHub workflow (external dead-man). Publish failure must NOT
+# fail the probe — staleness IS the alarm, and the external observer catches
+# it. Composed by hand (no jq dependency) so a bare box can still publish.
+HB_NOW="$(date -u +%FT%TZ)"
+HB_PAYLOAD='{"status":"ok","utc":"'"$HB_NOW"'"}'
+if ! timeout 8 gh api gists/d26c163b894322b70b3a21f4bc10e50d -X PATCH \
+     -f "files[heartbeat.json][content]=$HB_PAYLOAD" >/dev/null 2>&1; then
+  printf '[siterep-uptime] heartbeat publish failed (external observer will notice)\n' >&2
+fi
+
+printf '[siterep-uptime] OK: %s (HTTP 200 + marker present)\n' "$URL" >&2
+exit 0

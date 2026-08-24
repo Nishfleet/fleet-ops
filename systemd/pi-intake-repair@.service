@@ -1,0 +1,11 @@
+[Unit]
+Description=Pi fleet intake repair agent for Nishfleet/%i
+StartLimitIntervalSec=21600
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/nish
+ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake-repair.md; echo; echo "TARGET: intake unit pi-intake@%i.service, repo Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider devin --model glm-5-2'
+TimeoutStartSec=1800

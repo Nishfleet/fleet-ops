@@ -1,0 +1,16 @@
+[Unit]
+Description=Fleet Console (Pi) — generate live truth and push to KV
+# Replaces the deleted fleet1 console pusher. No hand-built orchestration:
+# systemd owns restart/backoff. TimeoutStartSec bounds a hung gh/wrangler call
+# (RuntimeMaxSec has no effect on Type=oneshot — systemd ignores it there).
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/workspaces/tooling/fleet-console-pi/push.sh
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=180s
+Environment=CF_ENV=/home/nish/.config/fleet-console/cf.env
+
+[Install]
+WantedBy=default.target

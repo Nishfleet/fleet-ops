@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# siterep-deploy-verify — post-deploy verification: poll live SHA == target, then canary.
+#
+# No LLM. Deterministic.
+#
+# Modes:
+#   (default)       Re-derive target = origin/main SHA (git ls-remote). Poll the
+#                   live release endpoint (bounded: up to 12 tries, 10s apart)
+#                   until live SHA == target, else exit 1. Then run
+#                   siterep-live-canary; nonzero canary = exit 1.
+#                   Success prints VERIFY_OK sha=<sha>.
+#
+#   --post-rollback Skip the SHA-equality check (the live SHA is the OLD sha
+#                   after a rollback, by design). Run ONLY the canary half
+#                   against the rolled-back state. Success prints
+#                   VERIFY_OK post-rollback canary=ok.
+#
+# Exit codes:
+#   0 = verified (SHA matches target AND canary green, or post-rollback canary green)
+#   1 = verification failed (SHA never matched, or canary failed)
+#   2 = bad env / config
+set -euo pipefail
+
+MODE="verify"
+for arg in "$@"; do
+  case "$arg" in
+    --post-rollback) MODE="post-rollback" ;;
+    -h|--help)
+      cat <<EOF
+Usage: siterep-deploy-verify [--post-rollback]
+  (default)       Poll live SHA until == origin/main, then run canary.
+  --post-rollback Skip SHA check; run canary only (after a rollback).
+EOF
+      exit 0
+      ;;
+    *) printf 'siterep-deploy-verify: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+REPO_URL="https://github.com/Nishfleet/siterep-public.git"
+LIVE_STATUS_URL="https://siterep.net/api/public/release-status"
+CANARY="/home/nish/.local/bin/siterep-live-canary"
+MAX_TRIES=12
+TRY_INTERVAL=10
+
+log() { printf '[siterep-deploy-verify] %s\n' "$*"; }
+die() { printf '[siterep-deploy-verify] ERROR: %s\n' "$*" >&2; exit 2; }
+
+command -v git >/dev/null 2>&1 || die "git not on PATH"
+command -v jq >/dev/null 2>&1 || die "jq not on PATH"
+command -v curl >/dev/null 2>&1 || die "curl not on PATH"
+[[ -x "$CANARY" ]] || die "canary script missing or not executable: $CANARY"
+
+fetch_live_sha() {
+  local json
+  if ! json=$(curl -fsS -m 15 "$LIVE_STATUS_URL" 2>/dev/null); then
+    printf ''
+    return
+  fi
+  printf '%s' "$json" | jq -r '.release.commit // empty' 2>/dev/null || true
+}
+
+if [[ "$MODE" == "verify" ]]; then
+  TARGET_SHA=$(git ls-remote "$REPO_URL" refs/heads/main | awk '{print $1}')
+  [[ -n "$TARGET_SHA" ]] || { printf '[siterep-deploy-verify] ERROR: could not resolve origin/main SHA\n' >&2; exit 1; }
+  log "target SHA (origin/main): ${TARGET_SHA}"
+
+  live_sha=""
+  for i in $(seq 1 "$MAX_TRIES"); do
+    live_sha=$(fetch_live_sha)
+    if [[ -n "$live_sha" ]]; then
+      log "try ${i}/${MAX_TRIES}: live SHA = ${live_sha}"
+      if [[ "$live_sha" == "$TARGET_SHA" ]]; then
+        log "live SHA matches target after ${i} try/tries"
+        break
+      fi
+    else
+      log "try ${i}/${MAX_TRIES}: live endpoint unreachable or commit missing"
+    fi
+    if [[ "$i" -lt "$MAX_TRIES" ]]; then
+      sleep "$TRY_INTERVAL"
+    fi
+  done
+
+  if [[ "$live_sha" != "$TARGET_SHA" ]]; then
+    printf '[siterep-deploy-verify] FAILED: live SHA (%s) != target (%s) after %s tries\n' \
+      "${live_sha:-<unavailable>}" "$TARGET_SHA" "$MAX_TRIES" >&2
+    exit 1
+  fi
+fi
+
+log "running canary: $CANARY"
+if canary_out=$("$CANARY" 2>&1); then
+  log "canary passed"
+else
+  rc=$?
+  printf '[siterep-deploy-verify] FAILED: canary exit %s. Output tail follows:\n' "$rc" >&2
+  printf '%s\n' "$canary_out" | tail -40 >&2
+  exit 1
+fi
+
+if [[ "$MODE" == "post-rollback" ]]; then
+  printf 'VERIFY_OK post-rollback canary=ok\n'
+else
+  printf 'VERIFY_OK sha=%s\n' "${TARGET_SHA}"
+fi
+exit 0

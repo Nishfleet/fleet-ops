@@ -1,0 +1,12 @@
+[Unit]
+Description=Uptime probe schedule for siterep.net (every 2 min, T1)
+
+[Timer]
+OnCalendar=*:0/2
+# Persistent=false: missed uptime probes must NOT stack on boot. A backlog of
+# stale probes firing after a long downtime is noise, not signal.
+Persistent=false
+Unit=siterep-uptime.service
+
+[Install]
+WantedBy=timers.target

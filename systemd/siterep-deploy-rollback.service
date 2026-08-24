@@ -1,0 +1,13 @@
+[Unit]
+Description=Auto-rollback siterep.net to previous wrangler version when verify fails
+Documentation=file:/home/nish/.local/bin/siterep-deploy-rollback
+StartLimitIntervalSec=21600
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/siterep-deploy-rollback
+TimeoutStartSec=600
+Restart=no

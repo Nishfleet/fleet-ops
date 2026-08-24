@@ -1,0 +1,13 @@
+[Unit]
+Description=Drift tick for siterep.net autonomous deploy (DISABLED — do NOT enable)
+
+[Timer]
+# Named reason for a timer: GitHub cannot reach the private VPS with a
+# merge webhook; the tick's empty case is two metadata reads (live SHA + ls-remote).
+OnCalendar=*:0/5
+RandomizedDelaySec=30
+Persistent=true
+Unit=siterep-deploy.service
+
+# Deliberately NOT installed. Enabling this timer would start autonomous
+# production deploys of siterep.net. Build DISABLED per packet p51.
