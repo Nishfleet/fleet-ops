@@ -394,16 +394,84 @@ _seat_list_unit() {
     done < <(systemctl --user list-units 'pi-issue-*.service' 'pi-packet-*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
 }
 
+# --- stale active-seat registry self-healing (2026-08-25) -----------------
+# The active-seats registry is written by register_active_seat on start and
+# cleared by clear_active_seat via `trap EXIT INT TERM` in the wrapper. The
+# trap does NOT fire when a worker is SIGKILLed (OOM killer, systemctl -9,
+# `systemd-oomd` kill), so a registry entry outlives its unit and then: (1)
+# count_active_total() over-counts — the intake sees phantom workers eating
+# capacity it could give to real work; (2) pick_seat() sees the phantom on
+# the seat and blocks routing to it (cursor cap "reached" by a dead worker,
+# devin blocked by a stale rate_limited marker). Live state beats memory:
+# the unit table is the source of truth for what is running right now.
+#
+# Gate: env-guarded so unit tests that stub a scratch HOME (no real user
+# session) keep working without a systemctl call. The installed wrapper
+# (pi-issue-run / pi-packet-run) exports PI_SEAT_LIB_CHECK_SYSTEMD=1 by
+# default; tests and callers that pre-seed the registry explicitly may
+# disable it.
+PI_SEAT_LIB_CHECK_SYSTEMD="${PI_SEAT_LIB_CHECK_SYSTEMD:-1}"
+
+# True if the registry file's unit is still a live pi worker unit.
+# Non-zero (stale) when the unit is dead, missing, or not a pi unit name.
+#
+# The registry stores the bare instance name (e.g. "pi-issue-fleet-ops-21",
+# matching the unit's %i / the active-seats filename), NOT the full unit
+# name. The full systemd unit is "pi-issue@<instance>.service" (template
+# unit) for issue workers and "pi-packet@<instance>.service" for packet
+# workers. Translate here so systemctl queries the real unit.
+_seat_registry_unit_live() {
+    local f="$1" unit="" sysunit=""
+    unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+    [[ -n "$unit" ]] || return 1
+    case "$unit" in
+        pi-issue-*) sysunit="pi-issue@${unit#pi-issue-}.service" ;;
+        pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
+        *) return 1 ;;
+    esac
+    local state
+    state=$(systemctl --user is-active "$sysunit" 2>/dev/null || true)
+    # A running Type=oneshot worker reports "activating" while its process
+    # runs; "active" also means live. Anything else (inactive/failed/
+    # auto-restart with MainPID=0) is not consuming a seat.
+    [[ "$state" == "active" || "$state" == "activating" ]]
+}
+
+# Reap one stale registry file (unit dead). Logged; best-effort.
+_seat_reap_stale_registry() {
+    local f="$1" unit
+    unit=$(jq -r '.unit // "unknown"' "$f" 2>/dev/null || true)
+    seat_log "seat registry: reaping stale entry $f (unit $unit not active)"
+    rm -f "$f" 2>/dev/null || true
+}
+
+# Emit only the LIVE active-seats registry files (skip + reap stale).
+# Uses PI_SEAT_LIB_CHECK_SYSTEMD=0 to disable the systemctl liveness probe
+# (tests, explicit seeding). With the probe enabled, a file whose unit is
+# dead is deleted here and excluded from all counts and cap checks.
+_seat_live_registry_files() {
+    local f
+    for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
+        [[ -f "$f" ]] || continue
+        if (( PI_SEAT_LIB_CHECK_SYSTEMD )); then
+            if ! _seat_registry_unit_live "$f"; then
+                _seat_reap_stale_registry "$f"
+                continue
+            fi
+        fi
+        echo "$f"
+    done
+}
+
 count_active_on_seat() {
     local prov="$1" mdl="$2"
     local n=0
     # State-dir based (new path)
     local f fp fm
-    for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
-        [[ -f "$f" ]] || continue
+    while IFS= read -r f; do
         read -r fp fm < <(jq -r '[.provider // "", .model // ""] | @tsv' "$f" 2>/dev/null) || continue
         [[ "$fp" == "$prov" && "$fm" == "$mdl" ]] && n=$((n+1))
-    done
+    done < <(_seat_live_registry_files)
     # Legacy grep (pi-issue-* / pi-packet-* with hardcoded --provider/--model in ExecStart)
     local u cmd
     while IFS= read -r u; do
@@ -423,11 +491,10 @@ count_active_on_provider() {
     local n=0
     # State-dir based (new path) — sum all models for the provider
     local f fp
-    for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
-        [[ -f "$f" ]] || continue
+    while IFS= read -r f; do
         read -r fp _ < <(jq -r '[.provider // "", .model // ""] | @tsv' "$f" 2>/dev/null) || continue
         [[ "$fp" == "$prov" ]] && n=$((n+1))
-    done
+    done < <(_seat_live_registry_files)
     # Legacy grep
     local u cmd
     while IFS= read -r u; do
@@ -445,10 +512,9 @@ count_active_on_provider() {
 count_active_total() {
     local n=0
     local f
-    for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
-        [[ -f "$f" ]] || continue
+    while IFS= read -r f; do
         n=$((n+1))
-    done
+    done < <(_seat_live_registry_files)
     local u cmd
     while IFS= read -r u; do
         [[ -n "$u" ]] || continue
