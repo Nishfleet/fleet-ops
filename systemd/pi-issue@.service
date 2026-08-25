@@ -9,6 +9,15 @@ StartLimitIntervalSec=1h
 StartLimitBurst=3
 
 [Service]
+# Per-worker memory caps, restored from the pre-2026-08-23 lane-manager
+# design (lane-manager.py:108 'RAM is the binding resource - which the
+# launch floor (MIN_FREE_RAM_MB) and per-worker MemoryHigh=3G/Max=6G
+# already govern'). systemd's own cgroup controls: High throttles and
+# reclaims, Max is the hard stop. Measured MemoryPeak n=14: median 1.28G,
+# max 4.8G - so 3G throttles the tail without killing normal work.
+MemoryAccounting=yes
+MemoryHigh=3G
+MemoryMax=6G
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
