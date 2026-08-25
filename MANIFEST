@@ -56,6 +56,11 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
+# fleet-ops#78: gated reap of the unmanaged Codex app-server during the
+# weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
+# (Sun 03:30 IST, after the 15-minute quiesce drain).
+bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap
+systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/10-codex-orphan-reap.conf
 # P14 tests (not installed — only run from the repo)
 # fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
 # requires root for install). install.sh --system copies them and runs

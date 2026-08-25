@@ -120,6 +120,24 @@ from `~/.config/systemd/user/`, `~/.local/bin/`, or `~/.pi/agent/prompts/` is
 swept in. EnvironmentFile= targets (e.g. `hc.env`, `deploy.env`, `cf.env`) are
 never tracked — only the units that reference them.
 
+## Codex orphan app-server (fleet-ops#78)
+
+An unmanaged `codex app-server` on the control socket blocks
+`codex-remote-control.service` (`app server is running but is not managed
+by codex app-server daemon`). Killing it mid-week severs live peer
+connections.
+
+`bin/codex-orphan-reap` kills that orphan, starts the managed unit, and
+proves takeover with `codex remote-control pair --json`. It refuses unless
+the weekly window is open (`maintenance.json` status `paused` or
+`quiescing`) or there are zero peer connections. A listener already named
+by the daemon pid file is left alone — next week's window must not kill
+the healthy daemon.
+
+The weekly update runs it as `ExecStartPre=-` (Sun 03:30 IST, after the
+15-minute quiesce drain). The leading `-` means a failed reap cannot skip
+apt. Do not run it by hand while the flag is `clear` and peers are live.
+
 ## Fleet heartbeat (durable, session-independent)
 
 `fleet-heartbeat.timer` + `fleet-heartbeat.service` keep the fleet flowing
