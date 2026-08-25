@@ -199,6 +199,20 @@ jobs:
               while IFS= read -r r; do echo "      $r"; done < repos-deploy.txt
             } >> .github/sync.yml
           fi
+          # Group 4: red-on-main-watch.yml -> Nishfleet repos EXCEPT fleet-ops
+          # (already has it). nish3451 personal repos cannot call a private
+          # Nishfleet reusable workflow. This is the alert-only watcher that
+          # catches a brand-new workflow failing on its first main run, which
+          # auto-revert cannot do because GitHub Actions workflow_run has no
+          # wildcard and auto-revert requires a proven-green watched list.
+          grep -E '^Nishfleet/' repos-all.txt | grep -vxE 'Nishfleet/fleet-ops' > repos-red-on-main.txt || true
+          {
+            echo "  - files:"
+            echo "      - source: .github/workflows/red-on-main-watch.yml"
+            echo "        dest: .github/workflows/red-on-main-watch.yml"
+            echo "    repos: |"
+            while IFS= read -r r; do echo "      $r"; done < repos-red-on-main.txt
+          } >> .github/sync.yml
           echo "--- generated .github/sync.yml ---"
           cat .github/sync.yml
 

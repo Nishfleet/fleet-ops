@@ -63,3 +63,18 @@ Replay a loop with `--from-json`; run it live with `--repo`.
 `.github/workflows/ci-failure-telemetry.yml` is the reusable caller — the
 same workflow that already runs the semantic-conflict detector, so every
 repo gets both alerts from one `uses:` call. It is an alert, not a gate.
+
+## Red on main
+
+Auto-revert may only watch a workflow that is already green on main.
+Watching a permanently-red workflow would revert every commit forever.
+
+Detecting red is a different job. `.github/scripts/red-on-main-detector.mjs`
+covers every workflow from its first run, including ones that have never
+been green. A first-ever main failure is called out as merged untested
+against main. The signal opens (or reuses) an issue. It does not revert.
+
+`.github/workflows/red-on-main-detector.yml` is the reusable caller.
+`.github/workflows/red-on-main-watch.yml` is the 15-minute sweep other
+Nishfleet repos get via repo-standards-sync. Do not make either a
+required check.

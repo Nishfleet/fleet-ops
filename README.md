@@ -113,6 +113,13 @@ checks that compare a computed value against a shared committed baseline
 with exact equality (or that fail unless the PR edits that baseline). It
 is advisory: warn, do not block. The rule itself is in `docs/ci-standard.md`.
 
+A seventh pair, `.github/workflows/red-on-main-detector.yml` (reusable) and
+`.github/workflows/red-on-main-watch.yml` (15-minute sweep, synced to other
+Nishfleet repos), watches **every** workflow on main — including ones that
+have never been green. Auto-revert still only watches proven-green
+workflows; this detector alerts, it does not revert. A workflow whose
+first ever main run fails is called out as merged untested against main.
+
 ## Allowlist
 
 Only the files listed in `MANIFEST` are tracked and installed. Nothing else
