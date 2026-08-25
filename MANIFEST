@@ -47,6 +47,15 @@ bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
+# fleet-ops#32: declared-set reconciler. Closes the loop between the
+# declared repo set in config/intake-repos.json and the live pi-intake /
+# pi-scout systemd state — the four silent reversions on 2026-08-25/26
+# had no record; this path unit + 30-min timer trip the reconciler, and
+# every state change writes one audit line so drift is grep-able.
+bin/intake-reconcile /home/nish/.local/bin/intake-reconcile
+systemd/intake-reconcile.path /home/nish/.config/systemd/user/intake-reconcile.path
+systemd/intake-reconcile.service /home/nish/.config/systemd/user/intake-reconcile.service
+systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.timer
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
 systemd/stop-escalation.path /home/nish/.config/systemd/user/stop-escalation.path
