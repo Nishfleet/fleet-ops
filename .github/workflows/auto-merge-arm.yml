@@ -1,0 +1,47 @@
+name: Auto-merge arm
+
+# Agent-authored PRs land themselves (Nish, 2026-08-25 — vault
+# global-standing-rules.md "Agent-authored PRs land themselves"): every opened
+# PR is armed for auto-merge so it lands the moment required checks pass, no
+# matter which agent, tool, or human opened it. Required checks (and the merge
+# queue, where one exists) stay the only quality gate — this removes just the
+# human wait, and keeps working when any one agent is out of usage.
+#
+# Opt-outs (the ONLY ones): draft PRs, the `no-auto-merge` label at creation,
+# or `[no-merge]` in the title. Scheduled sweeps that must never self-merge
+# open DRAFT PRs.
+#
+# Arms with AUTO_REVERT_PAT, not GITHUB_TOKEN: a merge performed under
+# GITHUB_TOKEN would not trigger push workflows on main (deploy verification,
+# auto-revert), silently disarming the safety net. If the PAT is missing the
+# run fails LOUD and the PR waits for a human — the correct fallback.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: auto-merge-arm-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  arm:
+    if: >-
+      github.event.pull_request.draft == false &&
+      !contains(github.event.pull_request.title, '[no-merge]') &&
+      !contains(join(github.event.pull_request.labels.*.name, ','), 'no-auto-merge')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Arm auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::AUTO_REVERT_PAT is not configured — auto-merge not armed; this PR waits for a human"
+            exit 1
+          fi
+          gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"
