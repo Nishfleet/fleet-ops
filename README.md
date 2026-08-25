@@ -43,6 +43,12 @@ more).
 
 All actions are pinned to exact commit SHAs. Every job has a timeout.
 
+A fifth reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
+the merge-queue semantic-conflict detector. Other repos call it with
+`workflow_call`; it is an alert, not a required check. It fires when the
+same check is green on `pull_request` and red on `merge_group`, names the
+check, and publishes the `pull_request` vs `merge_group` failure-rate split.
+
 ## Allowlist
 
 Only the files listed in `MANIFEST` are tracked and installed. Nothing else

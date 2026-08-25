@@ -1,0 +1,108 @@
+name: CI failure telemetry
+
+# Central reusable telemetry workflow. This job is the merge-queue
+# semantic-conflict detector: the same check, for the same PR, passed on
+# pull_request and failed on merge_group. That is a semantic merge conflict
+# (green in isolation, collides with the batch). Re-queueing cannot fix it.
+#
+# Usage from another repo:
+#   jobs:
+#     telemetry:
+#       uses: Nishfleet/fleet-ops/.github/workflows/ci-failure-telemetry.yml@main
+#       permissions:
+#         actions: read
+#         contents: read
+#         pull-requests: write
+#
+# Do not make this a required check. It is an alert, not a gate.
+# Surface: gh CLI + GitHub REST API only. No paid services.
+
+on:
+  workflow_call:
+    inputs:
+      target-repo:
+        description: "Repository to analyze (owner/name). Defaults to the calling repository."
+        required: false
+        type: string
+      lookback-hours:
+        description: "Hours of recent runs to sample."
+        default: 24
+        type: number
+      comment-on-pr:
+        description: "Comment on each conflicting PR so nobody re-queues it."
+        default: true
+        type: boolean
+    outputs:
+      conflicts:
+        description: "Number of semantic merge conflicts found."
+        value: ${{ jobs.telemetry.outputs.conflicts }}
+      runs-sampled:
+        description: "Total runs sampled."
+        value: ${{ jobs.telemetry.outputs.runs-sampled }}
+      divergence-pct:
+        description: "merge_group failure rate minus pull_request failure rate, in percentage points."
+        value: ${{ jobs.telemetry.outputs.divergence-pct }}
+  workflow_dispatch:
+    inputs:
+      target-repo:
+        description: "Repository to analyze (owner/name). Defaults to this repository."
+        required: false
+        type: string
+      lookback-hours:
+        description: "Hours of recent runs to sample."
+        default: "24"
+        type: string
+      comment-on-pr:
+        description: "Comment on each conflicting PR."
+        default: false
+        type: boolean
+  schedule:
+    # Daily 04:47 UTC. Named reason: GitHub offers no event for "a PR was
+    # ejected from the merge queue"; a daily sweep is the cheapest mechanical
+    # form that still catches a PR being re-queued overnight.
+    - cron: "47 4 * * *"
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ci-failure-telemetry-${{ github.repository }}-${{ inputs.target-repo || github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  telemetry:
+    name: Semantic merge-conflict detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    outputs:
+      conflicts: ${{ steps.run.outputs.conflicts }}
+      runs-sampled: ${{ steps.run.outputs.runs-sampled }}
+      divergence-pct: ${{ steps.run.outputs.divergence-pct }}
+    steps:
+      - name: Checkout detector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Run detector
+        id: run
+        env:
+          SEMANTIC_CONFLICT_REPO: ${{ inputs.target-repo || github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOKBACK: ${{ inputs.lookback-hours || 24 }}
+          COMMENT: ${{ inputs.comment-on-pr == true && '--comment' || '' }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/semantic-conflict-detector.mjs \
+            --repo "${SEMANTIC_CONFLICT_REPO}" \
+            --lookback-hours "${LOOKBACK}" \
+            --output-json report.json \
+            ${COMMENT}
