@@ -103,7 +103,9 @@ Two-tier design (so the heartbeat still works if every LLM is dead):
 
 - **Tier 1 (deterministic, every tick, no LLM)**: queue green fleet PRs,
   release orphaned claims, log failed units into the triage file, verify
-  scout/intake timers are armed, update the `last-heartbeat:` stamp in the
+  scout/intake timers are armed, re-examine `agent-blocked` issues (re-queue
+  when a listed dependency has closed/merged; publish count and oldest age
+  for Nish-decision blocks), update the `last-heartbeat:` stamp in the
   playbook. Plain bash + gh + jq. Zero quota.
 - **Tier 2 (judgment, only when the triage file is non-empty or the held
   queue has dispatchable items)**: walk a seat ladder

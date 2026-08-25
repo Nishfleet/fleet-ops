@@ -39,6 +39,16 @@ Steps:
    (git will create the local branch tracking origin/claim/issue-<N>; if the worktree dir already exists from your own prior attempt, reuse it.) Work ONLY inside that worktree.
 4. If the issue is under-specified or the approach genuinely ambiguous: do NOT guess. Comment your concrete proposal and open questions on the issue, then
    `gh issue edit <N> -R Nishfleet/<repo> --add-label agent-blocked --remove-label agent-in-progress`,
+   and end that comment with one or more machine-readable blocker lines so
+   the heartbeat reconciler can re-queue without a human:
+
+   blocked-on: Nishfleet/<repo>#<n>
+   blocked-on: nish-decision
+
+   One line per dependency. Use `nish-decision` when the blocker is a Nish
+   call (money, privacy, security, legal, product direction, deploy). Prose
+   `#n` mentions are ignored — without `blocked-on:` the issue sits on the
+   desk-triage list until a human answers. Then
    release the claim: `git push origin :refs/heads/claim/issue-<N>`, remove your worktree, print "blocked: proposal posted", exit 0.
 5. Otherwise implement: the smallest durable change that fully solves the issue, following the repo's own conventions. Run the repo's own tests/checks locally (what its CI would run) and make them pass. If /home/nish/.local/bin/sgscan exists, run it on your diff and fix anything it rates ERROR.
 6. Commit with a clear message. Push early and again when done: `git push origin claim/issue-<N>`.

@@ -10,7 +10,7 @@ Description=Fleet orchestrator heartbeat (durable, session-independent)
 #   tier 1 (deterministic, no LLM) runs every tick — keeps the pipeline
 #     flowing even if every LLM is dead (queue green PRs, release orphaned
 #     claims, reset failed units, verify scout/intake timers, update the
-#     last-heartbeat stamp).
+#     last-heartbeat stamp, re-examine agent-blocked issues).
 #   tier 2 (judgment) runs ONLY when the triage file is non-empty or the
 #     held queue has dispatchable items, and walks a seat ladder
 #     (claude-opus-5 -> devin glm-5-2 [after 30s probe] -> minimax M3).

@@ -95,3 +95,9 @@ fleet2_excluded="$(jq -r '[.excluded[] | select(.name=="fleet2" and .permanent==
   || fail "fleet2 must be listed in excluded with permanent=true (standing rule)"
 
 echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count excluded, fleet2 guard live)"
+
+# fleet-ops#29: the agent-blocked label is a live queue, not a parking lot.
+# CI's tests job does not yet have a named step for tests/blocked-reconcile.test.sh
+# (workflow files are out of band for the worker App). Run them here so a
+# regression cannot merge green.
+bash "$here/blocked-reconcile.test.sh"
