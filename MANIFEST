@@ -29,6 +29,7 @@ prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
+lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service

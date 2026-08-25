@@ -38,10 +38,31 @@ log() {
     printf '[%s] [fleet-heartbeat] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
+# Dead-man ping (fleet-ops#76): healthchecks.io HC_URL, success only, same
+# pattern as siterep-uptime. Sourced from the install path; tests override.
+WATCHMAN_LIB="${FLEET_HEARTBEAT_WATCHMAN:-$HOME/.local/lib/pi-packet/heartbeat-watchman.sh}"
+# shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+if [ -f "$WATCHMAN_LIB" ]; then
+    # shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+    source "$WATCHMAN_LIB"
+else
+    heartbeat_ping_deadman() { log "dead-man: watchman lib missing at $WATCHMAN_LIB"; }
+fi
+
+hb_finish() {
+    local rc="${1:-0}"
+    if [ "$rc" -eq 0 ]; then
+        heartbeat_ping_deadman
+    else
+        log "dead-man: skip ping (tick rc=$rc)"
+    fi
+    exit "$rc"
+}
+
 # --- 0. preflight: required files exist --------------------------------------
-[ -f "$PLAN_FILE"  ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 2; }
-[ -f "$TIER1"      ] || { log "FATAL: tier1 script missing: $TIER1"; exit 2; }
-[ -x "$TIER1"      ] || { log "FATAL: tier1 not executable: $TIER1"; exit 2; }
+[ -f "$PLAN_FILE"  ] || { log "FATAL: plan file missing: $PLAN_FILE"; hb_finish 2; }
+[ -f "$TIER1"      ] || { log "FATAL: tier1 script missing: $TIER1"; hb_finish 2; }
+[ -x "$TIER1"      ] || { log "FATAL: tier1 not executable: $TIER1"; hb_finish 2; }
 # tier 2 script and prompt are required ONLY if tier 2 will run; checked
 # inside tier 2.
 
@@ -61,7 +82,7 @@ if [ -n "$last_line" ]; then
         age_s=$(( now_s - last_s ))
         if [ "$age_s" -lt $((fresh_min * 60)) ]; then
             log "freshness: last heartbeat ${age_s}s ago (<${fresh_min}m) — skipping tick"
-            exit 0
+            hb_finish 0
         fi
         log "freshness: last heartbeat ${age_s}s ago — proceeding"
     else
@@ -76,7 +97,7 @@ log "tier 1: starting"
 if ! "$TIER1"; then
     rc=$?
     log "tier 1: FAILED (rc=$rc) — unit will land in --state=failed"
-    exit 1
+    hb_finish 1
 fi
 log "tier 1: done"
 
@@ -105,7 +126,7 @@ fi
 
 if [ "$needs_tier2" -eq 0 ]; then
     log "tier 2: no work — tick complete"
-    exit 0
+    hb_finish 0
 fi
 
 # --- 3a. tier 2 preflight: prompt must exist --------------------------------
@@ -115,7 +136,7 @@ fi
         printf '\n[%s] [TIER2-NO-PROMPT] prompt file missing: %s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PROMPT"
     } >> "$TRIAGE" 2>/dev/null || true
-    exit 2
+    hb_finish 2
 }
 
 # --- 3b. tier 2: seat ladder -------------------------------------------------
@@ -147,9 +168,9 @@ with open(path, 'w', encoding='utf-8') as f:
     f.writelines(ln for ln in lines if not re.match(r'^READY-TO-DISPATCH:', ln))
 PY
     fi
-    exit 0
+    hb_finish 0
 else
     rc=$?
     log "tier 2: all seats exhausted (rc=$rc) — unit will land in --state=failed"
-    exit 1
+    hb_finish 1
 fi

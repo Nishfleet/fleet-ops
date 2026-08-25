@@ -11,7 +11,8 @@
 #      the hands-off list).
 #   3. Release orphaned claims (agent-in-progress + no live worker +
 #      no open claim/issue-N PR).
-#   4. Reset+log failed pi-issue-* / fable-p-* units into the triage file.
+#   4. Repair failed user units, then page remaining via triage + hermes
+#      --urgent (fleet-ops#76). Skip fleet-heartbeat itself.
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
 #      outside this repo, and the GitHub App has no webhooks. If every
@@ -58,6 +59,17 @@ loud() {
         printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
+
+WATCHMAN_LIB="${FLEET_HEARTBEAT_WATCHMAN:-$HOME/.local/lib/pi-packet/heartbeat-watchman.sh}"
+# shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+if [ -f "$WATCHMAN_LIB" ]; then
+    # shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+    source "$WATCHMAN_LIB"
+else
+    log "WARN: watchman lib missing at $WATCHMAN_LIB — failed-unit page + seat-health skipped"
+    heartbeat_process_failed_units() { log "failed-units: skipped (watchman lib missing)"; }
+    heartbeat_seat_health_check() { log "seat-health: skipped (watchman lib missing)"; }
+fi
 
 [ -f "$PLAN_FILE" ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 1; }
 [ -f "$REPOS_JSON" ] || {
@@ -320,32 +332,15 @@ done <<< "$claim_repos"
 log "3. orphan-pass complete: released=$released"
 
 # ============================================================================
-# 4. RESET+LOG FAILED pi-issue-* / fable-p-* UNITS
+# 4. REPAIR FAILED UNITS, THEN PAGE WHAT REMAINS (fleet-ops#76)
 # ============================================================================
-# For each failed unit, write a triage line so the next tier-2 tick sees it.
-# We do NOT auto-restart the unit (that would defeat the fail-loud signal).
-# pi-issue-* failures already trigger OnFailure=pi-issue-failed@ which
-# cleans up the claim branch; this loop is the OBSERVABILITY + audit step.
-#
-# Idempotency: we keep a marker per failed unit per tick in $TICK_LOG;
-# the triage entry is also timestamped so tier-2 sees it once and clears it.
-reset_logged=0
+# Repair first (reset-failed + start), page second. Remaining failures
+# go to the triage file AND hermes send --urgent. fleet-heartbeat itself
+# is skipped so a failed tick does not recurse. #75 adds undersaturation
+# as its own block; this one stays additive.
 log "4. failed-units pass starting"
-while IFS= read -r unit; do
-    [ -z "$unit" ] && continue
-    case "$unit" in
-        pi-issue-*|fable-p*) : ;;  # match
-        *) continue ;;
-    esac
-
-    # Pull the last 5 lines of the journal for the audit breadcrumb.
-    excerpt=$(journalctl --user -u "$unit" -n 5 --no-pager -q 2>/dev/null | tr '\n' ' ' | head -c 400 || true)
-    loud "UNIT-FAILED" "$unit :: ${excerpt:-<no-journal>}"
-    reset_logged=$((reset_logged+1))
-done < <(systemctl --user --state=failed --no-legend 2>/dev/null \
-            | awk '{print $1}' \
-            | grep -E '^(pi-issue-|fable-p)' || true)
-log "4. failed-units pass complete: logged=$reset_logged"
+heartbeat_process_failed_units
+log "4. failed-units pass complete"
 
 # ============================================================================
 # 5. VERIFY SCOUT / INTAKE TIMERS ARMED
@@ -465,7 +460,17 @@ if [ "$degraded" -gt 0 ]; then
 fi
 
 # ============================================================================
+# 8. SEAT-HEALTH FRESHNESS (fleet-ops#76)
+# ============================================================================
+# Standing rule: verify observed_at before trusting pi-seat-health.json.
+# Stale (>90 min) or unparseable -> trigger pi-transport-check, then report.
+# Additive block so #75 can land undersaturation without overlapping this.
+log "8. seat-health freshness starting"
+heartbeat_seat_health_check
+log "8. seat-health freshness done"
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded"
+log "tier 1 complete: queued=$queued orphan_released=$released timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded"
 exit 0
