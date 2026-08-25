@@ -163,9 +163,39 @@ fi
 # for no-op detection. stderr goes to the err file for the council packet.
 # Time the run too — P13-B spawn-visibility needs to distinguish a spawn-
 # phase ETIMEDOUT (< 120s) from a long-session transient.
+#
+# P15 hang watchdog: pi (any provider) intermittently never finalizes in
+# --print mode — it does real tool work (verified: 4–11 tool calls in the
+# session jsonl) then hangs in ep_poll instead of writing final output and
+# exiting. The session log shows the last event is the assistant's text;
+# the process never sends/gets a finish. The wrapper previously waited
+# forever: the unit sat in `activating` until TimeoutStartSec=45min
+# killed it, the seat registration stayed in the registry (liveness probe
+# sees `activating` = live), caps stayed exhausted, and pick_seat refused
+# to route anything else. Root fix: bound the pi run ourselves with a hard
+# timeout SHORTER than the unit's TimeoutStartSec (45 min), so a wedged pi
+# becomes a fast, loud, seat-cleaned failure and systemd re-seats on the
+# next Restart immediately instead of starving the fleet for 45 minutes.
+# timeout(1) sends SIGTERM at the limit and SIGKILL after --kill-after;
+# the clear_active_seat trap on EXIT/TERM fires on the SIGTERM path.
+#
+# Also written to the err file so the seat-health spawn-fail detector can
+# distinguish a hang (this marker) from a spawn ETIMEDOUT.
+PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=45min
 spawn_start_s=$(date -u +%s)
 rc=0
-"$PI_BIN" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file" || rc=$?
+if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file"; then
+    rc=0
+elif [[ $? -eq 124 ]]; then
+    rc=124
+    {
+        echo "pi-issue-run: PI HANG WATCHDOG — pi on $np/$nm did not finalize within ${PI_HANG_TIMEOUT_S}s ($(date -u +%FT%TZ)); killed. This is the P15 wedge fix — seat cleared, restarting on a new seat."
+        echo "pi-issue-run: session tail: $(tail -c 400 "$err_file" 2>/dev/null | tr '\n' ' ' | tail -c 300)"
+    } >>"$err_file"
+    seat_log "pi-issue-run: $inst PI HANG WATCHDOG on $np/$nm after ${PI_HANG_TIMEOUT_S}s — killed and re-seating"
+else
+    rc=$?
+fi
 spawn_end_s=$(date -u +%s)
 spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
 
