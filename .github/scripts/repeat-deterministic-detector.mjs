@@ -33,12 +33,20 @@ import { pathToFileURL } from "node:url";
 const DEFAULT_LOOKBACK_HOURS = 6;
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_WINDOW_HOURS = 6;
+const DEFAULT_TOP_SIGNATURES = 10;
 const DEFAULT_PAGE_SIZE = 100;
 const COMMENT_MARKER = "<!-- repeat-deterministic-detector -->";
 
-// GitHub Actions log annotation prefix. Strip it so the assertion is the
-// message, not the wrapper.
-const ANNOTATION_PREFIX = /^##(?:error|warning|notice)\s+/u;
+// GitHub Actions log annotation prefix. Real GitHub logs emit
+// `##[error] <msg>` (with brackets), not the bracketless `##error <msg>`
+// the docs use as shorthand. The detector must match BOTH forms — the
+// issue fleet-ops#21 names the bracket form verbatim ("first ##[error]
+// assertion line"), and the real 0509 ratchet failures only emit the
+// bracket form from vitest assertions. A regex that misses one keeps the
+// whole headline diagnostic invisible. The trailing whitespace is
+// optional because GitHub itself sometimes omits it (e.g. timestamp lines
+// emit `##[error]<msg>` with no separator).
+const ANNOTATION_PREFIX = /^##\[?(?:error|warning|notice)\]?\s*/u;
 // Leading log timestamp tokens: "2026-08-25T11:09:00.123Z " or "11:09:00 ".
 const LEADING_TS = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+|\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)/u;
 
@@ -67,6 +75,7 @@ const LEADING_TS = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+|\d{2}
  *   job: string,
  *   step: string,
  *   assertion: string,
+ *   event: string,
  *   count: number,
  *   threshold: number,
  *   window_hours: number,
@@ -74,6 +83,35 @@ const LEADING_TS = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+|\d{2}
  *   last_at: string,
  *   runs: Array<{ run_id: number, run_url: string, created_at: string, pr: number | null }>,
  * }} Repeat
+ *
+ * @typedef {{
+ *   signature: string,
+ *   repo: string,
+ *   workflow: string,
+ *   job: string,
+ *   step: string,
+ *   assertion: string,
+ *   event: string,
+ *   count: number,
+ *   first_at: string,
+ *   last_at: string,
+ *   runs: Array<{ run_id: number, run_url: string, created_at: string, pr: number | null }>,
+ * }} FailureSignature
+ *
+ * @typedef {{
+ *   event: string,
+ *   total: number,
+ *   failed: number,
+ *   failure_rate: number,
+ * }} EventSplitRow
+ *
+ * @typedef {{
+ *   rows: EventSplitRow[],
+ *   failed_total: number,
+ *   total_runs: number,
+ *   divergence_pp: number,
+ *   primary: { pr: EventSplitRow, queue: EventSplitRow } | null,
+ * }} EventSplit
  */
 
 /**
@@ -184,8 +222,10 @@ export function normalizeAssertion(raw) {
   if (raw === null || raw === undefined) return "";
   let s = String(raw);
   // The annotation wrapper and a leading log timestamp can appear in either
-  // order (`##error <ts> msg` or `<ts> ##error msg`), so strip each twice.
-  // Order matters: the timestamp precedes `##error` in raw logs.
+  // order (`##[error] <ts> msg` or `<ts> ##[error] msg`), so strip each
+  // twice. Order matters: the timestamp precedes `##[error]` in raw logs.
+  // The wrapper regex accepts BOTH `##[error]` (real GitHub format) and
+  // the bracketless `##error` shorthand — both show up across CI tooling.
   s = s.replace(LEADING_TS, "");
   s = s.replace(ANNOTATION_PREFIX, "");
   s = s.replace(LEADING_TS, "");
@@ -197,11 +237,19 @@ export function normalizeAssertion(raw) {
 }
 
 /**
+ * The signature is the full tuple the issue names:
+ *   (repo, workflow, job, step, assertion, triggering event)
+ * Event is part of the key because a pull_request failure and a merge_group
+ * failure of the same assertion are different contexts — the PR-vs-queue
+ * split is the diagnosis, so collapsing them would hide it. Null/unknown
+ * events coerce to "(unknown)" so a fixture without an event still groups
+ * deterministically.
+ *
  * @param {Failure} f
  * @returns {string}
  */
 export function signature(f) {
-  return [f.repo, f.workflow, f.job, f.step, f.assertion].join("\u241F");
+  return [f.repo, f.workflow, f.job, f.step, f.assertion, f.event ?? "(unknown)"].join("\u241F");
 }
 
 /**
@@ -268,6 +316,7 @@ export function detectRepeatDeterministic(failures, opts = {}) {
       job: head.job,
       step: head.step,
       assertion: head.assertion,
+      event: head.event ?? "(unknown)",
       count: sorted.length,
       threshold,
       window_hours: windowHours,
@@ -294,6 +343,162 @@ export function detectRepeatDeterministic(failures, opts = {}) {
 }
 
 /**
+ * Summarize every failure signature in the sample — NOT only those that
+ * crossed the repeat-deterministic threshold. The headline "21.8% CI
+ * failure rate" is meaningless without decomposition: the same assertion
+ * firing 6 times is one root cause, not six. This function is the
+ * decomposition. It returns all signatures sorted by count desc (then
+ * most-recent-first as a stable tiebreak), so the top-N view is the
+ * diagnosis, not the totals.
+ *
+ * The signature is `(repo, workflow, job, step, assertion, event)` — the
+ * tuple the issue names verbatim. Event is part of the key because a
+ * pull_request failure and a merge_group failure of the same assertion are
+ * DIFFERENT contexts; the PR-vs-queue split is the diagnosis, so
+ * collapsing them would hide it.
+ *
+ * `limit` defaults to DEFAULT_TOP_SIGNATURES (10) and is clamped to >= 1.
+ * Passing a large number returns every distinct signature.
+ *
+ * @param {Failure[]} failures
+ * @param {{ limit?: number }} [opts]
+ * @returns {FailureSignature[]}
+ */
+export function summarizeSignatures(failures, opts = {}) {
+  const limit = Math.max(1, Math.floor(opts.limit ?? DEFAULT_TOP_SIGNATURES));
+  /** @type {Map<string, Failure[]>} */
+  const groups = new Map();
+  for (const f of failures) {
+    if (!f || !f.created_at) continue;
+    const key = signature(f);
+    const list = groups.get(key) ?? [];
+    list.push(f);
+    groups.set(key, list);
+  }
+  /** @type {FailureSignature[]} */
+  const out = [];
+  for (const [, list] of groups) {
+    const sorted = list.slice().sort((a, b) => {
+      const ai = epochMs(a.created_at);
+      const bi = epochMs(b.created_at);
+      if (ai === bi) return 0;
+      return ai < bi ? -1 : 1;
+    });
+    const head = sorted[0];
+    const tail = sorted[sorted.length - 1];
+    out.push({
+      signature: signature(head),
+      repo: head.repo,
+      workflow: head.workflow,
+      job: head.job,
+      step: head.step,
+      assertion: head.assertion,
+      event: head.event ?? "(unknown)",
+      count: sorted.length,
+      first_at: head.created_at,
+      last_at: tail.created_at,
+      runs: sorted.map((f) => ({
+        run_id: f.run_id,
+        run_url: f.run_url,
+        created_at: f.created_at,
+        pr: f.pr,
+      })),
+    });
+  }
+  out.sort((a, b) => {
+    if (a.count !== b.count) return b.count - a.count;
+    // Tiebreak: most-recent failure wins — "what is on fire NOW" is more
+    // diagnostic than "what fired first historically".
+    const ai = epochMs(a.last_at);
+    const bi = epochMs(b.last_at);
+    if (ai !== bi) return ai < bi ? 1 : -1;
+    return a.signature.localeCompare(b.signature);
+  });
+  return out.slice(0, limit);
+}
+
+/**
+ * Bucket all runs (failed + total) by triggering event so the headline rate
+ * decomposes into pull_request vs merge_group vs push vs ... The issue
+ * names this number explicitly: "9.6% vs 21% — that gap is the diagnosis."
+ * A headline rate with no decomposition cannot drive any action.
+ *
+ * Inputs:
+ *   - failures: every failed run the detector knows about (already
+ *     derived from `fetchFailedRuns`, so each failure has an event field).
+ *   - totalRuns: the full set of runs in the same lookback window
+ *     (any conclusion). When omitted (e.g. fixture mode), we fall back to
+ *     counting failed runs only — the split still says what fraction of
+ *     failures came from each event, which is a useful signal even without
+ *     the true rate.
+ *
+ * Output rows are sorted by event name for deterministic output. The
+ * `primary` field pairs pull_request and merge_group specifically so the
+ * headline number is one-line greppable in the rendered report.
+ *
+ * `divergence_pp` is the merge_group rate minus the pull_request rate,
+ * expressed in percentage points. A positive divergence says "queue runs
+ * fail more often than PR runs" — the single most diagnostic number for
+ * whether failures are semantic merge conflicts (queue-side gap) or flaky
+ * tests (no gap, both events similar).
+ *
+ * @param {Failure[]} failures
+ * @param {Array<{ event: string | null }>} [totalRuns]
+ * @returns {EventSplit}
+ */
+export function summarizeEventSplit(failures, totalRuns) {
+  /** @type {Map<string, number>} */
+  const totalByEvent = new Map();
+  if (Array.isArray(totalRuns)) {
+    for (const r of totalRuns) {
+      if (!r) continue;
+      const ev = r.event ?? "(unknown)";
+      totalByEvent.set(ev, (totalByEvent.get(ev) ?? 0) + 1);
+    }
+  }
+  /** @type {Map<string, number>} */
+  const failedByEvent = new Map();
+  for (const f of failures) {
+    if (!f) continue;
+    const ev = f.event ?? "(unknown)";
+    failedByEvent.set(ev, (failedByEvent.get(ev) ?? 0) + 1);
+  }
+  const allEvents = new Set([...totalByEvent.keys(), ...failedByEvent.keys()]);
+  /** @type {EventSplitRow[]} */
+  const rows = [];
+  for (const event of allEvents) {
+    const total = totalByEvent.get(event) ?? 0;
+    const failed = failedByEvent.get(event) ?? 0;
+    // When totalRuns is unknown (fixture mode, omitted) we still report the
+    // failed count, and the rate field is `null` (NaN -> null at render time)
+    // so the JSON does not lie about a percentage that was never measured.
+    const rate = total > 0 ? failed / total : Number.NaN;
+    rows.push({
+      event,
+      total,
+      failed,
+      failure_rate: Number.isFinite(rate) ? rate : 0,
+    });
+  }
+  rows.sort((a, b) => (a.event < b.event ? -1 : a.event > b.event ? 1 : 0));
+  const failedTotal = failures.length;
+  const totalRunsCount = Array.isArray(totalRuns) ? totalRuns.length : 0;
+  const pr = rows.find((r) => r.event === "pull_request") ?? null;
+  const queue = rows.find((r) => r.event === "merge_group") ?? null;
+  let divergence = Number.NaN;
+  if (pr && queue && Number.isFinite(pr.failure_rate) && Number.isFinite(queue.failure_rate)) {
+    divergence = (queue.failure_rate - pr.failure_rate) * 100;
+  }
+  return {
+    rows,
+    failed_total: failedTotal,
+    total_runs: totalRunsCount,
+    divergence_pp: Number.isFinite(divergence) ? divergence : 0,
+    primary: pr && queue ? { pr, queue } : null,
+  };
+}
+
+/**
  * @param {Repeat} repeat
  * @returns {string}
  */
@@ -301,7 +506,7 @@ export function renderAlert(repeat) {
   const plural = repeat.count === 1 ? "time" : "times";
   return (
     `Failure signature "${repeat.workflow} / ${repeat.job} / ${repeat.step}"` +
-    ` failed ${repeat.count} ${plural} in ${repeat.window_hours}h` +
+    ` (event=${repeat.event}) failed ${repeat.count} ${plural} in ${repeat.window_hours}h` +
     ` (assertion: "${repeat.assertion || "<no message>"}").` +
     ` This is a repeat-deterministic failure — re-arm or re-queue will not help.` +
     ` Classify before retrying: assertion failure -> stop; infra/network/timeout -> retry with backoff.`
@@ -317,6 +522,8 @@ export function renderAlert(repeat) {
  *   window_hours: number,
  *   failures_sampled: number,
  *   repeats: Repeat[],
+ *   top_signatures?: FailureSignature[],
+ *   event_split?: EventSplit,
  * }} report
  * @returns {string}
  */
@@ -339,6 +546,63 @@ export function renderReport(report) {
       lines.push(`      last:      ${repeat.last_at}`);
       lines.push(`      runs:      ${repeat.runs.map((r) => r.run_url).join(", ")}`);
     }
+  }
+  lines.push("");
+  lines.push(renderTopSignaturesSection(report.top_signatures ?? []));
+  lines.push(renderEventSplitSection(report.event_split ?? null));
+  return lines.join("\n");
+}
+
+/**
+ * @param {FailureSignature[]} signatures
+ * @returns {string}
+ */
+export function renderTopSignaturesSection(signatures) {
+  const lines = [];
+  if (signatures.length === 0) {
+    lines.push("Top failure signatures: none (no failures sampled)");
+    return lines.join("\n");
+  }
+  lines.push(`Top failure signatures: ${signatures.length} (count desc, most-recent first as tiebreak)`);
+  for (let i = 0; i < signatures.length; i++) {
+    const s = signatures[i];
+    const tail = s.assertion ? ` :: ${s.assertion}` : "";
+    lines.push(
+      `  ${String(i + 1).padStart(2)}. [${s.event}] ${s.workflow} / ${s.job} / ${s.step} x${s.count}${tail}`,
+    );
+    lines.push(`        ${s.first_at} -> ${s.last_at} | ${s.runs.length} run url(s)`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * @param {EventSplit | null} split
+ * @returns {string}
+ */
+export function renderEventSplitSection(split) {
+  if (!split || split.rows.length === 0) {
+    return "Event split: none";
+  }
+  const lines = [];
+  lines.push(
+    `Event split: ${split.failed_total} failures across ${split.rows.length} event type(s)` +
+      (split.total_runs > 0 ? ` (${split.total_runs} total runs sampled)` : " (true rate unavailable)"),
+  );
+  for (const row of split.rows) {
+    const rate = split.total_runs > 0 ? ` (${(row.failure_rate * 100).toFixed(2)}%)` : "";
+    lines.push(`  - ${row.event.padEnd(14)} failed=${String(row.failed).padStart(4)}${rate}`);
+  }
+  if (split.primary) {
+    const { pr, queue } = split.primary;
+    const prPct = split.total_runs > 0 ? ` (${(pr.failure_rate * 100).toFixed(2)}%)` : "";
+    const queuePct = split.total_runs > 0 ? ` (${(queue.failure_rate * 100).toFixed(2)}%)` : "";
+    const div = Number.isFinite(split.divergence_pp)
+      ? `${split.divergence_pp >= 0 ? "+" : ""}${split.divergence_pp.toFixed(2)}pp`
+      : "n/a";
+    lines.push(
+      `  pull_request${prPct} vs merge_group${queuePct} — divergence: ${div}` +
+        ` (>0 means queue-side gap, the semantic-merge-conflict signature)`,
+    );
   }
   return lines.join("\n");
 }
@@ -365,6 +629,34 @@ export function fetchFailedRuns(repository, since) {
   );
   const runs = Array.isArray(raw) ? raw : [];
   return runs.filter((r) => r && r.conclusion === "failure");
+}
+
+/**
+ * Fetch every run in the lookback window regardless of conclusion — needed
+ * to compute the true `pull_request` vs `merge_group` failure rate (the
+ * issue's headline diagnostic). Pulls only `id, conclusion, event` per
+ * page (no log fetches) so the call stays cheap.
+ *
+ * The same `created >= since` filter is applied as `fetchFailedRuns` so the
+ * failure rate is computed over an identical window.
+ *
+ * @param {string} repository
+ * @param {Date} since
+ * @returns {Array<{ id: number, event: string | null, conclusion: string | null, created_at: string }>}
+ */
+export function fetchAllRuns(repository, since) {
+  const sinceIso = since.toISOString();
+  const raw = ghApiJson(
+    `repos/${repository}/actions/runs`,
+    `.workflow_runs[]? | select(.created_at >= "${sinceIso}") | ` +
+      `{id: .id, event: .event, conclusion: .conclusion, created_at: .created_at}`,
+    {
+      paginate: true,
+      query: { per_page: DEFAULT_PAGE_SIZE, created: `>=${sinceIso}` },
+      timeoutMs: 180_000,
+    },
+  );
+  return Array.isArray(raw) ? raw.filter((r) => r && r.id) : [];
 }
 
 /**
@@ -404,7 +696,7 @@ export function fetchJobAssertion(repository, jobId) {
     );
     if (!logs) return "";
     for (const line of logs.split(/\r?\n/u)) {
-      const m = line.match(/##error\s+(.*)/u);
+      const m = line.match(/##\[?error\]?\s*(.*)/u);
       if (m && m[1] && m[1].trim()) return normalizeAssertion(m[1]);
     }
     return "";
@@ -594,7 +886,7 @@ export function commentOnPullRequest(repository, repeat) {
 }
 
 /**
- * @param {{ repeats: Repeat[] }} report
+ * @param {{ repeats: Repeat[], top_signatures?: FailureSignature[], event_split?: EventSplit }} report
  * @param {boolean} emitAnnotations
  */
 export function emitGithubAnnotations(report, emitAnnotations) {
@@ -602,6 +894,15 @@ export function emitGithubAnnotations(report, emitAnnotations) {
   for (const repeat of report.repeats) {
     const msg = renderAlert(repeat).replace(/\r?\n/gu, " ");
     console.error(`::error title=REPEAT-DETERMINISTIC::${msg}`);
+  }
+  if (report.event_split?.primary) {
+    const { pr, queue } = report.event_split.primary;
+    const prPct = (pr.failure_rate * 100).toFixed(2);
+    const queuePct = (queue.failure_rate * 100).toFixed(2);
+    const div = report.event_split.divergence_pp.toFixed(2);
+    console.error(
+      `::notice title=CI EVENT RATE::pull_request=${prPct}% merge_group=${queuePct}% divergence=${div}pp`,
+    );
   }
 }
 
@@ -613,11 +914,13 @@ Options:
   --lookback-hours <n>      Hours of recent failed runs to sample (default: ${DEFAULT_LOOKBACK_HOURS})
   --threshold <n>           Failures needed to fire (default: ${DEFAULT_THRESHOLD})
   --window-hours <n>        Sliding window in hours (default: ${DEFAULT_WINDOW_HOURS})
+  --top-signatures <n>      How many top failure signatures to publish (default: ${DEFAULT_TOP_SIGNATURES})
   --from-json <path>        Replay stored failures (no GitHub). Fixture tests use this.
   --format <human|json>     Output format (default: human)
   --output-json <path>      Also write the report JSON to this file
   --comment                 Emit PR-comment breadcrumbs (off by default)
   --no-enrich               Do not fetch job logs for assertion text
+  --no-event-split          Skip fetching the full-run set for the event-rate split
   --help                    Show this message
 `);
 }
@@ -628,11 +931,13 @@ function parseArgs(argv) {
     lookbackHours: DEFAULT_LOOKBACK_HOURS,
     threshold: DEFAULT_THRESHOLD,
     windowHours: DEFAULT_WINDOW_HOURS,
+    topSignatures: DEFAULT_TOP_SIGNATURES,
     fromJson: "",
     format: "human",
     outputJson: "",
     comment: false,
     enrich: true,
+    eventSplit: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -647,6 +952,8 @@ function parseArgs(argv) {
       args.threshold = Math.max(1, Number(argv[++i]) || DEFAULT_THRESHOLD);
     } else if (arg === "--window-hours") {
       args.windowHours = Math.max(1, Number(argv[++i]) || DEFAULT_WINDOW_HOURS);
+    } else if (arg === "--top-signatures") {
+      args.topSignatures = Math.max(1, Number(argv[++i]) || DEFAULT_TOP_SIGNATURES);
     } else if (arg === "--from-json") {
       args.fromJson = argv[++i] ?? "";
     } else if (arg === "--format") {
@@ -657,6 +964,8 @@ function parseArgs(argv) {
       args.comment = true;
     } else if (arg === "--no-enrich") {
       args.enrich = false;
+    } else if (arg === "--no-event-split") {
+      args.eventSplit = false;
     } else if (arg && !arg.startsWith("-")) {
       args.repo = arg;
     }
@@ -671,15 +980,15 @@ function parseArgs(argv) {
 
 /**
  * @param {unknown} payload
- * @returns {Failure[]}
+ * @returns {{ failures: Failure[], totalRuns: Array<{ id: number, event: string | null, conclusion: string | null, created_at: string }> | null }}
  */
 function failuresFromFixture(payload) {
-  const list = Array.isArray(payload)
-    ? payload
-    : payload && typeof payload === "object" && Array.isArray(/** @type {{ failures?: unknown }} */ (payload).failures)
-      ? /** @type {{ failures: Failure[] }} */ (payload).failures
-      : [];
-  return list.map((f) => {
+  /** @type {{ failures?: unknown, total_runs?: unknown, repository?: unknown }} */
+  const obj = Array.isArray(payload) || payload === null || typeof payload !== "object"
+    ? /** @type {{ failures?: unknown }} */ ({})
+    : /** @type {{ failures?: unknown, total_runs?: unknown, repository?: unknown }} */ (payload);
+  const list = Array.isArray(obj.failures) ? obj.failures : [];
+  const failures = list.map((f) => {
     const pr =
       typeof f.pr === "number"
         ? f.pr
@@ -701,6 +1010,24 @@ function failuresFromFixture(payload) {
       pr: Number.isFinite(pr) ? pr : null,
     };
   });
+  let totalRuns = null;
+  if (Array.isArray(obj.total_runs)) {
+    totalRuns = obj.total_runs
+      .map((r) => {
+        if (!r || typeof r !== "object") return null;
+        const rec = /** @type {{ id?: unknown, event?: unknown, conclusion?: unknown, created_at?: unknown }} */ (r);
+        const id = Number(rec.id);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        return {
+          id,
+          event: typeof rec.event === "string" ? rec.event : null,
+          conclusion: typeof rec.conclusion === "string" ? rec.conclusion : null,
+          created_at: String(rec.created_at ?? ""),
+        };
+      })
+      .filter((r) => r !== null);
+  }
+  return { failures, totalRuns };
 }
 
 async function main() {
@@ -709,6 +1036,8 @@ async function main() {
   let repository = args.repo;
   /** @type {Failure[]} */
   let failures;
+  /** @type {Array<{ id: number, event: string | null, conclusion: string | null, created_at: string }> | null} */
+  let totalRuns = null;
 
   if (args.fromJson) {
     const payload = JSON.parse(readFileSync(resolve(args.fromJson), "utf8"));
@@ -716,10 +1045,24 @@ async function main() {
       repository = String(payload.repository);
     }
     if (!repository) repository = "fixture";
-    failures = failuresFromFixture(payload);
+    const parsed = failuresFromFixture(payload);
+    failures = parsed.failures;
+    totalRuns = parsed.totalRuns;
   } else {
     const since = new Date(now.getTime() - args.lookbackHours * 60 * 60 * 1000);
     const runs = fetchFailedRuns(args.repo, since);
+    if (args.eventSplit) {
+      try {
+        totalRuns = fetchAllRuns(args.repo, since);
+      } catch (error) {
+        // Event-split fetch is best-effort: a single failure here must not
+        // suppress the repeat-deterministic signal the alert exists for.
+        console.error(
+          `event_split_fetch_failed on ${args.repo}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        totalRuns = null;
+      }
+    }
     failures = buildFailures(args.repo, runs, { enrich: false });
     if (args.enrich) {
       failures = enrichCandidateAssertions(args.repo, failures, {
@@ -733,6 +1076,14 @@ async function main() {
     threshold: args.threshold,
     windowHours: args.windowHours,
   });
+  // Top failure signatures: every distinct tuple ranked by count desc. The
+  // headline rate cannot drive action without this decomposition. Limit is
+  // configurable via --top-signatures; default 10.
+  const topSignatures = summarizeSignatures(failures, { limit: args.topSignatures });
+  // pull_request vs merge_group failure-rate split. The issue's headline
+  // number is uninformative without it: a 12-point gap says "queue-side
+  // failure" (semantic merge conflicts), while a small gap says "flaky".
+  const eventSplit = summarizeEventSplit(failures, totalRuns ?? undefined);
   const report = {
     generated_at: now.toISOString(),
     repository,
@@ -741,6 +1092,8 @@ async function main() {
     window_hours: args.windowHours,
     failures_sampled: failures.length,
     repeats,
+    top_signatures: topSignatures,
+    event_split: eventSplit,
   };
 
   const json = JSON.stringify(report, null, 2);
@@ -769,6 +1122,9 @@ async function main() {
     const lines = [
       `repeats=${repeats.length}`,
       `failures-sampled=${failures.length}`,
+      `top-signatures=${topSignatures.length}`,
+      `event-split=${eventSplit.primary ? "computed" : "missing"}`,
+      `divergence-pp=${Number.isFinite(eventSplit.divergence_pp) ? eventSplit.divergence_pp.toFixed(2) : "n/a"}`,
     ];
     appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
   }

@@ -98,8 +98,15 @@ the merge-queue semantic-conflict detector (fires when the same check is
 green on `pull_request` and red on `merge_group`, names the check, and
 publishes the `pull_request` vs `merge_group` failure-rate split) and the
 repeat-deterministic detector (fires when the same
-`(workflow, job, step, assertion)` signature fails 3+ times within 6h — an
-assertion failure is not retryable, so the alert says stop, do not re-arm).
+`(workflow, job, step, assertion, event)` signature fails 3+ times within
+6h — an assertion failure is not retryable, so the alert says stop, do not
+re-arm). Both detectors also publish a headline decomposition: top failure
+signatures ranked by count (every distinct tuple, not just the ones that
+fired the alert) and the `pull_request` vs `merge_group` divergence in
+percentage points — the single most diagnostic number for whether failures
+are semantic merge conflicts (large divergence) or flaky tests (small
+divergence). A headline "21.8% CI failure rate" without this decomposition
+cannot drive any action (fleet-ops#21).
 
 A sixth, `.github/workflows/ci-required-check-purity.yml`, flags required
 checks that compare a computed value against a shared committed baseline

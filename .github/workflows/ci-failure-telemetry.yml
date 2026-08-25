@@ -7,12 +7,19 @@ name: CI failure telemetry
 #    passed on pull_request and failed on merge_group. Green in isolation,
 #    collides with the batch. Re-queueing cannot fix it.
 # 2. Repeat-deterministic detector — the same (workflow, job, step,
-#    assertion) signature failed 3+ times within 6h. An assertion failure
-#    is not retryable; this alert says stop, do not re-arm. Catches both
-#    shapes that burned CI on 2026-08-25: "Deploy production" retried an
-#    identical hard wrangler error 6x (11:09 -> 14:06), and 0509 PR #994
-#    re-entered the merge queue 6x (19:51 -> 22:21) failing the same
-#    assertion every time.
+#    assertion, event) signature failed 3+ times within 6h. An assertion
+#    failure is not retryable; this alert says stop, do not re-arm.
+#    Catches both shapes that burned CI on 2026-08-25: "Deploy production"
+#    retried an identical hard wrangler error 6x (11:09 -> 14:06), and
+#    0509 PR #994 re-entered the merge queue 6x (19:51 -> 22:21) failing
+#    the same assertion every time.
+#
+# Both detectors also publish a HEADLINE DECOMPOSITION (fleet-ops#21):
+#   - top failure signatures (every distinct tuple, ranked by count)
+#   - pull_request vs merge_group failure-rate split (the single most
+#     diagnostic number — a >5pp divergence says semantic merge conflict,
+#     a flat split says flaky test)
+# Without these, a headline "21.8% CI failure rate" cannot drive action.
 #
 # Usage from another repo:
 #   jobs:
@@ -41,6 +48,10 @@ on:
         description: "Comment on each conflicting PR so nobody re-queues it."
         default: true
         type: boolean
+      top-signatures:
+        description: "How many top failure signatures to publish (repeat-deterministic job)."
+        default: 10
+        type: number
     outputs:
       conflicts:
         description: "Number of semantic merge conflicts found."
@@ -54,6 +65,12 @@ on:
       divergence-pct:
         description: "merge_group failure rate minus pull_request failure rate, in percentage points."
         value: ${{ jobs.semantic.outputs.divergence-pct }}
+      top-signatures-count:
+        description: "Number of top failure signatures published (ranked by count desc)."
+        value: ${{ jobs.repeat.outputs.top-signatures }}
+      rd-divergence-pp:
+        description: "pull_request vs merge_group divergence from the repeat-deterministic detector's event split, in percentage points. n/a when total runs were not fetched."
+        value: ${{ jobs.repeat.outputs.divergence-pp }}
   workflow_dispatch:
     inputs:
       target-repo:
@@ -68,6 +85,10 @@ on:
         description: "Comment on each conflicting PR."
         default: false
         type: boolean
+      top-signatures:
+        description: "How many top failure signatures to publish (repeat-deterministic job)."
+        default: "10"
+        type: string
   schedule:
     # Daily 04:47 UTC. Named reason: GitHub offers no event for "a PR was
     # ejected from the merge queue" or "a deploy looped on the same error";
@@ -130,6 +151,8 @@ jobs:
       pull-requests: write
     outputs:
       repeats: ${{ steps.run.outputs.repeats }}
+      top-signatures: ${{ steps.run.outputs.top-signatures }}
+      divergence-pp: ${{ steps.run.outputs.divergence-pp }}
     steps:
       - name: Checkout detector
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,9 +167,11 @@ jobs:
           REPEAT_DETERMINISTIC_REPO: ${{ inputs.target-repo || github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT: ${{ inputs.comment-on-pr == true && '--comment' || '' }}
+          TOP_SIGNATURES: ${{ inputs.top-signatures || 10 }}
         run: |
           set -euo pipefail
           node .github/scripts/repeat-deterministic-detector.mjs \
             --repo "${REPEAT_DETERMINISTIC_REPO}" \
+            --top-signatures "${TOP_SIGNATURES}" \
             --output-json repeat-report.json \
             ${COMMENT}
