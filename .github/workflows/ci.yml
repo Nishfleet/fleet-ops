@@ -206,3 +206,5 @@ jobs:
         run: bash tests/pi-issue-start.test.sh
       - name: pi-issue-failed-reap live skip
         run: bash tests/pi-issue-failed-reap.test.sh
+      - name: repair rotation
+        run: bash tests/repair-rotation.test.sh
