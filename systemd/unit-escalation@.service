@@ -1,0 +1,17 @@
+# Universal failure escalation template. One instance per failed user
+# service (instantiated by the global service.d/10-escalate.conf drop-in as
+# unit-escalation@<failed-unit>.service). %i = the failed unit's full name.
+# The ExecStart script writes a STOP-REASON.json entry that stop-escalation.path
+# consumes, summoning one SENIOR AUDITOR. Self-trigger guard: the per-template
+# drop-in resets OnFailure= so this template's own instances never recurse,
+# and the script refuses excluded unit names.
+[Unit]
+Description=Universal failure escalation: record STOP-REASON for failed unit %i
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/unit-escalation-write %i'
+TimeoutStartSec=1min
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true

@@ -223,6 +223,11 @@ jobs:
         run: bash tests/seat-lib.test.sh
       - name: seat-lib degraded units
         run: bash tests/seat-lib-degraded.test.sh
+      # fleet-ops#34: lock the SENIOR-AUDITOR escalation contract — fully-walled
+      # ladder reaches NISH, healthy seat dispatches, timeout/no-block dispatch
+      # does not consume the budget, 2-dispatch cap is enforced.
+      - name: stop-escalation-dispatch
+        run: bash tests/stop-escalation-dispatch.test.sh
       # fleet-ops#71: lock the system-scope RAM governor drop-ins this issue
       # repo-owns, plus their MANIFEST entries and the install.sh routing
       # that puts them under `./install.sh --system`. Drift detection at
