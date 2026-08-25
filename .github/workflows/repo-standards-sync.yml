@@ -63,30 +63,60 @@ jobs:
         # allow_auto_merge (private repos on the free plan) are skipped and
         # logged — they are also excluded from the auto-merge-arm.yml sync
         # below, matching the reconcile script's behavior.
+        #
+        # Robustness: this step runs under `bash -e` (GitHub Actions default).
+        # Every per-repo operation is non-fatal — a failed read or PATCH for
+        # one repo is captured, logged as SKIP, and the loop continues. The
+        # step only exits non-zero for STRUCTURAL failures: an empty repo list
+        # (auth dead or both accounts empty). Individual repo quirks (archived
+        # mid-sweep, 404, private-free-plan rejecting the PATCH) never kill
+        # the step.
         env:
           GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
         run: |
           set -uo pipefail
-          { gh repo list Nishfleet --limit 200 --no-archived --json nameWithOwner,isFork --jq '.[] | select(.isFork|not) | .nameWithOwner';
-            gh repo list nish3451   --limit 200 --no-archived --json nameWithOwner,isFork --jq '.[] | select(.isFork|not) | .nameWithOwner'; } > repos-all.txt
+          : > repos-all.txt
+          # Build the candidate list. Each account is guarded so a single
+          # account failure (auth/permissions) does not abort the step; if
+          # BOTH come back empty we fail loud below.
+          gh repo list Nishfleet --limit 200 --no-archived --json nameWithOwner,isFork --jq '.[] | select(.isFork|not) | .nameWithOwner' >> repos-all.txt 2>/dev/null \
+            || echo "WARN: Nishfleet repo list failed (auth/permissions?) — continuing with nish3451"
+          gh repo list nish3451   --limit 200 --no-archived --json nameWithOwner,isFork --jq '.[] | select(.isFork|not) | .nameWithOwner' >> repos-all.txt 2>/dev/null \
+            || echo "WARN: nish3451 repo list failed (auth/permissions?) — continuing with Nishfleet"
+          if [ ! -s repos-all.txt ]; then
+            echo "::error::No active non-fork repos found in Nishfleet or nish3451 — FLEET_SYNC_PAT auth dead or both accounts empty. Aborting."
+            exit 1
+          fi
           : > repos-eligible.txt
+          : > repos-skipped.txt
+          enabled=0
+          skipped=0
           while IFS= read -r r; do
             [ -n "$r" ] || continue
-            cur=$(gh api "repos/$r" --jq '.allow_auto_merge' 2>/dev/null) || { echo "WARN: cannot read $r — skipped"; continue; }
+            cur=$(gh api "repos/$r" --jq '.allow_auto_merge' 2>/dev/null) || { echo "SKIP $r: cannot read repo (404/permissions) — skipped"; echo "$r" >> repos-skipped.txt; skipped=$((skipped+1)); continue; }
             if [ "$cur" = "true" ]; then
               echo "$r" >> repos-eligible.txt
               continue
             fi
-            new=$(gh api -X PATCH "repos/$r" -F allow_auto_merge=true --jq '.allow_auto_merge' 2>/dev/null)
+            # `|| true` inside the substitution keeps set -e from aborting
+            # when the PATCH is rejected (e.g. private repo on free plan).
+            new=$(gh api -X PATCH "repos/$r" -F allow_auto_merge=true --jq '.allow_auto_merge' 2>/dev/null || true)
             if [ "$new" = "true" ]; then
               echo "ENABLED $r"
               echo "$r" >> repos-eligible.txt
+              enabled=$((enabled+1))
             else
               echo "SKIP $r: allow_auto_merge unavailable (private repo on free plan?) — arm workflow will NOT be synced here"
+              echo "$r" >> repos-skipped.txt
+              skipped=$((skipped+1))
             fi
           done < repos-all.txt
-          echo "Eligible (can auto-merge) repos: $(wc -l < repos-eligible.txt)"
-          echo "All active repos: $(wc -l < repos-all.txt)"
+          eligible=$(wc -l < repos-eligible.txt)
+          total=$(wc -l < repos-all.txt)
+          echo "Eligible (can auto-merge) repos: $eligible"
+          echo "Skipped repos: $(wc -l < repos-skipped.txt)"
+          echo "All active repos: $total"
+          echo "Summary: newly enabled=$enabled, skipped=$skipped, eligible=$eligible of $total"
 
       - name: Fetch canonical standards files from siterep-public
         id: fetch
