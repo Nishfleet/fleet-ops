@@ -184,17 +184,23 @@ fi
 PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=45min
 spawn_start_s=$(date -u +%s)
 rc=0
+pi_rc=0
 if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file"; then
     rc=0
-elif [[ $? -eq 124 ]]; then
-    rc=124
-    {
-        echo "pi-issue-run: PI HANG WATCHDOG — pi on $np/$nm did not finalize within ${PI_HANG_TIMEOUT_S}s ($(date -u +%FT%TZ)); killed. This is the P15 wedge fix — seat cleared, restarting on a new seat."
-        echo "pi-issue-run: session tail: $(tail -c 400 "$err_file" 2>/dev/null | tr '\n' ' ' | tail -c 300)"
-    } >>"$err_file"
-    seat_log "pi-issue-run: $inst PI HANG WATCHDOG on $np/$nm after ${PI_HANG_TIMEOUT_S}s — killed and re-seating"
+    pi_rc=0
 else
-    rc=$?
+    pi_rc=$?
+    if (( pi_rc == 124 )); then
+        rc=124
+        # Buffer the tail before appending so we never read+write $err_file
+        # in the same pipeline (SC2094).
+        session_tail=$(tail -c 400 "$err_file" 2>/dev/null | tr '\n' ' ' | tail -c 300)
+        {
+            echo "pi-issue-run: PI HANG WATCHDOG — pi on $np/$nm did not finalize within ${PI_HANG_TIMEOUT_S}s ($(date -u +%FT%TZ)); killed. This is the P15 wedge fix — seat cleared, restarting on a new seat."
+            echo "pi-issue-run: session tail: $session_tail"
+        } >>"$err_file"
+        seat_log "pi-issue-run: $inst PI HANG WATCHDOG on $np/$nm after ${PI_HANG_TIMEOUT_S}s — killed and re-seating"
+    fi
 fi
 spawn_end_s=$(date -u +%s)
 spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
