@@ -77,6 +77,11 @@ GH="${INTAKE_RECONCILE_GH:-gh}"
 INTAKE_JSON="${INTAKE_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
 TRIAGE="${INTAKE_RECONCILE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 DRY="${INTAKE_RECONCILE_DRY_RUN:-0}"
+# Set to 1 when a repo's preconditions cannot be verified but current state
+# must be preserved (e.g. the GitHub label check errored). The script exits
+# non-zero at the end so escalation fires, but it does NOT converge the fleet
+# to OFF because of a transient failure.
+RECONCILE_ERRORS=0
 
 # Audit log default: $HOME/.local/state/intake-reconcile/audit.log. Tests
 # override INTAKE_RECONCILE_AUDIT_LOG to a scratch path. mkdir -p parents
@@ -144,14 +149,19 @@ mapfile -t excluded_nonperm_arr < <(jq -r '.excluded[]? | select(.permanent != t
 mapfile -t deferred_arr < <(jq -r '.deferred[]?.name' "$INTAKE_JSON")
 
 # --- precondition probe ------------------------------------------------------
-# Returns 0 if the repo has every required_label, 1 otherwise. Never dies
-# on a single network blip — labels might be unavailable but the
-# reconciliation still needs to converge the rest. The result is reflected
-# in the audit log ("why=precondition-missing-labels:<name>").
+# Returns:
+#   0  every required_label is present on the repo (VERIFIED-OK)
+#   1  one or more required_labels are genuinely missing (VERIFIED-FAIL)
+#   2  the label check itself could not be completed (CHECK-ERROR) —
+#      network, auth, or transient API failure. The caller MUST NOT treat
+#      this as a verified-fail and must preserve current state.
 repo_has_labels() {
     local repo="$1"
     local got
-    if ! got=$("$GH" label list -R "$repo" --json name --jq '.[].name' 2>/dev/null); then
+    # The repo names in the config are short; gh requires OWNER/REPO.
+    # The short form was the root cause of the first supervised run failing
+    # every label check with quota healthy (fleet-ops#32, 2026-08-26).
+    if ! got=$("$GH" label list -R "Nishfleet/$repo" --json name --jq '.[].name' 2>/dev/null); then
         log "  $repo: gh label list FAILED"
         return 2
     fi
@@ -275,13 +285,25 @@ converge_repo() {
             # repo_has_labels returns non-zero under set -e on failure; use
             # || true so we capture the code instead of aborting the
             # reconcile sweep. The result is what drives the precondition
-            # decision.
+            # decision: 0 OK, 1 verified missing labels, 2 check error.
             local label_rc=0
             repo_has_labels "$repo" || label_rc=$?
             case "$label_rc" in
                 0) ;;
                 1) fail+=("repo-missing-labels") ;;
-                2) fail+=("repo-label-check-error") ;;
+                2)
+                    # CHECK-ERROR: the API/auth/network call itself failed.
+                    # This must NOT be treated as a verified precondition
+                    # failure and must NOT converge the repo to OFF. Keep the
+                    # current state, log loud, and exit non-zero so escalation
+                    # fires (fleet-ops#32, 2026-08-26).
+                    local extra=""
+                    [ "${#fail[@]}" -gt 0 ] && extra=" (also: $(printf '%s,' "${fail[@]}"))"
+                    loud "INTAKE-PRECOND-CHECK-ERROR" \
+                        "$repo: label check failed (gh API/auth/network) — keeping current state, not converging$extra"
+                    RECONCILE_ERRORS=1
+                    return 0
+                    ;;
             esac
 
             if [ "${#fail[@]}" -gt 0 ]; then
@@ -460,4 +482,8 @@ snap="$snap]}"
 printf '%s\n' "$snap" >"$(snapshot_path)"
 
 log "converged ${#declared_mode[@]} repos"
+if [ "$RECONCILE_ERRORS" -ne 0 ]; then
+    log "FATAL: one or more repos could not be verified; current state preserved and escalation triggered"
+    exit 1
+fi
 exit 0

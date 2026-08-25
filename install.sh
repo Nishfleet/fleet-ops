@@ -128,6 +128,12 @@ fi
 
 if [ "$do_user_install" = 1 ]; then
   systemctl --user daemon-reload
+  # fleet-ops#32: the reconciler was fail-closed on gh label-check errors,
+  # so it was stopped/disabled. Once this fixed version is installed, the
+  # path unit (fired by intake-repos.json changes) and the 30-minute timer
+  # can be safely re-enabled.
+  systemctl --user enable intake-reconcile.path
+  systemctl --user enable --now intake-reconcile.timer
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

@@ -62,11 +62,19 @@ CHECKOUT_ROOT="$scratch/checkout_root"
 
 # --- fake gh ----------------------------------------------------------------
 # Driven by $LABEL_FILE: one label name per line.
+#   $GH_CALLS            every gh invocation is appended here (for proving the
+#                        full owner/repo name is passed).
+#   $GH_FAIL             1 = simulate a transient GitHub API/auth failure.
 gh_fake="$scratch/gh"
 cat >"$gh_fake" <<'FAKE'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GH_CALLS:-/dev/null}"
 case "$*" in
   *"label list"*)
+    if [[ "${GH_FAIL:-0}" == "1" ]]; then
+      printf 'gh label list failed (simulated transient API error)\n' >&2
+      exit 2
+    fi
     if [[ -f "${LABEL_FILE:-/dev/null}" ]]; then
       cat "$LABEL_FILE"
     else
@@ -235,14 +243,16 @@ reset_world() {
     : >"$triage"
     : >"$audit_log"
     : >"${CALLS:=$scratch/calls.log}"
+    : >"${GH_CALLS:=$scratch/gh_calls}"
     : >"${UNIT_FILES:=$scratch/unit_files}"
     : >"${UNIT_ACTIVE:=$scratch/unit_active}"
     : >"${LABEL_FILE:=$scratch/labels}"
+    GH_FAIL=0
     rm -rf "$scratch/checkout_root"/*
     mkdir -p "$scratch/checkout_root"
 }
 
-export CALLS UNIT_FILES UNIT_ACTIVE LABEL_FILE
+export CALLS GH_CALLS GH_FAIL UNIT_FILES UNIT_ACTIVE LABEL_FILE
 
 # ============================================================================
 # Scenario 1: enrolled repo with passing preconditions → enable + start
@@ -279,6 +289,11 @@ grep -q 'pi-intake@demo.timer enable actor=reconciler why=declared-enrolled:decl
     || fail "scenario1: audit line missing for intake enable ($(cat "$audit_log"))"
 grep -q 'pi-scout@demo.timer enable actor=reconciler why=declared-enrolled:declared-in-repos' "$audit_log" \
     || fail "scenario1: audit line missing for scout enable"
+# The repo name in the config is short, but gh must be called with the
+# full owner/repo name — the short form was the root cause of the
+# repo-label-check-error on 2026-08-26.
+grep -q 'Nishfleet/demo' "$GH_CALLS" \
+    || fail "scenario1: gh must be called with full owner/repo name: $(cat "$GH_CALLS")"
 ok "scenario1: enrolled repo with passing preconditions → enable+start, audit line per state change"
 
 # Idempotence: re-run with already-enabled state.
@@ -572,6 +587,42 @@ grep -q 'systemd/intake-reconcile.timer' "$repo_root/MANIFEST" \
 grep -q 'systemd/intake-reconcile.path' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list systemd/intake-reconcile.path"
 ok "scenario10: MANIFEST + README + description all reference the reconciler"
+
+# ============================================================================
+# Scenario 11: gh label check fails (network/auth/transient) → keep state,
+#              log loud, exit non-zero.  This was the fail-closed defect that
+#              disabled every enrolled repo on the reconciler's first run.
+# ============================================================================
+reset_world
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+mkdir -p "$scratch/checkout_root/demo"
+# Labels would pass, but the API call itself fails.
+printf 'agent-ready\nagent-in-progress\nagent-blocked\n' >"$LABEL_FILE"
+printf 'pi-intake@demo.timer enabled\npi-scout@demo.timer enabled\n' >"$UNIT_FILES"
+printf 'pi-intake@demo.timer\npi-scout@demo.timer\n' >"$UNIT_ACTIVE"
+
+GH_FAIL=1
+run_reconcile "$intake_json"
+GH_FAIL=0
+
+[[ "$env_rc" != 0 ]] || fail "scenario11: transient gh failure must exit non-zero, got $env_rc"
+# A check error is NOT a verified precondition failure — the repo must stay
+# in its current state, not be converged to OFF.
+grep -q 'disable pi-intake@demo.timer' "$CALLS" \
+    && fail "scenario11: must NOT disable on transient API error: $(cat "$CALLS")"
+grep -q 'enable pi-intake@demo.timer' "$CALLS" \
+    && fail "scenario11: must NOT enable on transient API error: $(cat "$CALLS")"
+grep -q 'INTAKE-PRECOND-CHECK-ERROR' "$triage" \
+    || fail "scenario11: triage must record LOUD check error: $(cat "$triage")"
+ok "scenario11: gh API error keeps current state, logs loud, exits non-zero"
 
 echo "OK: intake-reconcile converges declared set → systemd, drift surfaces loud"
 exit 0
