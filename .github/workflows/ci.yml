@@ -217,3 +217,5 @@ jobs:
       # SHAPE lock that catches content regressions in CI.
       - name: system drop-ins shape
         run: bash tests/system-dropins-shape.test.sh
+      - name: undersaturation alarm
+        run: bash tests/fleet-heartbeat-undersaturation.test.sh

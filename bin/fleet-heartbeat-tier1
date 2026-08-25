@@ -18,6 +18,14 @@
 #      machine-checkable dependency is closed/merged, flip back to
 #      agent-ready. Nish-decision blocks stay labelled and are published
 #      (count + oldest age) into the triage file.
+#   8. Undersaturation alarm + throughput line (fleet-ops#75). Delegates to
+#      bin/fleet-heartbeat-undersaturation: counts ready/claimed work and
+#      live pi-issue workers; if work>0 and running==0 it repairs (reset-
+#      failed, reap stale active-seats, restart intake) on the first wedged
+#      tick and fails LOUD on the second consecutive one. Also emits one
+#      THROUGHPUT line per tick (merged fleet-worker PRs since last tick)
+#      into the triage log. The helper's non-zero exit propagates here so
+#      fleet-heartbeat.service lands in --state=failed -> page + Telegram.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -465,7 +473,33 @@ if [ "$degraded" -gt 0 ]; then
 fi
 
 # ============================================================================
+# 8. UNDERSATURATION ALARM + THROUGHPUT LINE (fleet-ops#75)
+# ============================================================================
+# Delegates to bin/fleet-heartbeat-undersaturation. The helper counts ready/
+# claimed work vs live pi-issue workers; on a wedge (work>0, running==0) it
+# repairs on the first tick and fails LOUD on the second consecutive one. It
+# also emits a per-tick THROUGHPUT line. A non-zero exit here propagates so
+# fleet-heartbeat.service lands in --state=failed (page + Telegram) — that is
+# the deliberate fail-loud signal, not an error to swallow.
+UNDERSAT_BIN="${FLEET_HEARTBEAT_UNDERSAT:-/home/nish/.local/bin/fleet-heartbeat-undersaturation}"
+undersat_rc=0
+if [ -x "$UNDERSAT_BIN" ]; then
+    log "8. undersaturation+throughput pass starting"
+    if "$UNDERSAT_BIN"; then
+        log "8. undersaturation pass complete"
+    else
+        undersat_rc=$?
+        log "8. undersaturation: FAIL LOUD (rc=$undersat_rc) — second consecutive wedged tick; unit will land in --state=failed"
+    fi
+else
+    log "8. undersaturation helper missing at $UNDERSAT_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc"
+if [ "$undersat_rc" -ne 0 ]; then
+    exit "$undersat_rc"
+fi
 exit 0
