@@ -158,53 +158,38 @@ jobs:
         run: gitleaks git --redact --verbose
 
   tests:
-    # P14 (worker credential split): prove the nishfleet-worker App
-    # manifest is shape-locked and the worker-token path is fail-closed.
-    # The live test (tests/worker-token-live.test.sh) is gated on
-    # NISHFLEET_WORKER_LIVE_TEST=1 and skips by default — it requires the
-    # real App + credentials and is run manually after Nish's manifest
-    # click. Until then, this job is the only automation that touches
-    # the new code, and it never reaches GitHub.
+    # Calls the central reusable PR-checks workflow. The four required check
+    # names (Gitleaks, Semgrep, Shellcheck, systemd-analyze) stay as local
+    # jobs above: a `uses:` job reports as "caller / callee" and would make
+    # those required checks wait forever. scan-secrets is false so gitleaks
+    # does not run twice while that required job still exists.
     name: P14 tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install test deps
-        # ubuntu-latest hosted runners are pre-seeded with curl, jq, openssl,
-        # and python3 — apt-get is unnecessary here. Run a quick existence
-        # check so the failure mode is "missing tool" rather than apt lock
-        # contention with parallel jobs.
-        run: |
-          set -euo pipefail
-          for t in jq openssl curl python3 node; do
-            command -v "$t" >/dev/null 2>&1 || {
-              echo "missing tool: $t" >&2
-              exit 1
-            }
-          done
-      - name: Manifest shape
-        run: bash tests/manifest-shape.test.sh
-      - name: intake-repos shape
-        run: bash tests/intake-repos-shape.test.sh
-      - name: worker-token fail-closed
-        run: bash tests/worker-token-fail-closed.test.sh
-      - name: semantic-conflict-detector
-        run: bash tests/semantic-conflict-detector.test.sh
-      - name: repeat-deterministic-detector
-        run: bash tests/repeat-deterministic-detector.test.sh
-      - name: required-check-purity
-        run: bash tests/required-check-purity.test.sh
-      - name: pi-systemd-run
-        run: bash tests/pi-systemd-run.test.sh
-      - name: pi-intake-run overlap
-        run: bash tests/pi-intake-run.test.sh
-      - name: pi-issue-start no-op
-        run: bash tests/pi-issue-start.test.sh
-      - name: pi-issue-failed-reap live skip
-        run: bash tests/pi-issue-failed-reap.test.sh
-      - name: repair rotation
-        run: bash tests/repair-rotation.test.sh
+    uses: ./.github/workflows/reusable-pr-checks.yml
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      node-version: ""
+      install-command: ""
+      scan-secrets: false
+      timeout-minutes: 5
+      verify-command: |
+        set -euo pipefail
+        for t in jq openssl curl python3 node; do
+          command -v "$t" >/dev/null 2>&1 || {
+            echo "missing tool: $t" >&2
+            exit 1
+          }
+        done
+        bash tests/manifest-shape.test.sh
+        bash tests/intake-repos-shape.test.sh
+        bash tests/worker-token-fail-closed.test.sh
+        bash tests/semantic-conflict-detector.test.sh
+        bash tests/repeat-deterministic-detector.test.sh
+        bash tests/required-check-purity.test.sh
+        bash tests/pi-systemd-run.test.sh
+        bash tests/pi-intake-run.test.sh
+        bash tests/pi-issue-start.test.sh
+        bash tests/pi-issue-failed-reap.test.sh
+        bash tests/repair-rotation.test.sh
+        bash tests/reusable-workflows.test.sh

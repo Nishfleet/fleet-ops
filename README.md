@@ -70,7 +70,17 @@ worker still has a MainPID.
 
 All actions are pinned to exact commit SHAs. Every job has a timeout.
 
-A fifth reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
+The tests job calls `.github/workflows/reusable-pr-checks.yml` (`workflow_call`).
+That file is the batched CI standard for every current and future repo: one
+job, `timeout-minutes`, PR concurrency, npm cache, job-level path gating, and
+gitleaks. Callers pass `inputs`; they do not copy the steps. The four required
+check names stay as local jobs because a `uses:` job reports as
+`caller / callee` and branch protection still lists `Gitleaks`, `Semgrep`,
+`Shellcheck`, and `systemd-analyze`.
+
+New repos copy `template/.github/workflows/` (wired to this repo at `@main`).
+
+A further reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
 the central CI failure telemetry set. Other repos call it with
 `workflow_call`; it is an alert, not a required check. It runs two detectors:
 the merge-queue semantic-conflict detector (fires when the same check is
