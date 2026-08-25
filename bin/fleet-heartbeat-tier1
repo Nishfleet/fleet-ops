@@ -11,7 +11,9 @@
 #      the hands-off list).
 #   3. Release orphaned claims (agent-in-progress + no live worker +
 #      no open claim/issue-N PR).
-#   4. Reset+log failed pi-issue-* / fable-p-* units into the triage file.
+#   4. Recover/log failed fleet worker/repair/cleanup units; attempt a plain
+#      reset+start for transient lane faults on supply/repair units, and
+#      escalate loudly after N attempts so a unit never ends failed quietly.
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
 #      outside this repo, and the GitHub App has no webhooks. If every
@@ -65,6 +67,157 @@ loud() {
     {
         printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# --- failed-unit recovery helpers -------------------------------------------
+FAILED_UNITS_STATE_DIR="${FLEET_HEARTBEAT_FAILED_STATE_DIR:-$LOG_DIR/failed-units}"
+FAILED_UNITS_MAX_ATTEMPTS="${FLEET_HEARTBEAT_FAILED_MAX_ATTEMPTS:-3}"
+mkdir -p "$FAILED_UNITS_STATE_DIR"
+
+# Safe on-disk filename for a systemd unit name.
+unit_state_file() {
+    local u="$1" safe
+    safe=$(printf '%s' "$u" | tr -c 'A-Za-z0-9._-' '_')
+    printf '%s/%s.json\n' "$FAILED_UNITS_STATE_DIR" "$safe"
+}
+
+# Read a single key from a unit's JSON state file.
+state_get() {
+    local f="$1" key="$2" default="${3:-}"
+    if [[ -f "$f" ]]; then
+        jq -r --arg k "$key" --arg d "$default" '(.[$k] // $d) | tostring' "$f" 2>/dev/null || printf '%s' "$default"
+    else
+        printf '%s' "$default"
+    fi
+}
+
+# Write a unit's JSON state file atomically. Empty attempts/escalated means
+# "leave the current value".
+state_update() {
+    local f="$1" unit="$2" class="$3" action="$4" still="$5" attempts="${6:-}" escalated="${7:-}"
+    python3 - "$f" "$unit" "$class" "$action" "$still" "$attempts" "$escalated" <<'PY'
+import sys, os, json, datetime
+f, unit, cls, action, still = sys.argv[1:6]
+attempts = sys.argv[6] if len(sys.argv) > 6 else ''
+escalated = sys.argv[7] if len(sys.argv) > 7 else ''
+state = {}
+if os.path.exists(f):
+    try:
+        with open(f, 'r', encoding='utf-8') as fh:
+            state = json.load(fh)
+    except Exception:
+        state = {}
+now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+state['unit'] = unit
+state['class'] = cls
+if 'first_seen' not in state:
+    state['first_seen'] = now
+state['last_seen'] = now
+state['last_action'] = action
+state['last_action_at'] = now
+state['still_failed'] = (still == 'true')
+if attempts != '':
+    try:
+        state['attempts'] = int(attempts)
+    except ValueError:
+        state['attempts'] = state.get('attempts', 0)
+if escalated != '':
+    state['escalated'] = (escalated == 'true')
+tmp = f + '.tmp.' + str(os.getpid())
+with open(tmp, 'w', encoding='utf-8') as fh:
+    json.dump(state, fh)
+os.rename(tmp, f)
+PY
+}
+
+# Remove state when a unit has recovered.
+state_remove() {
+    local f="$1"
+    rm -f "$f"
+}
+
+# Classify a failure from the lower-cased journal text.
+classify_failure() {
+    local journal="$1"
+    local low
+    low=$(printf '%s' "$journal" | tr '[:upper:]' '[:lower:]')
+    if printf '%s' "$low" | grep -qiE 'rate limit|reached.*message.*limit|429|too many requests|etimedout|connection timed out|connect etimedout|econn|handshake.*timeout|spawn.*timeout|timed out waiting|retryable.*true|transient_fault'; then
+        printf 'transient-lane'; return
+    fi
+    if printf '%s' "$low" | grep -qiE 'start.*limit|startlimitburst|start-limit|start-limit-hit'; then
+        printf 'start-limit'; return
+    fi
+    if printf '%s' "$low" | grep -qiE 'auth.*fail|credential.*bad|api key.*invalid|token.*invalid|model missing|llm.*dead|permission denied.*(invalid|bad|missing)|quota.*exhausted|out of quota|daily limit'; then
+        printf 'llm-dead'; return
+    fi
+    if printf '%s' "$low" | grep -qiE 'code=exited.*status=1|exit-code|syntax error|command not found|no such file|fatal|error'; then
+        printf 'code-fail'; return
+    fi
+    printf 'unknown'
+}
+
+# Extract provider/model from the unit's ExecStart line.
+unit_seat() {
+    local u="$1"
+    local ex p m
+    ex=$(systemctl --user show "$u" --property=ExecStart --value 2>/dev/null || true)
+    p=""; m=""
+    if [[ "$ex" =~ --provider[[:space:]]+([^[:space:]\'\"]+) ]]; then
+        p="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$ex" =~ --model[[:space:]]+([^[:space:]\'\"]+) ]]; then
+        m="${BASH_REMATCH[1]}"
+    fi
+    printf '%s\t%s\n' "${p:-unknown}" "${m:-unknown}"
+}
+
+# True if a tag+unit triage line already exists (so we do not repeat every tick).
+already_in_triage() {
+    local tag="$1" unit="$2"
+    [[ -s "$TRIAGE" ]] && grep -qF "[$tag] unit=$unit" "$TRIAGE" 2>/dev/null
+}
+
+# Remove stale trigger lines for a unit before writing a new one, so the
+# triage file does not hold a classification that is no longer current.
+triage_remove_unit() {
+    local unit="$1"
+    [[ -s "$TRIAGE" ]] || return 0
+    python3 - "$TRIAGE" "$unit" <<'PY'
+import sys, re, os
+path, unit = sys.argv[1], sys.argv[2]
+if not os.path.exists(path):
+    sys.exit(0)
+pattern = re.compile(
+    r'^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\] '
+    r'\[(LLM-DEAD|CODE-FAIL|UNIT-ESCALATE)\] unit=' + re.escape(unit) + ' '
+)
+with open(path, 'r', encoding='utf-8') as f:
+    kept = [ln for ln in f if not pattern.match(ln)]
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(kept)
+PY
+}
+
+# Whether tier 1 may reset+start this failed unit itself.
+#   recover — supply/repair units with NO OnFailure reap. A transient lane
+#             fault (provider 429, ETIMEDOUT, StartLimit from transient
+#             retries) leaves them failed with no other recovery path, so
+#             the heartbeat's reset+start floor is safe and is the fix the
+#             2026-08-25 incident (#28) was missing.
+#   observe — worker units (pi-issue@/pi-packet@/fable-p*) and reap cleanup
+#             units (*-failed@). Restarting these races the OnFailure reap
+#             (which releases the claim branch and flips the label) and the
+#             intake re-dispatch: two workers would land on the same issue.
+#             Their own retry/reap path is the correct recovery, so tier 1
+#             only observes and surfaces non-transient faults.
+unit_recovery_class() {
+    case "$1" in
+        pi-intake@*.service)        printf 'recover' ;;
+        pi-intake-repair@*.service) printf 'recover' ;;
+        pi-scout@*.service)         printf 'recover' ;;
+        pi-scout-repair@*.service)  printf 'recover' ;;
+        *)                          printf 'observe' ;;
+    esac
 }
 
 [ -f "$PLAN_FILE" ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 1; }
@@ -328,32 +481,163 @@ done <<< "$claim_repos"
 log "3. orphan-pass complete: released=$released"
 
 # ============================================================================
-# 4. RESET+LOG FAILED pi-issue-* / fable-p-* UNITS
+# 4. RECOVER / LOG FAILED FLEET UNITS
 # ============================================================================
-# For each failed unit, write a triage line so the next tier-2 tick sees it.
-# We do NOT auto-restart the unit (that would defeat the fail-loud signal).
-# pi-issue-* failures already trigger OnFailure=pi-issue-failed@ which
-# cleans up the claim branch; this loop is the OBSERVABILITY + audit step.
+# Tier 1 now owns the failed-unit pass. For every fleet-owned unit in
+# --state=failed we record it, classify it, and either:
+#   - recover: reset-failed + start (supply/repair units only — see
+#     unit_recovery_class), bounded by FAILED_UNITS_MAX_ATTEMPTS, or
+#   - observe: log + surface, no restart (workers + reaps; their OnFailure
+#     reap and intake re-dispatch are the retry path).
+# Non-transient faults (dead provider, code bug) and exhausted recovery
+# attempts are written to the triage file as LOUD lines so tier 2 / humans
+# see them — a unit never ends in a quiet failed state.
 #
-# Idempotency: we keep a marker per failed unit per tick in $TICK_LOG;
-# the triage entry is also timestamped so tier-2 sees it once and clears it.
-reset_logged=0
+# The 2026-08-25 incident (#28): pi-intake-repair@0509.service failed with a
+# Devin rate limit at 23:16:54 IST. Heartbeat ran 57 seconds later but its
+# matcher only looked at pi-issue-* and fable-p* (hyphen), so it matched
+# neither the template instance pi-issue@* (at-sign) nor the repair unit
+# pi-intake-repair@*. The unit was invisible and was cleared by hand. The
+# matcher below now covers every fleet worker / repair / cleanup unit
+# instance, and the reset+start floor does not depend on any agent lane
+# being healthy.
+#
+# Idempotency: a per-unit JSON state file tracks attempts and escalation so
+# the N-attempt ceiling is real and the triage file is not spammed.
+seen=0
+repaired=0
+requeued=0
+still_failed=0
+exhausted=0
+escd=0
+current_failed_units=""
 log "4. failed-units pass starting"
-while IFS= read -r unit; do
-    [ -z "$unit" ] && continue
-    case "$unit" in
-        pi-issue-*|fable-p*) : ;;  # match
-        *) continue ;;
-    esac
 
-    # Pull the last 5 lines of the journal for the audit breadcrumb.
-    excerpt=$(journalctl --user -u "$unit" -n 5 --no-pager -q 2>/dev/null | tr '\n' ' ' | head -c 400 || true)
-    loud "UNIT-FAILED" "$unit :: ${excerpt:-<no-journal>}"
-    reset_logged=$((reset_logged+1))
-done < <(systemctl --user --state=failed --no-legend 2>/dev/null \
-            | awk '{print $1}' \
-            | grep -E '^(pi-issue-|fable-p)' || true)
-log "4. failed-units pass complete: logged=$reset_logged"
+mapfile -t failed_units < <(systemctl --user --state=failed --no-legend 2>/dev/null \
+    | awk '{print $1}' \
+    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p)' \
+    || true)
+
+for unit in "${failed_units[@]}"; do
+    [ -z "$unit" ] && continue
+    current_failed_units="${current_failed_units}${unit}"$'\n'
+
+    # Read enough journal to classify and leave an audit breadcrumb.
+    journal=$(journalctl --user -u "$unit" -n 50 --no-pager -q 2>/dev/null || true)
+    excerpt=$(printf '%s' "$journal" | tr '\n' ' ' | head -c 400 || true)
+    cls=$(classify_failure "$journal")
+    log "4.  - $unit: seen class=$cls"
+
+    state_f=$(unit_state_file "$unit")
+    state_update "$state_f" "$unit" "$cls" "seen" true
+
+    seen=$((seen+1))
+    rclass=$(unit_recovery_class "$unit")
+
+    # Non-transient failures: hand to tier 2 via triage. Deduplicate so the
+    # same unit does not generate a new line every 30 minutes. Applies to
+    # both recover- and observe-class units — a dead provider or a code bug
+    # is not fixed by a restart.
+    if [ "$cls" = "llm-dead" ] || [ "$cls" = "code-fail" ] || [ "$cls" = "unknown" ]; then
+        tag="CODE-FAIL"
+        [ "$cls" = "llm-dead" ] && tag="LLM-DEAD"
+        if ! already_in_triage "$tag" "$unit"; then
+            triage_remove_unit "$unit"
+            read -r provider model < <(unit_seat "$unit")
+            loud "$tag" "unit=$unit provider=$provider model=$model class=$cls excerpt=${excerpt:-<none>}"
+            state_update "$state_f" "$unit" "$cls" "escalated" true "" true
+            escd=$((escd+1))
+        fi
+        still_failed=$((still_failed+1))
+        continue
+    fi
+
+    # Transient lane fault or start-limit from here on. observe-class units
+    # (workers + reaps) must NOT be reset+started here: their OnFailure reap
+    # releases the claim and intake re-dispatches, so a heartbeat restart
+    # would race a second worker onto the same issue. Surface and stop.
+    if [ "$rclass" = "observe" ]; then
+        log "4.  - $unit: observe-only class=$cls — no restart (reap/intake is the retry path)"
+        still_failed=$((still_failed+1))
+        continue
+    fi
+
+    # recover-class: try reset + start, bounded by FAILED_UNITS_MAX_ATTEMPTS.
+    attempts=$(state_get "$state_f" "attempts" "0")
+    if [ "$attempts" -ge "$FAILED_UNITS_MAX_ATTEMPTS" ]; then
+        if ! already_in_triage "UNIT-ESCALATE" "$unit"; then
+            triage_remove_unit "$unit"
+            loud "UNIT-ESCALATE" "unit=$unit class=$cls attempts=$attempts recovery exhausted (max=$FAILED_UNITS_MAX_ATTEMPTS) — needs manual seat or code fix"
+            state_update "$state_f" "$unit" "$cls" "exhausted" true "$attempts" true
+            exhausted=$((exhausted+1))
+        fi
+        still_failed=$((still_failed+1))
+        continue
+    fi
+
+    log "4.  - $unit: reset-failed + start --no-block (attempt=$((attempts+1))/$FAILED_UNITS_MAX_ATTEMPTS)"
+    if systemctl --user reset-failed "$unit" 2>/dev/null; then
+        if systemctl --user start --no-block "$unit" 2>/dev/null; then
+            # Give systemd a moment to start the job and either run or fail.
+            sleep 2
+            active_state=$(systemctl --user show "$unit" --property=ActiveState --value 2>/dev/null || true)
+            log "4.  - $unit: ActiveState=$active_state after start"
+            if [ "$active_state" = "failed" ]; then
+                new_attempts=$((attempts+1))
+                state_update "$state_f" "$unit" "$cls" "reset+start" true "$new_attempts" false
+                still_failed=$((still_failed+1))
+                if [ "$new_attempts" -ge "$FAILED_UNITS_MAX_ATTEMPTS" ]; then
+                    if ! already_in_triage "UNIT-ESCALATE" "$unit"; then
+                        triage_remove_unit "$unit"
+                        loud "UNIT-ESCALATE" "unit=$unit class=$cls attempts=$new_attempts recovery exhausted after reset+start — needs manual seat or code fix"
+                        state_update "$state_f" "$unit" "$cls" "exhausted" true "$new_attempts" true
+                        exhausted=$((exhausted+1))
+                    fi
+                fi
+            elif [ "$active_state" = "inactive" ]; then
+                triage_remove_unit "$unit"
+                log "4.  - $unit: RECOVERED"
+                loud "UNIT-RECOVERED" "unit=$unit recovered (class=$cls, failed_attempts=$attempts)"
+                state_remove "$state_f"
+                repaired=$((repaired+1))
+            else
+                # activating, active, or unknown: the job is queued/running.
+                triage_remove_unit "$unit"
+                log "4.  - $unit: start queued (ActiveState=$active_state, not failed)"
+                state_update "$state_f" "$unit" "$cls" "reset+start-queued" false "$((attempts+1))" false
+                requeued=$((requeued+1))
+            fi
+        else
+            log "4.  - $unit: start --no-block failed"
+            state_update "$state_f" "$unit" "$cls" "start-failed" true "$((attempts+1))" false
+            still_failed=$((still_failed+1))
+        fi
+    else
+        log "4.  - $unit: reset-failed failed"
+        state_update "$state_f" "$unit" "$cls" "reset-failed-failed" true "$((attempts+1))" false
+        still_failed=$((still_failed+1))
+    fi
+done
+
+# Clean up state files for units that are no longer failed or active.
+shopt -s nullglob
+for f in "$FAILED_UNITS_STATE_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    u=$(jq -r '.unit // empty' "$f" 2>/dev/null || true)
+    [ -n "$u" ] || continue
+    if printf '%s' "$current_failed_units" | grep -qxF "$u"; then
+        continue
+    fi
+    as=$(systemctl --user show "$u" --property=ActiveState --value 2>/dev/null || true)
+    if [ "$as" = "failed" ] || [ "$as" = "activating" ] || [ "$as" = "active" ]; then
+        continue
+    fi
+    # inactive, condition-skip, dead, or gone: recovery worked or unit stopped.
+    rm -f "$f"
+done
+shopt -u nullglob
+
+log "4. failed-units pass complete: seen=$seen repaired=$repaired requeued=$requeued still_failed=$still_failed exhausted=$exhausted escd=$escd"
 
 # ============================================================================
 # 5. VERIFY SCOUT / INTAKE TIMERS ARMED
@@ -498,7 +782,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc"
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
 fi
