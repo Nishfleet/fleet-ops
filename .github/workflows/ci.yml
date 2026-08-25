@@ -97,6 +97,9 @@ jobs:
             /home/nish/.local/bin/siterep-deploy-rollback \
             /home/nish/.local/bin/siterep-live-canary \
             /home/nish/.local/bin/siterep-uptime \
+            /home/nish/.local/bin/fleet-heartbeat \
+            /home/nish/.local/bin/fleet-heartbeat-tier1 \
+            /home/nish/.local/bin/fleet-heartbeat-tier2 \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"

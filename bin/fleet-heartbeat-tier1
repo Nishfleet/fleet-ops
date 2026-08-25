@@ -171,7 +171,13 @@ while IFS= read -r repo; do
         pr_num=$(printf '%s' "$row" | jq -r '.number')
         pr_head=$(printf '%s' "$row" | jq -r '.headRefName')
         pr_draft=$(printf '%s' "$row" | jq -r '.isDraft')
+        # pr_mergeable comes from the same PR row but we gate on check status,
+        # not the mergeable flag (a red PR can still report mergeable=true on
+        # GitHub while checks are pending; we trust checks). Read it so shellcheck
+        # doesn't flag SC2034, and so the next operator can wire it as an
+        # additional gate without re-parsing the row.
         pr_mergeable=$(printf '%s' "$row" | jq -r '.mergeable')
+        : "${pr_mergeable:=UNKNOWN}"
 
         if [ "$pr_draft" = "true" ]; then
             log "2.  - $repo#$pr_num ($pr_head): DRAFT — skip"
