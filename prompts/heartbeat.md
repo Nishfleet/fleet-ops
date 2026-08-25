@@ -87,22 +87,50 @@ Never use `--admin`. Never bypass a branch protection. Never force-merge.
 
 ---
 
-## Step 4 — release orphaned claims
+## Step 4 — reconcile claims (BOTH directions)
 
-If you find an issue with `agent-in-progress` label but no live worker AND no
-open claim/issue-<N> PR:
+A claim has three parts that must agree: the `claim/issue-<N>` **branch**, the
+`agent-in-progress` **label**, and a live `pi-issue@<repo>-<N>.service` **unit**.
+**Any two-out-of-three disagreeing is a fault to repair.** Both failure
+directions strand work silently, so check for both every tick:
 
-1. Confirm there is no related unit in `systemctl --user --state=running`.
-2. Delete the claim branch: `gh api repos/<repo>/git/refs/heads/claim/issue-<N> -X DELETE`
-3. Flip the label: `gh issue edit <N> -R <repo> --remove-label agent-in-progress --add-label agent-ready`
-4. Comment on the issue noting the heartbeat release + UTC timestamp.
-5. Log to playbook.
+**A. Label without branch or worker** (issue looks claimed, nothing is working
+it). It is NOT `agent-ready`, so intake cannot see it — it sits forever.
+**B. Branch without label** (intake's pre-flight `ls-remote` finds the branch
+and skips the issue as already-claimed, forever).
+**C. Unnumbered branch** — `claim/issue-` with an empty `<N>` belongs to no
+issue and can never be released by the normal path. Delete on sight.
 
-Fleet repos (always check, in order): `Nishfleet/0509`,
-`Nishfleet/inish-site`, `Nishfleet/seo-fix-kit`, `Nishfleet/TinyStudio.io`,
-`Nishfleet/tinystudio-in`, `Nishfleet/siterep-public`. If a repo is on the
+Repair, in this order. **The label flip is the step that matters — never let a
+failed branch delete prevent it:**
+
+1. Confirm no live unit: `systemctl --user is-active pi-issue@<repo>-<N>.service`.
+2. Confirm no open PR from `claim/issue-<N>`.
+3. Delete the claim branch IF it exists, tolerating "already gone":
+   `gh api repos/<repo>/git/refs/heads/claim/issue-<N> -X DELETE || true`
+   A 404 here means the branch was already released — that is the NORMAL case
+   for direction A and must not abort the repair.
+4. Flip the label: `gh issue edit <N> -R <repo> --remove-label agent-in-progress --add-label agent-ready`
+5. Comment on the issue noting the heartbeat release + UTC timestamp + which
+   direction (A/B/C) was found.
+6. Log to playbook.
+
+Do NOT release a claim whose worker unit is genuinely live, and do NOT release
+one whose `claim/issue-<N>` PR is open — that is work in flight.
+
+Fleet repos (always check, in order): `Nishfleet/fleet-ops`, `Nishfleet/0509`,
+`Nishfleet/siterep-public`, `Nishfleet/inish-site`, `Nishfleet/seo-fix-kit`,
+`Nishfleet/TinyStudio.io`, `Nishfleet/tinystudio-in`. If a repo is on the
 hands-off list (`config/fleet-repos.json`), skip queue/claim mutations but
 still log if anything looks wrong.
+
+> `Nishfleet/fleet-ops` was MISSING from this list until 2026-08-26, so the
+> control repo — where the fleet's own repair work is queued — was never
+> reconciled. Combined with the branch-delete-before-label-flip ordering above,
+> six issues across fleet-ops and 0509 sat `agent-in-progress` with no worker
+> and no branch, invisible to intake, until a human noticed. Both defects are
+> fixed here; the lesson is that the reconciler must cover the repo that holds
+> its own repairs.
 
 ---
 
@@ -119,6 +147,15 @@ Pre-implementation contract check (required):
 - Read the spec before dispatching; do not invent scope.
 
 Dispatch rules (the seat-guard rules):
+
+> **HARD-CONSERVE (Nish, 2026-08-26): Claude is the LAST resort, not the
+> escalation default.** Exhaust the pi seat ladder first — devin, cursor,
+> cline, ollama, minimax, commandcode, openrouter, zenmux, hetzner all
+> answer, and `pick_seat` rotates through them. Only spend a Claude call
+> when a repair has failed on TWO distinct pi seats, and say which two in
+> the log. The weekly Claude cap runs dry at normal pace every week; a
+> heartbeat that reaches for Opus on the first failure will drain it
+> overnight while free seats sit idle.
 
 - Quality-critical or security-critical OR twice-failed: try `claude -p
   --model claude-opus-5` with the spec on stdin (your own seat is already
