@@ -1,0 +1,17 @@
+# Aggregate memory bound for ALL pi worker units.
+#
+# Measured 2026-08-26 (n=14 real worker runs, MemoryPeak):
+#   min 0.28 | median ~1.28 | p95 ~4.4 | max 4.8 GB
+# A 17x spread. Sizing concurrency off a single per-worker constant is
+# therefore wrong in both directions: 1.5 GB/worker is near the MEDIAN, so six
+# workers hitting the tail would want ~28 GB against 9.88 GiB available.
+#
+# Bounding the SLICE instead of guessing per worker makes the aggregate
+# deterministic: the fleet can never exceed this no matter how many workers
+# run, so concurrency can be raised safely. MemoryHigh throttles and reclaims
+# first; MemoryMax is the hard stop. Box: MemTotal 15.61 GiB, MemAvailable
+# 9.88 GiB — this leaves >2 GiB for everything else on the host.
+[Slice]
+MemoryAccounting=yes
+MemoryHigh=6G
+MemoryMax=7500M
