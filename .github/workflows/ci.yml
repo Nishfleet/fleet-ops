@@ -210,6 +210,17 @@ jobs:
         run: bash tests/pi-issue-failed-reap.test.sh
       - name: repair rotation
         run: bash tests/repair-rotation.test.sh
+      # fleet-ops#36: lock the seat-selection contract — cap-map allowlist,
+      # model cap-0, loud stall, expiry-first order, rate-limit retry, and
+      # the credential precheck (an allowlisted provider whose apiKey
+      # resolves to empty is never a candidate). These run with no live
+      # systemd user session; seat-lib.sh's bare `systemctl --user` calls
+      # fail closed and the tests still pass (verified locally with a
+      # broken-systemctl stub).
+      - name: seat-lib allowlist + credential precheck
+        run: bash tests/seat-lib.test.sh
+      - name: seat-lib degraded units
+        run: bash tests/seat-lib-degraded.test.sh
       # fleet-ops#71: lock the system-scope RAM governor drop-ins this issue
       # repo-owns, plus their MANIFEST entries and the install.sh routing
       # that puts them under `./install.sh --system`. Drift detection at

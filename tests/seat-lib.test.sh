@@ -262,8 +262,110 @@ set -e
 grep -q "stale >21600s) — assuming usable" "$PI_PACKET_STATE/watch.log" \
   || fail "stale ledger: stale seat must be assumed usable"
 
+# --- invariant 8: credential precheck (fleet-ops#36) -----------------------
+# An allowlisted provider (cap>0, model cap>0) is STILL rejected when its
+# apiKey resolves to empty — defence in depth on top of the cap map. Prove:
+#   8a. "!cmd" with empty stdout  -> rejected (the groq/openrouter 2026-08-25
+#       "No API key found" shape: a credential command that yields nothing).
+#   8b. "$VAR" with the var UNSET  -> rejected.
+#   8c. "!cmd" with non-empty stdout -> accepted.
+#   8d. "$VAR" with the var SET    -> accepted.
+#   8e. literal apiKey             -> accepted.
+#   8f. NO apiKey field            -> fail OPEN (accepted) — OAuth/test fixtures
+#       are not bricked; the reactive ledger is the backstop.
+#   8g. per-call cache: a provider with TWO models runs its "!cmd" ONCE.
+cred_scratch="$(mktemp -d -t seat-lib-cred.XXXXXX)"
+# A "!cmd" with a side effect so we can count how many times it ran.
+cred_counter="$cred_scratch/counter"
+export cred_counter
+: >"$cred_counter"
+cat >"$cred_scratch/models.json" <<JSON
+{
+  "providers": {
+    "badcmd":  { "apiKey": "!printf ''",            "models": [ { "id": "m", "cost": { "input": 0 } } ] },
+    "badvar":  { "apiKey": "\$MISSING_VAR_CRED",    "models": [ { "id": "m", "cost": { "input": 0 } } ] },
+    "goodcmd": { "apiKey": "!echo secretkey",       "models": [ { "id": "m", "cost": { "input": 0 } } ] },
+    "goodvar": { "apiKey": "\$GOOD_VAR_CRED",       "models": [ { "id": "m", "cost": { "input": 0 } } ] },
+    "literal": { "apiKey": "sk-literal-123",        "models": [ { "id": "m", "cost": { "input": 0 } } ] },
+    "nokey":   {                                     "models": [ { "id": "m", "cost": { "input": 0 } } ] },
+    "twomodel":{ "apiKey": "!printf x >>$cred_counter; echo k", "models": [ { "id": "a", "cost": { "input": 0 } }, { "id": "b", "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$cred_scratch/seat-caps.json" <<'JSON'
+{
+  "free_providers_in_order": ["badcmd","badvar","goodcmd","goodvar","literal","nokey","twomodel"],
+  "providers": {
+    "badcmd":   { "cap": 2, "class": "free", "models": { "m": 2 } },
+    "badvar":   { "cap": 2, "class": "free", "models": { "m": 2 } },
+    "goodcmd":  { "cap": 2, "class": "free", "models": { "m": 2 } },
+    "goodvar":  { "cap": 2, "class": "free", "models": { "m": 2 } },
+    "literal":  { "cap": 2, "class": "free", "models": { "m": 2 } },
+    "nokey":    { "cap": 2, "class": "free", "models": { "m": 2 } },
+    "twomodel": { "cap": 2, "class": "free", "models": { "a": 2, "b": 2 } }
+  }
+}
+JSON
+ledger="$cred_scratch/ledger"
+mkdir -p "$ledger"
+export PI_MODELS_JSON="$cred_scratch/models.json"
+export SEAT_CAPS_JSON="$cred_scratch/seat-caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export PI_PACKET_STATE="$cred_scratch/state"
+export GOOD_VAR_CRED="set-value"
+unset MISSING_VAR_CRED
+# 8a/8b/8c: badcmd and badvar are first in free order and must be skipped;
+# goodcmd is the first allowlisted seat WITH a credential, so it is picked.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "cred: expected a pick, got rc=$rc"
+[[ "$out" == "goodcmd	m" ]] \
+  || fail "cred: badcmd/badvar must be skipped, expected goodcmd/m, got: $out"
+grep -q "credential precheck: badcmd rejected" "$PI_PACKET_STATE/watch.log" \
+  || fail "cred: badcmd (!cmd empty) must be rejected by the precheck"
+grep -q "credential precheck: badvar rejected" "$PI_PACKET_STATE/watch.log" \
+  || fail "cred: badvar (\$VAR unset) must be rejected by the precheck"
+
+# 8d/8e/8f: with goodcmd excluded, the next credentialed seat is goodvar;
+# then literal; then nokey (fail-open). Prove the fail-open path: a provider
+# with NO apiKey field is still a candidate.
+printf "goodcmd/m\n" >"$cred_scratch/tried.txt"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$cred_scratch/tried.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "cred2: expected a pick, got rc=$rc"
+[[ "$out" == "goodvar	m" ]] \
+  || fail "cred2: expected goodvar/m (set var), got: $out"
+grep -q "credential precheck: nokey has no apiKey field" "$PI_PACKET_STATE/watch.log" \
+  || fail "cred2: nokey (no apiKey field) must fail OPEN and log the skip"
+
+# 8g: per-call cache. twomodel has two models (a, b) but its "!cmd" side
+# effect (append 'x' to $cred_counter) must fire ONCE per pick_seat pass.
+: >"$cred_counter"
+# Exclude every provider that sorts before twomodel so twomodel is reached.
+printf "badcmd/m\nbadvar/m\ngoodcmd/m\ngoodvar/m\nliteral/m\nnokey/m\n" >"$cred_scratch/tried2.txt"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$cred_scratch/tried2.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "cred-cache: expected a pick, got rc=$rc"
+[[ "$out" == "twomodel	a" ]] \
+  || fail "cred-cache: expected twomodel/a, got: $out"
+count=$(wc -c <"$cred_counter"); count=${count//[^0-9]/}
+[[ "$count" == "1" ]] \
+  || fail "cred-cache: twomodel !cmd must run ONCE (cache), ran ${count:-0} times"
+
+# Restore the fixtures the earlier invariants used, in case anything after
+# this re-sources the lib (defensive; nothing does today).
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 ok "allowlist: no-entry provider and cap-0 models rejected"
 ok "loud stall: all-dead returns rc=1 with NO USABLE SEAT, empty stdout"
 ok "expiry-first: cursor/composer-2.5 picked on clean ledger"
 ok "rate_limited: stale marker retried, fresh marker excluded"
 ok "stale observed_at assumed usable (P4-A inversion fixed)"
+ok "credential precheck: empty !cmd / unset \$VAR rejected; set var / literal / no-apiKey fail-open accepted; per-call cache runs !cmd once"
