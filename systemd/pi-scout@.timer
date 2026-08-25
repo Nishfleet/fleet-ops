@@ -1,10 +1,9 @@
 [Unit]
-Description=Pi fleet product scout schedule for Nishfleet/%i (work supply for autonomous lanes; event-driven intake exists for claiming, but generation needs periodic product inspection)
+Description=Pi fleet product scout schedule for Nishfleet/%i (every 4h)
+# supply generation is inherently periodic; intake claiming stays event-gated by its ExecCondition
 
 [Timer]
-OnCalendar=03:17
-OnCalendar=11:23
-OnCalendar=19:41
+OnCalendar=*-*-* 00/4:00:00
 RandomizedDelaySec=300
 Persistent=true
 

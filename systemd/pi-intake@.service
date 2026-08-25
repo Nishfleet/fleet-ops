@@ -8,4 +8,4 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
 ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
 ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider minimax --model MiniMax-M3'
-TimeoutStartSec=900
+TimeoutStartSec=1800

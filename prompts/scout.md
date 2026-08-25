@@ -6,7 +6,7 @@ Hard rules:
 - Never close issues, never merge PRs, never push to main, never edit repo code.
 - Touch only the TARGET repo for issue/label operations.
 - If any `gh` command errors (auth, network), print the error and exit nonzero — fail loud.
-- Max **4 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
+- Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
 
@@ -16,8 +16,8 @@ Hard rules:
 gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number
 ```
 
-Let `ready_count` = length of that list. If `ready_count >= 6`, print "supply full (agent-ready >= 6)", exit 0.
-Let `label_budget = 6 - ready_count`. You may apply `agent-ready` to at most `label_budget` issues this run (new or relabeled).
+Let `ready_count` = length of that list. If `ready_count >= 12`, print "supply full (agent-ready >= 12)", exit 0.
+Let `label_budget = 12 - ready_count`. You may apply `agent-ready` to at most `label_budget` issues this run (new or relabeled).
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 
@@ -32,7 +32,7 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 
 ## Step 2 — Inspect sources (value order)
 
-Work top-down. Stop adding candidates once you have more than 4 strong ones; you will trim in step 4.
+Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
 
 ### A. Live product signals (FIRST — spend most effort here)
 
@@ -104,7 +104,7 @@ termination: <one exact verification command whose exit 0 means done; must be ru
 
 ## Step 4 — File issues
 
-For each chosen candidate (max 4):
+For each chosen candidate (max 8):
 ```bash
 gh issue create -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
 <full body>

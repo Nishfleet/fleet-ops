@@ -8,7 +8,7 @@ Hard rules:
 - If a gh or git command errors (auth, network), print the error and exit nonzero — fail loud. A REJECTED claim push is NOT an error: another agent won that issue; skip it.
 
 Steps:
-1. List ready work: `gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number,title --limit 10`. If empty, print "no ready issues", exit 0.
+1. List ready work: `gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number,title --limit 50`. If empty, print "no ready issues", exit 0.
 2. Capacity (P4-A — fleet-ops config/seat-caps.json, NOT a hardcoded "4 Devin"):
    a. Source the shared seat logic so the same accounting the run wrapper uses is what the intake tick sees:
       `. /home/nish/.local/lib/pi-packet/seat-lib.sh`

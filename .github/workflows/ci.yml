@@ -91,6 +91,7 @@ jobs:
           for p in \
             /home/nish/.local/bin/pi \
             /home/nish/.local/bin/pi-issue-run \
+            /home/nish/.local/bin/pi-issue-failed-reap \
             /home/nish/.local/bin/siterep-deploy \
             /home/nish/.local/bin/siterep-deploy-verify \
             /home/nish/.local/bin/siterep-deploy-rollback \
