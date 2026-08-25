@@ -1,0 +1,17 @@
+name: Auto-merge arm
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: auto-merge-arm-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  arm:
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@main
+    secrets:
+      AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}

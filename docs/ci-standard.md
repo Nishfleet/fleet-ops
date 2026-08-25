@@ -7,6 +7,25 @@ so a new check is written correctly instead of caught later.
 Reusable workflows in this repo are the mechanism. Call them with `uses:`;
 pass `inputs`; do not copy or override critical steps.
 
+## PR checks (the batched standard)
+
+`.github/workflows/reusable-pr-checks.yml` is the one job every product repo
+should call. It is `workflow_call` only. Guarantees that are not optional:
+
+- `timeout-minutes` on the job (override with the `timeout-minutes` input).
+- `concurrency` + `cancel-in-progress: true` for PR/push.
+- npm cache when `install-command` is set.
+- docs-only PRs skip install/verify inside the job, so the check still reports.
+- gitleaks (pinned binary, no license) when `scan-secrets` is true.
+
+Same-repo caller: `uses: ./.github/workflows/reusable-pr-checks.yml`.
+Other repos: `uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main`.
+
+`.github/workflows/reusable-auto-merge-arm.yml` is the matching auto-merge job.
+Callers keep the `pull_request` trigger and pass `AUTO_REVERT_PAT` explicitly.
+
+`template/.github/workflows/` is the starter caller set for a new repo.
+
 ## Required checks are pure
 
 A required status check must be a function of the PR's own diff.
