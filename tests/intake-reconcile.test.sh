@@ -64,13 +64,18 @@ CHECKOUT_ROOT="$scratch/checkout_root"
 # Driven by $LABEL_FILE: one label name per line.
 #   $GH_CALLS            every gh invocation is appended here (for proving the
 #                        full owner/repo name is passed).
-#   $GH_FAIL             1 = simulate a transient GitHub API/auth failure.
+#   $GH_FAIL             1 = simulate a transient GitHub API/network failure.
+#   $GH_AUTH_FAIL        1 = simulate a non-retryable auth/permission error.
 gh_fake="$scratch/gh"
 cat >"$gh_fake" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_CALLS:-/dev/null}"
 case "$*" in
   *"label list"*)
+    if [[ "${GH_AUTH_FAIL:-0}" == "1" ]]; then
+      printf 'HTTP 401: Bad credentials\n' >&2
+      exit 1
+    fi
     if [[ "${GH_FAIL:-0}" == "1" ]]; then
       printf 'gh label list failed (simulated transient API error)\n' >&2
       exit 2
@@ -248,11 +253,13 @@ reset_world() {
     : >"${UNIT_ACTIVE:=$scratch/unit_active}"
     : >"${LABEL_FILE:=$scratch/labels}"
     GH_FAIL=0
+    GH_AUTH_FAIL=0
     rm -rf "$scratch/checkout_root"/*
     mkdir -p "$scratch/checkout_root"
+    rm -rf "$(dirname "$audit_log")/transient-fail"
 }
 
-export CALLS GH_CALLS GH_FAIL UNIT_FILES UNIT_ACTIVE LABEL_FILE
+export CALLS GH_CALLS GH_FAIL GH_AUTH_FAIL UNIT_FILES UNIT_ACTIVE LABEL_FILE
 
 # ============================================================================
 # Scenario 1: enrolled repo with passing preconditions → enable + start
@@ -622,7 +629,117 @@ grep -q 'enable pi-intake@demo.timer' "$CALLS" \
     && fail "scenario11: must NOT enable on transient API error: $(cat "$CALLS")"
 grep -q 'INTAKE-PRECOND-CHECK-ERROR' "$triage" \
     || fail "scenario11: triage must record LOUD check error: $(cat "$triage")"
+grep -q 'skip actor=reconciler why=' "$audit_log" \
+    || fail "scenario11: audit must record the skip: $(cat "$audit_log")"
 ok "scenario11: gh API error keeps current state, logs loud, exits non-zero"
+
+# ============================================================================
+# Scenario 12 (fleet-ops#129): a single transient gh failure then a success
+# must leave units enabled. The original defect disabled intake+scout on the
+# first blip and left them off until a human re-ran reconcile.
+# ============================================================================
+reset_world
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+mkdir -p "$scratch/checkout_root/demo"
+printf 'agent-ready\nagent-in-progress\nagent-blocked\n' >"$LABEL_FILE"
+printf 'pi-intake@demo.timer enabled\npi-scout@demo.timer enabled\n' >"$UNIT_FILES"
+printf 'pi-intake@demo.timer\npi-scout@demo.timer\n' >"$UNIT_ACTIVE"
+
+GH_FAIL=1
+run_reconcile "$intake_json"
+[[ "$env_rc" != 0 ]] || fail "scenario12 tick1: single transient must exit non-zero, got $env_rc"
+grep -q 'disable pi-intake@demo.timer' "$CALLS" \
+    && fail "scenario12 tick1: must NOT disable on a single blip: $(cat "$CALLS")"
+grep -q 'INTAKE-PRECOND-CHECK-ERROR' "$triage" \
+    || fail "scenario12 tick1: triage must record the skip: $(cat "$triage")"
+grep -q 'skip actor=reconciler' "$audit_log" \
+    || fail "scenario12 tick1: audit must record the skip: $(cat "$audit_log")"
+
+: >"$CALLS"
+: >"$audit_log"
+: >"$triage"
+GH_FAIL=0
+run_reconcile "$intake_json"
+[[ "$env_rc" == 0 ]] || fail "scenario12 tick2: recovered label check must exit 0, got $env_rc ($env_out)"
+grep -q 'disable ' "$CALLS" \
+    && fail "scenario12 tick2: recovered check must NOT disable: $(cat "$CALLS")"
+ok "scenario12: one gh blip then success — units stay enabled"
+
+# ============================================================================
+# Scenario 13 (fleet-ops#129): N consecutive transients disable the repo
+# with why=precondition-fail:repo-label-check-error.
+# ============================================================================
+reset_world
+export INTAKE_RECONCILE_TRANSIENT_THRESHOLD=3
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+mkdir -p "$scratch/checkout_root/demo"
+printf 'agent-ready\nagent-in-progress\nagent-blocked\n' >"$LABEL_FILE"
+printf 'pi-intake@demo.timer enabled\npi-scout@demo.timer enabled\n' >"$UNIT_FILES"
+printf 'pi-intake@demo.timer\npi-scout@demo.timer\n' >"$UNIT_ACTIVE"
+
+GH_FAIL=1
+run_reconcile "$intake_json"
+grep -q 'disable ' "$CALLS" \
+    && fail "scenario13 tick1: must NOT disable yet: $(cat "$CALLS")"
+run_reconcile "$intake_json"
+grep -q 'disable ' "$CALLS" \
+    && fail "scenario13 tick2: must NOT disable yet: $(cat "$CALLS")"
+run_reconcile "$intake_json"
+grep -qx 'disable pi-intake@demo.timer' "$CALLS" \
+    || fail "scenario13 tick3: must disable intake after N blips: $(cat "$CALLS")"
+grep -qx 'disable pi-scout@demo.timer' "$CALLS" \
+    || fail "scenario13 tick3: must disable scout after N blips: $(cat "$CALLS")"
+grep -q 'precondition-fail:repo-label-check-error' "$audit_log" \
+    || fail "scenario13: audit why must be repo-label-check-error: $(cat "$audit_log")"
+unset INTAKE_RECONCILE_TRANSIENT_THRESHOLD
+ok "scenario13: N consecutive transients → disable with repo-label-check-error"
+
+# ============================================================================
+# Scenario 14 (fleet-ops#129): a non-retryable auth/permission error disables
+# immediately — it is not a blip.
+# ============================================================================
+reset_world
+cat >"$intake_json" <<JSON
+{
+  "checkout_root": "$CHECKOUT_ROOT",
+  "required_labels": ["agent-ready","agent-in-progress","agent-blocked"],
+  "repos": [{ "name": "demo" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+mkdir -p "$scratch/checkout_root/demo"
+printf 'agent-ready\nagent-in-progress\nagent-blocked\n' >"$LABEL_FILE"
+printf 'pi-intake@demo.timer enabled\npi-scout@demo.timer enabled\n' >"$UNIT_FILES"
+printf 'pi-intake@demo.timer\npi-scout@demo.timer\n' >"$UNIT_ACTIVE"
+
+GH_AUTH_FAIL=1
+run_reconcile "$intake_json"
+grep -qx 'disable pi-intake@demo.timer' "$CALLS" \
+    || fail "scenario14: auth failure must disable intake immediately: $(cat "$CALLS")"
+grep -qx 'disable pi-scout@demo.timer' "$CALLS" \
+    || fail "scenario14: auth failure must disable scout immediately: $(cat "$CALLS")"
+grep -q 'precondition-fail:repo-label-check-error' "$audit_log" \
+    || fail "scenario14: audit why must be repo-label-check-error: $(cat "$audit_log")"
+grep -q 'INTAKE-PRECOND-FAIL' "$triage" \
+    || fail "scenario14: triage must record PRECOND-FAIL: $(cat "$triage")"
+ok "scenario14: non-retryable auth error disables immediately"
 
 echo "OK: intake-reconcile converges declared set → systemd, drift surfaces loud"
 exit 0
