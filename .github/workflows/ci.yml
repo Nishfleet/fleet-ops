@@ -179,7 +179,7 @@ jobs:
         # contention with parallel jobs.
         run: |
           set -euo pipefail
-          for t in jq openssl curl python3; do
+          for t in jq openssl curl python3 node; do
             command -v "$t" >/dev/null 2>&1 || {
               echo "missing tool: $t" >&2
               exit 1
@@ -189,3 +189,5 @@ jobs:
         run: bash tests/manifest-shape.test.sh
       - name: worker-token fail-closed
         run: bash tests/worker-token-fail-closed.test.sh
+      - name: semantic-conflict-detector
+        run: bash tests/semantic-conflict-detector.test.sh
