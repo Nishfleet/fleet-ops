@@ -9,7 +9,12 @@ StartLimitBurst=8
 Type=simple
 Restart=on-failure
 RestartSec=20
-RuntimeDirectory=pi-intake
+# Per-instance RuntimeDirectory: a fixed "pi-intake" name is shared across every
+# instance of this template, so when a sibling (0509, siterep-public) starts and
+# stops/skips, systemd wipes /run/user/$UID/pi-intake out from under the running
+# fleet-ops tick — deleting pi-packet-run's *.run.out path, which makes the
+# no-op check see 0 bytes and trips a false no-op -> restart storm (2026-08-26).
+RuntimeDirectory=pi-intake-%i
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
 ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
@@ -23,7 +28,9 @@ ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --
 # while healthy seats sat unused.
 #
 # pi-intake-run holds an exclusive flock so a manual `systemctl start` racing
-# the timer is a no-op instead of a second tick (fleet-ops#26).
-ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake/intake-%i.pkt'
-ExecStart=/home/nish/.local/bin/pi-intake-run %i
+# the timer is a no-op instead of a second tick (fleet-ops#26). NOT YET BUILT —
+# the binary does not exist, so ExecStart falls back to the proven #37 form
+# (pi-packet-run with empty fail-seats = full rotation) until it lands.
+ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake-%i/intake-%i.pkt'
+ExecStart=/home/nish/.local/bin/pi-packet-run %t/pi-intake-%i/intake-%i.pkt /home/nish "" ""
 TimeoutStartSec=1800

@@ -98,6 +98,15 @@ need_capable=0
 seat=$(pick_seat "" "" "$need_capable" "$tried_file" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-issue-run: $inst no seat available (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null)) — exiting 1 so OnFailure escalates"
+    # Reset the tried-seats file. Every allowlisted seat has now been tried
+    # and failed, so the within-burst rotation list has done its job. The
+    # seat-health ledger (usable_at) is the DURABLE avoidance authority —
+    # seats still in backoff stay gated there. Clearing tried_file lets the
+    # next restart retry seats that have RECOVERED, instead of looping
+    # forever on an exhausted list (the 2026-08-26 fleet-ops-32 stuck loop:
+    # all 4 heavy seats failed once, then every restart exited in <1s with
+    # "no seat available" because the tried list never cleared).
+    : >"$tried_file"
     exit 1
 fi
 
@@ -194,4 +203,9 @@ if (( out_bytes < OUT_MIN )); then
 fi
 
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
+# Reset the tried-seats file: this run succeeded, so a future re-trigger of
+# the same issue (intake re-claim -> pi-issue-start -> systemctl start) starts
+# with the full seat pool, not the stale list of seats that failed before the
+# one that worked.
+: >"$tried_file"
 exit 0
