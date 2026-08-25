@@ -325,6 +325,18 @@ printf 'pi-issue@demo-10.service\n' >"$scratch/fresh_activating_units"
 run_helper
 [[ "$env_rc" == 0 ]] || fail "scenario4: wedged-tick must exit 0, got $env_rc ($env_out)"
 
+# DEBUG (P15 CI repro): surface the real state so a CI-only failure is diagnosable.
+{
+    echo "--- s4 debug: env_out ---"
+    printf '%s\n' "$env_out"
+    echo "--- s4 debug: active-seats after ---"
+    ls -la "$seat_state/active-seats/" 2>&1 || true
+    echo "--- s4 debug: wedged_units ---"; cat "$scratch/wedged_units" 2>&1 || true
+    echo "--- s4 debug: fresh_activating_units ---"; cat "$scratch/fresh_activating_units" 2>&1 || true
+    echo "--- s4 debug: live_seat_units ---"; cat "$scratch/live_seat_units" 2>&1 || true
+    echo "--- s4 debug: calls.log ---"; cat "$calls" 2>&1 || true
+} >&2
+
 # The wedged phantom must be reaped; the fresh live one kept.
 [[ ! -f "$seat_state/active-seats/pi-issue-demo-9.json" ]] \
     || fail "scenario4: wedged-activating phantom was not reaped"
