@@ -243,3 +243,9 @@ jobs:
       # Sunday window; this is the CI lock on the gate.
       - name: codex orphan reap gate
         run: bash tests/codex-orphan-reap.test.sh
+      # fleet-ops#95: a transient seat blip (rate_limited/transient_fault,
+      # dead=false) is re-read once and dispatched on recovery; only
+      # dead=true, poison_ladder, or persistent unhealth reaches NISH. The
+      # 2-per-hash cap is unchanged. Pure unit test (DRY_RUN, stub paths).
+      - name: stop-escalation seat-health gate
+        run: bash tests/stop-escalation-dispatch.test.sh

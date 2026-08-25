@@ -56,6 +56,11 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
+# fleet-ops#95: SENIOR-AUDITOR dispatcher. A transient seat blip
+# (rate_limited/transient_fault, dead=false) is re-read once after a bounded
+# delay and dispatched on recovery; only dead=true, poison_ladder, or
+# persistent unhealth reaches NISH-ESCALATIONS.md.
+bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 # fleet-ops#78: gated reap of the unmanaged Codex app-server during the
 # weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
 # (Sun 03:30 IST, after the 15-minute quiesce drain).
