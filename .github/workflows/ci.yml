@@ -188,3 +188,5 @@ jobs:
         run: bash tests/manifest-shape.test.sh
       - name: worker-token fail-closed
         run: bash tests/worker-token-fail-closed.test.sh
+      - name: pi-issue-run tried-seats reset
+        run: bash tests/pi-issue-run-tried-reset.test.sh
