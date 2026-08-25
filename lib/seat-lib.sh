@@ -77,12 +77,19 @@ load_seat_caps() {
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         SEAT_PROVIDER_CLASS["$p"]="$class"
-    done < <(jq -r '.providers | to_entries[] | [.key, (.value.cap // 0), (.value.class // "free")] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # A provider may be a bare number (shorthand for cap=N, class=free, no
+    # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
+    # and, with `2>/dev/null || true`, silently empties the whole cap map —
+    # which then makes total_seat_cap() return 0 and the intake ceiling fall
+    # back to the (inflated) RAM governor. Normalise by type first.
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p m cap; do
         [[ -n "$p" && -n "$m" ]] || continue
         SEAT_MODEL_CAP["$p/$m"]="$cap"
-    done < <(jq -r '.providers | to_entries[] | .key as $p | (.value.models // {}) | to_entries[] | [$p, .key, (.value // 0)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # Same bare-number guard as the providers loop: .value.models on a bare
+    # number crashes jq before `// {}` can rescue it, emptying all model caps.
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
@@ -132,9 +139,10 @@ ram_governor_cap() {
         echo 9999
         return
     fi
-    # 1.5 GB default. floor(MemAvailable_GB / per_worker) — bash integer math.
-    ram_budget=$(( (mem_avail_kb / 1024) / ${SEAT_RAM_GB_PER_WORKER%.*} ))
-    (( ram_budget < 1 )) && ram_budget=1
+    # 1.5 GB default. floor(MemAvailable_GB / per_worker). per_worker may be a
+    # decimal (1.5), so do the division in awk — bash integer math can't, and
+    # `${x%.*}` turns "1.5" into "1", inflating the cap ~1.5x.
+    ram_budget=$(awk -v m="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" 'BEGIN{ if (per+0 <= 0) per=1.5; r=int((m/1024/1024)/per); if (r<1) r=1; print r }')
     echo "$ram_budget"
 }
 
@@ -276,7 +284,7 @@ seat_usable() {
     fi
     if ! _seat_observed_fresh "$observed"; then
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
-        return 1
+        return 0
     fi
     if [[ "$dead" == "true" ]]; then
         seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
@@ -451,13 +459,22 @@ pick_seat() {
         [[ -n "$p" ]] || continue
         # must differ from all tried seats
         [[ -n "${tried[$p/$m]:-}" ]] && continue
-        # Zenmux is never routed to (free tier exhausted; standing constraint).
-        [[ "$p" == "zenmux" ]] && continue
+        # Zenmux is routed to again (Nish, 2026-08-25): it carries FREE lanes
+        # AND credits, so the old "free tier exhausted" hard-skip is stale. It
+        # is governed by the cap map like every other provider now.
         # P4-A: cap-map allowlist. If a model is not listed in the cap map for
         # its provider (and the provider has a cap entry), it is forbidden —
         # e.g. ollama models other than deepseek-v4-flash:0731.
         p_cap=$(provider_cap "$p")
-        if (( p_cap == 0 )) && [[ -n "${SEAT_PROVIDER_CAP[$p]:-}" ]]; then
+        if [[ -z "${SEAT_PROVIDER_CAP[$p]:-}" ]]; then
+            # The cap map is an ALLOWLIST. A provider with no entry is not
+            # approved for the fleet. Previously these fell through and were
+            # tried FIRST, so uncredentialed seats (groq, opencode, orcarouter)
+            # headed the ladder and every attempt failed in ~1s.
+            seat_log "seat $p/$m skipped (provider not in cap-map allowlist)"
+            continue
+        fi
+        if (( p_cap == 0 )); then
             # Provider explicitly capped at 0 (e.g. zenmux via config, though the
             # zenmux hard-skip above already covers it; this is the catch-all).
             seat_log "seat $p/$m skipped (provider cap=0)"
@@ -491,11 +508,20 @@ pick_seat() {
         fi
 
         class=$(class_of "$p")
-        case "$p" in
-            devin)        devin_seats+=("$p"$'\t'"$m") ;;
-            cursor)       cursor_seats+=("$p"$'\t'"$m") ;;
-            cline)        cline_seats+=("$p"$'\t'"$m") ;;
-            minimax)      metered_seats+=("$p"$'\t'"$m") ;;
+        # Bucket by CLASS from the cap map, not by provider name. The old
+        # case matched literal names and dropped everything else into
+        # free_seats, so class_of() was computed and discarded and any
+        # credit-bearing provider that was not named "minimax" (openrouter,
+        # zenmux) was spent as if it were free.
+        case "$class" in
+            subscription)
+                case "$p" in
+                    devin)  devin_seats+=("$p"$'\t'"$m") ;;
+                    cursor) cursor_seats+=("$p"$'\t'"$m") ;;
+                    cline)  cline_seats+=("$p"$'\t'"$m") ;;
+                    *)      cline_seats+=("$p"$'\t'"$m") ;;
+                esac ;;
+            metered)      metered_seats+=("$p"$'\t'"$m") ;;
             *)            free_seats+=("$p"$'\t'"$m") ;;
         esac
     done < <(enumerate_seats)
