@@ -87,12 +87,12 @@ OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 
 [[ $# -ge 1 ]] || { echo "pi-issue-run: need 1 arg: <unit-instance>" >&2; exit 1; }
 inst="$1"
-pkt="$STATE_DIR/../pi-issues/${inst}.in"
-# Resolve to an absolute path (the line above uses $STATE_DIR/.. — keep it
-# explicit so it does not surprise a future refactor).
-pkt="/home/nish/.local/state/pi-issues/${inst}.in"
-out_file="/home/nish/.local/state/pi-issues/${inst}.out"
-err_file="/home/nish/.local/state/pi-issues/${inst}.err"
+# PI_ISSUES_DIR lets tests redirect the packet/out/err triplet into a
+# scratch dir. Default is the live install path; production is unchanged.
+PI_ISSUES_DIR="${PI_ISSUES_DIR:-/home/nish/.local/state/pi-issues}"
+pkt="$PI_ISSUES_DIR/${inst}.in"
+out_file="$PI_ISSUES_DIR/${inst}.out"
+err_file="$PI_ISSUES_DIR/${inst}.err"
 tried_file="$ATTEMPTS_DIR/pi-issue-${inst}.tried-seats"
 
 mkdir -p "$ATTEMPTS_DIR" "$(dirname "$out_file")"
@@ -109,6 +109,17 @@ need_capable=0
 seat=$(pick_seat "" "" "$need_capable" "$tried_file" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-issue-run: $inst no seat available (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null)) — exiting 1 so OnFailure escalates"
+    # Reset the tried-seats file. Every allowlisted seat has now been tried
+    # and failed, so the within-burst rotation list has done its job. The
+    # seat-health ledger (usable_at) is the DURABLE avoidance authority —
+    # seats still in backoff stay gated there. Clearing tried_file lets the
+    # next restart retry seats that have RECOVERED, instead of looping
+    # forever on an exhausted list. Without this, a worker that burned
+    # through every capable seat once can never pick a seat again: every
+    # restart finds the same stale list and exits 1 in <1s (the
+    # 2026-08-26 fleet-ops-32 stuck loop — all 4 heavy seats failed, then
+    # 8+ restarts exited instantly with "no seat available").
+    : >"$tried_file"
     exit 1
 fi
 
@@ -278,4 +289,9 @@ if (( out_bytes < OUT_MIN )); then
 fi
 
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
+# Reset the tried-seats file: this run succeeded, so a future re-trigger of
+# the same issue (intake re-claim -> pi-issue-start -> systemctl start) starts
+# with the full seat pool, not the stale list of seats that failed before the
+# one that worked.
+: >"$tried_file"
 exit 0
