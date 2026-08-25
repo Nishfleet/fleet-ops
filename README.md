@@ -49,6 +49,11 @@ the merge-queue semantic-conflict detector. Other repos call it with
 same check is green on `pull_request` and red on `merge_group`, names the
 check, and publishes the `pull_request` vs `merge_group` failure-rate split.
 
+A sixth, `.github/workflows/ci-required-check-purity.yml`, flags required
+checks that compare a computed value against a shared committed baseline
+with exact equality (or that fail unless the PR edits that baseline). It
+is advisory: warn, do not block. The rule itself is in `docs/ci-standard.md`.
+
 ## Allowlist
 
 Only the files listed in `MANIFEST` are tracked and installed. Nothing else
