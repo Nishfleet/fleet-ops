@@ -47,10 +47,14 @@ more).
 All actions are pinned to exact commit SHAs. Every job has a timeout.
 
 A fifth reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
-the merge-queue semantic-conflict detector. Other repos call it with
-`workflow_call`; it is an alert, not a required check. It fires when the
-same check is green on `pull_request` and red on `merge_group`, names the
-check, and publishes the `pull_request` vs `merge_group` failure-rate split.
+the central CI failure telemetry set. Other repos call it with
+`workflow_call`; it is an alert, not a required check. It runs two detectors:
+the merge-queue semantic-conflict detector (fires when the same check is
+green on `pull_request` and red on `merge_group`, names the check, and
+publishes the `pull_request` vs `merge_group` failure-rate split) and the
+repeat-deterministic detector (fires when the same
+`(workflow, job, step, assertion)` signature fails 3+ times within 6h — an
+assertion failure is not retryable, so the alert says stop, do not re-arm).
 
 A sixth, `.github/workflows/ci-required-check-purity.yml`, flags required
 checks that compare a computed value against a shared committed baseline

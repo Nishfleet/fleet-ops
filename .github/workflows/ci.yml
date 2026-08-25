@@ -193,5 +193,7 @@ jobs:
         run: bash tests/worker-token-fail-closed.test.sh
       - name: semantic-conflict-detector
         run: bash tests/semantic-conflict-detector.test.sh
+      - name: repeat-deterministic-detector
+        run: bash tests/repeat-deterministic-detector.test.sh
       - name: required-check-purity
         run: bash tests/required-check-purity.test.sh
