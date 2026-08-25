@@ -50,4 +50,9 @@ bin/_worker-app-bootstrap-server.py /home/nish/.local/lib/fleet-worker/_worker-a
 credentials/app-manifest.json /home/nish/.config/fleet-worker/app-manifest.json
 credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 # P14 tests (not installed — only run from the repo)
+# fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
+# requires root for install). install.sh --system copies them and runs
+# systemctl daemon-reload; --check treats both symlink and content-equal as OK.
+systemd/system/user-1000.slice.d/50-ram-governor.conf /etc/systemd/system/user-1000.slice.d/50-ram-governor.conf
+systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf
 
