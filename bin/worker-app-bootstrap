@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# worker-app-bootstrap — capture GitHub App credentials from the manifest flow.
+#
+# WHAT THIS DOES
+#   1. Listens on 127.0.0.1:$PORT (default 18099) and serves credentials/
+#      bootstrap.html (the auto-submit form) plus credentials/app-manifest.json.
+#   2. Serves /callback once. When GitHub redirects to it after the user
+#      clicks "Create the GitHub App", the URL has ?code=<code>&state=<state>.
+#      The Python server here POSTs the code to
+#      https://api.github.com/app-manifests/<code>/conversions,
+#      exchanges the response for app credentials, and writes them to
+#      $CREDS_FILE (default ~/.config/fleet-worker/nishfleet-worker.env)
+#      with mode 0600.
+#   3. Prints next-step install instructions and exits.
+#
+#   --install-url <slug> [org] prints the installation URL for an already-
+#                          created app and exits. No listener, no write.
+#
+# DEGRADATION
+#   Network errors during the exchange leave $CREDS_FILE empty (truncated);
+#   the script then exits 2. Re-run with --reset to wipe a partial file.
+
+# shellcheck shell=bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CRED_DIR="$REPO_ROOT/credentials"
+SERVER_PY="$SCRIPT_DIR/_worker-app-bootstrap-server.py"
+CREDS_FILE_DEFAULT="$HOME/.config/fleet-worker/nishfleet-worker.env"
+
+PORT="${WORKER_APP_BOOTSTRAP_PORT:-18099}"
+CREDS_FILE="${WORKER_APP_CREDS_FILE:-$CREDS_FILE_DEFAULT}"
+LISTEN_ADDR="${WORKER_APP_LISTEN_ADDR:-127.0.0.1}"
+TIMEOUT_S="${WORKER_APP_BOOTSTRAP_TIMEOUT_S:-180}"
+
+case "${1:-}" in
+  --install-url)
+    shift
+    slug="${1:?--install-url requires the existing app slug}"
+    org="${2:-Nishfleet}"
+    printf 'Install the existing "nishfleet-worker" app under additional repos:\n'
+    printf '  https://github.com/apps/%s/installations/new\n' "$slug"
+    printf '(Choose "%s", then "Only select repositories" -> pick the repos.)\n' "$org"
+    exit 0
+    ;;
+  --reset) rm -f "$CREDS_FILE";;
+esac
+
+# --- preconditions ---------------------------------------------------------
+command -v python3 >/dev/null 2>&1 || { echo "missing python3" >&2; exit 1; }
+[[ -f "$SERVER_PY" ]]              || { echo "missing $SERVER_PY" >&2; exit 1; }
+[[ -f "$CRED_DIR/app-manifest.json" ]] || { echo "missing $CRED_DIR/app-manifest.json" >&2; exit 1; }
+[[ -f "$CRED_DIR/bootstrap.html" ]]    || { echo "missing $CRED_DIR/bootstrap.html" >&2; exit 1; }
+
+mkdir -p "$(dirname "$CREDS_FILE")"
+( umask 077; : > "$CREDS_FILE" )   # truncate / pre-create 0600
+
+on_exit() {
+  rc=$?
+  if (( rc != 0 )); then
+    # Truncate any partial write on failure so the worker-token path sees
+    # "missing creds" and falls back to existing gh auth.
+    : > "$CREDS_FILE" 2>/dev/null || true
+  fi
+  return "$rc"
+}
+trap on_exit EXIT INT TERM
+
+{
+  echo
+  echo "=== nishfleet-worker bootstrap ==="
+  echo "  open in a browser:"
+  echo "    http://${LISTEN_ADDR}:${PORT}/?org=Nishfleet"
+  echo "  (waiting up to ${TIMEOUT_S}s for the GitHub redirect)"
+  echo
+} >&2
+
+LISTEN_ADDR="$LISTEN_ADDR" PORT="$PORT" TIMEOUT_S="$TIMEOUT_S" \
+  MANIFEST_PATH="$CRED_DIR/app-manifest.json" BOOTSTRAP_PATH="$CRED_DIR/bootstrap.html" \
+  CREDS_FILE="$CREDS_FILE" exec python3 "$SERVER_PY"

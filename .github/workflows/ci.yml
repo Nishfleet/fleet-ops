@@ -147,3 +147,29 @@ jobs:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       - name: Scan repository
         run: gitleaks git --redact --verbose
+
+  tests:
+    # P14 (worker credential split): prove the nishfleet-worker App
+    # manifest is shape-locked and the worker-token path is fail-closed.
+    # The live test (tests/worker-token-live.test.sh) is gated on
+    # NISHFLEET_WORKER_LIVE_TEST=1 and skips by default — it requires the
+    # real App + credentials and is run manually after Nish's manifest
+    # click. Until then, this job is the only automation that touches
+    # the new code, and it never reaches GitHub.
+    name: P14 tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install test deps
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq openssl ca-certificates
+      - name: Manifest shape
+        run: bash tests/manifest-shape.test.sh
+      - name: worker-token fail-closed
+        run: bash tests/worker-token-fail-closed.test.sh

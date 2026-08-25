@@ -39,3 +39,11 @@ bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
+# P14: GitHub App identity for workers (replaces fine-grained PAT)
+bin/worker-token /home/nish/.local/bin/worker-token
+bin/worker-app-bootstrap /home/nish/.local/bin/worker-app-bootstrap
+bin/_worker-app-bootstrap-server.py /home/nish/.local/lib/fleet-worker/_worker-app-bootstrap-server.py
+credentials/app-manifest.json /home/nish/.config/fleet-worker/app-manifest.json
+credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
+# P14 tests (not installed — only run from the repo)
+

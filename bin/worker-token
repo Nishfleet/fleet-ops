@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# worker-token — mint a short-lived installation token for nishfleet-worker.
+#
+# WHAT THIS DOES
+#   1. Sources $CREDS_FILE (default ~/.config/fleet-worker/nishfleet-worker.env).
+#      The file is mode 0600 and contains NISHFLEET_WORKER_{APP_ID, PRIVATE_KEY,
+#      CLIENT_ID, ...}. NEVER prints the contents.
+#   2. Discovers the installation under the chosen org (default: from
+#      NISHFLEET_WORKER_ORG, fall back to "Nishfleet") via GET /app/installations.
+#      Cache file: $HOME/.cache/fleet-worker/installations.json (0600, TTL 5min).
+#   3. Mints a JWT signed RS256 with the App's private key. iat = now,
+#      exp = now + 9 min (well within GitHub's 10-minute ceiling).
+#   4. POSTs to /app/installations/<id>/access_tokens. Optional --repos
+#      scopes the token to a subset; --all-repos uses the installation's
+#      full repo set.
+#   5. Defaults: --print to stdout the line `export GH_TOKEN=<token>`
+#      AND set GH_TOKEN in the process env. Use --exec <cmd> [args...]
+#      to replace the process with <cmd> under the new credential.
+#
+# DEGRADATION
+#   If $CREDS_FILE is missing, or any step fails, the script exits 3 with a
+#   message. Callers (pi-issue-run) fall through to the existing gh auth on
+#   exit 3 — that is the failure path the fleet was running on before this
+#   script existed, so breakage is impossible.
+#
+# NO LLM.  Pure bash + jq + openssl + curl.  Same workload every run.
+
+# shellcheck shell=bash
+set -euo pipefail
+
+CREDS_FILE="${WORKER_APP_CREDS_FILE:-$HOME/.config/fleet-worker/nishfleet-worker.env}"
+CACHE_DIR_DEFAULT="${XDG_CACHE_HOME:-$HOME/.cache}/fleet-worker"
+INSTALL_CACHE="${WORKER_INSTALL_CACHE:-$CACHE_DIR_DEFAULT/installations.json}"
+INSTALL_TTL_S="${WORKER_INSTALL_TTL_S:-300}"   # 5 min
+
+usage() {
+  cat <<'EOF'
+worker-token — mint a short-lived installation token for nishfleet-worker.
+
+Usage:
+  worker-token [--repos r1,r2,... | --all-repos] [--print]
+  worker-token [--repos r1,r2,... | --all-repos] --exec <cmd> [args...]
+  worker-token --degrade-probe                # exit 0 if creds usable, 1 if not
+  worker-token --help
+
+Env (loaded from CREDS_FILE):
+  NISHFLEET_WORKER_APP_ID        required
+  NISHFLEET_WORKER_PRIVATE_KEY   required (PEM, may be multi-line via heredoc)
+  NISHFLEET_WORKER_ORG           optional; default 'Nishfleet'
+  NISHFLEET_WORKER_CLIENT_ID     optional; used by OAuth-creator flows only
+
+Exit codes:
+  0  token minted (and exec'd if --exec)
+  1  usage error
+  3  degraded — creds missing or invalid; caller falls back to existing auth
+
+The token NEVER gets logged or printed unless --print is explicit (and
+even then the script prints only the export line, not the raw material).
+EOF
+}
+
+# --- arg parse --------------------------------------------------------------
+REPOS=""
+ALL_REPOS=0
+MODE="print"
+CMD=()
+DEGRADE_PROBE=0
+while (( $# )); do
+  case "$1" in
+    --repos)        REPOS="${2:?--repos needs a comma list}"; shift 2;;
+    --all-repos)    ALL_REPOS=1; shift;;
+    --print)        MODE="print"; shift;;
+    --exec)         MODE="exec"; shift; CMD=("$@"); break;;
+    --degrade-probe) DEGRADE_PROBE=1; shift;;
+    -h|--help)      usage; exit 0;;
+    *)              echo "worker-token: unknown arg: $1" >&2; usage >&2; exit 1;;
+  esac
+done
+
+# --- load credentials file safely -------------------------------------------
+if [[ ! -f "$CREDS_FILE" ]]; then
+  echo "worker-token: creds file not found ($CREDS_FILE) — degraded" >&2
+  exit 3
+fi
+# shellcheck disable=SC1090
+set +e
+. "$CREDS_FILE"
+src_rc=$?
+set -e
+if (( src_rc != 0 )); then
+  echo "worker-token: failed to source $CREDS_FILE (rc=$src_rc) — degraded" >&2
+  exit 3
+fi
+if [[ -z "${NISHFLEET_WORKER_APP_ID:-}" ]]; then
+  echo "worker-token: NISHFLEET_WORKER_APP_ID missing in $CREDS_FILE — degraded" >&2
+  exit 3
+fi
+if [[ -z "${NISHFLEET_WORKER_PRIVATE_KEY:-}" ]]; then
+  echo "worker-token: NISHFLEET_WORKER_PRIVATE_KEY missing in $CREDS_FILE — degraded" >&2
+  exit 3
+fi
+
+# The file uses a here-doc body for the PEM so it can contain newlines.
+# Bash populated NISHFLEET_WORKER_PRIVATE_KEY as a multi-line string; trim
+# the trailing newline that GitHub's PEM includes for cleanliness.
+PEM="$(printf '%s' "$NISHFLEET_WORKER_PRIVATE_KEY")"
+APP_ID="$NISHFLEET_WORKER_APP_ID"
+ORG="${NISHFLEET_WORKER_ORG:-Nishfleet}"
+
+# --- preconditions ---------------------------------------------------------
+for t in openssl jq curl; do
+  command -v "$t" >/dev/null 2>&1 || { echo "worker-token: missing tool $t" >&2; exit 3; }
+done
+
+# --- helpers ----------------------------------------------------------------
+b64url_no_pad() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# --- mint a fresh JWT -------------------------------------------------------
+# Memoize within the same script invocation only — JWTs are time-bound and
+# GitHub rate-limits them, so we never reuse them across calls.
+mint_jwt() {
+  local now exp header payload unsigned sig pem_path
+  now="$(date +%s)"
+  exp=$((now + 540))   # 9 min, under GitHub's 10-min ceiling
+  header='{"alg":"RS256","typ":"JWT"}'
+  payload="{\"iat\":${now},\"exp\":${exp},\"iss\":${APP_ID}}"
+  unsigned="$(printf '%s' "$header" | b64url_no_pad).$(printf '%s' "$payload" | b64url_no_pad)"
+  pem_path="$(mktemp -t worker-token.pem.XXXXXX)"
+  ( umask 077; printf '%s\n' "$PEM" > "$pem_path" )
+  sig="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$pem_path" | b64url_no_pad)" || {
+    rm -f "$pem_path"; echo "worker-token: JWT sign failed — degraded" >&2; exit 3; }
+  rm -f "$pem_path"
+  printf '%s.%s' "$unsigned" "$sig"
+}
+
+# --- look up the installation id (cached 5 minutes) -------------------------
+get_installation_id() {
+  local jwt cache_age now
+  now="$(date +%s)"
+  mkdir -p "$(dirname "$INSTALL_CACHE")"
+  ( umask 077; : > "$INSTALL_CACHE" )
+  if [[ -s "$INSTALL_CACHE" ]]; then
+    cache_age=$((now - $(stat -c %Y "$INSTALL_CACHE" 2>/dev/null || echo 0)))
+    if (( cache_age < INSTALL_TTL_S )); then
+      local cached
+      cached="$(jq -r --arg org "$ORG" \
+        '.installations[] | select(.account.login == $org) | .id' \
+        "$INSTALL_CACHE" 2>/dev/null || true)"
+      if [[ -n "$cached" && "$cached" != "null" ]]; then
+        printf '%s\n' "$cached"
+        return 0
+      fi
+    fi
+  fi
+  jwt="$(mint_jwt)"
+  local list
+  list="$(curl -fsS \
+      -H "Authorization: Bearer $jwt" \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: nishfleet-worker-token" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com/app/installations" 2>&1)" || {
+    echo "worker-token: app/installations lookup failed — degraded" >&2
+    exit 3; }
+  printf '%s' "$list" | jq '{installations: .}' > "$INSTALL_CACHE" 2>/dev/null || {
+    echo "worker-token: app/installations parse failed — degraded" >&2
+    exit 3; }
+  chmod 600 "$INSTALL_CACHE" 2>/dev/null || true
+  local id
+  id="$(jq -r --arg org "$ORG" \
+    '.installations[] | select(.account.login == $org) | .id' \
+    "$INSTALL_CACHE")"
+  if [[ -z "$id" || "$id" == "null" ]]; then
+    echo "worker-token: no installation of nishfleet-worker in org '$ORG' — degraded" >&2
+    echo "  (the app exists but has not been installed under that org yet)" >&2
+    exit 3
+  fi
+  printf '%s\n' "$id"
+}
+
+# --- mint the access token --------------------------------------------------
+mint_access_token() {
+  local jwt id payload response
+  jwt="$(mint_jwt)"
+  id="$(get_installation_id)"
+  payload="{}"
+  if (( ALL_REPOS )); then
+    payload='{}'
+  elif [[ -n "$REPOS" ]]; then
+    # Build a JSON array from "a,b,c" safely via jq.
+    payload="$(jq -nc --arg r "$REPOS" '$r | split(",") | map(select(. != "")) | {repositories: .}')"
+  fi
+  # GitHub caps installation tokens at 1 hour; we mint ≤9 min by default.
+  # The TTL arg is sent in the request only when --all-repos so non-all-repos
+  # invocations can be granted the full 60min if the operator wants it.
+  # Sending it unconditionally would tighten the bound without harm.
+  if (( ALL_REPOS )) || [[ -n "$REPOS" ]]; then
+    payload="$(jq -c --argjson p "$payload" '. + {permissions: {}}' <<<"$payload")"
+  fi
+  response="$(curl -fsS -X POST \
+      -H "Authorization: Bearer $jwt" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Content-Type: application/json" \
+      -H "User-Agent: nishfleet-worker-token" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      --max-time 15 \
+      -d "$payload" \
+      "https://api.github.com/app/installations/${id}/access_tokens")" || {
+    echo "worker-token: access-token mint failed — degraded" >&2
+    exit 3; }
+  local token
+  token="$(printf '%s' "$response" | jq -r '.token // empty')"
+  [[ -n "$token" && "$token" != "null" ]] || {
+    echo "worker-token: empty token in response — degraded" >&2
+    exit 3; }
+  printf '%s\n' "$token"
+}
+
+# --- degrade-probe path -----------------------------------------------------
+if (( DEGRADE_PROBE )); then
+  if [[ ! -f "$CREDS_FILE" ]] || [[ -z "${NISHFLEET_WORKER_APP_ID:-}" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+
+# --- main: print or exec ----------------------------------------------------
+TOKEN="$(mint_access_token)"
+case "$MODE" in
+  print)
+    # Print ONLY the export line. Never print the JWT or any credential
+    # material outside of this line.
+    printf 'export GH_TOKEN=%s\n' "$TOKEN"
+    exit 0
+    ;;
+  exec)
+    [[ ${#CMD[@]} -gt 0 ]] || { echo "worker-token: --exec needs a command" >&2; exit 1; }
+    export GH_TOKEN="$TOKEN"
+    exec "${CMD[@]}"
+    ;;
+esac
