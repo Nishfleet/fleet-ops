@@ -369,3 +369,72 @@ ok "expiry-first: cursor/composer-2.5 picked on clean ledger"
 ok "rate_limited: stale marker retried, fresh marker excluded"
 ok "stale observed_at assumed usable (P4-A inversion fixed)"
 ok "credential precheck: empty !cmd / unset \$VAR rejected; set var / literal / no-apiKey fail-open accepted; per-call cache runs !cmd once"
+
+# --- P15 wedge-age liveness probe ----------------------------------------
+# A unit stuck in `activating` past PI_SEAT_ACTIVATING_MAX_S is a wedged pi
+# (the fleet-ops#83 finalize-hang), not a live worker. The registry entry
+# must be reaped so caps free up. A freshly-activating unit (60s) is live.
+export PI_PACKET_STATE="$scratch/state-wedge"
+export PI_SEAT_LIB_CHECK_SYSTEMD=1
+mkdir -p "$PI_PACKET_STATE/active-seats"
+jq -n '{unit:"pi-issue-wedged"}' > "$PI_PACKET_STATE/active-seats/pi-issue-wedged.json"
+jq -n '{unit:"pi-issue-fresh"}' > "$PI_PACKET_STATE/active-seats/pi-issue-fresh.json"
+jq -n '{unit:"pi-issue-dead"}' > "$PI_PACKET_STATE/active-seats/pi-issue-dead.json"
+
+# The probe and the shim both read the clock via
+# `awk '{print int($1)}' /proc/uptime`. On a fresh GitHub runner (uptime
+# < 1h) a 3600s-old monotonic timestamp is not representable (it would be
+# negative and trip the probe's ^[0-9]+$ guard). Floor the simulated
+# uptime at 3700s so BOTH the probe's clock and the shim's clock agree on
+# any runner: wedged age = 3600s > 3300s max -> reaped, fresh age = 60s
+# -> live. Without the shared floor the probe computes wedged age as
+# (real uptime - 100)s, which on a fresh runner is < 3300s -> kept -> the
+# exact CI failure that auto-reverted #94 and #98.
+awk() {
+  if [[ "$*" == *'/proc/uptime'* ]] && [[ "$*" == *'print int($1)'* ]]; then
+    local real_s
+    real_s=$(command awk '{print int($1)}' /proc/uptime)
+    if (( real_s < 3700 )); then real_s=3700; fi
+    echo "$real_s"
+  else
+    command awk "$@"
+  fi
+}
+export -f awk
+
+# Shim systemctl: the probe calls `systemctl --user is-active UNIT` and
+# `systemctl --user show UNIT --property=ActiveEnterTimestampMonotonic
+# --value`. wedged is 3600s into activating, fresh 60s, dead failed.
+systemctl() {
+  [[ "$1" == "--user" ]] && shift
+  case "$1" in
+    is-active)
+      case "$2" in
+        pi-issue@wedged.service) echo activating ;;
+        pi-issue@fresh.service) echo activating ;;
+        pi-issue@dead.service) echo failed ;;
+        *) echo inactive ;;
+      esac ;;
+    show)
+      now_s=$(awk '{print int($1)}' /proc/uptime)
+      case "$2" in
+        pi-issue@wedged.service) echo "$(( (now_s - 3600) * 1000000 ))" ;;
+        pi-issue@fresh.service) echo "$(( (now_s - 60) * 1000000 ))" ;;
+        *) echo 0 ;;
+      esac ;;
+  esac
+}
+export -f systemctl
+
+set +e
+live=$(bash -c 'source "$1"; _seat_live_registry_files' _ "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "wedge probe: _seat_live_registry_files failed rc=$rc"
+echo "$live" | grep -q 'pi-issue-fresh.json' \
+  || fail "wedge probe: fresh activating unit must stay live, got: $live"
+echo "$live" | grep -q 'pi-issue-wedged.json' \
+  && fail "wedge probe: 3600s-activating unit must be reaped, got: $live"
+grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
+  || fail "wedge probe: must log the stuck-activating reap"
+ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
