@@ -10,9 +10,10 @@
 #      This is the gap the legacy intake path had (hardcoded
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
-#   2. No-op detection: if pi exits 0 but produced no real output (< 256 B
+#   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
 #      to stdout), exit non-zero so systemd's Restart= treats it as a
-#      failure and re-seats. Same trick pi-packet-run uses.
+#      failure and re-seats. 20 B is enough for a GitHub PR URL or a short
+#      status like 'blocked: proposal posted' (26 B).
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
@@ -49,7 +50,7 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
-OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-256}"
+OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 
 [[ $# -ge 1 ]] || { echo "pi-issue-run: need 1 arg: <unit-instance>" >&2; exit 1; }
 inst="$1"

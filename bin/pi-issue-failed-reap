@@ -54,10 +54,7 @@ open_pr_count=$(gh pr list -R "$repo_slug" --head "$branch_name" --state open --
 }
 
 if [[ "$open_pr_count" -gt 0 ]]; then
-    log "open PR exists from $branch_name; leaving branch intact"
-    if [[ "$in_progress" == "yes" ]]; then
-        gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress || true
-    fi
+    log "open PR exists from $branch_name; leaving branch and labels intact"
     exit 0
 fi
 
