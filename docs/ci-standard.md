@@ -35,3 +35,31 @@ shellcheck, gitleaks). That pin is not a shared counter every PR must edit.
 `.github/workflows/ci-required-check-purity.yml` is the reusable caller.
 It is **advisory** (warn, do not block) until existing instances are fixed.
 Promote with `enforce: true` after 0509#1056 lands.
+
+## Classify before retrying
+
+A retry is only worth a run when the failure could go away on its own.
+Top teams split failures first:
+
+- **assertion failure** (a test, a lint, a build, a deploy that errors on
+  the code) -> stop. Do not re-arm, do not re-queue. The code has to change.
+- **infra / network / timeout** (a flaky runner, a 5xx, a rate limit, a
+  fetch that timed out) -> retry with backoff.
+
+The mechanical signal is: the same `(workflow, job, step, assertion)`
+signature failed `3` times within `6` hours. That is a
+**repeat-deterministic** failure. Re-arm cannot fix it; the alert says so.
+
+This is the rule both 2026-08-25 loops broke: "Deploy production" retried
+an identical hard wrangler error 6x (11:09 -> 14:06), and 0509 PR #994
+re-entered the merge queue 6x (19:51 -> 22:21) failing the same assertion
+every time. Neither was retryable.
+
+## The detector
+
+`.github/scripts/repeat-deterministic-detector.mjs` implements the rule.
+Replay a loop with `--from-json`; run it live with `--repo`.
+
+`.github/workflows/ci-failure-telemetry.yml` is the reusable caller — the
+same workflow that already runs the semantic-conflict detector, so every
+repo gets both alerts from one `uses:` call. It is an alert, not a gate.

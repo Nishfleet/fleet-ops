@@ -1,9 +1,18 @@
 name: CI failure telemetry
 
-# Central reusable telemetry workflow. This job is the merge-queue
-# semantic-conflict detector: the same check, for the same PR, passed on
-# pull_request and failed on merge_group. That is a semantic merge conflict
-# (green in isolation, collides with the batch). Re-queueing cannot fix it.
+# Central reusable telemetry workflow. Two detectors share this workflow so
+# every repo gets both alerts from one `uses:` call:
+#
+# 1. Semantic merge-conflict detector — the same check, for the same PR,
+#    passed on pull_request and failed on merge_group. Green in isolation,
+#    collides with the batch. Re-queueing cannot fix it.
+# 2. Repeat-deterministic detector — the same (workflow, job, step,
+#    assertion) signature failed 3+ times within 6h. An assertion failure
+#    is not retryable; this alert says stop, do not re-arm. Catches both
+#    shapes that burned CI on 2026-08-25: "Deploy production" retried an
+#    identical hard wrangler error 6x (11:09 -> 14:06), and 0509 PR #994
+#    re-entered the merge queue 6x (19:51 -> 22:21) failing the same
+#    assertion every time.
 #
 # Usage from another repo:
 #   jobs:
@@ -35,13 +44,16 @@ on:
     outputs:
       conflicts:
         description: "Number of semantic merge conflicts found."
-        value: ${{ jobs.telemetry.outputs.conflicts }}
+        value: ${{ jobs.semantic.outputs.conflicts }}
+      repeats:
+        description: "Number of repeat-deterministic failure signatures found."
+        value: ${{ jobs.repeat.outputs.repeats }}
       runs-sampled:
-        description: "Total runs sampled."
-        value: ${{ jobs.telemetry.outputs.runs-sampled }}
+        description: "Total runs sampled by the semantic-conflict detector."
+        value: ${{ jobs.semantic.outputs.runs-sampled }}
       divergence-pct:
         description: "merge_group failure rate minus pull_request failure rate, in percentage points."
-        value: ${{ jobs.telemetry.outputs.divergence-pct }}
+        value: ${{ jobs.semantic.outputs.divergence-pct }}
   workflow_dispatch:
     inputs:
       target-repo:
@@ -58,8 +70,9 @@ on:
         type: boolean
   schedule:
     # Daily 04:47 UTC. Named reason: GitHub offers no event for "a PR was
-    # ejected from the merge queue"; a daily sweep is the cheapest mechanical
-    # form that still catches a PR being re-queued overnight.
+    # ejected from the merge queue" or "a deploy looped on the same error";
+    # a daily sweep is the cheapest mechanical form that still catches a
+    # loop running overnight.
     - cron: "47 4 * * *"
 
 permissions:
@@ -72,7 +85,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  telemetry:
+  semantic:
     name: Semantic merge-conflict detector
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -105,4 +118,35 @@ jobs:
             --repo "${SEMANTIC_CONFLICT_REPO}" \
             --lookback-hours "${LOOKBACK}" \
             --output-json report.json \
+            ${COMMENT}
+
+  repeat:
+    name: Repeat-deterministic detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    outputs:
+      repeats: ${{ steps.run.outputs.repeats }}
+    steps:
+      - name: Checkout detector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Run detector
+        id: run
+        env:
+          REPEAT_DETERMINISTIC_REPO: ${{ inputs.target-repo || github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT: ${{ inputs.comment-on-pr == true && '--comment' || '' }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/repeat-deterministic-detector.mjs \
+            --repo "${REPEAT_DETERMINISTIC_REPO}" \
+            --output-json repeat-report.json \
             ${COMMENT}
