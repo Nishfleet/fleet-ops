@@ -237,3 +237,9 @@ jobs:
       # SHAPE lock that catches decision regressions in CI.
       - name: mass-close guard
         run: bash tests/mass-close-guard.test.sh
+      # fleet-ops#45: lock bin/ram-measure's distribution math (mean/median/
+      # p95/max in GiB), the no-data vs infinity handling, the zero-units
+      # path, the rolling history, and the top-N output. Pure unit test
+      # with a stub systemctl; no live fleet required.
+      - name: ram-measure distribution
+        run: bash tests/ram-measure.test.sh

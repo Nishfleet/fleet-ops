@@ -56,6 +56,11 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
+# fleet-ops#45: peak-RSS measurement so ram_gb_per_worker can be re-derived
+# by command rather than re-read from a comment. Pure observability — no
+# timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
+# with a rolling 10-run history.
+bin/ram-measure /home/nish/.local/bin/ram-measure
 # P14 tests (not installed — only run from the repo)
 # fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
 # requires root for install). install.sh --system copies them and runs

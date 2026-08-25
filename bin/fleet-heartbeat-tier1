@@ -28,6 +28,13 @@
 #      THROUGHPUT line per tick (merged fleet-worker PRs since last tick)
 #      into the triage log. The helper's non-zero exit propagates here so
 #      fleet-heartbeat.service lands in --state=failed -> page + Telegram.
+#   9. RAM measurement (fleet-ops#45). Delegates to bin/ram-measure: walks
+#      pi-issue@/pi-packet@ units, aggregates MemoryPeak, and writes a
+#      rolling 10-run history to ~/.local/state/ram-measurement/. Pure
+#      observability — no cap adjustment, no escalation, no tick failure
+#      on a measurement error. A re-derive of ram_gb_per_worker is a
+#      HUMAN action (jq over the state file + a PR); the heartbeat only
+#      makes the measurement automatic.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -777,6 +784,35 @@ if [ -x "$UNDERSAT_BIN" ]; then
     fi
 else
     log "8. undersaturation helper missing at $UNDERSAT_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 9. RAM MEASUREMENT (fleet-ops#45)
+# ============================================================================
+# Mechanical re-measurement of peak RSS across fleet worker units. The
+# 0.75 in seat-caps.json's ram_gb_per_worker is the floor; a re-derive
+# is `ram-measure` + jq over $RAM_STATE_DIR/ram-measurement.json. The
+# single one-line stdout (mean/median/p95/max in GiB) is logged to the
+# tick log so a trend is visible from the journal alone. The script is
+# a pure observer — it never fails the tick, never escalates, never
+# touches the cap map. Drift between the live distribution and
+# ram_gb_per_worker is a HUMAN action (re-derive from a fresh
+# measurement, then a PR).
+#
+# Skipped silently if ram-measure is not installed; the .local/bin
+# symlink is a fleet-ops install step (MANIFEST + ./install.sh), so a
+# missing binary is a config drift, not a code bug.
+RAM_BIN="${FLEET_RAM_MEASURE_BIN:-/home/nish/.local/bin/ram-measure}"
+if [ -x "$RAM_BIN" ]; then
+    if ram_summary="$("$RAM_BIN" 2>/dev/null)"; then
+        log "9. ram-measure: $ram_summary"
+    else
+        # Measurement is observability; an unexpected non-zero here is
+        # logged but does NOT fail the tick.
+        log "9. ram-measure: non-zero exit (rc=$?) — state file may be stale"
+    fi
+else
+    log "9. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
 fi
 
 # ============================================================================

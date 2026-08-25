@@ -219,4 +219,26 @@ throttle real workers. `systemd/systemd#33486` notes pressure limits can fail
 to fire — re-run `oomd-drill` after any upgrade to confirm the path still
 trips.
 
+## Worker RAM measurement — `ram-measure` (issue #45)
+
+`ram_gb_per_worker` in `config/seat-caps.json` is the governor budget the
+RAM governor divides `MemAvailable` by. It is sized on the TYPICAL worker
+(0.75 GiB) with the tail bounded three ways (per-worker `MemoryHigh=3G`
+throttle, `MemoryMax=6G` hard stop, and `TimeoutStartSec=45min` to kill a
+wedge). A re-derive is one command:
+
+```
+ram-measure                          # one-line summary
+jq '.history[0]' ~/.local/state/ram-measurement/ram-measurement.json
+```
+
+`bin/ram-measure` walks every `pi-issue@*.service` and `pi-packet@*.service`
+unit, pulls `MemoryPeak` (bytes) from `systemctl show`, and reports count,
+mean, median, p95, and max in GiB plus a per-unit breakdown. State lives at
+`~/.local/state/ram-measurement/ram-measurement.json` with a rolling
+10-run history. The fleet-heartbeat calls it once per tick (section 9 of
+`bin/fleet-heartbeat-tier1`) so a re-derive is a one-time `jq` over the
+history, not a re-read of a comment. Pure observability — never a gate, never
+an escalation, never an edit to the cap map.
+
 

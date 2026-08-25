@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# ram-measure — fleet-ops#45. Aggregate peak RSS across fleet worker
+# units, sized into a distribution summary and a state file for diffing
+# over time.
+#
+# Walks pi-issue@* and pi-packet@* units in any state (MemoryPeak is
+# preserved by systemd after the cgroup exits, so inactive/dead units
+# still have data). Pulls MemoryPeak via `systemctl --user show`,
+# converts bytes -> GiB, and reports:
+#
+#   - count_of_units_with_data, count_of_units_without_data
+#   - mean / median / p95 / max in GiB
+#   - top-N biggest offenders (unit, GiB, ActiveState)
+#
+# The 4.8 GB outlier behind the issue was measured by hand on 2026-08-26
+# and recorded in a commit message (the PR that set ram_gb_per_worker=0.75).
+# A re-measurement must be one command, not a re-read of a comment — that
+# is what this script is. Run on demand OR from fleet-heartbeat-tier1
+# section 9, which calls it once per tick (the heartbeat-timer cadence is
+# 30 min, so the rolling history is one fresh sample per tick). No new
+# timer, no new unit, no separate orchestrator.
+#
+# Per-task-weight cap: NOT implemented. The single 4.8 GB peak was a
+# failure signature (the unit's exit recorded that peak), not a class of
+# task. n=14: median 1.28, p95 4.4, max 4.8 GB — the tail is one data
+# point, not a population. task_weight() in seat-lib.sh distinguishes
+# heavy vs light packets, but the heavy class has not demonstrated a
+# need for a higher cap (live heavy workers measure 0.8 GB). Revisit if
+# the rolling distribution ever shows heavy-class p95 > 3 GB sustained.
+#
+# State:
+#   $RAM_STATE_DIR/ram-measurement.json — last 10 runs (rolling),
+#   each with {ts, count, mean_gib, median_gib, p95_gib, max_gib,
+#   top_units: [{unit, gib, active_state}, ...]}.
+#
+# Environment seams (tests):
+#   SYSTEMCTL             default systemctl (tests inject a fake)
+#   RAM_STATE_DIR         default ~/.local/state/ram-measurement
+#   RAM_HISTORY_LEN       default 10 — rolling history depth
+#   RAM_MEASURE_GLOB      default 'pi-issue@*.service pi-packet@*.service'
+#   RAM_TOP_N             default 5 — number of top offenders to record
+#
+# Exit: 0 always. Measurement is observability; a 0-count result is data,
+# not a failure.
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+RAM_STATE_DIR="${RAM_STATE_DIR:-$HOME/.local/state/ram-measurement}"
+RAM_HISTORY_LEN="${RAM_HISTORY_LEN:-10}"
+RAM_MEASURE_GLOB="${RAM_MEASURE_GLOB:-pi-issue@*.service pi-packet@*.service}"
+RAM_TOP_N="${RAM_TOP_N:-5}"
+
+mkdir -p "$RAM_STATE_DIR"
+STATE_FILE="$RAM_STATE_DIR/ram-measurement.json"
+TMP_FILE="$RAM_STATE_DIR/.ram-measurement.tmp.$$"
+
+log() { printf '[ram-measure] %s\n' "$*" >&2; }
+
+# --- 1. walk units ---------------------------------------------------------
+# We want EVERY unit (active, failed, inactive — the point of the
+# measurement is the historical peak, which systemd remembers until the
+# unit file is gone). `list-units --all` includes dead/inactive units
+# only when they have a persistent state record. The pair `list-units
+# --all` + `list-units` is over-engineered; the simple form is
+# `list-units --all --no-legend --plain <globs>` and the kernel cgroup
+# is the source of truth for the actual cgroup's MemoryPeak, accessed
+# via `show` per unit.
+#
+# `show -p MemoryPeak --value` returns bytes for set values, "[not set]"
+# for never-run units, and "infinity" if MemoryHigh is unset. We treat
+# "infinity" / "[not set]" / non-numeric as no-data.
+units=()
+while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    units+=("$u")
+done < <(
+    # shellcheck disable=SC2086
+    "$SYSTEMCTL" --user list-units $RAM_MEASURE_GLOB --all --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' | grep -E '\.service$' || true
+)
+
+total_units=${#units[@]}
+if (( total_units == 0 )); then
+    log "no pi-issue@/pi-packet@ units found (globs: $RAM_MEASURE_GLOB)"
+    # Still write a state file with zeros so a subsequent re-measure diff
+    # is not the difference between "no file" and "file with zeros".
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq -nc --arg ts "$now_utc" --argjson hl "$RAM_HISTORY_LEN" \
+        --argjson count 0 --argjson nodata 0 --argjson mean 0 \
+        --argjson median 0 --argjson p95 0 --argjson max 0 \
+        --argjson top '[]' --argjson hist '[]' \
+        '{ts:$ts, count:$count, units_without_data:$nodata,
+          mean_gib:$mean, median_gib:$median, p95_gib:$p95, max_gib:$max,
+          top_units:$top, history:$hist}' > "$TMP_FILE"
+    mv "$TMP_FILE" "$STATE_FILE"
+    printf 'ram: n=0 mean=0GiB median=0GiB p95=0GiB max=0GiB (no fleet units found)\n'
+    exit 0
+fi
+
+# --- 2. pull MemoryPeak per unit ------------------------------------------
+peaks=()    # array of bytes-as-integers for units with data
+nodata=0
+top_units_json='[]'  # built incrementally; finalised in step 4
+
+# For top-N we need (gib, unit, active_state) tuples. We do a single
+# `show -p MemoryPeak -p MemoryHigh -p MemoryMax -p ActiveState --value
+# UNIT` per unit. MemoryPeak is the worker's peak; MemoryHigh is the
+# throttle (3G in production); MemoryMax is the hard cap (6G in
+# production). All in bytes; convert to GiB at the very end.
+#
+# A unit that hit MemoryHigh throttles; a unit that hit MemoryMax is
+# killed by the kernel. Recording those events separately matters
+# because a unit running right at MemoryMax is the failure pattern
+# behind the 4.8 GB outlier — the per-worker cap is the safety net
+# that the RAM governor budget does not need to assume.
+while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    show_out=$("$SYSTEMCTL" --user show -p MemoryPeak -p MemoryHigh -p MemoryMax -p ActiveState --value "$u" 2>/dev/null || true)
+    peak=$(printf '%s\n' "$show_out" | sed -n '1p')
+    high=$(printf '%s\n' "$show_out" | sed -n '2p')
+    mx=$(printf '%s\n' "$show_out" | sed -n '3p')
+    active=$(printf '%s\n' "$show_out" | sed -n '4p')
+
+    # MemoryPeak / MemoryHigh / MemoryMax are bytes when set, or the
+    # strings "infinity" (unset high/max) or "[not set]" (never run). We
+    # only treat a NUMERIC peak as data; everything else is no-data.
+    if [[ "$peak" =~ ^[0-9]+$ ]] && (( peak > 0 )); then
+        peaks+=("$peak")
+    else
+        nodata=$((nodata + 1))
+        continue
+    fi
+
+    # Top-N: keep a per-unit JSON snippet so jq can merge later. We
+    # store raw bytes; conversion to GiB happens at print time.
+    if [[ "$high" =~ ^[0-9]+$ ]] && (( peak >= high )); then
+        throttled=1
+    else
+        throttled=0
+    fi
+    if [[ "$mx" =~ ^[0-9]+$ ]] && (( peak >= mx )); then
+        hit_max=1
+    else
+        hit_max=0
+    fi
+    top_units_json=$(jq -c \
+        --arg u "$u" --argjson peak "$peak" \
+        --argjson high "${high:-null}" --argjson mx "${mx:-null}" \
+        --arg active "${active:-unknown}" \
+        --argjson throttled "$throttled" --argjson hit_max "$hit_max" \
+        --argjson top "$top_units_json" \
+        '($top + [{unit:$u, peak_bytes:$peak, memory_high_bytes:$high,
+                    memory_max_bytes:$mx, active_state:$active,
+                    throttled:$throttled, hit_memory_max:$hit_max}])' \
+        <<<"$top_units_json")
+done < <(printf '%s\n' "${units[@]}")
+
+count=${#peaks[@]}
+
+# --- 3. distribution -------------------------------------------------------
+# mean, median, p95 in GiB. We sort in bash via a temp newline file
+# (no dependency on GNU sort -V; pure numeric sort -n works).
+if (( count == 0 )); then
+    mean_gib=0
+    median_gib=0
+    p95_gib=0
+    max_gib=0
+else
+    # Convert bytes -> GiB with awk (1 GiB = 1073741824 bytes). Two
+    # decimals is enough; rounding further is just visual noise.
+    tmp_peaks=$(mktemp -t ram-measure-peaks.XXXXXX)
+    trap 'rm -f "$tmp_peaks"' EXIT INT TERM
+    printf '%s\n' "${peaks[@]}" > "$tmp_peaks"
+
+    stats=$(awk -v n="$count" '
+        { a[NR-1] = $1; sum += $1 }
+        END {
+            # mean
+            mean_b = sum / n
+            # Sort a[] in place by VALUE (asort sorts by value; asorti sorts
+            # by index, which is useless here since our index is just the
+            # insertion order 0..n-1). After asort, the sorted array is
+            # 1-indexed (gawk renumbers to 1..n, not 0..n-1) - this is the
+            # pitfall that drops the largest value if you iterate 0..n-1.
+            n2 = asort(a)
+            # median: a[int(n/2)] is the middle of the 1..n range, so
+            # for n=7 -> a[3] (the 3rd smallest, i.e. 4th element).
+            median_b = a[int(n/2)]
+            # p95: the value at the 95th percentile. For n samples sorted
+            # ascending, that is the smallest i such that i/n >= 0.95, i.e.
+            # ceil(0.95 * n) in 1-indexed terms. n=7 -> i=7 (the max);
+            # n=20 -> i=19; n=100 -> i=95. This matches the issue "p95,
+            # not the mean" rule conservatively: for small samples the
+            # p95 collapses to the max (the 4.8 GB outlier pattern), so
+            # sizing on it would NOT save capacity over sizing on max.
+            # The fleet-ops policy is to size on the typical worker and
+            # bound the tail with per-worker MemoryMax; the p95 here is
+            # therefore reported as OBSERVABILITY, not as a budget.
+            p95_i = int(n2 * 0.95 + 0.5); if (p95_i < 1) p95_i = 1
+            if (p95_i > n2) p95_i = n2
+            p95_b = a[p95_i]
+            # max: gawk asort is 1-indexed, so a[n2] is the largest.
+            max_b = a[n2]
+            printf "%.4f %.4f %.4f %.4f\n", mean_b/1073741824, median_b/1073741824, p95_b/1073741824, max_b/1073741824
+        }
+    ' "$tmp_peaks")
+    rm -f "$tmp_peaks"
+    trap - EXIT INT TERM
+    mean_gib=$(awk '{printf "%.2f", $1}' <<<"$stats")
+    median_gib=$(awk '{printf "%.2f", $2}' <<<"$stats")
+    p95_gib=$(awk '{printf "%.2f", $3}' <<<"$stats")
+    max_gib=$(awk '{printf "%.2f", $4}' <<<"$stats")
+fi
+
+# --- 4. top-N biggest offenders -------------------------------------------
+# `top_units_json` carries raw bytes; pick the largest RAM_TOP_N by peak
+# and convert to GiB for the on-disk and stdout form. jq does the sort
+# because bash + awk for nested JSON is more code than jq's one-liner.
+#
+# `top_units_json` is a JSON array of per-unit dicts. We turn it into
+# the final top_units array with peak_gib added, then truncate.
+top_units_json=$(jq -c --argjson n "$RAM_TOP_N" --argjson t "$top_units_json" '
+    ($t
+        | map(. + {peak_gib: (.peak_bytes / 1073741824)})
+        | sort_by(-.peak_bytes)
+        | .[0:$n]
+        | map({unit, peak_gib, active_state, throttled, hit_memory_max})
+    )' <<<"$top_units_json")
+
+# --- 5. write state file with rolling history -----------------------------
+now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+prev_history='[]'
+if [[ -f "$STATE_FILE" ]]; then
+    prev_history=$(jq -c '.history // []' "$STATE_FILE" 2>/dev/null || echo '[]')
+fi
+
+new_entry=$(jq -nc \
+    --arg ts "$now_utc" --argjson count "$count" --argjson nodata "$nodata" \
+    --argjson mean "$mean_gib" --argjson median "$median_gib" \
+    --argjson p95 "$p95_gib" --argjson max "$max_gib" \
+    --argjson top "$top_units_json" \
+    '{ts:$ts, count:$count, units_without_data:$nodata,
+      mean_gib:$mean, median_gib:$median, p95_gib:$p95, max_gib:$max,
+      top_units:$top}')
+
+new_history=$(jq -nc --argjson hl "$RAM_HISTORY_LEN" --argjson prev "$prev_history" --argjson e "$new_entry" '
+    ([$e] + $prev) | .[0:$hl]')
+
+# Whole-file state. Keep the LAST entry as a flat summary for grep
+# consumers, and history as a rolling array.
+jq -nc --arg ts "$now_utc" --argjson count "$count" --argjson nodata "$nodata" \
+    --argjson mean "$mean_gib" --argjson median "$median_gib" \
+    --argjson p95 "$p95_gib" --argjson max "$max_gib" \
+    --argjson top "$top_units_json" --argjson hist "$new_history" \
+    '{ts:$ts, count:$count, units_without_data:$nodata,
+      mean_gib:$mean, median_gib:$median, p95_gib:$p95, max_gib:$max,
+      top_units:$top, history:$hist}' > "$TMP_FILE"
+
+mv "$TMP_FILE" "$STATE_FILE"
+chmod 0644 "$STATE_FILE" 2>/dev/null || true
+
+# --- 6. one-line summary ---------------------------------------------------
+# Format mirrors the seat-caps.json comment: mean, median, p95, max in
+# GiB, plus the no-data count so a fleet that just started is
+# distinguishable from one that has been running long enough to mean
+# anything.
+printf 'ram: n=%d mean=%sGiB median=%sGiB p95=%sGiB max=%sGiB (no-data=%d total-units=%d)\n' \
+    "$count" "$mean_gib" "$median_gib" "$p95_gib" "$max_gib" "$nodata" "$total_units"
+
+exit 0
