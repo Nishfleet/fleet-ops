@@ -1,11 +1,26 @@
 [Unit]
 Description=Pi fleet issue intake tick for Nishfleet/%i
 OnFailure=pi-intake-repair@%i.service
+# Retry ladder is systemd's own; StartLimit* must live in [Unit].
+StartLimitIntervalSec=1h
+StartLimitBurst=8
 
 [Service]
-Type=oneshot
+Type=simple
+Restart=on-failure
+RestartSec=20
+RuntimeDirectory=pi-intake
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
 ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
-ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider minimax --model MiniMax-M3'
+# Seat rotation is pi-packet-run's documented job ("Pick a DIFFERENT seat on
+# each restart"), and the retry ladder is systemd's own Restart=/RestartSec=/
+# StartLimitBurst=. Nothing here is hand-rolled: ExecStartPre builds the packet,
+# pi-packet-run picks the seat, systemd owns the retries.
+#
+# A pinned --provider minimax previously died with HTTP 429 on every repo when
+# MiniMax hit its 5h rolling window (2026-08-25), stalling the whole fleet
+# while healthy seats sat unused.
+ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake/intake-%i.pkt'
+ExecStart=/home/nish/.local/bin/pi-packet-run %t/pi-intake/intake-%i.pkt /home/nish "" ""
 TimeoutStartSec=1800
