@@ -13,7 +13,9 @@
 #
 # Action:
 #   1. Parse %i as <repo>-<issue>.
-#   2. If pi-issue@%i is still live (active/activating or nonzero MainPID),
+#   2. If pi-issue@%i is still live (active, or activating with a running
+#      MainPID — auto-restart with MainPID=0 is NOT live: the worker process
+#      has exited and only systemd's restart timer is pending),
 #      do nothing — StartLimitBurst can fire OnFailure while ExecStart is
 #      still running (fleet-ops#26). Never release a live worker's claim.
 #   3. Load the issue state.
@@ -92,7 +94,18 @@ worker_is_live() {
     active="$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || echo "")"
     main="$("$SYSTEMCTL" --user show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
     case "$active" in
-        active|activating) return 0 ;;
+        active) return 0 ;;
+        activating)
+            # auto-restart has MainPID=0 (worker process exited, only the
+            # restart timer is pending) — NOT live. Only activating/start
+            # (MainPID>0) is a real running worker. Treating auto-restart as
+            # live was the never-say-next stuck-loop root cause
+            # (fleet-ops#109, 2026-08-26): a worker that exits non-zero
+            # thrashed forever because the reaper refused to release its
+            # claim while StartLimitIntervalSec reset hourly.
+            [[ "$main" =~ ^[1-9][0-9]*$ ]] && return 0
+            return 1
+            ;;
     esac
     if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
         return 0
