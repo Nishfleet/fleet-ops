@@ -99,6 +99,7 @@ jobs:
             /home/nish/.local/bin/pi \
             /home/nish/.local/bin/pi-issue-run \
             /home/nish/.local/bin/pi-packet-run \
+            /home/nish/.local/bin/pi-intake-run \
             /home/nish/.local/bin/pi-issue-failed-reap \
             /home/nish/.local/bin/siterep-deploy \
             /home/nish/.local/bin/siterep-deploy-verify \
@@ -195,3 +196,11 @@ jobs:
         run: bash tests/semantic-conflict-detector.test.sh
       - name: required-check-purity
         run: bash tests/required-check-purity.test.sh
+      - name: pi-systemd-run
+        run: bash tests/pi-systemd-run.test.sh
+      - name: pi-intake-run overlap
+        run: bash tests/pi-intake-run.test.sh
+      - name: pi-issue-start no-op
+        run: bash tests/pi-issue-start.test.sh
+      - name: pi-issue-failed-reap live skip
+        run: bash tests/pi-issue-failed-reap.test.sh

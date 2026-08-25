@@ -140,17 +140,16 @@ For the picked item:
 
 1. Write the packet file at `/home/nish/.local/state/pi-packets/<packet>.md`
    with the spec content.
-2. Spawn the worker:
-   - Quality/security/twice-failed → `claude -p --model claude-opus-5 < <packet>`
-     as a transient unit:
-     `systemd-run --user --unit=<packet>.service --working-directory=/home/nish
-      /bin/bash -c "claude -p --model claude-opus-5 < /home/nish/.local/state/pi-packets/<packet>.md"`
-   - Devin heavy → `systemd-run --user --unit=<packet>.service
-     --working-directory=/home/nish /bin/bash -c "pi --print
-     --provider devin --model glm-5-2 < /home/nish/.local/state/pi-packets/<packet>.md"`
-   - Mechanical → `systemd-run --user --unit=<packet>.service
-     --working-directory=/home/nish /bin/bash -c "pi --print
-     --provider minimax --model MiniMax-M3 < /home/nish/.local/state/pi-packets/<packet>.md"`
+2. Spawn the worker with `pi-systemd-run` (never `nohup` or trailing `&` —
+   those die with the launching session and look like a dead seat):
+   - Quality/security/twice-failed:
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- claude -p --model claude-opus-5`
+   - Devin heavy:
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider devin --model glm-5-2`
+   - Mechanical:
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider minimax --model MiniMax-M3`
+   Watch: `systemctl --user status <packet>.service`
+   Logs:  `journalctl --user -u <packet>.service -f`
 3. Log to playbook under a fresh "Heartbeat HH:MM UTC" line: which item
    was dispatched, on which seat, what the unit name is.
 

@@ -21,6 +21,9 @@ ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --
 # A pinned --provider minimax previously died with HTTP 429 on every repo when
 # MiniMax hit its 5h rolling window (2026-08-25), stalling the whole fleet
 # while healthy seats sat unused.
+#
+# pi-intake-run holds an exclusive flock so a manual `systemctl start` racing
+# the timer is a no-op instead of a second tick (fleet-ops#26).
 ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake/intake-%i.pkt'
-ExecStart=/home/nish/.local/bin/pi-packet-run %t/pi-intake/intake-%i.pkt /home/nish "" ""
+ExecStart=/home/nish/.local/bin/pi-intake-run %i
 TimeoutStartSec=1800
