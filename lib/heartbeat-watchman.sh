@@ -127,7 +127,11 @@ heartbeat_process_failed_units() {
         return 0
     fi
 
-    list=$(IFS=', '; echo "${still[*]}")
+    # Build a comma-joined list without mutating IFS (semgrep
+    # bash.lang.security.ifs-tampering). ${still[*]} with IFS=', '
+    # joins on the first char (","), so printf matches the prior output.
+    list=$(printf '%s,' "${still[@]}")
+    list=${list%,}
     heartbeat_page_units "$n" "$list" || true
     return 0
 }
