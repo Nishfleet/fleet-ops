@@ -36,6 +36,7 @@ bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
+bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
