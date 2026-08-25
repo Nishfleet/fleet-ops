@@ -21,14 +21,31 @@ script, or prompt lands unseen.
 ## Install
 
 ```
-./install.sh          # symlink MANIFEST entries into live paths, daemon-reload
-./install.sh --check  # report drift only, change nothing
+./install.sh              # user-scope only: symlink MANIFEST entries, systemctl --user daemon-reload
+./install.sh --system     # system-scope only: copy /etc/systemd/system drop-ins, sudo systemctl daemon-reload
+./install.sh --check      # drift detection for user-scope entries
+./install.sh --check --system  # drift detection for system-scope entries
 ```
 
 install.sh is hand-written because no platform feature installs from an
 explicit manifest; GNU stow was rejected because its directory-sweep semantics
 conflict with the allowlist requirement (only listed files install, nothing
 more).
+
+### System-scope entries (fleet-ops#71)
+
+The MANIFEST may list entries under `/etc/systemd/system/...` — those are
+SYSTEM scope and need root to install. `./install.sh` (default) SKIPS them;
+run `./install.sh --system` to install them. `--system` is non-interactive
+(it checks `sudo -n true`; if sudo requires a password, it refuses with a
+loud error and the exact manual command to run, so a worker can never hang
+on a sudo prompt). Drift on system entries is also worth checking from
+heartbeat tier 1: `./install.sh --check --system` exits nonzero on any
+byte-difference.
+
+The two system drop-ins repo-owned by `#71` are the fleet RAM governor
+themselves — see [docs/ram-governor-tree.md](docs/ram-governor-tree.md) for
+the full five-layer policy tree and what each layer does.
 
 ## Dispatch a packet that outlives this session
 
