@@ -342,6 +342,80 @@ seat_usable() {
     return 0
 }
 
+# --- credential precheck (fleet-ops#36) ------------------------------------
+# A provider that PASSES the cap-map allowlist can still have NO usable
+# credential — its env file was deleted, it was added to the cap map by
+# mistake, or its apiKey command returns nothing. The reactive seat-health
+# ledger only records credentials_bad AFTER a real attempt has burned a
+# retry slot (~1s each). On 2026-08-25 the fleet burned every tick on
+# groq/openai/gpt-oss-20b ("No API key found for openrouter") because the
+# cap map was the only gate and the ledger had no failure recorded yet.
+#
+# This precheck resolves the provider's apiKey the SAME way pi does
+# (custom-provider.md: "!command" executes, "$VAR"/"${VAR}" interpolate,
+# anything else is a literal) and rejects the seat up-front when no key can
+# be obtained — defence in depth ON TOP of the cap map, not a replacement.
+#
+# A provider with NO apiKey field (OAuth-only providers, or test fixtures)
+# is NOT rejected here: credential status cannot be determined from
+# models.json alone, and bricking OAuth seats would be wrong. The reactive
+# ledger remains the backstop for those. Fail open, log loud.
+#
+# Security: the resolved key is captured into a variable and NEVER printed
+# or logged — only its non-emptiness is tested. The apiKey commands in
+# models.json are Nish's own trusted config (pi itself runs them).
+PI_SEAT_CREDENTIAL_PRECHECK="${PI_SEAT_CREDENTIAL_PRECHECK:-1}"
+# Per-pick_seat call cache: provider -> "1" (has key) | "0" (no key).
+# Declared in pick_seat so the cache lives exactly one selection pass and
+# a provider with several models is resolved once, not once per model.
+declare -A _cred_cache=()
+
+# Returns 0 if provider $1 has a resolvable credential, 1 if it positively
+# does not. See the block comment above for the resolution rules and the
+# fail-open policy for providers with no apiKey field.
+provider_has_credential() {
+    local p="$1" ak key vname
+    (( PI_SEAT_CREDENTIAL_PRECHECK )) || return 0
+    # Per-call cache (set up by pick_seat). A provider appears once per
+    # model in enumerate_seats; the credential is per-provider, so cache.
+    if [[ -n "${_cred_cache[$p]+x}" ]]; then
+        [[ "${_cred_cache[$p]}" == 1 ]] && return 0 || return 1
+    fi
+    ak=$(jq -r --arg p "$p" '.providers[$p].apiKey // ""' "$MODELS_JSON" 2>/dev/null || true)
+    if [[ -z "$ak" ]]; then
+        # No apiKey field: cannot precheck from models.json. Fail open so
+        # OAuth/subscription providers and test fixtures are not bricked;
+        # the reactive ledger catches a real credentials_bad. Not cached
+        # (a key could appear mid-pass in theory) — cheap jq only.
+        seat_log "credential precheck: $p has no apiKey field — skipping precheck (reactive ledger is backstop)"
+        return 0
+    fi
+    key=""
+    if [[ "$ak" == !* ]]; then
+        # Leading "!": execute the rest as a shell command, key = stdout.
+        # Capture stdout only; NEVER log it. Errors swallowed (|| true) so
+        # a missing env file resolves to empty -> rejected, not a crash.
+        key=$(bash -c "${ak#!}" 2>/dev/null || true)
+    elif [[ "$ak" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]] || [[ "$ak" =~ ^\$([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
+        # Pure "$VAR" / "${VAR}" reference: resolve the env var directly.
+        vname="${BASH_REMATCH[1]}"
+        key="${!vname:-}"
+    else
+        # Literal key, or a mixed "$VAR"-interpolated literal. pi would
+        # interpolate the env refs and use the result; a missing var yields
+        # a partial key that the live request rejects — not our call to
+        # pre-reject a non-empty literal here.
+        key="$ak"
+    fi
+    if [[ -n "$key" ]]; then
+        _cred_cache[$p]=1
+        return 0
+    fi
+    _cred_cache[$p]=0
+    seat_log "credential precheck: $p rejected (apiKey resolves to empty — no credential available)"
+    return 1
+}
+
 # --- active seat accounting (P4-A) -----------------------------------------
 # Two sources of truth, summed:
 #   1. $ACTIVE_SEATS_DIR/<unit>.json — written by pi-issue-run / pi-packet-run
@@ -610,6 +684,12 @@ pick_seat() {
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
 
+    # Reset the per-call credential cache so a provider is resolved once
+    # per selection pass (fleet-ops#36). A provider with several models
+    # shares one credential; the cache stops us re-running its apiKey
+    # command per model.
+    _cred_cache=()
+
     # Build the set of tried seats for exclusion.
     declare -A tried=()
     tried["$fail_p/$fail_m"]=1
@@ -669,6 +749,13 @@ pick_seat() {
         if (( m_cap == 0 )); then
             # Model explicitly capped at 0 in the map (e.g. devin/glm-5-2:0).
             seat_log "seat $p/$m skipped (model cap=0)"
+            continue
+        fi
+        if ! provider_has_credential "$p"; then
+            # provider_has_credential already logged the rejection reason.
+            # Defence in depth on top of the cap map (fleet-ops#36): an
+            # allowlisted provider whose apiKey resolves to empty is never
+            # a candidate, so a tick is not burned on a guaranteed 401/403.
             continue
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
