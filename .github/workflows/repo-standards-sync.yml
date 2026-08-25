@@ -18,6 +18,12 @@ name: Repo standards sync
 #     (preserves the reconcile script's skip: adding the arm workflow to a
 #      repo that cannot auto-merge would fail every PR forever)
 #   - .github/workflows/visual-check.yml   -> all active repos (once it exists)
+#   - .github/workflows/deploy-production.yml -> all active repos EXCEPT
+#     Nishfleet/0509 (has its own richer deploy-production.yml with D1 gates —
+#     must NEVER be overwritten) and Nishfleet/aiconverter-app (has its own
+#     deploy.yml; adding the caller would double-deploy — excluded until a
+#     separate convergence lands). Per-repo deploy settings live in each
+#     repo's .github/deploy-config.json, read by the reusable workflow.
 #
 # Blocked on: FLEET_SYNC_PAT secret (contents+workflows+pull-requests write
 # across Nishfleet + nish3451). Fails LOUD with an actionable message if absent.
@@ -136,18 +142,21 @@ jobs:
               return 1
             fi
           }
-          have_arm=0; have_visual=0
+          have_arm=0; have_visual=0; have_deploy=0
           fetch ".github/workflows/auto-merge-arm.yml" "canonical/auto-merge-arm.yml" && have_arm=1
           fetch ".github/workflows/visual-check.yml"   "canonical/visual-check.yml"   && have_visual=1
+          fetch ".github/workflows/deploy-production.yml" "canonical/deploy-production.yml" && have_deploy=1
           {
             echo "have_arm=$have_arm"
             echo "have_visual=$have_visual"
+            echo "have_deploy=$have_deploy"
           } >> "$GITHUB_OUTPUT"
 
       - name: Generate sync.yml
         env:
           HAVE_ARM: ${{ steps.fetch.outputs.have_arm }}
           HAVE_VISUAL: ${{ steps.fetch.outputs.have_visual }}
+          HAVE_DEPLOY: ${{ steps.fetch.outputs.have_deploy }}
         run: |
           set -euo pipefail
           if [ "$HAVE_ARM" != "1" ]; then
@@ -171,6 +180,23 @@ jobs:
               echo "        dest: .github/workflows/visual-check.yml"
               echo "    repos: |"
               while IFS= read -r r; do echo "      $r"; done < repos-all.txt
+            } >> .github/sync.yml
+          fi
+          # Group 3: deploy-production.yml -> all active repos EXCEPT the
+          # excluded ones (own richer deploy workflow that must not be
+          # overwritten). Built as its own sync group with a filtered repo
+          # list, since BetaHuhn/repo-file-sync-action scopes repos per group.
+          if [ "$HAVE_DEPLOY" = "1" ]; then
+            # Excluded repos: Nishfleet/0509 (own deploy-production.yml with
+            # D1 gates), Nishfleet/aiconverter-app (own deploy.yml; the caller
+            # would double-deploy).
+            grep -vxE 'Nishfleet/0509|Nishfleet/aiconverter-app' repos-all.txt > repos-deploy.txt || true
+            {
+              echo "  - files:"
+              echo "      - source: canonical/deploy-production.yml"
+              echo "        dest: .github/workflows/deploy-production.yml"
+              echo "    repos: |"
+              while IFS= read -r r; do echo "      $r"; done < repos-deploy.txt
             } >> .github/sync.yml
           fi
           echo "--- generated .github/sync.yml ---"
