@@ -230,6 +230,12 @@ jobs:
         run: bash tests/system-dropins-shape.test.sh
       - name: undersaturation alarm
         run: bash tests/fleet-heartbeat-undersaturation.test.sh
+      # fleet-ops#39: the claim reconciler self-heals split-brain and garbage
+      # claim branches (direction B: branch without agent-in-progress label;
+      # C: unnumbered; orphaned: missing/closed issue). tier 1 §3 only iterates
+      # agent-in-progress issues, so it is blind to these branch-side faults.
+      - name: claim-reconcile
+        run: bash tests/claim-reconcile.test.sh
       # fleet-ops#77: lock the mass-close guard decision matrix. A not-planned
       # close of an agent-labeled issue with no merged linked PR reopens;
       # everything else stays closed. The live "close a dummy agent-ready

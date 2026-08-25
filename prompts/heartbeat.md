@@ -38,6 +38,13 @@ Tier 1 already re-examines `agent-blocked` issues (closed/merged dependencies
 flip back to `agent-ready`; Nish-decision blocks are published on the triage
 file with count and oldest age). Do not redo that sweep.
 
+Tier 1 §3b also runs `claim-reconcile` every tick, which self-heals the
+split-brain and garbage claim states nothing else re-examined (fleet-ops#39):
+direction B (a `claim/issue-<N>` branch whose issue is NOT `agent-in-progress`
+— invisible to intake), direction C (unnumbered `claim/issue-` branches), and
+orphaned branches (issue missing/closed, no open PR). It defers direction A
+(agent-in-progress + no worker + no PR) to §3. Do not redo that sweep either.
+
 ---
 
 ## Step 1 — verify claimed work against real state
@@ -97,6 +104,15 @@ Never use `--admin`. Never bypass a branch protection. Never force-merge.
 ---
 
 ## Step 4 — reconcile claims (BOTH directions)
+
+> Tier 1 now owns the deterministic reconciliation: §3 covers direction A
+> (agent-in-progress + no worker + no PR), and §3b runs `claim-reconcile`
+> for directions B, C, and orphaned branches (fleet-ops#39). You do NOT
+> need to re-walk the branch list yourself — if tier 1 reported a clean
+> claim-reconcile line, this step is already done. Only act here if tier 1
+> was unable to run (the bin is missing) AND you observe a stranded claim
+> by hand; in that case follow the repair order below and file an issue
+> so the bin gets reinstalled.
 
 A claim has three parts that must agree: the `claim/issue-<N>` **branch**, the
 `agent-in-progress` **label**, and a live `pi-issue@<repo>-<N>.service` **unit**.

@@ -247,6 +247,11 @@ log "2. queue pass complete: queued=$queued skipped=$skipped"
 #   - comment on the issue noting the heartbeat release
 #
 # Safety: if the issue is closed, skip the label flip (just clean up).
+#
+# Scope: this pass owns direction A ONLY. Directions B (branch without
+# label), C (unnumbered branch), and orphaned (branch for a missing/closed
+# issue) are branch-side faults this issue-iteration cannot see — §3b
+# (claim-reconcile) sweeps those by iterating branches.
 released=0
 log "3. orphan-pass starting"
 while IFS= read -r repo; do
@@ -326,6 +331,34 @@ while IFS= read -r repo; do
     done <<< "$issues_json"
 done <<< "$claim_repos"
 log "3. orphan-pass complete: released=$released"
+
+# ============================================================================
+# 3b. RECONCILE SPLIT-BRAIN / GARBAGE CLAIM BRANCHES (fleet-ops#39)
+# ============================================================================
+# §3 iterates issues labelled agent-in-progress, so it catches direction A
+# (label without branch/worker) but is blind to:
+#   B. claim/issue-<N> branch exists, issue <N> is open, label is NOT
+#      agent-in-progress (intake's pre-flight ls-remote finds the branch and
+#      skips the issue forever — invisible-but-present).
+#   C. claim/issue- with empty <N> — belongs to no issue, never released.
+#   Orphaned: claim/issue-<N> for a missing/closed issue.
+# claim-reconcile iterates BRANCHES (the thing §3 cannot see) and releases
+# them. It defers direction A to §3 (skips agent-in-progress issues) so the
+# two sweeps never double-process the same claim. Same safety contract as
+# §3: never release a claim with a live worker or an open PR.
+CLAIM_BIN="${FLEET_CLAIM_RECONCILE:-/home/nish/.local/bin/claim-reconcile}"
+if [ -x "$CLAIM_BIN" ]; then
+    log "3b. claim-reconcile starting"
+    if CLAIM_RECONCILE_REPOS="$(printf '%s\n' "$claim_repos")" \
+        CLAIM_RECONCILE_LOCKDIR="${XDG_RUNTIME_DIR}/claim-reconcile" \
+        "$CLAIM_BIN" 2>>"$TICK_LOG"; then
+        log "3b. claim-reconcile done"
+    else
+        log "3b. claim-reconcile FAILED — next tick retries"
+    fi
+else
+    log "3b. claim-reconcile missing at $CLAIM_BIN — skip (not installed)"
+fi
 
 # ============================================================================
 # 4. RESET+LOG FAILED pi-issue-* / fable-p-* UNITS
