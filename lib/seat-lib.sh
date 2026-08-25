@@ -143,7 +143,12 @@ ram_governor_cap() {
     # 1.5 GB default. floor(MemAvailable_GB / per_worker). per_worker may be a
     # decimal (1.5), so do the division in awk — bash integer math can't, and
     # `${x%.*}` turns "1.5" into "1", inflating the cap ~1.5x.
-    ram_budget=$(awk -v m="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" 'BEGIN{ if (per+0 <= 0) per=1.5; r=int((m/1024/1024)/per); if (r<1) r=1; print r }')
+    # Launch FLOOR, restored from the pre-2026-08-23 lane-manager design
+    # (MIN_FREE_RAM_MB = 2500): reserve headroom for the rest of the host
+    # FIRST, then divide what is genuinely spare. Dividing raw MemAvailable
+    # let the fleet plan to consume every last byte.
+    local floor_mb=${SEAT_MIN_FREE_RAM_MB:-2500}
+    ram_budget=$(awk -v m="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" -v fl="$floor_mb" 'BEGIN{ if (per+0 <= 0) per=1.5; spare=(m/1024)-fl; if (spare<0) spare=0; r=int((spare/1024)/per); if (r<1) r=1; print r }')
     (( ram_budget < 1 )) && ram_budget=1
     echo "$ram_budget"
 }

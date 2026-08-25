@@ -9,7 +9,11 @@
   "providers": {
     "devin": {
       "cap": 4,
-      "class": "subscription"
+      "class": "subscription",
+      "models": {
+        "glm-5-2": 4,
+        "swe-1-7": 4
+      }
     },
     "cursor": {
       "cap": 1,
