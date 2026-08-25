@@ -437,6 +437,26 @@ _seat_registry_unit_live() {
     [[ "$state" == "active" || "$state" == "activating" ]]
 }
 
+# True if a unit is in `activating/auto-restart` — the systemd sub-state
+# for a worker that has crashed and is waiting for its next RestartSec
+# window. fleet-ops#63: a unit in this state holds its claim branch,
+# its agent-in-progress label, and its seat in the cap accounting; it
+# does no work. The heartbeat publishes this as DEGRADED; the cap
+# accounting treats it as still-occupying so pick_seat does not route a
+# new worker onto a seat that might come back.
+#
+# Pure observability: callers that need to distinguish busy vs degraded
+# use this. Cap enforcement (pick_seat, count_active_total) deliberately
+# does NOT — the seat IS held until the unit gives up.
+unit_is_degraded() {
+    local sysunit="$1"
+    [[ -n "$sysunit" ]] || return 1
+    local sub state
+    state=$(systemctl --user is-active "$sysunit" 2>/dev/null || true)
+    sub=$(systemctl --user show "$sysunit" --property=SubState --value 2>/dev/null || echo unknown)
+    [[ "$state" == "activating" && "$sub" == "auto-restart" ]]
+}
+
 # Reap one stale registry file (unit dead). Logged; best-effort.
 _seat_reap_stale_registry() {
     local f="$1" unit
@@ -524,6 +544,57 @@ count_active_total() {
             n=$((n+1))
         fi
     done < <(_seat_list_unit)
+    echo "$n"
+}
+
+# Count workers in `activating/auto-restart` across all fleet worker units.
+# fleet-ops#63: these are crash-loopers — the unit holds its seat and
+# its claim branch but does no work. The heartbeat publishes this as
+# DEGRADED. Cap enforcement (count_active_total) intentionally treats
+# these as still-occupying; this counter is observability only.
+#
+# Like count_active_total, this counts BOTH the active-seats registry
+# (new path) AND legacy ExecStart-grep units. A degraded registry entry
+# (unit dead) is reaped by _seat_live_registry_files; the only thing
+# this loop has to filter is SubState=auto-restart.
+count_degraded_total() {
+    local n=0
+    local f unit sysunit
+    while IFS= read -r f; do
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        [[ -n "$unit" ]] || continue
+        case "$unit" in
+            pi-issue-*)  sysunit="pi-issue@${unit#pi-issue-}.service" ;;
+            pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
+            *) continue ;;
+        esac
+        if unit_is_degraded "$sysunit"; then
+            n=$((n+1))
+        fi
+    done < <(_seat_live_registry_files)
+    # Legacy grep path: scan pi-issue-*/pi-packet-* units in activating
+    # state (cheap) and filter by SubState=auto-restart. Same as
+    # _seat_list_unit but restricted to the activating state, so the
+    # filter is bounded.
+    local u sub state
+    while IFS= read -r u; do
+        [[ -n "$u" ]] || continue
+        state=$(systemctl --user is-active "$u" 2>/dev/null || true)
+        [[ "$state" == "activating" ]] || continue
+        sub=$(systemctl --user show "$u" --property=SubState --value 2>/dev/null || echo unknown)
+        if [[ "$sub" == "auto-restart" ]]; then
+            # Skip units already counted via the registry (matched by
+            # their instance name).
+            local instance="${u#pi-issue@}"
+            instance="${instance%.service}"
+            [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${instance}.json" ]] && continue
+            local instance2="${u#pi-packet@}"
+            instance2="${instance2%.service}"
+            [[ -f "$ACTIVE_SEATS_DIR/pi-packet-${instance2}.json" ]] && continue
+            n=$((n+1))
+        fi
+    done < <(systemctl --user list-units 'pi-issue-*.service' 'pi-packet-*.service' --state=activating --no-legend --plain 2>/dev/null \
+                | awk '{print $1}' | grep -E '\.service$' || true)
     echo "$n"
 }
 

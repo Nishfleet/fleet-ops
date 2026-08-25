@@ -66,7 +66,7 @@ loud() {
     cat > "$REPOS_JSON" <<'JSON'
 {
   "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
-  "claim_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
+  "claim_repos": ["Nishfleet/fleet-ops", "Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
   "hands_off": [],
   "verify_timers": ["pi-scout@0509.timer", "pi-intake@0509.timer", "pi-scout@siterep-public.timer", "pi-intake@siterep-public.timer"]
 }
@@ -255,10 +255,29 @@ while IFS= read -r repo; do
         [ -z "$issue_row" ] && continue
         issue_n=$(printf '%s' "$issue_row" | jq -r '.number')
 
-        # Is a pi-issue worker for this claim currently running?
+        # Is a pi-issue worker for this claim currently doing work?
+        # fleet-ops#63: --state=running misses both activating/start
+        # (a worker that is just now launching pi — held, busy) AND
+        # activating/auto-restart (a crash-loop waiting for its next
+        # RestartSec window — held, degraded). The old check would
+        # release the claim of BOTH cases and strand the issue with no
+        # worker and no label-flip path (the worker would just come back,
+        # or the reap would fire and skip a live claim). Hold the lane in
+        # both cases; the heartbeat tier 1 §7 surfaces auto-restart units
+        # as DEGRADED so the operator and tier 2 can see the real state
+        # without mistaking it for an orphan.
         unit="pi-issue@${short}-${issue_n}.service"
-        if systemctl --user --state=running --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"; then
-            log "3.  - $repo#$issue_n: worker $unit RUNNING — not orphan"
+        if systemctl --user list-units "$unit" --state=active,activating --no-legend 2>/dev/null \
+            | awk '{print $1}' | grep -qx "$unit"; then
+            sub=$(systemctl --user show "$unit" --property=SubState --value 2>/dev/null || echo unknown)
+            case "$sub" in
+                auto-restart)
+                    log "3.  - $repo#$issue_n: worker $unit DEGRADED (sub=$sub) — not orphan, lane held (heartbeat §7 will publish)"
+                    ;;
+                *)
+                    log "3.  - $repo#$issue_n: worker $unit LIVE (sub=$sub) — not orphan"
+                    ;;
+            esac
             continue
         fi
         # Also check transient fable-p* that may be working on it.
@@ -397,7 +416,56 @@ else
 fi
 
 # ============================================================================
+# 7. DEGRADED-LANE REPORT (fleet-ops#63)
+# ============================================================================
+# For every pi-issue-* unit in activating/auto-restart state, publish a
+# LOUD triage line. These workers hold their claim branch and their
+# agent-in-progress label (the orphan sweep must NOT reap them — the
+# worker is between crashes, the StartLimitBurst path is the right
+# release trigger, not the heartbeat), but they do no work. Without this
+# pass, every angle the fleet exposes — queue count, list-units, the
+# heartbeat's own logs — reported them as indistinguishable from a
+# genuinely running worker. "5 issues agent-in-progress, 4 doing nothing"
+# was the live symptom.
+#
+# This is OBSERVABILITY, not a fix path: StartLimitBurst=3 / RestartSec=
+# are the source of truth on whether the unit will give up, and
+# pi-issue-failed@ (OnFailure) is the right release path. The heartbeat
+# surfaces the degraded count; tier 2 may escalate via [LOUD] if the
+# number crosses a threshold.
+degraded=0
+degraded_units=""
+log "7. degraded-lane pass starting"
+while IFS= read -r u; do
+    [ -z "$u" ] && continue
+    # Limit scope to fleet worker units (template-instances and transients).
+    case "$u" in
+        pi-issue-*|fable-p*) : ;;  # match
+        *) continue ;;
+    esac
+    sub=$(systemctl --user show "$u" --property=SubState --value 2>/dev/null || echo unknown)
+    if [ "$sub" = "auto-restart" ]; then
+        degraded=$((degraded+1))
+        # Pull the last journal line for the breadcrumb (truncated).
+        excerpt=$(journalctl --user -u "$u" -n 1 --no-pager -q 2>/dev/null \
+                    | tr '\n' ' ' | head -c 200 || true)
+        if [ -z "$degraded_units" ]; then
+            degraded_units="$u sub=auto-restart :: ${excerpt:-<no-journal>}"
+        else
+            degraded_units="${degraded_units} | $u sub=auto-restart :: ${excerpt:-<no-journal>}"
+        fi
+        log "7.  - $u :: auto-restart (held, no work — wait for StartLimitBurst / OnFailure)"
+    fi
+done < <(systemctl --user list-units 'pi-issue-*.service' 'pi-packet-*.service' 'fable-p*.service' --state=activating --no-legend 2>/dev/null \
+            | awk '{print $1}' \
+            | grep -E '^(pi-issue-|pi-packet-|fable-p)' || true)
+log "7. degraded-lane pass complete: degraded=$degraded"
+if [ "$degraded" -gt 0 ]; then
+    loud "DEGRADED-LANES" "degraded=$degraded :: ${degraded_units}"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded"
 exit 0

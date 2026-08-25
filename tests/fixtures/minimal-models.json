@@ -1,0 +1,9 @@
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "swe-1-7", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 }
+      ]
+    }
+  }
+}

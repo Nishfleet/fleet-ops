@@ -21,6 +21,11 @@
 #      (default 120s) AND the captured output contains an ETIMEDOUT pattern
 #      paired with a spawn/socket/connect/child/handshake neighbour, write
 #      a per-seat ledger entry via mark_seat_spawn_fail (seat-lib.sh).
+#   6. Defensive mkdir for $ATTEMPTS_DIR: fleet-ops#63 observed the dir
+#      vanish between startup and the tried-seats append, stranding workers
+#      in crash-loop on a benign filesystem-cleanup race. The startup
+#      mkdir is no longer enough; recreate inline before the append so a
+#      mid-run wipe cannot permanently strand this worker.
 #   5. P14 worker credential split: if $WORKER_APP_CREDS_FILE exists
 #      (default ~/.config/fleet-worker/nishfleet-worker.env), mint a fresh
 #      installation token via the nishfleet-worker GitHub App and export
@@ -103,6 +108,18 @@ fi
 
 np=$(printf '%s' "$seat" | cut -f1)
 nm=$(printf '%s' "$seat" | cut -f2)
+
+# Defensive recreate: $ATTEMPTS_DIR was created at startup, but something
+# (a concurrent worker, a tmpfiles.d rule, an external cleanup) has been
+# wiping it from under running workers. fleet-ops#63. The error was
+# "pi-issue-run: line 100: .../attempts/pi-issue-fleet-ops-34.tried-seats:
+# No such file or directory" — the dir vanished between the startup
+# mkdir and the append below. Recreate inline before the write so a
+# wipe mid-run doesn't permanently strand the worker in crash-loop.
+mkdir -p "$ATTEMPTS_DIR" 2>/dev/null || {
+    seat_log "pi-issue-run: $inst FAILED to recreate $ATTEMPTS_DIR (wiped and unrecoverable) — exiting 1"
+    exit 1
+}
 
 # Record this seat as tried BEFORE running, so a concurrent restart cannot
 # pick the same one. Append "provider/model" per line.

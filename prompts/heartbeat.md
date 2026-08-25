@@ -49,10 +49,15 @@ For every `agent-in-progress` issue across the fleet repos:
 - If a PR exists but is red → record the failing check name and PR number in
   the triage file with `[BLOCKED-GREEN]` prefix. Do not retry it yourself.
 - If no PR exists → check whether a pi-issue worker is still running
-  (`systemctl --user --state=running --no-legend | grep pi-issue@<repo>-<N>`).
-  If yes, leave it alone. If no, this is an orphaned claim — record it in
-  the triage file with `[ORPHAN]` prefix and the issue number; tier 1 will
-  release it on the next tick.
+  (`systemctl --user --state=active,activating --no-legend | grep pi-issue@<repo>-<N>`).
+  Both `active/running` (busy) and `activating/start` (worker just launched
+  pi) count as live — leave the claim alone. `activating/auto-restart`
+  (crash-looping between attempts) also counts as live — the lane is held,
+  StartLimitBurst / OnFailure are the right release path, not this sweep.
+  Tier 1 §7 already publishes auto-restart units as `[DEGRADED-LANES]`.
+  Treat anything not in `active,activating` (failed / inactive) as
+  orphaned and record it with `[ORPHAN]`; tier 1 will release on the
+  next tick.
 
 ---
 
@@ -109,6 +114,10 @@ Repair, in this order. **The label flip is the step that matters — never let a
 failed branch delete prevent it:**
 
 1. Confirm no live unit: `systemctl --user is-active pi-issue@<repo>-<N>.service`.
+   `active` and `activating` both count as live — `activating/auto-restart`
+   is a crash-looper that still holds the lane; StartLimitBurst / OnFailure
+   is its release path, not this sweep. Only `failed` and `inactive` mean
+   the unit is genuinely dead.
 2. Confirm no open PR from `claim/issue-<N>`.
 3. Delete the claim branch IF it exists, tolerating "already gone":
    `gh api repos/<repo>/git/refs/heads/claim/issue-<N> -X DELETE || true`
