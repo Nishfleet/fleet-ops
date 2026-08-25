@@ -8,21 +8,60 @@
 # Action:
 #   1. Parse %i as <repo>-<issue>.
 #   2. Load the issue state.
-#   3. If an open PR exists from claim/issue-<N>, leave the branch alone and
-#      just remove the agent-in-progress label (the worker got far enough).
+#   3. If an open PR exists from claim/issue-<N>, leave the branch alone
+#      and write a triage note (the worker got far enough).
 #   4. Otherwise delete the claim branch and either:
 #        - open issue  -> remove agent-in-progress, add agent-ready
 #        - closed issue -> remove agent-in-progress only
+#   5. ALWAYS write one line to the heartbeat triage file so other agents
+#      can see the cleanup happened. This was the missing observability for
+#      P13-B: 0509-948 reaped silently twice today (2026-08-25) before the
+#      claim branch and label were released manually.
 #
-# Exit: 0 on success, non-zero on unexpected gh/network/auth errors.
+# Flags:
+#   --dry-run   Read-only; do not call any mutating gh endpoint
+#               (no branch delete, no label edit, no comment). Logs as usual.
+#               Useful for proving the parse/observation path without
+#               touching the repo. Standalone runnable.
+#
+# Environment:
+#   TRIAGE_FILE             Defaults to ~/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md.
+#                           One line is appended per invocation regardless of
+#                           outcome (success, partial-fail, total-fail).
+#
+# Exit: 0 = claimed cleanup done (branch deleted AND labels flipped on a
+#       matching open issue), or the open-PR shortcut was taken. Non-zero
+#       only when a hard pre-condition failed (unparseable instance, gh
+#       auth missing, etc.). Partial cleanup is not a hard error — the
+#       triage file captures what succeeded and what didn't, and the
+#       30-min orphan sweep (P13 tier-1) is the safety net.
 
-set -euo pipefail
+set -uo pipefail
+
+TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+dry_run=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+    dry_run=1
+    shift
+fi
 
 log() {
     printf '[%s] pi-issue-failed-reap: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
-[[ $# -ge 1 ]] || { log "usage: $0 <repo>-<issue>"; exit 1; }
+# Format matches fleet-heartbeat-tier1's `loud()` helper:
+#   [ISO ts] [TAG] message
+# One blank line precedes the entry so successive appends stay readable.
+log_to_triage() {
+    local tag="$1"; shift
+    local msg="$*"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE_FILE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE_FILE"
+}
+
+[[ $# -ge 1 ]] || { log "usage: $0 [--dry-run] <repo>-<issue>"; exit 1; }
 
 instance="$1"
 repo="${instance%-*}"
@@ -30,15 +69,25 @@ issue="${instance##*-}"
 
 if [[ -z "$repo" || -z "$issue" || ! "$issue" =~ ^[0-9]+$ ]]; then
     log "cannot parse instance '$instance' into repo and issue number"
+    log_to_triage "CLAIM-REAP-PARSE-FAIL" "instance=$instance repo=$repo issue=$issue"
     exit 1
 fi
 
 repo_slug="Nishfleet/$repo"
 branch_name="claim/issue-$issue"
 
+if ! command -v gh >/dev/null 2>&1; then
+    log "gh CLI missing — cannot reap $repo_slug#$issue (will leave orphan)"
+    log_to_triage "CLAIM-REAP-NO-GH" "instance=$instance repo=$repo_slug issue=$issue"
+    exit 1
+fi
+
+log_to_triage "CLAIM-REAP-STARTED" "instance=$instance repo=$repo_slug issue=$issue dry_run=$dry_run"
+
 # --- load issue state --------------------------------------------------------
 state_json=$(gh issue view "$issue" -R "$repo_slug" --json state,labels 2>&1) || {
     log "gh issue view $repo_slug#$issue failed: $state_json"
+    log_to_triage "CLAIM-REAP-GH-FAIL" "step=issue_view instance=$instance"
     exit 1
 }
 
@@ -50,11 +99,13 @@ log "state=$issue_state in_progress=$in_progress for $repo_slug#$issue"
 # --- branch cleanup: only if no open PR from this branch --------------------
 open_pr_count=$(gh pr list -R "$repo_slug" --head "$branch_name" --state open --json number --jq 'length' 2>&1) || {
     log "gh pr list $repo_slug head=$branch_name failed: $open_pr_count"
+    log_to_triage "CLAIM-REAP-GH-FAIL" "step=pr_list instance=$instance branch=$branch_name"
     exit 1
 }
 
 if [[ "$open_pr_count" -gt 0 ]]; then
     log "open PR exists from $branch_name; leaving branch and labels intact"
+    log_to_triage "CLAIM-REAP-NEEDED" "instance=$instance branch=$branch_name open_pr_count=$open_pr_count reason=open_pr_exists"
     exit 0
 fi
 
@@ -64,30 +115,56 @@ if gh api "repos/$repo_slug/git/refs/heads/$branch_name" >/dev/null 2>&1; then
     branch_exists=yes
 fi
 
+branch_deleted=no
 if [[ "$branch_exists" == "yes" ]]; then
-    if ! gh api "repos/$repo_slug/git/refs/heads/$branch_name" -X DELETE >/dev/null 2>&1; then
-        log "failed to delete branch $branch_name on $repo_slug"
-        exit 1
+    if [[ "$dry_run" == "1" ]]; then
+        log "DRY-RUN: would delete branch $branch_name on $repo_slug"
+        branch_deleted=skip
+    elif gh api "repos/$repo_slug/git/refs/heads/$branch_name" -X DELETE >/dev/null 2>&1; then
+        branch_deleted=yes
+        log "deleted branch $branch_name"
+    else
+        log "failed to delete branch $branch_name on $repo_slug (label flip will continue)"
+        log_to_triage "CLAIM-REAP-BRANCH-FAIL" "instance=$instance branch=$branch_name"
     fi
-    log "deleted branch $branch_name"
 fi
 
 # --- flip labels according to issue state ------------------------------------
+if [[ "$dry_run" == "1" ]]; then
+    log "DRY-RUN: would flip labels and post comment on $repo_slug#$issue (state=$issue_state)"
+    log_to_triage "CLAIM-REAP-NEEDED" "instance=$instance branch=$branch_name branch_deleted=$branch_deleted state=$issue_state in_progress=$in_progress dry_run=1"
+    exit 0
+fi
+
 if [[ "$issue_state" == "OPEN" ]]; then
-    if [[ "$in_progress" == "yes" ]]; then
-        gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready
+    label_ok=no
+    if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+        label_ok=yes
     else
-        gh issue edit "$issue" -R "$repo_slug" --add-label agent-ready
+        log "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"
+        log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels"
     fi
-    gh issue comment "$issue" -R "$repo_slug" --body "claim branch released after pi-issue-$instance reached StartLimitBurst at $(date -u +%FT%TZ)" || true
-    log "released $repo_slug#$issue back to agent-ready"
+    comment_ok=no
+    if gh issue comment "$issue" -R "$repo_slug" --body "claim branch released after pi-issue-$instance reached StartLimitBurst at $(date -u +%FT%TZ)" 2>/dev/null; then
+        comment_ok=yes
+    else
+        log "comment post failed on $repo_slug#$issue (label flip already attempted)"
+    fi
+    log_to_triage "CLAIM-RELEASED" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_flipped=$label_ok comment_posted=$comment_ok"
 elif [[ "$issue_state" == "CLOSED" ]]; then
+    label_ok=no
     if [[ "$in_progress" == "yes" ]]; then
-        gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress
+        if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
+            label_ok=yes
+        else
+            log "label remove (in-progress) failed on closed $repo_slug#$issue"
+            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=closed_labels"
+        fi
     fi
-    log "cleaned up closed $repo_slug#$issue"
+    log_to_triage "CLAIM-CLOSED-CLEANUP" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_removed=$label_ok"
 else
     log "unknown issue state '$issue_state' for $repo_slug#$issue; leaving labels"
+    log_to_triage "CLAIM-REAP-UNKNOWN-STATE" "instance=$instance state=$issue_state"
 fi
 
 exit 0

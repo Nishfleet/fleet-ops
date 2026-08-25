@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pi-issue-run — seat-rotation wrapper for pi-issue worker units (P4-A).
+# pi-issue-run — seat-rotation wrapper for pi-issue worker units (P4-A + P13-B).
 #
 # This is the ExecStart of pi-issue@.service. systemd handles the retry
 # ladder natively (Restart=/RestartSec=/RestartSteps=/StartLimitBurst=),
@@ -17,6 +17,15 @@
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
+#   4. P13-B spawn-phase failure marker: if pi dies in < SPAWN_FAIL_MAX_S
+#      (default 120s) AND the captured output contains an ETIMEDOUT pattern
+#      paired with a spawn/socket/connect/child/handshake neighbour, write
+#      a per-seat ledger entry via mark_seat_spawn_fail (seat-lib.sh).
+#      The marker is byte-compatible with SeatLedgerEntry (seat-health.ts);
+#      pick_seat honours it via the existing usable_at check. This is the
+#      deterministic counterpart to seat-health.ts's response-time hooks:
+#      no polling, no new timers, no new units — just an extra write on
+#      the failure path that the worker was already going to take.
 #
 # What this script does NOT do (systemd handles it):
 #   - Retry counting (StartLimitBurst=)
@@ -95,11 +104,42 @@ seat_log "pi-issue-run: $inst running on $np/$nm (weight=$weight, tried: $(wc -l
 # --- run pi, capture stdout/stderr -----------------------------------------
 # pi reads the packet from stdin. We capture stdout to measure output size
 # for no-op detection. stderr goes to the err file for the council packet.
+# Time the run too — P13-B spawn-visibility needs to distinguish a spawn-
+# phase ETIMEDOUT (< 120s) from a long-session transient.
+spawn_start_s=$(date -u +%s)
 rc=0
 "$PI_BIN" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file" || rc=$?
+spawn_end_s=$(date -u +%s)
+spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
+
+# --- P13-B spawn-fail marker (P13 visibility gap fix) ----------------------
+# seat-health.ts writes its ledger ONLY via after_provider_response and
+# cli_* — neither fires if pi dies at spawn (e.g. devin / cursor spawnSync
+# ETIMEDOUT). Without this fix, pick_seat keeps routing work to a seat
+# whose every spawn is timing out. We catch the trigger condition here,
+# write the marker into the per-seat ledger, and continue with the normal
+# non-zero exit so systemd restart picks a different seat. The marker
+# sets usable_at = now + 5 min, so the OUTBOUND retry also skips it.
+spawn_fail_triggered=0
+if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
+    out_for_scan=""
+    err_for_scan=""
+    [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
+    [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
+    if is_spawn_etimeout "$out_for_scan" "$err_for_scan"; then
+        spawn_fail_triggered=1
+        # Make sure seat-log is loud even if the marker write itself fails.
+        seat_log "pi-issue-run: $inst SPAWN-TIMEOUT on $np/$nm at ${spawn_elapsed_s}s (rc=$rc) — marking seat unusable for ${SPAWN_FAIL_BACKOFF_S}s"
+        if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:rc=$rc"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via pick_seat (excluded by usable_at in the future)"
+        else
+            seat_log "pi-issue-run: $inst WARN: spawn-fail marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
+        fi
+    fi
+fi
 
 if (( rc != 0 )); then
-    seat_log "pi-issue-run: $inst pi exited $rc on $np/$nm — systemd will restart with a new seat"
+    seat_log "pi-issue-run: $inst pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
     exit 1
 fi
 
