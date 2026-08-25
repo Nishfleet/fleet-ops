@@ -89,7 +89,7 @@ log "tier 1: done"
 # UNIT-FAILED-LOG) — those are for humans / dashboards to see, not for
 # the next LLM tick to re-process.
 needs_tier2=0
-if [ -s "$TRIAGE" ] && grep -qE '^\[(BLOCKED-GREEN|ORPHAN|LLM-DEAD|CODE-FAIL|REQUEST|READY-TO-DISPATCH)\]' "$TRIAGE" 2>/dev/null; then
+if [ -s "$TRIAGE" ] && grep -qE '^\[(BLOCKED-GREEN|ORPHAN|LLM-DEAD|CODE-FAIL|REQUEST|READY-TO-DISPATCH|UNIT-ESCALATE)\]' "$TRIAGE" 2>/dev/null; then
     needs_tier2=1
     log "tier 2: triage file has a needs-judgment entry — engaging seat ladder"
 elif grep -qE '^## Queued next' "$PLAN_FILE" 2>/dev/null; then
@@ -130,7 +130,7 @@ import sys, re, os
 path = sys.argv[1]
 if not os.path.exists(path):
     sys.exit(0)
-trigger = re.compile(r'^\[(BLOCKED-GREEN|ORPHAN|LLM-DEAD|CODE-FAIL|REQUEST|READY-TO-DISPATCH)\]')
+trigger = re.compile(r'^\[(BLOCKED-GREEN|ORPHAN|LLM-DEAD|CODE-FAIL|REQUEST|READY-TO-DISPATCH|UNIT-ESCALATE)\]')
 with open(path, 'r', encoding='utf-8') as f:
     kept = [ln for ln in f if not trigger.match(ln)]
 with open(path, 'w', encoding='utf-8') as f:
