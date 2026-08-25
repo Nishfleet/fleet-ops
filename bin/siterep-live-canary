@@ -33,11 +33,13 @@ command -v npm >/dev/null 2>&1 || { printf 'siterep-live-canary: no npm on PATH 
 
 cd "$WORKTREE"
 
-# Stay on origin/main so the canary reflects shipped production, not a stale
+# Stay on public/main so the canary reflects shipped production, not a stale
 # worktree. git reset --hard is safe here: this is a dedicated detached
 # worktree with no local edits (the timer owns it).
-git fetch --quiet origin main || { printf 'siterep-live-canary: git fetch failed - failing loud\n' >&2; exit 1; }
-git reset --hard --quiet origin/main || { printf 'siterep-live-canary: git reset failed - failing loud\n' >&2; exit 1; }
+# Switched from origin/main (Nishfleet/siterep, archived 2026-08-25) to
+# public/main (Nishfleet/siterep-public), the live Cloudflare Worker source.
+git fetch --quiet public main || { printf 'siterep-live-canary: git fetch failed - failing loud\n' >&2; exit 1; }
+git reset --hard --quiet public/main || { printf 'siterep-live-canary: git reset failed - failing loud\n' >&2; exit 1; }
 
 # Keep deps current with main. npm install is incremental (fast when the
 # lockfile is unchanged); npm ci would wipe node_modules and the Playwright
