@@ -32,3 +32,4 @@ lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
+bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap

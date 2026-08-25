@@ -1,10 +1,12 @@
 [Unit]
-Description=Record that Pi issue worker %i exhausted its retry policy
+Description=Reap stale claim after Pi issue worker %i exhausts its retry policy
 
 [Service]
 Type=oneshot
-# Deliberately does nothing but record. Retry, backoff and give-up already
-# happened in pi-issue@.service's own policy. Anything more would be
-# re-growing the thing Nish forbade on 2026-08-24 ("No hand-built
-# orchestration. Ever.").
-ExecStart=/usr/bin/logger -t pi-issue-failed -p user.err "issue worker %i exhausted StartLimitBurst - needs a human or a council, not another retry"
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/nish
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/pi-issue-failed-reap %i
+# This is not a scheduler/dispatcher: it is the OnFailure= cleanup path of
+# pi-issue@.service. It only runs after the worker has failed for good.
+TimeoutStartSec=120
