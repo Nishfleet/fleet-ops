@@ -178,14 +178,6 @@ units_for() {
     printf 'pi-intake@%s.timer\npi-scout@%s.timer\n' "$repo" "$repo"
 }
 
-unit_template_for() {
-    # For masking checks we want the matching service template too, since
-    # a masked timer usually rides with a masked service (enabling the
-    # timer alone won't unsilence it).
-    local repo="$1"
-    printf 'pi-intake@%s.service\npi-scout@%s.service\n' "$repo" "$repo"
-}
-
 # --- systemd probes ----------------------------------------------------------
 # is_enabled / is_active return "yes" / "no" / "<unknown>". Default to the
 # literal systemctl output; tests stub the fake to return deterministic
