@@ -64,7 +64,14 @@ jobs:
         # source file lives in the repo (the install symlinks it). Without
         # -x, shellcheck can't resolve the include and emits SC1091 — which
         # is the documented case shellcheck -x exists for.
-        run: shellcheck -x bin/* install.sh
+        # Filter bin/* to skip non-shell files (Python helper, TS extensions).
+        # shellcheck decides the language from the extension; feeding it .py
+        # emits SC1071 and exits nonzero, which is wrong for our layout.
+        run: |
+          set -euo pipefail
+          shopt -s extglob
+          files=(bin/!(*.py|*.ts) install.sh)
+          shellcheck -x "${files[@]}"
 
   unit-verify:
     name: systemd-analyze
@@ -147,3 +154,37 @@ jobs:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       - name: Scan repository
         run: gitleaks git --redact --verbose
+
+  tests:
+    # P14 (worker credential split): prove the nishfleet-worker App
+    # manifest is shape-locked and the worker-token path is fail-closed.
+    # The live test (tests/worker-token-live.test.sh) is gated on
+    # NISHFLEET_WORKER_LIVE_TEST=1 and skips by default — it requires the
+    # real App + credentials and is run manually after Nish's manifest
+    # click. Until then, this job is the only automation that touches
+    # the new code, and it never reaches GitHub.
+    name: P14 tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install test deps
+        # ubuntu-latest hosted runners are pre-seeded with curl, jq, openssl,
+        # and python3 — apt-get is unnecessary here. Run a quick existence
+        # check so the failure mode is "missing tool" rather than apt lock
+        # contention with parallel jobs.
+        run: |
+          set -euo pipefail
+          for t in jq openssl curl python3; do
+            command -v "$t" >/dev/null 2>&1 || {
+              echo "missing tool: $t" >&2
+              exit 1
+            }
+          done
+      - name: Manifest shape
+        run: bash tests/manifest-shape.test.sh
+      - name: worker-token fail-closed
+        run: bash tests/worker-token-fail-closed.test.sh
