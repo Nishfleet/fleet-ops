@@ -1,0 +1,9 @@
+[Unit]
+Description=Stop-escalation watcher (SENIOR-AUDITOR trigger on STOP-REASON.json)
+
+[Path]
+PathChanged=/home/nish/workspaces/agent-state/STOP-REASON.json
+Unit=stop-escalation.service
+
+[Install]
+WantedBy=default.target

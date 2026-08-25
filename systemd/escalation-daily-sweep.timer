@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily dead-man floor for SENIOR-AUDITOR escalation layer
+
+[Timer]
+OnCalendar=daily
+# Event tripwires cannot detect their own death; this bounds max time-to-audit
+# at 24h for any failure class with no dedicated tripwire.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
