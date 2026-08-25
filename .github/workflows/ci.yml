@@ -198,6 +198,8 @@ jobs:
         run: bash tests/repeat-deterministic-detector.test.sh
       - name: required-check-purity
         run: bash tests/required-check-purity.test.sh
+      - name: pi-packet-guard
+        run: bash tests/pi-packet-guard.test.sh
       - name: pi-systemd-run
         run: bash tests/pi-systemd-run.test.sh
       - name: pi-intake-run overlap
