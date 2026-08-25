@@ -558,3 +558,114 @@ clear_active_seat() {
     local unit="$1"
     rm -f "$ACTIVE_SEATS_DIR/${unit}.json" 2>/dev/null || true
 }
+
+# --- spawn-fail marker (P13-B) ---------------------------------------------
+# seat-health.ts writes the per-seat ledger via after_provider_response or
+# cli_* sources, both of which only fire on a LIVE session. A spawn-phase
+# failure (e.g. spawnSync ETIMEDOUT) terminates the worker before any
+# response hook runs, so the seat stays green in the ledger and seat_usable
+# keeps routing work to it. This writer is the deterministic event-driven
+# complement: the worker wrapper (pi-issue-run / pi-packet-run) calls it
+# on its way out when pi exited non-zero AND elapsed < SPAWN_FAIL_MAX_S
+# AND ETIMEDOUT is in the captured output. Schema is byte-compatible with
+# SeatHealthSidecar + SeatLedgerEntry (seat-health.ts); seat_usable here
+# reads the same fields and the failure naturally flips usable_at into
+# the future, which is the only field pick_seat gates on for this class.
+#
+# Args: provider model [reason]
+#   reason defaults to "spawn_etimeout". Passed through to log lines only
+#   (the marker itself uses a fixed failure_mode=cli_timeout so the shape
+#   matches what a live-session timeout would have written — selectors are
+#   stable across spawn-time and live-session failures).
+# Side effect: writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json
+# atomically (tmp + rename). Best-effort: any failure is logged to
+# $LOG_FILE but does NOT fail the worker's own exit — caller still wants
+# a non-zero exit so systemd re-seats, and a broken marker write must
+# never silently swallow that.
+SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"  # 5 min — longer than
+# the seat-health.ts default 60s because spawn ETIMEDOUT is the devin-503
+# signature, and 60s would let the same dead seat be picked 4x in 5 min.
+SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+
+# Returns 0 if the worker output looks like a spawn-phase failure (ETIMEDOUT
+# pattern from devin/cursor CLI shims). Strict enough to require the
+# timeout keyword AND a connection-flavored neighbour (ECONN / socket /
+# fetch / connect / spawn / child); spawnPhase starts before pi has a real
+# HTTP response to log, so the test is on the stderr text, not a status
+# code.
+is_spawn_etimeout() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    if ! grep -qiE 'ETIMEDOUT|connection timed out|connect ETIMEDOUT|timed out waiting' <<<"$combined"; then
+        return 1
+    fi
+    # Co-occurrence guard: a worker that took down stdout verbosely could
+    # mention "timed out" without it being spawn-time. Require at least one
+    # spawn-signal word within +/- 120 chars of the timed-out match. This
+    # is the cheap regex-version of "did this happen before pi had a real
+    # response" — a real timeout mid-session is paired with an HTTP status,
+    # never with spawn/socket/connect/child.
+    if grep -qiE '.{0,120}(ETIMEDOUT|timed out).{0,120}(spawn|socket|connect|child|fetch|handshake)' <<<"$combined"; then
+        return 0
+    fi
+    if grep -qiE '(spawn|socket|connect|child|fetch|handshake).{0,120}(ETIMEDOUT|timed out)' <<<"$combined"; then
+        return 0
+    fi
+    return 1
+}
+
+mark_seat_spawn_fail() {
+    local p="$1" m="$2" reason="${3:-spawn_etimeout}"
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    local tmp="$path.spawn.$$.$RANDOM.tmp"
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local backoff="$SPAWN_FAIL_BACKOFF_S"
+    # Compute usable_at = now + backoff (ISO 8601, bash portable: -d @ + offsets).
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry (so a real
+    # session-time 429 resetting later doesn't briefly flip us back to 0).
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg reason "$reason" \
+        --arg observed "$now_utc" --arg usable "$usable_at" \
+        --argjson http_status 0 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"transient_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"cli_timeout",
+          failure_mode:"cli_timeout",
+          usable_at:$usable,
+          consecutive_failure_count:$merged,
+          spawn_fail_reason:$reason,
+          spawn_fail_backoff_s:$backoff
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "spawn-fail: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "spawn-fail: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+        return 0
+    fi
+    seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
