@@ -64,7 +64,14 @@ jobs:
         # source file lives in the repo (the install symlinks it). Without
         # -x, shellcheck can't resolve the include and emits SC1091 — which
         # is the documented case shellcheck -x exists for.
-        run: shellcheck -x bin/* install.sh
+        # Filter bin/* to skip non-shell files (Python helper, TS extensions).
+        # shellcheck decides the language from the extension; feeding it .py
+        # emits SC1071 and exits nonzero, which is wrong for our layout.
+        run: |
+          set -euo pipefail
+          shopt -s extglob
+          files=(bin/!(*.py|*.ts) install.sh)
+          shellcheck -x "${files[@]}"
 
   unit-verify:
     name: systemd-analyze
@@ -165,10 +172,18 @@ jobs:
         with:
           persist-credentials: false
       - name: Install test deps
+        # ubuntu-latest hosted runners are pre-seeded with curl, jq, openssl,
+        # and python3 — apt-get is unnecessary here. Run a quick existence
+        # check so the failure mode is "missing tool" rather than apt lock
+        # contention with parallel jobs.
         run: |
           set -euo pipefail
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq openssl ca-certificates
+          for t in jq openssl curl python3; do
+            command -v "$t" >/dev/null 2>&1 || {
+              echo "missing tool: $t" >&2
+              exit 1
+            }
+          done
       - name: Manifest shape
         run: bash tests/manifest-shape.test.sh
       - name: worker-token fail-closed
