@@ -29,6 +29,7 @@ MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 # no polling, no network — file reads only.
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
 STALE_SECS=21600   # 6h — observed_at older than this counts as no-data
+RATE_LIMIT_FRESH_SECS=1800  # 30 min — a rate_limited marker is only trusted while freshly observed; older than this, retry the seat
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 # Capacity map (P4-A). The file is the source of truth; this env var lets
 # tests and fleet-ops overrides point at a different map without editing
@@ -143,6 +144,7 @@ ram_governor_cap() {
     # decimal (1.5), so do the division in awk — bash integer math can't, and
     # `${x%.*}` turns "1.5" into "1", inflating the cap ~1.5x.
     ram_budget=$(awk -v m="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" 'BEGIN{ if (per+0 <= 0) per=1.5; r=int((m/1024/1024)/per); if (r<1) r=1; print r }')
+    (( ram_budget < 1 )) && ram_budget=1
     echo "$ram_budget"
 }
 
@@ -245,6 +247,18 @@ _seat_observed_fresh() {
     (( obs_s > 0 && now - obs_s <= STALE_SECS ))
 }
 
+# True if observed_at is within RATE_LIMIT_FRESH_SECS of now. A rate_limited
+# marker older than this is treated as stale: the seat is retried (the rate
+# limit may have reset), which is the P15 retry-after-window semantics.
+_seat_rate_limit_fresh() {
+    local obs="$1" now obs_s
+    [[ -n "$obs" ]] || return 1
+    now=$(date -u +%s)
+    obs_s=$(date -u -d "$obs" +%s 2>/dev/null || echo 0)
+    [[ "$obs_s" =~ ^[0-9]+$ ]] || return 1
+    (( obs_s > 0 && now - obs_s <= RATE_LIMIT_FRESH_SECS ))
+}
+
 # True if the given ISO timestamp is strictly in the future relative to now.
 _seat_in_future() {
     local ts="$1" now ts_s
@@ -266,7 +280,9 @@ _seat_in_future() {
 #     log a loud "no health data" line (do not brick the ladder).
 #   - seat_dead=true                              -> unusable (credentials_bad)
 #   - health_class in {credentials_bad, quota_exhausted} -> unusable
-#   - usable_at non-null and in the future        -> unusable (honour retry-after)
+#   - rate_limited: excluded while the marker is FRESH (observed_at <
+#     RATE_LIMIT_FRESH_SECS=30min) and usable_at is in the future; once the
+#     marker ages past 30min the seat is RETRIED (rate limit may have reset).
 #   - otherwise                                   -> usable.
 seat_usable() {
     local p="$1" m="$2" f hc dead observed usable_at
@@ -293,6 +309,18 @@ seat_usable() {
     if [[ "$hc" == "quota_exhausted" || "$hc" == "credentials_bad" ]]; then
         seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
         return 1
+    fi
+    # rate_limited: trust only while the marker is fresh (<30 min) AND usable_at
+    # is still in the future. A fresh marker with usable_at in the past means the
+    # window already reset -> usable. A stale marker (>30 min) means the rate
+    # limit may have reset -> retry (usable).
+    if [[ "$hc" == "rate_limited" ]]; then
+        if _seat_rate_limit_fresh "$observed" && [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
+            seat_log "seat $p/$m: UNUSABLE (rate_limited until $usable_at, observed ${observed:-<empty>})"
+            return 1
+        fi
+        seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s or usable_at passed) — assuming usable"
+        return 0
     fi
     if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
         seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc)"
@@ -462,18 +490,18 @@ pick_seat() {
         # Zenmux is routed to again (Nish, 2026-08-25): it carries FREE lanes
         # AND credits, so the old "free tier exhausted" hard-skip is stale. It
         # is governed by the cap map like every other provider now.
-        # P4-A: cap-map allowlist. If a model is not listed in the cap map for
-        # its provider (and the provider has a cap entry), it is forbidden —
-        # e.g. ollama models other than deepseek-v4-flash:0731.
-        p_cap=$(provider_cap "$p")
+        # P4-A cap-map ALLOWLIST (P15 hardening): the cap map is the ONLY
+        # source of truth for what may be routed. enumerate_seats emits the
+        # WHOLE models.json list (including modelOverrides), so a provider
+        # with no cap-map entry must be rejected here — previously it fell
+        # through as "free" and could be picked with no credential backing
+        # (the groq/openai/gpt-oss-20b credentials_bad pick of 2026-08-25).
+        # No entry == not approved, period.
         if [[ -z "${SEAT_PROVIDER_CAP[$p]:-}" ]]; then
-            # The cap map is an ALLOWLIST. A provider with no entry is not
-            # approved for the fleet. Previously these fell through and were
-            # tried FIRST, so uncredentialed seats (groq, opencode, orcarouter)
-            # headed the ladder and every attempt failed in ~1s.
-            seat_log "seat $p/$m skipped (provider not in cap-map allowlist)"
+            seat_log "seat $p/$m skipped (provider $p not in cap-map allowlist)"
             continue
         fi
+        p_cap=$(provider_cap "$p")
         if (( p_cap == 0 )); then
             # Provider explicitly capped at 0 (e.g. zenmux via config, though the
             # zenmux hard-skip above already covers it; this is the catch-all).
@@ -481,10 +509,16 @@ pick_seat() {
             continue
         fi
         m_cap=$(model_cap "$p" "$m")
-        if (( p_cap > 0 )) && [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]] && [[ "$p" != "zenmux" ]]; then
-            # Provider has a cap map; model isn't listed -> standing-rule block
-            # (e.g. ollama DeepSeek-flash-only).
+        if [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]]; then
+            # Provider has a cap map but the model is not listed -> standing-rule
+            # block (e.g. ollama DeepSeek-flash-only, openrouter/grok with no
+            # models map). A provider cap alone is not an allowlist entry.
             seat_log "seat $p/$m skipped (not in cap-map allowlist for $p)"
+            continue
+        fi
+        if (( m_cap == 0 )); then
+            # Model explicitly capped at 0 in the map (e.g. devin/glm-5-2:0).
+            seat_log "seat $p/$m skipped (model cap=0)"
             continue
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
@@ -557,6 +591,11 @@ pick_seat() {
             return 0
         fi
     done
+
+    # P15: loud stall beats a garbage seat. Every allowlisted seat was dead or
+    # capped — return 1 (caller must not spawn anything) and say so, rather
+    # than falling back to a non-allowlisted model.
+    seat_log "pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map."
     return 1
 }
 
