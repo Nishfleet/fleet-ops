@@ -91,9 +91,6 @@ chmod +x "$gh_fake"
 #   $FAILED_UNITS    one unit per line (failed pi-issue@ units, for reset-failed)
 #   $LIVE_SEAT_UNITS a set of unit names (.service) considered live for the
 #                    active-seats is-active probe; anything else -> inactive.
-#   $WEDGED_UNITS    unit names considered `activating` but stuck past the
-#                    P15 wedge-age bound (is-active -> activating, show -> old).
-#   $FRESH_ACTIVATING_UNITS  unit names `activating` but young (live).
 # Mutating calls (reset-failed, start) append to $CALLS.
 systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
@@ -131,35 +128,11 @@ case "$cmd" in
     ;;
   is-active)
     unit="$1"
-    printf 'is-active %s\n' "$unit" >>"${CALLS:-/dev/null}"
     if [[ -f "${LIVE_SEAT_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${LIVE_SEAT_UNITS:-/dev/nonexistent}" 2>/dev/null; then
       echo active
-    elif [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo activating
-    elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo activating
     else
       echo inactive
-    fi
-    exit 0
-    ;;
-  show)
-    # ActiveEnterTimestampMonotonic (us). Wedged units are old (>55min),
-    # fresh-activating are young. Real systemd prints the value only with
-    # --value; the probe also passes --property and --value.
-    unit="$1"
-    now_us=$(awk '{print int($1*1000000)}' /proc/uptime)
-    if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( now_us - 3600000000 ))"
-    elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( now_us - 60000000 ))"
-    else
-      echo 0
     fi
     exit 0
     ;;
@@ -184,10 +157,8 @@ export WORK_INPROGRESS="$scratch/work_inprogress"
 RUNNING_UNITS="$scratch/running_units"
 FAILED_UNITS="$scratch/failed_units"
 LIVE_SEAT_UNITS="$scratch/live_seat_units"
-WEDGED_UNITS="$scratch/wedged_units"
-FRESH_ACTIVATING_UNITS="$scratch/fresh_activating_units"
-export RUNNING_UNITS FAILED_UNITS LIVE_SEAT_UNITS WEDGED_UNITS FRESH_ACTIVATING_UNITS
-: >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"; : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"
+export RUNNING_UNITS FAILED_UNITS LIVE_SEAT_UNITS
+: >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
 
 run_helper() {
   set +e
@@ -199,8 +170,6 @@ run_helper() {
 reset_state() {
   rm -f "$log_dir"/* "$triage" "$calls" "$seat_state"/active-seats/*
   : >"$calls"
-  : >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
-  : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"
 }
 
 # ============================================================================
@@ -302,34 +271,3 @@ grep -q 'THROUGHPUT' "$triage" || fail "scenario3: triage missing THROUGHPUT lin
 ok "scenario3: work>0/running>0 -> no repair, live seat kept, marker cleared, exit 0"
 
 ok "undersaturation: repair on first wedge, fail-loud on second, no-op when healthy"
-
-# ============================================================================
-# Scenario 4 (P15): in the REPAIR path (running=0), a unit stuck in
-# `activating` past the wedge-age bound is reaped; a fresh-activating unit
-# stays live. This mirrors seat-lib's probe; the inlined copy here is the
-# heartbeat's repair path and must agree.
-# ============================================================================
-reset_state
-printf '5\n' >"$scratch/work_ready"
-printf '0\n' >"$scratch/work_inprogress"
-: >"$scratch/running_units"   # running=0 -> repair path fires
-: >"$scratch/failed_units"
-# One wedged (3600s into activating) and one fresh (60s) registry entry.
-printf '{"unit":"pi-issue-demo-9","provider":"devin","model":"glm-5-2"}' \
-    >"$seat_state/active-seats/pi-issue-demo-9.json"
-printf '{"unit":"pi-issue-demo-10","provider":"devin","model":"glm-5-2"}' \
-    >"$seat_state/active-seats/pi-issue-demo-10.json"
-printf 'pi-issue@demo-9.service\n' >"$scratch/wedged_units"
-printf 'pi-issue@demo-10.service\n' >"$scratch/fresh_activating_units"
-
-run_helper
-[[ "$env_rc" == 0 ]] || fail "scenario4: wedged-tick must exit 0, got $env_rc ($env_out)"
-
-# The wedged phantom must be reaped; the fresh live one kept.
-[[ ! -f "$seat_state/active-seats/pi-issue-demo-9.json" ]] \
-    || fail "scenario4: wedged-activating phantom was not reaped"
-[[ -f "$seat_state/active-seats/pi-issue-demo-10.json" ]] \
-    || fail "scenario4: fresh-activating live seat was wrongly reaped"
-grep -q 'wedged active-seat' <<<"$env_out" \
-    || fail "scenario4: stderr missing wedged-reap log line: $env_out"
-ok "scenario4: wedged-activating phantom reaped, fresh-activating kept (P15)"

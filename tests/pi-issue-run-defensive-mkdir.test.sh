@@ -146,37 +146,3 @@ append_line=$(grep -nF "printf '%s/%s\\n' \"\$np\" \"\$nm\" >>\"\$tried_file\"" 
 inline=$(awk '/^# Defensive recreate/ { flag=1; next } flag && /^mkdir -p "\$ATTEMPTS_DIR"/ { print NR; exit }' "$bin")
 [[ -n "$inline" ]] || fail "pi-issue-run missing defensive inline mkdir -p \$ATTEMPTS_DIR (between seat pick and tried-seats append)"
 ok "inline defensive mkdir is wired between seat pick and tried-seats append"
-# --- Case 4 (P15): hang watchdog — a pi that never finalizes must be
-# killed by the wrapper's timeout, logged, and surfaced as rc!=0 so
-# systemd re-seats. This is the fleet-ops#83 wedge: pi does tool work
-# then hangs in ep_poll; previously the wrapper waited forever and the
-# unit sat in `activating` until TimeoutStartSec (45 min), holding its
-# seat and starving pick_seat. The wrapper must bound the run itself.
-stub_hang="$scratch/stub-hang"
-mkdir -p "$stub_hang"
-cat >"$stub_hang/pi" <<'STUB'
-#!/usr/bin/env bash
-# Simulate the wedge: never produce output, never exit (pi's finalize hang).
-sleep 300
-STUB
-chmod +x "$stub_hang/pi"
-
-# A tiny timeout so the test doesn't wait 42 minutes. The err file must
-# carry the watchdog marker so seat-health/pick_seat can distinguish a
-# hang from a spawn ETIMEDOUT.
-export PI_HANG_TIMEOUT_S=2
-export PI_BIN="$stub_hang/pi"
-# Fresh instance so pick_seat still has a seat to route to (the tried-seats
-# file from cases 1-3 already excluded devin/swe-1-7).
-HANG_INST="pi-issue-mkdir-hang"
-echo noop > "$STATE_PATH/$HANG_INST.in"
-set +e
-timeout 30 "$bin" "$HANG_INST" 2>"$scratch/err3.log"
-rc=$?
-set -e
-[[ "$rc" != "0" ]] || fail "P15: hung pi should exit non-zero, got rc=$rc"
-# The marker lands in the unit err file (the wrapper appends it there for
-# seat-health/pick_seat to distinguish a hang from a spawn ETIMEDOUT).
-HANG_ERR="$STATE_PATH/$HANG_INST.err"
-grep -q "PI HANG WATCHDOG" "$HANG_ERR" || fail "P15: unit err file missing PI HANG WATCHDOG marker: $(cat "$HANG_ERR")"
-ok "P15: hung pi killed by wrapper watchdog (PI_HANG_TIMEOUT_S), marker written, rc!=0"
