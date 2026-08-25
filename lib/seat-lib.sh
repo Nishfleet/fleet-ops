@@ -54,6 +54,7 @@ _seat_caps_loaded=0
 declare -A SEAT_PROVIDER_CAP=()
 declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_PROVIDER_CLASS=()
+declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
 SEAT_FREE_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
 
@@ -61,6 +62,7 @@ load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
     SEAT_PROVIDER_CLASS=()
+    SEAT_PROVIDER_BENCH_DEFAULT=()
     SEAT_FREE_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
 
@@ -74,16 +76,19 @@ load_seat_caps() {
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
 
-    while IFS=$'\t' read -r p cap class; do
+    while IFS=$'\t' read -r p cap class bench_def; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         SEAT_PROVIDER_CLASS["$p"]="$class"
+        [[ "$bench_def" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_BENCH_DEFAULT["$p"]="$bench_def"
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
     # which then makes total_seat_cap() return 0 and the intake ceiling fall
     # back to the (inflated) RAM governor. Normalise by type first.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # quota_bench_default_s (fleet-ops#90) is optional; absent -> empty ->
+    # provider_quota_bench_default returns 0 (no default, writer fails open).
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p m cap; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -128,6 +133,16 @@ class_of() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_CLASS[$p]:-free}"
+}
+
+# Default bench window (seconds) for a provider's quota/cap 429 when the
+# error text carries no explicit reset window (fleet-ops#90). 0 = no default
+# configured; the writer then fails open (no marker) and relies on the
+# reactive seat-health ledger's existing quota_exhausted block.
+provider_quota_bench_default() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
 }
 
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
@@ -293,23 +308,50 @@ _seat_in_future() {
 #     log a loud "no health data" line (do not brick the ladder).
 #   - seat_dead=true                              -> unusable (credentials_bad)
 #   - health_class in {credentials_bad, quota_exhausted} -> unusable
+#   - quota_bench (fleet-ops#90): a hard-capped seat benched for its advertised
+#     reset window. UNUSABLE while bench_until is in the future (one log line
+#     per skip: "benched until <ts>"); once bench_until passes the seat is
+#     RETRIED (fail-open) — a walled seat is a lane fault, never charged to the
+#     work item. Evaluated BEFORE the stale-observed_at fail-open: a weekly
+#     cap's bench_until is days in the future, but observed_at goes stale
+#     after STALE_SECS (6h). No bench_until -> unusable (defensive; the writer
+#     always sets one).
 #   - rate_limited: excluded while the marker is FRESH (observed_at <
 #     RATE_LIMIT_FRESH_SECS=30min) and usable_at is in the future; once the
 #     marker ages past 30min the seat is RETRIED (rate limit may have reset).
 #   - otherwise                                   -> usable.
 seat_usable() {
-    local p="$1" m="$2" f hc dead observed usable_at
+    local p="$1" m="$2" f hc dead observed usable_at bench_until
     f=$(seat_ledger_path "$p" "$m")
     if [[ ! -f "$f" ]]; then
         seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
         return 0
     fi
-    read -r hc dead observed usable_at < <(
-        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//"")] | @tsv' "$f" 2>/dev/null || true
+    # Unit-separator join (not TSV): bash `read` treats tab as IFS whitespace
+    # and collapses consecutive tabs, which would shift bench_until left when
+    # usable_at is empty (the 9d fixture and any ledger without usable_at).
+    # \x1f is not whitespace, so empty fields survive. Include newline in IFS
+    # so the trailing jq newline is not glued onto bench_until.
+    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until < <(
+        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
     )
     if [[ -z "$hc" ]]; then
         seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
         return 0
+    fi
+    # quota_bench BEFORE stale-observed_at: bench_until is the source of truth
+    # for the advertised reset window, which can outlive STALE_SECS.
+    if [[ "$hc" == "quota_bench" ]]; then
+        if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
+            seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
+            return 1
+        fi
+        if [[ -n "$bench_until" ]]; then
+            seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
+            return 0
+        fi
+        seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
+        return 1
     fi
     if ! _seat_observed_fresh "$observed"; then
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
@@ -1002,6 +1044,192 @@ mark_seat_spawn_fail() {
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- quota/cap bench (fleet-ops#90) ----------------------------------------
+# A provider that returns a hard cap/quota 429 with an advertised reset window
+# (ClinePass "weekly Clinepass limit ... resets in 1d 11h", devin 15-min 429,
+# HTTP retry-after) is a WALLED SEAT, not a transient retry. seat-health.ts
+# writes its ledger only on a live-session response hook, and even then may
+# record quota_exhausted with no bench window — so pick_seat keeps re-offering
+# the same walled seat to fresh workers, each of which burns a StartLimitBurst
+# attempt on a guaranteed failure. This is the deterministic complement to
+# mark_seat_spawn_fail: the worker wrapper (pi-issue-run) calls it on its way
+# out when pi exited non-zero AND the captured output looks like a quota/cap
+# error. It records a bench-until timestamp in the existing per-seat ledger;
+# seat_usable then skips the seat until that timestamp and fail-opens after.
+# Per the provider-wall standing rule: a walled seat is a lane fault, never
+# charged to the work item.
+
+# Parse a reset window out of an error text blob and echo the duration in
+# seconds. Returns 0 (echoing seconds) if a window is found, 1 (no echo) if not.
+# Handles the formats observed in the fleet:
+#   - "resets in 1d 11h" / "resets in 2h 30m" / "resets in 45m" / "resets in 3d"
+#   - "retry after 60" / "retry-after: 60" / "retry_after: 60" (delta-seconds)
+#   - "resets at 2026-08-27T12:00:00Z" / "retry after <ISO ts>" (absolute)
+# Greedy on the first match; case-insensitive. Whitespace-tolerant.
+# Every grep in a command substitution is `|| true` so a no-match cannot
+# kill the caller under `set -euo pipefail` (pi-issue-run sources this file).
+_parse_reset_window_s() {
+    local text="$1" s d h m
+    [[ -n "$text" ]] || return 1
+
+    # Absolute timestamp: "resets at <ISO>" or "retry after <ISO>". Parse the
+    # ts and compute the delta from now; only positive deltas count.
+    local abs_ts abs_ts_s abs_now_s
+    abs_ts=$(grep -oiE '(resets[[:space:]]+at|retry[[:space:]_-]?after)[^0-9]*([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9:]+))' <<<"$text" 2>/dev/null \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9:]+)' | head -n1 || true)
+    if [[ -n "$abs_ts" ]]; then
+        abs_now_s=$(date -u +%s)
+        abs_ts_s=$(date -u -d "$abs_ts" +%s 2>/dev/null || echo 0)
+        if [[ "$abs_ts_s" =~ ^[0-9]+$ ]] && (( abs_ts_s > abs_now_s )); then
+            echo $((abs_ts_s - abs_now_s))
+            return 0
+        fi
+        # ts in the past -> window already expired -> no window. Caller falls
+        # back to the provider default, which is the safe direction: bench
+        # for the default rather than immediately retry.
+        return 1
+    fi
+
+    # "resets in Nd Nh" / "Nh Nm" / "Nm" / "Ns" / "Nd" — sum all present units.
+    s=0; d=0; h=0; m=0
+    local in_block
+    in_block=$(grep -oiE 'resets[[:space:]]+in[[:space:]]+[0-9]+[dhms]([[:space:]]+[0-9]+[dhms])*' <<<"$text" 2>/dev/null || true)
+    if [[ -n "$in_block" ]]; then
+        local v u
+        while read -r v u; do
+            [[ "$v" =~ ^[0-9]+$ && -n "$u" ]] || continue
+            u="${u,,}"
+            case "$u" in
+                d) d=$v ;;
+                h) h=$v ;;
+                m) m=$v ;;
+                s) s=$v ;;
+            esac
+        done < <(grep -oiE '[0-9]+[dhms]' <<<"$in_block" | sed -E 's/^([0-9]+)([dhmsDHMS])$/\1 \2/' || true)
+        local total=$((d*86400 + h*3600 + m*60 + s))
+        if (( total > 0 )); then
+            echo "$total"
+            return 0
+        fi
+    fi
+
+    # "retry after N" / "retry-after: N" / "retry_after: N" — delta-seconds.
+    local delta
+    delta=$(grep -oiE 'retry[[:space:]_-]?after[^0-9]*[0-9]+' <<<"$text" 2>/dev/null \
+        | grep -oE '[0-9]+$' | head -n1 || true)
+    if [[ "$delta" =~ ^[0-9]+$ ]] && (( delta > 0 )); then
+        echo "$delta"
+        return 0
+    fi
+
+    return 1
+}
+
+# True if the captured output looks like a quota/cap wall (NOT a transient
+# rate-limit retry). Strict enough to require a quota/cap keyword AND a reset
+# signal, so a plain 429-with-retry-after (transient) does NOT trigger a long
+# bench — the rate_limited path already handles short windows. The trigger is a
+# hard cap: weekly/daily limit, quota exhausted, INFERENCE_CAP_ERROR, plan/usage
+# limit, out of credits, paired with either an explicit reset window OR a
+# provider default in seat-caps.json (the caller resolves the default).
+is_quota_cap_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    # Quota/cap signal words (hard wall, not a transient retry).
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|rate[[:space:]]+limit[[:space:]]+exceeded|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+        return 1
+    fi
+    # A reset signal: an explicit window OR a "resets" keyword. The provider
+    # default (seat-caps.json) is the caller's fallback when the keyword is
+    # present but no numeric window is; this guard just confirms it is a wall.
+    if grep -qiE 'resets?[[:space:]]+(in|at|after)|retry[[:space:]_-]?after|reset[[:space:]]+window' <<<"$combined"; then
+        return 0
+    fi
+    # Hard-cap keyword alone (e.g. "weekly Clinepass limit") with no window
+    # text still qualifies: the caller falls back to the provider default.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR' <<<"$combined"; then
+        return 0
+    fi
+    return 1
+}
+
+# Bench a seat for a quota/cap wall. Args: provider model [error_text]
+#   error_text defaults to "" — when empty, no window can be parsed and the
+#   provider default is used (or, with no default, the writer fails open and
+#   writes nothing).
+# Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json atomically with
+# health_class="quota_bench" and bench_until=<ISO>. Best-effort: any failure is
+# logged but does NOT fail the worker's own exit. Returns 0 if the marker was
+# written, 1 if it was not (no window AND no provider default -> fail open, or
+# jq/rename failure).
+mark_seat_quota_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    local window_s=0 parsed
+    parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
+    [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    if (( window_s <= 0 )); then
+        local def
+        def=$(provider_quota_bench_default "$p")
+        [[ "$def" =~ ^[0-9]+$ ]] && window_s="$def"
+    fi
+
+    if (( window_s <= 0 )); then
+        seat_log "quota-bench: $p/$m NOT benched — no reset window parsed and no provider default in seat-caps.json (fail-open; reactive ledger remains the backstop)"
+        return 1
+    fi
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"quota_bench",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "quota-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        return 0
+    fi
+    seat_log "quota-bench: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }

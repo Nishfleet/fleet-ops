@@ -6,10 +6,12 @@
   "_comment_minimax": "minimax direct (MiniMax-M3) classified as 'metered' per models.json cost field (input $0.30/M, output $1.20/M) even though the model name says 'Yearly Plus' — the cost field is the source of truth and 'Yearly Plus' is just a tier label. Selection order puts it LAST so subscription seats burn down first.",
   "_comment_ollama_rule": "ollama cap only covers deepseek-v4-flash:0731 — the DeepSeek-flash-only standing rule bans ollama/kimi-k2.7-code, ollama/deepseek-v4-pro:0813, and ollama/gpt-oss:20b. seat-lib.sh enumerate_seats() emits every model in models.json; the cap map here is the allowlist by being the only entries listed. (Code-level enforcement is a follow-up if the rule is ever loosened.)",
   "ram_gb_per_worker": 0.75,
+  "_comment_quota_bench": "quota_bench_default_s (fleet-ops#90): fallback bench window in seconds used by seat-lib.sh mark_seat_quota_bench when a provider returns a quota/cap 429 whose error text carries NO explicit reset window. cline=604800 (ClinePass weekly cap), devin=900 (devin 15-min message rate limit). A walled seat is benched until the advertised reset window (parsed from the error) or this default, then fail-open after it expires — never charged to the work item.",
   "providers": {
     "devin": {
       "cap": 4,
       "class": "subscription",
+      "quota_bench_default_s": 900,
       "models": {
         "glm-5-2": 4,
         "swe-1-7": 4
@@ -26,6 +28,7 @@
     "cline": {
       "cap": 2,
       "class": "subscription",
+      "quota_bench_default_s": 604800,
       "models": {
         "cline-pass/minimax-m3": 2,
         "cline-pass/deepseek-v4-flash": 2
