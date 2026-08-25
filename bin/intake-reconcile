@@ -61,10 +61,14 @@
 #   INTAKE_RECONCILE_TRIAGE      default FLEET-HEARTBEAT-TRIAGE.md
 #   INTAKE_RECONCILE_DRY_RUN     1 = print actions, mutate nothing
 #   INTAKE_RECONCILE_NOW         ISO-8601 clock (test override)
+#   INTAKE_RECONCILE_TRANSIENT_THRESHOLD
+#                                consecutive gh blips before a repo is
+#                                disabled (default 3). A single blip skips
+#                                the repo for this tick (fleet-ops#129).
 #
 # Exit 0 on a clean convergence (no actions OR every action logged).
-# Non-zero ONLY on an unexpected precondition (missing jq / gh failure that
-# is not a network blip on a single repo — that one is recorded + skipped).
+# Non-zero when a repo was skipped this tick because gh itself failed
+# (network/API blip): recorded in audit + triage, units left as they were.
 
 set -euo pipefail
 
@@ -77,10 +81,17 @@ GH="${INTAKE_RECONCILE_GH:-gh}"
 INTAKE_JSON="${INTAKE_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
 TRIAGE="${INTAKE_RECONCILE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 DRY="${INTAKE_RECONCILE_DRY_RUN:-0}"
+TRANSIENT_THRESHOLD="${INTAKE_RECONCILE_TRANSIENT_THRESHOLD:-3}"
+case "$TRANSIENT_THRESHOLD" in
+    ''|*[!0-9]*) TRANSIENT_THRESHOLD=3 ;;
+esac
+if [ "$TRANSIENT_THRESHOLD" -lt 1 ]; then
+    TRANSIENT_THRESHOLD=1
+fi
 # Set to 1 when a repo's preconditions cannot be verified but current state
 # must be preserved (e.g. the GitHub label check errored). The script exits
 # non-zero at the end so escalation fires, but it does NOT converge the fleet
-# to OFF because of a transient failure.
+# to OFF because of a single transient failure (fleet-ops#129).
 RECONCILE_ERRORS=0
 
 # Audit log default: $HOME/.local/state/intake-reconcile/audit.log. Tests
@@ -152,19 +163,82 @@ mapfile -t deferred_arr < <(jq -r '.deferred[]?.name' "$INTAKE_JSON")
 # Returns:
 #   0  every required_label is present on the repo (VERIFIED-OK)
 #   1  one or more required_labels are genuinely missing (VERIFIED-FAIL)
-#   2  the label check itself could not be completed (CHECK-ERROR) —
-#      network, auth, or transient API failure. The caller MUST NOT treat
-#      this as a verified-fail and must preserve current state.
+#   2  gh itself failed with a retryable/transient error (CHECK-ERROR) —
+#      network, 5xx, timeout. Caller must skip this tick, not disable.
+#   3  gh itself failed with a non-retryable auth/permission error.
+#      Caller disables immediately with repo-label-check-error.
+gh_err_is_nonretryable() {
+    local err
+    err="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$err" in
+        *'http 401'*|*'http 403'*|*'bad credentials'*|*'authentication required'*|*'resource not accessible by integration'*|*'gh_token environment'*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+safe_repo_token() {
+    # State files live under dirname(AUDIT_LOG)/transient-fail/<repo>.
+    # Repo names come from intake-repos.json (owner-controlled) but we
+    # still refuse path separators and anything outside [A-Za-z0-9._-].
+    local repo="$1"
+    case "$repo" in
+        ''|*[!A-Za-z0-9._-]*) printf '%s' "invalid-repo-name" ;;
+        *)                    printf '%s' "$repo" ;;
+    esac
+}
+
+transient_fail_path() {
+    printf '%s/transient-fail/%s' "$(dirname "$AUDIT_LOG")" "$(safe_repo_token "$1")"
+}
+
+read_transient_count() {
+    local f n=0
+    f="$(transient_fail_path "$1")"
+    if [ -f "$f" ]; then
+        n="$(tr -cd '0-9' <"$f" | head -c 8)"
+        [ -n "$n" ] || n=0
+    fi
+    printf '%s' "$n"
+}
+
+bump_transient_count() {
+    local repo="$1" dir f n
+    dir="$(dirname "$AUDIT_LOG")/transient-fail"
+    mkdir -p "$dir"
+    f="$dir/$repo"
+    n="$(read_transient_count "$repo")"
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$f"
+    printf '%s' "$n"
+}
+
+clear_transient_count() {
+    rm -f "$(transient_fail_path "$1")"
+}
+
 repo_has_labels() {
     local repo="$1"
     local got
+    local errfile
     # The repo names in the config are short; gh requires OWNER/REPO.
     # The short form was the root cause of the first supervised run failing
     # every label check with quota healthy (fleet-ops#32, 2026-08-26).
-    if ! got=$("$GH" label list -R "Nishfleet/$repo" --json name --jq '.[].name' 2>/dev/null); then
+    errfile="$(mktemp)"
+    if ! got=$("$GH" label list -R "Nishfleet/$repo" --json name --jq '.[].name' 2>"$errfile"); then
+        local gh_err
+        gh_err="$(cat "$errfile" 2>/dev/null || true)"
+        rm -f "$errfile"
         log "  $repo: gh label list FAILED"
+        if gh_err_is_nonretryable "$gh_err"; then
+            return 3
+        fi
         return 2
     fi
+    rm -f "$errfile"
     local got_sorted
     got_sorted="$(printf '%s\n' "$got" | LC_ALL=C sort -u)"
     local missing
@@ -284,25 +358,43 @@ converge_repo() {
             checkout_exists "$repo" || fail+=("checkout-missing-at-${checkout_root}/${repo}")
             # repo_has_labels returns non-zero under set -e on failure; use
             # || true so we capture the code instead of aborting the
-            # reconcile sweep. The result is what drives the precondition
-            # decision: 0 OK, 1 verified missing labels, 2 check error.
+            # reconcile sweep. 0 OK, 1 verified missing labels, 2 transient
+            # gh failure, 3 non-retryable auth/permission (fleet-ops#129).
             local label_rc=0
             repo_has_labels "$repo" || label_rc=$?
             case "$label_rc" in
-                0) ;;
-                1) fail+=("repo-missing-labels") ;;
+                0)
+                    clear_transient_count "$repo"
+                    ;;
+                1)
+                    clear_transient_count "$repo"
+                    fail+=("repo-missing-labels")
+                    ;;
                 2)
-                    # CHECK-ERROR: the API/auth/network call itself failed.
-                    # This must NOT be treated as a verified precondition
-                    # failure and must NOT converge the repo to OFF. Keep the
-                    # current state, log loud, and exit non-zero so escalation
-                    # fires (fleet-ops#32, 2026-08-26).
-                    local extra=""
-                    [ "${#fail[@]}" -gt 0 ] && extra=" (also: $(printf '%s,' "${fail[@]}"))"
-                    loud "INTAKE-PRECOND-CHECK-ERROR" \
-                        "$repo: label check failed (gh API/auth/network) — keeping current state, not converging$extra"
-                    RECONCILE_ERRORS=1
-                    return 0
+                    # Transient CHECK-ERROR. A single blip must not disable
+                    # units. If checkout is already a verified fail, disable
+                    # for THAT reason — do not hide a missing checkout behind
+                    # a network blip.
+                    if [ "${#fail[@]}" -eq 0 ]; then
+                        local n
+                        n="$(bump_transient_count "$repo")"
+                        if [ "$n" -lt "$TRANSIENT_THRESHOLD" ]; then
+                            loud "INTAKE-PRECOND-CHECK-ERROR" \
+                                "$repo: label check failed (gh API/network) — skip this tick ($n/$TRANSIENT_THRESHOLD)"
+                            audit "$repo" "skip" "transient-gh-label-check:$n/$TRANSIENT_THRESHOLD"
+                            RECONCILE_ERRORS=1
+                            return 0
+                        fi
+                        fail+=("repo-label-check-error")
+                        clear_transient_count "$repo"
+                    fi
+                    ;;
+                3)
+                    clear_transient_count "$repo"
+                    fail+=("repo-label-check-error")
+                    ;;
+                *)
+                    fail+=("repo-label-check-error")
                     ;;
             esac
 
