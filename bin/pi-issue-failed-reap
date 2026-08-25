@@ -84,6 +84,19 @@ fi
 
 log_to_triage "CLAIM-REAP-STARTED" "instance=$instance repo=$repo_slug issue=$issue dry_run=$dry_run"
 
+# --- clear per-instance seat-rotation state ----------------------------------
+# pi-issue-run appends every tried seat to $ATTEMPTS_DIR/pi-issue-${instance}.tried-seats
+# and pick_seat excludes them. Without clearing it here, a re-claimed issue
+# re-spawns into "no seat available" on its first pick_seat and loops forever
+# (0509-1057 looped for ~7h on 2026-08-25 for exactly this reason). Clearing on
+# reap guarantees a fresh claim starts a fresh seat cycle. Runs on every reap
+# path (dry-run too: the file is local state, not a repo mutation).
+tried_file="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts/pi-issue-${instance}.tried-seats"
+if [[ -f "$tried_file" ]]; then
+    rm -f "$tried_file" && log "cleared tried-seats state $tried_file" \
+        || log "WARN: failed to clear tried-seats state $tried_file"
+fi
+
 # --- load issue state --------------------------------------------------------
 state_json=$(gh issue view "$issue" -R "$repo_slug" --json state,labels 2>&1) || {
     log "gh issue view $repo_slug#$issue failed: $state_json"

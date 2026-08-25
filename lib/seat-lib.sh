@@ -53,6 +53,7 @@ _seat_caps_loaded=0
 declare -A SEAT_PROVIDER_CAP=()
 declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_PROVIDER_CLASS=()
+declare -A SEAT_PROVIDER_HAS_MODELS=()
 SEAT_FREE_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
 
@@ -60,6 +61,7 @@ load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
     SEAT_PROVIDER_CLASS=()
+    SEAT_PROVIDER_HAS_MODELS=()
     SEAT_FREE_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
 
@@ -90,6 +92,15 @@ load_seat_caps() {
     # Same bare-number guard as the providers loop: .value.models on a bare
     # number crashes jq before `// {}` can rescue it, emptying all model caps.
     done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # Record which providers declare a per-model allowlist. A provider with a
+    # cap but NO `models` key allows ALL its models (the cap is the only gate);
+    # the per-model allowlist is OPTIONAL granularity. This generalizes the old
+    # hardcoded zenmux exemption (auditor 2026-08-25: devin/hetzner/openrouter
+    # had no `models` key and were being fully skipped, bricking the fleet).
+    while IFS=$'\t' read -r p; do
+        [[ -n "$p" ]] && SEAT_PROVIDER_HAS_MODELS["$p"]=1
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | select(($v|type)=="object" and ($v.models // {}) | length > 0) | $p' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
@@ -481,9 +492,10 @@ pick_seat() {
             continue
         fi
         m_cap=$(model_cap "$p" "$m")
-        if (( p_cap > 0 )) && [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]] && [[ "$p" != "zenmux" ]]; then
-            # Provider has a cap map; model isn't listed -> standing-rule block
-            # (e.g. ollama DeepSeek-flash-only).
+        if (( p_cap > 0 )) && [[ -n "${SEAT_PROVIDER_HAS_MODELS[$p]:-}" ]] && [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]]; then
+            # Provider declares a per-model allowlist and this model isn't on it
+            # -> standing-rule block (e.g. ollama DeepSeek-flash-only). Providers
+            # with NO `models` key allow all models (cap is the only gate).
             seat_log "seat $p/$m skipped (not in cap-map allowlist for $p)"
             continue
         fi
