@@ -157,13 +157,15 @@ case "$cmd" in
     if (( now_s < 3700 )); then now_s=3700; fi
     if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( (now_s - 3600) * 1000000 ))"
+      ts="$(( (now_s - 3600) * 1000000 ))"
     elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( (now_s - 60) * 1000000 ))"
+      ts="$(( (now_s - 60) * 1000000 ))"
     else
-      echo 0
+      ts=0
     fi
+    printf 'show %s -> %s (uptime %ss)\n' "$unit" "$ts" "$now_s" >>"${CALLS:-/dev/null}"
+    echo "$ts"
     exit 0
     ;;
   *)
@@ -329,8 +331,20 @@ run_helper
 [[ "$env_rc" == 0 ]] || fail "scenario4: wedged-tick must exit 0, got $env_rc ($env_out)"
 
 # The wedged phantom must be reaped; the fresh live one kept.
-[[ ! -f "$seat_state/active-seats/pi-issue-demo-9.json" ]] \
-    || fail "scenario4: wedged-activating phantom was not reaped"
+if [[ -f "$seat_state/active-seats/pi-issue-demo-9.json" ]]; then
+    {
+        echo "=== s4 FAILURE dump ==="
+        echo "--- env_out ---"; printf '%s\n' "$env_out"
+        echo "--- active-seats after ---"; ls -la "$seat_state/active-seats/" 2>&1 || true
+        echo "--- calls.log ---"; cat "$calls" 2>&1 || true
+        echo "--- wedged_units ---"; cat "$scratch/wedged_units" 2>&1 || true
+        echo "--- fresh_activating_units ---"; cat "$scratch/fresh_activating_units" 2>&1 || true
+        echo "--- live_seat_units ---"; cat "$scratch/live_seat_units" 2>&1 || true
+        echo "--- /proc/uptime ---"; cat /proc/uptime 2>&1 || true
+        echo "--- uname ---"; uname -a 2>&1 || true
+    } >&2
+    fail "scenario4: wedged-activating phantom was not reaped"
+fi
 [[ -f "$seat_state/active-seats/pi-issue-demo-10.json" ]] \
     || fail "scenario4: fresh-activating live seat was wrongly reaped"
 grep -q 'wedged active-seat' <<<"$env_out" \
