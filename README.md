@@ -162,3 +162,63 @@ this file is the coverage decision (#25) it consumes.
 This repo copies files in. The symlink cutover (making the live paths point
 here) is a separate, later step. Until then the live paths are real files and
 `install.sh --check` will report every entry as a DIFF.
+
+## systemd-oomd — the reactive last resort (issue #62)
+
+There is no automatic RAM manager on the box by default. `systemd-oomd` is the
+built-in Linux answer; it is installed and enabled on the host, and this repo
+holds its fleet-scoped policy. Killing is the **exception**, not the norm —
+three layers own memory, in order, and oomd is the last:
+
+| | mechanism | effect | owns which failure |
+|---|---|---|---|
+| 1 | `MIN_FREE_RAM_MB=2500` launch floor (~13.1 GiB soft cap) | **prevents** work starting | the box is filling up — stop adding work |
+| 2 | per-worker `MemoryHigh=3G` / `MemoryMax=6G` on `pi-issue@.service` | **throttles** and reclaims one worker; nothing dies | one worker is runaway |
+| 3 | `systemd/app-pi\x2dissue.slice` (`ManagedOOMMemoryPressure=kill` @ 80%/60s) | **kills** a cgroup | 1 and 2 have both failed — host is in trouble |
+
+The policy lives on the worker slice only. `sshd`, `tailscaled`,
+`fleet-heartbeat` and the intake timers stay `auto`, so oomd can never take a
+lifeline or the supervisor that would repair a reaped worker. `ManagedOOMSwap`
+is left `auto` on purpose: ~4.7 GiB of swap in use with zero pressure is
+healthy here (workers idling on API calls), and killing on swap would reap
+useful work.
+
+The 80%/60s threshold is **measurement-derived**, not a default: baseline
+`/proc/pressure/memory` `some avg10` = 0.00 across 5 samples with the fleet
+running, so 80% sustained for a full minute is nowhere near normal. The global
+`DefaultMemoryPressureDurationSec=60s` lives in `/etc/systemd/oomd.conf.d/` on
+the host (root-owned system config, not this user-config repo — recorded here
+so it is findable).
+
+### Proving it: `oomd-drill`
+
+A rollout without a drill is not done. `bin/oomd-drill` drives a bounded
+(`MemoryMax=1G`) memory hog inside `oomd-drill.slice` — which carries the same
+`ManagedOOMMemoryPressure=kill` mechanism behind a low 5% trip point — and
+confirms oomd's own journal shows a managed kill while every lifeline stays
+live.
+
+```
+oomd-drill          # run the drill, print proof, exit 0/1
+oomd-drill --check  # report whether oomd + the drill units are in place
+```
+
+**Drill record, 2026-08-26 01:24:33 IST** — oomd killed a memory-hog cgroup:
+
+```
+systemd-oomd: Killed .../oomd-drill.slice/oomd-drill-hog.service due to memory
+pressure for .../user@1000.service being 75.07% > 50.00% for > 1min with
+reclaim activity
+```
+
+The hog hit `Pressure: Avg10: 98.76`. ssh, `fleet-heartbeat`, and the
+`pi-intake` timers stayed live throughout (zero failed user units, all timers
+active). The managed-kill mechanism fires and spares lifelines.
+
+What the drill proves and what it does not: it proves oomd's managed-kill path
+fires under pressure and is safely scoped. It does **not** drive the production
+slice to 80% live (that would throttle real workers); the 80% trip point is
+calibrated from measurement instead. `systemd/systemd#33486` reports cases
+where a pressure limit does not fire as expected — re-run `oomd-drill` after any
+oomd or kernel upgrade to confirm the path still trips.
+

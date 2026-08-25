@@ -49,5 +49,8 @@ bin/worker-app-bootstrap /home/nish/.local/bin/worker-app-bootstrap
 bin/_worker-app-bootstrap-server.py /home/nish/.local/lib/fleet-worker/_worker-app-bootstrap-server.py
 credentials/app-manifest.json /home/nish/.config/fleet-worker/app-manifest.json
 credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
+systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
+systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
+bin/oomd-drill /home/nish/.local/bin/oomd-drill
 # P14 tests (not installed — only run from the repo)
 

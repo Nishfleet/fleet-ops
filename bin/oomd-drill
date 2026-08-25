@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# oomd-drill — reproducibly prove systemd-oomd's managed-kill path fires and
+# spares the fleet's lifelines. One-shot; run by hand. Not timer-driven.
+#
+# Drives a bounded (MemoryMax=1G) memory hog inside oomd-drill.slice, which
+# carries ManagedOOMMemoryPressure=kill at a low 5% trip point. The hog hits
+# the cap, stalls, PSI pressure climbs, and oomd kills the hog cgroup after
+# the global DefaultMemoryPressureDurationSec (60s on this host). The script
+# then confirms oomd (not the kernel OOM killer, not systemd's timeout) did
+# the kill, and that sshd, tailscaled, fleet-heartbeat and the intake timers
+# are still live. Prints the proof and exits 0; exits 1 on any doubt.
+#
+# This proves the MECHANISM. The production 80% threshold on app-pi-issue.slice
+# is calibrated from measurement (see that slice) and is not driven live, since
+# doing so would pressure real workers.
+#
+# Usage: oomd-drill          # run the drill, print proof, exit 0/1
+#        oomd-drill --check  # report whether oomd + the drill units are in place
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+SLICE=oomd-drill.slice
+HOG=oomd-drill-hog.service
+LIFELINES=(sshd.service tailscaled.service fleet-heartbeat.timer)
+# Intake timers are templated; check any that are active via a glob below.
+OOMD=systemd-oomd.service
+
+log() { printf '[oomd-drill] %s\n' "$*" >&2; }
+fail() { log "FAIL: $*"; exit 1; }
+
+have_sudo() { sudo -n true 2>/dev/null; }
+
+check_env() {
+  systemctl is-active --quiet "$OOMD" 2>/dev/null \
+    || fail "systemd-oomd is not active; install+enable it first (apt install systemd-oomd)"
+  systemctl --user cat "$SLICE" >/dev/null 2>&1 \
+    || fail "$SLICE not installed; run ./install.sh from the fleet-ops repo"
+  systemctl --user cat "$HOG" >/dev/null 2>&1 \
+    || fail "$HOG not installed; run ./install.sh from the fleet-ops repo"
+  have_sudo || fail "need passwordless sudo to read the system oomd journal"
+  log "prerequisites ok (oomd active, drill units installed, sudo available)"
+}
+
+lifelines_live() {
+  local bad=0 unit
+  for unit in "${LIFELINES[@]}"; do
+    if ! systemctl is-active --quiet "$unit" 2>/dev/null \
+       && ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+      log "lifeline NOT active: $unit"
+      bad=1
+    fi
+  done
+  # Intake timers (templated, user scope): at least the fleet-ops one must be live.
+  if ! systemctl --user is-active --quiet 'pi-intake@*.timer' 2>/dev/null; then
+    log "no pi-intake@*.timer active in user scope"
+    bad=1
+  fi
+  return "$bad"
+}
+
+run_drill() {
+  local before kill_line
+  before="$(date +%s)"
+  log "starting $HOG under $SLICE (bounded to MemoryMax=1G)"
+  systemctl --user reset-failed "$HOG" 2>/dev/null || true
+  systemctl --user start "$HOG" 2>/dev/null || true
+
+  # Wait for the hog to be reaped. oomd needs ~60s of sustained pressure; allow
+  # 4 min before giving up (well under the 5min TimeoutStartSec backstop).
+  local waited=0
+  while systemctl --user is-active --quiet "$HOG" 2>/dev/null; do
+    waited=$((waited + 5))
+    if [ "$waited" -ge 240 ]; then
+      systemctl --user stop "$HOG" 2>/dev/null || true
+      fail "hog ran 240s without being killed — oomd did not fire"
+    fi
+    sleep 5
+  done
+  local elapsed=$(( $(date +%s) - before ))
+  log "hog reaped after ${elapsed}s"
+
+  # The proof: oomd's own journal must show a managed kill of the hog cgroup.
+  kill_line="$(sudo journalctl -u "$OOMD" --since "@$before" --no-pager 2>/dev/null \
+    | grep -F "Killed" | grep -F "$HOG" | tail -n 1 || true)"
+  if [ -z "$kill_line" ]; then
+    log "no oomd managed-kill line for $HOG in the system journal since the drill started"
+    log "the hog may have been killed by the kernel OOM killer or systemd's TimeoutStartSec"
+    fail "oomd managed-kill path did NOT fire — drill failed"
+  fi
+  log "oomd managed kill: $kill_line"
+
+  if ! lifelines_live; then
+    fail "a lifeline died during the drill — oomd is not safely scoped"
+  fi
+  log "lifelines survived: ${LIFELINES[*]} + pi-intake@*.timer"
+
+  printf '\nPROOF: oomd killed a memory-hogging cgroup under pressure while every lifeline stayed live.\n'
+  printf '  oomd line: %s\n' "$kill_line"
+  printf '  elapsed:   %ss\n' "$elapsed"
+  printf '  lifelines: %s + pi-intake@*.timer all active\n' "${LIFELINES[*]}"
+  printf '\nReproduce: oomd-drill\n'
+}
+
+cleanup() {
+  systemctl --user reset-failed "$HOG" 2>/dev/null || true
+  systemctl --user stop "$SLICE" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+case "${1:-}" in
+  --check) check_env; log "ready: run 'oomd-drill' to execute";;
+  "")      check_env; run_drill;;
+  *)       fail "usage: oomd-drill [--check]";;
+esac

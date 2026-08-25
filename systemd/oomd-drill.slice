@@ -1,0 +1,23 @@
+# oomd-drill.slice — a bounded, throwaway slice for reproducibly proving
+# systemd-oomd's managed-kill path. NOT a fleet unit; started on demand by
+# bin/oomd-drill and torn down after. No [Install], never enabled.
+#
+# Why this exists: app-pi\x2dissue.slice carries the real 80%/60s kill policy,
+# but driving the worker slice to 80% pressure live would throttle real
+# workers. This slice isolates the same ManagedOOMMemoryPressure=kill mechanism
+# behind a low limit and a hard MemoryMax, so the drill proves oomd fires and
+# spares lifelines without stressing the fleet.
+#
+# MemoryMax=1G bounds the hog: it hits the wall, stalls on allocation, PSI
+# memory pressure climbs, oomd kills the hog cgroup after
+# DefaultMemoryPressureDurationSec (60s, set in /etc/systemd/oomd.conf.d on the
+# host). 5% is a deliberately low trip point so the drill fires fast; the real
+# worker slice uses 80% (see app-pi\x2dissue.slice for why).
+#
+# Scope: this slice only. sshd, tailscaled, fleet-heartbeat and the intake
+# timers are NOT under it and stay `auto`, so the drill can never take a
+# lifeline — same isolation property the production policy relies on.
+[Slice]
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=5%
+MemoryMax=1G

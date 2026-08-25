@@ -1,0 +1,18 @@
+[Unit]
+Description=oomd drill memory hog — allocates until systemd-oomd kills it
+# Throwaway drill target. Started by bin/oomd-drill inside oomd-drill.slice.
+# Not wanted by anything; never auto-starts.
+
+[Service]
+Slice=oomd-drill.slice
+Type=exec
+# One-line Python hog: append 64 MiB chunks every 50 ms into an unbounded
+# list. The slice's MemoryMax=1G caps it; once it hits the wall, allocations
+# stall, PSI memory pressure climbs, and oomd kills this cgroup after the
+# global DefaultMemoryPressureDurationSec. /usr/bin/python3 is used (not a
+# bin/ script) so CI's systemd-analyze verify needs no new ExecStart stub.
+ExecStart=/usr/bin/python3 -c "import time;b=[];[b.append(bytearray(1<<26)) or time.sleep(.05) for _ in iter(int,1)]"
+# Backstop: if oomd does NOT fire, systemd kills the hog here and the drill
+# reports a failure (oomd managed-kill path did not trip). 5 min is well past
+# the 60s pressure duration, so a clean oomd kill happens long before this.
+TimeoutStartSec=5min
