@@ -147,11 +147,9 @@ case "$cmd" in
     exit 0
     ;;
   show)
-    # ActiveEnterTimestampMonotonic (us). Wedged units are old (>55min),
-    # fresh-activating are young. Simulate a machine up long enough that
-    # "3600s into activating" is representable on ANY runner: a fresh GitHub
-    # runner (uptime < 1h) cannot represent a 3600s-old monotonic timestamp
-    # (it would be negative and trip the probe's ^[0-9]+$ guard).
+    # ActiveEnterTimestampMonotonic (us). The awk shim below floors the
+    # simulated uptime at 3700s so the timestamp is always representable on
+    # any runner (a fresh runner cannot have a 3600s-old monotonic value).
     unit="$1"
     now_s=$(awk '{print int($1)}' /proc/uptime)
     if (( now_s < 3700 )); then now_s=3700; fi
@@ -173,6 +171,25 @@ case "$cmd" in
 esac
 FAKE
 chmod +x "$systemctl_fake"
+
+# The probe (inside the bin) and the mock's `show` case both read the clock
+# via `awk '{print int($1)}' /proc/uptime`. On a fresh GitHub runner (uptime
+# < 1h) a 3600s-old monotonic timestamp is not representable (negative),
+# and the probe's ^[0-9]+$ guard would keep the wedged phantom. Floor the
+# simulated uptime at 3700s so the probe's clock and the mock agree on any
+# runner: wedged age = 3600s > 3300s max -> reaped, fresh age = 60s -> live.
+# Exported so the bin subprocess (and its children) see it.
+awk() {
+  if [[ "$*" == *'/proc/uptime'* ]] && [[ "$*" == *'print int($1)'* ]]; then
+    local real_s
+    real_s=$(command awk '{print int($1)}' /proc/uptime)
+    if (( real_s < 3700 )); then real_s=3700; fi
+    echo "$real_s"
+  else
+    command awk "$@"
+  fi
+}
+export -f awk
 
 # Common env for every invocation. Exports so the fake binaries (which run
 # in child processes) inherit the state-file pointers.
@@ -329,8 +346,20 @@ run_helper
 [[ "$env_rc" == 0 ]] || fail "scenario4: wedged-tick must exit 0, got $env_rc ($env_out)"
 
 # The wedged phantom must be reaped; the fresh live one kept.
-[[ ! -f "$seat_state/active-seats/pi-issue-demo-9.json" ]] \
-    || fail "scenario4: wedged-activating phantom was not reaped"
+if [[ -f "$seat_state/active-seats/pi-issue-demo-9.json" ]]; then
+    {
+        echo "=== s4 FAILURE dump ==="
+        echo "--- env_out ---"; printf '%s\n' "$env_out"
+        echo "--- active-seats after ---"; ls -la "$seat_state/active-seats/" 2>&1 || true
+        echo "--- calls.log ---"; cat "$calls" 2>&1 || true
+        echo "--- wedged_units ---"; cat "$scratch/wedged_units" 2>&1 || true
+        echo "--- fresh_activating_units ---"; cat "$scratch/fresh_activating_units" 2>&1 || true
+        echo "--- live_seat_units ---"; cat "$scratch/live_seat_units" 2>&1 || true
+        echo "--- /proc/uptime ---"; cat /proc/uptime 2>&1 || true
+        echo "--- uname ---"; uname -a 2>&1 || true
+    } >&2
+    fail "scenario4: wedged-activating phantom was not reaped"
+fi
 [[ -f "$seat_state/active-seats/pi-issue-demo-10.json" ]] \
     || fail "scenario4: fresh-activating live seat was wrongly reaped"
 grep -q 'wedged active-seat' <<<"$env_out" \
