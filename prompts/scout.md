@@ -100,6 +100,21 @@ termination: <one exact verification command whose exit 0 means done; must be ru
 
 **Quality gate:** If you cannot write `termination:` as a concrete command (not prose), drop the candidate.
 
+**D1 schema gate (expand/contract):** if a candidate would make a worker touch `migrations/**`, do NOT file it as one issue. Rollback rolls back code, never data — D1, KV, R2 and Durable Objects sit outside the Worker version and D1 has no down-migrations — so a migration that breaks the previous code makes auto-revert silently impossible. File **one issue per phase**, in this order, each naming its phase in the title:
+
+1. add nullable column (or new table)
+2. dual-write
+3. backfill
+4. read-switch
+5. drop the old column/table
+
+Every one of those issues must additionally satisfy:
+- `accept:` forbids `DROP COLUMN`, `DROP TABLE`, a column/table rename, and `NOT NULL` without a `DEFAULT` in that PR.
+- `accept:` requires a test under `tests/integration/**` that applies the real migrations and asserts the new READ *and* WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
+- `termination:` runs that integration test, not just the unit suite.
+
+If you cannot decompose the candidate into phases, drop it.
+
 **Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run.
 
 ## Step 4 — File issues
