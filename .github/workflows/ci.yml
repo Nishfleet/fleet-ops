@@ -186,6 +186,8 @@ jobs:
               exit 1
             }
           done
+          # The CI-standards audit parses workflow YAML with PyYAML.
+          python3 -m pip install --no-input "pyyaml==6.0.1"
       - name: Manifest shape
         run: bash tests/manifest-shape.test.sh
       - name: intake-repos shape
@@ -226,3 +228,5 @@ jobs:
       # SHAPE lock that catches decision regressions in CI.
       - name: mass-close guard
         run: bash tests/mass-close-guard.test.sh
+      - name: ci-standards-audit
+        run: bash tests/ci-standards-audit.test.sh

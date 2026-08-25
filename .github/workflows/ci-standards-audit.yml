@@ -1,0 +1,123 @@
+name: CI standards audit
+
+# Mechanical CI-standard conformance audit across every non-archived repo in the
+# configured account. Reads from the GitHub API only (no local checkout, no
+# assumed default branch), produces a gap matrix, and opens fix PRs for the one
+# gap that is safe to fix mechanically: missing auto-revert.yml on repos that
+# already have a green push-to-main CI workflow and required checks.
+#
+# Usage from another repo:
+#   jobs:
+#     audit:
+#       uses: Nishfleet/fleet-ops/.github/workflows/ci-standards-audit.yml@main
+#       secrets:
+#         FLEET_SYNC_PAT: ${{ secrets.FLEET_SYNC_PAT }}
+#
+# The audit writes JSON + Markdown artifacts and, when `open-prs` is true, opens
+# auto-revert PRs in eligible repos. It is an alert/audit, not a required check.
+
+on:
+  workflow_call:
+    inputs:
+      account:
+        description: "GitHub owner/org to audit."
+        default: "Nishfleet"
+        type: string
+      open-prs:
+        description: "Open fix PRs for missing auto-revert.yml where eligible."
+        default: false
+        type: boolean
+    outputs:
+      total-repos:
+        description: "Number of repos audited."
+        value: ${{ jobs.audit.outputs.total-repos }}
+      total-workflow-gaps:
+        description: "Number of workflow standard gaps found."
+        value: ${{ jobs.audit.outputs.total-workflow-gaps }}
+      auto-revert-missing-eligible:
+        description: "Repos eligible for auto-revert but missing it."
+        value: ${{ jobs.audit.outputs.auto-revert-missing-eligible }}
+      auto-revert-prs-opened:
+        description: "Auto-revert fix PRs opened this run."
+        value: ${{ jobs.audit.outputs.auto-revert-prs-opened }}
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "GitHub owner/org to audit."
+        default: "Nishfleet"
+        type: string
+      open-prs:
+        description: "Open fix PRs for missing auto-revert.yml where eligible."
+        default: false
+        type: boolean
+  schedule:
+    # Daily 05:17 UTC. Named reason: a new repo or a changed workflow has no
+    # webhook receiver in this free plan, so a scheduled sweep is the minimal
+    # mechanical form. Off-peak to avoid the :00 cluster.
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-standards-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit CI standards
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    outputs:
+      total-repos: ${{ steps.run.outputs.total-repos }}
+      total-workflow-gaps: ${{ steps.run.outputs.total-workflow-gaps }}
+      auto-revert-missing-eligible: ${{ steps.run.outputs.auto-revert-missing-eligible }}
+      auto-revert-prs-opened: ${{ steps.run.outputs.auto-revert-prs-opened }}
+    steps:
+      - name: Verify FLEET_SYNC_PAT
+        env:
+          PAT: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::FLEET_SYNC_PAT is not set. The audit needs contents+pull-requests write across Nishfleet to open fix PRs. Add the secret and re-run."
+            exit 1
+          fi
+
+      - name: Checkout fleet-ops
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410b181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Install PyYAML
+        # The audit parses workflow YAML with PyYAML via a Python one-liner.
+        run: python3 -m pip install --no-input "pyyaml==6.0.1"
+
+      - name: Run audit
+        id: run
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          ACCOUNT: ${{ inputs.account || 'Nishfleet' }}
+          OPEN_PRS: ${{ (inputs.open-prs == true || github.event_name == 'schedule') && '--open-prs' || '' }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/ci-standards-audit.mjs \
+            --account "$ACCOUNT" \
+            $OPEN_PRS \
+            --canonical-ref "$WORKFLOW_SHA" \
+            --output-json gap-matrix.json \
+            --output-markdown gap-matrix.md
+
+      - name: Upload matrix artifacts
+        uses: actions/upload-artifact@507de32f7b3f094b774c69e437be4eb0721c607a # v4.6.0
+        with:
+          name: ci-standards-gap-matrix
+          path: |
+            gap-matrix.json
+            gap-matrix.md

@@ -1,0 +1,47 @@
+{
+  "account": "Nishfleet",
+  "repos": [
+    {
+      "nameWithOwner": "Nishfleet/example-compliant",
+      "default_branch": "main",
+      "is_private": false,
+      "plan": "free",
+      "required_contexts": ["test", "Gitleaks"],
+      "latest_ci_conclusion": "success",
+      "workflows": {
+        "ci.yml": {
+          "content": "name: CI\non:\n  pull_request:\n  push:\n    branches: [main]\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:\n  test:\n    name: test\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n          cache: npm\n      - run: npm ci\n      - run: npm test\n  gitleaks:\n    name: Gitleaks\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo scan\n"
+        },
+        "auto-revert.yml": {
+          "content": "name: Auto revert\non:\n  workflow_run:\n    workflows: [CI]\n    types: [completed]\n    branches: [main]\njobs:\n  auto-revert:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps:\n      - run: echo revert\n"
+        }
+      }
+    },
+    {
+      "nameWithOwner": "Nishfleet/example-gaps",
+      "default_branch": "main",
+      "is_private": false,
+      "plan": "free",
+      "required_contexts": ["test", "Gitleaks"],
+      "latest_ci_conclusion": "success",
+      "workflows": {
+        "ci.yml": {
+          "content": "name: CI\non:\n  pull_request:\n    paths:\n      - 'src/**'\n  push:\n    branches: [main]\n\npermissions:\n  contents: read\n\njobs:\n  test:\n    name: test\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n      - run: npm ci\n      - run: npm test\n  gitleaks:\n    name: Gitleaks\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo scan\n"
+        }
+      }
+    },
+    {
+      "nameWithOwner": "Nishfleet/example-not-eligible",
+      "default_branch": "main",
+      "is_private": true,
+      "plan": "free",
+      "required_contexts": [],
+      "latest_ci_conclusion": null,
+      "workflows": {
+        "probe.yml": {
+          "content": "name: Probe\non:\n  schedule:\n    - cron: '* * * * *'\njobs:\n  probe:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo probe\n"
+        }
+      }
+    }
+  ]
+}
