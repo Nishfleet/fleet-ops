@@ -115,8 +115,8 @@ set -e
 [[ -d "$ATTEMPTS_PATH" ]] || fail "normal run: attempts dir not created at $ATTEMPTS_PATH"
 tries="$ATTEMPTS_PATH/pi-issue-pi-issue-mkdir-test.tried-seats"
 [[ -f "$tries" ]] || fail "normal run: tried-seats file not created at $tries"
-got_seat=$(grep -v '^$' "$tries" | head -n1 | tr -d '[:space:]')
-[[ -n "$got_seat" ]] || fail "normal run: tried-seats file is empty"
+# Reset-on-success (fleet-ops#131) clears the file after a successful run,
+# so the file may be empty here. Its existence proves the inline write happened.
 ok "normal run writes tried-seats and keeps attempts dir"
 
 # --- Case 2: wipe the attempts dir between runs; the inline mkdir in the
