@@ -18,7 +18,7 @@ triage="$(mktemp)"
 trap 'rm -rf "$fake"; rm -f "$triage"' EXIT
 
 write_fake() {
-    local active="$1" pid="$2"
+    local active="$1" pid="$2" sub="${3:-running}"
     cat >"$fake/systemctl" <<FAKE
 #!/usr/bin/env bash
 shift  # --user
@@ -38,7 +38,7 @@ case "\$1" in
     case "\$prop" in
       ActiveState) echo ${active} ;;
       MainPID) echo ${pid} ;;
-      SubState) echo running ;;
+      SubState) echo ${sub} ;;
       *) echo "" ;;
     esac
     exit 0
@@ -74,3 +74,18 @@ rc=$?
 set -e
 grep -q 'CLAIM-REAP-SKIP-LIVE' "$triage" && fail "inactive worker must not skip-live: $(cat "$triage")"
 ok "reaper does not skip-live when worker is inactive (rc=$rc)"
+
+# Regression (fleet-ops#109, 2026-08-26): activating + MainPID=0 + SubState=
+# auto-restart is NOT a live worker — the process has exited and only systemd's
+# restart timer is pending. The old code treated any `activating` as live and
+# refused to release the claim, so a worker that exited non-zero thrashed
+# forever (StartLimitIntervalSec resets hourly). Must NOT skip-live here.
+: >"$triage"
+write_fake activating 0 auto-restart
+set +e
+out="$(SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    "$bin" --dry-run fleet-ops-20 2>&1)"
+rc=$?
+set -e
+grep -q 'CLAIM-REAP-SKIP-LIVE' "$triage" && fail "auto-restart (MainPID=0) must not skip-live: $(cat "$triage")"
+ok "reaper does not skip-live when worker is in auto-restart (MainPID=0) — the fleet-ops#109 regression (rc=$rc)"
