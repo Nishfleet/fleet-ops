@@ -1,0 +1,182 @@
+name: Repo standards sync
+
+# Migrates repo-standards propagation OFF the VPS onto GitHub-hosted
+# machinery (agent-agnostic standing rule, Nish 2026-08-23). Replaces the
+# hand-built /home/nish/.local/bin/repo-standards-reconcile systemd sweep.
+#
+# What it does, daily:
+#   1. Ensures allow_auto_merge=true on every active non-archived non-fork
+#      repo in Nishfleet + nish3451 (idempotent; skips repos where the plan
+#      forbids it — private repos on the free plan — and logs them).
+#   2. Syncs the canonical standards files from Nishfleet/siterep-public@main
+#      to all active repos via BetaHuhn/repo-file-sync-action (pinned SHA),
+#      opening PRs. Each target repo's own auto-merge-arm.yml arms those PRs
+#      on open; this workflow also arms them as a backstop.
+#
+# Canonical files (graceful if missing on siterep-public main):
+#   - .github/workflows/auto-merge-arm.yml -> can-arm repos only
+#     (preserves the reconcile script's skip: adding the arm workflow to a
+#      repo that cannot auto-merge would fail every PR forever)
+#   - .github/workflows/visual-check.yml   -> all active repos (once it exists)
+#
+# Blocked on: FLEET_SYNC_PAT secret (contents+workflows+pull-requests write
+# across Nishfleet + nish3451). Fails LOUD with an actionable message if absent.
+
+on:
+  schedule:
+    # Daily 03:17 UTC. Named reason (per the compute rule): GitHub's free org
+    # plan offers no event for "repo created / setting drifted" without hosting
+    # a webhook receiver, which would be new control plane. One idempotent
+    # daily sweep is the minimal mechanical form.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-standards-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync repo standards
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout fleet-ops
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify FLEET_SYNC_PAT
+        env:
+          PAT: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::FLEET_SYNC_PAT secret is not set. Create a PAT with contents+workflows+pull-requests write across Nishfleet and nish3451, add it as the FLEET_SYNC_PAT repo (or org) secret on Nishfleet/fleet-ops, then re-run this workflow (Actions tab -> Repo standards sync -> Run workflow). Until then this workflow cannot sync."
+            exit 1
+          fi
+
+      - name: Ensure allow_auto_merge on all active repos
+        # Idempotent, skip archived. Repos where the plan forbids
+        # allow_auto_merge (private repos on the free plan) are skipped and
+        # logged — they are also excluded from the auto-merge-arm.yml sync
+        # below, matching the reconcile script's behavior.
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          set -uo pipefail
+          { gh repo list Nishfleet --limit 200 --no-archived --json nameWithOwner,isFork --jq '.[] | select(.isFork|not) | .nameWithOwner';
+            gh repo list nish3451   --limit 200 --no-archived --json nameWithOwner,isFork --jq '.[] | select(.isFork|not) | .nameWithOwner'; } > repos-all.txt
+          : > repos-eligible.txt
+          while IFS= read -r r; do
+            [ -n "$r" ] || continue
+            cur=$(gh api "repos/$r" --jq '.allow_auto_merge' 2>/dev/null) || { echo "WARN: cannot read $r — skipped"; continue; }
+            if [ "$cur" = "true" ]; then
+              echo "$r" >> repos-eligible.txt
+              continue
+            fi
+            new=$(gh api -X PATCH "repos/$r" -F allow_auto_merge=true --jq '.allow_auto_merge' 2>/dev/null)
+            if [ "$new" = "true" ]; then
+              echo "ENABLED $r"
+              echo "$r" >> repos-eligible.txt
+            else
+              echo "SKIP $r: allow_auto_merge unavailable (private repo on free plan?) — arm workflow will NOT be synced here"
+            fi
+          done < repos-all.txt
+          echo "Eligible (can auto-merge) repos: $(wc -l < repos-eligible.txt)"
+          echo "All active repos: $(wc -l < repos-all.txt)"
+
+      - name: Fetch canonical standards files from siterep-public
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          set -uo pipefail
+          mkdir -p canonical
+          fetch() {
+            local p="$1" out="$2"
+            if gh api "repos/Nishfleet/siterep-public/contents/$p" --jq '.content' > /tmp/b64 2>/dev/null; then
+              base64 -d < /tmp/b64 > "$out"
+              echo "FETCHED $p -> $out"
+              return 0
+            else
+              echo "ABSENT $p on siterep-public@main — not syncing (graceful)"
+              return 1
+            fi
+          }
+          have_arm=0; have_visual=0
+          fetch ".github/workflows/auto-merge-arm.yml" "canonical/auto-merge-arm.yml" && have_arm=1
+          fetch ".github/workflows/visual-check.yml"   "canonical/visual-check.yml"   && have_visual=1
+          {
+            echo "have_arm=$have_arm"
+            echo "have_visual=$have_visual"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate sync.yml
+        env:
+          HAVE_ARM: ${{ steps.fetch.outputs.have_arm }}
+          HAVE_VISUAL: ${{ steps.fetch.outputs.have_visual }}
+        run: |
+          set -euo pipefail
+          if [ "$HAVE_ARM" != "1" ]; then
+            echo "::error::Canonical auto-merge-arm.yml is missing from siterep-public@main — nothing to sync. Aborting."
+            exit 1
+          fi
+          # Group 1: auto-merge-arm.yml -> can-arm repos only.
+          {
+            echo "group:"
+            echo "  - files:"
+            echo "      - source: canonical/auto-merge-arm.yml"
+            echo "        dest: .github/workflows/auto-merge-arm.yml"
+            echo "    repos: |"
+            while IFS= read -r r; do echo "      $r"; done < repos-eligible.txt
+          } > .github/sync.yml
+          # Group 2: visual-check.yml -> ALL active repos, only if it exists.
+          if [ "$HAVE_VISUAL" = "1" ]; then
+            {
+              echo "  - files:"
+              echo "      - source: canonical/visual-check.yml"
+              echo "        dest: .github/workflows/visual-check.yml"
+              echo "    repos: |"
+              while IFS= read -r r; do echo "      $r"; done < repos-all.txt
+            } >> .github/sync.yml
+          fi
+          echo "--- generated .github/sync.yml ---"
+          cat .github/sync.yml
+
+      - name: Run repo-file-sync-action
+        id: sync
+        uses: BetaHuhn/repo-file-sync-action@8b92be3375cf1d1b0cd579af488a9255572e4619 # v1.21.1
+        with:
+          GH_PAT: ${{ secrets.FLEET_SYNC_PAT }}
+          CONFIG_PATH: .github/sync.yml
+          PR_LABELS: repo-standards-sync
+          COMMIT_PREFIX: 'ci: '
+          COMMIT_EACH_FILE: true
+          OVERWRITE_EXISTING_PR: true
+
+      - name: Arm auto-merge on opened sync PRs (backstop)
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          PR_URLS: ${{ steps.sync.outputs.pull_request_urls }}
+        run: |
+          set -uo pipefail
+          # The target repo's own auto-merge-arm.yml arms PRs on open. This
+          # step is a backstop for repos where that workflow is not yet
+          # present or the arm race-lost. Best-effort: never fail the workflow
+          # on an arm failure (the PR waits for a human — the documented
+          # fallback).
+          urls=$(echo "$PR_URLS" | jq -r '.[]?' 2>/dev/null || true)
+          [ -n "$urls" ] || { echo "No sync PRs opened this run."; exit 0; }
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            repo=$(echo "$url" | sed -E 's#https://github.com/([^/]+/[^/]+)/pull/[0-9]+#\1#')
+            num=$(echo "$url" | sed -E 's#.*/pull/([0-9]+).*#\1#')
+            if gh pr merge "$num" --auto --squash --repo "$repo" 2>/tmp/arm; then
+              echo "ARMED $url"
+            else
+              echo "NOTE: could not arm $url — $(cat /tmp/arm 2>/dev/null) — PR waits for a human"
+            fi
+          done <<< "$urls"
