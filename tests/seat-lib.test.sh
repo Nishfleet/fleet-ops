@@ -23,13 +23,11 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 lib="$repo_root/lib/seat-lib.sh"
-caps="$repo_root/config/seat-caps.json"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
-[[ -f "$caps" ]] || fail "seat-caps.json not found: $caps"
 command -v jq >/dev/null || fail "jq required"
 
 scratch="$(mktemp -d -t seat-lib-p15.XXXXXX)"
@@ -83,8 +81,27 @@ cat >"$scratch/models.json" <<'JSON'
 }
 JSON
 
+# A scratch cap map that is independent of the live fleet config so this
+# test does not break every time a cap is tuned (issue #59).  devin has
+# provider cap > 0 but both models cap=0, which lets us prove the model-level
+# 0 block without depending on the current production values.
+cat >"$scratch/seat-caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["ollama", "commandcode"],
+  "providers": {
+    "devin":    { "cap": 4, "class": "subscription", "models": { "glm-5-2": 0, "swe-1-7": 0 } },
+    "cursor":   { "cap": 1, "class": "subscription", "models": { "composer-2.5": 1, "cursor-grok-4.6-high": 1 } },
+    "cline":    { "cap": 2, "class": "subscription", "models": { "cline-pass/deepseek-v4-flash": 2, "cline-pass/minimax-m3": 2 } },
+    "commandcode": { "cap": 2, "class": "free",       "models": { "deepseek/deepseek-v4-flash": 2 } },
+    "ollama":   { "cap": 2, "class": "free",       "models": { "deepseek-v4-flash:0731": 2 } },
+    "minimax":  { "cap": 2, "class": "metered",    "models": { "MiniMax-M3": 2 } }
+  }
+}
+JSON
+
 export PI_MODELS_JSON="$scratch/models.json"
-export SEAT_CAPS_JSON="$caps"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
 # --- invariant 2: provider with NO cap-map entry is rejected --------------
 ledger="$scratch/ledger-noentry"
@@ -145,7 +162,7 @@ ledger="$scratch/ledger-modelcap0"
 mkdir -p "$ledger"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 export PI_PACKET_STATE="$scratch/state-modelcap0"
-# devin is cap 0 in P15 seat-caps; prove the model-level 0 also blocks.
+# devin has provider cap=4 but both models cap=0; prove the model-level 0 also blocks.
 set +e
 out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
@@ -154,8 +171,8 @@ set -e
 if echo "$out" | grep -qE "^(devin|groq)"; then
   fail "modelcap0 ledger: devin/groq must never be picked, got: $out"
 fi
-grep -q "provider cap=0" "$PI_PACKET_STATE/watch.log" \
-  || fail "modelcap0 ledger: devin must be rejected (provider cap=0)"
+grep -q "cap=0" "$PI_PACKET_STATE/watch.log" \
+  || fail "modelcap0 ledger: devin must be rejected (cap=0)"
 
 # --- invariant 1: ALL DEAD -> loud stall, rc=1, no stdout -----------------
 ledger="$scratch/ledger-alldead"
