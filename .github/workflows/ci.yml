@@ -219,3 +219,10 @@ jobs:
         run: bash tests/system-dropins-shape.test.sh
       - name: undersaturation alarm
         run: bash tests/fleet-heartbeat-undersaturation.test.sh
+      # fleet-ops#77: lock the mass-close guard decision matrix. A not-planned
+      # close of an agent-labeled issue with no merged linked PR reopens;
+      # everything else stays closed. The live "close a dummy agent-ready
+      # issue and watch it reopen" check is manual GitHub-side; this is the
+      # SHAPE lock that catches decision regressions in CI.
+      - name: mass-close guard
+        run: bash tests/mass-close-guard.test.sh
