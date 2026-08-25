@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# fleet-heartbeat — durable orchestrator tick entry (P13, 2026-08-25).
+#
+# Called by systemd/fleet-heartbeat.service on every timer fire. Owns:
+#   1. Freshness guard (read last-heartbeat: from plan file; <20 min -> exit 0)
+#   2. Tier 1 (deterministic, no LLM) — always runs
+#   3. Tier 2 (judgment, seat ladder) — runs only when triage non-empty OR
+#      held queue dispatchable
+#   4. Fail-loud: any unexpected error -> exit non-zero (systemd state=failed
+#      is the page; no auto-retry, no fallback, no --collect)
+#
+# One pass per fire. No polling loops. systemd owns retry/backoff (it
+# doesn't — Restart=no — because the next timer fire IS the retry; that
+# is the point of the durable timer).
+#
+# Exit codes:
+#   0  = tick clean (tier 1 ok, tier 2 either ok or skipped because no work)
+#   1  = tier 1 failed OR tier 2 ran and all seats failed OR plan unreadable
+#   2  = config/prompt missing (config error, do not retry blindly)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+# --- locations (symlink-installed by install.sh, see MANIFEST) ---------------
+PLAN_FILE="${FLEET_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
+TIER1="${FLEET_HEARTBEAT_TIER1:-/home/nish/.local/bin/fleet-heartbeat-tier1}"
+TIER2="${FLEET_HEARTBEAT_TIER2:-/home/nish/.local/bin/fleet-heartbeat-tier2}"
+PROMPT="${FLEET_HEARTBEAT_PROMPT:-/home/nish/.pi/agent/prompts/heartbeat.md}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+
+mkdir -p "$LOG_DIR"
+
+log() {
+    printf '[%s] [fleet-heartbeat] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# --- 0. preflight: required files exist --------------------------------------
+[ -f "$PLAN_FILE"  ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 2; }
+[ -f "$TIER1"      ] || { log "FATAL: tier1 script missing: $TIER1"; exit 2; }
+[ -x "$TIER1"      ] || { log "FATAL: tier1 not executable: $TIER1"; exit 2; }
+# tier 2 script and prompt are required ONLY if tier 2 will run; checked
+# inside tier 2.
+
+# --- 1. freshness guard ------------------------------------------------------
+# Read the line matching ^last-heartbeat: from the plan file. If the
+# timestamp there is < 20 minutes old, exit 0 immediately. This is the
+# session-coexistence rule: a live interactive session is also ticking
+# (and updating this line); the durable timer must NOT thrash against it.
+now_s=$(date -u +%s)
+fresh_min=20
+
+last_line=$(grep -E '^last-heartbeat:' "$PLAN_FILE" 2>/dev/null | tail -n 1 || true)
+if [ -n "$last_line" ]; then
+    last_ts=$(printf '%s' "$last_line" | sed -E 's/^last-heartbeat:[[:space:]]+([^[:space:]]+).*/\1/')
+    last_s=$(date -u -d "$last_ts" +%s 2>/dev/null || echo 0)
+    if [ "$last_s" -gt 0 ] 2>/dev/null; then
+        age_s=$(( now_s - last_s ))
+        if [ "$age_s" -lt $((fresh_min * 60)) ]; then
+            log "freshness: last heartbeat ${age_s}s ago (<${fresh_min}m) — skipping tick"
+            exit 0
+        fi
+        log "freshness: last heartbeat ${age_s}s ago — proceeding"
+    else
+        log "freshness: could not parse '$last_ts' — proceeding"
+    fi
+else
+    log "freshness: no last-heartbeat: line in plan file — proceeding (first run)"
+fi
+
+# --- 2. tier 1: deterministic ops, always runs --------------------------------
+log "tier 1: starting"
+if ! "$TIER1"; then
+    rc=$?
+    log "tier 1: FAILED (rc=$rc) — unit will land in --state=failed"
+    exit 1
+fi
+log "tier 1: done"
+
+# --- 3. tier 2: judgment, only if there is work ------------------------------
+# A 'needs judgment' triage entry is one of these tags — written by tier 1
+# when it finds something it CANNOT handle deterministically (blocked green,
+# orphan not handled because tier 1's heuristic kept it, code fail, etc.) or
+# by tier 2 itself when all seats fail. We deliberately do NOT trigger tier 2
+# on informational loud writes (TIMER-DISABLED, TIMER-NO-NEXT,
+# UNIT-FAILED-LOG) — those are for humans / dashboards to see, not for
+# the next LLM tick to re-process.
+needs_tier2=0
+if [ -s "$TRIAGE" ] && grep -qE '^\[(BLOCKED-GREEN|ORPHAN|LLM-DEAD|CODE-FAIL|REQUEST|READY-TO-DISPATCH)\]' "$TRIAGE" 2>/dev/null; then
+    needs_tier2=1
+    log "tier 2: triage file has a needs-judgment entry — engaging seat ladder"
+elif grep -qE '^## Queued next' "$PLAN_FILE" 2>/dev/null; then
+    # Held-queue trigger: only when there is an explicit READY-TO-DISPATCH
+    # line in the playbook. The held queue section itself always has content,
+    # so we use a sentinel marker that a prior heartbeat (or a human
+    # restoration handoff) writes when an item is genuinely dispatchable.
+    if grep -qE '^READY-TO-DISPATCH:' "$PLAN_FILE" 2>/dev/null; then
+        needs_tier2=1
+        log "tier 2: held queue has a READY-TO-DISPATCH marker — engaging seat ladder"
+    fi
+fi
+
+if [ "$needs_tier2" -eq 0 ]; then
+    log "tier 2: no work — tick complete"
+    exit 0
+fi
+
+# --- 3a. tier 2 preflight: prompt must exist --------------------------------
+[ -f "$PROMPT" ] || {
+    log "tier 2: FATAL prompt missing: $PROMPT — appending LOUD line to triage and failing"
+    {
+        printf '\n[%s] [TIER2-NO-PROMPT] prompt file missing: %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PROMPT"
+    } >> "$TRIAGE" 2>/dev/null || true
+    exit 2
+}
+
+# --- 3b. tier 2: seat ladder -------------------------------------------------
+log "tier 2: starting (prompt=$(stat -Lc%s "$PROMPT" 2>/dev/null || wc -c < "$PROMPT" 2>/dev/null || echo '?')B)"
+if "$TIER2"; then
+    log "tier 2: done — clearing handled triage tags so next tick starts fresh"
+    # Remove trigger tags that were handled by this run. Use a python one-
+    # liner for portability (BSD/GNU grep -v differ on -i). We deliberately
+    # do NOT remove ALL-SEATS-DEAD — that is the humans-only page marker.
+    python3 - "$TRIAGE" <<'PY'
+import sys, re, os
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(0)
+trigger = re.compile(r'^\[(BLOCKED-GREEN|ORPHAN|LLM-DEAD|CODE-FAIL|REQUEST|READY-TO-DISPATCH)\]')
+with open(path, 'r', encoding='utf-8') as f:
+    kept = [ln for ln in f if not trigger.match(ln)]
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(kept)
+PY
+    # Clear the held-queue dispatch marker too.
+    if [ -f "$PLAN_FILE" ]; then
+        python3 - "$PLAN_FILE" <<'PY'
+import sys, re
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(ln for ln in lines if not re.match(r'^READY-TO-DISPATCH:', ln))
+PY
+    fi
+    exit 0
+else
+    rc=$?
+    log "tier 2: all seats exhausted (rc=$rc) — unit will land in --state=failed"
+    exit 1
+fi

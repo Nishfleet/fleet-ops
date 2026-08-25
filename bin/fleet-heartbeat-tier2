@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# fleet-heartbeat-tier2 — judgment seat ladder (P13, 2026-08-25).
+#
+# Runs ONLY when tier 1 reported work (triage non-empty OR held queue has
+# dispatchable items). Walks a seat ladder:
+#   1. claude -p --model claude-opus-5   (preferred; bounded 25 min)
+#   2. pi --print --provider devin --model glm-5-2   (only after a 30s
+#      probe succeeds; only if <4 devin workers active; singly; bounded 25 min)
+#   3. pi --print --provider minimax --model MiniMax-M3   (mechanical only;
+#      bounded 25 min)
+#
+# First healthy seat wins. If all fail:
+#   - append LOUD [ALL-SEATS-DEAD] line to the triage file
+#   - exit non-zero (systemd marks the unit FAILED -> failed-units page)
+#
+# The prompt is provider-neutral (no Claude-specific tool references). The
+# seat ladder just decides which binary reads the same prompt.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+PROMPT="${FLEET_HEARTBEAT_PROMPT:-/home/nish/.pi/agent/prompts/heartbeat.md}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+PLAN_FILE="${FLEET_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
+
+mkdir -p "$LOG_DIR"
+TICK_TS=$(date -u +%Y%m%dT%H%M%SZ)
+TICK_LOG="$LOG_DIR/tier2-$TICK_TS.log"
+exec 3>"$TICK_LOG"
+
+log() {
+    local line
+    line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+    printf '%s\n' "$line" >&2
+    printf '%s\n' "$line" >&3
+}
+
+loud() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $*"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$*"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Per-seat timeout. Bounded so the whole tier 2 fits inside the service's
+# TimeoutStartSec=45min with margin.
+SEAT_TIMEOUT="${FLEET_HEARTBEAT_SEAT_TIMEOUT:-1500}"   # 25 min
+
+# --- preflight ---------------------------------------------------------------
+[ -f "$PROMPT" ]   || { loud "TIER2-NO-PROMPT" "$PROMPT missing"; exit 2; }
+[ -f "$PLAN_FILE" ] || { loud "TIER2-NO-PLAN"  "$PLAN_FILE missing"; exit 2; }
+
+prompt_bytes=$(stat -Lc%s "$PROMPT" 2>/dev/null || wc -c < "$PROMPT" 2>/dev/null || echo 0)
+[ "$prompt_bytes" -gt 200 ] || {
+    loud "TIER2-PROMPT-TINY" "prompt is $prompt_bytes bytes — expected >200"; exit 2;
+}
+
+# --- seat 1: claude -p --model claude-opus-5 ---------------------------------
+try_claude() {
+    if ! command -v claude >/dev/null 2>&1; then
+        log "seat[1/3] claude: NOT INSTALLED"
+        return 1
+    fi
+    local out rc
+    out=$(timeout "$SEAT_TIMEOUT" claude -p --model claude-opus-5 \
+        < "$PROMPT" 2>&1) || { rc=$?; log "seat[1/3] claude: exit=$rc"; return 1; }
+    rc=0
+    [ -z "$out" ] && { log "seat[1/3] claude: empty output"; return 1; }
+    log "seat[1/3] claude: OK ($(printf '%s' "$out" | wc -c)B output)"
+    return 0
+}
+
+# --- seat 2: pi --print --provider devin --model glm-5-2 (after 30s probe) ---
+try_devin() {
+    if ! command -v pi >/dev/null 2>&1; then
+        log "seat[2/3] devin: pi NOT INSTALLED"
+        return 1
+    fi
+
+    # Capacity check: fewer than 4 active devin workers.
+    local active
+    active=$(systemctl --user --state=running --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -cE '^fable-p.*devin|^pi-issue.*devin' || true)
+    # That grep is approximate; safer: count by the running process tree.
+    active=$(pgrep -af 'pi .*--provider devin' 2>/dev/null | wc -l || echo 0)
+    if [ "$active" -ge 4 ]; then
+        log "seat[2/3] devin: $active workers already active (cap=4) — skipping"
+        return 1
+    fi
+
+    # 30-second probe. If this fails or hangs, skip devin for this tick.
+    log "seat[2/3] devin: probing (30s budget)"
+    local probe_rc
+    timeout 30s pi --print --provider devin --model glm-5-2 \
+        < <(printf 'echo probe-ok-%s\n' "$(date +%s)") >/dev/null 2>&1 || probe_rc=$?
+    if [ "${probe_rc:-0}" -ne 0 ]; then
+        log "seat[2/3] devin: probe FAILED (rc=${probe_rc:-?}) — skipping"
+        return 1
+    fi
+    log "seat[2/3] devin: probe OK — running real prompt"
+
+    local out
+    out=$(timeout "$SEAT_TIMEOUT" pi --print --provider devin --model glm-5-2 \
+        < "$PROMPT" 2>&1) || { log "seat[2/3] devin: real run exit=$?"; return 1; }
+    [ -z "$out" ] && { log "seat[2/3] devin: empty output"; return 1; }
+    log "seat[2/3] devin: OK ($(printf '%s' "$out" | wc -c)B output)"
+    return 0
+}
+
+# --- seat 3: pi --print --provider minimax --model MiniMax-M3 ----------------
+try_minimax() {
+    if ! command -v pi >/dev/null 2>&1; then
+        log "seat[3/3] minimax: pi NOT INSTALLED"
+        return 1
+    fi
+    local out
+    out=$(timeout "$SEAT_TIMEOUT" pi --print --provider minimax --model MiniMax-M3 \
+        < "$PROMPT" 2>&1) || { log "seat[3/3] minimax: exit=$?"; return 1; }
+    [ -z "$out" ] && { log "seat[3/3] minimax: empty output"; return 1; }
+    log "seat[3/3] minimax: OK ($(printf '%s' "$out" | wc -c)B output)"
+    return 0
+}
+
+# --- ladder ------------------------------------------------------------------
+log "seat ladder: starting (prompt=${prompt_bytes}B timeout=${SEAT_TIMEOUT}s)"
+
+if try_claude; then
+    log "seat ladder: SUCCESS on claude"
+    exit 0
+fi
+
+if try_devin; then
+    log "seat ladder: SUCCESS on devin"
+    exit 0
+fi
+
+if try_minimax; then
+    log "seat ladder: SUCCESS on minimax"
+    exit 0
+fi
+
+# All three failed. Loud triage line + exit 1 -> systemd state=failed.
+loud "ALL-SEATS-DEAD" "claude + devin + minimax all failed at $(date -u +%FT%TZ) — fleet orchestrator blind until next tick; check quota/auth/keys"
+exit 1

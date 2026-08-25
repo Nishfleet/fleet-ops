@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# fleet-heartbeat-tier1 — deterministic, no-LLM ops (P13, 2026-08-25).
+#
+# Runs every tick. Zero quota. Keeps the pipeline flowing even when every
+# LLM is dead. Idempotent — safe to run as often as the timer fires.
+#
+# Responsibilities (one per labelled block, in order):
+#   1. Update the last-heartbeat: line in the plan file (so interactive
+#      sessions see the durable timer is alive).
+#   2. Queue green fleet-authored PRs (auto-merge per repo, respecting
+#      the hands-off list).
+#   3. Release orphaned claims (agent-in-progress + no live worker +
+#      no open claim/issue-N PR).
+#   4. Reset+log failed pi-issue-* / fable-p-* units into the triage file.
+#   5. Verify scout/intake timers are armed; re-enable if disabled and
+#      write a LOUD line to the triage file.
+#
+# Logging: every action goes to stderr (systemd journal) AND to the per-
+# tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
+# output (exit code is the signal; nothing else needs to be parsed).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+PLAN_FILE="${FLEET_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+REPOS_JSON="${FLEET_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-repos.json}"
+
+mkdir -p "$LOG_DIR"
+
+# Per-tick log file (UTC timestamp; one file per fire, easy to diff).
+TICK_TS=$(date -u +%Y%m%dT%H%M%SZ)
+TICK_LOG="$LOG_DIR/tier1-$TICK_TS.log"
+exec 3>"$TICK_LOG"
+
+log() {
+    local line
+    line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+    printf '%s\n' "$line" >&2
+    printf '%s\n' "$line" >&3
+}
+
+# Loud tier2 / handoff lines go to BOTH the tick log and the triage file.
+# Other agents (and humans) watch the triage file as a single page.
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+[ -f "$PLAN_FILE" ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 1; }
+[ -f "$REPOS_JSON" ] || {
+    log "WARN: fleet-repos.json missing at $REPOS_JSON — writing default"
+    mkdir -p "$(dirname "$REPOS_JSON")"
+    cat > "$REPOS_JSON" <<'JSON'
+{
+  "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
+  "claim_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
+  "hands_off": [],
+  "verify_timers": ["pi-scout@0509.timer", "pi-intake@0509.timer", "pi-scout@siterep-public.timer", "pi-intake@siterep-public.timer"]
+}
+JSON
+    log "wrote default $REPOS_JSON"
+}
+
+# Read the repos config with jq once.
+queue_repos=$(jq -r '.queue_repos[]' "$REPOS_JSON")
+claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON")
+hands_off=$(jq -r '.hands_off[]' "$REPOS_JSON" 2>/dev/null || true)
+verify_timers=$(jq -r '.verify_timers[]' "$REPOS_JSON")
+
+# is_hands_off <repo>
+is_hands_off() {
+    local r="$1"
+    while IFS= read -r ho; do
+        [ -z "$ho" ] && continue
+        [ "$ho" = "$r" ] && return 0
+    done <<< "$hands_off"
+    return 1
+}
+
+# ============================================================================
+# 1. UPDATE last-heartbeat: LINE IN PLAN FILE
+# ============================================================================
+# The freshness guard (in fleet-heartbeat) already proved this line is
+# >20 min old. We update it in place: only the timestamp portion of the
+# matching line, never the prefix, never the rest of the file.
+new_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if grep -qE '^last-heartbeat:' "$PLAN_FILE"; then
+    # sed in place, anchored to start-of-line, only on the matching line.
+    # Use a python one-liner for portability — sed -i differs across GNU/BSD.
+    python3 - "$PLAN_FILE" "$new_ts" <<'PY'
+import sys, re
+path, ts = sys.argv[1], sys.argv[2]
+with open(path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+new = []
+hit = False
+for ln in lines:
+    if not hit and re.match(r'^last-heartbeat:', ln):
+        new.append(f'last-heartbeat: {ts} (durable-timer)\n')
+        hit = True
+    else:
+        new.append(ln)
+if not hit:
+    # Should not happen — fleet-heartbeat created it. Append just in case.
+    new.append(f'\nlast-heartbeat: {ts} (durable-timer)\n')
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(new)
+PY
+    log "1. last-heartbeat updated to $new_ts"
+else
+    log "1. WARN: no last-heartbeat: line found in plan file (freshness guard expected one)"
+fi
+
+# ============================================================================
+# 2. QUEUE GREEN FLEET-AUTHORED PRS
+# ============================================================================
+# For each repo in queue_repos:
+#   - list open PRs whose head ref matches a fleet worker prefix
+#   - skip hands-off
+#   - if all required checks green + mergeable -> enable auto-merge
+#
+# Fleet worker prefixes (data, not code, so the list can grow):
+#   claim/issue-*    -> standard pi-issue worker PR
+#   p<N>/*           -> packet branches
+#   lane*/           -> lane worker branches
+#   revert/          -> auto-revert worker
+#   dependabot/      -> leave to dependabot policy; we skip
+#
+# We only queue PRs whose headRef starts with claim/issue- or p<digit>/
+# or lane<digit>- or revert/. The full gate proof is `gh pr checks` returning
+# all PASS.
+queued=0
+skipped=0
+log "2. queue pass starting"
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    if is_hands_off "$repo"; then
+        log "2.  - $repo: HANDS-OFF, skipping queue pass"
+        continue
+    fi
+
+    # Fetch open PRs. --jq filters to fleet-worker head refs and excludes
+    # dependabot (handled by its own policy).
+    prs_json=$(gh pr list -R "$repo" --state open \
+        --json number,headRefName,isDraft,mergeable \
+        --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert)/")))]' \
+        2>/dev/null) || {
+            log "2.  - $repo: gh pr list FAILED — skipping (auth/network?)"
+            continue
+        }
+
+    # Empty array?
+    pr_count=$(printf '%s' "$prs_json" | jq 'length')
+    if [ "$pr_count" = "0" ]; then
+        log "2.  - $repo: no fleet-worker PRs open"
+        continue
+    fi
+
+    # For each PR, check status and queue if green.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        pr_num=$(printf '%s' "$row" | jq -r '.number')
+        pr_head=$(printf '%s' "$row" | jq -r '.headRefName')
+        pr_draft=$(printf '%s' "$row" | jq -r '.isDraft')
+        pr_mergeable=$(printf '%s' "$row" | jq -r '.mergeable')
+
+        if [ "$pr_draft" = "true" ]; then
+            log "2.  - $repo#$pr_num ($pr_head): DRAFT — skip"
+            skipped=$((skipped+1))
+            continue
+        fi
+
+        # Check the status: count checks; all must be SUCCESS (no FAILURE,
+        # no PENDING). If there are no required checks at all, treat as not
+        # mergeable (defensive).
+        checks_json=$(gh pr checks "$pr_num" -R "$repo" --json name,bucket,state 2>/dev/null) || {
+            log "2.  - $repo#$pr_num ($pr_head): gh pr checks FAILED — skip"
+            skipped=$((skipped+1))
+            continue
+        }
+        n_total=$(printf '%s' "$checks_json" | jq 'length')
+        if [ "$n_total" = "0" ]; then
+            log "2.  - $repo#$pr_num ($pr_head): NO CHECKS — skip (no auto-merge)"
+            skipped=$((skipped+1))
+            continue
+        fi
+        n_fail=$(printf '%s' "$checks_json" | jq '[.[] | select(.bucket == "fail" or .state == "FAILURE" or .state == "ERROR")] | length')
+        n_pending=$(printf '%s' "$checks_json" | jq '[.[] | select(.state == "PENDING" or .state == "QUEUED")] | length')
+        if [ "$n_fail" != "0" ] || [ "$n_pending" != "0" ]; then
+            log "2.  - $repo#$pr_num ($pr_head): not green (fail=$n_fail pending=$n_pending) — skip"
+            skipped=$((skipped+1))
+            continue
+        fi
+
+        # Green: enable auto-merge (squash is the fleet default; matches
+        # 0509's ruleset config and every other repo's branch protection).
+        # --auto is idempotent: if already set, gh exits 0 with a notice.
+        if gh pr merge "$pr_num" -R "$repo" --auto --squash >/dev/null 2>&1; then
+            log "2.  - $repo#$pr_num ($pr_head): AUTO-MERGE armed"
+            queued=$((queued+1))
+        else
+            log "2.  - $repo#$pr_num ($pr_head): gh pr merge --auto FAILED — skip"
+            skipped=$((skipped+1))
+        fi
+    done < <(printf '%s' "$prs_json" | jq -c '.[]')
+done <<< "$queue_repos"
+log "2. queue pass complete: queued=$queued skipped=$skipped"
+
+# ============================================================================
+# 3. RELEASE ORPHANED CLAIMS
+# ============================================================================
+# Definition of orphaned claim:
+#   - issue has label agent-in-progress
+#   - no pi-issue@<repo>-<issue> unit is currently running
+#   - no open claim/issue-<issue> PR exists on the repo
+#
+# Action:
+#   - delete the claim branch
+#   - flip label: agent-in-progress -> agent-ready
+#   - comment on the issue noting the heartbeat release
+#
+# Safety: if the issue is closed, skip the label flip (just clean up).
+released=0
+log "3. orphan-pass starting"
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    short=$(printf '%s' "$repo" | awk -F/ '{print $2}')
+
+    issues_json=$(gh issue list -R "$repo" -l agent-in-progress --state open \
+        --json number,title --jq '.[]' 2>/dev/null) || {
+            log "3.  - $repo: gh issue list FAILED — skip"
+            continue
+        }
+
+    while IFS= read -r issue_row; do
+        [ -z "$issue_row" ] && continue
+        issue_n=$(printf '%s' "$issue_row" | jq -r '.number')
+
+        # Is a pi-issue worker for this claim currently running?
+        unit="pi-issue@${short}-${issue_n}.service"
+        if systemctl --user --state=running --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"; then
+            log "3.  - $repo#$issue_n: worker $unit RUNNING — not orphan"
+            continue
+        fi
+        # Also check transient fable-p* that may be working on it.
+        if systemctl --user list-units --no-legend --type=service --state=running 2>/dev/null \
+            | awk '{print $1}' | grep -E "(fable-p|pi-issue)" | grep -q "${short}-${issue_n}"; then
+            log "3.  - $repo#$issue_n: transient worker active — not orphan"
+            continue
+        fi
+
+        # Open PR from claim/issue-<N>?
+        if gh pr list -R "$repo" --head "claim/issue-${issue_n}" --state open --json number 2>/dev/null \
+            | jq -e 'length > 0' >/dev/null 2>&1; then
+            log "3.  - $repo#$issue_n: open claim PR exists — not orphan (leave to queue pass)"
+            continue
+        fi
+
+        # Orphan. Release it.
+        branch="claim/issue-${issue_n}"
+        if gh api "repos/${repo}/git/refs/heads/${branch}" >/dev/null 2>&1; then
+            if gh api "repos/${repo}/git/refs/heads/${branch}" -X DELETE >/dev/null 2>&1; then
+                log "3.  - $repo#$issue_n: deleted branch $branch"
+            else
+                log "3.  - $repo#$issue_n: branch delete FAILED ($branch) — will retry next tick"
+                continue
+            fi
+        fi
+
+        if gh issue edit "$issue_n" -R "$repo" \
+            --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+            gh issue comment "$issue_n" -R "$repo" \
+                --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (no live worker, no open PR)" \
+                >/dev/null 2>&1 || true
+            log "3.  - $repo#$issue_n: RELEASED -> agent-ready"
+            released=$((released+1))
+        else
+            log "3.  - $repo#$issue_n: label flip FAILED — will retry next tick"
+        fi
+    done <<< "$issues_json"
+done <<< "$claim_repos"
+log "3. orphan-pass complete: released=$released"
+
+# ============================================================================
+# 4. RESET+LOG FAILED pi-issue-* / fable-p-* UNITS
+# ============================================================================
+# For each failed unit, write a triage line so the next tier-2 tick sees it.
+# We do NOT auto-restart the unit (that would defeat the fail-loud signal).
+# pi-issue-* failures already trigger OnFailure=pi-issue-failed@ which
+# cleans up the claim branch; this loop is the OBSERVABILITY + audit step.
+#
+# Idempotency: we keep a marker per failed unit per tick in $TICK_LOG;
+# the triage entry is also timestamped so tier-2 sees it once and clears it.
+reset_logged=0
+log "4. failed-units pass starting"
+while IFS= read -r unit; do
+    [ -z "$unit" ] && continue
+    case "$unit" in
+        pi-issue-*|fable-p*) : ;;  # match
+        *) continue ;;
+    esac
+
+    # Pull the last 5 lines of the journal for the audit breadcrumb.
+    excerpt=$(journalctl --user -u "$unit" -n 5 --no-pager -q 2>/dev/null | tr '\n' ' ' | head -c 400 || true)
+    loud "UNIT-FAILED" "$unit :: ${excerpt:-<no-journal>}"
+    reset_logged=$((reset_logged+1))
+done < <(systemctl --user --state=failed --no-legend 2>/dev/null \
+            | awk '{print $1}' \
+            | grep -E '^(pi-issue-|fable-p)' || true)
+log "4. failed-units pass complete: logged=$reset_logged"
+
+# ============================================================================
+# 5. VERIFY SCOUT / INTAKE TIMERS ARMED
+# ============================================================================
+# If a fleet-supply timer is disabled, supply stops. Re-enable + log loud.
+# (Hands-off list is not respected here: these are fleet-internal timers
+#  the fleet itself owns, not user code.)
+verified=0
+re_enabled=0
+log "5. timer-arm pass starting"
+while IFS= read -r t; do
+    [ -z "$t" ] && continue
+    state=$(systemctl --user is-enabled "$t" 2>/dev/null || echo unknown)
+    # Is the timer actually scheduled to fire? Show property gives us both
+    # the enabled state and the next elapse; --all shows paused/stopped too.
+    next_us=$(systemctl --user show "$t" --property=NextElapseUSecRealtime --value 2>/dev/null || echo "")
+    active=$(systemctl --user show "$t" --property=ActiveState --value 2>/dev/null || echo unknown)
+
+    if [ "$state" = "enabled" ] && [ -n "$next_us" ] && [ "$next_us" != "0" ]; then
+        log "5.  - $t: ENABLED active=$active next=${next_us}"
+        verified=$((verified+1))
+        continue
+    fi
+
+    if [ "$state" != "enabled" ]; then
+        loud "TIMER-DISABLED" "$t is $state — re-enabling + starting"
+        if ! systemctl --user enable --now "$t" 2>/dev/null; then
+            loud "TIMER-REENABLE-FAIL" "$t could not be re-enabled ($state) — manual fix needed"
+            continue
+        fi
+        re_enabled=$((re_enabled+1))
+        continue
+    fi
+
+    # enabled but no Next firing — likely paused or stale. Start it.
+    loud "TIMER-NO-NEXT" "$t is enabled (state=$state active=$active) but no Next firing — starting it"
+    systemctl --user start "$t" 2>/dev/null || {
+        loud "TIMER-START-FAIL" "$t start failed — manual fix needed"
+        continue
+    }
+    re_enabled=$((re_enabled+1))
+done <<< "$verify_timers"
+log "5. timer-arm pass complete: verified=$verified re_enabled=$re_enabled"
+
+# ============================================================================
+# done
+# ============================================================================
+log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled"
+exit 0
