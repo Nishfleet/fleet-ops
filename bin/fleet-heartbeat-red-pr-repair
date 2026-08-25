@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# fleet-heartbeat-red-pr-repair — tier1 block (fleet-ops#124).
+#
+# The blind spot proven 2026-08-26 ~04:15 IST: a worker opens a PR, exits,
+# and if CI comes back red the PR sits indefinitely. The claim branch blocks
+# re-claiming (intake's ls-remote skips it), the agent-in-progress label
+# blocks re-queueing, and no machinery watches fleet PRs for red checks.
+# PR #80 fixes future WORKER behavior (loop-to-green) but not the
+# already-orphaned red PRs whose workers have already exited. Tonight PRs
+# #123 and #86 stalled this way with 9 claims held and 0 workers running; a
+# session had to notice by hand — the exact human-nudge dependency this
+# repo is eliminating.
+#
+# For each open fleet-worker PR (claim/issue-* head) whose checks are red
+# AND whose pi-issue@<repo>-<issue> unit has no live worker:
+#   - First observing tick: set a one-tick marker (debounce — do not
+#     dispatch on a transient gap or a check that may self-heal; the issue
+#     requires "no live MainPID for >1 tick").
+#   - Second consecutive tick (marker present, still red, still dead):
+#     dispatch one repair worker onto the existing claim branch via
+#     pi-issue-start (reuses seat rotation + the #80 loop-to-green worker
+#     prompt; the worker's re-entrancy step reuses the existing claim
+#     branch and PR). Bounded: RED_PR_MAX_ATTEMPTS (default 2) per PR.
+#   - After RED_PR_MAX_ATTEMPTS dispatches with the PR still red + worker
+#     still dead: FAIL LOUD (RED-PR-ESCALATE triage line + non-zero exit ->
+#     fleet-heartbeat.service lands in --state=failed -> page + Telegram
+#     per #76/#86). Never degrades silently.
+#
+# Liveness rule (matches the orphan sweep, fleet-heartbeat-tier1 block 3,
+# and the lane-holding doctrine in fleet-ops#63): a unit in active or
+# activating state holds the lane — work is in flight (a freshly dispatched
+# repair worker, or a crash-looper between RestartSec windows). Only
+# failed/inactive means the worker is genuinely dead and a repair dispatch
+# can land without racing a second worker onto the same claim. Treating
+# auto-restart as live also prevents burning an attempt on a pi-issue-start
+# no-op (pi-issue-start no-ops on activating).
+#
+# Environment seams (tests):
+#   GH                        default gh
+#   SYSTEMCTL                 default systemctl
+#   PI_ISSUE_START            pi-issue-start path (default ~/.local/bin/pi-issue-start)
+#   FLEET_REDPR_REPOS_JSON    claim_repos source (default fleet-repos.json)
+#   FLEET_HEARTBEAT_LOG_DIR   state + flag dir
+#   FLEET_HEARTBEAT_TRIAGE    triage file
+#   RED_PR_MAX_ATTEMPTS       default 2
+#
+# Exit: 0 = no escalation (nothing to do, or dispatches attempted within
+#       budget). Non-zero = at least one PR exhausted its repair budget and
+#       was failed loud — propagates to fleet-heartbeat.service -> page.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+PI_ISSUE_START="${PI_ISSUE_START:-$HOME/.local/bin/pi-issue-start}"
+REPOS_JSON="${FLEET_REDPR_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-repos.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+RED_PR_MAX_ATTEMPTS="${RED_PR_MAX_ATTEMPTS:-2}"
+
+STATE_DIR="$LOG_DIR/red-pr-repair"
+mkdir -p "$STATE_DIR"
+
+log() {
+    printf '[%s] [fleet-heartbeat-red-pr-repair] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# Loud lines go to BOTH stderr and the triage file (single page for humans +
+# other agents). Format matches fleet-heartbeat-tier1's loud() helper.
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Safe on-disk filename for a "<short>-<issue>" key.
+state_key() {
+    local short="$1" issue="$2" safe
+    safe=$(printf '%s-%s' "$short" "$issue" | tr -c 'A-Za-z0-9._-' '_')
+    printf '%s' "$safe"
+}
+
+state_file() { printf '%s/%s.json' "$STATE_DIR" "$(state_key "$1" "$2")"; }
+flag_file()  { printf '%s/%s.flag'  "$STATE_DIR" "$(state_key "$1" "$2")"; }
+
+# Read one key from a PR's JSON state file.
+state_get() {
+    local f="$1" key="$2" default="${3:-}"
+    if [[ -f "$f" ]]; then
+        jq -r --arg k "$key" --arg d "$default" '(.[$k] // $d) | tostring' "$f" 2>/dev/null \
+            || printf '%s' "$default"
+    else
+        printf '%s' "$default"
+    fi
+}
+
+# Write a PR's JSON state file atomically. Empty attempts means "leave it".
+state_write() {
+    local f="$1" short="$2" issue="$3" pr="$4" attempts="${5:-}" escalated="${6:-}"
+    python3 - "$f" "$short" "$issue" "$pr" "$attempts" "$escalated" <<'PY'
+import sys, os, json, datetime
+f, short, issue, pr = sys.argv[1:5]
+attempts = sys.argv[5] if len(sys.argv) > 5 else ''
+escalated = sys.argv[6] if len(sys.argv) > 6 else ''
+state = {}
+if os.path.exists(f):
+    try:
+        with open(f, 'r', encoding='utf-8') as fh:
+            state = json.load(fh)
+    except Exception:
+        state = {}
+now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+state['short'] = short
+state['issue'] = issue
+state['pr'] = pr
+if 'first_seen' not in state:
+    state['first_seen'] = now
+state['last_seen'] = now
+if attempts != '':
+    try:
+        state['attempts'] = int(attempts)
+    except ValueError:
+        state['attempts'] = state.get('attempts', 0)
+if escalated != '':
+    state['escalated'] = (escalated == 'true')
+tmp = f + '.tmp.' + str(os.getpid())
+with open(tmp, 'w', encoding='utf-8') as fh:
+    json.dump(state, fh)
+os.rename(tmp, f)
+PY
+}
+
+state_remove() { rm -f "$1"; }
+
+# --- repos config -----------------------------------------------------------
+[[ -f "$REPOS_JSON" ]] || {
+    log "WARN: repos json missing at $REPOS_JSON — no claim_repos to scan"
+    exit 0
+}
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+
+claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON" 2>/dev/null || true)
+
+# --- is the pi-issue worker for this claim live? ----------------------------
+# active/activating holds the lane (work in flight or crash-looper between
+# RestartSec windows). failed/inactive means genuinely dead.
+worker_live() {
+    local short="$1" issue="$2" unit state
+    unit="pi-issue@${short}-${issue}.service"
+    state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    case "$state" in
+        active|activating) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# --- dispatch a repair worker onto the existing claim branch -----------------
+# reset-failed clears any StartLimitBurst counter so start lands; pi-issue-start
+# no-ops if the unit is already live (defence in depth) and reuses seat
+# rotation + the #80 loop-to-green worker prompt on the existing claim branch.
+dispatch_repair() {
+    local short="$1" issue="$2" unit
+    unit="pi-issue@${short}-${issue}.service"
+    "$SYSTEMCTL" --user reset-failed "$unit" 2>/dev/null || true
+    if [[ -x "$PI_ISSUE_START" ]]; then
+        "$PI_ISSUE_START" "${short}-${issue}" 2>/dev/null || true
+    else
+        "$SYSTEMCTL" --user start "$unit" 2>/dev/null || true
+    fi
+}
+
+# --- main pass --------------------------------------------------------------
+log "red-pr-repair pass starting (max_attempts=$RED_PR_MAX_ATTEMPTS)"
+
+escalated_any=0
+dispatched=0
+observed=0
+cleared=0
+
+while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    short=${repo##*/}
+
+    # Open claim/issue-* PRs on this repo.
+    prs_json=$("$GH" pr list -R "$repo" --state open \
+        --json number,headRefName,isDraft \
+        --jq '[.[] | select(.headRefName | startswith("claim/issue-"))]' \
+        2>/dev/null) || {
+            log "  - $repo: gh pr list FAILED — skipping (auth/network?)"
+            continue
+        }
+    pr_count=$(printf '%s' "$prs_json" | jq 'length')
+    if [[ "$pr_count" == "0" ]]; then
+        log "  - $repo: no claim/issue-* PRs open"
+        continue
+    fi
+
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        pr_num=$(printf '%s' "$row" | jq -r '.number')
+        pr_head=$(printf '%s' "$row" | jq -r '.headRefName')
+        pr_draft=$(printf '%s' "$row" | jq -r '.isDraft')
+        if [[ "$pr_draft" == "true" ]]; then
+            log "  - $repo#$pr_num ($pr_head): DRAFT — skip"
+            continue
+        fi
+
+        # Derive the issue number from the head ref: claim/issue-<N>.
+        issue=${pr_head#claim/issue-}
+        if [[ ! "$issue" =~ ^[0-9]+$ ]]; then
+            log "  - $repo#$pr_num ($pr_head): head ref not claim/issue-<N> — skip"
+            continue
+        fi
+
+        # Check status: red = any check in fail/error bucket. No checks at all
+        # is not red (leave to the queue pass). Pending is not red yet — give
+        # CI time to finish before dispatching a repair.
+        checks_json=$("$GH" pr checks "$pr_num" -R "$repo" --json name,bucket,state 2>/dev/null) || {
+            log "  - $repo#$pr_num ($pr_head): gh pr checks FAILED — skip"
+            continue
+        }
+        n_total=$(printf '%s' "$checks_json" | jq 'length')
+        if [[ "$n_total" == "0" ]]; then
+            log "  - $repo#$pr_num ($pr_head): NO CHECKS — not red, skip"
+            # No longer a candidate: clear any stale state.
+            state_remove "$(state_file "$short" "$issue")"
+            state_remove "$(flag_file "$short" "$issue")"
+            cleared=$((cleared+1))
+            continue
+        fi
+        n_fail=$(printf '%s' "$checks_json" | jq '[.[] | select(.bucket == "fail" or .state == "FAILURE" or .state == "ERROR")] | length')
+        if [[ "$n_fail" == "0" ]]; then
+            log "  - $repo#$pr_num ($pr_head): not red (no failing checks) — clear state"
+            state_remove "$(state_file "$short" "$issue")"
+            state_remove "$(flag_file "$short" "$issue")"
+            cleared=$((cleared+1))
+            continue
+        fi
+
+        # Red PR. Is the worker still live? If so, work is in flight — clear
+        # the debounce flag and skip (the worker or a prior repair dispatch
+        # is still running).
+        if worker_live "$short" "$issue"; then
+            log "  - $repo#$pr_num ($pr_head): RED but worker live — in flight, clear flag"
+            state_remove "$(flag_file "$short" "$issue")"
+            continue
+        fi
+
+        # Red PR + dead worker. Apply the >1-tick debounce + bounded dispatch.
+        sf=$(state_file "$short" "$issue")
+        ff=$(flag_file "$short" "$issue")
+        attempts=$(state_get "$sf" "attempts" "0")
+        escalated=$(state_get "$sf" "escalated" "false")
+
+        # Budget exhausted: fail loud ONCE per PR, then keep the escalated
+        # marker so we do not spam the triage file every tick. The non-zero
+        # exit at the end propagates to the pager.
+        if [[ "$attempts" -ge "$RED_PR_MAX_ATTEMPTS" ]]; then
+            if [[ "$escalated" != "true" ]]; then
+                loud "RED-PR-ESCALATE" "repo=$repo pr=#$pr_num issue=$issue branch=$pr_head red_checks=$n_fail attempts=$attempts — repair budget exhausted, worker dead. Manual fix needed (page per #76/#86)."
+                state_write "$sf" "$short" "$issue" "$pr_num" "$attempts" true
+            else
+                log "  - $repo#$pr_num ($pr_head): still red+dead, already escalated — holding"
+            fi
+            state_remove "$ff"
+            escalated_any=1
+            continue
+        fi
+
+        # Debounce: first observing tick sets the flag and waits a tick.
+        if [[ ! -f "$ff" ]]; then
+            printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$ff"
+            state_write "$sf" "$short" "$issue" "$pr_num" "$attempts" "$escalated"
+            log "  - $repo#$pr_num ($pr_head): RED + dead worker — observed, will dispatch next tick if still red (attempts=$attempts)"
+            observed=$((observed+1))
+            continue
+        fi
+
+        # Second consecutive tick: dispatch the repair worker.
+        log "  - $repo#$pr_num ($pr_head): RED + dead worker for >1 tick — dispatching repair (attempt=$((attempts+1))/$RED_PR_MAX_ATTEMPTS)"
+        loud "RED-PR-REPAIR" "repo=$repo pr=#$pr_num issue=$issue branch=$pr_head red_checks=$n_fail attempt=$((attempts+1))/$RED_PR_MAX_ATTEMPTS — re-dispatching worker onto existing claim branch (loop-to-green per #80)"
+        dispatch_repair "$short" "$issue"
+        new_attempts=$((attempts+1))
+        state_write "$sf" "$short" "$issue" "$pr_num" "$new_attempts" false
+        state_remove "$ff"
+        dispatched=$((dispatched+1))
+    done < <(printf '%s' "$prs_json" | jq -c '.[]')
+done <<< "$claim_repos"
+
+# --- GC: drop state for PRs that are no longer open/red ----------------------
+# Best-effort — a state file whose PR closed/merged or went green is stale.
+# We cannot cheaply re-query every prior PR here, so we rely on the per-PR
+# clear-on-green/clear-on-no-checks paths above. Files for PRs that vanished
+# (closed/merged) are reaped when their issue's claim is released by the
+# orphan sweep or pi-issue-failed-reap; this block does not own that.
+
+log "red-pr-repair pass complete: observed=$observed dispatched=$dispatched cleared=$cleared escalated_any=$escalated_any"
+
+if [[ "$escalated_any" -ne 0 ]]; then
+    log "red-pr-repair: FAIL LOUD — at least one PR exhausted its repair budget"
+    exit 1
+fi
+exit 0
