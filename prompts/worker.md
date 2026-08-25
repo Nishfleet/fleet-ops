@@ -22,6 +22,34 @@ Hard rules:
 - Stay inside the issue's scope. Problems you discover along the way get filed as NEW issues in the same repo (plain, no labels) — not fixed in this PR.
 - Any unexpected failing command: say so in your output; if it blocks the work, exit nonzero.
 
+Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=):
+The deliverable you just built gets run before you call the issue done. Repo
+unit tests around it are not the run. systemd Restart= on this unit is seat
+rotation for a dead worker, not this loop. Do not add a bash retry wrapper,
+a cooldown, or an attempt ledger — that is forbidden hand-built orchestration.
+
+1. Name the run. If you produced a script, binary, service, page, or API,
+   that is the deliverable: run it in the environment it will live in. If the
+   real run is destructive, stub only the outermost edge (sudo, reboot, a
+   trigger file) and restore the fixture in the same turn. If you produced
+   only a prompt, doc, or config, the run is the repo's own tests plus any
+   lock-test this PR adds. If you cannot name the command, you are not done.
+2. Parse the run into three buckets and never conflate them:
+   - FAILURE: the deliverable you built broke. Fix it in this PR.
+   - SKIP: something that cannot work by design. Report it every run so it
+     cannot silently drift. A SKIP is not a green run.
+   - PRE-EXISTING: a fault the run exposed that this issue does not own.
+     File it as a NEW issue in the same repo (plain, no labels). Do not
+     fix it in this PR.
+3. After every fix, re-run the same command. Stop only on a green run, not a
+   green phase. Cap: 5 inner-loop rounds (the worked example needed 4 cycles
+   to go clean — `vps-weekly-update` and `~/.local/state/vps-maintenance/update.log`).
+   Hitting the cap is a loud failure: say so in the PR body, do not loop.
+4. Only after a clean run, route the existing review gates in order:
+   sgscan (if `/home/nish/.local/bin/sgscan` exists) → crgate (if `crgate`
+   exists) → the repo's tests / live E2E → then open the PR (Greptile and
+   autoreview run on the PR). Do not send un-run code to those gates.
+
 D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:
 - **Rollback rolls back code, never data.** D1, KV, R2 and Durable Objects sit outside the Worker version, and D1 has no down-migrations anywhere. A migration that breaks the previous code makes the fleet's auto-revert silently impossible. Treat every migration as one-way.
 - **One phase per PR.** The order is: add nullable column -> dual-write -> backfill -> read-switch -> drop. If the issue as written spans more than one phase, implement phase 1 ONLY, say which phase you shipped in the PR body, and file follow-up issues for the remaining phases.
@@ -50,7 +78,7 @@ Steps:
    `#n` mentions are ignored — without `blocked-on:` the issue sits on the
    desk-triage list until a human answers. Then
    release the claim: `git push origin :refs/heads/claim/issue-<N>`, remove your worktree, print "blocked: proposal posted", exit 0.
-5. Otherwise implement: the smallest durable change that fully solves the issue, following the repo's own conventions. Run the repo's own tests/checks locally (what its CI would run) and make them pass. If /home/nish/.local/bin/sgscan exists, run it on your diff and fix anything it rates ERROR.
+5. Otherwise implement: the smallest durable change that fully solves the issue, following the repo's own conventions. Then run the Execution IS the review inner loop to a green run. Only after that, run the repo's own tests/checks locally (what its CI would run) and make them pass. If /home/nish/.local/bin/sgscan exists, run it on your diff and fix anything it rates ERROR.
 6. Commit with a clear message. Push early and again when done: `git push origin claim/issue-<N>`.
 7. Open the PR:
    `gh pr create -R Nishfleet/<repo> --head claim/issue-<N> --title "<concise title>" --body "<what changed and why>. Verification: <exact commands run and their results>. Closes #<N>"`
