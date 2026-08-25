@@ -10,6 +10,9 @@ script, or prompt lands unseen.
   `systemctl --user`.
 - `bin/` — shell scripts the units exec.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
+- `config/` — fleet configuration. `seat-caps.json` is the per-seat ceiling
+  map; `intake-repos.json` is the declared set of repos enrolled in
+  pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
 - `MANIFEST` — one line per file: `<repo-relative-path> <absolute-install-path>`.
 - `install.sh` — symlinks each manifest entry into its live path, then
   `systemctl --user daemon-reload`. `--check` reports drift without changing
@@ -90,6 +93,34 @@ of fleet timers firing at :00, :13, :15, :23, :38, :39, :43, :48, :52).
 
 Prompt: `prompts/heartbeat.md` — provider-neutral (no Claude-specific
 tool references). Plain instructions any agent with shell + `gh` executes.
+
+## Intake enrolment
+
+`config/intake-repos.json` is the **declared set** of repos that run
+pi-intake/pi-scout. It is the single source of truth for which repos are
+enrolled — adding or removing a repo is a PR against that file, not a
+`systemctl enable`. This replaces the old imperative enrolment that was
+silently reverted without a record (fleet-ops#32).
+
+Each enrolled repo needs two preconditions, both verified by the reconciler
+before its unit is enabled:
+
+1. A git checkout at `/home/nish/workspaces/products/<name>` — intake does
+   `git -C <checkout>/<name> fetch origin` and the worker creates its
+   worktree from it.
+2. The three labels `agent-ready`, `agent-in-progress`, `agent-blocked`
+   present on the repo — the `ExecCondition` in `pi-intake@.service`
+   silently no-ops without them, so an `agent-ready` issue on a label-less
+   repo looks queued and is actually inert (the gap fleet-ops#25 was filed
+   for).
+
+`fleet2` is permanently excluded (standing rule: no second dispatcher,
+ever). `siterep` is excluded (archived). Both are recorded in the file's
+`excluded` list with reasons, and `tests/intake-repos-shape.test.sh`
+fail-closes if `fleet2` ever reappears in `repos`.
+
+The reconciler that converges systemd state to this file is fleet-ops#32;
+this file is the coverage decision (#25) it consumes.
 
 ## Excluded pending manual review
 
