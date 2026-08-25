@@ -1,0 +1,59 @@
+name: Mass-close guard
+
+# Deterministic, per-issue guard against bulk not-planned closes of
+# agent-labeled issues (fleet-ops#77). On every `issues: closed` event it
+# asks one question, no LLM, no rate window:
+#
+#   Was this issue closed as `not_planned` while labeled
+#   `agent-ready`/`agent-in-progress`, with no linked merged PR?
+#
+# If yes -> comment, reopen, apply `triage-mass-close`. If a merged PR
+# references the issue, the close was legitimate and it stays closed.
+#
+# The YAML `if` is a minutes-economy pre-filter only (this repo is public so
+# minutes are free, but there is no point spinning a runner for a
+# `completed` close or an issue with no agent label). The script is the
+# authority: it re-checks state_reason + labels from the API and does the
+# linked-merged-PR lookup itself, so a misrouted event still cannot slip
+# through.
+#
+# Surface: gh CLI + GitHub REST API only. No paid services.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+  contents: read
+
+# One guard run per issue. `cancel-in-progress: false` so a re-triggered
+# close (e.g. someone recloses during the guard's own reopen) still runs to
+# completion rather than being cancelled mid-flight.
+concurrency:
+  group: mass-close-guard-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    if: >-
+      github.event.issue.state_reason == 'not_planned' &&
+      (contains(join(github.event.issue.labels.*.name, ','), 'agent-ready') ||
+       contains(join(github.event.issue.labels.*.name, ','), 'agent-in-progress'))
+    name: mass-close guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Reopen if no merged linked PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/mass-close-guard.mjs --repo "$REPO" --issue "$ISSUE"
