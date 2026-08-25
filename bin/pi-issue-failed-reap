@@ -5,15 +5,24 @@
 # This runs only on failure; the normal worker path cleans up by finishing
 # the issue and opening a PR.
 #
+# Environment:
+#   TRIAGE_FILE             Defaults to ~/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md.
+#                           One line is appended per invocation regardless of
+#                           outcome (success, partial-fail, total-fail).
+#   SYSTEMCTL               Defaults to systemctl. Tests inject a fake.
+#
 # Action:
 #   1. Parse %i as <repo>-<issue>.
-#   2. Load the issue state.
-#   3. If an open PR exists from claim/issue-<N>, leave the branch alone
+#   2. If pi-issue@%i is still live (active/activating or nonzero MainPID),
+#      do nothing — StartLimitBurst can fire OnFailure while ExecStart is
+#      still running (fleet-ops#26). Never release a live worker's claim.
+#   3. Load the issue state.
+#   4. If an open PR exists from claim/issue-<N>, leave the branch alone
 #      and write a triage note (the worker got far enough).
-#   4. Otherwise delete the claim branch and either:
+#   5. Otherwise delete the claim branch and either:
 #        - open issue  -> remove agent-in-progress, add agent-ready
 #        - closed issue -> remove agent-in-progress only
-#   5. ALWAYS write one line to the heartbeat triage file so other agents
+#   6. ALWAYS write one line to the heartbeat triage file so other agents
 #      can see the cleanup happened. This was the missing observability for
 #      P13-B: 0509-948 reaped silently twice today (2026-08-25) before the
 #      claim branch and label were released manually.
@@ -23,11 +32,6 @@
 #               (no branch delete, no label edit, no comment). Logs as usual.
 #               Useful for proving the parse/observation path without
 #               touching the repo. Standalone runnable.
-#
-# Environment:
-#   TRIAGE_FILE             Defaults to ~/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md.
-#                           One line is appended per invocation regardless of
-#                           outcome (success, partial-fail, total-fail).
 #
 # Exit: 0 = claimed cleanup done (branch deleted AND labels flipped on a
 #       matching open issue), or the open-PR shortcut was taken. Non-zero
@@ -39,6 +43,7 @@
 set -uo pipefail
 
 TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 dry_run=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -75,6 +80,31 @@ fi
 
 repo_slug="Nishfleet/$repo"
 branch_name="claim/issue-$issue"
+
+# Never release a claim while this instance's worker is still live.
+# StartLimitBurst can fire OnFailure while ExecStart is still running
+# (two overlapping `systemctl start`s of a Type=oneshot). Releasing then
+# is the split-brain in Nishfleet/fleet-ops#26: an unsanctioned worker
+# with no claim, and the next tick free to duplicate the work.
+worker_is_live() {
+    local unit="pi-issue@${instance}.service"
+    local active main
+    active="$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || echo "")"
+    main="$("$SYSTEMCTL" --user show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
+    case "$active" in
+        active|activating) return 0 ;;
+    esac
+    if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+if worker_is_live; then
+    log "worker pi-issue@${instance} still live; not releasing claim"
+    log_to_triage "CLAIM-REAP-SKIP-LIVE" "instance=$instance repo=$repo_slug issue=$issue"
+    exit 0
+fi
 
 if ! command -v gh >/dev/null 2>&1; then
     log "gh CLI missing — cannot reap $repo_slug#$issue (will leave orphan)"

@@ -30,6 +30,30 @@ explicit manifest; GNU stow was rejected because its directory-sweep semantics
 conflict with the allowlist requirement (only listed files install, nothing
 more).
 
+## Dispatch a packet that outlives this session
+
+`nohup pi ... &` dies when the launching shell ends. The four `EXTLOAD-OK`
+lines it leaves behind look like a dead seat. Use the thin systemd wrapper:
+
+```
+pi-systemd-run --unit mypacket --stdin /path/to/packet.md -- \
+  pi --print --provider minimax --model MiniMax-M3
+```
+
+That is `systemd-run --user --collect --no-block`. Not a dispatcher: no
+retry ladder, no seat rotation, no queue. Watch with
+`systemctl --user status mypacket.service`.
+
+A short log with no verdict after `nohup` or `&` is a **launcher fault**
+(the session reaped the process). A log containing `rate_limit` /
+`ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
+them up.
+
+Overlapping `systemctl start` of a live intake tick is a no-op
+(`pi-intake-run` flock). Starting a live `pi-issue@` worker is a no-op
+(`pi-issue-start`). The failed-reaper will not release a claim while that
+worker still has a MainPID.
+
 ## CI
 
 `.github/workflows/ci.yml` runs four jobs on every PR and push to main:

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# pi-intake-run — one intake tick for Nishfleet/$1, exclusive.
+#
+# ExecStart of pi-intake@.service. ExecStartPre has already written the
+# packet to $XDG_RUNTIME_DIR/pi-intake/intake-$1.pkt. This script:
+#   1. Takes a non-blocking flock. A second start while the tick is live
+#      exits 0 (no-op) instead of racing the timer, double-spawning
+#      pi-issue@, and burning StartLimitBurst (Nishfleet/fleet-ops#26).
+#   2. exec's pi-packet-run with the same argv the unit used before, so
+#      seat rotation stays systemd's retry + pi-packet-run — not a pinned
+#      provider.
+#
+# Environment overrides (tests):
+#   PI_INTAKE_LOCKDIR  flock directory (default: $XDG_RUNTIME_DIR/pi-intake)
+#   PI_INTAKE_CMD      if set, run this instead of pi-packet-run (test seam)
+#   PI_PACKET_RUN      pi-packet-run path
+#
+# Exit: 0 = tick ran or overlapping tick no-op'd. Non-zero = runner failed.
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+
+[[ $# -ge 1 ]] || { echo "pi-intake-run: need repo instance (e.g. fleet-ops)" >&2; exit 1; }
+repo="$1"
+
+lockdir="${PI_INTAKE_LOCKDIR:-${XDG_RUNTIME_DIR}/pi-intake}"
+mkdir -p "$lockdir"
+exec 9>"$lockdir/${repo}.lock"
+if ! flock -n 9; then
+    echo "pi-intake-run: $repo tick already running (no-op)"
+    exit 0
+fi
+
+if [[ -n "${PI_INTAKE_CMD:-}" ]]; then
+    # Test seam: run a caller-supplied command instead of a live seat.
+    bash -c "$PI_INTAKE_CMD"
+    exit $?
+fi
+
+pkt="${XDG_RUNTIME_DIR}/pi-intake/intake-${repo}.pkt"
+run="${PI_PACKET_RUN:-$HOME/.local/bin/pi-packet-run}"
+[[ -f "$pkt" ]] || { echo "pi-intake-run: packet not found: $pkt" >&2; exit 1; }
+[[ -x "$run" ]] || { echo "pi-intake-run: runner not executable: $run" >&2; exit 1; }
+
+# fd 9 (the lock) stays open across exec, so the overlapping tick still no-ops
+# for the whole lifetime of pi-packet-run.
+exec "$run" "$pkt" "$HOME" "" ""

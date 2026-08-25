@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# pi-systemd-run — thin systemd-run --user wrapper so a Pi packet outlives
+# this session. Not a dispatcher: no retry ladder, no seat rotation, no queue.
+#
+# Wrong:  nohup pi --print --provider ... < packet.md > packet.out &
+# Right:  pi-systemd-run --unit mypacket --stdin packet.md -- \
+#           pi --print --provider minimax --model MiniMax-M3
+#
+# The launching shell can exit immediately. systemd owns the process.
+# Watch with: systemctl --user status <unit>.service
+#             journalctl --user -u <unit>.service -f
+#
+# If <unit> is already active or activating, this is a no-op (exit 0).
+# A second start of a running job is how StartLimitBurst gets burned by
+# overlapping ticks — see Nishfleet/fleet-ops#26.
+#
+# Flags:
+#   --dry-run              Print the systemd-run argv; do not start anything.
+#   --unit NAME            Transient unit name (default: pi-job-<ts>-<pid>).
+#   --working-directory D  Default: /home/nish.
+#   --stdin FILE           StandardInput=file: (absolute path). Packet on stdin.
+#
+# Environment overrides (tests):
+#   SYSTEMD_RUN, SYSTEMCTL
+#
+# Exit:
+#   0  started, already-running no-op, or dry-run
+#   2  usage / refused (nohup in command, missing file, bad unit)
+#   1  systemd-run failed
+
+set -euo pipefail
+
+SYSTEMD_RUN="${SYSTEMD_RUN:-systemd-run}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+usage() {
+    cat <<'EOF' >&2
+usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] -- COMMAND [ARGS...]
+
+Run COMMAND as a user systemd unit so it outlives this session.
+    Never use nohup or trailing & — those die with the launching shell.
+EOF
+    exit 2
+}
+
+dry_run=0
+unit=""
+workdir="${HOME:-/home/nish}"
+stdin_file=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) dry_run=1; shift ;;
+        --unit)
+            [[ $# -ge 2 ]] || usage
+            unit="$2"
+            shift 2
+            ;;
+        --working-directory)
+            [[ $# -ge 2 ]] || usage
+            workdir="$2"
+            shift 2
+            ;;
+        --stdin)
+            [[ $# -ge 2 ]] || usage
+            stdin_file="$2"
+            shift 2
+            ;;
+        --) shift; break ;;
+        -h|--help) usage ;;
+        *)
+            echo "pi-systemd-run: unknown flag: $1" >&2
+            usage
+            ;;
+    esac
+done
+
+[[ $# -ge 1 ]] || usage
+
+# Refuse the failure mode this wrapper exists to replace.
+for arg in "$@"; do
+    if [[ "$arg" == "nohup" ]]; then
+        echo "pi-systemd-run: refuse nohup — this command already outlives the session" >&2
+        exit 2
+    fi
+done
+if [[ "${*}" == *" &"* || "${*}" == *"& "* || "${*}" == *" & " ]]; then
+    echo "pi-systemd-run: refuse background '&' — systemd owns the process" >&2
+    exit 2
+fi
+
+if [[ -z "$unit" ]]; then
+    unit="pi-job-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+fi
+unit="${unit%.service}"
+# systemd unit names: alphanumerics, '.', '_', '-', ':', '\'.
+unit="${unit//[^A-Za-z0-9:_.\\-]/_}"
+[[ -n "$unit" ]] || { echo "pi-systemd-run: empty --unit after sanitise" >&2; exit 2; }
+
+[[ -d "$workdir" ]] || { echo "pi-systemd-run: working directory not found: $workdir" >&2; exit 2; }
+
+if [[ -n "$stdin_file" ]]; then
+    [[ -f "$stdin_file" ]] || { echo "pi-systemd-run: --stdin file not found: $stdin_file" >&2; exit 2; }
+    stdin_file="$(readlink -f "$stdin_file")"
+fi
+
+# Already-running no-op: do not count a second start toward StartLimitBurst.
+if [[ "$dry_run" != "1" ]]; then
+    state="$("$SYSTEMCTL" --user is-active "${unit}.service" 2>/dev/null || true)"
+    case "$state" in
+        active|activating)
+            echo "pi-systemd-run: ${unit}.service is $state (no-op)"
+            exit 0
+            ;;
+    esac
+    main="$("$SYSTEMCTL" --user show -p MainPID --value "${unit}.service" 2>/dev/null || echo 0)"
+    if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
+        echo "pi-systemd-run: ${unit}.service still has MainPID=$main (no-op)"
+        exit 0
+    fi
+fi
+
+cmd=(
+    "$SYSTEMD_RUN" --user
+    --unit="$unit"
+    --collect
+    --no-block
+    --working-directory="$workdir"
+    --description="Pi packet $unit (session-independent)"
+    --setenv=HOME
+    --setenv=PATH
+    --setenv=XDG_RUNTIME_DIR
+)
+if [[ -n "${GH_TOKEN:-}" ]]; then
+    cmd+=(--setenv=GH_TOKEN)
+fi
+if [[ -n "$stdin_file" ]]; then
+    cmd+=(--property="StandardInput=file:${stdin_file}")
+fi
+cmd+=(-- "$@")
+
+if [[ "$dry_run" == "1" ]]; then
+    printf '%q ' "${cmd[@]}"
+    printf '\n'
+    exit 0
+fi
+
+echo "pi-systemd-run: starting ${unit}.service (survives this session)"
+echo "pi-systemd-run: watch: systemctl --user status ${unit}.service"
+echo "pi-systemd-run: logs:  journalctl --user -u ${unit}.service -f"
+exec "${cmd[@]}"
