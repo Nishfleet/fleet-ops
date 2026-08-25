@@ -9,6 +9,14 @@ Hard rules:
 - Stay inside the issue's scope. Problems you discover along the way get filed as NEW issues in the same repo (plain, no labels) — not fixed in this PR.
 - Any unexpected failing command: say so in your output; if it blocks the work, exit nonzero.
 
+D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:
+- **Rollback rolls back code, never data.** D1, KV, R2 and Durable Objects sit outside the Worker version, and D1 has no down-migrations anywhere. A migration that breaks the previous code makes the fleet's auto-revert silently impossible. Treat every migration as one-way.
+- **One phase per PR.** The order is: add nullable column -> dual-write -> backfill -> read-switch -> drop. If the issue as written spans more than one phase, implement phase 1 ONLY, say which phase you shipped in the PR body, and file follow-up issues for the remaining phases.
+- **Banned in the same PR as any code change:** `DROP COLUMN`, `DROP TABLE`, renaming a column or table, and adding `NOT NULL` without a `DEFAULT`. Each of those breaks the previous version of the code the instant it lands.
+- **Not done without a real integration test.** A migration PR must add or extend a test under `tests/integration/**` that applies the real migrations and asserts the new READ *and* the new WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
+- Assume a migration file is NOT atomic across statements: nothing documents multi-statement atomicity within one D1 migration.
+- Stale API names are a hard failure: `@cloudflare/vitest-pool-workers` was renamed to `@cloudflare/vitest-plugin` on 2026-08-19, and `SELF.fetch` is replaced by `exports.default.fetch` from `cloudflare:workers`. Never write the old names from memory.
+
 Steps:
 1. Read the work: `gh issue view <N> -R Nishfleet/<repo> --comments`.
 2. Re-entrancy: if branch claim/issue-<N> already exists on origin AND the latest claim comment names YOUR unit, this is your own earlier attempt restarted — continue it, reusing the worktree if present.
