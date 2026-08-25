@@ -120,3 +120,7 @@ fi
 ok "install.sh --system: handles missing passwordless sudo path"
 
 echo "OK: system drop-ins shape locked (50-ram-governor + 50-no-distro-oomd-kill, MANIFEST entries live, install.sh routing works)"
+
+# fleet-ops#62: drill tooling. CI lists THIS file explicitly; the worker
+# GitHub App cannot add a workflow step, so the drill test rides along.
+bash "$here/oomd-drill.test.sh"

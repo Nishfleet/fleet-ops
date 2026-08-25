@@ -28,18 +28,21 @@ HOG=oomd-drill-hog.service
 LIFELINES=(sshd.service tailscaled.service fleet-heartbeat.timer)
 # Intake timers are templated; check any that are active via a glob below.
 OOMD=systemd-oomd.service
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+SUDO="${SUDO:-sudo}"
+JOURNALCTL="${JOURNALCTL:-journalctl}"
 
 log() { printf '[oomd-drill] %s\n' "$*" >&2; }
 fail() { log "FAIL: $*"; exit 1; }
 
-have_sudo() { sudo -n true 2>/dev/null; }
+have_sudo() { "$SUDO" -n true 2>/dev/null; }
 
 check_env() {
-  systemctl is-active --quiet "$OOMD" 2>/dev/null \
+  "$SYSTEMCTL" is-active --quiet "$OOMD" 2>/dev/null \
     || fail "systemd-oomd is not active; install+enable it first (apt install systemd-oomd)"
-  systemctl --user cat "$SLICE" >/dev/null 2>&1 \
+  "$SYSTEMCTL" --user cat "$SLICE" >/dev/null 2>&1 \
     || fail "$SLICE not installed; run ./install.sh from the fleet-ops repo"
-  systemctl --user cat "$HOG" >/dev/null 2>&1 \
+  "$SYSTEMCTL" --user cat "$HOG" >/dev/null 2>&1 \
     || fail "$HOG not installed; run ./install.sh from the fleet-ops repo"
   have_sudo || fail "need passwordless sudo to read the system oomd journal"
   log "prerequisites ok (oomd active, drill units installed, sudo available)"
@@ -48,14 +51,14 @@ check_env() {
 lifelines_live() {
   local bad=0 unit
   for unit in "${LIFELINES[@]}"; do
-    if ! systemctl is-active --quiet "$unit" 2>/dev/null \
-       && ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+    if ! "$SYSTEMCTL" is-active --quiet "$unit" 2>/dev/null \
+       && ! "$SYSTEMCTL" --user is-active --quiet "$unit" 2>/dev/null; then
       log "lifeline NOT active: $unit"
       bad=1
     fi
   done
-  # Intake timers (templated, user scope): at least the fleet-ops one must be live.
-  if ! systemctl --user is-active --quiet 'pi-intake@*.timer' 2>/dev/null; then
+  # Intake timers (templated, user scope): at least one instance must be live.
+  if ! "$SYSTEMCTL" --user is-active --quiet 'pi-intake@*.timer' 2>/dev/null; then
     log "no pi-intake@*.timer active in user scope"
     bad=1
   fi
@@ -66,16 +69,17 @@ run_drill() {
   local before kill_line
   before="$(date +%s)"
   log "starting $HOG under $SLICE (MemoryHigh=128M, MemoryMax=1G, MemorySwapMax=0)"
-  systemctl --user reset-failed "$HOG" 2>/dev/null || true
-  systemctl --user start "$HOG" 2>/dev/null || true
+  "$SYSTEMCTL" --user reset-failed "$HOG" 2>/dev/null || true
+  "$SYSTEMCTL" --user start "$HOG" || fail "failed to start $HOG"
 
   # Wait for the hog to be reaped. oomd needs ~60s of sustained pressure; allow
-  # 4 min before giving up (well under the 5min TimeoutStartSec backstop).
+  # 4 min before giving up (past the hog's RuntimeMaxSec=180 backstop, so a
+  # timeout kill is distinguishable from a hang).
   local waited=0
-  while systemctl --user is-active --quiet "$HOG" 2>/dev/null; do
+  while "$SYSTEMCTL" --user is-active --quiet "$HOG" 2>/dev/null; do
     waited=$((waited + 5))
     if [ "$waited" -ge 240 ]; then
-      systemctl --user stop "$HOG" 2>/dev/null || true
+      "$SYSTEMCTL" --user stop "$HOG" 2>/dev/null || true
       fail "hog ran 240s without being killed — oomd did not fire"
     fi
     sleep 5
@@ -84,7 +88,7 @@ run_drill() {
   log "hog reaped after ${elapsed}s"
 
   # The proof: oomd's own journal must show a managed kill of the hog cgroup.
-  kill_line="$(sudo journalctl -u "$OOMD" --since "@$before" --no-pager 2>/dev/null \
+  kill_line="$("$SUDO" "$JOURNALCTL" -u "$OOMD" --since "@$before" --no-pager 2>/dev/null \
     | grep -F "Killed" | grep -F "$HOG" | tail -n 1 || true)"
   if [ -z "$kill_line" ]; then
     log "no oomd managed-kill line for $HOG in the system journal since the drill started"
@@ -106,13 +110,12 @@ run_drill() {
 }
 
 cleanup() {
-  systemctl --user reset-failed "$HOG" 2>/dev/null || true
-  systemctl --user stop "$SLICE" 2>/dev/null || true
+  "$SYSTEMCTL" --user reset-failed "$HOG" 2>/dev/null || true
+  "$SYSTEMCTL" --user stop "$SLICE" 2>/dev/null || true
 }
-trap cleanup EXIT
 
 case "${1:-}" in
   --check) check_env; log "ready: run 'oomd-drill' to execute";;
-  "")      check_env; run_drill;;
+  "")      trap cleanup EXIT; check_env; run_drill;;
   *)       fail "usage: oomd-drill [--check]";;
 esac
