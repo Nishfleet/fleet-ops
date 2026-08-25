@@ -179,7 +179,7 @@ jobs:
       timeout-minutes: 5
       verify-command: |
         set -euo pipefail
-        for t in jq openssl curl python3 node; do
+        for t in jq openssl curl python3 node git flock; do
           command -v "$t" >/dev/null 2>&1 || {
             echo "missing tool: $t" >&2
             exit 1
@@ -198,6 +198,7 @@ jobs:
         bash tests/pi-issue-start.test.sh
         bash tests/pi-issue-failed-reap.test.sh
         bash tests/repair-rotation.test.sh
+        bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh

@@ -55,6 +55,7 @@ bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
 bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
+bin/fleet-claim /home/nish/.local/bin/fleet-claim
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
