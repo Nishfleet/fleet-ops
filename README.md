@@ -66,6 +66,10 @@ A short log with no verdict after `nohup` or `&` is a **launcher fault**
 `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
 them up.
 
+The `pi-packet-guard` (and the Claude PostToolUse hook that calls it)
+classifies these automatically from the redirected packet log. Launcher
+faults advise `pi-systemd-run`; lane faults advise seat rotation.
+
 Overlapping `systemctl start` of a live intake tick is a no-op
 (`pi-intake-run` flock). Starting a live `pi-issue@` worker is a no-op
 (`pi-issue-start`). The failed-reaper will not release a claim while that
