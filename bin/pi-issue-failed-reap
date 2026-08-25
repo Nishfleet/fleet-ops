@@ -13,9 +13,7 @@
 #
 # Action:
 #   1. Parse %i as <repo>-<issue>.
-#   2. If pi-issue@%i is still live (active, or activating with a running
-#      MainPID — auto-restart with MainPID=0 is NOT live: the worker process
-#      has exited and only systemd's restart timer is pending),
+#   2. If pi-issue@%i is still live (active/activating or nonzero MainPID),
 #      do nothing — StartLimitBurst can fire OnFailure while ExecStart is
 #      still running (fleet-ops#26). Never release a live worker's claim.
 #   3. Load the issue state.
