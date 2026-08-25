@@ -148,16 +148,19 @@ case "$cmd" in
     ;;
   show)
     # ActiveEnterTimestampMonotonic (us). Wedged units are old (>55min),
-    # fresh-activating are young. Real systemd prints the value only with
-    # --value; the probe also passes --property and --value.
+    # fresh-activating are young. Simulate a machine up long enough that
+    # "3600s into activating" is representable on ANY runner: a fresh GitHub
+    # runner (uptime < 1h) cannot represent a 3600s-old monotonic timestamp
+    # (it would be negative and trip the probe's ^[0-9]+$ guard).
     unit="$1"
-    now_us=$(awk '{print int($1*1000000)}' /proc/uptime)
+    now_s=$(awk '{print int($1)}' /proc/uptime)
+    if (( now_s < 3700 )); then now_s=3700; fi
     if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( now_us - 3600000000 ))"
+      echo "$(( (now_s - 3600) * 1000000 ))"
     elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( now_us - 60000000 ))"
+      echo "$(( (now_s - 60) * 1000000 ))"
     else
       echo 0
     fi

@@ -293,9 +293,15 @@ systemctl() {
         *) echo inactive ;;
       esac ;;
     show)
+      # Simulate a machine up long enough that "3600s into activating" is
+      # representable on ANY runner (fresh runners have uptime < 1h, which
+      # would make a 3600s-old monotonic timestamp negative and trip the
+      # probe's ^[0-9]+$ guard).
+      now_s=$(awk '{print int($1)}' /proc/uptime)
+      if (( now_s < 3700 )); then now_s=3700; fi
       case "$2" in
-        pi-issue@wedged.service) echo "$(( $(awk '{print int($1*1000000)}' /proc/uptime) - 3600000000 ))" ;;
-        pi-issue@fresh.service) echo "$(( $(awk '{print int($1*1000000)}' /proc/uptime) - 60000000 ))" ;;
+        pi-issue@wedged.service) echo "$(( (now_s - 3600) * 1000000 ))" ;;
+        pi-issue@fresh.service) echo "$(( (now_s - 60) * 1000000 ))" ;;
         *) echo 0 ;;
       esac ;;
   esac
