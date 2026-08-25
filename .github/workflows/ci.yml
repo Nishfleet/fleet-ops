@@ -100,6 +100,7 @@ jobs:
             /home/nish/.local/bin/pi-issue-run \
             /home/nish/.local/bin/pi-packet-run \
             /home/nish/.local/bin/pi-intake-run \
+            /home/nish/.local/bin/intake-reconcile \
             /home/nish/.local/bin/pi-issue-failed-reap \
             /home/nish/.local/bin/siterep-deploy \
             /home/nish/.local/bin/siterep-deploy-verify \

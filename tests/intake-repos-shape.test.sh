@@ -101,3 +101,8 @@ echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count exclude
 # (workflow files are out of band for the worker App). Run them here so a
 # regression cannot merge green.
 bash "$here/blocked-reconcile.test.sh"
+# fleet-ops#32: same pattern for the declared-set reconciler — the
+# intake-repos.json shape is meaningless without bin/intake-reconcile, so
+# gate on both. Workers implementing #32 must NEVER touch the live user
+# manager; the test runs entirely against stubbed systemctl + gh.
+bash "$here/intake-reconcile.test.sh"

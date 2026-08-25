@@ -203,7 +203,13 @@ ever). `siterep` is excluded (archived). Both are recorded in the file's
 fail-closes if `fleet2` ever reappears in `repos`.
 
 The reconciler that converges systemd state to this file is fleet-ops#32;
-this file is the coverage decision (#25) it consumes.
+this file is the coverage decision (#25) it consumes. The reconciler is
+`bin/intake-reconcile`, triggered by `systemd/intake-reconcile.{path,
+service,timer}` (file-change trip + 30-minute sweep). Every enable, disable,
+mask-detect or precondition-fail writes one line to
+`$HOME/.local/state/intake-reconcile/audit.log` with
+`<iso8601> <unit> <action> actor=reconciler why=<reason>` so the four
+silent reversions that prompted this issue have no recurrence path.
 
 ## Excluded pending manual review
 

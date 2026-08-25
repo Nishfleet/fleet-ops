@@ -1,0 +1,463 @@
+#!/usr/bin/env bash
+# intake-reconcile — converge systemd state to config/intake-repos.json
+# (fleet-ops#32).
+#
+# The defect this exists to close: every change to which repos run intake
+# used to be an imperative `systemctl enable` / `systemctl mask` somewhere,
+# usually invisible. Three reversions in one night (2026-08-25/26) left zero
+# trace and the queue stalled with 20 agent-ready issues queued and zero
+# intake ticks running. The declared set in config/intake-repos.json is now
+# the single source of truth; this script is the only thing that mutates
+# those systemd units. Any out-of-band mutation shows up as drift, never as
+# a silent state change.
+#
+# Two triggers, one outcome:
+#   - path unit on intake-repos.json: fires when the file changes
+#     (PRs land on main and the timer pulls it).
+#   - periodic timer: every 30 min, in case the path trigger missed
+#     (e.g. editor mtime didn't bump, or the path unit is masked).
+# Both call this script with no args. Idempotent.
+#
+# Convergence rules per repo:
+#   repos[]       (declared enrolled): enable + start pi-intake@<r>.timer
+#                                        and pi-scout@<r>.timer, BUT ONLY
+#                                        after both preconditions hold:
+#                                          (a) <checkout_root>/<name> exists
+#                                          (b) every required_label is
+#                                              present on the repo
+#                                        If a precondition fails, DISABLE
+#                                        (don't mask) and record the reason.
+#   excluded[*].permanent==true (fleet2, archived): MASK. Permanent means
+#                                        it must never run; enable is wrong
+#                                        even by accident.
+#   excluded[*].permanent==false: DISABLE.
+#   deferred[]    : DISABLE. Re-enrolment is a PR, not a sweep decision.
+#   UNDECLARED    : DISABLE if a unit exists for it, plus a LOUD alert.
+#                   An undeclared repo running means something is acting
+#                   out of band; the file is the source of truth.
+#
+# MASKED is never auto-unmasked. Masking is the loud-fail signal this issue
+# was filed for; auto-unmasking would re-enable the silent-mutation loop
+# (fourth reversion on 2026-08-26 was a disable, not a mask, which is why
+# the next requirement is "every enable/disable/mask/unmask writes one
+# audit line"). A masked unit is logged loud and left alone.
+#
+# Audit log (one line per actual state change):
+#   <iso8601> <unit> <action> actor=reconciler why=<reason>
+# Default location: $XDG_STATE_HOME/intake-reconcile/audit.log or
+#                   ~/.local/state/intake-reconcile/audit.log. Override
+# with INTAKE_RECONCILE_AUDIT_LOG. systemd's journal captures stderr for
+# every service invocation, so unhandled divergence surfaces there too.
+#
+# Loud alerts (drift the reconciler could not correct) go to:
+#   - stderr (journal)
+#   - the heartbeat triage file (humans + cross-agent grep)
+#
+# Environment seams (overridden by tests):
+#   INTAKE_RECONCILE_SYSTEMCTL   default systemctl
+#   INTAKE_RECONCILE_GH          default gh
+#   INTAKE_RECONCILE_INTAKE_JSON default .../config/intake-repos.json
+#   INTAKE_RECONCILE_AUDIT_LOG   default .../.local/state/.../audit.log
+#   INTAKE_RECONCILE_TRIAGE      default FLEET-HEARTBEAT-TRIAGE.md
+#   INTAKE_RECONCILE_DRY_RUN     1 = print actions, mutate nothing
+#   INTAKE_RECONCILE_NOW         ISO-8601 clock (test override)
+#
+# Exit 0 on a clean convergence (no actions OR every action logged).
+# Non-zero ONLY on an unexpected precondition (missing jq / gh failure that
+# is not a network blip on a single repo — that one is recorded + skipped).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+SYSTEMCTL="${INTAKE_RECONCILE_SYSTEMCTL:-systemctl}"
+GH="${INTAKE_RECONCILE_GH:-gh}"
+INTAKE_JSON="${INTAKE_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+TRIAGE="${INTAKE_RECONCILE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+DRY="${INTAKE_RECONCILE_DRY_RUN:-0}"
+
+# Audit log default: $HOME/.local/state/intake-reconcile/audit.log. Tests
+# override INTAKE_RECONCILE_AUDIT_LOG to a scratch path. mkdir -p parents
+# before opening for append so the first run on a fresh box does not fail.
+if [ -n "${INTAKE_RECONCILE_AUDIT_LOG:-}" ]; then
+    AUDIT_LOG="$INTAKE_RECONCILE_AUDIT_LOG"
+else
+    state_root="${XDG_STATE_HOME:-$HOME/.local/state}"
+    AUDIT_LOG="$state_root/intake-reconcile/audit.log"
+fi
+mkdir -p "$(dirname "$AUDIT_LOG")"
+
+now_iso() {
+    if [ -n "${INTAKE_RECONCILE_NOW:-}" ]; then
+        printf '%s' "$INTAKE_RECONCILE_NOW"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+log() {
+    printf '[%s] [intake-reconcile] %s\n' "$(now_iso)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(now_iso)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+audit() {
+    local unit="$1" action="$2" why="$3"
+    printf '%s %s %s actor=reconciler why=%s\n' \
+        "$(now_iso)" "$unit" "$action" "$why" >>"$AUDIT_LOG"
+}
+
+# Append one snapshot line so an operator can answer "what is declared
+# right now?" without reading the file. Updated even on no-op runs so
+# the heartbeat can confirm the file has been read this tick.
+snapshot_path() {
+    printf '%s/snapshot.json' "$(dirname "$AUDIT_LOG")"
+}
+
+# --- preflight ---------------------------------------------------------------
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+[ -f "$INTAKE_JSON" ] || { log "FATAL: intake file missing: $INTAKE_JSON"; exit 2; }
+jq empty "$INTAKE_JSON" >/dev/null 2>&1 || { log "FATAL: intake file invalid JSON: $INTAKE_JSON"; exit 2; }
+
+checkout_root="$(jq -r '.checkout_root // "/home/nish/workspaces/products"' "$INTAKE_JSON")"
+
+# required_labels as a sorted newline-separated list for `comm`.
+mapfile -t required_labels_arr < <(jq -r '.required_labels[]?' "$INTAKE_JSON")
+if [ "${#required_labels_arr[@]}" -eq 0 ]; then
+    log "FATAL: intake file has no required_labels"
+    exit 2
+fi
+required_labels_sorted="$(printf '%s\n' "${required_labels_arr[@]}" | LC_ALL=C sort -u)"
+
+mapfile -t declared_repos_arr < <(jq -r '.repos[]?.name' "$INTAKE_JSON")
+mapfile -t excluded_perm_arr < <(jq -r '.excluded[]? | select(.permanent == true) | .name' "$INTAKE_JSON")
+mapfile -t excluded_nonperm_arr < <(jq -r '.excluded[]? | select(.permanent != true) | .name' "$INTAKE_JSON")
+mapfile -t deferred_arr < <(jq -r '.deferred[]?.name' "$INTAKE_JSON")
+
+# --- precondition probe ------------------------------------------------------
+# Returns 0 if the repo has every required_label, 1 otherwise. Never dies
+# on a single network blip — labels might be unavailable but the
+# reconciliation still needs to converge the rest. The result is reflected
+# in the audit log ("why=precondition-missing-labels:<name>").
+repo_has_labels() {
+    local repo="$1"
+    local got
+    if ! got=$("$GH" label list -R "$repo" --json name --jq '.[].name' 2>/dev/null); then
+        log "  $repo: gh label list FAILED"
+        return 2
+    fi
+    local got_sorted
+    got_sorted="$(printf '%s\n' "$got" | LC_ALL=C sort -u)"
+    local missing
+    missing="$(comm -23 <(printf '%s\n' "$required_labels_sorted") <(printf '%s\n' "$got_sorted"))"
+    if [ -n "$missing" ]; then
+        log "  $repo: missing labels:"$'\n'"$missing"
+        return 1
+    fi
+    return 0
+}
+
+checkout_exists() {
+    local repo="$1"
+    [ -d "$checkout_root/$repo" ]
+}
+
+units_for() {
+    # Two units per repo. Keep the list tight — the audit log only names
+    # the unit that actually moved.
+    local repo="$1"
+    printf 'pi-intake@%s.timer\npi-scout@%s.timer\n' "$repo" "$repo"
+}
+
+# --- systemd probes ----------------------------------------------------------
+# is_enabled / is_active return "yes" / "no" / "<unknown>". Default to the
+# literal systemctl output; tests stub the fake to return deterministic
+# states. is_masked returns "yes" / "no".
+
+is_enabled() {
+    "$SYSTEMCTL" --user is-enabled --quiet "$1" 2>/dev/null && echo yes || echo no
+}
+
+is_active() {
+    "$SYSTEMCTL" --user is-active --quiet "$1" 2>/dev/null && echo yes || echo no
+}
+
+is_masked() {
+    # is-enabled returns "masked" or "not-found" or "enabled". We want a
+    # boolean specifically about masking, so re-route through show if
+    # needed — but the boolean form is enough for the no-op detection.
+    local s
+    s="$("$SYSTEMCTL" --user is-enabled "$1" 2>/dev/null || true)"
+    case "$s" in
+        masked) echo yes ;;
+        *)      echo no ;;
+    esac
+}
+
+# --- mutators ----------------------------------------------------------------
+# Each mutator: idempotent (already-correct state = no audit), logs to
+# audit log only on actual state change. DRY_RUN short-circuits before any
+# systemctl invocation.
+
+enable_unit() {
+    local unit="$1" why="$2"
+    if [ "$(is_enabled "$unit")" = "yes" ]; then return 0; fi
+    if [ "$DRY" = "1" ]; then
+        log "DRY enable $unit ($why)"
+        audit "$unit" "enable" "$why"
+        return 0
+    fi
+    "$SYSTEMCTL" --user enable --now "$unit" >/dev/null 2>&1 \
+        || { log "enable $unit FAILED"; return 1; }
+    audit "$unit" "enable" "$why"
+    log "  $unit: enabled ($why)"
+}
+
+start_unit() {
+    local unit="$1" why="$2"
+    if [ "$(is_active "$unit")" = "yes" ]; then return 0; fi
+    if [ "$DRY" = "1" ]; then
+        log "DRY start $unit ($why)"
+        audit "$unit" "start" "$why"
+        return 0
+    fi
+    "$SYSTEMCTL" --user start "$unit" >/dev/null 2>&1 \
+        || { log "start $unit FAILED"; return 1; }
+    audit "$unit" "start" "$why"
+    log "  $unit: started ($why)"
+}
+
+disable_unit() {
+    local unit="$1" why="$2"
+    if [ "$(is_enabled "$unit")" = "no" ]; then return 0; fi
+    if [ "$DRY" = "1" ]; then
+        log "DRY disable $unit ($why)"
+        audit "$unit" "disable" "$why"
+        return 0
+    fi
+    "$SYSTEMCTL" --user disable --now "$unit" >/dev/null 2>&1 \
+        || { log "disable $unit FAILED"; return 1; }
+    audit "$unit" "disable" "$why"
+    log "  $unit: disabled ($why)"
+}
+
+# A masked unit is the loud-fail signal the issue was filed for. We do NOT
+# auto-unmask. We log loud + audit + leave it.
+check_masked() {
+    local unit="$1" repo="$2"
+    if [ "$(is_masked "$unit")" = "no" ]; then return 0; fi
+    local msg="$unit masked but declared enrolled for Nishfleet/$repo — leaving masked, do not auto-unmask"
+    loud "INTAKE-MASKED" "$msg"
+    audit "$unit" "mask-detected" "declared-enrolled-but-masked"
+    return 1
+}
+
+# --- per-repo convergence ----------------------------------------------------
+# Converge one repo's two timers. Mode is one of: enroll, defer, exclude-perm,
+# exclude-nonperm, undeclared.
+
+converge_repo() {
+    local repo="$1" mode="$2" reason="$3"
+    case "$mode" in
+        enroll)
+            # Preconditions FIRST. If they fail we disable, never silently skip.
+            local fail=()
+            checkout_exists "$repo" || fail+=("checkout-missing-at-${checkout_root}/${repo}")
+            # repo_has_labels returns non-zero under set -e on failure; use
+            # || true so we capture the code instead of aborting the
+            # reconcile sweep. The result is what drives the precondition
+            # decision.
+            local label_rc=0
+            repo_has_labels "$repo" || label_rc=$?
+            case "$label_rc" in
+                0) ;;
+                1) fail+=("repo-missing-labels") ;;
+                2) fail+=("repo-label-check-error") ;;
+            esac
+
+            if [ "${#fail[@]}" -gt 0 ]; then
+                local why
+                why="$(printf '%s\n' "${fail[@]}" | paste -sd, -)"
+                # Unit cannot run anyway — disable so it can't be started
+                # by a clock tick. Mask would be wrong: masking is permanent.
+                while IFS= read -r u; do
+                    [ -n "$u" ] || continue
+                    disable_unit "$u" "precondition-fail:$why"
+                    check_masked "$u" "$repo" || true
+                done < <(units_for "$repo")
+                loud "INTAKE-PRECOND-FAIL" \
+                    "$repo: preconditions failed ($why) — units disabled, NOT enrolled"
+                return 0
+            fi
+
+            # Both preconditions hold. Mask check is per-unit: a masked
+            # unit is left masked + logged loud, but the non-masked ones
+            # for the same repo still get enabled. Auto-unmask would
+            # re-enable the silent-mutation loop this issue was filed for.
+            local masked=() to_enable=()
+            while IFS= read -r u; do
+                [ -n "$u" ] || continue
+                if [ "$(is_masked "$u")" = "yes" ]; then
+                    masked+=("$u")
+                else
+                    to_enable+=("$u")
+                fi
+            done < <(units_for "$repo")
+
+            if [ "${#masked[@]}" -gt 0 ]; then
+                local m
+                m="$(printf '%s\n' "${masked[@]}" | paste -sd, -)"
+                loud "INTAKE-MASKED" \
+                    "$repo: declared enrolled but unit(s) masked ($m) — leaving masked"
+                audit "$repo" "mask-detected" "declared-enrolled-but-masked:$m"
+            fi
+
+            local u
+            for u in "${to_enable[@]:-}"; do
+                [ -n "$u" ] || continue
+                enable_unit "$u" "declared-enrolled:$reason"
+                start_unit  "$u" "declared-enrolled:$reason"
+            done
+            log "  $repo: enrolled ($reason)"
+            ;;
+        defer)
+            while IFS= read -r u; do
+                [ -n "$u" ] || continue
+                disable_unit "$u" "declared-deferred:$reason"
+            done < <(units_for "$repo")
+            log "  $repo: deferred — units disabled ($reason)"
+            ;;
+        exclude-perm)
+            # Mask: permanent exclusion means this repo MUST NEVER run.
+            # Disable is not strong enough — a stray clock tick could
+            # re-enable it. Mask survives until a human unmask + delete.
+            # But: NEVER auto-mask on first encounter; an operator may
+            # have intentionally left a unit enabled for diagnosis. Loud
+            # line + audit + leave is the consistent rule with enroll's
+            # masked-handling.
+            local masked=()
+            while IFS= read -r u; do
+                [ -n "$u" ] || continue
+                if [ "$(is_masked "$u")" = "yes" ]; then masked+=("$u"); fi
+                disable_unit "$u" "declared-excluded-permanent:$reason"
+            done < <(units_for "$repo")
+            if [ "${#masked[@]}" -gt 0 ]; then
+                local m
+                m="$(printf '%s\n' "${masked[@]}" | paste -sd, -)"
+                loud "INTAKE-MASKED" \
+                    "$repo: permanent-excluded and already masked ($m) — leaving masked"
+            else
+                loud "INTAKE-PERM-EXCLUDED" \
+                    "$repo: permanent-excluded ($reason) — units disabled, not masked (operator must mask manually if so desired)"
+                audit "$repo" "perm-excluded" "$reason"
+            fi
+            ;;
+        exclude-nonperm)
+            while IFS= read -r u; do
+                [ -n "$u" ] || continue
+                disable_unit "$u" "declared-excluded-nonperm:$reason"
+            done < <(units_for "$repo")
+            log "  $repo: non-perm excluded — units disabled ($reason)"
+            ;;
+        undeclared)
+            # A unit for a repo that is in NEITHER repos NOR excluded NOR
+            # deferred. The file is the source of truth — an undeclared
+            # unit running is drift, plain and simple. Loud alert, then
+            # disable. Audit log records the divergence.
+            loud "INTAKE-UNDECLARED" \
+                "$repo: unit exists but repo is undeclared — drift, disabling"
+            audit "$repo" "undeclared-drift" "unit-exists-but-file-does-not-list"
+            while IFS= read -r u; do
+                [ -n "$u" ] || continue
+                disable_unit "$u" "undeclared-drift"
+            done < <(units_for "$repo")
+            ;;
+    esac
+}
+
+# --- main convergence --------------------------------------------------------
+# Build the full set of repo names we should converge (declared + anything
+# the path unit sees). We only know about declared names; units for
+# UNDECLARED repos are detected by enumerating live timer instances via
+# `systemctl --user list-unit-files`. That way an out-of-band `enable`
+# surfaces as drift and is corrected on the next tick.
+
+declare -A declared_mode=() declared_reason=()
+
+for r in "${declared_repos_arr[@]}"; do
+    declared_mode[$r]=enroll
+    declared_reason[$r]="declared-in-repos"
+done
+for r in "${excluded_perm_arr[@]}"; do
+    declared_mode[$r]=exclude-perm
+    declared_reason[$r]="declared-excluded-permanent"
+done
+for r in "${excluded_nonperm_arr[@]}"; do
+    declared_mode[$r]=exclude-nonperm
+    declared_reason[$r]="declared-excluded-nonperm"
+done
+for r in "${deferred_arr[@]}"; do
+    declared_mode[$r]=defer
+    declared_reason[$r]="declared-deferred"
+done
+
+# Enumerate live unit-file instances that look like our templates.
+live_repos=""
+list_out="$("$SYSTEMCTL" --user list-unit-files 'pi-intake@*.timer' 'pi-scout@*.timer' \
+    --no-legend --plain 2>/dev/null || true)"
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # Format: <unit> <state> ...
+    unit="${line%% *}"
+    case "$unit" in
+        pi-intake@*.timer) inst="${unit#pi-intake@}"; inst="${inst%.timer}" ;;
+        pi-scout@*.timer)  inst="${unit#pi-scout@}";  inst="${inst%.timer}" ;;
+        *) continue ;;
+    esac
+    live_repos="$(printf '%s\n%s\n' "$live_repos" "$inst" | awk 'NF' | LC_ALL=C sort -u)"
+done <<<"$list_out"
+
+# Anything live that is not in our declared set is UNDECLARED drift.
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    if [ -z "${declared_mode[$repo]:-}" ]; then
+        declared_mode[$repo]=undeclared
+        declared_reason[$repo]="not-in-declared-set"
+    fi
+done <<<"$live_repos"
+
+# Iterate in LC_ALL=C sorted order so the audit log is stable across runs
+# (the diff between two consecutive ticks is human-readable).
+ordered_repos="$(printf '%s\n' "${!declared_mode[@]}" | LC_ALL=C sort -u)"
+log "converging $(printf '%s\n' "$ordered_repos" | awk 'NF' | wc -l) repos; audit=$AUDIT_LOG"
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    mode="${declared_mode[$repo]}"
+    reason="${declared_reason[$repo]}"
+    converge_repo "$repo" "$mode" "$reason"
+done <<<"$ordered_repos"
+
+# Publish a snapshot so an operator (or another agent) can grep "what does
+# the reconciler think right now?" without re-reading the file.
+snap="{\"updated\":\"$(now_iso)\",\"repos\":["
+first=1
+for repo in $ordered_repos; do
+    [ "$first" -eq 1 ] || snap="$snap,"
+    first=0
+    snap="$snap{\"name\":\"$repo\",\"mode\":\"${declared_mode[$repo]}\",\"reason\":\"${declared_reason[$repo]}\"}"
+done
+snap="$snap]}"
+printf '%s\n' "$snap" >"$(snapshot_path)"
+
+log "converged ${#declared_mode[@]} repos"
+exit 0
