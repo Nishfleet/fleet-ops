@@ -7,5 +7,8 @@ StartLimitBurst=2
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/scout-repair.md; echo; echo "TARGET: scout unit pi-scout@%i.service, repo Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider devin --model glm-5-2'
+# Same wrapper as pi-scout@.service: pick_seat, fail loud when every seat
+# is walled. Do not pin --provider here — a hardcoded repair seat is how
+# this unit sat activating on quota_exhausted glm-5-2 (fleet-ops#130).
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout-repair'
 TimeoutStartSec=1800

@@ -38,6 +38,7 @@ bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
+bin/pi-scout-run /home/nish/.local/bin/pi-scout-run
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch

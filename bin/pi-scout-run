@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# bin/pi-scout-run
+# Seat-rotation wrapper for pi-scout and pi-scout-repair units.
+#
+# Assembles the packet from ~/.pi/agent/prompts/<prompt>.md plus the correct
+# TARGET line, calls pick_seat from lib/seat-lib.sh, and runs
+# pi --print --provider <provider> --model <model> on the assembled packet.
+#
+# Args:
+#   $1 = repo instance (e.g. fleet-ops)
+#   $2 = prompt name (scout or scout-repair)
+#
+# Environment:
+#   PI_PACKET_SEAT_LIB  path to seat-lib.sh
+#   SCOUT_PROMPT_DIR    prompt directory (default ~/.pi/agent/prompts)
+#   PI_BIN              pi binary (default ~/.local/bin/pi)
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+source "$SEAT_LIB"
+
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+PROMPT_DIR="${SCOUT_PROMPT_DIR:-$HOME/.pi/agent/prompts}"
+
+usage() {
+    echo "usage: pi-scout-run <repo> <prompt-name>" >&2
+    exit 1
+}
+[[ $# -ge 2 ]] || usage
+
+repo="$1"
+prompt_name="$2"
+prompt_file="$PROMPT_DIR/${prompt_name}.md"
+
+[[ -f "$prompt_file" ]] || { echo "pi-scout-run: prompt not found: $prompt_file" >&2; exit 1; }
+
+# Choose a healthy seat. Compute need_capable from the task weight so a
+# heavy repair prompt gets a capable seat, while the lighter scout prompt
+# can use any healthy seat.
+weight=$(task_weight "$prompt_file")
+need_capable=0
+[[ "$weight" == "heavy" ]] && need_capable=1
+
+seat=$(pick_seat "" "" "$need_capable" || true)
+if [[ -z "$seat" ]]; then
+    seat_log "pi-scout-run: $repo/$prompt_name no healthy seat available"
+    echo "pi-scout-run: $repo/$prompt_name no healthy seat available" >&2
+    exit 1
+fi
+
+np=$(printf '%s' "$seat" | cut -f1)
+nm=$(printf '%s' "$seat" | cut -f2)
+
+seat_log "pi-scout-run: $repo/$prompt_name running on $np/$nm (weight=$weight)"
+
+# Build the TARGET line.
+case "$prompt_name" in
+    scout)
+        target_line="TARGET REPO: Nishfleet/${repo}"
+        ;;
+    scout-repair)
+        target_line="TARGET: scout unit pi-scout@${repo}.service, repo Nishfleet/${repo}"
+        ;;
+    *)
+        echo "pi-scout-run: unknown prompt name: $prompt_name" >&2
+        exit 1
+        ;;
+esac
+
+# Run pi. The packet is the prompt plus a blank line and the TARGET line.
+{
+    cat "$prompt_file"
+    echo
+    echo "$target_line"
+} | "$PI_BIN" --print --provider "$np" --model "$nm"
