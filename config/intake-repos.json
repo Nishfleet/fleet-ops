@@ -1,0 +1,31 @@
+{
+  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake — the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly — every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for).",
+  "checkout_root": "/home/nish/workspaces/products",
+  "required_labels": ["agent-ready", "agent-in-progress", "agent-blocked"],
+  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> — intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo — the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
+  "repos": [
+    {"name": "0509"},
+    {"name": "0509-telemetry"},
+    {"name": "TinyStudio.io"},
+    {"name": "TinyStudio.io-public"},
+    {"name": "aiconverter-app"},
+    {"name": "context-hub"},
+    {"name": "egress-probe"},
+    {"name": "fleet-ops"},
+    {"name": "inish-site"},
+    {"name": "siterep-public"},
+    {"name": "tinystudio-in"}
+  ],
+  "excluded": [
+    {
+      "name": "fleet2",
+      "permanent": true,
+      "reason": "Forbidden second dispatcher. Standing rule 'One fleet — No second dispatcher, ever' (vault _system/shared-memory/global-standing-rules.md, 'One fleet'): a second fleet spends its effort on itself. fleet2 must NEVER be enrolled regardless of labels or checkout state."
+    },
+    {
+      "name": "siterep",
+      "permanent": true,
+      "reason": "Archived repo (isArchived=true). No intake on archived repos."
+    }
+  ]
+}

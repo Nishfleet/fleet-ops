@@ -187,6 +187,8 @@ jobs:
           done
       - name: Manifest shape
         run: bash tests/manifest-shape.test.sh
+      - name: intake-repos shape
+        run: bash tests/intake-repos-shape.test.sh
       - name: worker-token fail-closed
         run: bash tests/worker-token-fail-closed.test.sh
       - name: semantic-conflict-detector
