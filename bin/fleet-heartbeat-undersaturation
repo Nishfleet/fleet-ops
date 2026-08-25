@@ -188,7 +188,23 @@ reap_stale_active_seats() {
         esac
         state=$("$SYSTEMCTL" --user is-active "$sysunit" 2>/dev/null || echo inactive)
         case "$state" in
-            active|activating) : ;;  # live, keep
+            active) : ;;  # live, keep
+            activating)
+                # P15 wedge-age probe: `activating` is normally live (up to
+                # the unit's TimeoutStartSec=45min), but past
+                # PI_SEAT_ACTIVATING_MAX_S it is a wedged pi, not a worker.
+                # Mirrors seat-lib's _seat_registry_unit_live. A SIGKILLed
+                # wedged worker leaves `activating`; age is the honest signal.
+                active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+                if [[ "$active_since" =~ ^[0-9]+$ ]]; then
+                    now_s=$(awk '{print int($1)}' /proc/uptime)
+                    age_s=$(( now_s - active_since / 1000000 ))
+                    if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
+                        rm -f "$f"; n=$((n+1))
+                        log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s)"
+                    fi
+                fi
+                ;;
             *) rm -f "$f"; n=$((n+1)); log "repair: reaped stale active-seat $f ($sysunit $state)" ;;
         esac
     done
