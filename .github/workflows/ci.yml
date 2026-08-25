@@ -237,3 +237,9 @@ jobs:
       # SHAPE lock that catches decision regressions in CI.
       - name: mass-close guard
         run: bash tests/mass-close-guard.test.sh
+      # fleet-ops#78: lock the unmanaged Codex app-server reap gate.
+      # Never kill outside the weekly window while peer connections live;
+      # never kill an already-managed daemon. Live reap+round-trip is the
+      # Sunday window; this is the CI lock on the gate.
+      - name: codex orphan reap gate
+        run: bash tests/codex-orphan-reap.test.sh

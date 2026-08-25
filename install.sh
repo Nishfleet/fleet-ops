@@ -98,7 +98,9 @@ process_entry() {
     sudo install -D -m 0644 -o root -g root "$repo" "$dest"
     echo "installed (system): $dest"
   else
-    # User scope: symlink, idempotent.
+    # User scope: symlink, idempotent. mkdir -p so nested drop-in dirs
+    # (e.g. vps-weekly-update.service.d/) exist on first install.
+    mkdir -p "$(dirname "$dest")"
     ln -sfn "$repo" "$dest"
   fi
 }

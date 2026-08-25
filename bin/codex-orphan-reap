@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# codex-orphan-reap — gated reap of an unmanaged Codex app-server that
+# blocks codex-remote-control.service, then start the managed daemon and
+# prove it with one remote-control round-trip.
+#
+# BACKGROUND (Nishfleet/fleet-ops#78)
+#   An unmanaged `codex app-server` (reparented to PID 1, listening on
+#   ~/.codex/app-server-control/app-server-control.sock) makes
+#   `codex remote-control start` fail with:
+#     app server is running but is not managed by codex app-server daemon
+#   Killing it outside the weekly window severs any live peer connections,
+#   so this script refuses that path.
+#
+# SAFETY GATE
+#   Reap is allowed only when:
+#     - the listener is NOT already the managed daemon (pid file match), AND
+#     - maintenance.json status is `paused` or `quiescing`, OR
+#     - the orphan has zero peer connections.
+#   --force bypasses the maintenance-flag check, never an active peer count.
+#
+# USAGE
+#   codex-orphan-reap            # detect, gated reap, restart, verify
+#   codex-orphan-reap --dry-run  # detect + report; no kill, no restart
+#   codex-orphan-reap --force    # bypass the maintenance-flag check
+#
+# EXIT CODES
+#   0   success, already managed, or nothing to do (idempotent)
+#   2   missing prereq (codex, systemctl, lsof)
+#   10  safety gate refused (not in the window AND peers > 0)
+#   11  reap failed (orphan survived SIGKILL)
+#   12  restart failed (codex-remote-control.service did not become active)
+#   13  round-trip verification failed
+set -euo pipefail
+
+SOCK="${CODEX_CONTROL_SOCK:-$HOME/.codex/app-server-control/app-server-control.sock}"
+DAEMON_PID_FILE="${CODEX_DAEMON_PID_FILE:-$HOME/.codex/app-server-daemon/app-server.pid}"
+MAINT_FLAG="${CODEX_MAINT_FLAG:-/home/nish/workspaces/agent-state/maintenance.json}"
+LOG_DIR="${CODEX_ORPHAN_REAP_LOG_DIR:-$HOME/.local/state/codex-orphan-reap}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+LSOF="${LSOF:-lsof}"
+CODEX="${CODEX:-codex}"
+
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/last-run.log"
+: > "$LOG"
+
+log() { printf '[%s] %s\n' "$(date -Is)" "$*" | tee -a "$LOG" >&2; }
+die() { log "FATAL: $*"; exit "${2:-1}"; }
+
+DRY_RUN=0
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --force)   FORCE=1 ;;
+        -h|--help) sed -n '2,32p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *) die "unknown arg: $arg" 2 ;;
+    esac
+done
+
+command -v "$CODEX" >/dev/null     || die "codex binary missing" 2
+command -v "$SYSTEMCTL" >/dev/null || die "systemctl missing" 2
+command -v "$LSOF" >/dev/null      || die "lsof missing" 2
+
+# --- helpers ----------------------------------------------------------------
+daemon_pid_from_file() {
+    local f="$1"
+    [ -f "$f" ] || return 1
+    python3 -c 'import json,sys
+try:
+    p = json.load(open(sys.argv[1])).get("pid", "")
+except Exception:
+    p = ""
+print(p if str(p).isdigit() else "")' "$f"
+}
+
+is_descendant_of() {
+    local ancestor="$2" cur="$1"
+    local hops=0
+    while [ "$hops" -lt 16 ]; do
+        [ "$cur" = "$ancestor" ] && return 0
+        if [ -z "$cur" ] || [ "$cur" = "1" ]; then
+            return 1
+        fi
+        [ -f "/proc/$cur/status" ] || return 1
+        cur="$(awk '/^PPid:/{print $2; exit}' "/proc/$cur/status")"
+        hops=$((hops + 1))
+    done
+    return 1
+}
+
+# Unique NODE ids on CONNECTED unix sockets, excluding LISTEN.
+# Two fds that share a NODE are one socketpair, not two peers.
+peer_count_from_lsof() {
+    awk '
+        /STREAM/ && /CONNECTED/ && !/LISTEN/ { nodes[$8] = 1 }
+        END { print length(nodes) + 0 }
+    '
+}
+
+# --- detect -----------------------------------------------------------------
+if [ ! -S "$SOCK" ]; then
+    log "no control socket at $SOCK — nothing to reap"
+    exit 0
+fi
+
+listener="$("$LSOF" -t "$SOCK" 2>/dev/null | head -1 || true)"
+if [ -z "$listener" ]; then
+    log "no listener on $SOCK — nothing to reap"
+    if [ "$DRY_RUN" -ne 1 ]; then
+        rm -f "$SOCK"
+    fi
+    exit 0
+fi
+if ! kill -0 "$listener" 2>/dev/null; then
+    log "listener $listener already dead — removing stale socket"
+    if [ "$DRY_RUN" -ne 1 ]; then
+        rm -f "$SOCK"
+    fi
+    exit 0
+fi
+
+cmdline="$(tr '\0' ' ' < "/proc/$listener/cmdline" 2>/dev/null || true)"
+log "listener pid=$listener cmd=$cmdline"
+
+# Already managed: the daemon pid file points at this listener (or its
+# parent). A managed daemon with live peers must NEVER be reaped — that
+# is the healthy post-fix state, including during next week's window.
+daemon_pid="$(daemon_pid_from_file "$DAEMON_PID_FILE" || true)"
+if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
+    if [ "$daemon_pid" = "$listener" ] || is_descendant_of "$listener" "$daemon_pid"; then
+        log "listener is managed by daemon pid=$daemon_pid — nothing to reap"
+        exit 0
+    fi
+    log "daemon pid file names pid=$daemon_pid (live) but listener is pid=$listener — treating listener as unmanaged"
+fi
+
+peer_count="$("$LSOF" -a -U -p "$listener" 2>/dev/null | peer_count_from_lsof || true)"
+peer_count="${peer_count:-0}"
+log "listener holds $peer_count active peer connection(s)"
+
+maint_status="clear"
+if [ -f "$MAINT_FLAG" ]; then
+    maint_status="$(python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("status", "clear"))
+except Exception:
+    print("clear")' "$MAINT_FLAG" 2>/dev/null || echo clear)"
+fi
+log "maintenance flag status=$maint_status"
+
+allowed=0
+reason=""
+case "$maint_status" in
+    paused|quiescing)
+        allowed=1
+        reason="maintenance flag=$maint_status (window is in kill phase)"
+        ;;
+    *)
+        if [ "$peer_count" -eq 0 ]; then
+            allowed=1
+            reason="no active peers"
+        else
+            reason="maintenance=$maint_status peers=$peer_count"
+        fi
+        ;;
+esac
+if [ "$allowed" -ne 1 ] && [ "$FORCE" -eq 1 ]; then
+    if [ "$peer_count" -eq 0 ]; then
+        allowed=1
+        reason="--force and no active peers"
+    else
+        reason="--force requested but $peer_count peers active — refuse to sever"
+    fi
+fi
+if [ "$allowed" -ne 1 ]; then
+    log "REFUSED: $reason"
+    log "do NOT reap the orphan outside the maintenance window while it holds connections"
+    log "hint: wait for the maintenance window (Sun 03:15 IST) or stop the things holding the connections first"
+    exit 10
+fi
+log "ALLOWED: $reason"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run: would reap pid=$listener and restart codex-remote-control.service"
+    exit 0
+fi
+
+# --- reap -------------------------------------------------------------------
+log "sending SIGTERM to pid=$listener"
+kill -TERM "$listener" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$listener" 2>/dev/null || break
+    sleep 0.5
+done
+if kill -0 "$listener" 2>/dev/null; then
+    log "pid=$listener did not exit; sending SIGKILL"
+    kill -KILL "$listener" 2>/dev/null || true
+    sleep 0.5
+fi
+if kill -0 "$listener" 2>/dev/null; then
+    die "pid=$listener survived SIGKILL — refusing to continue" 11
+fi
+log "orphan reaped"
+
+if [ -x "$HOME/.local/bin/codex-remote-control-prestart" ]; then
+    "$HOME/.local/bin/codex-remote-control-prestart" || true
+fi
+
+# --- restart ----------------------------------------------------------------
+log "starting codex-remote-control.service"
+if ! "$SYSTEMCTL" --user start codex-remote-control.service 2>&1 | tee -a "$LOG"; then
+    die "systemctl --user start codex-remote-control.service failed" 12
+fi
+
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    state="$("$SYSTEMCTL" --user is-active codex-remote-control.service 2>/dev/null || true)"
+    case "$state" in
+        active) break ;;
+        failed) die "codex-remote-control.service entered failed state" 12 ;;
+    esac
+    sleep 1
+done
+if [ "$("$SYSTEMCTL" --user is-active codex-remote-control.service)" != "active" ]; then
+    die "codex-remote-control.service did not become active" 12
+fi
+log "codex-remote-control.service is active"
+
+# Managed takeover: the daemon pid file must name a live process. The
+# socket listener is still `codex ... app-server`; do not require
+# "remote-control" in its cmdline (that string is the wrapper, not the
+# listener).
+new_pid="$(daemon_pid_from_file "$DAEMON_PID_FILE" || true)"
+if [ -z "$new_pid" ] || ! kill -0 "$new_pid" 2>/dev/null; then
+    die "managed daemon pid file missing or dead after start" 13
+fi
+log "managed daemon pid=$new_pid"
+
+if ! timeout 30 "$CODEX" remote-control pair --json > "$LOG_DIR/last-pair.json" 2>>"$LOG"; then
+    die "codex remote-control pair round-trip failed" 13
+fi
+log "round-trip ok"
+log "done"
+exit 0
