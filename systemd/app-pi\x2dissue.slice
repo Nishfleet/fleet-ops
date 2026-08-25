@@ -28,18 +28,25 @@
 # DefaultMemoryPressureDurationSec in /etc/systemd/oomd.conf, set to 60s
 # there: at 80% a 30s spike is survivable, a full sustained minute is not.
 #
-# PROVEN by drill 2026-08-26 01:24:33 IST: systemd-oomd killed a memory-hog
-# cgroup "due to memory pressure ... 75.07% > 50.00% for > 1min with reclaim
-# activity" (system oomd journal) while ssh, fleet-heartbeat, and the pi-intake
-# timers stayed live (zero failed user units, all timers active). The managed
-# kill mechanism fires and spares lifelines. Reproduce with bin/oomd-drill.
-#
-# Known caveat: systemd/systemd#33486 reports cases where a pressure limit
-# does not fire as expected. The drill exercised oomd's managed-kill path via
-# a bounded hog; the 80% threshold on THIS slice specifically was calibrated
-# from measurement (baseline `some avg10` = 0.00, n=5, fleet running) rather
-# than driven to 80% live, since doing so would pressure real workers. The
-# mechanism is proven; the exact 80% trip point is measurement-derived.
+# Provenance (fleet-ops#71): the kill path is now PROVEN, not assumed.
+# Bounded thrasher (MemoryHigh=128M, MemoryMax=1G, MemorySwapMax=0,
+# RuntimeMaxSec=180) in oomd-drill.slice on 2026-08-26 01:24 IST. systemd
+# journal at that minute, system-scope:
+#   systemd-oomd[3099719]: Killed
+#     /user.slice/user-1000.slice/user@1000.service/oomd.slice/oomd-drill.slice/oomd-drill-hog.service
+#     due to memory pressure for /user.slice/user-1000.slice/user@1000.service
+#     being 75.07% > 50.00% for > 1min with reclaim activity
+# Service exited Result=oom-kill; ssh, the heartbeat, and intake survived.
+# The 50.00% trip was Ubuntu's STOCK user@.service policy
+# (10-oomd-user-service-defaults.conf) — NOT our 80% layer, which fires
+# higher. Stock layer was not yet neutralized on 2026-08-26 01:24; it was
+# neutralized at 01:34 via
+# /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf
+# (ManagedOOMMemoryPressure=auto). Both that drop-in AND
+# /etc/systemd/system/user-1000.slice.d/50-ram-governor.conf are
+# repo-owned by fleet-ops#71. See docs/ram-governor-tree.md for the
+# full five-layer policy tree.
+# Reproduce the drill after any oomd/kernel upgrade: bin/oomd-drill (issue #62).
 #
 # ManagedOOMSwap is deliberately left `auto` (off). 4.7 GiB of swap was in use
 # at configuration time with ZERO pressure - swapped-out pages of workers idling
@@ -48,6 +55,14 @@
 # Scope: this slice only. sshd, tailscaled, the fleet heartbeat and the intake
 # timers are NOT in it and stay `auto`, so oomd can never take the box's
 # lifelines or the supervisor that would repair a reaped worker.
+#
+# Policy stack (outermost → innermost):
+#   /etc/systemd/oomd.conf.d/99-fleet.conf            60s pressure duration
+#   /etc/systemd/system/user-1000.slice.d/...         12 GiB cap + 80% kill (this issue)
+#   user@1000.service                                 50% stock kill (now neutralized — this issue)
+#   this slice (app-pi\x2dissue.slice)                80% kill (the LAST resort for fleet workers)
+#   per-worker MemoryHigh=3G / MemoryMax=6G           throttle-and-bound
+#   MIN_FREE_RAM_MB=2500 launch floor                 prevent work starting
 [Slice]
 ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=80%

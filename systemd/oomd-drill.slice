@@ -8,11 +8,16 @@
 # behind a low limit and a hard MemoryMax, so the drill proves oomd fires and
 # spares lifelines without stressing the fleet.
 #
-# MemoryMax=1G bounds the hog: it hits the wall, stalls on allocation, PSI
-# memory pressure climbs, oomd kills the hog cgroup after
-# DefaultMemoryPressureDurationSec (60s, set in /etc/systemd/oomd.conf.d on the
-# host). 5% is a deliberately low trip point so the drill fires fast; the real
-# worker slice uses 80% (see app-pi\x2dissue.slice for why).
+# MemoryMax=1G bounds the hog; MemoryHigh=128M throttles it well before the
+# cap so PSI memory pressure climbs sharply (a throttled allocator stalls,
+# which is what pressure measures); MemorySwapMax=0 keeps it out of swap so
+# the kill is driven by pressure, not swap usage. oomd kills the hog cgroup
+# after DefaultMemoryPressureDurationSec (60s, set in /etc/systemd/oomd.conf.d
+# on the host). 5% is a deliberately low trip point so the drill fires fast;
+# the real worker slice uses 80% (see app-pi\x2dissue.slice for why).
+#
+# These bounds match the 2026-08-26 01:24 IST drill recorded in
+# app-pi\x2dissue.slice and docs/ram-governor-tree.md.
 #
 # Scope: this slice only. sshd, tailscaled, fleet-heartbeat and the intake
 # timers are NOT under it and stay `auto`, so the drill can never take a
@@ -20,4 +25,6 @@
 [Slice]
 ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=5%
+MemoryHigh=128M
 MemoryMax=1G
+MemorySwapMax=0

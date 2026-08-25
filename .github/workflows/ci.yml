@@ -198,6 +198,8 @@ jobs:
         run: bash tests/repeat-deterministic-detector.test.sh
       - name: required-check-purity
         run: bash tests/required-check-purity.test.sh
+      - name: pi-packet-guard
+        run: bash tests/pi-packet-guard.test.sh
       - name: pi-systemd-run
         run: bash tests/pi-systemd-run.test.sh
       - name: pi-intake-run overlap
@@ -208,3 +210,10 @@ jobs:
         run: bash tests/pi-issue-failed-reap.test.sh
       - name: repair rotation
         run: bash tests/repair-rotation.test.sh
+      # fleet-ops#71: lock the system-scope RAM governor drop-ins this issue
+      # repo-owns, plus their MANIFEST entries and the install.sh routing
+      # that puts them under `./install.sh --system`. Drift detection at
+      # install time is `./install.sh --check --system`; this is the
+      # SHAPE lock that catches content regressions in CI.
+      - name: system drop-ins shape
+        run: bash tests/system-dropins-shape.test.sh

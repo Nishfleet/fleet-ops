@@ -21,14 +21,31 @@ script, or prompt lands unseen.
 ## Install
 
 ```
-./install.sh          # symlink MANIFEST entries into live paths, daemon-reload
-./install.sh --check  # report drift only, change nothing
+./install.sh              # user-scope only: symlink MANIFEST entries, systemctl --user daemon-reload
+./install.sh --system     # system-scope only: copy /etc/systemd/system drop-ins, sudo systemctl daemon-reload
+./install.sh --check      # drift detection for user-scope entries
+./install.sh --check --system  # drift detection for system-scope entries
 ```
 
 install.sh is hand-written because no platform feature installs from an
 explicit manifest; GNU stow was rejected because its directory-sweep semantics
 conflict with the allowlist requirement (only listed files install, nothing
 more).
+
+### System-scope entries (fleet-ops#71)
+
+The MANIFEST may list entries under `/etc/systemd/system/...` — those are
+SYSTEM scope and need root to install. `./install.sh` (default) SKIPS them;
+run `./install.sh --system` to install them. `--system` is non-interactive
+(it checks `sudo -n true`; if sudo requires a password, it refuses with a
+loud error and the exact manual command to run, so a worker can never hang
+on a sudo prompt). Drift on system entries is also worth checking from
+heartbeat tier 1: `./install.sh --check --system` exits nonzero on any
+byte-difference.
+
+The two system drop-ins repo-owned by `#71` are the fleet RAM governor
+themselves — see [docs/ram-governor-tree.md](docs/ram-governor-tree.md) for
+the full five-layer policy tree and what each layer does.
 
 ## Dispatch a packet that outlives this session
 
@@ -48,6 +65,10 @@ A short log with no verdict after `nohup` or `&` is a **launcher fault**
 (the session reaped the process). A log containing `rate_limit` /
 `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
 them up.
+
+The `pi-packet-guard` (and the Claude PostToolUse hook that calls it)
+classifies these automatically from the redirected packet log. Launcher
+faults advise `pi-systemd-run`; lane faults advise seat rotation.
 
 Overlapping `systemctl start` of a live intake tick is a no-op
 (`pi-intake-run` flock). Starting a live `pi-issue@` worker is a no-op
@@ -163,62 +184,32 @@ This repo copies files in. The symlink cutover (making the live paths point
 here) is a separate, later step. Until then the live paths are real files and
 `install.sh --check` will report every entry as a DIFF.
 
-## systemd-oomd — the reactive last resort (issue #62)
+## systemd-oomd drill — `oomd-drill` (issue #62)
 
-There is no automatic RAM manager on the box by default. `systemd-oomd` is the
-built-in Linux answer; it is installed and enabled on the host, and this repo
-holds its fleet-scoped policy. Killing is the **exception**, not the norm —
-three layers own memory, in order, and oomd is the last:
+The fleet's RAM policy is a five-layer tree, owned by this repo and documented
+in [docs/ram-governor-tree.md](docs/ram-governor-tree.md). `systemd-oomd` is
+the reactive last resort; the 2026-08-26 01:24 IST drill proved its managed
+kill path fires under pressure (provenance recorded in
+`systemd/app-pi\x2dissue.slice`).
 
-| | mechanism | effect | owns which failure |
-|---|---|---|---|
-| 1 | `MIN_FREE_RAM_MB=2500` launch floor (~13.1 GiB soft cap) | **prevents** work starting | the box is filling up — stop adding work |
-| 2 | per-worker `MemoryHigh=3G` / `MemoryMax=6G` on `pi-issue@.service` | **throttles** and reclaims one worker; nothing dies | one worker is runaway |
-| 3 | `systemd/app-pi\x2dissue.slice` (`ManagedOOMMemoryPressure=kill` @ 80%/60s) | **kills** a cgroup | 1 and 2 have both failed — host is in trouble |
-
-The policy lives on the worker slice only. `sshd`, `tailscaled`,
-`fleet-heartbeat` and the intake timers stay `auto`, so oomd can never take a
-lifeline or the supervisor that would repair a reaped worker. `ManagedOOMSwap`
-is left `auto` on purpose: ~4.7 GiB of swap in use with zero pressure is
-healthy here (workers idling on API calls), and killing on swap would reap
-useful work.
-
-The 80%/60s threshold is **measurement-derived**, not a default: baseline
-`/proc/pressure/memory` `some avg10` = 0.00 across 5 samples with the fleet
-running, so 80% sustained for a full minute is nowhere near normal. The global
-`DefaultMemoryPressureDurationSec=60s` lives in `/etc/systemd/oomd.conf.d/` on
-the host (root-owned system config, not this user-config repo — recorded here
-so it is findable).
-
-### Proving it: `oomd-drill`
-
-A rollout without a drill is not done. `bin/oomd-drill` drives a bounded
-(`MemoryMax=1G`) memory hog inside `oomd-drill.slice` — which carries the same
-`ManagedOOMMemoryPressure=kill` mechanism behind a low 5% trip point — and
-confirms oomd's own journal shows a managed kill while every lifeline stays
-live.
+That drill was run ad-hoc via `systemd-run`; this repo now holds the
+reproducible tooling so it can be re-run after any oomd or kernel upgrade:
 
 ```
 oomd-drill          # run the drill, print proof, exit 0/1
 oomd-drill --check  # report whether oomd + the drill units are in place
 ```
 
-**Drill record, 2026-08-26 01:24:33 IST** — oomd killed a memory-hog cgroup:
+`bin/oomd-drill` drives a bounded thrasher (`MemoryHigh=128M`, `MemoryMax=1G`,
+`MemorySwapMax=0`) inside `oomd-drill.slice` — which carries the same
+`ManagedOOMMemoryPressure=kill` mechanism behind a low 5% trip point — then
+confirms oomd's own journal shows the managed kill (not the kernel OOM killer,
+not systemd's `RuntimeMaxSec` backstop) and that `sshd`, `tailscaled`,
+`fleet-heartbeat` and the intake timers stayed live. It proves the mechanism
+fires and is safely scoped; the production 80% trip point is calibrated from
+measurement (see the governor tree), not driven live, since doing so would
+throttle real workers. `systemd/systemd#33486` notes pressure limits can fail
+to fire — re-run `oomd-drill` after any upgrade to confirm the path still
+trips.
 
-```
-systemd-oomd: Killed .../oomd-drill.slice/oomd-drill-hog.service due to memory
-pressure for .../user@1000.service being 75.07% > 50.00% for > 1min with
-reclaim activity
-```
-
-The hog hit `Pressure: Avg10: 98.76`. ssh, `fleet-heartbeat`, and the
-`pi-intake` timers stayed live throughout (zero failed user units, all timers
-active). The managed-kill mechanism fires and spares lifelines.
-
-What the drill proves and what it does not: it proves oomd's managed-kill path
-fires under pressure and is safely scoped. It does **not** drive the production
-slice to 80% live (that would throttle real workers); the 80% trip point is
-calibrated from measurement instead. `systemd/systemd#33486` reports cases
-where a pressure limit does not fire as expected — re-run `oomd-drill` after any
-oomd or kernel upgrade to confirm the path still trips.
 

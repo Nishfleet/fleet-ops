@@ -65,7 +65,7 @@ lifelines_live() {
 run_drill() {
   local before kill_line
   before="$(date +%s)"
-  log "starting $HOG under $SLICE (bounded to MemoryMax=1G)"
+  log "starting $HOG under $SLICE (MemoryHigh=128M, MemoryMax=1G, MemorySwapMax=0)"
   systemctl --user reset-failed "$HOG" 2>/dev/null || true
   systemctl --user start "$HOG" 2>/dev/null || true
 
