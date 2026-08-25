@@ -196,6 +196,8 @@ jobs:
         run: bash tests/semantic-conflict-detector.test.sh
       - name: repeat-deterministic-detector
         run: bash tests/repeat-deterministic-detector.test.sh
+      - name: red-on-main-detector
+        run: bash tests/red-on-main-detector.test.sh
       - name: required-check-purity
         run: bash tests/required-check-purity.test.sh
       - name: pi-packet-guard
