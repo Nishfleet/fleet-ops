@@ -486,15 +486,6 @@ _seat_list_unit() {
 # disable it.
 PI_SEAT_LIB_CHECK_SYSTEMD="${PI_SEAT_LIB_CHECK_SYSTEMD:-1}"
 
-# P15: a unit in `activating` for longer than this is a wedge, not a
-# worker. Type=oneshot workers legitimately sit in `activating` for up to
-# TimeoutStartSec=45min (the unit's own hang bound); anything beyond that
-# bound + margin is a hung pi that the wrapper watchdog (PI_HANG_TIMEOUT_S,
-# default 42 min) should have killed but didn't (older wrapper, SIGKILL
-# path, unit timeout race). The unit table's ActiveEnterTimestamp is the
-# ground truth for how long it has been trying to start.
-PI_SEAT_ACTIVATING_MAX_S="${PI_SEAT_ACTIVATING_MAX_S:-3300}"  # 55 min > unit 45 min
-
 # True if the registry file's unit is still a live pi worker unit.
 # Non-zero (stale) when the unit is dead, missing, or not a pi unit name.
 #
@@ -512,37 +503,12 @@ _seat_registry_unit_live() {
         pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
         *) return 1 ;;
     esac
-    local state active_since now age_s
+    local state
     state=$(systemctl --user is-active "$sysunit" 2>/dev/null || true)
     # A running Type=oneshot worker reports "activating" while its process
     # runs; "active" also means live. Anything else (inactive/failed/
     # auto-restart with MainPID=0) is not consuming a seat.
-    if [[ "$state" == "active" ]]; then
-        return 0
-    fi
-    if [[ "$state" != "activating" ]]; then
-        return 1
-    fi
-    # P15 wedge probe: `activating` is normally live (up to the unit's own
-    # TimeoutStartSec), but a unit stuck activating past the wrapper's hang
-    # bound + margin is a wedged pi whose seat registration must be reaped
-    # so caps free up. A SIGKILLed wedged worker leaves `activating`
-    # (systemd -9 leaves the unit start state) — age is the only honest
-    # signal. This is the fleet-ops#83 blind spot: the probe treated every
-    # `activating` as live, so a wedged unit held its seat for the full
-    # 45-minute TimeoutStartSec and starved pick_seat.
-    active_since=$(systemctl --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-    # ActiveEnterTimestampMonotonic is in MICROSECONDS since boot. /proc/uptime
-    # is in SECONDS. Compare in seconds to avoid ms/us mixing.
-    if [[ "$active_since" =~ ^[0-9]+$ ]]; then
-        now_s=$(awk '{print int($1)}' /proc/uptime)
-        age_s=$(( now_s - active_since / 1000000 ))
-        if (( age_s > PI_SEAT_ACTIVATING_MAX_S )); then
-            seat_log "seat registry: unit $sysunit stuck activating ${age_s}s (> ${PI_SEAT_ACTIVATING_MAX_S}s) — wedged pi, reaping seat"
-            return 1
-        fi
-    fi
-    return 0
+    [[ "$state" == "active" || "$state" == "activating" ]]
 }
 
 # True if a unit is in `activating/auto-restart` — the systemd sub-state
