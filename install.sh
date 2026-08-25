@@ -4,6 +4,8 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; rc=0
 while read -r src dest; do
   [ -z "$src" ] && continue
+  # Skip comment lines (# P14 tests ...) and empty lines.
+  [[ "$src" == \#* ]] && continue
   repo=$(readlink -f "$here/$src")
   if [ "${1:-}" = "--check" ]; then
     link=$(readlink -f "$dest" 2>/dev/null || true)
