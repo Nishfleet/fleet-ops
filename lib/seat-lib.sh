@@ -133,6 +133,14 @@ class_of() {
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
 # If /proc/meminfo can't be read, returns 9999 (effectively unbounded) and logs.
 ram_governor_cap() {
+    # Lazy-load the cap map FIRST. Without this, SEAT_RAM_GB_PER_WORKER keeps
+    # its hardcoded 1.5 default and ram_gb_per_worker in seat-caps.json is
+    # silently ignored - every other consumer (provider_cap, model_cap,
+    # class_of, pick_seat) does this and ram_governor_cap did not, so the RAM
+    # governor was the ONE function that never read its own config. Measured
+    # 2026-08-26: reported 5 lanes on the 1.5 default where the configured
+    # 0.75 gives 10. Half the fleet's capacity was invisible.
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     local mem_avail_kb ram_budget
     mem_avail_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
     if (( mem_avail_kb <= 0 )); then
