@@ -34,6 +34,10 @@ Do not run `systemctl --user enable` on anything new.
 If the playbook is unreadable, write a loud line to the triage file and exit
 non-zero. Do not improvise.
 
+Tier 1 already re-examines `agent-blocked` issues (closed/merged dependencies
+flip back to `agent-ready`; Nish-decision blocks are published on the triage
+file with count and oldest age). Do not redo that sweep.
+
 ---
 
 ## Step 1 — verify claimed work against real state

@@ -12,8 +12,12 @@
 #   3. Release orphaned claims (agent-in-progress + no live worker +
 #      no open claim/issue-N PR).
 #   4. Reset+log failed pi-issue-* / fable-p-* units into the triage file.
-#   5. Verify scout/intake timers are armed; re-enable if disabled and
-#      write a LOUD line to the triage file.
+#   6. Re-examine agent-blocked issues. Named reason this is a sweep:
+#      the blocker (a dependency issue/PR, or a Nish decision) changes
+#      outside this repo, and the GitHub App has no webhooks. If every
+#      machine-checkable dependency is closed/merged, flip back to
+#      agent-ready. Nish-decision blocks stay labelled and are published
+#      (count + oldest age) into the triage file.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -366,6 +370,31 @@ while IFS= read -r t; do
     re_enabled=$((re_enabled+1))
 done <<< "$verify_timers"
 log "5. timer-arm pass complete: verified=$verified re_enabled=$re_enabled"
+
+# ============================================================================
+# 6. RECONCILE agent-blocked ISSUES
+# ============================================================================
+# Named reason for this sweep (vault: "a schedule needs a NAMED reason"):
+# the blocking condition changes outside the repo — a dependency issue/PR
+# closes, or Nish answers. Event-driven is the default, but the
+# nishfleet-worker App has no webhooks (credentials/app-manifest.json
+# events=[]), so there is no event to subscribe to. Heartbeat's existing
+# 30-minute timer is the observer; this is not a new schedule.
+BLOCKED_BIN="${FLEET_BLOCKED_RECONCILE:-/home/nish/.local/bin/blocked-reconcile}"
+if [ -x "$BLOCKED_BIN" ]; then
+    log "6. blocked-reconcile starting"
+    if BLOCKED_RECONCILE_REPOS="$(printf '%s\n' "$claim_repos")" \
+        BLOCKED_RECONCILE_TRIAGE="$TRIAGE" \
+        BLOCKED_RECONCILE_STATE="$LOG_DIR/blocked-queue.json" \
+        BLOCKED_RECONCILE_LOCKDIR="${XDG_RUNTIME_DIR}/blocked-reconcile" \
+        "$BLOCKED_BIN"; then
+        log "6. blocked-reconcile done"
+    else
+        log "6. blocked-reconcile FAILED — next tick retries"
+    fi
+else
+    log "6. blocked-reconcile missing at $BLOCKED_BIN — skip (not installed)"
+fi
 
 # ============================================================================
 # done
