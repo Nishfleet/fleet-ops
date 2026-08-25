@@ -33,3 +33,9 @@ systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
+bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
+bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
+bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
+systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
+systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
+prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md

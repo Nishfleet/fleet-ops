@@ -1,0 +1,38 @@
+[Unit]
+Description=Fleet orchestrator heartbeat (durable, session-independent)
+# Named reason for this schedule (vault: "a schedule needs a NAMED reason"):
+# orchestrator continuity across interactive-session restarts; event
+# notifications die with sessions. The previous watcher/cron was session-
+# bound and died 4x today on session hops; this timer is owned by the
+# user systemd instance, not by any agent or tmux session.
+#
+# Two-tier design (P13 amendment, 2026-08-25):
+#   tier 1 (deterministic, no LLM) runs every tick — keeps the pipeline
+#     flowing even if every LLM is dead (queue green PRs, release orphaned
+#     claims, reset failed units, verify scout/intake timers, update the
+#     last-heartbeat stamp).
+#   tier 2 (judgment) runs ONLY when the triage file is non-empty or the
+#     held queue has dispatchable items, and walks a seat ladder
+#     (claude-opus-5 -> devin glm-5-2 [after 30s probe] -> minimax M3).
+#     All dead -> loud triage line + unit FAILS (systemd's failed state is
+#     the page; no auto-retry, no fallback, no --collect).
+#
+# No polling loops inside the script; one pass per timer fire.
+OnFailure=fleet-heartbeat-failed-notify.service
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-heartbeat
+# tier 1 budget: 10 minutes (gh + jq only, fast).
+# tier 2 budget: 40 minutes max (one Claude attempt is the slow one; the
+#   devin probe + minimax ladder is bounded below that). Total fits inside
+#   one timer interval (30 min) with a 10 min safety margin; if tier 2
+#   blows past this, it is broken and must fail visibly.
+TimeoutStartSec=45min
+# Never restart on success OR failure: the next timer fire is the retry.
+# systemd's failed state IS the signal; if we restart in here we hide it.
+Restart=no

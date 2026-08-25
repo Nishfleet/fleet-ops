@@ -50,6 +50,36 @@ from `~/.config/systemd/user/`, `~/.local/bin/`, or `~/.pi/agent/prompts/` is
 swept in. EnvironmentFile= targets (e.g. `hc.env`, `deploy.env`, `cf.env`) are
 never tracked — only the units that reference them.
 
+## Fleet heartbeat (durable, session-independent)
+
+`fleet-heartbeat.timer` + `fleet-heartbeat.service` keep the fleet flowing
+even when every interactive Claude / Pi session dies. The old session-bound
+watcher/cron died 4x in one day on session hops — this one is owned by the
+user systemd instance (Persistent=true), not by any agent or tmux session.
+
+Two-tier design (so the heartbeat still works if every LLM is dead):
+
+- **Tier 1 (deterministic, every tick, no LLM)**: queue green fleet PRs,
+  release orphaned claims, log failed units into the triage file, verify
+  scout/intake timers are armed, update the `last-heartbeat:` stamp in the
+  playbook. Plain bash + gh + jq. Zero quota.
+- **Tier 2 (judgment, only when the triage file is non-empty or the held
+  queue has dispatchable items)**: walk a seat ladder
+  `claude -p --model claude-opus-5` → `pi --print --provider devin
+  --model glm-5-2` (after a 30 s probe) → `pi --print --provider minimax
+  --model MiniMax-M3`. First healthy seat wins; all dead → loud triage
+  line + unit FAILS (systemd's `state=failed` is the page).
+
+Freshness guard: the orchestrator entry reads the plan file's
+`last-heartbeat:` line and exits 0 immediately if < 20 minutes old, so the
+durable timer does not thrash against a live interactive session.
+
+Schedule: every 30 minutes at minute `:17` (off-peak — avoids the cluster
+of fleet timers firing at :00, :13, :15, :23, :38, :39, :43, :48, :52).
+
+Prompt: `prompts/heartbeat.md` — provider-neutral (no Claude-specific
+tool references). Plain instructions any agent with shell + `gh` executes.
+
 ## Excluded pending manual review
 
 - `inish-publish-on-token.path`
