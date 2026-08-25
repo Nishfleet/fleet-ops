@@ -1,0 +1,80 @@
+name: Required-check purity
+
+# Central reusable lint. A required status check must be a pure function of
+# the PR's own diff: never exact equality against a shared committed
+# baseline, and never a gate that fails unless the PR edits that file.
+#
+# Usage from another repo:
+#   jobs:
+#     purity:
+#       uses: Nishfleet/fleet-ops/.github/workflows/ci-required-check-purity.yml@main
+#
+# Advisory: this job warns, it does not block. Do not make it a required
+# check until existing instances are fixed (0509#1056 is the textbook
+# case). Pass enforce: true to promote it.
+#
+# Surface: local files only. No paid services.
+
+on:
+  workflow_call:
+    inputs:
+      enforce:
+        description: "Fail the job on findings. Default false (advisory)."
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      findings:
+        description: "Number of impurity findings."
+        value: ${{ jobs.purity.outputs.findings }}
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: "Fail the job on findings."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: required-check-purity-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  purity:
+    name: Required-check purity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      findings: ${{ steps.run.outputs.findings }}
+    steps:
+      - name: Checkout caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout linter
+        if: github.repository != 'Nishfleet/fleet-ops'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: ${{ github.workflow_sha }}
+          path: .fleet-ops-purity
+          persist-credentials: false
+
+      - name: Run purity lint
+        id: run
+        env:
+          MODE: ${{ inputs.enforce == true && '--enforce' || '--advisory' }}
+        run: |
+          set -euo pipefail
+          if [ -f .fleet-ops-purity/.github/scripts/required-check-purity.mjs ]; then
+            SCRIPT=".fleet-ops-purity/.github/scripts/required-check-purity.mjs"
+          else
+            SCRIPT=".github/scripts/required-check-purity.mjs"
+          fi
+          node "$SCRIPT" --root . --format human ${MODE}
