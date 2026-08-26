@@ -27,10 +27,10 @@ mkdir -p "$FLEET_CLAIM_CHECKOUT_ROOT"
 # Set up a bare remote and a product checkout.
 bare="$scratch/bare/fleet-ops.git"
 mkdir -p "$scratch/bare"
-git init --bare -q "$bare"
+git -c init.defaultBranch=main init --bare -q "$bare"
 
 checkout="$FLEET_CLAIM_CHECKOUT_ROOT/fleet-ops"
-git clone -q "$bare" "$checkout"
+git -c init.defaultBranch=main clone -q "$bare" "$checkout"
 
 (
     cd "$checkout"
@@ -39,6 +39,9 @@ git clone -q "$bare" "$checkout"
     echo 'init' > file.txt
     git add file.txt
     git commit -q -m 'initial'
+    # CI runners (and any host whose init.defaultBranch is not main) name
+    # the first commit master. fleet-claim fetches FLEET_CLAIM_MAIN_BRANCH=main.
+    git branch -M main
     git push -q -u origin main
 )
 
