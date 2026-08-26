@@ -255,3 +255,7 @@ grep -Fxq "$drop_line" "$manifest" || fail "MANIFEST missing: $drop_line"
 ok "invariant 9: drop-in ExecStartPre=- and MANIFEST entries are locked"
 
 echo "OK: codex-orphan-reap safety gate, managed-skip, and window wiring are locked"
+
+# fleet-ops#85: CI lists THIS file explicitly. Workers cannot add a workflow
+# line (no Workflows permission), so the session reaper test rides along.
+bash "$here/interactive-session-reap.test.sh" || fail "interactive-session-reap tests failed"
