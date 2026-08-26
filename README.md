@@ -176,6 +176,13 @@ have never been green. Auto-revert still only watches proven-green
 workflows; this detector alerts, it does not revert. A workflow whose
 first ever main run fails is called out as merged untested against main.
 
+An eighth, `.github/workflows/gap-closure-cycle.yml`, is the org-wide
+gap-closure loop. It lists every Nishfleet repo from the GitHub API,
+drops `excluded[]` from `config/intake-repos.json`, audits, drills
+auto-revert in a sandbox, and writes a DORA report. A new repo is in the
+next daily cycle with no enrolment. Org rulesets are a loud SKIP on the
+free plan. Not a required check. See `docs/ci-standard.md`.
+
 ## Allowlist
 
 Only the files listed in `MANIFEST` are tracked and installed. Nothing else

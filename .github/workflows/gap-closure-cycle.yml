@@ -1,0 +1,87 @@
+name: Gap-closure cycle
+
+# Org-wide gap-closure loop (fleet-ops#185). Lives in this central public
+# repo so a newly created Nishfleet repo is in the next cycle with nobody
+# touching enrolment. Discovers via the GitHub API minus
+# config/intake-repos.json excluded[].
+#
+# Why this workflow (standing rule, find the proven thing):
+# 0. GitHub Actions schedule + workflow_dispatch is the inbuilt trigger.
+#    Same shape as repo-standards-sync.yml and red-on-main-watch.yml.
+# 1. Org rulesets with repo-pattern * would bind every current and future
+#    repo. Nishfleet is on the free plan; GET /orgs/Nishfleet/rulesets
+#    returns 403 Upgrade to GitHub Team. That probe is a loud SKIP inside
+#    the script, not a pass. repo-standards-sync copies files; it does
+#    not audit, drill, or measure DORA.
+# 2. No extra product. Allstar / org rulesets need Team.
+# 3. Hosted on the public fleet-ops repo (free minutes). Private repos
+#    are API-audited from here and never get a workflow dispatched into
+#    them (github-actions-minutes-economy). No systemd copy of this
+#    schedule — VPS stays for live-state + the #180 conference only.
+#
+# Do not make this a required check. It is a cycle, not a PR gate.
+
+on:
+  schedule:
+    # Daily 04:41 UTC. Named reason: GitHub's free org plan has no
+    # repository.created event without a webhook receiver (new control
+    # plane). One idempotent daily sweep is the same form as
+    # repo-standards-sync. Offset from 03:17 so the two jobs do not
+    # contend for the PAT.
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Compute the report and do not file issues"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: gap-closure-cycle
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    name: Org-wide cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout fleet-ops
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run cycle
+        env:
+          # FLEET_SYNC_PAT can file gap-audit issues in other repos.
+          # GITHUB_TOKEN can still discover public repos, run drills,
+          # write the report, and file issues on fleet-ops itself.
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GAP_CLOSURE_ORG: Nishfleet
+          # github.event_name / inputs.dry-run are user-influenced context,
+          # so they go through env vars (semgrep run-shell-injection), never
+          # straight into the run: script.
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DRY_RUN" = "true" ]; then
+            extra+=(--dry-run)
+          fi
+          node .github/scripts/gap-closure-cycle.mjs \
+            --org Nishfleet \
+            --intake config/intake-repos.json \
+            --format json \
+            --output-json gap-closure-report.json \
+            "${extra[@]+"${extra[@]}"}"
