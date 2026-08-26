@@ -115,6 +115,53 @@ redpr_json="$state/fleet-repos.json"
 export FLEET_INTAKE_REPOS_JSON="$intake_json"
 export FLEET_REDPR_REPOS_JSON="$redpr_json"
 
+# fleet-ops#383: step 9 joins a fixture vault against a matching matrix so
+# existing two-plane scenarios stay green. Auto-file stays off unless a
+# drill turns it on with a fake gh.
+export FLEET_STANDING_RULES="$scratch/standing-rules.md"
+export FLEET_DECISIONS_LEDGER="$scratch/decisions-ledger.md"
+export FLEET_RULE_ENFORCEMENT_JSON="$repo/config/rule-enforcement.json"
+export FLEET_RULE_ENFORCEMENT_LIB="$repo_root/lib/rule-enforcement.py"
+export FLEET_RULE_ENFORCEMENT_FILE_ISSUES=0
+export FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z"
+
+write_covered_vault() {
+  cat >"$FLEET_STANDING_RULES" <<'EOF'
+# fixture standing rules
+## Covered fixture rule (Nish, 2026-08-26)
+A rule the matrix already covers.
+EOF
+  cat >"$FLEET_DECISIONS_LEDGER" <<'EOF'
+# fixture ledger
+## Ledger
+### Product / fleet
+- 2026-08-26 | covered ledger rule | a decision the matrix already covers
+EOF
+  mkdir -p "$repo/config"
+  cat >"$FLEET_RULE_ENFORCEMENT_JSON" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "sr-covered-fixture",
+      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
+      "mechanism": "test gate",
+      "proof": "tests/escalation-coverage-canary.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-covered-fixture",
+      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
+      "mechanism": "test gate",
+      "proof": "tests/escalation-coverage-canary.test.sh",
+      "status": "enforced"
+    }
+  ]
+}
+EOF
+}
+
 write_intake() {
   # $* = repo names (short, no owner prefix)
   {
@@ -171,6 +218,7 @@ WF
   rm -f "$FLEET_ESCALATION_CANARY_DELIVERY" "$FLEET_ESCALATION_CANARY_REDCI" "$FLEET_ESCALATION_CANARY_BRIDGE"
   rm -f "$repo/.github/workflows/ci-failure-escalation.yml" "$repo/.github/scripts/ci-failure-escalation-detector.mjs"
   rm -rf "${repo:?}/lib" "${repo:?}/systemd"
+  write_covered_vault
 }
 
 # ============================================================================
