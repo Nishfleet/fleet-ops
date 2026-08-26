@@ -603,10 +603,9 @@
     {
       "id": "led-worker-lane-refresh",
       "source": "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)",
-      "mechanism": "Cheapest-and-best flash-model pick + free M3 on commandcode; not yet a live canary",
-      "proof": "Nishfleet/fleet-ops#545",
-      "status": "queued(#545)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat MiniMax M3 catalog canary on commandcode and opencode: fail-loud if seat-caps allowlists a billing MiniMax M3 slug or a free-form slug whose models.json cost is non-zero; observe-to-open detector auto-files a prove-free + wire ticket when a -free or *-pass/ MiniMax M3 slug appears unwired. Paid-flash watcher auto-files a cheapest-and-best bench+wire ticket when Qwen 3.8 flash or GLM 5.3 flash appears in Pi's catalog on openrouter/zenmux.",
+      "proof": "bin/opencode-m3-catalog-canary; tests/opencode-m3-catalog-canary.test.sh; bin/fleet-paid-flash-canary; tests/paid-flash-canary.test.sh; fleet-heartbeat-tier1 blocks 17-18; fleet-ops#545",
+      "status": "enforced"
     },
     {
       "id": "led-north-star-quality",
