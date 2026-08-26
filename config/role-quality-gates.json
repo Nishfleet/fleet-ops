@@ -14,6 +14,7 @@
         "prompts/auditor.md",
         "bin/fleet-heartbeat-auditor",
         "bin/pi-audit-tally",
+        "lib/agent-ready-spec-gate.py",
         "systemd/pi-audit@.service"
       ],
       "units": [
@@ -26,7 +27,8 @@
       ],
       "bypass_checks": [
         "scout_agent_ready_product",
-        "sweep_blank_approval"
+        "sweep_blank_approval",
+        "agent_ready_spec_gate"
       ]
     },
     {

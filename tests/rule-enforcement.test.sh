@@ -61,6 +61,11 @@ jq -e '.rules[] | select(.id == "sr-pstack-review" and .status == "enforced") | 
   || fail "sr-pstack-review must be enforced and proof must name prompts/worker.md (fleet-ops#1260)"
 ok "matrix row sr-pstack-review is enforced via worker.md"
 
+jq -e '.rules[] | select(.id == "led-work-supply-agent-ready" and .status == "enforced")' \
+  "$matrix" >/dev/null \
+  || fail "led-work-supply-agent-ready must be status=enforced (fleet-ops#543)"
+ok "matrix row led-work-supply-agent-ready is enforced"
+
 # fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
 # rows even when the live vault is absent (CI skips the live join).
 for src in \
@@ -168,6 +173,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report Tailscale ACL lockdown as enforced covered_rows (fleet-ops#544): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Per-repo verification harness (Nish, 2026-08-20, adopted from Cursor pstack)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report sr-verify-harness as enforced covered_rows (fleet-ops#524): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | work supply" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report work-supply agent-ready as enforced covered_rows (fleet-ops#543): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: prepaid max-util source is enforced (observe-to-close for #531)"
@@ -187,6 +194,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
   ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
   ok "live join: per-repo verification harness source is enforced (observe-to-close for #524)"
+  ok "live join: work-supply agent-ready source is enforced (observe-to-close for #543)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -934,7 +942,12 @@ ok "rule-enforcement: asset census and guard-mapping drill"
 bash "$here/timer-manifest.test.sh" || fail "timer-manifest drill failed"
 ok "rule-enforcement: timer-manifest shape lock drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, and organ-heartbeat drills, asset-census, and timer-manifest drills"
+# fleet-ops#543: agent-ready spec-gate. Nested host so the worker token
+# does not need to edit .github/workflows/**.
+bash "$here/agent-ready-spec-gate.test.sh" || fail "agent-ready spec-gate drill failed"
+ok "rule-enforcement: agent-ready spec-gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, and agent-ready-spec-gate drills"
 
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).

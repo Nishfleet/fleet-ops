@@ -542,10 +542,9 @@
     {
       "id": "led-work-supply-agent-ready",
       "source": "decisions-ledger.md: 2026-08-25 | work supply",
-      "mechanism": "Orchestrators may apply agent-ready; no mechanical spec-gate on that label yet",
-      "proof": "Nishfleet/fleet-ops#543",
-      "status": "queued(#543)",
-      "queued_since": "2026-08-27"
+      "mechanism": "First admission to agent-ready (lifecycle-label-sweep on fleet-ops, pi-audit-tally 2-of-3 PASS) calls lib/agent-ready-spec-gate.py; a body without termination:/accept:/required:/metric: is refused. Scout prompt caps labels with label_budget. Re-queue paths stay exempt.",
+      "proof": "lib/agent-ready-spec-gate.py; tests/agent-ready-spec-gate.test.sh; bin/lifecycle-label-sweep; bin/pi-audit-tally",
+      "status": "enforced"
     },
     {
       "id": "led-gitleaks",
