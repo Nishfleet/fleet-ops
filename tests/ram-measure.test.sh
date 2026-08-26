@@ -27,6 +27,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/ram-measure"
 
+# Hermetic when nested under tests/seat-lib.test.sh (fleet-ops#449), which
+# export -f systemctl and awk. Functions beat PATH; this file ships its
+# own fake systemctl.
+unset -f systemctl awk 2>/dev/null || true
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -355,6 +360,22 @@ for u in pi-issue@uncapped-01.service pi-issue@notset-01.service; do
     [[ "$hm" == "0" ]] || fail "$u must not have hit max (got: $hm)"
 done
 ok "8. numeric peak + non-numeric high/max exits 0, records unit, null caps"
+
+# =========================================================================
+# 9. CI host lock (fleet-ops#449). Workers cannot add a verify-command
+#    line. This file must stay listed in ci.yml OR invoked from a test
+#    that already is (currently seat-lib.test.sh). Dropping both is the
+#    #204-class regression this issue exists to prevent.
+# =========================================================================
+ci_yml="$repo_root/.github/workflows/ci.yml"
+listed=0
+hosted=0
+grep -Fq 'bash tests/ram-measure.test.sh' "$ci_yml" && listed=1
+grep -Fq 'bash "$here/ram-measure.test.sh"' "$repo_root/tests/seat-lib.test.sh" && hosted=1
+if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
+  fail "ram-measure.test.sh has no CI host (fleet-ops#449): list it in ci.yml or invoke it from seat-lib.test.sh"
+fi
+ok "9. CI host exists (ci.yml listed=$listed seat-lib hosted=$hosted)"
 
 echo
 echo "ALL OK"

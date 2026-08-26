@@ -934,3 +934,7 @@ bash "$here/ram-metric-compare.test.sh" || fail "ram-metric-compare tests failed
 # gate and free-slug detector through this listed file.
 bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3-catalog-canary tests failed"
 
+# fleet-ops#449 / #216 / #491: bin/ram-measure contract. CI lists this
+# file, not ram-measure.test.sh (workers cannot edit .github/workflows).
+bash "$here/ram-measure.test.sh" || fail "ram-measure tests failed"
+
