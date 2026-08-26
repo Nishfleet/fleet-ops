@@ -6,7 +6,7 @@
   "rules": [
     {
       "id": "sr-decisions-ledger",
-      "source": "global-standing-rules.md: Decisions ledger — check before asking Nish (Nish's direct order, 2026-08-25)",
+      "source": "global-standing-rules.md: Decisions ledger \u2014 check before asking Nish (Nish's direct order, 2026-08-25)",
       "mechanism": "Claude Code PreToolUse hook only; other agents can still re-ask",
       "proof": "Nishfleet/fleet-ops#514",
       "status": "queued(#514)",
@@ -14,7 +14,7 @@
     },
     {
       "id": "sr-quality-speed-efficiency",
-      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 — NON-NEGOTIABLE)",
+      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 \u2014 NON-NEGOTIABLE)",
       "mechanism": "CI required checks + gate-integrity ratchet: weakening tests or gates is a blocker",
       "proof": ".github/workflows/ci.yml; tests/required-check-purity.test.sh; 0509 gate-integrity",
       "status": "enforced"
@@ -38,8 +38,8 @@
     {
       "id": "sr-get-it-moving",
       "source": "global-standing-rules.md: Get it moving, always (Nish, 2026-08-18)",
-      "mechanism": "none — judgment of implied permission",
-      "proof": "n/a — un-mechanizable without wrapping every idle pause",
+      "mechanism": "none \u2014 judgment of implied permission",
+      "proof": "n/a \u2014 un-mechanizable without wrapping every idle pause",
       "status": "advisory(senior: whether permission was already implied is a judgment call, not a merge artifact)"
     },
     {
@@ -52,7 +52,7 @@
     },
     {
       "id": "sr-research-before-build",
-      "source": "global-standing-rules.md: Research before build — always (Nish, 2026-08-18)",
+      "source": "global-standing-rules.md: Research before build \u2014 always (Nish, 2026-08-18)",
       "mechanism": "No gate that a build skipped last30days / official docs",
       "proof": "Nishfleet/fleet-ops#517",
       "status": "queued(#517)",
@@ -67,7 +67,7 @@
     },
     {
       "id": "sr-free-model-roster",
-      "source": "global-standing-rules.md: Free-model roster stays fresh — quality-gated (Nish, 2026-08-18)",
+      "source": "global-standing-rules.md: Free-model roster stays fresh \u2014 quality-gated (Nish, 2026-08-18)",
       "mechanism": "fleet2 roster scout was deleted with the 08-23 wipe; no live audition ladder remains",
       "proof": "Nishfleet/fleet-ops#518",
       "status": "queued(#518)",
@@ -99,8 +99,8 @@
     {
       "id": "sr-quality-outranks",
       "source": "global-standing-rules.md: Quality outranks everything (Nish, 2026-08-18)",
-      "mechanism": "none — taste overlay on the quality>speed gate",
-      "proof": "n/a — mechanical core lives in sr-quality-speed-efficiency",
+      "mechanism": "none \u2014 taste overlay on the quality>speed gate",
+      "proof": "n/a \u2014 mechanical core lives in sr-quality-speed-efficiency",
       "status": "advisory(senior: delightfulness and overdelivery are taste; the mechanical quality bar is sr-quality-speed-efficiency)"
     },
     {
@@ -121,7 +121,7 @@
     {
       "id": "sr-verify-before-answering",
       "source": "global-standing-rules.md: Verify before answering (Nish, 2026-08-19)",
-      "mechanism": "none — cannot wrap every claim without an oracle of 'answered from memory'",
+      "mechanism": "none \u2014 cannot wrap every claim without an oracle of 'answered from memory'",
       "proof": "n/a",
       "status": "advisory(senior: live-truth discipline is an answering rule; there is no merge artifact to gate)"
     },
@@ -249,7 +249,7 @@
     },
     {
       "id": "sr-one-fleet",
-      "source": "global-standing-rules.md: One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)",
+      "source": "global-standing-rules.md: One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 \u2014 corrected 2026-08-25)",
       "mechanism": "intake-repos.json permanently excludes fleet2; shape test fails closed if it is enrolled",
       "proof": "config/intake-repos.json excluded.fleet2; tests/intake-repos-shape.test.sh",
       "status": "enforced"
@@ -310,27 +310,27 @@
     {
       "id": "sr-ambiguity-authoritative",
       "source": "global-standing-rules.md: Ambiguity resolves to the authoritative recommendation, not to Nish (Nish, 2026-08-24)",
-      "mechanism": "none — research quality is not mechanically observable",
+      "mechanism": "none \u2014 research quality is not mechanically observable",
       "proof": "n/a",
       "status": "advisory(senior: choosing the authoritative source is a judgment; the council is the mechanism for high-stakes gray areas, not a CI check)"
     },
     {
       "id": "sr-no-hand-built-orch",
-      "source": "global-standing-rules.md: No hand-built orchestration. Ever. (Nish, 2026-08-24 — FORBIDDEN, non-negotiable)",
+      "source": "global-standing-rules.md: No hand-built orchestration. Ever. (Nish, 2026-08-24 \u2014 FORBIDDEN, non-negotiable)",
       "mechanism": "Semgrep on fleet-ops CI + senior conference auto-reject; org-wide reusable ruleset still rolling out",
       "proof": ".github/workflows/ci.yml semgrep job; fleet-ops#223; remaining org rollout fleet-ops#302/#303",
       "status": "enforced"
     },
     {
       "id": "sr-ci-standard",
-      "source": "global-standing-rules.md: CI standard: batched, minimal, near-zero failures — every repo, current and future (Nish, 2026-08-24, NON-NEGOTIABLE)",
+      "source": "global-standing-rules.md: CI standard: batched, minimal, near-zero failures \u2014 every repo, current and future (Nish, 2026-08-24, NON-NEGOTIABLE)",
       "mechanism": "Central reusable-pr-checks + ci-standards-audit + template callers",
       "proof": ".github/workflows/reusable-pr-checks.yml; tests/ci-standards-audit.test.sh; tests/reusable-workflows.test.sh",
       "status": "enforced"
     },
     {
       "id": "sr-reversibility",
-      "source": "global-standing-rules.md: Engineer reversibility, don't gate (Nish, 2026-08-24 — fleet default)",
+      "source": "global-standing-rules.md: Engineer reversibility, don't gate (Nish, 2026-08-24 \u2014 fleet default)",
       "mechanism": "auto-revert on red main + siterep-deploy-rollback on failed verify",
       "proof": ".github/workflows/auto-revert.yml; systemd/siterep-deploy-rollback.service; tests/auto-revert-required-check-gate.test.sh",
       "status": "enforced"
@@ -344,7 +344,7 @@
     },
     {
       "id": "sr-prs-self-land",
-      "source": "global-standing-rules.md: Agent-authored PRs land themselves (Nish, 2026-08-25 — \"automatic / autonomous ... for all repos, current and future\")",
+      "source": "global-standing-rules.md: Agent-authored PRs land themselves (Nish, 2026-08-25 \u2014 \"automatic / autonomous ... for all repos, current and future\")",
       "mechanism": "auto-merge-arm.yml on every active repo; repo-standards-sync enables allow_auto_merge",
       "proof": ".github/workflows/auto-merge-arm.yml; .github/workflows/repo-standards-sync.yml",
       "status": "enforced"
@@ -359,14 +359,14 @@
     },
     {
       "id": "sr-agent-agnostic",
-      "source": "global-standing-rules.md: Standing machinery is agent-agnostic — the boundary and its enforcement (Nish, 2026-08-25)",
+      "source": "global-standing-rules.md: Standing machinery is agent-agnostic \u2014 the boundary and its enforcement (Nish, 2026-08-25)",
       "mechanism": "repo-standards-sync is GitHub-hosted; no named exceptions remain in the standing-rules list",
       "proof": ".github/workflows/repo-standards-sync.yml",
       "status": "enforced"
     },
     {
       "id": "sr-execution-is-review",
-      "source": "global-standing-rules.md: Execution IS the review — run it, log the bugs, fix, run again (Nish, 2026-08-25 — non-negotiable)",
+      "source": "global-standing-rules.md: Execution IS the review \u2014 run it, log the bugs, fix, run again (Nish, 2026-08-25 \u2014 non-negotiable)",
       "mechanism": "Worker prompt inner-loop; nothing detects a worker that skipped the run",
       "proof": "Nishfleet/fleet-ops#537",
       "status": "queued(#537)",
@@ -374,7 +374,7 @@
     },
     {
       "id": "sr-never-vibes",
-      "source": "global-standing-rules.md: Never decide by vibes — always measure (Nish, 2026-08-26)",
+      "source": "global-standing-rules.md: Never decide by vibes \u2014 always measure (Nish, 2026-08-26)",
       "mechanism": "RAM and seat caps are measured; remaining hand-set constants still unmeasured",
       "proof": "Nishfleet/fleet-ops#538",
       "status": "queued(#538)",
@@ -390,15 +390,15 @@
     },
     {
       "id": "sr-memory-oom",
-      "source": "global-standing-rules.md: Memory: prevent, throttle, then kill — in that order (Nish, 2026-08-26)",
+      "source": "global-standing-rules.md: Memory: prevent, throttle, then kill \u2014 in that order (Nish, 2026-08-26)",
       "mechanism": "user-1000.slice MemoryHigh + ManagedOOMMemoryPressure; oomd-drill proves the kill path",
       "proof": "systemd/system/user-1000.slice.d/50-ram-governor.conf; bin/oomd-drill; tests/system-dropins-shape.test.sh",
       "status": "enforced"
     },
     {
       "id": "sr-everything-mechanical",
-      "source": "global-standing-rules.md: Everything is mechanical — failures included (Nish, 2026-08-26 — NON-NEGOTIABLE)",
-      "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; detector→queue is #362",
+      "source": "global-standing-rules.md: Everything is mechanical \u2014 failures included (Nish, 2026-08-26 \u2014 NON-NEGOTIABLE)",
+      "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; detector\u2192queue is #362",
       "proof": "fleet-ops#366; fleet-ops#362",
       "status": "queued(#366)",
       "queued_since": "2026-08-26"
@@ -442,7 +442,7 @@
     {
       "id": "led-gap-closure-loop",
       "source": "decisions-ledger.md: 2026-08-26 | gap-closure loop",
-      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE; observe-to-close still open",
+      "mechanism": "Audit\u2192fix\u2192drill\u2192re-audit until unanimous DONE; observe-to-close still open",
       "proof": "fleet-ops#180 (blocked); fleet-ops#362",
       "status": "queued(#362)",
       "queued_since": "2026-08-26"
@@ -523,21 +523,21 @@
     {
       "id": "led-transformation-bets",
       "source": "decisions-ledger.md: 2026-08-25 | transformation bets",
-      "mechanism": "none — product ranking is Nish/orchestrator judgment",
+      "mechanism": "none \u2014 product ranking is Nish/orchestrator judgment",
       "proof": "n/a",
       "status": "advisory(senior: ranking bets is product direction; fleet capacity is the throttle, not a gate)"
     },
     {
       "id": "led-seo-geo-aeo",
       "source": "decisions-ledger.md: 2026-08-25 | SEO/GEO/AEO",
-      "mechanism": "none — enforced by 0509 product work, not a VPS canary",
+      "mechanism": "none \u2014 enforced by 0509 product work, not a VPS canary",
       "proof": "n/a",
       "status": "advisory(senior: product-priority ranking, not a fleet control-plane rule)"
     },
     {
       "id": "led-discovery-feature",
       "source": "decisions-ledger.md: 2026-08-25 | discovery feature",
-      "mechanism": "none — 0509 product spike",
+      "mechanism": "none \u2014 0509 product spike",
       "proof": "n/a",
       "status": "advisory(senior: gated product feature; the 12-domain spike is a product proof, not a standing-rule enforcer)"
     },
@@ -574,7 +574,7 @@
     {
       "id": "led-coderabbit",
       "source": "decisions-ledger.md: 2026-08-25 | CodeRabbit",
-      "mechanism": "none — waiting on a Nish-reserved auth action",
+      "mechanism": "none \u2014 waiting on a Nish-reserved auth action",
       "proof": "n/a",
       "status": "advisory(senior: Nish re-auths when convenient; fleet is ordered to run without the local gate until then)"
     },
@@ -674,15 +674,14 @@
       "id": "led-top-gear-everywhere",
       "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
       "mechanism": "TOP GEAR invariant: deferral requires a named clock; merge-to-live <=5min event-driven; seat-recovery fires intake instantly",
-      "proof": "fleet-ops #468; mechanism issue #479 filed by canary",
-      "status": "queued(#479)",
-      "queued_since": "2026-08-27"
+      "proof": "fleet-ops #468; enforced by bin/fleet-unjustified-wait (clock audit), bin/fleet-deploy-check + systemd/fleet-deploy-check.{service,timer} (2-min merge-to-live), bin/fleet-seat-recovery + systemd/fleet-seat-recovery.{service,path} (instant intake on seat recovery), all wired into fleet-heartbeat-tier1 block 15",
+      "status": "enforced"
     },
     {
       "id": "led-escalation-matrix-fixes",
       "source": "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes",
       "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal",
-      "proof": "bin/fleet-escalation-completion (per-chain stall budget + fail-loud ladder, wired into fleet-heartbeat-tier1 block 21); tests/fleet-escalation-completion.test.sh",
+      "proof": "fleet-ops #468; enforced by bin/fleet-escalation-completion (per-chain stall budget + fail-loud ladder, wired into fleet-heartbeat-tier1 block 15)",
       "status": "enforced"
     }
   ]

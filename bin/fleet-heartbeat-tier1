@@ -1272,6 +1272,50 @@ else
 fi
 
 # ============================================================================
+# 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
+# ============================================================================
+# Every tick, prove "deferral requires a named clock": every benched seat,
+# held claim, and queued deploy carries a machine-checkable justification.
+# Anything waiting WITHOUT one is LOUD + auto-filed; the tick fails so the
+# invariant has teeth. Runs before the coverage canary so a TOP GEAR
+# violation is visible even when the canary passes.
+UNJUSTIFIED_BIN="${FLEET_UNJUSTIFIED_WAIT:-/home/nish/.local/bin/fleet-unjustified-wait}"
+unjustified_rc=0
+if [ -x "$UNJUSTIFIED_BIN" ]; then
+    log "15. unjustified-wait detector starting"
+    if "$UNJUSTIFIED_BIN"; then
+        log "15. unjustified-wait detector complete"
+    else
+        unjustified_rc=$?
+        log "15. unjustified-wait detector FAILED (rc=$unjustified_rc) — TOP GEAR invariant violated; unit will land in --state=failed"
+    fi
+else
+    log "15. unjustified-wait detector missing at $UNJUSTIFIED_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 15. ESCALATION-COMPLETION ENFORCER (fleet-ops#468 matrix FIXES, not just routes)
+# ============================================================================
+# Every tick, prove every open escalation chain TERMINATES: detector-green
+# or a Nish-reserved wall, within a cycle budget. Stalled chains climb the
+# ladder (re-fire -> fail-loud -> unit-escalation). A green detector with an
+# IDLE pipeline and a non-terminal STOP-REASON is a stale trip (closeout
+# skipped) — fail loud.
+ESCALATION_COMPLETION_BIN="${FLEET_ESCALATION_COMPLETION:-/home/nish/.local/bin/fleet-escalation-completion}"
+escalation_completion_rc=0
+if [ -x "$ESCALATION_COMPLETION_BIN" ]; then
+    log "15. escalation-completion enforcer starting"
+    if "$ESCALATION_COMPLETION_BIN"; then
+        log "15. escalation-completion enforcer complete"
+    else
+        escalation_completion_rc=$?
+        log "15. escalation-completion enforcer FAILED (rc=$escalation_completion_rc) — escalation chain stalled; unit will land in --state=failed"
+    fi
+else
+    log "15. escalation-completion enforcer missing at $ESCALATION_COMPLETION_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # 15. ESCALATION COVERAGE CANARY (fleet-ops#152)
 # ============================================================================
 # Every tick, prove the two-plane invariant "every failure path lands in the
@@ -1432,31 +1476,9 @@ else
 fi
 
 # ============================================================================
-# 21. ESCALATION COMPLETION ENFORCER (fleet-ops#480)
-# ============================================================================
-# Every tick, prove every open escalation chain TERMINATES in a verified fix
-# (detector-green) or a genuinely Nish-reserved wall. A stalled chain climbs
-# the ladder (re-fire -> fail-loud -> unit-escalation). Runs after the
-# coverage canary because it depends on the same STOP-REASON / AUDITOR-LOG
-# state and must not hide a coverage gap behind completion.
-ESCALATION_COMPLETION_BIN="${FLEET_ESCALATION_COMPLETION:-/home/nish/.local/bin/fleet-escalation-completion}"
-escalation_completion_rc=0
-if [ -x "$ESCALATION_COMPLETION_BIN" ]; then
-    log "21. escalation-completion enforcer starting"
-    if "$ESCALATION_COMPLETION_BIN"; then
-        log "21. escalation-completion enforcer complete"
-    else
-        escalation_completion_rc=$?
-        log "21. escalation-completion enforcer FAILED (rc=$escalation_completion_rc) — escalation chain stalled; unit will land in --state=failed"
-    fi
-else
-    log "21. escalation-completion enforcer missing at $ESCALATION_COMPLETION_BIN — skip (not installed; re-run ./install.sh)"
-fi
-
-# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc escalation_completion_rc=${escalation_completion_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1497,7 +1519,10 @@ fi
 if [ "${researcher_dispatch_rc:-0}" -ne 0 ]; then
     exit "$researcher_dispatch_rc"
 fi
+if [ "${unjustified_rc:-0}" -ne 0 ]; then
+    exit "${unjustified_rc}"
+fi
 if [ "${escalation_completion_rc:-0}" -ne 0 ]; then
-    exit "$escalation_completion_rc"
+    exit "${escalation_completion_rc}"
 fi
 exit 0

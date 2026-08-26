@@ -1,0 +1,9 @@
+[Unit]
+Description=Fleet seat-recovery path watcher (fleet-ops#468)
+
+[Path]
+PathChanged=/home/nish/workspaces/agent-state/lanes/seats
+Unit=fleet-seat-recovery.service
+
+[Install]
+WantedBy=default.target

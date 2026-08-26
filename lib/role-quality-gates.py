@@ -36,6 +36,9 @@ NON_ROLE_UNIT_PREFIXES = (
     "resilience-drill",
     "fleet-console",
     "fleet-heartbeat-failed-notify",
+    "fleet-deploy-check",
+    "fleet-seat-recovery",
+    "interactive-session-reap",
     "agent-cron-",
     "app-pi",
 )
@@ -144,6 +147,13 @@ def check_audit_has_panel(repo: Path, _role: dict[str, Any]) -> str | None:
     return None
 
 
+def check_researcher_delta_contract(repo: Path, _role: dict[str, Any]) -> str | None:
+    """Researcher deltas must pass the contract validator before filing."""
+    if not (repo / "lib" / "researcher-delta.py").exists():
+        return "lib/researcher-delta.py missing (delta contract validator)"
+    return None
+
+
 BYPASS_CHECKS = {
     "scout_agent_ready_product": check_scout_agent_ready_product,
     "sweep_blank_approval": check_sweep_blank_approval,
@@ -153,6 +163,7 @@ BYPASS_CHECKS = {
     "senior_cannot_self_admit": check_senior_cannot_self_admit,
     "orchestrator_verdict_guard": check_orchestrator_verdict_guard,
     "audit_has_panel": check_audit_has_panel,
+    "researcher_delta_contract": check_researcher_delta_contract,
 }
 
 
