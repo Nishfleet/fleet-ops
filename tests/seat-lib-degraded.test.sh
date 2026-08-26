@@ -3,7 +3,9 @@
 #
 # fleet-ops#63: distinguish `active/running` (busy) from
 # `activating/auto-restart` (degraded, lane held but no work) in seat
-# accounting. This test pins:
+# accounting. fleet-ops#355: the enumerator must use at-sign globs
+# (`pi-issue@*.service`), not hyphen (`pi-issue-*.service`), because
+# template instances are `pi-issue@<inst>.service`.
 #   1. unit_is_degraded() returns true only for activating/auto-restart.
 #   2. count_degraded_total() counts degraded units across the
 #      registry + legacy-grep paths.
@@ -217,3 +219,40 @@ seed_unit pi-issue@fleet-ops-31.service activating start
 n=$(count_degraded_total)
 [[ "$n" == "2" ]] || fail "count_degraded_total: activating/start must NOT count as degraded, got $n"
 ok "count_degraded_total excludes activating/start (busy, not degraded)"
+
+# --- 5: source pins at-sign list-units globs (fleet-ops#355) --------------
+# Template instances are pi-issue@<inst>.service. Hyphen globs match
+# nothing. The same class as #28 (heartbeat §4) and #103 (heartbeat §7),
+# in seat-lib's worker enumerator.
+grep -F "list-units 'pi-issue@*.service' 'pi-packet@*.service'" "$SEAT_LIB" >/dev/null \
+  || fail "seat-lib.sh must list-units pi-issue@*.service and pi-packet@*.service (at-sign)"
+grep -F "list-units 'pi-issue-*.service' 'pi-packet-*.service'" "$SEAT_LIB" >/dev/null \
+  && fail "seat-lib.sh must not list-units pi-issue-*.service / pi-packet-*.service (hyphen)" || true
+ok "source uses at-sign list-units globs, not hyphen"
+
+# --- 6: _seat_list_unit returns at-sign template instances ----------------
+# A hyphen-named unit is seeded so a leftover hyphen glob would still
+# "succeed" against the wrong name. The enumerator must ignore it.
+seed_unit pi-issue-355.service active running
+listed=$(_seat_list_unit)
+printf '%s\n' "$listed" | grep -qxF 'pi-issue@fleet-ops-36.service' \
+  || fail "_seat_list_unit must emit pi-issue@fleet-ops-36.service, got: $listed"
+printf '%s\n' "$listed" | grep -qxF 'pi-issue-355.service' \
+  && fail "_seat_list_unit must not emit hyphen-named pi-issue-355.service, got: $listed" || true
+ok "_seat_list_unit emits at-sign template instances, not hyphen names"
+
+# --- 7: count_degraded_total legacy path sees at-sign crash-loopers -------
+# A crash-looping worker that never wrote a registry file (legacy ExecStart
+# path, or a wipe of active-seats) must still count. Hyphen globs miss it.
+seed_unit pi-issue@fleet-ops-355.service activating auto-restart
+n=$(count_degraded_total)
+[[ "$n" == "3" ]] || fail "count_degraded_total: expected 3 after unregistered pi-issue@fleet-ops-355, got $n"
+ok "count_degraded_total counts an unregistered at-sign auto-restart unit"
+
+# --- 8: class gate: no hyphen list-units in production code ---------------
+# Prevents a fourth copy of this bug. Tests may mention the old glob to
+# prove it does not match; lib/ and bin/ must not call it.
+hyphen_hits=$(grep -R -n -E "list-units[^[:cntrl:]]*'pi-issue-\*\.service'|list-units[^[:cntrl:]]*'pi-packet-\*\.service'" \
+  "$repo_root/lib" "$repo_root/bin" || true)
+[[ -z "$hyphen_hits" ]] || fail "hyphen list-units glob still in production code: $hyphen_hits"
+ok "lib/ and bin/ have no hyphen pi-issue/pi-packet list-units globs"
