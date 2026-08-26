@@ -273,8 +273,8 @@ unit_recovery_class() {
     mkdir -p "$(dirname "$REPOS_JSON")"
     cat > "$REPOS_JSON" <<'JSON'
 {
-  "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "nish3451/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
-  "claim_repos": ["Nishfleet/fleet-ops", "Nishfleet/0509", "Nishfleet/inish-site", "nish3451/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
+  "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
+  "claim_repos": ["Nishfleet/fleet-ops", "Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
   "hands_off": []
 }
 JSON
