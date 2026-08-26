@@ -218,8 +218,8 @@ if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider
     pi_rc=0
 else
     pi_rc=$?
+    rc=$pi_rc
     if (( pi_rc == 124 )); then
-        rc=124
         # Buffer the tail before appending so we never read+write $err_file
         # in the same pipeline (SC2094).
         session_tail=$(tail -c 400 "$err_file" 2>/dev/null | tr '\n' ' ' | tail -c 300)

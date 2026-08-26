@@ -40,7 +40,13 @@ HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
 
 seat_log() {
-    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_FILE"
+    local line ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf -v line '[%s] %s\n' "$ts" "$*"
+    # Durable audit trail in watch.log. Also emit to stderr so systemd's
+    # journal / `systemctl status` shows the reason (fleet-ops#342).
+    printf '%s' "$line" >>"$LOG_FILE"
+    printf '%s' "$line" >&2
 }
 
 now_s() { date -u +%s; }
