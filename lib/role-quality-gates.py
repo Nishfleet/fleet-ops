@@ -41,6 +41,7 @@ NON_ROLE_UNIT_PREFIXES = (
     "interactive-session-reap",
     "agent-cron-",
     "app-pi",
+    "vault-conflict",
 )
 
 
