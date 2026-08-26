@@ -85,8 +85,14 @@ Steps:
 1. Read the work: `gh issue view <N> -R Nishfleet/<repo> --comments`.
 2. Re-entrancy: if branch claim/issue-<N> already exists on origin AND the latest claim comment names YOUR unit, this is your own earlier attempt restarted — continue it, reusing the worktree if present.
 3. Workspace:
-   `git -C /home/nish/workspaces/products/<repo> fetch origin`
-   `git -C /home/nish/workspaces/products/<repo> worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> claim/issue-<N>`
+   For Nishfleet/fleet-ops the git parent is the canonical deploy-clone, not
+   `products/fleet-ops` (that symlink still points at the pre-rewrite
+   worktree parent until fleet-ops#410 retargets it when no worktrees remain):
+     CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
+   For every other repo:
+     CHECKOUT=/home/nish/workspaces/products/<repo>
+   `git -C "$CHECKOUT" fetch origin`
+   `git -C "$CHECKOUT" worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> claim/issue-<N>`
    (git will create the local branch tracking origin/claim/issue-<N>; if the worktree dir already exists from your own prior attempt, reuse it.) Work ONLY inside that worktree.
 4. If the issue is under-specified or the approach genuinely ambiguous: do NOT guess. Comment your concrete proposal and open questions on the issue, then
    `gh issue edit <N> -R Nishfleet/<repo> --add-label agent-blocked --remove-label agent-in-progress`,

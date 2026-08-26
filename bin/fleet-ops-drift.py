@@ -31,8 +31,10 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK; 0 skip gh
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
+  FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
+  FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
   GH                              gh binary (tests stub this)
 """
 
@@ -67,6 +69,7 @@ CANONICAL_CHECKOUT = Path(
 SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
 ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
 PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
+PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 PAPER_OVER_DROPIN = (
     HOME / ".config" / "systemd" / "user" / "fleet-heartbeat.service.d" / "10-deploy-checkout.conf"
 )
@@ -221,6 +224,61 @@ def auto_file_paper_over(msg: str) -> None:
         extra,
         msg,
     )
+
+
+def auto_file_products_symlink(msg: str) -> None:
+    """File one issue if products/fleet-ops cannot retarget to the deploy-clone."""
+    extra = (
+        "products/fleet-ops must point at the canonical deploy-clone. "
+        "fleet-ops-retarget-products applies that when no git worktrees "
+        "remain on the pre-rewrite parent; it must not delete the parent. "
+        "Waiting on attached worktrees is expected (exit 2) and is not "
+        "this class. This canary auto-files when apply fails (fleet-ops#410)."
+    )
+    auto_file_drift(
+        PRODUCTS_MARKER,
+        "products/fleet-ops still not the deploy-clone",
+        extra,
+        msg,
+    )
+
+
+def retarget_products_bin() -> Path:
+    env = os.environ.get("FLEET_OPS_RETARGET_BIN", "")
+    if env:
+        return Path(env)
+    sibling = Path(__file__).resolve().parent / "fleet-ops-retarget-products"
+    if sibling.is_file():
+        return sibling
+    return HOME / ".local" / "bin" / "fleet-ops-retarget-products"
+
+
+def check_products_symlink() -> None:
+    """Retarget products/fleet-ops when safe; fail loud only on apply errors.
+
+    Attached worktrees on the pre-rewrite parent are the expected drain
+    state (helper exit 2). That must not trip the canary or auto-file.
+    """
+    if ALLOW_NONCANONICAL:
+        log("products-symlink gate skipped (FLEET_OPS_ALLOW_NONCANONICAL=1)")
+        return
+    helper = retarget_products_bin()
+    if not helper.is_file():
+        log(f"products-symlink gate skipped (missing {helper})")
+        return
+    rc, stdout, stderr = run([str(helper), "--apply"], check=False)
+    text = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part)
+    if text:
+        for line in text.splitlines():
+            log(line)
+    if rc == 0:
+        return
+    if rc == 2:
+        log("products/fleet-ops still on worktree parent; attached worktrees remain (fleet-ops#410)")
+        return
+    msg = text or f"{helper} --apply exited {rc}"
+    auto_file_products_symlink(msg)
+    fail_loud("DRIFT-PRODUCTS-SYMLINK", msg)
 
 
 def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> None:
@@ -809,6 +867,7 @@ def main() -> None:
 
     check_papered_heartbeat_dropin()
     check_volatile_canary_bin()
+    check_products_symlink()
     check_canonical_source(checkout, expected_dests)
     check_checkout(checkout)
     check_manifest_install(checkout)
