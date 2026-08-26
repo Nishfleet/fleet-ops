@@ -1,0 +1,4 @@
+HTTP/2 200
+content-type: application/json; charset=utf-8
+x-oauth-scopes: workflow
+x-accepted-github-permissions: metadata=read
