@@ -354,6 +354,15 @@ grep -E 'CREATE .*--body-file ' "$noncanon_log" >/dev/null \
     || fail "noncanonical auto-file missing --body-file: $(cat "$noncanon_log")"
 grep -F 'Blind audit targeted non-canonical' "$noncanon_log" >/dev/null \
     || fail "noncanonical auto-file missing detector title: $(cat "$noncanon_log")"
+# fleet-ops#503: the noncanonical-checkout detector issue must be stamped
+# gap-audit + agent-ready at create time, or intake (agent-ready only) cannot
+# see it until lifecycle-label-sweep runs. Same class as the #402 create site.
+# The grep pins the detector title so the drill finding's own labeled CREATE
+# (fleet-ops#402) cannot satisfy this guard.
+grep -E 'CREATE .*Blind audit targeted non-canonical.*--label gap-audit' "$noncanon_log" >/dev/null \
+    || fail "noncanonical auto-file missing --label gap-audit (fleet-ops#503): $(cat "$noncanon_log")"
+grep -E 'CREATE .*Blind audit targeted non-canonical.*--label agent-ready' "$noncanon_log" >/dev/null \
+    || fail "noncanonical auto-file missing --label agent-ready (fleet-ops#503): $(cat "$noncanon_log")"
 ok "noncanonical products/fleet-ops root retargets and auto-files"
 
 # Same class via the worktree parent path (not the products symlink).
@@ -382,6 +391,11 @@ PATH="$scratch/fakebin:$PATH" \
 [[ $parent_rc == 0 ]] || { cat "$scratch/parent.log"; fail "parent-root drill exited $parent_rc"; }
 grep -F 'AUDIT-NONCANONICAL' "$scratch/parent.log" >/dev/null \
     || fail "worktree-parent root did not log AUDIT-NONCANONICAL"
+# fleet-ops#503: parent-path auto-file must also stamp both labels.
+grep -E 'CREATE .*Blind audit targeted non-canonical.*--label gap-audit' "$parent_log" >/dev/null \
+    || fail "parent auto-file missing --label gap-audit (fleet-ops#503): $(cat "$parent_log")"
+grep -E 'CREATE .*Blind audit targeted non-canonical.*--label agent-ready' "$parent_log" >/dev/null \
+    || fail "parent auto-file missing --label agent-ready (fleet-ops#503): $(cat "$parent_log")"
 ok "noncanonical tooling/fleet-ops parent retargets"
 
 # AUDIT_ALLOW_NONCANONICAL=1 skips retarget (tests/auditors that mean it).
