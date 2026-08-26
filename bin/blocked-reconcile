@@ -13,8 +13,11 @@
 #                Query each listed issue/PR; CLOSED / MERGED = resolved.
 #                Struck-through `~~blocked-on: ...~~` body lines are ignored.
 #   nish-decision — resolved when a later comment (or body line) carries
-#                `decision-resolved:`. Until then, leave the label and
-#                publish into the heartbeat triage file.
+#                `decision-resolved:` and has no live `blocked-on:` line.
+#                A worker ask that includes a copy-paste example plus
+#                `blocked-on: nish-decision` is not an answer (fleet-ops#563).
+#                Until then, leave the label and publish into the heartbeat
+#                triage file.
 # When every listed blocker is resolved, flip agent-blocked → agent-ready
 # and comment the evidence. Unparseable issues (no blocked-on lines) stay
 # on the desk-triage route and are never auto-requeued.
@@ -83,7 +86,12 @@ def comments_have_decision_resolved(comments):
         b = (c.get("body") if isinstance(c, dict) else "") or ""
         if SKIP_COMMENT.match(b.lstrip()):
             continue
-        if DECISION_RESOLVED.search(b):
+        live = live_text(b)
+        # Instruction comments still carry a live blocked-on: line and a
+        # copy-paste decision-resolved: example. Those are not answers.
+        if BLOCKED_ON.search(live):
+            continue
+        if DECISION_RESOLVED.search(live):
             return True
     return False
 
@@ -172,8 +180,9 @@ def extract(issue):
     title = issue.get("title") or ""
     body = issue.get("body") or ""
     comments = issue.get("comments") or []
+    live_body = live_text(body)
     nish_resolved = comments_have_decision_resolved(comments)
-    if DECISION_RESOLVED.search(live_text(body)):
+    if DECISION_RESOLVED.search(live_body) and not BLOCKED_ON.search(live_body):
         nish_resolved = True
     texts = [live_text(title), live_text(body)]
     for c in comments:
