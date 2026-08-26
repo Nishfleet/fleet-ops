@@ -593,6 +593,10 @@ grep -q 'systemd/intake-reconcile.timer' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list systemd/intake-reconcile.timer"
 grep -q 'systemd/intake-reconcile.path' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list systemd/intake-reconcile.path"
+[[ -f "$repo_root/systemd/intake-reconcile.service.d/10-deploy-checkout.conf" ]] \
+    || fail "systemd/intake-reconcile.service.d/10-deploy-checkout.conf missing"
+grep -q 'systemd/intake-reconcile.service.d/10-deploy-checkout.conf' "$repo_root/MANIFEST" \
+    || fail "MANIFEST must list systemd/intake-reconcile.service.d/10-deploy-checkout.conf"
 ok "scenario10: MANIFEST + README + description all reference the reconciler"
 
 # ============================================================================

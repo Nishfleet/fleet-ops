@@ -114,3 +114,6 @@ bash "$here/claim-reconcile.test.sh"
 # Workers implementing these issues must NEVER touch the live user
 # manager; the test runs entirely against stubbed systemctl + gh.
 bash "$here/intake-reconcile.test.sh"
+# 2026-08-26 split-brain: intake-reconcile must read deploy-clone
+# intake-repos.json. Named ci.yml step is out of band for the worker App.
+bash "$here/intake-reconcile-deploy-checkout.test.sh"
