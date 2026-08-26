@@ -1,0 +1,7 @@
+{
+  "org": "Nishfleet",
+  "plan": "team",
+  "rulesets": [
+    { "id": 1, "name": "bind-all", "target": "branch" }
+  ]
+}

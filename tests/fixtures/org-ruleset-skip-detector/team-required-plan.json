@@ -1,0 +1,7 @@
+{
+  "org": "Nishfleet",
+  "plan": "free",
+  "rulesets": [
+    { "id": 999, "name": "forged-list-must-not-become-a-pass" }
+  ]
+}
