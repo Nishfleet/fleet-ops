@@ -96,13 +96,33 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
+# Fake seat-lib: the real lib/seat-lib.sh reads ~/.pi/agent/models.json and
+# ~/.local/state/pi-packet/seat-caps.json. Those exist on Nish's VPS (so this
+# test passed locally) but NOT on a GitHub Actions hosted runner, where
+# pick_seat returned empty and the bin exited 1 at the "no capable seat"
+# guard — the fleet-ops#304 / #282-revert failure. Seat selection itself is
+# covered by seat-lib.test.sh; this test owns the audit harness mechanics
+# (panel, filing, dedupe, deliberate-state loud, stamp), so pick_seat is
+# stubbed to a deterministic seat, matching the fake-pi/fake-gh pattern.
+cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+# shellcheck shell=bash
+pick_seat() {
+    printf 'fakeprovider\tfakemodel'
+}
+FAKE_SEAT_LIB
+
 plan="$scratch/plan.md"
 cat > "$plan" <<'EOF'
 last-heartbeat: 2026-08-26T05:43:00Z (durable-timer)
 EOF
 
-mkdir -p "$scratch/state"
+mkdir -p "$scratch/state" "$scratch/empty-home"
 
+# Isolate from the VPS home (hosted runners have a blank HOME). set +e so a
+# non-zero bin exit is captured into $rc — under set -e the test died
+# silently before rc=$? (the fleet-ops#304 "no FAIL line" symptom).
+set +e
+HOME="$scratch/empty-home" \
 PATH="$scratch/fakebin:$PATH" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
@@ -110,14 +130,15 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PROMPT="$repo_root/prompts/blind-audit.md" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
-  AUDIT_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
   AUDIT_PLAN_FILE="$plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/run.log" 2>&1
-
 rc=$?
+set -e
+
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
 
 # Find the one report directory.

@@ -218,6 +218,15 @@ jobs:
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         bash tests/escalation-coverage-canary.test.sh
+        # fleet-ops#223: mechanical build-seriousness gate + senior-auditor panel.
+        # These four are hosted-runner-safe (pure node JSON-in/out, no user
+        # systemd bus, no live seat files). They belong in this P14 job; they
+        # are not VPS-only. Two prior lands died on other P14 tests that
+        # were not runner-aware — those are fixed in this PR too.
+        bash tests/seriousness-gate.test.sh
+        bash tests/senior-panel-tally.test.sh
+        bash tests/senior-panel-conference.test.sh
+        bash tests/hand-rolled-plumbing.test.sh
         bash tests/reusable-workflows.test.sh
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
