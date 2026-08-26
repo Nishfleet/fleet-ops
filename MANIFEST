@@ -263,6 +263,12 @@ config/pi-extensions-allowlist.json /home/nish/.local/state/pi-packet/pi-extensi
 # cline-pass GLM 5.3 flash slug appears in Pi's catalog. Heartbeat-tier1
 # block 23.
 bin/fleet-cline-glm53-canary /home/nish/.local/bin/fleet-cline-glm53-canary
+# fleet-ops#542: product-repo visibility canary (led-repo-visibility).
+# Fail-loud + auto-file when gh repo list shows a non-archived private
+# Nishfleet repo that is not in config/repo-visibility.json allow_private[].
+# Heartbeat-tier1 block 24.
+bin/fleet-repo-visibility-canary /home/nish/.local/bin/fleet-repo-visibility-canary
+config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

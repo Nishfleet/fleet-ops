@@ -540,10 +540,9 @@
     {
       "id": "led-repo-visibility",
       "source": "decisions-ledger.md: 2026-08-25 | repo visibility",
-      "mechanism": "Public-flip audits exist as docs; no canary that a new private product repo skipped the audit",
-      "proof": "Nishfleet/fleet-ops#542",
-      "status": "queued(#542)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat gh repo list canary: fail-loud + auto-file when a non-archived Nishfleet repo is private and not in config/repo-visibility.json allow_private[] (a product repo that skipped the public-flip audit). Declared sinks (telemetry/PII) and non-product private utilities stay quiet. Archived private repos are skipped.",
+      "proof": "bin/fleet-repo-visibility-canary; config/repo-visibility.json; tests/fleet-repo-visibility-canary.test.sh; fleet-heartbeat-tier1 block 24; fleet-ops#542",
+      "status": "enforced"
     },
     {
       "id": "led-work-supply-agent-ready",
