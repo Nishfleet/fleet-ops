@@ -623,6 +623,54 @@
       "proof": "needs a seat-caps.json PR plus a free-M3 fail-closed probe",
       "status": "queued(#416)",
       "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-north-star-quality",
+      "source": "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through",
+      "mechanism": "Quality SLOs measured mechanically on the gap-closure loop's primary scoreboard; speed/resilience wins that cost quality rejected at conference",
+      "proof": "fleet-ops #180 comment + #455 + #418; mechanism issue filed by canary",
+      "status": "queued(#459)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-quality-inescapable",
+      "source": "decisions-ledger.md: 2026-08-26 | quality is INESCAPABLE, every role",
+      "mechanism": "Every role's output passes a quality gate it cannot bypass; routing is quality-weighted via fail-closed seat machinery",
+      "proof": "fleet-ops #456 #457; mechanism issue filed by canary",
+      "status": "queued(#460)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-researchers-join",
+      "source": "decisions-ledger.md: 2026-08-26 | researchers join the fleet",
+      "mechanism": "Researchers as standing role; output through same admission pipeline + quality gates; event-driven triggers, cheap/free lanes capped",
+      "proof": "fleet-ops #458; mechanism issue filed by canary",
+      "status": "queued(#461)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-glm-5-3-free-clinepass",
+      "source": "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass",
+      "mechanism": "Wire free GLM 5.3 flash on ClinePass; slug + weekly-cap-bypass must be PROVEN live before routing (fail closed if it bills)",
+      "proof": "fleet-ops #384 comment; mechanism issue filed by canary",
+      "status": "queued(#462)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-cursor-grok-re-admitted",
+      "source": "decisions-ledger.md: 2026-08-27 | cursor grok-4.6 heavy re-admitted",
+      "mechanism": "Cursor grok-4.6 re-admitted to heavy lanes per dated decision; seat-caps row + routing must reflect it",
+      "proof": "decisions-ledger 2026-08-27; config/seat-caps.json",
+      "status": "queued(#437)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-straitly-ds4-pro-workers",
+      "source": "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers",
+      "mechanism": "straitly ds4-pro approved for worker use per dated decision; metered spend for auditing approved; seat routing updated",
+      "proof": "decisions-ledger 2026-08-27; fleet-ops #146",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-27"
     }
   ]
 }
