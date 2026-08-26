@@ -78,6 +78,7 @@ case "$subcmd" in
         printf '%s\n' '[{"number":77,"title":"stale agent-state file","labels":[]}]'
         ;;
       create)
+        printf 'CREATE %s\n' "$*" >> "${GH_CREATE_LOG:-/dev/null}"
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
     esac
@@ -102,8 +103,10 @@ last-heartbeat: 2026-08-26T05:43:00Z (durable-timer)
 EOF
 
 mkdir -p "$scratch/state"
+: > "$scratch/gh-create.log"
 
 PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$scratch/gh-create.log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$scratch/state" \
@@ -151,4 +154,112 @@ grep -qE '^last-blind-audit-run:' "$plan" || fail "plan file missing last-blind-
 [[ -f "$report_dir/report.md" ]] || fail "report.md missing"
 [[ -f "$report_dir/findings.json" ]] || fail "findings.json missing"
 
-ok "fleet-blind-audit: panel, filing, dedupe, deliberate-state loud, and stamp"
+# Step 6 must write the filed URL into the durable report AND the verdict log.
+# The 2026-08-26 live run filed #367-#371 but left report.md saying "no GitHub
+# issues filed" (the reviewer is forbidden from filing). That is the bug.
+grep -F '## Filing results' "$report_dir/report.md" >/dev/null \
+  || fail "report.md missing Filing results section"
+grep -F 'https://github.com/Nishfleet/fleet-ops/issues/9999' "$report_dir/report.md" >/dev/null \
+  || fail "report.md does not link the filed issue"
+[[ -n $(jq -R -c 'fromjson | select(.rank=="1" and .issue=="https://github.com/Nishfleet/fleet-ops/issues/9999")' "$verdicts") ]] \
+  || fail "verdicts.jsonl rank 1 missing issue URL"
+
+# gh issue create must use --body-file (not --body) and the gap-audit label.
+grep -E 'CREATE .*--body-file ' "$scratch/gh-create.log" >/dev/null \
+  || fail "gh issue create was not invoked with --body-file: $(cat "$scratch/gh-create.log")"
+grep -E 'CREATE .*--label gap-audit' "$scratch/gh-create.log" >/dev/null \
+  || fail "gh issue create missing --label gap-audit: $(cat "$scratch/gh-create.log")"
+
+ok "fleet-blind-audit: panel, filing, dedupe, deliberate-state loud, stamp, report ledger"
+
+# ============================================================================
+# Drill: fixture finding, no pi/seat. Proves step 6 files an issue.
+# ============================================================================
+drill_state="$scratch/drill-state"
+drill_plan="$scratch/drill-plan.md"
+drill_log="$scratch/drill-create.log"
+mkdir -p "$drill_state"
+: > "$drill_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$drill_plan"
+
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$drill_log" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$drill_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$drill_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:21:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/drill.log" 2>&1
+drill_rc=$?
+[[ $drill_rc == 0 ]] || { cat "$scratch/drill.log"; fail "drill exited $drill_rc"; }
+
+drill_dir=$(find "$drill_state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)
+[[ -n "$drill_dir" ]] || fail "drill produced no report directory"
+grep -c 'FILED' "$scratch/drill.log" | grep -qx 1 \
+  || fail "drill did not file exactly one issue: $(cat "$scratch/drill.log")"
+grep -F 'https://github.com/Nishfleet/fleet-ops/issues/9999' "$drill_dir/report.md" >/dev/null \
+  || fail "drill report.md does not link the filed issue"
+[[ -n $(jq -R -c 'fromjson | select(.verdict=="PASS" and (.issue|test("issues/9999")))' "$drill_dir/verdicts.jsonl") ]] \
+  || fail "drill verdicts.jsonl missing filed issue URL"
+grep -E 'CREATE .*--body-file ' "$drill_log" >/dev/null \
+  || fail "drill gh create missing --body-file"
+ok "drill: fixture finding filed as gap-audit issue with report linked"
+
+# ============================================================================
+# Fail-loud: PASS finding + gh create failure must exit 1 (not silent success).
+# ============================================================================
+fail_gh="$scratch/failgh"
+mkdir -p "$fail_gh"
+cat > "$fail_gh/gh" <<'FAIL_GH'
+#!/usr/bin/env bash
+subcmd="${1:-}"
+shift || true
+case "$subcmd" in
+  label) exit 0 ;;
+  issue)
+    case "${1:-}" in
+      list) printf '%s\n' '[]' ;;
+      create) echo "HTTP 401: requires authentication" >&2; exit 1 ;;
+    esac
+    exit 0
+    ;;
+  pr) printf '%s\n' '[]'; exit 0 ;;
+  *) exit 0 ;;
+esac
+FAIL_GH
+chmod +x "$fail_gh/gh"
+
+fail_state="$scratch/fail-state"
+fail_plan="$scratch/fail-plan.md"
+mkdir -p "$fail_state"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$fail_plan"
+
+set +e
+PATH="$fail_gh:$scratch/fakebin:$PATH" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$fail_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$fail_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:22:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/fail.log" 2>&1
+fail_rc=$?
+set -e
+[[ $fail_rc == 1 ]] || { cat "$scratch/fail.log"; fail "expected exit 1 when gh create fails, got $fail_rc"; }
+grep -F 'FATAL:' "$scratch/fail.log" >/dev/null \
+  || fail "fail-loud run did not log FATAL"
+fail_dir=$(find "$fail_state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)
+grep -F 'Unfiled PASS findings: 1' "$fail_dir/report.md" >/dev/null \
+  || fail "fail-loud report.md did not record unfiled PASS"
+
+ok "fail-loud: unfiled PASS finding exits 1 and is recorded in the report"
+
