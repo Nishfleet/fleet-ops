@@ -1,0 +1,138 @@
+name: Seriousness gate
+
+# Mechanical, opt-in-free build-seriousness labeler (fleet-ops #223).
+#
+# A PR is `build:serious` when ANY of:
+#   1. it touches control-plane paths (bin/, systemd/, lib/, config/,
+#      .github/workflows/),
+#   2. the diff is > 300 changed lines,
+#   3. it closes an issue labeled `keystone` or `gap-audit`,
+#   4. the claim ran > 15 min (worker start -> PR created_at).
+#
+# The gate ADDS `build:serious` when a trigger fires. It never strips a
+# hand-added label — "hand-adding the label also works; `build:trivial` may
+# be applied ONLY by the panel itself" (#223 §1). Removal is the panel's job.
+#
+# The `senior-panel` check (senior-panel.yml) is the required status that
+# blocks merge on labeled PRs; making it required is the org ruleset (#185),
+# not this workflow. This workflow only labels.
+#
+# Pure of judgement: the classify function lives in
+# .github/scripts/seriousness-gate.mjs and is unit-tested. The workflow
+# gathers PR metadata with gh and feeds it in — no decision logic here.
+# Surface: gh CLI + GitHub REST API only. No paid services.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+concurrency:
+  group: seriousness-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label build:serious
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Gather PR metadata and classify
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # PR diff stats + changed files.
+          pr_json="$(gh pr view "$PR" -R "$REPO" --json files,additions,deletions,body,closingIssuesReferences,createdAt)"
+          changed_files="$(printf '%s' "$pr_json" | jq -c '[.files[].path]')"
+          additions="$(printf '%s' "$pr_json" | jq -r '.additions')"
+          deletions="$(printf '%s' "$pr_json" | jq -r '.deletions')"
+          pr_created="$(printf '%s' "$pr_json" | jq -r '.createdAt')"
+
+          # Closing-issue labels (keystone / gap-audit mark a serious close).
+          closing_labels='[]'
+          closing_numbers="$(printf '%s' "$pr_json" | jq -r '[.closingIssuesReferences[].number] | map(tostring) | join(" ")')"
+          if [ -n "$closing_numbers" ]; then
+            labels='[]'
+            for n in $closing_numbers; do
+              l="$(gh issue view "$n" -R "$REPO" --json labels -q '[.labels[].name]' 2>/dev/null || echo '[]')"
+              labels="$(printf '%s' "$labels" | jq -c --argjson l "$l" '. + $l')"
+            done
+            closing_labels="$(printf '%s' "$labels" | jq -c 'unique')"
+          fi
+
+          # Claim duration: the worker's "claimed by <unit> at <ts>" comment
+          # on the closing issue -> PR created_at. > 15 min is serious
+          # (Nish 2026-08-26, supersedes the spec body's 1h).
+          claim_minutes='null'
+          if [ -n "$closing_numbers" ]; then
+            for n in $closing_numbers; do
+              # The claim comment looks like: "claimed by <unit> at <ISO8601>"
+              claim_ts="$(gh issue view "$n" -R "$REPO" --comments \
+                --json comments -q '[.comments[].body] | map(select(test("claimed by .* at [0-9]"))) | first' 2>/dev/null || true)"
+              if [ -n "$claim_ts" ] && [ "$claim_ts" != "null" ]; then
+                ts="$(printf '%s' "$claim_ts" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' | head -1)"
+                if [ -n "$ts" ]; then
+                  claim_minutes="$(python3 -c "
+          from datetime import datetime
+          a=datetime.fromisoformat('$ts'.replace('Z','+00:00'))
+          b=datetime.fromisoformat('$pr_created'.replace('Z','+00:00'))
+          print(round((b-a).total_seconds()/60.0,2))
+          " 2>/dev/null || echo 'null')"
+                  break
+                fi
+              fi
+            done
+          fi
+
+          packet="$(jq -c -n \
+            --argjson changedFiles "$changed_files" \
+            --argjson additions "$additions" \
+            --argjson deletions "$deletions" \
+            --argjson closingIssueLabels "$closing_labels" \
+            --argjson claimDurationMinutes "$claim_minutes" \
+            '{changedFiles:$changedFiles, additions:$additions, deletions:$deletions, closingIssueLabels:$closingIssueLabels, claimDurationMinutes:$claimDurationMinutes}')"
+
+          result="$(printf '%s' "$packet" | node .github/scripts/seriousness-gate.mjs)"
+          printf '%s\n' "$result"
+          serious="$(printf '%s' "$result" | jq -r '.serious')"
+          triggers="$(printf '%s' "$result" | jq -c '.triggers')"
+          {
+            echo "serious=$serious"
+            echo "triggers=$triggers"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply build:serious label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SERIOUS: ${{ steps.gate.outputs.serious }}
+        run: |
+          set -euo pipefail
+          current="$(gh pr view "$PR" -R "$REPO" --json labels -q '[.labels[].name]')"
+          has_serious="$(printf '%s' "$current" | jq -r 'any(. == "build:serious")')"
+          if [ "$SERIOUS" = "true" ]; then
+            if [ "$has_serious" = "false" ]; then
+              gh pr edit "$PR" -R "$REPO" --add-label build:serious
+              echo "added build:serious (triggers: ${{ steps.gate.outputs.triggers }})"
+            else
+              echo "build:serious already present"
+            fi
+          else
+            # Do NOT remove a hand-added label — only the panel applies
+            # build:trivial (#223 §1). Just report.
+            echo "no mechanical trigger; label left as-is (has build:serious: $has_serious)"
+          fi
