@@ -20,7 +20,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/agent-cron-run"
 svc="$repo_root/systemd/agent-cron-0509-daily-market-signal.service"
-tmr="$repo_root/systemd/agent-cron-0509-daily-market-signal.timer"
 manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -214,17 +213,14 @@ grep -Fxq "systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/
 ok "MANIFEST entries present for runner + service + timer"
 
 # --- systemd-analyze verify on the unit files -------------------------------
-if command -v systemd-analyze >/dev/null 2>&1; then
-  # Capture stderr (where systemd-analyze writes diagnostics) so a CI-only
-  # verify failure is diagnosable instead of a bare "failed" with stderr
-  # discarded. stdout is empty for verify; redirect both into the capture.
-  if ! verify_out=$(systemd-analyze verify --man=no "$svc" "$tmr" 2>&1); then
-    fail "systemd-analyze verify failed for agent-cron units:
-$verify_out"
-  fi
-  ok "systemd-analyze verify accepts agent-cron units"
-else
-  echo "SKIP: systemd-analyze not on PATH"
-fi
+# NOTE: unit-file verification is owned by the dedicated `systemd-analyze` CI
+# job (.github/workflows/ci.yml), which stubs the VPS ExecStart paths
+# (/home/nish/.local/bin/agent-cron-run, etc.) before verifying every
+# systemd/*.service + *.timer. Do NOT re-verify here: this test runs without
+# sudo and without those stubs, and `systemd-analyze verify` on systemd 256+
+# rejects units whose ExecStart binary does not exist on the host — so an
+# inline verify false-positives on every CI run (the runner has no
+# /home/nish/.local/bin/agent-cron-run). That red baseline kept main failing
+# since #144 and made auto-revert thrash (halt issues #151/#160/#169/#172).
 
 ok "agent-cron seat rotation: gate replaced by pick_seat, transient 429 routes to alt, fully-walled fails loud"
