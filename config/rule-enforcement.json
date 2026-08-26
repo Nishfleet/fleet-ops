@@ -193,10 +193,9 @@
     {
       "id": "sr-vault-sync-conflicts",
       "source": "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)",
-      "mechanism": "Freeze-on-conflict is prose; confirm the Syncthing conflict handler still fires",
-      "proof": "Nishfleet/fleet-ops#529",
-      "status": "queued(#529)",
-      "queued_since": "2026-08-27"
+      "mechanism": "vault-conflict-resolver.timer every 10 min resolves identical / append-superset / missing-base and quarantines divergent *.sync-conflict-* files; freeze-on-conflict remains (memory-ledger-supersede exits 2); heartbeat canary block 11 plants a fixture conflict and screams if the timer dies or the handler no longer clears it",
+      "proof": "lib/vault-conflict-resolver.py; systemd/vault-conflict-resolver.timer; bin/fleet-escalation-canary block 11; tests/vault-conflict-resolver.test.sh; tests/memory-ledger-supersede.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-claim-surface",

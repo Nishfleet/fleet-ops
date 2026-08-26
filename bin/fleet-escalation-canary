@@ -45,6 +45,11 @@
 #        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
 #        When a previously auto-filed source is now `enforced`, the canary
 #        comments `canary-covered:` on the open issue (observe-to-close).
+#    10. Backup staleness (fleet-ops#388): restic-r2-backup.timer active and
+#        fresh (body of the canary, after the GitHub plane).
+#    11. Vault sync-conflict handler (fleet-ops#529): vault-conflict-resolver
+#        timer is active, last Result=success, and a fixture *.sync-conflict-*
+#        file is planted and must clear. Missing handler = the 2026-08-23 wipe.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -86,6 +91,11 @@
 #                                       auto-files a distinct mechanism issue for
 #                                       each queued row owned by an umbrella issue.
 #   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
+#   FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT  1 skips block 11 (offline tests)
+#   FLEET_VAULT_CONFLICT_TIMER          default vault-conflict-resolver.timer
+#   FLEET_VAULT_CONFLICT_SERVICE        default vault-conflict-resolver.service
+#   FLEET_VAULT_CONFLICT_RESOLVER       path to lib/vault-conflict-resolver.py
+#   FLEET_VAULT_CONFLICT_STALE_HOURS    default 1 (timer fires every 10 min)
 
 set -Eeuo pipefail
 
@@ -136,6 +146,15 @@ if ! [[ "$RESTIC_STALENESS_HOURS" =~ ^[0-9]+$ ]]; then
     RESTIC_STALENESS_HOURS="$RESTIC_STALENESS_HOURS_DEFAULT"
 fi
 readonly RESTIC_STALENESS_HOURS
+
+VAULT_CONFLICT_TIMER="${FLEET_VAULT_CONFLICT_TIMER:-vault-conflict-resolver.timer}"
+VAULT_CONFLICT_SERVICE="${FLEET_VAULT_CONFLICT_SERVICE:-vault-conflict-resolver.service}"
+VAULT_CONFLICT_STALE_HOURS_DEFAULT=1
+VAULT_CONFLICT_STALE_HOURS="${FLEET_VAULT_CONFLICT_STALE_HOURS:-$VAULT_CONFLICT_STALE_HOURS_DEFAULT}"
+if ! [[ "$VAULT_CONFLICT_STALE_HOURS" =~ ^[0-9]+$ ]]; then
+    VAULT_CONFLICT_STALE_HOURS="$VAULT_CONFLICT_STALE_HOURS_DEFAULT"
+fi
+readonly VAULT_CONFLICT_STALE_HOURS
 
 log() {
     printf '[%s] [fleet-escalation-canary] %s\n' \
@@ -664,6 +683,85 @@ else
     if [[ "$_backup_result" != "success" ]]; then
         loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_SERVICE last Result=$_backup_result (not success) — the last backup run failed"
         violations=$((violations + 1))
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 11. Vault sync-conflict handler — fleet-ops#529
+# ---------------------------------------------------------------------------
+# Freeze-on-conflict is self-clearing only while vault-conflict-resolver.timer
+# fires. The 2026-08-23 wipe deleted the timer and the freeze sat until a
+# human noticed. This block is the cheap every-tick signal: timer active,
+# last Result=success, and a fixture *.sync-conflict-* file must clear.
+#
+# FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1 skips this block (offline tests).
+log "11. checking vault-conflict-resolver (sr-vault-sync-conflicts)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT:-0}" == "1" ]]; then
+    log "11.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1)"
+else
+    _vc_active=$("$SYSTEMCTL" --user show "$VAULT_CONFLICT_TIMER" --property=ActiveState --value 2>/dev/null || true)
+    _vc_last=$("$SYSTEMCTL" --user show "$VAULT_CONFLICT_TIMER" --property=LastTriggerUSec --value 2>/dev/null || true)
+    _vc_result=$("$SYSTEMCTL" --user show "$VAULT_CONFLICT_SERVICE" --property=Result --value 2>/dev/null || true)
+    log "11.  - $VAULT_CONFLICT_TIMER ActiveState=$_vc_active LastTriggerUSec=$_vc_last"
+    log "11.  - $VAULT_CONFLICT_SERVICE Result=$_vc_result"
+    if [[ "$_vc_active" != "active" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER is not active (state=$_vc_active) — *.sync-conflict-* files will freeze the vault with no self-clear"
+        violations=$((violations + 1))
+    elif [[ -z "$_vc_last" ]] || [[ "$_vc_last" == "0" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER has never fired — the handler has not run"
+        violations=$((violations + 1))
+    else
+        _vc_epoch="$(date -d "$_vc_last" +%s 2>/dev/null || true)"
+        if [[ -z "$_vc_epoch" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER LastTriggerUSec unparseable: '$_vc_last'"
+            violations=$((violations + 1))
+        else
+            _vc_age_h=$(( ( $(date +%s) - _vc_epoch ) / 3600 ))
+            if (( _vc_age_h > VAULT_CONFLICT_STALE_HOURS )); then
+                loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_TIMER last fired ${_vc_age_h}h ago — older than ${VAULT_CONFLICT_STALE_HOURS}h threshold. The Syncthing conflict handler is not firing."
+                violations=$((violations + 1))
+            else
+                log "11.  - last run ${_vc_age_h}h ago (within ${VAULT_CONFLICT_STALE_HOURS}h threshold)"
+            fi
+        fi
+    fi
+    if [[ "$_vc_result" != "success" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: $VAULT_CONFLICT_SERVICE last Result=$_vc_result (not success) — the last resolver run failed"
+        violations=$((violations + 1))
+    fi
+    _vc_resolver="${FLEET_VAULT_CONFLICT_RESOLVER:-}"
+    if [[ -z "$_vc_resolver" ]]; then
+        if [[ -f "$FLEET_OPS_REPO/lib/vault-conflict-resolver.py" ]]; then
+            _vc_resolver="$FLEET_OPS_REPO/lib/vault-conflict-resolver.py"
+        elif [[ -x "${HOME}/.local/bin/vault-conflict-resolver" ]]; then
+            _vc_resolver="${HOME}/.local/bin/vault-conflict-resolver"
+        fi
+    fi
+    if [[ -z "$_vc_resolver" || ! -f "$_vc_resolver" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: resolver missing (looked in $FLEET_OPS_REPO/lib/vault-conflict-resolver.py and ${HOME}/.local/bin/vault-conflict-resolver) — the 2026-08-23 wipe class is back"
+        violations=$((violations + 1))
+    elif ! command -v python3 >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: python3 missing — cannot run the *.sync-conflict-* fixture canary"
+        violations=$((violations + 1))
+    else
+        _vc_fix=$(mktemp -d -t vault-conflict-canary.XXXXXX)
+        _vc_base="$_vc_fix/canary.md"
+        _vc_copy="$_vc_fix/canary.sync-conflict-20260827-000000-CANARY.md"
+        printf 'same-bytes\n' >"$_vc_base"
+        printf 'same-bytes\n' >"$_vc_copy"
+        if ! env FLEET_VAULT="$_vc_fix" \
+            FLEET_VAULT_CONFLICT_LOG="$_vc_fix/resolver.log" \
+            FLEET_VAULT_CONFLICT_DISPATCH="/bin/true" \
+            python3 "$_vc_resolver" >/dev/null 2>&1; then
+            loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: fixture resolver exited non-zero"
+            violations=$((violations + 1))
+        elif [[ -e "$_vc_copy" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "vault-conflict: fixture *.sync-conflict-* still present after resolver — handler did not fire"
+            violations=$((violations + 1))
+        else
+            log "11.  - fixture *.sync-conflict-* cleared"
+        fi
+        rm -rf "$_vc_fix"
     fi
 fi
 
