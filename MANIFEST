@@ -30,6 +30,7 @@ prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-rep
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
+lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
@@ -58,6 +59,14 @@ bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+# fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
+# timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a
+# local panel, and files gap-audit issues linked to a durable report.
+bin/fleet-blind-audit /home/nish/.local/bin/fleet-blind-audit
+bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
+prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
+systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
+systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26

@@ -823,9 +823,66 @@ else
 fi
 
 # ============================================================================
+# 10. BLIND AUDIT TRIGGER (fleet-ops#157)
+# ============================================================================
+# When the gap-board is drained (zero open gap-audit issues in fleet-ops) and
+# no audit is already running, start fleet-blind-audit.service and stamp the
+# plan file. The audit itself is responsible for filing gap-audit issues and
+# writing the report to agent-state. One at a time via the audit's own flock.
+audit_started=0
+if [ "${FLEET_BLIND_AUDIT_DISABLE:-0}" != "1" ]; then
+    log "10. blind-audit trigger starting"
+    n_gaps=$(gh issue list -R Nishfleet/fleet-ops -l gap-audit --state open \
+        --json number --jq length 2>/dev/null || echo 999)
+    if [ "$n_gaps" -eq 0 ] 2>/dev/null; then
+        # Only start if the audit unit is not already active/activating.
+        audit_state=$(systemctl --user is-active fleet-blind-audit.service 2>/dev/null || echo "unknown")
+        case "$audit_state" in
+            active|activating)
+                log "10.  - fleet-blind-audit.service is $audit_state — no-op"
+                ;;
+            *)
+                log "10.  - gap-board empty, starting fleet-blind-audit.service"
+                if systemctl --user start fleet-blind-audit.service 2>/dev/null; then
+                    audit_started=1
+                    new_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                    python3 - "$PLAN_FILE" "$new_ts" <<'PY'
+import sys, re
+path, ts = sys.argv[1], sys.argv[2]
+with open(path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+new = []
+hit = False
+for ln in lines:
+    if not hit and re.match(r'^last-blind-audit-dispatch:', ln):
+        new.append(f'last-blind-audit-dispatch: {ts} (heartbeat)\n')
+        hit = True
+    else:
+        new.append(ln)
+if not hit:
+    if new and not new[-1].endswith('\n'):
+        new.append('\n')
+    new.append(f'\nlast-blind-audit-dispatch: {ts} (heartbeat)\n')
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(new)
+PY
+                    log "10.  - fleet-blind-audit.service started, stamp=$new_ts"
+                else
+                    loud "BLIND-AUDIT-START-FAIL" "systemctl start fleet-blind-audit.service failed"
+                fi
+                ;;
+        esac
+    else
+        log "10.  - gap-board has $n_gaps open gap-audit issue(s) — no trigger"
+    fi
+else
+    log "10. blind-audit disabled via FLEET_BLIND_AUDIT_DISABLE=1"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started"
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
 fi
