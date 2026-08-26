@@ -1,0 +1,17 @@
+# fleet-ops own gate set. Decision script and reusable source are gate-owned
+# because editing them changes the rules every consumer is judged by.
+gate_globs:
+  - ".github/workflows/**"
+  - ".github/scripts/**"
+  - ".github/CODEOWNERS"
+  - ".gitleaksignore"
+  - ".gitleaks.toml"
+  - ".semgrepignore"
+  - ".semgrep.yml"
+  - ".semgrep.yaml"
+  - ".fleet/**"
+  - "lib/gate-integrity.sh"
+  - "lib/gate-integrity-config.sh"
+  - "lib/workflows/reusable-gate-integrity.yml"
+  - "tests/gate-integrity.test.sh"
+ratchet_ceilings: []

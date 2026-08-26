@@ -1,0 +1,14 @@
+# Default / new-repo gate set. No design-system ratchet, no 0509 CI runner
+# scripts. `.fleet/**` is gated so a PR cannot silently rewrite the rules
+# that will judge the next PR (the current run still reads BASE-branch bytes).
+gate_globs:
+  - ".github/workflows/**"
+  - ".github/scripts/**"
+  - ".github/CODEOWNERS"
+  - ".gitleaksignore"
+  - ".gitleaks.toml"
+  - ".semgrepignore"
+  - ".semgrep.yml"
+  - ".semgrep.yaml"
+  - ".fleet/**"
+ratchet_ceilings: []

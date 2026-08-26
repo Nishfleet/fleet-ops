@@ -1,0 +1,273 @@
+# Reusable gate-integrity — the CI-gaming detector, defined once in fleet-ops.
+#
+# Call from a consumer (MUST be pull_request_target so GitHub evaluates the
+# CALLER's base-branch copy of the thin workflow, not the candidate's):
+#
+#   name: Gate integrity
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened, labeled, unlabeled]
+#     merge_group:
+#   concurrency:
+#     group: gate-integrity-${{ github.event.pull_request.number || github.ref }}
+#     cancel-in-progress: true
+#   permissions:
+#     contents: read
+#     pull-requests: read
+#   jobs:
+#     gate-integrity:
+#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#
+# Same-repo callers use ./.github/workflows/reusable-gate-integrity.yml
+# once that file is installed at the GitHub-callable path (it is sourced
+# from lib/workflows/reusable-gate-integrity.yml).
+#
+# Repo-specific globs live in `.fleet/gate-integrity.yml` on the CONSUMER,
+# fetched from the consumer BASE ref through the API. A PR cannot change
+# the rules that judge it. The decision script is fetched from THIS
+# fleet-ops commit (github.job_workflow_sha), so a consumer PR cannot
+# edit the detector either.
+#
+# Candidate code is never checked out and never executed.
+#
+# REQUIRED-CONTEXT SAFETY: no job-level `if:`, no `continue-on-error`, no
+# trailing `|| true`. merge_group is an authorizer-only pass-through: the
+# PR-level run (base-branch bytes) is the authoritative one.
+#
+# Standing CI standard (vault global-standing-rules.md), by construction:
+#   1. timeout-minutes on the job.
+#   2. concurrency + cancel-in-progress, grouped by PR number (never
+#      github.ref under pull_request_target — that collapses every open PR).
+#   3. no CI that watches CI.
+
+name: Reusable gate integrity
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: "Path in the caller repo of the per-repo gate set. Fetched from BASE. Missing file → fleet defaults."
+        type: string
+        required: false
+        default: ".fleet/gate-integrity.yml"
+      timeout-minutes:
+        description: "Job timeout."
+        type: number
+        required: false
+        default: 15
+
+concurrency:
+  group: gate-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate-integrity:
+    name: gate-integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Authorize exact verification candidate
+        id: authorize
+        shell: bash
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad GITHUB_SHA: $GITHUB_SHA" >&2; exit 1; }
+          case "$GITHUB_EVENT_NAME" in
+            pull_request_target)
+              test "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+              case "$GITHUB_REF" in
+                refs/pull/[1-9]*[0-9]*/merge) ;;
+                refs/heads/*) ;;
+                *) echo "unexpected GITHUB_REF: $GITHUB_REF" >&2; exit 1 ;;
+              esac
+              [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "bad PR_NUMBER: $PR_NUMBER" >&2; exit 1; }
+              [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad HEAD_SHA: $HEAD_SHA" >&2; exit 1; }
+              test -n "$BASE_REF" || { echo "empty BASE_REF" >&2; exit 1; }
+              ;;
+            merge_group)
+              [[ "$GITHUB_REF" =~ ^refs/heads/gh-readonly-queue/ ]] || { echo "unexpected GITHUB_REF: $GITHUB_REF" >&2; exit 1; }
+              ;;
+            *)
+              echo "unexpected GITHUB_EVENT_NAME: $GITHUB_EVENT_NAME" >&2; exit 1
+              ;;
+          esac
+
+      - name: Resolve candidate context through the GitHub API
+        id: context
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          CONFIG_PATH="${CONFIG_PATH:-.fleet/gate-integrity.yml}"
+          case "$CONFIG_PATH" in
+            *..*|/*|*\\*)
+              echo "bad CONFIG_PATH: $CONFIG_PATH" >&2
+              exit 1
+              ;;
+          esac
+          files_json="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+            --jq '.[] | {
+                    filename,
+                    previous_filename,
+                    status,
+                    patch: (
+                      if .patch == null then null
+                      else (.patch | split("\n")
+                            | map(select((startswith("+") or startswith("-"))
+                                          and (startswith("+++") or startswith("---") | not)))
+                            | join("\n"))
+                      end
+                    )
+                  }' | jq -s .)"
+
+          commits_json="$(gh api --paginate "repos/$REPO/pulls/$PR/commits?per_page=100" \
+            | jq -s '[.[][] | .commit.message]')"
+
+          comments_json="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq '.[] | {body: (.body // ""), user: (.user.login // "")}' | jq -s .)"
+          attestations_json="$(printf '%s' "$comments_json" | jq -c '
+            [ .[]
+              | . as $c
+              | ($c.body | gsub("\r"; "") | sub("^\\s+"; "") | sub("\\s+$"; "")) as $b
+              | select($b | test("^gate-integrity-attest: [0-9a-fA-F]{40}$"))
+              | {user: $c.user, sha: ($b | sub("^gate-integrity-attest: "; "") | ascii_downcase)}
+            ]')"
+          auto_revert_attestations_json="$(printf '%s' "$comments_json" | jq -c '
+            [ .[]
+              | . as $c
+              | ($c.body | gsub("\r"; "") | sub("^\\s+"; "") | sub("\\s+$"; "")) as $b
+              | select($b | test("^gate-integrity-auto-revert: [0-9a-fA-F]{40}$"))
+              | {user: $c.user, sha: ($b | sub("^gate-integrity-auto-revert: "; "") | ascii_downcase)}
+            ]')"
+
+          perms_file="$RUNNER_TEMP/perms.tsv"
+          : > "$perms_file"
+          logins="$(printf '%s' "$attestations_json" | jq -r '.[].user | select(. != "")' | sort -u)"
+          for login in $logins; do
+            perm="$(gh api "repos/$REPO/collaborators/$login/permission" --jq '.permission')"
+            printf '%s\t%s\n' "$login" "$perm" >> "$perms_file"
+          done
+          perms_json="$(awk -F'\t' 'NF==2 {print}' "$perms_file" | jq -Rn \
+            '[inputs | split("\t") | select(length==2) | {key: .[0], value: .[1]}] | from_entries')"
+
+          source_repo="Nishfleet/fleet-ops"
+          if [[ -n "${JOB_WORKFLOW_REF:-}" ]]; then
+            source_repo="$(printf '%s' "${JOB_WORKFLOW_REF%%/.github/*}")"
+          fi
+          source_sha="${JOB_WORKFLOW_SHA:-}"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || source_sha="main"
+
+          config_loader="$RUNNER_TEMP/gate-integrity-config.sh"
+          gh api "repos/$source_repo/contents/lib/gate-integrity-config.sh?ref=$source_sha" \
+            --jq '.content' | base64 -d > "$config_loader"
+          test -s "$config_loader"
+          chmod +x "$config_loader"
+
+          config_file="$RUNNER_TEMP/gate-integrity.yml"
+          : > "$config_file"
+          if [[ -n "$CONFIG_PATH" ]]; then
+            if gh api "repos/$REPO/contents/${CONFIG_PATH}?ref=$BASE_REF" --jq '.content' \
+              | base64 -d > "$config_file"; then
+              test -s "$config_file" || : > "$config_file"
+            else
+              : > "$config_file"
+            fi
+          fi
+          if [[ -s "$config_file" ]]; then
+            config_json="$(bash "$config_loader" "$config_file")"
+          else
+            config_json="$(bash "$config_loader")"
+          fi
+
+          jq -n \
+            --arg head_sha "$HEAD_SHA" \
+            --arg pr_body "${PR_BODY:-}" \
+            --argjson files "$files_json" \
+            --argjson commit_messages "$commits_json" \
+            --argjson attestations "$attestations_json" \
+            --argjson auto_revert_attestations "$auto_revert_attestations_json" \
+            --argjson permissions "$perms_json" \
+            --argjson config "$config_json" \
+            '{head_sha: $head_sha, pr_body: $pr_body, files: $files,
+              commit_messages: $commit_messages, attestations: $attestations,
+              auto_revert_attestations: $auto_revert_attestations,
+              permissions: $permissions} + $config' \
+            > "$RUNNER_TEMP/gate-bundle.json"
+
+      - name: Evaluate gate integrity
+        id: evaluate
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          source_repo="Nishfleet/fleet-ops"
+          if [[ -n "${JOB_WORKFLOW_REF:-}" ]]; then
+            source_repo="$(printf '%s' "${JOB_WORKFLOW_REF%%/.github/*}")"
+          fi
+          source_sha="${JOB_WORKFLOW_SHA:-}"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || source_sha="main"
+          script="$RUNNER_TEMP/gate-integrity.sh"
+          gh api "repos/$source_repo/contents/lib/gate-integrity.sh?ref=$source_sha" \
+            --jq '.content' | base64 -d > "$script"
+          test -s "$script"
+          bash "$script" < "$RUNNER_TEMP/gate-bundle.json"
+
+      - name: Run deterministic fixture regression
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          source_repo="Nishfleet/fleet-ops"
+          if [[ -n "${JOB_WORKFLOW_REF:-}" ]]; then
+            source_repo="$(printf '%s' "${JOB_WORKFLOW_REF%%/.github/*}")"
+          fi
+          source_sha="${JOB_WORKFLOW_SHA:-}"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || source_sha="main"
+          root="$RUNNER_TEMP/gate-integrity-src"
+          mkdir -p "$root/lib" "$root/tests/fixtures/gate-integrity"
+          fetch() {
+            local dest="$1" path="$2"
+            gh api "repos/$source_repo/contents/${path}?ref=$source_sha" \
+              --jq '.content' | base64 -d > "$dest"
+            test -s "$dest"
+          }
+          fetch "$root/lib/gate-integrity.sh" "lib/gate-integrity.sh"
+          fetch "$root/lib/gate-integrity-config.sh" "lib/gate-integrity-config.sh"
+          fetch "$root/tests/gate-integrity.test.sh" "tests/gate-integrity.test.sh"
+          fetch "$root/tests/fixtures/gate-integrity/0509.yml" "tests/fixtures/gate-integrity/0509.yml"
+          fetch "$root/tests/fixtures/gate-integrity/default.yml" "tests/fixtures/gate-integrity/default.yml"
+          chmod +x "$root/lib/gate-integrity.sh" "$root/lib/gate-integrity-config.sh"
+          bash "$root/tests/gate-integrity.test.sh"

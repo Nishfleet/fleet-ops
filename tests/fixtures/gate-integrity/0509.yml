@@ -1,0 +1,18 @@
+# Nishfleet/0509 gate set. The extra globs and ratchet path are why P11-B
+# left this check local: they are product-specific, not fleet-generic.
+gate_globs:
+  - ".github/workflows/**"
+  - ".github/scripts/**"
+  - ".github/CODEOWNERS"
+  - ".gitleaksignore"
+  - ".gitleaks.toml"
+  - ".semgrepignore"
+  - ".semgrep.yml"
+  - ".semgrep.yaml"
+  - "scripts/design-system-ratchet.mjs"
+  - "docs/design-system-ratchet.json"
+  - "scripts/ci-vitest-run.sh"
+  - "scripts/ci-verify-*.sh"
+  - ".fleet/**"
+ratchet_ceilings:
+  - "docs/design-system-ratchet.json"
