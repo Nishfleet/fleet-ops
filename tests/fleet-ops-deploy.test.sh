@@ -23,6 +23,10 @@
 #      and removes the paper-over heartbeat drop-in.
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
+#  14. The paper-over heartbeat drop-in fails DRIFT-PAPER-OVER and auto-files
+#      (fleet-ops#370). A second tick with the marker open does not re-file.
+#  15. FLEET_OPS_DRIFT_BIN under agent-worktrees fails DEPLOY-DRIFT-BIN-VOLATILE.
+#  16. fleet-ops-deploy removes the paper-over drop-in even when merge is blocked.
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -71,6 +75,19 @@ grep -q 'DRIFT-MISSING-EXEC' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag user units whose ExecStart binary is missing"
 grep -q 'orphan-execstart: fleet-ops#285' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file missing-ExecStart leftovers with the #285 marker"
+grep -q 'DRIFT-PAPER-OVER' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag the paper-over heartbeat drop-in (fleet-ops#370)"
+grep -q 'paper-over-dropin: fleet-ops#370' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file the paper-over drop-in with the #370 marker"
+grep -q 'DEPLOY-DRIFT-BIN-VOLATILE' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must refuse FLEET_OPS_DRIFT_BIN under agent-worktrees"
+grep -q 'fleet-heartbeat.service.d/10-deploy-checkout.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the paper-over heartbeat drop-in"
+if grep -q 'FLEET_OPS_DRIFT_BIN=' "$repo_root/systemd/fleet-heartbeat.service"; then
+    fail "fleet-heartbeat.service must not pin FLEET_OPS_DRIFT_BIN (that was the paper-over)"
+fi
+[[ ! -e "$repo_root/systemd/fleet-heartbeat.service.d/10-deploy-checkout.conf" ]] \
+    || fail "repo must not ship the paper-over heartbeat drop-in"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -669,6 +686,120 @@ if ! out=$(run_canary); then
     fail "scenario13c: canary should be clean after leftover units are removed, got: $out"
 fi
 ok "scenario13c: removing the leftover units clears DRIFT-MISSING-EXEC"
+
+# --- scenario 14: paper-over heartbeat drop-in fails and auto-files (#370) ---
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+git -C "$checkout" checkout -q -- systemd/demo.timer bin/demo-script MANIFEST 2>/dev/null || true
+paper_gh_log="$scratch/gh-paper.log"
+paper_gh="$scratch/gh-paper"
+: >"$paper_gh_log"
+echo '[]' >"$scratch/open-paper.json"
+cat >"$paper_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/3700"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$paper_gh"
+dropin="$HOME/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf"
+mkdir -p "$(dirname "$dropin")"
+printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/agent-worktrees/fix-drift-canary/bin/fleet-ops-drift.py\n' > "$dropin"
+run_paper_canary() {
+  GH="$paper_gh" \
+  GH_LOG="$paper_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-paper.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+}
+if out=$(run_paper_canary); then
+    fail "scenario14: canary should fail on the paper-over drop-in, got: $out"
+fi
+[[ "$out" == *"DRIFT-PAPER-OVER"* ]] \
+    || fail "scenario14: expected DRIFT-PAPER-OVER (got: $out)"
+grep -q 'issue create' "$paper_gh_log" \
+    || fail "scenario14: must auto-file (log=$(cat "$paper_gh_log"))"
+ok "scenario14: paper-over drop-in fails DRIFT-PAPER-OVER and auto-files"
+
+: >"$paper_gh_log"
+jq -n --arg b $'body\npaper-over-dropin: fleet-ops#370\n' \
+  '[{number: 370, body: $b}]' >"$scratch/open-paper.json"
+if out=$(
+  GH="$paper_gh" \
+  GH_LOG="$paper_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-paper.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario14b: canary should still fail on drop-in after dedup, got: $out"
+fi
+grep -q 'issue create' "$paper_gh_log" \
+    && fail "scenario14b: must not file a duplicate (log=$(cat "$paper_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario14b: expected dedup log, got: $out"
+ok "scenario14b: open issue with the #370 marker is not filed twice"
+rm -f "$dropin"
+
+# --- scenario 15: FLEET_OPS_DRIFT_BIN under agent-worktrees is refused ------
+wt_canary="$scratch/agent-worktrees/fix-drift-canary-external-units/bin/fleet-ops-drift.py"
+mkdir -p "$(dirname "$wt_canary")"
+printf '#!/usr/bin/env python3\nraise SystemExit("volatile canary must not run")\n' > "$wt_canary"
+chmod +x "$wt_canary"
+if out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$wt_canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario15: deploy should refuse a worktree FLEET_OPS_DRIFT_BIN, got: $out"
+fi
+[[ "$out" == *"DEPLOY-DRIFT-BIN-VOLATILE"* ]] \
+    || fail "scenario15: expected DEPLOY-DRIFT-BIN-VOLATILE (got: $out)"
+ok "scenario15: FLEET_OPS_DRIFT_BIN under agent-worktrees is refused"
+
+if out=$(
+  FLEET_OPS_DRIFT_BIN="$wt_canary" \
+  GH="$paper_gh" \
+  GH_LOG="$paper_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-paper.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario15b: canary should fail when FLEET_OPS_DRIFT_BIN is a worktree, got: $out"
+fi
+[[ "$out" == *"DRIFT-PAPER-OVER"* ]] \
+    || fail "scenario15b: expected DRIFT-PAPER-OVER for worktree FLEET_OPS_DRIFT_BIN (got: $out)"
+ok "scenario15b: canary flags FLEET_OPS_DRIFT_BIN under agent-worktrees"
+
+# --- scenario 16: deploy removes the drop-in even when merge is blocked ------
+: >"$enabled_units"
+block_head=$(git -C "$checkout" rev-parse HEAD)
+echo '# paper-over-block' >> "$checkout/bin/demo-script"
+mkdir -p "$(dirname "$dropin")"
+printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/agent-worktrees/x.py\n' > "$dropin"
+if out=$(run_deploy); then
+    fail "scenario16: deploy should block on dirty tracked files, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario16: expected DEPLOY-BLOCKED (got: $out)"
+[[ ! -e "$dropin" ]] || fail "scenario16: paper-over drop-in survived a blocked deploy"
+ok "scenario16: blocked deploy still removes the paper-over drop-in"
+git -C "$checkout" checkout -q -- bin/demo-script
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$block_head" ] \
+    || fail "scenario16: blocked deploy mutated HEAD"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
