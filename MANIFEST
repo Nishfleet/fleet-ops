@@ -257,3 +257,21 @@ systemd/interactive-session-reap.timer /home/nish/.config/systemd/user/interacti
 systemd/system/user-1000.slice.d/50-ram-governor.conf /etc/systemd/system/user-1000.slice.d/50-ram-governor.conf
 systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf
 
+# fleet-ops#468 TOP GEAR: merge->live <=5min. fleet-deploy-check runs on a
+# 2-minute timer, git-fetches + rev-compares origin/main, and ONLY invokes
+# the sanctioned bin/fleet-ops-deploy when origin/main moved. No new
+# dispatcher — event-driven on the merge event.
+bin/fleet-deploy-check /home/nish/.local/bin/fleet-deploy-check
+systemd/fleet-deploy-check.service /home/nish/.config/systemd/user/fleet-deploy-check.service
+systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-check.timer
+# fleet-ops#468 TOP GEAR: seat recovery fires intake instantly. A systemd
+# .path watcher on the seat ledger (event-driven, no polling) fires
+# fleet-seat-recovery.service, which starts pi-intake@<repo> on the
+# NO-USABLE-SEAT -> usable transition instead of waiting for the 15-min tick.
+bin/fleet-seat-recovery /home/nish/.local/bin/fleet-seat-recovery
+systemd/fleet-seat-recovery.service /home/nish/.config/systemd/user/fleet-seat-recovery.service
+systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-recovery.path
+# fleet-ops#468 TOP GEAR teeth + escalation-matrix FIXES (both wired into
+# fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
+bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
+bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion

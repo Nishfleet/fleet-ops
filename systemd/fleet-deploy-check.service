@@ -1,0 +1,18 @@
+[Unit]
+Description=Fleet merge-to-live deploy check (tight cadence, fleet-ops#468)
+
+# Named reason (decisions-ledger 2026-08-27 TOP GEAR): merged-but-not-live
+# latency. Every 2 minutes: git fetch + rev compare (seconds). Only when
+# origin/main moved does it invoke the sanctioned bin/fleet-ops-deploy —
+# the same deploy step the heartbeat block 0 uses, so live converges to a
+# merge within ~2 minutes instead of waiting for the 30-min beat.
+# No new dispatcher, no polling for work — event-driven on the merge event.
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-deploy-check
+# A fetch/rev-compare is cheap; give a deploy plenty of room to finish.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
