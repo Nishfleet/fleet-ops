@@ -92,6 +92,8 @@ has passed IS a loud gap — file it as a finding.
   an empty `findings` array and explain why in the report.
 - Titles must be concrete and specific, not generic warnings.
 - Do NOT create GitHub issues yourself. The caller files them.
+- Do NOT write that issues were or were not filed. The caller appends
+  a "Filing results" section to this report after you return.
 - Do NOT edit, move, or delete any file except the two output files above.
 - Prefer read-only inspection. If you run a command that could change state,
   explain why it is safe.
