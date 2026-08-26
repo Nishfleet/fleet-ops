@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # pi-intake-run — one intake tick for Nishfleet/$1, exclusive.
 #
-# ExecStart of pi-intake@.service. ExecStartPre has already written the
-# packet to $XDG_RUNTIME_DIR/pi-intake/intake-$1.pkt. This script:
+# ExecStart of pi-intake@.service. RuntimeDirectory=pi-intake-$1 means
+# ExecStartPre writes the packet to $RUNTIME_DIRECTORY/intake-$1.pkt
+# (e.g. /run/user/$UID/pi-intake-$1). This script:
 #   1. Takes a non-blocking flock. A second start while the tick is live
 #      exits 0 (no-op) instead of racing the timer, double-spawning
 #      pi-issue@, and burning StartLimitBurst (Nishfleet/fleet-ops#26).
@@ -11,7 +12,8 @@
 #      provider.
 #
 # Environment overrides (tests):
-#   PI_INTAKE_LOCKDIR  flock directory (default: $XDG_RUNTIME_DIR/pi-intake)
+#   PI_INTAKE_LOCKDIR  flock directory (default: $RUNTIME_DIRECTORY, or
+#                      $XDG_RUNTIME_DIR/pi-intake-$1)
 #   PI_INTAKE_CMD      if set, run this instead of pi-packet-run (test seam)
 #   PI_PACKET_RUN      pi-packet-run path
 #
@@ -26,7 +28,10 @@ export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 [[ $# -ge 1 ]] || { echo "pi-intake-run: need repo instance (e.g. fleet-ops)" >&2; exit 1; }
 repo="$1"
 
-lockdir="${PI_INTAKE_LOCKDIR:-${XDG_RUNTIME_DIR}/pi-intake}"
+rundir="${RUNTIME_DIRECTORY:-${XDG_RUNTIME_DIR}/pi-intake-${repo}}"
+mkdir -p "$rundir"
+
+lockdir="${PI_INTAKE_LOCKDIR:-$rundir}"
 mkdir -p "$lockdir"
 exec 9>"$lockdir/${repo}.lock"
 if ! flock -n 9; then
@@ -40,7 +45,7 @@ if [[ -n "${PI_INTAKE_CMD:-}" ]]; then
     exit $?
 fi
 
-pkt="${XDG_RUNTIME_DIR}/pi-intake/intake-${repo}.pkt"
+pkt="${rundir}/intake-${repo}.pkt"
 run="${PI_PACKET_RUN:-$HOME/.local/bin/pi-packet-run}"
 [[ -f "$pkt" ]] || { echo "pi-intake-run: packet not found: $pkt" >&2; exit 1; }
 [[ -x "$run" ]] || { echo "pi-intake-run: runner not executable: $run" >&2; exit 1; }

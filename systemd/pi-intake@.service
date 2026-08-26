@@ -9,7 +9,7 @@ StartLimitBurst=8
 Type=simple
 Restart=on-failure
 RestartSec=20
-RuntimeDirectory=pi-intake
+RuntimeDirectory=pi-intake-%i
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
 ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number -L 1 2>&1) || { echo "gh failed: $$out" >&2; exit 255; }; [ "$$out" != "[]" ]'
@@ -24,6 +24,6 @@ ExecCondition=/bin/sh -c 'out=$$(gh issue list -R Nishfleet/%i -l agent-ready --
 #
 # pi-intake-run holds an exclusive flock so a manual `systemctl start` racing
 # the timer is a no-op instead of a second tick (fleet-ops#26).
-ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake/intake-%i.pkt'
+ExecStartPre=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake.md; echo; echo "TARGET REPO: Nishfleet/%i"; } > %t/pi-intake-%i/intake-%i.pkt'
 ExecStart=/home/nish/.local/bin/pi-intake-run %i
 TimeoutStartSec=1800
