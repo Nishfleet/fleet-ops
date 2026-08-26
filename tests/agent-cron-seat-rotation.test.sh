@@ -203,7 +203,9 @@ grep -q '^StartLimitIntervalSec=1h$' "$svc" \
 if grep -q 'SEAT_FILE=' "$svc"; then
     fail "service must not carry the legacy SEAT_FILE env (the snapshot gate is gone)"
 fi
-ok "service unit: Restart=on-failure RestartSec=900 StartLimitBurst=3, no legacy SEAT_FILE"
+grep -q '^Environment=PROMPTS_DIR=/home/nish/\.pi/agent/prompts$' "$svc" \
+  || fail "service must use the MANIFEST-installed prompts dir"
+ok "service unit: Restart=on-failure RestartSec=900 StartLimitBurst=3, no legacy SEAT_FILE, managed PROMPTS_DIR"
 
 # --- MANIFEST entries -------------------------------------------------------
 grep -Fxq "bin/agent-cron-run /home/nish/.local/bin/agent-cron-run" "$manifest" \
@@ -212,7 +214,11 @@ grep -Fxq "systemd/agent-cron-0509-daily-market-signal.service /home/nish/.confi
   || fail "MANIFEST missing: agent-cron service"
 grep -Fxq "systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer" "$manifest" \
   || fail "MANIFEST missing: agent-cron timer"
-ok "MANIFEST entries present for runner + service + timer"
+grep -Fxq "prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-market-signal.md" "$manifest" \
+  || fail "MANIFEST missing: prompts/0509-daily-market-signal.md"
+git -C "$repo_root" ls-files --error-unmatch prompts/0509-daily-market-signal.md >/dev/null \
+  || fail "prompt file not tracked in git: prompts/0509-daily-market-signal.md"
+ok "MANIFEST entries present for runner + service + timer + prompt"
 
 # --- install.sh enables the [Install] timer (fleet-ops#183) -----------------
 # The timer was in MANIFEST with [Install] and still not-found on the live
@@ -246,7 +252,12 @@ calls="$scratch/systemctl.calls"
 cat >"$scratch/fake-bin/systemctl" <<FAKE
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$calls"
-exit 0
+# Simulate a fresh box: units are not yet enabled, so is-enabled returns non-zero.
+# Every other systemctl command (daemon-reload, enable --now, etc.) succeeds.
+case "\$*" in
+  *'is-enabled'*) exit 1 ;;
+  *) exit 0 ;;
+esac
 FAKE
 chmod +x "$scratch/fake-bin/systemctl"
 PATH="$scratch/fake-bin:$PATH" "$install_scratch/install.sh"
