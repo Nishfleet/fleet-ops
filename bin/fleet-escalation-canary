@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# fleet-escalation-canary — coverage canary for the escalation matrix
+# (fleet-ops#152).
+#
+# Every heartbeat tick asserts three invariants mechanically:
+#
+#   1. Every loaded user service is covered by the global escalation drop-in
+#      (OnFailure contains unit-escalation@<unit>.service) OR appears on the
+#      explicit anti-recursion exclusion list.
+#
+#   2. No fleet execution path exists outside a systemd unit: only the
+#      sanctioned bin wrappers invoke `pi --print --provider` directly.
+#
+#   3. Terminal delivery exists for NISH-ESCALATIONS.md and failed-units state.
+#      Until fleet-ops#76 lands, this is reported as a standing loud finding
+#      (PENDING) — the canary does not pretend the invariant is met.
+#
+# The canary is run by fleet-heartbeat-tier1 on every tick. It fails loud
+# (exit 1) on real violations, exits 0 when the only findings are the
+# documented pending holes (#76 delivery, #124 red-CI ownerless), and logs
+# every check to stderr + the heartbeat triage file.
+#
+# Anti-recursion: the canary runs inside fleet-heartbeat.service, which is
+# itself covered by the global unit-escalation drop-in. The canary never
+# creates its own unit or OnFailure path, so it cannot feed its own failure
+# back into itself.
+#
+# Environment seams (tests):
+#   SYSTEMCTL                         default systemctl
+#   FLEET_OPS_REPO                    path to fleet-ops checkout
+#   FLEET_HEARTBEAT_TRIAGE            heartbeat triage file
+#   AGENT_STATE                       /home/nish/workspaces/agent-state
+#   FLEET_ESCALATION_CANARY_DELIVERY  marker file for #76 delivery
+#   FLEET_ESCALATION_CANARY_REDCI     marker file for #124 guard
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+# Resolve the repo root from this script's canonical path. When installed as a
+# symlink (the normal case) this follows the link to the active checkout.
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+DELIVERY_MARKER="${FLEET_ESCALATION_CANARY_DELIVERY:-$AGENT_STATE/.escalation-delivery}"
+REDCI_MARKER="${FLEET_ESCALATION_CANARY_REDCI:-$AGENT_STATE/.red-ci-ownerless-guard}"
+
+log() {
+    printf '[%s] [fleet-escalation-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# Loud lines go to BOTH stderr and the triage file (single page for humans +
+# other agents). Format matches fleet-heartbeat-tier1's loud() helper.
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Anti-recursion exclusion list for services. These are part of the escalation
+# pipeline itself and must not trigger their own escalation.
+is_escalation_excluded() {
+    case "$1" in
+        unit-escalation@*)         return 0 ;;
+        stop-escalation.*)         return 0 ;;
+        ready-work*)               return 0 ;;
+        escalation-daily-sweep.*)  return 0 ;;
+    esac
+    return 1
+}
+
+# Sanctioned bin wrappers that are allowed to invoke the pi binary directly.
+# New runners must be added here AND wired to a systemd unit template.
+SANCTIONED_PI_RUNNERS=(
+    agent-cron-run
+    fleet-heartbeat-tier2
+    pi-intake-run
+    pi-issue-run
+    pi-packet-run
+    pi-scout-run
+    stop-escalation-dispatch
+)
+
+is_sanctioned_pi_runner() {
+    local name="$1"
+    local r
+    for r in "${SANCTIONED_PI_RUNNERS[@]}"; do
+        if [[ "$r" == "$name" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The canary scans bin/ for direct pi invocations. It must not scan itself,
+# because its own source contains the regex pattern and diagnostic messages.
+self_name=$(basename "$0")
+
+# ============================================================================
+# main
+# ============================================================================
+violations=0
+pending=0
+
+log "escalation coverage canary starting (repo=$FLEET_OPS_REPO)"
+
+# ---------------------------------------------------------------------------
+# 0. repo paths exist
+# ---------------------------------------------------------------------------
+if [[ ! -d "$FLEET_OPS_REPO/bin" ]]; then
+    log "FATAL: bin dir missing in fleet-ops repo: $FLEET_OPS_REPO/bin"
+    exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# 1. loaded user service escalation coverage
+# ---------------------------------------------------------------------------
+log "1. checking escalation coverage for loaded user services"
+mapfile -t loaded_services < <(
+    "$SYSTEMCTL" --user list-units --type=service --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' \
+        | grep '\.service$' \
+        || true
+)
+
+for unit in "${loaded_services[@]}"; do
+    [[ -n "$unit" ]] || continue
+
+    if is_escalation_excluded "$unit"; then
+        log "1.  - $unit: excluded (anti-recursion)"
+        continue
+    fi
+
+    onf=$("$SYSTEMCTL" --user show "$unit" --property=OnFailure --value 2>/dev/null || true)
+    expected="unit-escalation@${unit}.service"
+
+    if [[ -n "$onf" ]] && grep -qF "$expected" <<< "$onf"; then
+        log "1.  - $unit: covered ($onf)"
+    else
+        loud "ESCALATION-CANARY-VIOLATION" "unit=$unit missing escalation drop-in (OnFailure='$onf', expected='$expected')"
+        violations=$((violations + 1))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 2. no unwrapped pi invocations in bin/
+# ---------------------------------------------------------------------------
+log "2. checking bin/ for unwrapped pi invocations"
+# Match a literal `pi` binary or the $PI / $PI_BIN variables followed by
+# `--print`. This deliberately skips comment lines and the canary's own source.
+mapfile -t pi_matching < <(
+    grep -R -l --exclude="$self_name" \
+        -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
+        "$FLEET_OPS_REPO/bin" 2>/dev/null \
+        || true
+)
+
+for f in "${pi_matching[@]}"; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f")
+    if is_sanctioned_pi_runner "$name"; then
+        log "2.  - $name: sanctioned pi wrapper"
+    else
+        loud "ESCALATION-CANARY-VIOLATION" "bin/$name invokes the pi binary directly but is not a sanctioned unit wrapper"
+        violations=$((violations + 1))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 3. terminal delivery path (#76 pending)
+# ---------------------------------------------------------------------------
+log "3. checking terminal delivery path"
+if [[ -f "$DELIVERY_MARKER" ]]; then
+    log "3.  - delivery marker present: $DELIVERY_MARKER"
+else
+    loud "ESCALATION-CANARY-PENDING" "terminal delivery not wired (#76) — NISH-ESCALATIONS.md and failed-units state have no live pager/dead-man ping yet"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 4. red-CI-on-ownerless-PR coverage (#124 pending)
+# ---------------------------------------------------------------------------
+log "4. checking red-CI ownerless-PR coverage"
+if [[ -f "$REDCI_MARKER" ]]; then
+    log "4.  - red-CI ownerless guard present: $REDCI_MARKER"
+else
+    loud "ESCALATION-CANARY-PENDING" "red-CI-on-ownerless-PR coverage pending (#124) — failing fleet PRs with no live worker are not yet re-dispatched"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 5. system-scope fleet artifacts — documented as kernel/oomd-supervised
+# ---------------------------------------------------------------------------
+log "5. documenting system-scope exclusions (kernel/oomd-supervised)"
+loud "ESCALATION-CANARY-EXCLUDED" "system-scope fleet artifacts are kernel/oomd-supervised, not user-manager OnFailure: user-1000.slice (50-ram-governor), user@1000.service (50-no-distro-oomd-kill)"
+
+# ---------------------------------------------------------------------------
+# done
+# ---------------------------------------------------------------------------
+if [[ "$violations" -gt 0 ]]; then
+    loud "ESCALATION-CANARY-FAIL" "violations=$violations pending=$pending — escalation matrix is not fully covered"
+    exit 1
+fi
+
+loud "ESCALATION-CANARY-OK" "all loaded services covered; no unwrapped pi runners; pending=$pending"
+exit 0

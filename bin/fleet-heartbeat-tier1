@@ -823,9 +823,33 @@ else
 fi
 
 # ============================================================================
+# 10. ESCALATION COVERAGE CANARY (fleet-ops#152)
+# ============================================================================
+# Every tick, prove that every loaded user service lands in the escalation
+# matrix and that no fleet pi execution path exists outside a systemd unit.
+# The canary exits 0 when the only findings are the documented pending holes
+# (#76 delivery, #124 red-CI ownerless); it exits 1 on real coverage gaps.
+CANARY_BIN="${FLEET_ESCALATION_CANARY:-/home/nish/.local/bin/fleet-escalation-canary}"
+canary_rc=0
+if [ -x "$CANARY_BIN" ]; then
+    log "10. escalation-coverage canary starting"
+    if ! "$CANARY_BIN"; then
+        canary_rc=$?
+        log "10. escalation-coverage canary FAILED (rc=$canary_rc) — unit will land in --state=failed"
+    else
+        log "10. escalation-coverage canary complete"
+    fi
+else
+    log "10. escalation-coverage canary missing at $CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc canary_rc=$canary_rc"
+if [ "$canary_rc" -ne 0 ]; then
+    exit "$canary_rc"
+fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
 fi

@@ -56,6 +56,7 @@ bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
+bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
