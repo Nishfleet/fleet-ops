@@ -1,0 +1,17 @@
+[Unit]
+Description=Check the nish-vault for Syncthing sync conflicts every 10 minutes (fleet-ops#529)
+# Named reason: freeze-on-conflict is self-clearing only while this timer
+# fires. 10 minutes is the resolver's DISPATCH_COOLDOWN_SEC window and the
+# standing-rules wait ("one resolver cycle before escalating"). Persistent
+# so a reboot does not leave the freeze stuck.
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=true
+RandomizedDelaySec=30s
+Unit=vault-conflict-resolver.service
+
+[Install]
+WantedBy=timers.target
