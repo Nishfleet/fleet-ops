@@ -455,5 +455,7 @@ fi
 # inline verify false-positives on every CI run (the runner has no
 # /home/nish/.local/bin/agent-cron-run). That red baseline kept main failing
 # since #144 and made auto-revert thrash (halt issues #151/#160/#169/#172).
+# fleet-ops#154 is the class lock: tests/p14-unstubbed-unit-verify.test.sh
+# fails if this P14 test (or any other) re-introduces a live verify call.
 
 ok "agent-cron seat rotation: gate replaced by pick_seat, transient 429 routes to alt, fully-walled fails loud"
