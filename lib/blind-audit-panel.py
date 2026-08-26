@@ -3,7 +3,7 @@
 #
 # This is the stub for the #146 senior-auditor panel. It reads a JSON object
 # from stdin and prints a JSON verdict.  Verdict is "PASS" if the finding may
-# be filed as a gap-audit issue, "FAIL" if it should be logged but not filed.
+# be filed as a gap-audit + agent-ready issue, "FAIL" if it should be logged but not filed.
 
 import json
 import re
