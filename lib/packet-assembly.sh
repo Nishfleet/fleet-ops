@@ -17,6 +17,7 @@ PACKET_MARKET_SIGNAL_DIR="${PACKET_MARKET_SIGNAL_DIR:-$AGENT_STATE_DIR/cron-outp
 PACKET_TRANSFORMATION_DIR="${PACKET_TRANSFORMATION_DIR:-$AGENT_STATE_DIR/0509-transformation}"
 PACKET_PLAN_FILE="${PACKET_PLAN_FILE:-$AGENT_STATE_DIR/fleet-restoration-2026-08-25.md}"
 PACKET_NORTH_STAR_FILE="${PACKET_NORTH_STAR_FILE:-$HOME/workspaces/tooling/nish-vault/03 Knowledge/compiled/shared-memory/global/north-star-edge-ai-cannot-match.md}"
+PACKET_QUALITY_SLO_SNAPSHOT="${PACKET_QUALITY_SLO_SNAPSHOT:-$AGENT_STATE_DIR/quality-slo/snapshot.json}"
 PACKET_GH="${PACKET_GH:-gh}"
 
 # packet_market_signal <max_age_hours>
@@ -112,6 +113,28 @@ packet_repo_reality() {
         printf '## Open PRs\n'
         printf '%s\n\n' "${prs:-<none>}"
     }
+}
+
+# packet_quality_scoreboard
+# Print the computed quality snapshot for conference / loop packets
+# (fleet-ops#456). Missing or stale snapshot is marked STALE.
+packet_quality_scoreboard() {
+    local lib_dir render snap
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    render="${PACKET_QUALITY_SLO_LIB:-$lib_dir/quality-slo.py}"
+    snap="${PACKET_QUALITY_SLO_SNAPSHOT:-$AGENT_STATE_DIR/quality-slo/snapshot.json}"
+    if [[ ! -f "$snap" ]]; then
+        printf '## Quality scoreboard (STALE — missing)\n'
+        printf 'No snapshot at %s. The heartbeat quality-slo step has not written one.\n\n' "$snap"
+        return 1
+    fi
+    if [[ ! -f "$render" ]]; then
+        printf '## Quality scoreboard (STALE — missing renderer)\n'
+        printf 'MISSING %s\n\n' "$render"
+        return 1
+    fi
+    python3 "$render" render --snapshot "$snap"
+    printf '\n'
 }
 
 # packet_mechanical_fix_rule

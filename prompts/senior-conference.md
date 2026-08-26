@@ -19,6 +19,27 @@ a detector/canary/postmortem) is REJECT unless it also ships:
 (b) an explicit `mechanism-impossible:` line with a reason — which you judge,
     and the blind audit can re-litigate.
 
+## Automatic criterion: quality north star (fleet-ops#456)
+
+The packet includes the computed quality scoreboard. Ask, with the numbers
+in hand: does this change hurt the quality metrics?
+
+Primary metrics (decision overturn rate, auto-revert rate, post-merge
+defect rate, churn %, drill pass rate, canary regressions, scout futility)
+decide PASS/FAIL. ANY primary metric that is FAIL, or that this PR would
+worsen, is an automatic REJECT. Throughput and saturation numbers in the
+same snapshot cannot override. Product acquisition metrics (installs,
+traffic) cannot outrank retention/LTV if they appear.
+
+Render the live snapshot if it is not already in the packet:
+
+```
+python3 lib/quality-slo.py render --snapshot $AGENT_STATE/quality-slo/snapshot.json
+```
+
+A missing or STALE snapshot is itself a REJECT — the north star is not
+being measured.
+
 Do not re-derive the automatic half. Run the mechanical gate on the PR JSON
 (title, body, labels, files, diff, closing issues):
 

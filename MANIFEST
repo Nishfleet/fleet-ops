@@ -138,6 +138,11 @@ prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
 bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-gate
 lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
+# fleet-ops#456: computed quality scoreboard. Heartbeat-tier1 step, no new
+# timer. Snapshot at agent-state/quality-slo/; FAIL files escalate-senior
+# and reopens the gap-closure loop (#180).
+bin/fleet-quality-slo /home/nish/.local/bin/fleet-quality-slo
+lib/quality-slo.py /home/nish/.local/lib/pi-packet/quality-slo.py
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
 # fleet-ops#458: standing researcher role. Event-driven dispatch on the

@@ -755,3 +755,6 @@ bash "$here/fleet-restore-drill.test.sh"
 # cannot push .github/workflows/**).
 bash "$here/fleet-resilience-drill.test.sh"
 
+# fleet-ops#456: computed quality scoreboard. Same nesting reason.
+bash "$here/quality-slo.test.sh"
+

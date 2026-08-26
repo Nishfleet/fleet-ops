@@ -14,9 +14,9 @@
     },
     {
       "id": "sr-quality-speed-efficiency",
-      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 \u2014 NON-NEGOTIABLE)",
-      "mechanism": "CI required checks + gate-integrity ratchet: weakening tests or gates is a blocker",
-      "proof": ".github/workflows/ci.yml; tests/required-check-purity.test.sh; 0509 gate-integrity",
+      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 — NON-NEGOTIABLE)",
+      "mechanism": "Computed quality-slo scoreboard every heartbeat tick; cycle FAIL on primary regression; CI required checks + gate-integrity ratchet: weakening tests or gates is a blocker",
+      "proof": "lib/quality-slo.py; bin/fleet-quality-slo; tests/quality-slo.test.sh; .github/workflows/ci.yml; tests/required-check-purity.test.sh",
       "status": "enforced"
     },
     {
@@ -509,8 +509,8 @@
     {
       "id": "led-optimization-order",
       "source": "decisions-ledger.md: 2026-08-25 | optimization order",
-      "mechanism": "Same mechanical bar as quality>speed: CI/gate-integrity reject quality-losing shortcuts",
-      "proof": ".github/workflows/ci.yml; tests/required-check-purity.test.sh",
+      "mechanism": "Same mechanical bar as quality>speed: quality-slo cycle FAIL + CI/gate-integrity reject quality-losing shortcuts",
+      "proof": "lib/quality-slo.py; bin/fleet-quality-slo; tests/quality-slo.test.sh; .github/workflows/ci.yml",
       "status": "enforced"
     },
     {
@@ -627,10 +627,9 @@
     {
       "id": "led-north-star-quality",
       "source": "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through",
-      "mechanism": "Quality SLOs measured mechanically on the gap-closure loop's primary scoreboard; speed/resilience wins that cost quality rejected at conference",
-      "proof": "fleet-ops #180 comment + #455 + #418; mechanism issue filed by canary",
-      "status": "queued(#459)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Heartbeat quality-slo generator computes decision/work/output SLOs every tick; cycle FAIL files escalate-senior and reopens #180; conference packet carries the snapshot",
+      "proof": "lib/quality-slo.py; bin/fleet-quality-slo; tests/quality-slo.test.sh; prompts/senior-conference.md; bin/fleet-heartbeat-tier1 block 19",
+      "status": "enforced"
     },
     {
       "id": "led-quality-inescapable",
