@@ -169,7 +169,9 @@ Two-tier design (so the heartbeat still works if every LLM is dead):
   scout/intake timers are armed, re-examine `agent-blocked` issues (re-queue
   when a listed dependency has closed/merged; publish count and oldest age
   for Nish-decision blocks), update the `last-heartbeat:` stamp in the
-  playbook. Plain bash + gh + jq. Zero quota.
+  playbook. Also re-dispatches repair workers onto orphaned red fleet-worker
+  PRs whose worker has exited (debounced one tick, bounded 2 attempts, then
+  fail-loud into the paging path). Plain bash + gh + jq. Zero quota.
 - **Tier 2 (judgment, only when the triage file is non-empty or the held
   queue has dispatchable items)**: walk a seat ladder
   `claude -p --model claude-opus-5` → `pi --print --provider devin

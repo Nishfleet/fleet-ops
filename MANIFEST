@@ -59,6 +59,7 @@ bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair
 # fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
 # timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a
 # local panel, and files gap-audit issues linked to a durable report.
