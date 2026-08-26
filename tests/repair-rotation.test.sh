@@ -158,4 +158,9 @@ for p in prompts/intake-repair.md prompts/scout-repair.md; do
 done
 ok "intake-repair.md and scout-repair.md classify 429 as a lane fault and rotate"
 
+# fleet-ops#138: the intake-repair wrapper also routes through pick_seat.
+# The worker GitHub App cannot add a workflow step, so this test rides
+# along inside the already-wired repair-rotation job.
+bash "$here/pi-intake-repair-run.test.sh"
+
 ok "repair rotation: 429 rotates to a healthy seat; all-walled fails loud"

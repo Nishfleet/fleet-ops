@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# bin/pi-intake-repair-run
+# Seat-rotation wrapper for pi-intake-repair units.
+#
+# Assembles the packet from ~/.pi/agent/prompts/intake-repair.md plus the
+# correct TARGET line, calls pick_seat from lib/seat-lib.sh, and runs
+# pi --print --provider <provider> --model <model> on the assembled packet.
+#
+# Args:
+#   $1 = repo instance (e.g. fleet-ops)
+#
+# Environment:
+#   PI_PACKET_SEAT_LIB        path to seat-lib.sh
+#   INTAKE_REPAIR_PROMPT_DIR  prompt directory (default ~/.pi/agent/prompts)
+#   PI_BIN                    pi binary (default ~/.local/bin/pi)
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+source "$SEAT_LIB"
+
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+PROMPT_DIR="${INTAKE_REPAIR_PROMPT_DIR:-$HOME/.pi/agent/prompts}"
+
+usage() {
+    echo "usage: pi-intake-repair-run <repo>" >&2
+    exit 1
+}
+[[ $# -ge 1 ]] || usage
+
+repo="$1"
+prompt_file="$PROMPT_DIR/intake-repair.md"
+
+[[ -f "$prompt_file" ]] || { echo "pi-intake-repair-run: prompt not found: $prompt_file" >&2; exit 1; }
+
+# Choose a healthy seat. The repair prompt is heavy (it may edit substantial
+# code and must run on a capable seat), so compute need_capable from the
+# prompt weight.
+weight=$(task_weight "$prompt_file")
+need_capable=0
+[[ "$weight" == "heavy" ]] && need_capable=1
+
+seat=$(pick_seat "" "" "$need_capable" || true)
+if [[ -z "$seat" ]]; then
+    seat_log "pi-intake-repair-run: $repo no healthy seat available"
+    echo "pi-intake-repair-run: $repo no healthy seat available" >&2
+    exit 1
+fi
+
+np=$(printf '%s' "$seat" | cut -f1)
+nm=$(printf '%s' "$seat" | cut -f2)
+
+seat_log "pi-intake-repair-run: $repo running on $np/$nm (weight=$weight)"
+
+{
+    cat "$prompt_file"
+    echo
+    echo "TARGET: intake unit pi-intake@${repo}.service, repo Nishfleet/${repo}"
+} | "$PI_BIN" --print --provider "$np" --model "$nm"
