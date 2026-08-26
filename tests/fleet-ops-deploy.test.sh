@@ -573,3 +573,6 @@ ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offl
 # fleet-ops#176: CI lists THIS file explicitly; the worker GitHub App cannot
 # add a workflow step, so the canonical-checkout drill rides along.
 bash "$here/canonical-checkout-guard.test.sh"
+
+# fleet-ops#175: same CI-list constraint; required-bins drill rides along.
+bash "$here/manifest-required-bins.test.sh"

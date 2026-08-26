@@ -381,6 +381,22 @@ else
     log "0. deploy step skipped (invocation is not the installed heartbeat)"
 fi
 
+# fleet-ops#175: a MANIFEST dest missing from live must not be a quiet skip.
+# The installed heartbeat (should_run_deploy=1) fails loud — that is the
+# class that hid a dead wedge alarm. Worktree/CI copies still skip so tests
+# can run without ~/.local/bin populated.
+#   0 = executable, 1 = missing in production, 2 = missing in CI/worktree.
+require_manifest_helper() {
+    local path="$1"
+    if [ -x "$path" ]; then
+        return 0
+    fi
+    if [ "${should_run_deploy:-0}" = 1 ]; then
+        return 1
+    fi
+    return 2
+}
+
 # ============================================================================
 # 1. UPDATE last-heartbeat: LINE IN PLAN FILE
 # ============================================================================
@@ -879,7 +895,8 @@ log "5. timer-arm pass complete: verified=$verified re_enabled=$re_enabled"
 # events=[]), so there is no event to subscribe to. Heartbeat's existing
 # 30-minute timer is the observer; this is not a new schedule.
 BLOCKED_BIN="${FLEET_BLOCKED_RECONCILE:-/home/nish/.local/bin/blocked-reconcile}"
-if [ -x "$BLOCKED_BIN" ]; then
+blocked_rc=0
+if require_manifest_helper "$BLOCKED_BIN"; then
     log "6. blocked-reconcile starting"
     if BLOCKED_RECONCILE_REPOS="$(printf '%s\n' "$claim_repos")" \
         BLOCKED_RECONCILE_TRIAGE="$TRIAGE" \
@@ -891,7 +908,13 @@ if [ -x "$BLOCKED_BIN" ]; then
         log "6. blocked-reconcile FAILED — next tick retries"
     fi
 else
-    log "6. blocked-reconcile missing at $BLOCKED_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "blocked-reconcile missing at $BLOCKED_BIN — MANIFEST dest; silent skip disabled the agent-blocked sweep (fleet-ops#175)"
+        blocked_rc=1
+    else
+        log "6. blocked-reconcile missing at $BLOCKED_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -983,7 +1006,7 @@ fi
 # the deliberate fail-loud signal, not an error to swallow.
 UNDERSAT_BIN="${FLEET_HEARTBEAT_UNDERSAT:-/home/nish/.local/bin/fleet-heartbeat-undersaturation}"
 undersat_rc=0
-if [ -x "$UNDERSAT_BIN" ]; then
+if require_manifest_helper "$UNDERSAT_BIN"; then
     log "8. undersaturation+throughput pass starting"
     if "$UNDERSAT_BIN"; then
         log "8. undersaturation pass complete"
@@ -992,7 +1015,13 @@ if [ -x "$UNDERSAT_BIN" ]; then
         log "8. undersaturation: FAIL LOUD (rc=$undersat_rc) — second consecutive wedged tick; unit will land in --state=failed"
     fi
 else
-    log "8. undersaturation helper missing at $UNDERSAT_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "undersaturation helper missing at $UNDERSAT_BIN — MANIFEST dest; silent skip disabled the wedge alarm (fleet-ops#175)"
+        undersat_rc=1
+    else
+        log "8. undersaturation helper missing at $UNDERSAT_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1248,12 +1277,16 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
-# Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
-# red-pr-repair, or a heartbeat canary may fail loud; all route to the same
-# escalation (fleet-heartbeat.service -> --state=failed -> unit-escalation).
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
+# Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
+# helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
+# loud; all route to the same escalation (fleet-heartbeat.service ->
+# --state=failed -> unit-escalation).
 if [ "$deploy_rc" -ne 0 ]; then
     exit "$deploy_rc"
+fi
+if [ "${blocked_rc:-0}" -ne 0 ]; then
+    exit "$blocked_rc"
 fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
