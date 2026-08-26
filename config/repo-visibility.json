@@ -1,0 +1,19 @@
+{
+  "description": "Ledger 2026-08-25 repo visibility: ALL product repos public after a clean full-history audit. Private info (telemetry, PII, internal pricing) lives in private sinks, never scrubbed-after. Mirror pattern dropped. This file is the allowlist of Nishfleet repos that may stay private; anything else private and not archived is a product repo that skipped the audit.",
+  "org": "Nishfleet",
+  "limit": 1000,
+  "allow_private": [
+    {
+      "name": "0509-telemetry",
+      "reason": "Private telemetry/PII sink. Public 0509 never carries traction telemetry."
+    },
+    {
+      "name": "fleet2",
+      "reason": "Forbidden second dispatcher (standing rule One fleet). Not a product repo."
+    },
+    {
+      "name": "egress-probe",
+      "reason": "Non-product private utility (Actions egress probe only). Not a customer-facing product repo."
+    }
+  ]
+}

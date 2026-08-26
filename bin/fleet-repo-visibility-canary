@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# fleet-repo-visibility-canary — product repos must be public (fleet-ops#542).
+#
+# Ledger 2026-08-25: ALL product repos public after a clean full-history
+# audit ("option 1 for everything"); private info lives in private sinks,
+# never scrubbed-after. Mirror pattern dropped.
+#
+# STEP 0: ran `gh repo list --help`. It already lists repos and can filter
+# `--visibility private` / `--json name,isPrivate,isArchived,visibility`.
+# Default `--limit` is 30. It does not classify product vs sink, does not
+# fail-loud, and does not auto-file. GitHub org member-privilege settings
+# (restrict visibility changes / restrict creation) need Administration,
+# default toward private, and cannot allow private sinks while requiring
+# every other product repo public. This canary is that missing classifier:
+#   1. GATE (fail-loud, exit 1): a non-archived private repo whose name is
+#      not in config/repo-visibility.json allow_private[] — a product repo
+#      that skipped the public-flip audit.
+#   2. DETECTOR (auto-file, same tick): each undeclared private repo gets
+#      one fleet-ops issue (deduped on the marker). Cap per tick.
+#   3. FAIL-LOUD on a broken watch: gh missing, list failed, or allowlist
+#      missing/malformed -> exit 1.
+#
+# Archived private repos are skipped (siterep). Allowlisted private repos
+# stay quiet. No new scheduler. Run by fleet-heartbeat-tier1 block 24.
+#
+# Environment seams (tests):
+#   FLEET_REPO_VISIBILITY_JSON   allowlist (default repo config, then
+#                                ~/.local/state/pi-packet/repo-visibility.json)
+#   FLEET_REPO_VISIBILITY_LIST   gh repo list JSON fixture (overrides gh)
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_REPO_VISIBILITY_REPO   default Nishfleet/fleet-ops
+#   FLEET_REPO_VISIBILITY_FILE   1 (default) file issues; 0 skip gh create
+#   FLEET_REPO_VISIBILITY_CAP    per-tick file cap (default 5)
+#   GH                           gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+ALLOWLIST="${FLEET_REPO_VISIBILITY_JSON:-$FLEET_OPS_REPO/config/repo-visibility.json}"
+if [[ ! -f "$ALLOWLIST" ]]; then
+    ALLOWLIST="${HOME}/.local/state/pi-packet/repo-visibility.json"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_REPO_VISIBILITY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_REPO_VISIBILITY_FILE:-1}"
+FILE_CAP="${FLEET_REPO_VISIBILITY_CAP:-5}"
+
+log() {
+    printf '[%s] [fleet-repo-visibility-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local name="$1" title="$2" body="$3"
+    local marker="fleet-repo-visibility-canary: private-product ${name}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_REPO_VISIBILITY_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    if (( filed_this_tick >= FILE_CAP )); then
+        log "file cap reached ($FILE_CAP); skipping $marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+        filed_this_tick=$((filed_this_tick + 1))
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+if [[ ! -f "$ALLOWLIST" ]]; then
+    loud "REPO-VISIBILITY-WATCHER-BROKEN" "allowlist missing: $ALLOWLIST"
+    exit 1
+fi
+if ! jq -e . "$ALLOWLIST" >/dev/null 2>&1; then
+    loud "REPO-VISIBILITY-WATCHER-BROKEN" "allowlist unparseable: $ALLOWLIST"
+    exit 1
+fi
+
+org=$(jq -r '.org // empty' "$ALLOWLIST")
+limit=$(jq -r '.limit // 1000' "$ALLOWLIST")
+if [[ -z "$org" ]]; then
+    loud "REPO-VISIBILITY-WATCHER-BROKEN" "allowlist missing org: $ALLOWLIST"
+    exit 1
+fi
+if ! [[ "$limit" =~ ^[0-9]+$ ]] || (( limit < 1 )); then
+    loud "REPO-VISIBILITY-WATCHER-BROKEN" "allowlist limit must be a positive integer: $limit"
+    exit 1
+fi
+
+declare -A allow_set=()
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    allow_set["$name"]=1
+done < <(jq -r '.allow_private[]?.name // empty' "$ALLOWLIST")
+
+emit_repos() {
+    local out
+    if [[ -n "${FLEET_REPO_VISIBILITY_LIST:-}" ]]; then
+        if [[ ! -f "$FLEET_REPO_VISIBILITY_LIST" ]]; then
+            log "FAIL: FLEET_REPO_VISIBILITY_LIST missing: $FLEET_REPO_VISIBILITY_LIST"
+            return 1
+        fi
+        cat "$FLEET_REPO_VISIBILITY_LIST"
+        return 0
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        log "FAIL: gh binary not found ($GH)"
+        return 1
+    fi
+    # Default gh repo list --limit is 30. An org bigger than that would
+    # silently miss a private product repo. Always pass --limit.
+    if ! out=$("$GH" repo list "$org" --limit "$limit" \
+        --json name,isPrivate,isArchived,visibility 2>/dev/null); then
+        log "FAIL: gh repo list $org exited non-zero"
+        return 1
+    fi
+    printf '%s\n' "$out"
+}
+
+list_out=""
+if ! list_out=$(emit_repos); then
+    loud "REPO-VISIBILITY-WATCHER-BROKEN" "gh repo list unavailable; cannot watch $org visibility"
+    exit 1
+fi
+if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$list_out"; then
+    loud "REPO-VISIBILITY-WATCHER-BROKEN" "gh repo list did not return a JSON array"
+    exit 1
+fi
+
+filed_this_tick=0
+violations=0
+while IFS=$'\t' read -r name is_private is_archived; do
+    [[ -n "$name" ]] || continue
+    if [[ "$is_archived" == "true" ]]; then
+        log "skip archived: $name"
+        continue
+    fi
+    if [[ "$is_private" != "true" ]]; then
+        continue
+    fi
+    if [[ -n "${allow_set[$name]:-}" ]]; then
+        log "allow_private: $name"
+        continue
+    fi
+    loud "REPO-VISIBILITY-VIOLATION" "undeclared private product repo: $org/$name"
+    file_finding "$name" \
+        "private product repo $org/$name skipped the public-flip audit" \
+        "\`gh repo list ${org}\` shows \`${org}/${name}\` as private and not archived. It is not in \`config/repo-visibility.json\` allow_private[]. Ledger 2026-08-25 (fleet-ops#542): ALL product repos public after a clean full-history audit; private info lives in private sinks, never scrubbed-after. Either (1) run the public-flip audit and make the repo public, or (2) if this is a genuine private sink, add it to allow_private[] with a reason in a fleet-ops PR. Do not scrub secrets after a public flip."
+    violations=$((violations + 1))
+done < <(jq -r '.[] | [.name, (.isPrivate|tostring), (.isArchived|tostring)] | @tsv' <<<"$list_out")
+
+if (( violations > 0 )); then
+    log "FAIL: $violations undeclared private product repo(s)"
+    exit 1
+fi
+
+loud "REPO-VISIBILITY-OK" "no undeclared private product repo in $org"
+exit 0
