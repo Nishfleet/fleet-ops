@@ -11,9 +11,13 @@
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), exit non-zero so systemd's Restart= treats it as a
-#      failure and re-seats. 20 B is enough for a GitHub PR URL or a short
-#      status like 'blocked: proposal posted' (26 B).
+#      to stdout), bench the seat via mark_seat_spawn_fail (short backoff,
+#      same as spawn-fail) and exit non-zero so systemd's Restart= treats
+#      it as a failure and re-seats. Without the bench, pick_seat re-selects
+#      the same still-healthy seat on an intake re-spawn with an empty
+#      tried-seats file (fleet-ops#390 / fleet-ops-378). 20 B is enough
+#      for a GitHub PR URL or a short status like 'blocked: proposal posted'
+#      (26 B).
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
@@ -296,6 +300,17 @@ out_bytes=${out_bytes//[^0-9]/}; out_bytes=${out_bytes:-0}
 
 if (( out_bytes < OUT_MIN )); then
     seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — no-op, exiting 1 so systemd re-seats"
+    # fleet-ops#390: a no-op is a flake on this packet, not proof the seat
+    # is dead. Bench it briefly (SPAWN_FAIL_BACKOFF_S, default 5 min) so
+    # pick_seat skips it on the next Restart AND on an intake re-spawn
+    # that starts with an empty tried-seats file. Without this, the
+    # healthy ledger re-selects the same seat and the unit loops until
+    # StartLimitBurst exhausts (fleet-ops-378: 1 byte stdout, unit dead).
+    if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:no-op:stdout=${out_bytes}B"; then
+        seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via pick_seat (excluded by usable_at in the future)"
+    else
+        seat_log "pi-issue-run: $inst WARN: spawn-fail marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
+    fi
     exit 1
 fi
 
