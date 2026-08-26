@@ -547,7 +547,7 @@ rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "default: cursor (no default) expected rc=1 (fail-open), got $rc"
 [[ -f "$ledger/cursor__composer-2.5.json" ]] \
-  && fail "default: cursor (no default) must NOT write a marker" || true
+  && fail "default: cursor (no default) must NOT write a marker"
 grep -q "quota-bench: cursor/composer-2.5 NOT benched" "$PI_PACKET_STATE/watch.log" \
   || fail "default: cursor fail-open must log the NOT-benched line"
 
@@ -656,3 +656,14 @@ echo "$live" | grep -q 'pi-issue-wedged.json' \
 grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
   || fail "wedge probe: must log the stuck-activating reap"
 ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
+
+# --- AIMD invariants (fleet-ops#217) -----------------------------------------
+bash "$here/seat-lib-aimd.test.sh" || fail "seat-lib-aimd invariants"
+
+# --- seat-inventory drift canary (fleet-ops#217) -----------------------------
+# Run in a subshell with the cap/model overrides cleared so the canary sees the
+# repo config and the live (or default) models.json, not the scratch fixtures.
+(
+    unset PI_MODELS_JSON SEAT_CAPS_JSON
+    bash "$here/seat-inventory-drift.test.sh"
+) || fail "seat-inventory-drift canary"
