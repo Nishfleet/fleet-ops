@@ -176,6 +176,17 @@ have never been green. Auto-revert still only watches proven-green
 workflows; this detector alerts, it does not revert. A workflow whose
 first ever main run fails is called out as merged untested against main.
 
+An eighth, `.github/workflows/ci-standards-audit.yml`, is the central
+conformance audit. It reads every non-archived repo from the GitHub API,
+resolves each repo's real default branch, then publishes a per-repo,
+per-workflow gap matrix for the CI standard: `timeout-minutes` on every
+job, `concurrency` with `cancel-in-progress` on PR-triggered workflows,
+dependency caching, job-level path filtering (with trigger-level path
+filters on required checks flagged as an error), and `auto-revert.yml`
+presence and eligibility. It can also open fix PRs for the one gap that is
+safe to fix mechanically: missing `auto-revert.yml` on repos that already
+have a green push-to-main CI workflow and required checks.
+
 ## Allowlist
 
 Only the files listed in `MANIFEST` are tracked and installed. Nothing else
