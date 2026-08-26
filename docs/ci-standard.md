@@ -40,6 +40,16 @@ context.
 `.github/workflows/ci-standards-audit.yml` is the reusable caller. It is an
 alert/audit, not a required check.
 
+## Org rulesets (SKIP on the free plan)
+
+Organization repository rulesets with repo-pattern `*` would bind every
+current and future repo at creation. Nishfleet is on GitHub's free org plan,
+so `GET /orgs/Nishfleet/rulesets` returns 403 "Upgrade to GitHub Team".
+That is a SKIP, never a pass. `.github/scripts/org-ruleset-skip-detector.mjs`
+probes the plan on every live `ci-standards-audit` run, records the SKIP,
+and posts `decision-resolved:` on fleet-ops#219 the moment the plan is no
+longer free. Paid Team is Nish's call (fleet-ops#219).
+
 ## Required checks are pure
 
 A required status check must be a function of the PR's own diff.
