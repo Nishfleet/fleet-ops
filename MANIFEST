@@ -64,6 +64,9 @@ bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-wat
 # had no record; this path unit + 30-min timer trip the reconciler, and
 # every state change writes one audit line so drift is grep-able.
 bin/intake-reconcile /home/nish/.local/bin/intake-reconcile
+# fleet-ops#149: merge-to-live drift canary. Fails loud when installed state
+# diverges from MANIFEST or the deploy checkout diverges from origin/main.
+bin/fleet-ops-drift.py /home/nish/.local/bin/fleet-ops-drift
 systemd/intake-reconcile.path /home/nish/.config/systemd/user/intake-reconcile.path
 systemd/intake-reconcile.service /home/nish/.config/systemd/user/intake-reconcile.service
 systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.timer

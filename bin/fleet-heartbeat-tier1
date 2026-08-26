@@ -266,6 +266,142 @@ is_hands_off() {
     return 1
 }
 
+# --- merge-to-live deploy step (fleet-ops#149) -----------------------------
+DEPLOY_CHECKOUT="${FLEET_OPS_CHECKOUT:-}"
+if [ -z "$DEPLOY_CHECKOUT" ]; then
+    DEPLOY_CHECKOUT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+fi
+DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$LOG_DIR/deploy-audit.log}"
+mkdir -p "$(dirname "$DEPLOY_AUDIT_LOG")"
+
+deploy_audit() {
+    local unit="$1" action="$2" why="$3"
+    printf '%s %s %s actor=heartbeat-deploy why=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$unit" "$action" "$why" >> "$DEPLOY_AUDIT_LOG"
+}
+
+# Update the deploy checkout to origin/main, run install.sh, reconcile the
+# declared per-repo set, and run the drift canary. Any divergence is LOUD and
+# fails the unit (exit 1), matching the agent-scheduler-drift pattern.
+deploy_step() {
+    log "0. deploy step starting: checkout=$DEPLOY_CHECKOUT"
+
+    if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
+        loud "DEPLOY-CHECKOUT-MISSING" "no git checkout at $DEPLOY_CHECKOUT"
+        return 1
+    fi
+
+    if ! git -C "$DEPLOY_CHECKOUT" fetch origin >/dev/null 2>&1; then
+        loud "DEPLOY-FETCH" "git fetch origin failed at $DEPLOY_CHECKOUT"
+        return 1
+    fi
+
+    local ahead=0
+    ahead=$(git -C "$DEPLOY_CHECKOUT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+
+    local dirty=""
+    if ! dirty=$(git -C "$DEPLOY_CHECKOUT" status --porcelain --untracked-files=no 2>/dev/null); then
+        loud "DEPLOY-STATUS" "git status failed at $DEPLOY_CHECKOUT"
+        return 1
+    fi
+
+    local nonff=0
+    if ! git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then
+        nonff=1
+    fi
+
+    local reasons=()
+    [ "$ahead" -gt 0 ] && reasons+=("origin/main ahead by $ahead")
+    [ -n "$dirty" ] && reasons+=("dirty tracked files")
+    [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
+    if [ "${#reasons[@]}" -gt 0 ]; then
+        local why
+        why=$(printf '%s; ' "${reasons[@]}" | sed 's/; $//')
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why"
+        deploy_audit "fleet-ops" "deploy-blocked" "$why"
+        return 1
+    fi
+
+    if [ "$ahead" -gt 0 ]; then
+        if ! git -C "$DEPLOY_CHECKOUT" merge --ff-only origin/main >/dev/null 2>&1; then
+            loud "DEPLOY-MERGE" "git merge --ff-only origin/main failed at $DEPLOY_CHECKOUT"
+            return 1
+        fi
+        local newhead
+        newhead=$(git -C "$DEPLOY_CHECKOUT" rev-parse --short HEAD)
+        log "0. deploy checkout merged origin/main -> $newhead"
+        deploy_audit "fleet-ops" "merge" "origin/main to $newhead"
+    else
+        log "0. deploy checkout up to date"
+    fi
+
+    # Run install.sh idempotently.
+    local install_out="" install_rc=0
+    if install_out=$("$DEPLOY_CHECKOUT/install.sh" 2>&1); then
+        install_rc=0
+    else
+        install_rc=$?
+        loud "DEPLOY-INSTALL" "install.sh failed (rc=$install_rc): $install_out"
+        deploy_audit "fleet-ops" "install-failed" "rc=$install_rc"
+        return 1
+    fi
+    if [ -n "$install_out" ]; then
+        log "0. install.sh output: $install_out"
+    fi
+    deploy_audit "fleet-ops" "install" "ok"
+
+    # Converge the per-repo declared set. Failures are best-effort here: the
+    # drift canary below is the authoritative pass/fail on live state.
+    local recon_out="" recon_rc=0
+    if [ -x "$DEPLOY_CHECKOUT/bin/intake-reconcile" ]; then
+        if recon_out=$(INTAKE_RECONCILE_INTAKE_JSON="$DEPLOY_CHECKOUT/config/intake-repos.json" "$DEPLOY_CHECKOUT/bin/intake-reconcile" 2>&1); then
+            if [ -n "$recon_out" ]; then
+                log "0. intake-reconcile output: $recon_out"
+            fi
+            deploy_audit "fleet-ops" "intake-reconcile" "ok"
+        else
+            recon_rc=$?
+            loud "DEPLOY-RECONCILE" "intake-reconcile failed (rc=$recon_rc): $recon_out"
+            deploy_audit "fleet-ops" "intake-reconcile-failed" "rc=$recon_rc"
+        fi
+    else
+        log "0. intake-reconcile not present in checkout — skip"
+    fi
+
+    # Run the drift canary. Any divergence fails the unit loud.
+    local canary canary_out
+    canary="${FLEET_OPS_DRIFT_BIN:-/home/nish/.local/bin/fleet-ops-drift}"
+    if [ -x "$canary" ]; then
+        if canary_out=$(FLEET_OPS_CHECKOUT="$DEPLOY_CHECKOUT" FLEET_OPS_AUDIT_LOG="$DEPLOY_AUDIT_LOG" "$canary" 2>&1); then
+            if [ -n "$canary_out" ]; then
+                log "0. drift canary output: $canary_out"
+            fi
+        else
+            if [ -n "$canary_out" ]; then
+                log "0. drift canary failed: $canary_out"
+            fi
+            # Loud output already written by canary.
+            return 1
+        fi
+    else
+        log "0. drift canary not installed at $canary — skip"
+    fi
+
+    log "0. deploy step complete"
+    deploy_audit "fleet-ops" "drift-ok" "checkout-and-installed-state-match-main"
+    return 0
+}
+
+# ============================================================================
+# 0. MERGE-TO-LIVE DEPLOY + DRIFT CANARY (fleet-ops#149)
+# ============================================================================
+# Before any orchestration work, make sure the installed units are exactly
+# what origin/main declares. A dirty tracked file, non-ff branch, or install
+# drift blocks the update with a LOUD line — no reset, no stash, no silent
+# deployment around it.
+deploy_rc=0
+deploy_step || deploy_rc=$?
+
 # ============================================================================
 # 1. UPDATE last-heartbeat: LINE IN PLAN FILE
 # ============================================================================
@@ -832,7 +968,10 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc deploy_rc=$deploy_rc"
+if [ "$deploy_rc" -ne 0 ]; then
+    exit "$deploy_rc"
+fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
 fi
