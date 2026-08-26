@@ -204,6 +204,7 @@ def join(
     queued: list[dict[str, Any]] = []
     stale_queued: list[dict[str, Any]] = []
     malformed: list[dict[str, Any]] = []
+    covered_rows: list[dict[str, Any]] = []
     covered = 0
     advisory = 0
     queued_ok = 0
@@ -286,6 +287,14 @@ def join(
             )
         else:
             covered += 1
+            covered_rows.append(
+                {
+                    "id": entry.get("id"),
+                    "source": src,
+                    "status": "enforced",
+                    "fallback_id": _fallback_id(row),
+                }
+            )
 
     extra = []
     for src, entry in matrix_by_source.items():
@@ -311,6 +320,7 @@ def join(
         "stale_queued": stale_queued,
         "malformed": malformed,
         "extra_matrix": extra,
+        "covered_rows": covered_rows,
         "auto_file_cap_per_tick": int(matrix.get("auto_file_cap_per_tick") or 5),
     }
 
@@ -320,6 +330,102 @@ def _fallback_id(row: dict[str, str]) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", key).strip("-")[:60]
     prefix = "sr" if row["kind"] == "standing" else "led"
     return f"{prefix}-{slug}"
+
+
+def fallback_id_from_source(source: str) -> str:
+    """Reconstruct the auto-file id the canary used before a matrix row existed."""
+    source = (source or "").strip()
+    if source.startswith(STANDING_PREFIX):
+        kind, key = "standing", source[len(STANDING_PREFIX) :]
+    elif source.startswith(LEDGER_PREFIX):
+        kind, key = "ledger", source[len(LEDGER_PREFIX) :]
+    else:
+        kind, key = "ledger", source
+    return _fallback_id({"kind": kind, "key": key})
+
+
+def issue_matches_covered(body: str, row: dict[str, Any]) -> bool:
+    """True when an auto-filed mechanism issue refers to this enforced row.
+
+    Auto-file uses `_fallback_id` (from the vault key). Later matrix rows may
+    pick a shorter id, so match matrix id OR fallback id. Do not match on the
+    source string alone — other tickets quote that source in passing.
+    """
+    body = body or ""
+    rid = str(row.get("id") or "").strip()
+    src = str(row.get("source") or "").strip()
+    fallback = str(row.get("fallback_id") or "").strip() or (
+        fallback_id_from_source(src) if src else ""
+    )
+    for signal_id in (rid, fallback):
+        if signal_id and (SIGNAL_FMT.format(id=signal_id) in body):
+            return True
+    return False
+
+
+def observe_comment(row: dict[str, Any]) -> str:
+    src = str(row.get("source") or "")
+    rid = str(row.get("id") or "unknown")
+    marker = f"canary-covered: {src}"
+    return (
+        f"{marker}\n\n"
+        "status: enforced\n"
+        f"matrix-id: `{rid}`\n"
+        f"{SIGNAL_FMT.format(id=rid)}\n\n"
+        "This source is covered on a real heartbeat tick "
+        "(fleet-ops#383 observe-to-close).\n"
+    )
+
+
+def observe_targets(
+    report: dict[str, Any], issues: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Open issues that an enforced covered row should comment on.
+
+    Skips issues that already carry the `canary-covered:` marker in body or
+    comments. Caps at auto_file_cap_per_tick.
+    """
+    cap = int(report.get("auto_file_cap_per_tick") or 5)
+    rows = [
+        r
+        for r in (report.get("covered_rows") or [])
+        if isinstance(r, dict) and r.get("status") == "enforced"
+    ]
+    out: list[dict[str, Any]] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        number = issue.get("number")
+        if not isinstance(number, int):
+            continue
+        body = str(issue.get("body") or "")
+        comment_bits = []
+        for comment in issue.get("comments") or []:
+            if isinstance(comment, dict):
+                comment_bits.append(str(comment.get("body") or ""))
+            else:
+                comment_bits.append(str(comment))
+        blob = body + "\n" + "\n".join(comment_bits)
+        for row in rows:
+            src = str(row.get("source") or "")
+            if not src or not issue_matches_covered(body, row):
+                continue
+            marker = f"canary-covered: {src}"
+            if marker in blob:
+                break
+            out.append(
+                {
+                    "number": number,
+                    "id": row.get("id"),
+                    "source": src,
+                    "marker": marker,
+                    "body": observe_comment(row),
+                }
+            )
+            break
+        if len(out) >= cap:
+            break
+    return out
 
 
 def issue_title(item: dict[str, Any]) -> str:
@@ -438,6 +544,20 @@ def cmd_issue_body(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_observe_targets(args: argparse.Namespace) -> int:
+    with open(args.report, encoding="utf-8") as fh:
+        report = json.load(fh)
+    with open(args.issues, encoding="utf-8") as fh:
+        issues = json.load(fh)
+    if not isinstance(issues, list):
+        print("issues JSON must be an array", file=sys.stderr)
+        return 1
+    targets = observe_targets(report, issues)
+    json.dump(targets, sys.stdout, indent=2, ensure_ascii=False)
+    sys.stdout.write("\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -461,6 +581,14 @@ def main(argv: list[str] | None = None) -> int:
     body_p = sub.add_parser("issue-body", help="render an auto-file issue body")
     body_p.add_argument("--json", required=True)
     body_p.set_defaults(func=cmd_issue_body)
+
+    obs_p = sub.add_parser(
+        "observe-targets",
+        help="open mechanism issues to comment when a source is enforced",
+    )
+    obs_p.add_argument("--report", required=True)
+    obs_p.add_argument("--issues", required=True)
+    obs_p.set_defaults(func=cmd_observe_targets)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

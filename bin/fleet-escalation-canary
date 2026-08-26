@@ -43,6 +43,8 @@
 #        config/rule-enforcement.json. Missing or stale queued = VIOLATION;
 #        uncovered rules and queued rows owned by an umbrella tracker
 #        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
+#        When a previously auto-filed source is now `enforced`, the canary
+#        comments `canary-covered:` on the open issue (observe-to-close).
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -430,6 +432,8 @@ fi
 # config/rule-enforcement.json. Any rule with no entry, an invalid row, or
 # queued(#N) older than queued_stale_days is a LOUD violation. Uncovered
 # rules auto-file a mechanism issue (deduped by signal key), cap per tick.
+# Enforced rows with an open mechanism issue get a `canary-covered:` comment
+# (observe-to-close; fleet-ops#479).
 log "9. checking rule-enforcement coverage against vault standing rules + ledger"
 if [[ ! -f "$RULE_MATRIX" ]]; then
     loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: matrix missing at $RULE_MATRIX — no standing rule can name its enforcer"
@@ -488,11 +492,10 @@ else
             pending=$((pending + 1))
         done < <(jq -r '.extra_matrix[].source' <<<"$rule_report")
 
-        # Auto-file mechanism issues. Uncovered rules and queued rows owned by an
-        # umbrella tracker (FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES) are each
-        # deduped by `signal: rule-enforcement/<id>` in the issue body. Cap per
-        # tick so a vault dump cannot open 80 issues.
-        if [[ "$FILE_RULE_ISSUES" == "1" ]] && { [[ "$uncovered_n" -gt 0 ]] || { [[ "$queued_n" -gt 0 ]] && [[ ${#UMBRELLA_ISSUES[@]} -gt 0 ]]; }; }; then
+        # Auto-file uncovered/queued-umbrella issues, then observe-to-close
+        # enforced rows (fleet-ops#479). Listing runs even when uncovered_n=0
+        # so a green join can still comment on leftover mechanism tickets.
+        if [[ "$FILE_RULE_ISSUES" == "1" ]]; then
             cap=$(jq '.auto_file_cap_per_tick' <<<"$rule_report")
             filed=0
             skipped_dup=0
@@ -508,9 +511,10 @@ else
                     log "9.  WARN: could not list open issues for dedupe (gh rc=$gh_list_rc)"
                 fi
             else
-                log "9.  WARN: gh missing — cannot auto-file mechanism issues"
+                log "9.  WARN: gh missing — cannot auto-file or observe-to-close mechanism issues"
             fi
 
+            if [[ "$uncovered_n" -gt 0 ]] || { [[ "$queued_n" -gt 0 ]] && [[ ${#UMBRELLA_ISSUES[@]} -gt 0 ]]; }; then
             declare -A UMBRELLA_MAP=()
             for u in "${UMBRELLA_ISSUES[@]}"; do
                 [[ -n "$u" ]] && UMBRELLA_MAP["$u"]=1
@@ -565,6 +569,51 @@ else
                 pending=$((pending + 1))
             fi
             log "9.  auto-file: filed=$filed deduped=$skipped_dup cap-skipped=$skipped_cap"
+            fi
+
+            observed=0
+            skipped_obs=0
+            if command -v "$GH" >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+                _rep="/tmp/rule-enforcement-report.$$.json"
+                _iss="/tmp/rule-enforcement-open.$$.json"
+                printf '%s\n' "$rule_report" >"$_rep"
+                printf '%s\n' "$open_json" >"$_iss"
+                set +e
+                targets=$(python3 "$RULE_LIB" observe-targets --report "$_rep" --issues "$_iss")
+                obs_rc=$?
+                set -e
+                rm -f "$_rep" "$_iss"
+                if [[ "$obs_rc" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"${targets:-}"; then
+                    while IFS= read -r target; do
+                        [[ -n "$target" ]] || continue
+                        obs_num=$(jq -r '.number' <<<"$target")
+                        obs_id=$(jq -r '.id' <<<"$target")
+                        obs_marker=$(jq -r '.marker' <<<"$target")
+                        obs_body=$(jq -r '.body' <<<"$target")
+                        [[ -n "$obs_num" && "$obs_num" != "null" ]] || continue
+                        set +e
+                        view_json=$("$GH" issue view "$obs_num" -R "$RULE_ISSUE_REPO" --json comments 2>/dev/null)
+                        view_rc=$?
+                        set -e
+                        if [[ "$view_rc" -eq 0 ]] && jq -e --arg m "$obs_marker" '[.comments[]?.body // empty | select(contains($m))] | length > 0' <<<"$view_json" >/dev/null 2>&1; then
+                            skipped_obs=$((skipped_obs + 1))
+                            log "9.  - #$obs_num: already has canary-covered comment (deduped)"
+                            continue
+                        fi
+                        set +e
+                        "$GH" issue comment "$obs_num" -R "$RULE_ISSUE_REPO" --body "$obs_body" >/tmp/rule-enforcement-comment.err 2>&1
+                        comment_rc=$?
+                        set -e
+                        if [[ "$comment_rc" -eq 0 ]]; then
+                            observed=$((observed + 1))
+                            log "9.  OBSERVED-COVERED $obs_id -> #$obs_num"
+                        else
+                            log "9.  WARN: failed to comment #$obs_num (rc=$comment_rc) $(tr '\n' ' ' </tmp/rule-enforcement-comment.err 2>/dev/null)"
+                        fi
+                    done < <(jq -c '.[]' <<<"$targets")
+                fi
+            fi
+            log "9.  observe-to-close: commented=$observed already-observed=$skipped_obs"
         fi
 
         log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n queued=$queued_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"

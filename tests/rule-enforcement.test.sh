@@ -10,6 +10,8 @@
 #   5. queued(#N) older than queued_stale_days is a LOUD violation.
 #   6. advisory without a reason fails validate-matrix.
 #   7. FLAG ledger lines are skipped (not standing rules).
+#   8. Observe-to-close: an enforced row with an open fallback-signal
+#      mechanism issue gets a `canary-covered:` comment; replay is a no-op.
 #
 # Offline. Live vault coverage is asserted when the vault files exist
 # (VPS inner loop); hosted CI skips that one check rather than inventing
@@ -52,7 +54,10 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   [[ "$uncovered" == "0" ]] || fail "live vault has uncovered rules: $(jq -c '.uncovered' <<<"$live")"
   [[ "$malformed" == "0" ]] || fail "live matrix has malformed rows: $(jq -c '.malformed' <<<"$live")"
   [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
+  ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -87,9 +92,50 @@ assert len(standing) == 2, standing
 assert standing[0]["key"] == "Real standing rule (Nish, 2026-08-26)", standing
 assert len(ledger) == 1, ledger
 assert ledger[0]["key"] == "2026-08-26 | real decision", ledger
+
+src = "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable"
+assert m.fallback_id_from_source(src) == (
+    "led-2026-08-27-top-gear-everywhere-non-negotiable"
+), m.fallback_id_from_source(src)
+row = {
+    "id": "led-top-gear-everywhere",
+    "source": src,
+    "status": "enforced",
+    "fallback_id": m.fallback_id_from_source(src),
+}
+body_fallback = (
+    "The rule-coverage canary found a standing rule with no live enforcer.\n\n"
+    f"- source: `{src}`\n\n"
+    "signal: rule-enforcement/led-2026-08-27-top-gear-everywhere-non-negotiable\n"
+)
+assert m.issue_matches_covered(body_fallback, row), "fallback signal + source backtick must match"
+body_matrix_id = "signal: rule-enforcement/led-top-gear-everywhere\n"
+assert m.issue_matches_covered(body_matrix_id, row), "matrix id signal must match"
+assert not m.issue_matches_covered("unrelated body", row)
+assert not m.issue_matches_covered(
+    f"- source: `{src}`\nrelated but not a mechanism signal\n", row
+), "quoting the source without a signal must not match"
+
+report = {
+    "covered_rows": [row],
+    "auto_file_cap_per_tick": 5,
+}
+issues = [
+    {"number": 479, "body": body_fallback, "comments": []},
+    {"number": 480, "body": "signal: rule-enforcement/other", "comments": []},
+    {
+        "number": 481,
+        "body": body_fallback,
+        "comments": [{"body": f"canary-covered: {src}\n"}],
+    },
+]
+targets = m.observe_targets(report, issues)
+assert [t["number"] for t in targets] == [479], targets
+assert targets[0]["marker"] == f"canary-covered: {src}", targets
 print("parser-ok")
 PY
 ok "parser: ## headings counted, ### ignored, FLAG ledger lines skipped"
+ok "observe-to-close: fallback id, source backtick, and already-commented issues"
 
 # --- fixture join: complete coverage ----------------------------------------
 cat >"$scratch/covered-rules.md" <<'EOF'
@@ -287,7 +333,7 @@ cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
 EOF
 
 printf '%s\n' "good-worker.service" >"$drill/loaded"
-printf 'unit-escalation@good-worker.service\n' >"$drill/onf/good-worker.service"
+printf 'unit-escalation@good-worker.service.service\n' >"$drill/onf/good-worker.service"
 printf '{"repos":[{"name":"0509"}],"excluded":[]}' >"$drill/repo/config/intake-repos.json"
 printf '{"claim_repos":["Nishfleet/0509"]}' >"$drill/state/fleet-repos.json"
 : >"$drill/state/.escalation-delivery"
@@ -305,7 +351,7 @@ case "$cmd" in
     exit 0
     ;;
   show)
-    printf 'unit-escalation@good-worker.service\n'
+    printf 'unit-escalation@good-worker.service.service\n'
     exit 0
     ;;
   *)
@@ -334,6 +380,34 @@ case "$subcmd" in
       create)
         echo "https://github.com/Nishfleet/fleet-ops/issues/4242"
         echo create >>"${GH_CREATED:-/dev/null}"
+        ;;
+      view)
+        # Replay comments from GH_OPEN_ISSUES for the requested number.
+        num=""
+        for arg in "$@"; do
+          case "$arg" in
+            [0-9]*) num="$arg"; break ;;
+          esac
+        done
+        if [[ -f "${GH_OPEN_ISSUES:-/dev/null}" && -n "$num" ]]; then
+          jq -c --argjson n "$num" '.[] | select(.number == $n)' "${GH_OPEN_ISSUES}" \
+            | jq -c '{comments: (.comments // [])}' \
+            || printf '{"comments":[]}\n'
+        else
+          printf '{"comments":[]}\n'
+        fi
+        ;;
+      comment)
+        num=""
+        for arg in "$@"; do
+          case "$arg" in
+            [0-9]*) num="$arg"; break ;;
+          esac
+        done
+        if [[ -n "${GH_COMMENTED:-}" && "${GH_COMMENTED}" != "/dev/null" ]]; then
+          printf '%s\n' "$num" >>"$GH_COMMENTED"
+        fi
+        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#comment"
         ;;
     esac
     ;;
@@ -372,7 +446,9 @@ run_drill() {
     FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z" \
     GH_LOG="$glog" \
     GH_CREATED="$created" \
+    GH_COMMENTED="${GH_COMMENTED:-/dev/null}" \
     GH_OPEN_ISSUES="${GH_OPEN_ISSUES:-}" \
+    FLEET_ESCALATION_CANARY_SKIP_BACKUP="${FLEET_ESCALATION_CANARY_SKIP_BACKUP:-0}" \
     "$canary" 2>&1
   )
   env_rc=$?
@@ -406,4 +482,45 @@ grep -q 'already has an open mechanism issue' <<<"$env_out" \
   || fail "dedupe replay: must log deduped (out=$env_out)"
 ok "drill: open issue with signal key is deduped"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, and auto-file drill"
+# Observe-to-close (fleet-ops#479): a fully covered vault + an open
+# mechanism issue filed under the fallback signal must get a canary comment,
+# even when the matrix id differs from the auto-file id. Replay with the
+# marker already in comments must not comment twice.
+cat >"$drill/standing.md" <<'EOF'
+# fixture
+## Covered fixture rule (Nish, 2026-08-26)
+## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
+EOF
+: >"$created"
+: >"$drill/triage.md"
+commented="$drill/commented.txt"
+: >"$commented"
+printf '%s\n' '[{"number":479,"title":"mechanism for TOP GEAR","body":"- source: `decisions-ledger.md: 2026-08-26 | covered ledger rule`\n\nsignal: rule-enforcement/led-2026-08-26-covered-ledger-rule","comments":[]},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
+  >"$drill/open.json"
+export GH_OPEN_ISSUES="$drill/open.json"
+export GH_COMMENTED="$commented"
+export FLEET_ESCALATION_CANARY_SKIP_BACKUP=1
+run_drill
+[[ "$env_rc" == "0" ]] || fail "observe-to-close: canary must exit 0 when covered (rc=$env_rc out=$env_out)"
+if grep -q create "$created"; then
+  fail "observe-to-close: must not file a new issue when the source is covered"
+fi
+grep -q '^479$' "$commented" || fail "observe-to-close: must comment on #479 (commented=$(cat "$commented") out=$env_out)"
+grep -q 'OBSERVED-COVERED' <<<"$env_out" || fail "observe-to-close: must log OBSERVED-COVERED (out=$env_out)"
+ok "drill: enforced coverage comments on the fallback-signal mechanism issue"
+
+: >"$commented"
+: >"$drill/triage.md"
+printf '%s\n' '[{"number":479,"title":"mechanism for TOP GEAR","body":"- source: `decisions-ledger.md: 2026-08-26 | covered ledger rule`\n\nsignal: rule-enforcement/led-2026-08-26-covered-ledger-rule","comments":[{"body":"canary-covered: decisions-ledger.md: 2026-08-26 | covered ledger rule\n"}]},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
+  >"$drill/open.json"
+run_drill
+[[ "$env_rc" == "0" ]] || fail "observe replay: canary must stay exit 0 (rc=$env_rc out=$env_out)"
+if grep -q create "$created"; then
+  fail "observe replay: must not file"
+fi
+if grep -q . "$commented"; then
+  fail "observe replay: must not comment again (commented=$(cat "$commented") out=$env_out)"
+fi
+ok "drill: canary-covered marker is not posted twice"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, and observe-to-close drill"
