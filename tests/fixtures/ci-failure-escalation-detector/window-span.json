@@ -1,0 +1,39 @@
+{
+  "repository": "Nishfleet/0509",
+  "failures": [
+    {
+      "repo": "Nishfleet/0509",
+      "workflow": "CI",
+      "job": "P14 tests",
+      "step": "assert",
+      "assertion": "AssertionError: spread too thin",
+      "run_id": 1401,
+      "run_url": "https://github.com/Nishfleet/0509/actions/runs/1401",
+      "job_id": 6001,
+      "job_url": "https://github.com/Nishfleet/0509/actions/runs/1401/job/6001",
+      "created_at": "2026-08-26T00:00:00Z",
+      "event": "pull_request",
+      "head_branch": "feature/y",
+      "head_sha": "mno345",
+      "pr": 61
+    },
+    {
+      "repo": "Nishfleet/0509",
+      "workflow": "CI",
+      "job": "P14 tests",
+      "step": "assert",
+      "assertion": "AssertionError: spread too thin",
+      "run_id": 1402,
+      "run_url": "https://github.com/Nishfleet/0509/actions/runs/1402",
+      "job_id": 6002,
+      "job_url": "https://github.com/Nishfleet/0509/actions/runs/1402/job/6002",
+      "created_at": "2026-08-26T07:00:00Z",
+      "event": "pull_request",
+      "head_branch": "feature/y",
+      "head_sha": "mno345",
+      "pr": 61
+    }
+  ],
+  "all_runs": [],
+  "open_issues": []
+}

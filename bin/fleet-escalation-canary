@@ -31,8 +31,9 @@
 #        fleet-heartbeat-red-pr-repair = VIOLATION.
 #     8. red-check -> senior-auditor bridge: the path for a red check on a PR
 #        whose worker is still live (so #124 does not fire) and not on main
-#        (so auto-revert does not fire). NOT YET BUILT — standing loud PENDING
-#        finding per repo, suppressible by a marker once the bridge lands.
+#        (so auto-revert does not fire). Wired when the bridge workflow and
+#        detector script are present in the repo; the marker override is still
+#        honored so tests and manual suppression keep working.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -334,8 +335,12 @@ fi
 # 8. GitHub plane — red-check -> senior-auditor bridge (live-worker red PRs)
 # ---------------------------------------------------------------------------
 log "8. checking GitHub plane: red-check -> senior-auditor bridge"
+bridge_wf="$FLEET_OPS_REPO/.github/workflows/ci-failure-escalation.yml"
+bridge_script="$FLEET_OPS_REPO/.github/scripts/ci-failure-escalation-detector.mjs"
 if [[ -f "$BRIDGE_MARKER" ]]; then
     log "8.  - bridge marker present: $BRIDGE_MARKER"
+elif [[ -f "$bridge_wf" ]] && [[ -f "$bridge_script" ]]; then
+    log "8.  - bridge wired: $bridge_wf + $bridge_script"
 else
     loud "ESCALATION-CANARY-PENDING" "red-check -> senior-auditor bridge not wired (#152 scope addition) — a red check on a PR whose worker is still live (so #124 does not fire) and not on main (so auto-revert does not fire) has no automatic path to a senior auditor yet"
     pending=$((pending + 1))
