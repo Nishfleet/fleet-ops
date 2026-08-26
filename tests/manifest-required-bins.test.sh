@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# tests/manifest-required-bins.test.sh
+#
+# fleet-ops#175: MANIFEST-declared binaries must stay in MANIFEST, and the
+# installed heartbeat must fail loud when a required helper is missing.
+# Silent `skip (not installed)` hid a dead wedge alarm and a dead
+# agent-blocked sweep.
+#
+# Proves, offline:
+#   1. The audit-named dests are still MANIFEST lines.
+#   2. require_manifest_helper exists and is wired into blocked-reconcile
+#      and undersaturation.
+#   3. Missing helper + should_run_deploy=1 -> return 1 (fail loud).
+#   4. Missing helper + should_run_deploy=0 -> return 2 (CI/worktree skip).
+#   5. Executable helper -> return 0.
+#   6. HELPER-MISSING is the loud tag; the production path no longer
+#      skip-only those two helpers.
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+manifest="$repo_root/MANIFEST"
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -f "$manifest" ]] || fail "MANIFEST missing"
+[[ -x "$tier1" ]] || fail "not executable: $tier1"
+
+# --- 1. MANIFEST still declares the dests the audit found missing ----------
+required=(
+  "lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py"
+  "bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard"
+  "bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile"
+  "bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation"
+  "bin/oomd-drill /home/nish/.local/bin/oomd-drill"
+  "bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap"
+)
+for entry in "${required[@]}"; do
+  grep -Fxq "$entry" "$manifest" || fail "MANIFEST missing required dest: $entry"
+done
+ok "MANIFEST still declares the six #175 dests"
+
+# --- 2. wiring: helper exists, both heartbeat call sites use it ------------
+grep -q '^require_manifest_helper()' "$tier1" \
+  || fail "tier1 must define require_manifest_helper"
+grep -q 'HELPER-MISSING' "$tier1" \
+  || fail "tier1 must emit HELPER-MISSING"
+# Both named heartbeat helpers must call the guard, not a bare -x skip.
+set +e
+awk '
+  /BLOCKED_BIN=/ { in_blocked=1 }
+  in_blocked && /require_manifest_helper/ { blocked=1 }
+  in_blocked && /^# ===/ { in_blocked=0 }
+  /UNDERSAT_BIN=/ { in_undersat=1 }
+  in_undersat && /require_manifest_helper/ { undersat=1 }
+  in_undersat && /^# ===/ { in_undersat=0 }
+  END {
+    if (!blocked) exit 11
+    if (!undersat) exit 12
+  }
+' "$tier1"
+awk_rc=$?
+set -e
+case "$awk_rc" in
+  0) ;;
+  11) fail "blocked-reconcile path must call require_manifest_helper" ;;
+  12) fail "undersaturation path must call require_manifest_helper" ;;
+  *) fail "awk wiring check exited $awk_rc" ;;
+esac
+ok "blocked-reconcile and undersaturation call require_manifest_helper"
+
+# --- 3-5. extract the real function and prove the three outcomes -----------
+extract_fn() {
+  local fn="$1"
+  awk -v fn="$fn" '
+    $0 ~ "^"fn"\\(\\)[[:space:]]*\\{" { in_fn=1 }
+    in_fn { print }
+    in_fn && /^\}/ { in_fn=0 }
+  ' "$tier1"
+}
+
+scratch="$(mktemp -d -t manifest-required-bins.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+extract_fn require_manifest_helper >"$scratch/helper.sh"
+grep -q 'require_manifest_helper' "$scratch/helper.sh" \
+  || fail "could not extract require_manifest_helper"
+# shellcheck disable=SC1091
+source "$scratch/helper.sh"
+
+present="$scratch/present-helper"
+printf '#!/bin/sh\nexit 0\n' >"$present"
+chmod +x "$present"
+missing="$scratch/missing-helper"
+
+should_run_deploy=1
+require_manifest_helper "$present"
+[[ $? -eq 0 ]] || fail "executable helper must return 0"
+
+set +e
+require_manifest_helper "$missing"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "missing helper + should_run_deploy=1 must return 1, got $rc"
+
+should_run_deploy=0
+set +e
+require_manifest_helper "$missing"
+rc=$?
+set -e
+[[ "$rc" -eq 2 ]] || fail "missing helper + should_run_deploy=0 must return 2, got $rc"
+ok "require_manifest_helper: present=0, prod-missing=1, ci-missing=2"
+
+# --- 6. production path is fail-loud, not skip-only ------------------------
+# The skip log line may still exist for worktree/CI copies. The production
+# branch must name HELPER-MISSING next to those two helpers.
+python3 - "$tier1" <<'PY'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+for needle, label in (
+    ("BLOCKED_BIN=", "blocked-reconcile"),
+    ("UNDERSAT_BIN=", "undersaturation"),
+):
+    start = text.find(needle)
+    if start < 0:
+        sys.exit(f"missing {label} block")
+    chunk = text[start : start + 1800]
+    if "HELPER-MISSING" not in chunk:
+        sys.exit(f"{label} block must loud HELPER-MISSING")
+    if "require_manifest_helper" not in chunk:
+        sys.exit(f"{label} block must call require_manifest_helper")
+print("ok")
+PY
+ok "production missing-helper path louds HELPER-MISSING for both helpers"
+
+echo "OK: MANIFEST dests locked and missing helpers fail loud (fleet-ops#175)"
