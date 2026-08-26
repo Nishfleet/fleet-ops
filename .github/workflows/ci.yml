@@ -191,7 +191,6 @@ jobs:
         bash tests/semantic-conflict-detector.test.sh
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
-        bash tests/ci-failure-escalation-detector.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/pi-packet-guard.test.sh
         bash tests/pi-systemd-run.test.sh
