@@ -168,18 +168,15 @@ grep -F "loud \"DEGRADED-LANES\"" "$bin" >/dev/null \
   || fail "fleet-heartbeat-tier1 must wire DEGRADED-LANES through loud() (visible to operators)"
 ok "degraded-lane reporter: SubState query + DEGRADED-LANES loud line wired"
 
-# --- Phase D: default config covers fleet-ops -----------------------------
-# The heartbeat fleet-repos.json default MUST include Nishfleet/fleet-ops
-# in claim_repos so the orphan sweep actually runs against this repo
-# (issue #61 surfaced the gap). The default is the source of truth —
-# if the live config gets regenerated (e.g. on a fresh install), it
-# must include fleet-ops.
-grep -F '"Nishfleet/fleet-ops"' "$bin" >/dev/null \
-  || fail "fleet-heartbeat-tier1 default claim_repos must include Nishfleet/fleet-ops (fleet-ops#61)"
-# And it must be in the claim_repos list, not just somewhere in the file.
-default_block=$(awk '/cat > "\$REPOS_JSON"/,/^JSON$/' "$bin")
-printf '%s\n' "$default_block" | grep -F '"Nishfleet/fleet-ops"' >/dev/null \
-  || fail "Nishfleet/fleet-ops must appear in the default fleet-repos.json heredoc"
-printf '%s\n' "$default_block" | grep -F '"claim_repos": ["Nishfleet/fleet-ops"' >/dev/null \
-  || fail 'Nishfleet/fleet-ops must lead the "claim_repos" array in the default fleet-repos.json'
-ok "default claim_repos includes Nishfleet/fleet-ops (orphan sweep covers this repo)"
+# --- Phase D: orphan sweep covers fleet-ops via intake enrolment ----------
+# issue #61: the orphan sweep must run against this repo. Enrolment is
+# config/intake-repos.json, not a hand-maintained default heredoc
+# (fleet-ops#177). fleet-ops must be in repos[], and claim_repos must be
+# the derived enrolled set.
+jq -e '.repos[] | select(.name=="fleet-ops")' "$repo_root/config/intake-repos.json" >/dev/null \
+  || fail "config/intake-repos.json must enrol fleet-ops (orphan sweep coverage, #61/#177)"
+grep -qF 'claim_repos=$enrolled_repos' "$bin" \
+  || fail "fleet-heartbeat-tier1 must set claim_repos from the enrolled intake set"
+grep -qF '.repos[]? | "Nishfleet/" + .name' "$bin" \
+  || fail "fleet-heartbeat-tier1 must derive Nishfleet/<name> from intake repos[]"
+ok "orphan sweep covers fleet-ops via intake enrolment (fleet-ops#61/#177)"

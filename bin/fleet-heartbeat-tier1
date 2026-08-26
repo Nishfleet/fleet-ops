@@ -282,33 +282,53 @@ unit_recovery_class() {
     esac
 }
 
+# Project fleet-repos.json from config/intake-repos.json.
+# queue_repos and claim_repos are always repos[] as Nishfleet/<name>.
+# Deferred and excluded names never appear. hands_off is an operator
+# escape hatch and is the only key preserved from the previous file.
+# This is the mechanical close for fleet-ops#177 / #239: the live state
+# file cannot drift because every tick overwrites it from intake.
+reconcile_fleet_repos_from_intake() {
+    local intake="$1"
+    local dest="$2"
+    local enrolled_json hands_json tmp
+    enrolled_json=$(jq -c '[.repos[]? | "Nishfleet/" + .name]' "$intake")
+    if [ -f "$dest" ]; then
+        hands_json=$(jq -c '.hands_off // []' "$dest" 2>/dev/null || printf '%s' '[]')
+    else
+        hands_json='[]'
+    fi
+    mkdir -p "$(dirname "$dest")"
+    tmp="${dest}.tmp.$$"
+    jq -n \
+        --argjson enrolled "$enrolled_json" \
+        --argjson hands "$hands_json" \
+        '{
+            queue_repos: $enrolled,
+            claim_repos: $enrolled,
+            hands_off: $hands,
+            derived_from: "config/intake-repos.json"
+        }' > "$tmp"
+    mv -f "$tmp" "$dest"
+}
+
 [ -f "$PLAN_FILE" ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 1; }
-[ -f "$REPOS_JSON" ] || {
-    log "WARN: fleet-repos.json missing at $REPOS_JSON — writing default"
-    mkdir -p "$(dirname "$REPOS_JSON")"
-    cat > "$REPOS_JSON" <<'JSON'
-{
-  "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
-  "claim_repos": ["Nishfleet/fleet-ops", "Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
-  "hands_off": []
-}
-JSON
-    log "wrote default $REPOS_JSON"
-}
 
-# Read the repos config with jq once.
-queue_repos=$(jq -r '.queue_repos[]' "$REPOS_JSON")
-claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON")
-hands_off=$(jq -r '.hands_off[]' "$REPOS_JSON" 2>/dev/null || true)
-
-# Derive the timer verification list from the declared intake repo set. The
-# reconciler (bin/intake-reconcile) uses config/intake-repos.json as the single
-# source of truth for enrolment; heartbeat §5 must use the same source or its
-# verify list drifts the moment a repo is added/removed (fleet-ops#156 finding 9).
+# config/intake-repos.json is the single source of truth for enrolment.
+# The intake reconciler converges systemd to it. Heartbeat queue, claim,
+# and timer-verify must use the same source or they drift the moment a
+# repo is added, removed, or deferred (fleet-ops#177: deferred repos
+# stayed in queue/claim, fleet-ops was omitted after it enrolled).
 INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
 [ -f "$INTAKE_REPOS_JSON" ] || { log "FATAL: $INTAKE_REPOS_JSON missing"; exit 2; }
 jq empty "$INTAKE_REPOS_JSON" >/dev/null 2>&1 || { log "FATAL: $INTAKE_REPOS_JSON invalid JSON"; exit 2; }
+enrolled_repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_REPOS_JSON")
+queue_repos=$enrolled_repos
+claim_repos=$enrolled_repos
 verify_timers=$(jq -r '.repos[]? | "pi-scout@\(.name).timer", "pi-intake@\(.name).timer"' "$INTAKE_REPOS_JSON")
+reconcile_fleet_repos_from_intake "$INTAKE_REPOS_JSON" "$REPOS_JSON"
+hands_off=$(jq -r '.hands_off[]?' "$REPOS_JSON" 2>/dev/null || true)
+log "repos: queue/claim from $INTAKE_REPOS_JSON; reconciled $REPOS_JSON"
 
 # is_hands_off <repo>
 is_hands_off() {

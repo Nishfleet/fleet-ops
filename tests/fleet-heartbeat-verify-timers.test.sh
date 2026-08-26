@@ -82,13 +82,13 @@ count=$(printf '%s\n' "$units" | wc -l)
   || fail "verify list count mismatch (expected 2x repo count, got $count)"
 ok "live intake-repos.json derives one scout and one intake timer per repo"
 
-# --- 4. fleet-repos.json default no longer carries a hand-maintained list ----
-# The default written when fleet-repos.json is missing must not contain a
-# verify_timers key — the heartbeat now derives it from intake-repos.json.
-default_block=$(awk '/cat > "\$REPOS_JSON"/,/^JSON$/' "$bin")
-if printf '%s\n' "$default_block" | grep -q 'verify_timers'; then
-  fail "default fleet-repos.json must not carry a hand-maintained verify_timers"
+# --- 4. no hardcoded fleet-repos.json default (drift surface) --------------
+# The old missing-file path wrote a heredoc that also carried verify_timers.
+# Queue/claim now come from intake; the state file is a projection, not a
+# source. A cat-heredoc default must not return.
+if grep -qF 'cat > "$REPOS_JSON"' "$bin"; then
+  fail "fleet-heartbeat-tier1 still auto-writes a hardcoded fleet-repos.json"
 fi
-ok "default fleet-repos.json has no verify_timers drift surface"
+ok "no hardcoded fleet-repos.json default (verify_timers cannot drift in via heredoc)"
 
 echo "OK: heartbeat verify_timers derived from intake-repos.json (fleet-ops#156 finding 9)"
