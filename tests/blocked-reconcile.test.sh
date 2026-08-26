@@ -7,7 +7,8 @@
 #   - a closed issue / merged PR requeues (agent-blocked → agent-ready)
 #   - a closed-unmerged PR does not
 #   - nish-decision issues stay labelled until a later comment carries
-#     `decision-resolved:`; then they requeue from live state
+#     `decision-resolved:` with no live `blocked-on:` (fleet-ops#563);
+#     then they requeue from live state
 #   - struck-through ~~blocked-on:~~ body lines are ignored
 #   - overlapping sweeps no-op
 set -euo pipefail
@@ -89,6 +90,28 @@ got=$(extract '{"repo":"Nishfleet/fleet-ops","number":180,"title":"gap-closure l
 [[ "$(printf '%s' "$got" | jq '.deps|length')" == "2" ]] || fail "180 deps: $got"
 [[ "$(printf '%s' "$got" | jq -r '.deps[0].ref')" == "Nishfleet/fleet-ops#149" ]] || fail "180 dep0: $got"
 ok "decision-resolved: in a later comment marks nish-decision resolved; deps stay recorded"
+
+# fleet-ops#563 / #145 shape: worker ask with copy-paste example + live blocked-on.
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":145,"title":"red-on-main: Repo standards sync","body":"blocked-on: nish-decision\n","comments":[{"body":"Rotate FLEET_SYNC_PAT. When that dispatch is green, copy this line:\n\ndecision-resolved: FLEET_SYNC_PAT rotated\n\nblocked-on: nish-decision\n"}]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish')" == "true" ]] || fail "145 nish: $got"
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "false" ]] || fail "145 worker ask must not resolve: $got"
+ok "#145 worker ask with copy-paste decision-resolved: stays nish_resolved=false"
+
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":145,"title":"red-on-main: Repo standards sync","body":"blocked-on: nish-decision\n","comments":[{"body":"Rotate FLEET_SYNC_PAT. When that dispatch is green, copy this line:\n\ndecision-resolved: FLEET_SYNC_PAT rotated\n\nblocked-on: nish-decision\n"},{"body":"decision-resolved: FLEET_SYNC_PAT rotated\n"}]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "true" ]] || fail "145 later marker must resolve: $got"
+ok "#145 later comment that is only the marker extracts nish_resolved=true"
+
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":145,"title":"red-on-main: Repo standards sync","body":"blocked-on: nish-decision\n","comments":[{"body":"Rotate FLEET_SYNC_PAT.\n\ndecision-resolved: FLEET_SYNC_PAT rotated\n\nblocked-on: nish-decision\n"},{"body":"~~blocked-on: nish-decision~~\n\ndecision-resolved: FLEET_SYNC_PAT rotated\n"}]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "true" ]] || fail "145 struck+marker must resolve: $got"
+ok "later comment with struck blocked-on plus marker extracts nish_resolved=true"
+
+got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: nish-decision\ndecision-resolved: example\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "false" ]] || fail "body ask must not resolve: $got"
+ok "issue body with live blocked-on: plus a decision-resolved: example stays unresolved"
+
+got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"~~blocked-on: nish-decision~~\ndecision-resolved:\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "true" ]] || fail "struck body plus marker: $got"
+ok "body with struck blocked-on plus decision-resolved: extracts nish_resolved=true"
 
 got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"~~blocked-on: #10~~\n~~blocked-on: nish-decision~~\n","comments":[]}')
 [[ "$(printf '%s' "$got" | jq '.deps|length')" == "0" ]] || fail "struck dep leaked: $got"
@@ -298,6 +321,35 @@ grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "364 missing label 
 grep -q 'blocker cleared' "$scratch/comments.log" || fail "364 missing evidence comment: $(cat "$scratch/comments.log")"
 grep -q 'nish-decision' "$scratch/comments.log" || fail "evidence should name nish-decision: $(cat "$scratch/comments.log")"
 ok "fixture body + decision-resolved: requeues from live state"
+
+# Case 7b: fleet-ops#563 / #145 shape — worker ask must not requeue; later marker must
+cat >"$scratch/list.json" <<'JSON'
+[{"number":145,"title":"red-on-main: Repo standards sync","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-145.json" <<'JSON'
+{"title":"red-on-main: Repo standards sync","body":"blocked-on: nish-decision\n","createdAt":"2026-08-25T06:00:00Z","comments":[{"body":"Rotate FLEET_SYNC_PAT. When that dispatch is green, copy this line:\n\ndecision-resolved: FLEET_SYNC_PAT rotated\n\nblocked-on: nish-decision\n"}]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err145-ask.txt")
+grep -q 'requeued=0' <<<"$out" || fail "#145 worker ask must not requeue: $out"
+grep -q 'count=1' <<<"$out" || fail "#145 worker ask stays in queue: $out"
+[[ -s "$scratch/edits.log" ]] && fail "#145 worker ask must not flip labels: $(cat "$scratch/edits.log")"
+ok "#145 worker ask with copy-paste decision-resolved: stays blocked"
+
+cat >"$scratch/view-145.json" <<'JSON'
+{"title":"red-on-main: Repo standards sync","body":"blocked-on: nish-decision\n","createdAt":"2026-08-25T06:00:00Z","comments":[{"body":"Rotate FLEET_SYNC_PAT. When that dispatch is green, copy this line:\n\ndecision-resolved: FLEET_SYNC_PAT rotated\n\nblocked-on: nish-decision\n"},{"body":"decision-resolved: FLEET_SYNC_PAT rotated\n"}]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err145-resolved.txt")
+grep -q 'requeued=1' <<<"$out" || fail "#145 later marker should requeue: $out"
+grep -q 'count=0' <<<"$out" || fail "#145 later marker should drain: $out"
+grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "#145 missing label remove: $(cat "$scratch/edits.log")"
+grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "#145 missing label add: $(cat "$scratch/edits.log")"
+ok "#145 later comment that is only the marker requeues from live state"
 
 # Case 8: drill — close a fixture blocker, next pass flips the label
 cat >"$scratch/list.json" <<'JSON'
