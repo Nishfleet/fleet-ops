@@ -465,8 +465,8 @@
     {
       "id": "led-merge-to-live",
       "source": "decisions-ledger.md: 2026-08-26 | merge-to-live",
-      "mechanism": "Heartbeat pull+install+verify; drift canary asserts installed == MANIFEST == origin/main",
-      "proof": "bin/fleet-ops-deploy; bin/fleet-ops-drift.py; tests/fleet-ops-deploy.test.sh",
+      "mechanism": "Heartbeat pull+install+verify; install.sh and fleet-ops-deploy refuse non-canonical workspaces checkouts; drift canary asserts installed == MANIFEST == origin/main and auto-files DRIFT-SOURCE",
+      "proof": "bin/fleet-ops-deploy; bin/fleet-ops-drift.py; tests/fleet-ops-deploy.test.sh; tests/canonical-checkout-guard.test.sh",
       "status": "enforced"
     },
     {

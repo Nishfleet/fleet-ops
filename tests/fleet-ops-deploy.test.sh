@@ -54,6 +54,14 @@ grep -q 'live_newer_than_repo' "$repo_root/install.sh" \
     || fail "install.sh must refuse to overwrite a newer live config"
 grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the paper-over heartbeat drop-in"
+grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
+    || fail "install.sh must refuse to install from a non-canonical workspaces checkout"
+grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must refuse a non-canonical FLEET_OPS_CHECKOUT"
+grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag live dests that point outside the canonical checkout"
+grep -q 'gh issue create' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file a canonical-checkout drift issue"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -561,3 +569,7 @@ PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 ok "scenario12b: install.sh removes the paper-over heartbeat drop-in"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
+
+# fleet-ops#176: CI lists THIS file explicitly; the worker GitHub App cannot
+# add a workflow step, so the canonical-checkout drill rides along.
+bash "$here/canonical-checkout-guard.test.sh"

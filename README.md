@@ -54,6 +54,13 @@ to the checkout working tree, so it cannot self-compare. It also fails if
 any installed unit file or enable-link resolves into `/tmp`, `/run`, or
 `agent-worktrees`.
 
+`install.sh` (mutating modes) and `fleet-ops-deploy` refuse to run from any
+path under `/home/nish/workspaces` that is not that canonical checkout.
+`--check` still runs from a worktree so an auditor can see DIFF. Override
+with `FLEET_OPS_ALLOW_NONCANONICAL=1`. The drift canary tags
+`DRIFT-SOURCE` and auto-files when live dests point at a non-canonical
+workspaces tree (fleet-ops#176).
+
 ### System-scope entries (fleet-ops#71)
 
 The MANIFEST may list entries under `/etc/systemd/system/...` — those are
