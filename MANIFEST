@@ -181,6 +181,11 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 bin/worker-app-canary /home/nish/.local/bin/worker-app-canary
 bin/attest-identity-gate /home/nish/.local/bin/attest-identity-gate
 lib/attest-identity-gate.py /home/nish/.local/lib/pi-packet/attest-identity-gate.py
+# fleet-ops#436: parked-flash watcher. Runs `pi --list-models` every
+# heartbeat-tier1 tick; quiet while Qwen 3.8 / GLM 5.3 flash are absent from
+# Pi's catalog, auto-files a revisit+bench+wire ticket the moment one
+# appears. Fails loud only when the watcher itself is broken (pi missing).
+bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
