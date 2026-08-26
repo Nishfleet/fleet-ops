@@ -110,6 +110,19 @@ def check_intake_lists_agent_ready_only(repo: Path, _role: dict[str, Any]) -> st
     return None
 
 
+def check_agent_ready_spec_gate(repo: Path, _role: dict[str, Any]) -> str | None:
+    """First admission to agent-ready must call the spec-gate (fleet-ops#543)."""
+    if not (repo / "lib" / "agent-ready-spec-gate.py").exists():
+        return "lib/agent-ready-spec-gate.py missing"
+    for rel in ("bin/lifecycle-label-sweep", "bin/pi-audit-tally"):
+        text = _read(repo / rel)
+        if not text:
+            return f"{rel} missing"
+        if "agent-ready-spec-gate" not in text:
+            return f"{rel} applies agent-ready without the spec-gate"
+    return None
+
+
 def check_builder_ci_and_auto_revert(repo: Path, _role: dict[str, Any]) -> str | None:
     ci = repo / ".github" / "workflows" / "ci.yml"
     revert = repo / ".github" / "workflows" / "auto-revert.yml"
@@ -159,6 +172,7 @@ BYPASS_CHECKS = {
     "scout_agent_ready_product": check_scout_agent_ready_product,
     "sweep_blank_approval": check_sweep_blank_approval,
     "intake_lists_agent_ready_only": check_intake_lists_agent_ready_only,
+    "agent_ready_spec_gate": check_agent_ready_spec_gate,
     "builder_ci_and_auto_revert": check_builder_ci_and_auto_revert,
     "reviewer_attestation_gate": check_reviewer_attestation_gate,
     "senior_cannot_self_admit": check_senior_cannot_self_admit,

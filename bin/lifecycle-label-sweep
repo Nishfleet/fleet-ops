@@ -204,6 +204,31 @@ ensure_label() {
     gh label create "$name" -R "$repo" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
 }
 
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1"
+    local py
+    py=$(spec_gate_py)
+    if [ ! -f "$py" ]; then
+        log "SPEC-GATE missing at $py — refuse agent-ready (fail closed)"
+        return 1
+    fi
+    printf '%s' "$body" | python3 "$py" check-body >/dev/null
+}
+
 apply_label() {
     local repo="$1" num="$2" label="$3"
     local body
@@ -251,7 +276,7 @@ while IFS= read -r repo; do
     log "repo $repo"
 
     if ! list_json=$(gh issue list -R "$repo" --state open \
-        --json number,title,labels --limit 500 2>/dev/null); then
+        --json number,title,labels,body --limit 500 2>/dev/null); then
         log "  $repo: gh issue list FAILED — skip"
         continue
     fi
@@ -261,6 +286,7 @@ while IFS= read -r repo; do
         num=$(printf '%s' "$row" | jq -r '.number')
         title=$(printf '%s' "$row" | jq -r '.title // ""')
         labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
 
         if issue_has_lifecycle "$labels_json"; then
             skipped=$((skipped + 1))
@@ -274,6 +300,21 @@ while IFS= read -r repo; do
             label="agent-ready"
         else
             label=$(classify "$title" "$repo")
+        fi
+        # fleet-ops#543: first admission to agent-ready needs a spec.
+        # gap-audit leftovers already passed the panel; skip the body check.
+        if [ "$label" = "agent-ready" ] \
+            && ! printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
+            if ! issue_passes_spec_gate "$issue_body"; then
+                log "  $repo#$num: SPEC-GATE-REFUSED agent-ready ($title)"
+                if [ "$DRY" != "1" ]; then
+                    gh issue comment "$num" -R "$repo" \
+                        --body "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
+                        >/dev/null 2>&1 || true
+                fi
+                skipped=$((skipped + 1))
+                continue
+            fi
         fi
         log "  $repo#$num: unlabeled → $label ($title)"
         if apply_label "$repo" "$num" "$label"; then

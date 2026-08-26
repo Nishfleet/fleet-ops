@@ -77,6 +77,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report led-north-star-quality as enforced covered_rows (fleet-ops#459): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report GLM 5.3 flash ClinePass as enforced covered_rows (fleet-ops#462): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | work supply" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report work-supply agent-ready as enforced covered_rows (fleet-ops#543): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -84,6 +86,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
   ok "live join: NORTH STAR quality source is enforced (observe-to-close for #459)"
   ok "live join: GLM 5.3 flash ClinePass source is enforced (observe-to-close for #462)"
+  ok "live join: work-supply agent-ready source is enforced (observe-to-close for #543)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -671,4 +674,9 @@ ok "rule-enforcement: north-star-quality gate drill"
 bash "$here/fleet-cline-glm53-canary.test.sh" || fail "cline glm53 canary drill failed"
 ok "rule-enforcement: ClinePass GLM 5.3 flash canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, and cline-glm53 drills"
+# fleet-ops#543: agent-ready spec-gate. Nested host so the worker token
+# does not need to edit .github/workflows/**.
+bash "$here/agent-ready-spec-gate.test.sh" || fail "agent-ready spec-gate drill failed"
+ok "rule-enforcement: agent-ready spec-gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, and agent-ready-spec-gate drills"
