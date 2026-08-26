@@ -15,7 +15,7 @@
 #   7. An intake repo missing from claim_repos -> exit 1, named.
 #   8. An intake repo on the exclusion list -> skipped (not a violation).
 #   9. fleet-repos.json missing -> PENDING (loud, not fail).
-#  10. bridge marker absent -> PENDING; present -> suppressed.
+#  10. bridge marker or bridge files present -> OK; absent -> PENDING.
 #
 # Offline: uses a mocked systemctl, a scratch repo layout, and scratch JSON.
 
@@ -167,6 +167,7 @@ on:
   workflow_call:
 WF
   rm -f "$FLEET_ESCALATION_CANARY_DELIVERY" "$FLEET_ESCALATION_CANARY_REDCI" "$FLEET_ESCALATION_CANARY_BRIDGE"
+  rm -f "$repo/.github/workflows/ci-failure-escalation.yml" "$repo/.github/scripts/ci-failure-escalation-detector.mjs"
 }
 
 # ============================================================================
@@ -361,5 +362,27 @@ run_canary
 [[ "$env_rc" == 0 ]] || fail "scenario8b: must exit 0, got $env_rc ($env_out)"
 ! grep -q 'senior-auditor bridge not wired' "$triage" || fail "scenario8b: bridge PENDING must be suppressed by marker"
 ok "scenario8b: bridge marker present -> suppressed"
+
+# ============================================================================
+# Scenario 9: bridge files present without marker -> canary sees it as wired
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+mkdir -p "$repo/.github/scripts"
+: >"$repo/.github/workflows/ci-failure-escalation.yml"
+: >"$repo/.github/scripts/ci-failure-escalation-detector.mjs"
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario9: must exit 0, got $env_rc ($env_out)"
+! grep -q 'senior-auditor bridge not wired' "$triage" || fail "scenario9: bridge files must suppress PENDING without marker"
+grep -q 'pending=0' "$triage" || fail "scenario9: OK line must show pending=0"
+ok "scenario9: bridge files present -> wired without marker"
 
 ok "escalation-coverage-canary: covers VPS + GitHub planes, exclusions, and pending holes"
