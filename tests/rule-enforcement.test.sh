@@ -523,4 +523,9 @@ if grep -q . "$commented"; then
 fi
 ok "drill: canary-covered marker is not posted twice"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, and observe-to-close drill"
+# fleet-ops#519: run the no-agent-names gate drill as part of the
+# rule-enforcement suite so it is exercised in CI without a workflow edit.
+bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"
+ok "rule-enforcement: no-agent-names gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, and no-agent-names drill"

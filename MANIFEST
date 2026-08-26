@@ -37,6 +37,9 @@ lib/blind-audit-cadence.sh /home/nish/.local/lib/pi-packet/blind-audit-cadence.s
 bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
 # fleet-ops#517: new bin/ files need a research: line before the PR opens.
 bin/research-before-build-check /home/nish/.local/bin/research-before-build-check
+# fleet-ops#519: no agent names on Nish's work — PR-body + commit-message lint.
+lib/fleet-no-agent-names-check.py /home/nish/.local/lib/pi-packet/fleet-no-agent-names-check.py
+bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh

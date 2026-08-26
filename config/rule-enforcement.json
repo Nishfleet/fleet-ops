@@ -80,10 +80,9 @@
     {
       "id": "sr-no-agent-names",
       "source": "global-standing-rules.md: No agent names on Nish's work (Nish, 2026-08-18)",
-      "mechanism": "Packet prompts forbid Co-Authored-By; no CI check rejects the trailers",
-      "proof": "Nishfleet/fleet-ops#519",
-      "status": "queued(#519)",
-      "queued_since": "2026-08-27"
+      "mechanism": "PR-body and commit-message lint: bin/fleet-no-agent-names-check rejects Co-Authored-By trailers, Generated-with footers, and agent-name attribution; worker prompt commands the run; tests/fleet-no-agent-names.test.sh drills it",
+      "proof": "bin/fleet-no-agent-names-check; lib/fleet-no-agent-names-check.py; tests/fleet-no-agent-names.test.sh; prompts/worker.md",
+      "status": "enforced"
     },
     {
       "id": "sr-free-tier-privacy",
