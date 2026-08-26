@@ -44,11 +44,7 @@ deploy_audit() {
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
 
-# Accept both a normal checkout (.git is a directory) and a linked worktree
-# (.git is a FILE pointing at the worktree's gitdir). The previous -d test
-# false-negatived on worktrees and turned every heartbeat tick red on
-# deploy_rc. -e covers both shapes; git -C still works on either.
-if [ ! -e "$DEPLOY_CHECKOUT/.git" ]; then
+if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
     loud "DEPLOY-CHECKOUT-MISSING" "no git checkout at $DEPLOY_CHECKOUT"
     exit 1
 fi
