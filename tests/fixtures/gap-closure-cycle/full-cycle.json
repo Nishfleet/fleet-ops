@@ -1,0 +1,189 @@
+{
+  "org": "Nishfleet",
+  "now": "2026-08-26T06:00:00Z",
+  "org_rulesets": {
+    "status": 403,
+    "message": "Upgrade to GitHub Team to enable this feature."
+  },
+  "intake": {
+    "excluded": [
+      { "name": "fleet2", "permanent": true, "reason": "second dispatcher" },
+      { "name": "siterep", "permanent": true, "reason": "archived" }
+    ]
+  },
+  "hands_off": ["paused-product"],
+  "prev_loop": {
+    "0509": "done",
+    "context-hub": "done"
+  },
+  "repos": [
+    {
+      "name": "fleet2",
+      "full_name": "Nishfleet/fleet2",
+      "archived": false,
+      "private": false
+    },
+    {
+      "name": "siterep",
+      "full_name": "Nishfleet/siterep",
+      "archived": true,
+      "private": false
+    },
+    {
+      "name": "paused-product",
+      "full_name": "Nishfleet/paused-product",
+      "archived": false,
+      "private": false
+    },
+    {
+      "name": "brand-new-tomorrow",
+      "full_name": "Nishfleet/brand-new-tomorrow",
+      "archived": false,
+      "private": false,
+      "default_branch": "main",
+      "created_at": "2026-08-26T00:00:00Z",
+      "workflows": [],
+      "has_auto_revert": false,
+      "has_branch_protection": false,
+      "main_runs": [],
+      "open_prs": [],
+      "branches": [],
+      "merged_prs": [],
+      "deployments": [],
+      "open_gap_audit_titles": []
+    },
+    {
+      "name": "fleet-ops",
+      "full_name": "Nishfleet/fleet-ops",
+      "archived": false,
+      "private": false,
+      "default_branch": "main",
+      "workflows": ["CI", "Auto revert"],
+      "has_auto_revert": true,
+      "has_branch_protection": true,
+      "main_runs": [
+        {
+          "id": 11,
+          "name": "CI",
+          "conclusion": "failure",
+          "status": "completed",
+          "head_branch": "main",
+          "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/11",
+          "created_at": "2026-08-26T05:00:00Z"
+        }
+      ],
+      "open_prs": [],
+      "branches": [],
+      "merged_prs": [
+        {
+          "number": 171,
+          "created_at": "2026-08-25T10:00:00Z",
+          "merged_at": "2026-08-25T12:00:00Z",
+          "auto_revert": false
+        },
+        {
+          "number": 173,
+          "created_at": "2026-08-25T13:00:00Z",
+          "merged_at": "2026-08-25T13:30:00Z",
+          "auto_revert": true
+        }
+      ],
+      "deployments": [
+        { "created_at": "2026-08-25T12:05:00Z", "state": "success" }
+      ],
+      "open_gap_audit_titles": []
+    },
+    {
+      "name": "0509",
+      "full_name": "Nishfleet/0509",
+      "archived": false,
+      "private": false,
+      "default_branch": "main",
+      "workflows": ["CI", "Auto revert"],
+      "has_auto_revert": true,
+      "has_branch_protection": true,
+      "main_runs": [
+        {
+          "id": 22,
+          "name": "CI",
+          "conclusion": "success",
+          "status": "completed",
+          "head_branch": "main",
+          "html_url": "https://github.com/Nishfleet/0509/actions/runs/22",
+          "created_at": "2026-08-26T04:00:00Z"
+        }
+      ],
+      "open_prs": [
+        {
+          "number": 88,
+          "title": "ownerless leftover",
+          "html_url": "https://github.com/Nishfleet/0509/pull/88",
+          "draft": false,
+          "updated_at": "2026-08-20T00:00:00Z",
+          "assignees": [],
+          "labels": []
+        }
+      ],
+      "branches": [
+        {
+          "name": "abandoned/old-fix",
+          "updated_at": "2026-08-01T00:00:00Z",
+          "ahead": 3,
+          "open_pr": false
+        }
+      ],
+      "merged_prs": [
+        {
+          "number": 90,
+          "created_at": "2026-08-24T00:00:00Z",
+          "merged_at": "2026-08-24T06:00:00Z",
+          "auto_revert": false
+        }
+      ],
+      "deployments": [
+        { "created_at": "2026-08-24T06:10:00Z", "state": "success" }
+      ],
+      "open_gap_audit_titles": []
+    },
+    {
+      "name": "context-hub",
+      "full_name": "Nishfleet/context-hub",
+      "archived": false,
+      "private": false,
+      "default_branch": "main",
+      "workflows": ["CI", "Auto revert"],
+      "has_auto_revert": true,
+      "has_branch_protection": true,
+      "main_runs": [
+        {
+          "id": 3,
+          "name": "CI",
+          "conclusion": "success",
+          "status": "completed",
+          "head_branch": "main",
+          "created_at": "2026-08-26T01:00:00Z"
+        }
+      ],
+      "open_prs": [],
+      "branches": [],
+      "merged_prs": [],
+      "deployments": [],
+      "open_gap_audit_titles": []
+    },
+    {
+      "name": "0509-telemetry",
+      "full_name": "Nishfleet/0509-telemetry",
+      "archived": false,
+      "private": true,
+      "default_branch": "main",
+      "workflows": ["CI"],
+      "has_auto_revert": false,
+      "has_branch_protection": true,
+      "main_runs": [],
+      "open_prs": [],
+      "branches": [],
+      "merged_prs": [],
+      "deployments": []
+    }
+  ]
+}

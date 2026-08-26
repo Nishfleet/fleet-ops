@@ -97,3 +97,25 @@ against main. The signal opens (or reuses) an issue. It does not revert.
 `.github/workflows/red-on-main-watch.yml` is the 15-minute sweep other
 Nishfleet repos get via repo-standards-sync. Do not make either a
 required check.
+
+## Org-wide gap-closure cycle
+
+`.github/workflows/gap-closure-cycle.yml` runs daily in this central
+public repo. It lists every Nishfleet repo via the GitHub API, drops
+`config/intake-repos.json` `excluded[]` (fleet2, archived siterep), and
+audits the rest. A repo created tomorrow is in the next cycle. There is
+no enrolment step.
+
+Org rulesets with pattern `*` would bind every current and future repo.
+Nishfleet is on GitHub's free plan, so that API 403s ("Upgrade to GitHub
+Team"). The cycle records that as a loud SKIP. Paid Team is Nish's call.
+
+Private repos are read through the API from this public workflow. The
+cycle never dispatches a workflow into a private repo.
+
+The three-auditor conference stays on the VPS and reuses fleet-ops#180.
+This workflow records `conference: pending-180` and still does per-repo
+DONE / reopen from findings + drills.
+
+Do not copy this workflow into product repos. Do not make it a required
+check.
