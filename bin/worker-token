@@ -19,9 +19,8 @@
 #
 # DEGRADATION
 #   If $CREDS_FILE is missing, or any step fails, the script exits 3 with a
-#   message. Callers (pi-issue-run) fall through to the existing gh auth on
-#   exit 3 — that is the failure path the fleet was running on before this
-#   script existed, so breakage is impossible.
+#   message. Callers (pi-issue-run) treat a degraded worker-token as a
+#   DEAD APP IDENTITY and exit 1 — there is no fallback to a human gh auth.
 #
 # NO LLM.  Pure bash + jq + openssl + curl.  Same workload every run.
 
@@ -52,7 +51,8 @@ Env (loaded from CREDS_FILE):
 Exit codes:
   0  token minted (and exec'd if --exec)
   1  usage error
-  3  degraded — creds missing or invalid; caller falls back to existing auth
+  3  degraded — creds missing or invalid; the wrapper treats this as a
+     dead App and fails loud, never falling back to a human gh auth
 
 The token NEVER gets logged or printed unless --print is explicit (and
 even then the script prints only the export line, not the raw material).

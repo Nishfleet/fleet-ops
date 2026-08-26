@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/worker-token-fail-closed.test.sh
 #
-# Proves worker-token and pi-issue-run degrade safely when the GitHub App
-# does not exist yet (Nish's manifest click still pending). Runs entirely
-# offline / without GitHub credentials — no app, no creds, no network.
+# Proves worker-token and pi-issue-run fail closed when the GitHub App
+# is not configured. Runs entirely offline / without GitHub credentials —
+# no app, no creds, no network. There is no fallback to a human account.
 #
 # What we prove:
 #   1. worker-token with no creds file → exits 3 with a clear message
@@ -11,18 +11,18 @@
 #   2. worker-token with a creds file that's empty → exits 3.
 #   3. worker-token --degrade-probe with no creds file → exits 1 (so a
 #      caller can use it as a "should I rotate?" check).
-#   4. pi-issue-run still runs the same way it did before the PR: when
-#      nishfleet-worker.env is absent, the script logs the fall-through
-#      line and proceeds with whatever gh auth the parent provided.
-#      We exercise this by sourcing the script body in a controlled way.
+#   4. pi-issue-run screams (DEAD APP IDENTITY) when nishfleet-worker.env
+#      is absent or worker-token mint fails; it never falls back to a
+#      human gh auth. We exercise this by sourcing the script body in a
+#      controlled way.
 #   5. The manifest claim about permissions matches what worker-token
 #      would mint (no admin scope, no workflows, no organization).
 #
-# These are the invariants CI needs to vouch for BEFORE Nish clicks the
-# manifest button. After the click, real-world verification lives in the
-# tests/worker-token-live.test.sh (run manually, with creds in place)
-# file — that one is documented but not part of CI because it requires
-# a live GitHub App.
+# These are the invariants CI locks in code: the App-credential path is
+# the only production path, and a missing or invalid creds file is a
+# dead App. Real-world mint verification lives in
+# tests/worker-token-live.test.sh, which is run manually with the live
+# nishfleet-worker App.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,12 +113,10 @@ set -e
 issue_run="$repo_root/bin/pi-issue-run"
 [[ -x "$issue_run" ]] || fail "pi-issue-run missing or not executable: $issue_run"
 
-grep -q 'falling through to existing gh auth' "$issue_run" \
-  || fail "pi-issue-run must log 'falling through to existing gh auth' when creds are absent"
+grep -q 'DEAD APP IDENTITY' "$issue_run" \
+  || fail "pi-issue-run must scream DEAD APP IDENTITY when creds are missing or mint fails"
 grep -q 'WORKER_APP_CREDS_FILE' "$issue_run" \
   || fail "pi-issue-run must source WORKER_APP_CREDS_FILE"
-grep -q 'DEAD APP IDENTITY' "$issue_run" \
-  || fail "pi-issue-run must scream DEAD APP IDENTITY when creds exist and mint fails"
 
 # --- invariant 5: source-of-truth cross-check ------------------------------
 # Match what the manifest claims (contents/pull_requests/issues write,
@@ -135,7 +133,7 @@ for k in contents pull_requests issues metadata; do
 done
 
 ok "worker-token fails closed on missing/empty/invalid creds"
-ok "pi-issue-run fall-through path is present and indexed"
+ok "pi-issue-run scream path is present and indexed"
 ok "manifest permissions exactly match the audit cross-check"
 
 # fleet-ops#413: identity-separation drill, App-identity canary, and
