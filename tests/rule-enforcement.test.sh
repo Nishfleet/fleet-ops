@@ -67,6 +67,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report escalation FIXES as enforced covered_rows (fleet-ops#548): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report vault sync conflicts as enforced covered_rows (fleet-ops#529): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)" and .status == "enforced")' <<<"$live" >/dev/null \
@@ -77,6 +79,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report GLM 5.3 flash ClinePass as enforced covered_rows (fleet-ops#462): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
+  ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
   ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
   ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
   ok "live join: NORTH STAR quality source is enforced (observe-to-close for #459)"
@@ -194,6 +197,61 @@ python3 "$lib" join --rules "$scratch/covered-rules.md" --ledger "$scratch/cover
 jq -e '.violations == 0 and .uncovered == []' "$scratch/covered.json" >/dev/null \
   || fail "complete fixture must have zero violations: $(cat "$scratch/covered.json")"
 ok "join: complete fixture is green"
+
+# fleet-ops#548: CI-visible guard for the VPS-only miss. A ledger with the
+# two 2026-08-27 titles must be covered by the committed rows, and omitting
+# those rows must surface the fallback ids the canary auto-files.
+cat >"$scratch/548-rules.md" <<'EOF'
+# none
+EOF
+cat >"$scratch/548-ledger.md" <<'EOF'
+- 2026-08-27 | TOP GEAR everywhere, non-negotiable | a decision
+- 2026-08-27 | escalation matrix FIXES, not just routes | a decision
+EOF
+jq '{
+  queued_stale_days: .queued_stale_days,
+  auto_file_cap_per_tick: .auto_file_cap_per_tick,
+  rules: [.rules[] | select(
+    .source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable"
+    or .source == "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes"
+  )]
+}' "$matrix" >"$scratch/548-covered-matrix.json"
+python3 "$lib" join --rules "$scratch/548-rules.md" --ledger "$scratch/548-ledger.md" \
+  --matrix "$scratch/548-covered-matrix.json" --now "2026-08-27T12:00:00Z" \
+  >"$scratch/548-covered.json"
+jq -e '.violations == 0 and (.uncovered | length) == 0 and (.covered == 2)' \
+  "$scratch/548-covered.json" >/dev/null \
+  || fail "committed 2026-08-27 rows must cover the two ledger titles: $(cat "$scratch/548-covered.json")"
+ok "join: committed 2026-08-27 rows cover the two ledger titles (fleet-ops#548)"
+
+cat >"$scratch/548-missing-matrix.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "led-unrelated-548",
+      "source": "decisions-ledger.md: 2026-08-26 | unrelated covered",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    }
+  ]
+}
+EOF
+set +e
+python3 "$lib" join --rules "$scratch/548-rules.md" --ledger "$scratch/548-ledger.md" \
+  --matrix "$scratch/548-missing-matrix.json" --now "2026-08-27T12:00:00Z" \
+  >"$scratch/548-missing.json"
+missing_rc=$?
+set -e
+[[ "$missing_rc" == "1" ]] || fail "omitting the 2026-08-27 rows must make join exit 1, got $missing_rc"
+jq -e '[.uncovered[].id] | sort == [
+  "led-2026-08-27-escalation-matrix-fixes-not-just-routes",
+  "led-2026-08-27-top-gear-everywhere-non-negotiable"
+]' "$scratch/548-missing.json" >/dev/null \
+  || fail "omitting the 2026-08-27 rows must uncover the canary fallback ids: $(cat "$scratch/548-missing.json")"
+ok "join: omitting the 2026-08-27 rows uncovers the canary fallback ids (fleet-ops#548)"
 
 # --- queued row in report ---------------------------------------------------
 cat >"$scratch/queued-rules.md" <<'EOF'
