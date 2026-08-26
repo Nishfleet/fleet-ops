@@ -638,10 +638,9 @@
     {
       "id": "led-glm-5-3-free-clinepass",
       "source": "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass",
-      "mechanism": "Wire free GLM 5.3 flash on ClinePass; slug + weekly-cap-bypass must be PROVEN live before routing (fail closed if it bills)",
-      "proof": "fleet-ops #384 comment; mechanism issue filed by canary",
-      "status": "queued(#462)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Heartbeat ClinePass GLM 5.3 flash canary: fail-loud if seat-caps allowlists a GLM 5.3 flash slug without the cline-pass/ prefix (would bill), the non-flash cline-pass/glm-5.3 quota id, a guessed slug absent from Pi's cline catalog, or a proven slug missing from models.json; observe-to-open detector auto-files a prove-weekly-cap-bypass + models.json + wire ticket when a cline-pass flash slug appears unwired",
+      "proof": "bin/fleet-cline-glm53-canary; tests/fleet-cline-glm53-canary.test.sh; fleet-heartbeat-tier1 block 23; fleet-ops#462",
+      "status": "enforced"
     },
     {
       "id": "led-cursor-grok-re-admitted",
