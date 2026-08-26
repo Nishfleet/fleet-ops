@@ -124,3 +124,7 @@ echo "OK: system drop-ins shape locked (50-ram-governor + 50-no-distro-oomd-kill
 # fleet-ops#62: drill tooling. CI lists THIS file explicitly; the worker
 # GitHub App cannot add a workflow step, so the drill test rides along.
 bash "$here/oomd-drill.test.sh"
+
+# fleet-ops#92: slice syntax. Same CI-list constraint; the dedicated
+# unit-verify job cannot gain systemd/*.slice without a workflow push.
+bash "$here/systemd-analyze-slices.test.sh"
