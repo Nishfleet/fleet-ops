@@ -135,6 +135,8 @@ systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.
 systemd/intake-reconcile.service.d/10-deploy-checkout.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/10-deploy-checkout.conf
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
+# fleet-ops#368: OnFailure page must resolve hostname at send time.
+systemd/fleet-heartbeat-failed-notify.service /home/nish/.config/systemd/user/fleet-heartbeat-failed-notify.service
 systemd/stop-escalation.path /home/nish/.config/systemd/user/stop-escalation.path
 systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.service
 systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
