@@ -17,6 +17,8 @@
 #   4. Recover/log failed fleet worker/repair/cleanup units; attempt a plain
 #      reset+start for transient lane faults on supply/repair units, and
 #      escalate loudly after N attempts so a unit never ends failed quietly.
+#      Then page remaining failed units (triage + hermes --urgent, fleet-ops#76).
+#      Skip fleet-heartbeat itself.
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
 #      outside this repo, and the GitHub App has no webhooks. If every
@@ -46,6 +48,9 @@
 #      (loop-to-green per #80), bounded 2 attempts per PR, then fails LOUD
 #      into the paging path (#76/#86). Same non-zero-exit -> page contract
 #      as block 8.
+#  12. Seat-health freshness (fleet-ops#76). observed_at must parse and be
+#      under 90 minutes; stale or unparseable triggers pi-transport-check
+#      then reports. Additive end block so it does not overlap 8–11.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -86,6 +91,18 @@ loud() {
         printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
+
+WATCHMAN_LIB="${FLEET_HEARTBEAT_WATCHMAN:-$HOME/.local/lib/pi-packet/heartbeat-watchman.sh}"
+# shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+if [ -f "$WATCHMAN_LIB" ]; then
+    # shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+    source "$WATCHMAN_LIB"
+else
+    log "WARN: watchman lib missing at $WATCHMAN_LIB — failed-unit page + seat-health skipped"
+    heartbeat_seat_health_check() { log "seat-health: skipped (watchman lib missing)"; }
+    heartbeat_list_failed_units() { return 0; }
+    heartbeat_page_units() { log "failed-units: page skipped (watchman lib missing)"; }
+fi
 
 # --- failed-unit recovery helpers -------------------------------------------
 FAILED_UNITS_STATE_DIR="${FLEET_HEARTBEAT_FAILED_STATE_DIR:-$LOG_DIR/failed-units}"
@@ -697,6 +714,28 @@ shopt -u nullglob
 
 log "4. failed-units pass complete: seen=$seen repaired=$repaired requeued=$requeued still_failed=$still_failed exhausted=$exhausted escd=$escd"
 
+# fleet-ops#76: after the recover/observe pass, page what is still failed
+# so leftover units reach Telegram. Repair policy stays in block 4 (do not
+# restart observe-class workers here — that races OnFailure reap). Skip
+# fleet-heartbeat itself (watchman list already does).
+page_n=0
+page_list=""
+while IFS= read -r u; do
+    [ -z "$u" ] && continue
+    page_n=$((page_n + 1))
+    if [ -z "$page_list" ]; then
+        page_list="$u"
+    else
+        page_list="${page_list},${u}"
+    fi
+done < <(heartbeat_list_failed_units)
+if [ "$page_n" -gt 0 ]; then
+    heartbeat_page_units "$page_n" "$page_list" || true
+    log "4. failed-units page: n=$page_n"
+else
+    log "4. failed-units page: none remaining"
+fi
+
 # ============================================================================
 # 5. VERIFY SCOUT / INTAKE TIMERS ARMED
 # ============================================================================
@@ -955,6 +994,15 @@ if [ -x "$REDPR_BIN" ]; then
 else
     log "11. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
 fi
+
+# ============================================================================
+# 12. SEAT-HEALTH FRESHNESS (fleet-ops#76)
+# ============================================================================
+# Standing rule: verify observed_at before trusting pi-seat-health.json.
+# Stale (>90 min) or unparseable -> trigger pi-transport-check, then report.
+log "12. seat-health freshness starting"
+heartbeat_seat_health_check
+log "12. seat-health freshness done"
 
 # ============================================================================
 # done
