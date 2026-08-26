@@ -165,13 +165,16 @@ user systemd instance (Persistent=true), not by any agent or tmux session.
 Two-tier design (so the heartbeat still works if every LLM is dead):
 
 - **Tier 1 (deterministic, every tick, no LLM)**: queue green fleet PRs,
-  release orphaned claims, log failed units into the triage file, verify
-  scout/intake timers are armed, re-examine `agent-blocked` issues (re-queue
-  when a listed dependency has closed/merged; publish count and oldest age
-  for Nish-decision blocks), update the `last-heartbeat:` stamp in the
+  release orphaned claims, recover failed fleet units then page what remains
+  (triage + `hermes send --urgent`), verify scout/intake timers are armed,
+  re-examine `agent-blocked` issues, check `pi-seat-health.json` is fresh
+  (`observed_at` < 90 min), update the `last-heartbeat:` stamp in the
   playbook. Also re-dispatches repair workers onto orphaned red fleet-worker
   PRs whose worker has exited (debounced one tick, bounded 2 attempts, then
   fail-loud into the paging path). Plain bash + gh + jq. Zero quota.
+  A successful tick also pings healthchecks.io (`HC_URL` in
+  `~/.config/fleet-heartbeat/hc.env`, same dead-man pattern as siterep-uptime)
+  so a masked or dead timer is visible off-box.
 - **Tier 2 (judgment, only when the triage file is non-empty or the held
   queue has dispatchable items)**: walk a seat ladder
   `claude -p --model claude-opus-5` → `pi --print --provider devin
