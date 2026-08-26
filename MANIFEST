@@ -146,6 +146,12 @@ systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config
 # timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
 # with a rolling 10-run history.
 bin/ram-measure /home/nish/.local/bin/ram-measure
+# fleet-ops#389: ledger-supersession pass on the memory curator. A new
+# decisions-ledger line makes the next curator tick mark conflicting
+# compiled / agent memories SUPERSEDED-BY:<date+title> (no delete, no
+# rewritten prose). Drop-in appends ExecStart on nish-memory-curator.
+bin/memory-ledger-supersede.py /home/nish/.local/bin/memory-ledger-supersede
+systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.config/systemd/user/nish-memory-curator.service.d/10-ledger-supersede.conf
 # P14 tests (not installed — only run from the repo)
 # fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
 # requires root for install). install.sh --system copies them and runs
