@@ -206,6 +206,10 @@ jobs:
         bash tests/system-dropins-shape.test.sh
         bash tests/fleet-ops-deploy.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
+        # fleet-ops#153: lock the product-vs-control-plane throughput split.
+        bash tests/fleet-heartbeat-throughput-split.test.sh
+        # fleet-ops#153: lock the 0509 scout packet-assembly contract.
+        bash tests/pi-scout-packet-assembly.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         bash tests/fleet-blind-audit.test.sh
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
