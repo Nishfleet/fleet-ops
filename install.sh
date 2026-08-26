@@ -140,6 +140,16 @@ unit_file_matches() {
     return 1
 }
 
+# Resolve dest to the live file (follow one symlink). Empty if dest is missing.
+live_target_file() {
+    local dest=$1
+    if [ -L "$dest" ]; then
+        readlink -f "$dest" 2>/dev/null || true
+    elif [ -f "$dest" ]; then
+        printf '%s\n' "$dest"
+    fi
+}
+
 # Returns 0 if dest exists and its live target is a different file whose
 # mtime is newer than the repo copy. install.sh must refuse that overwrite
 # (fleet-ops#372): running from a stale checkout would otherwise replace
@@ -147,18 +157,80 @@ unit_file_matches() {
 live_newer_than_repo() {
     local dest=$1 repo=$2
     local live live_m repo_m
-    if [ -L "$dest" ]; then
-        live=$(readlink -f "$dest" 2>/dev/null || true)
-    elif [ -f "$dest" ]; then
-        live=$dest
-    else
-        return 1
-    fi
+    live=$(live_target_file "$dest")
     [ -n "$live" ] && [ -e "$live" ] || return 1
     [ "$live" = "$repo" ] && return 1
     live_m=$(stat -c %Y "$live" 2>/dev/null || echo 0)
     repo_m=$(stat -c %Y "$repo" 2>/dev/null || echo 0)
     [ "$live_m" -gt "$repo_m" ]
+}
+
+# True when $1 is byte-identical to origin/main:config/seat-caps.json.
+# A merged cap drop on origin/main is intentional (fleet-ops-deploy).
+seat_caps_is_origin_main_blob() {
+    local repo=$1
+    git -C "$here" show origin/main:config/seat-caps.json 2>/dev/null | cmp -s "$repo" -
+}
+
+# Returns 0 if installing repo seat-caps.json would lower any live provider
+# or model cap. git checkout refreshes mtime, so live_newer_than_repo misses
+# a stale clone of the pre-#331 snapshot (fleet-ops#371: live devin 4 / ollama
+# 4 overwritten to 0 / 2). Prints the drops on stdout for the REFUSE line.
+# Unparseable JSON is not this class — return 1 and let mtime decide.
+seat_caps_would_downgrade() {
+    local dest=$1 repo=$2
+    local live
+    [ "${FLEET_OPS_ALLOW_SEAT_CAPS_OVERWRITE:-}" = 1 ] && return 1
+    live=$(live_target_file "$dest")
+    [ -n "$live" ] && [ -e "$live" ] || return 1
+    [ "$live" = "$repo" ] && return 1
+    python3 - "$live" "$repo" <<'PY'
+import json, sys
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        sys.exit(1)
+    if not isinstance(data, dict):
+        sys.exit(1)
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        sys.exit(1)
+    return providers
+
+live, repo = load(sys.argv[1]), load(sys.argv[2])
+hits = []
+for name, lprov in live.items():
+    if not isinstance(lprov, dict):
+        continue
+    rprov = repo.get(name)
+    lc = lprov.get("cap")
+    if isinstance(lc, int) and lc > 0:
+        if not isinstance(rprov, dict):
+            hits.append(f"{name}:{lc}->missing")
+        else:
+            rc = rprov.get("cap")
+            if isinstance(rc, int) and rc < lc:
+                hits.append(f"{name}:{lc}->{rc}")
+    if not isinstance(rprov, dict):
+        continue
+    lmodels = lprov.get("models") if isinstance(lprov.get("models"), dict) else {}
+    rmodels = rprov.get("models") if isinstance(rprov.get("models"), dict) else {}
+    for model, lm in lmodels.items():
+        if not isinstance(lm, int) or lm <= 0:
+            continue
+        rm = rmodels.get(model)
+        if not isinstance(rm, int):
+            hits.append(f"{name}/{model}:{lm}->missing")
+        elif rm < lm:
+            hits.append(f"{name}/{model}:{lm}->{rm}")
+if hits:
+    print(" ".join(hits))
+    sys.exit(0)
+sys.exit(1)
+PY
 }
 
 # fleet-ops#372: the hand-built heartbeat drop-in pointed FLEET_OPS_DRIFT_BIN
@@ -210,7 +282,7 @@ check_comment_junk() {
 
 process_entry() {
   local src=$1 dest=$2 skip=$3
-  local repo
+  local repo why=""
   repo=$(readlink -f "$here/$src")
 
   if [ "$skip" = 1 ]; then return 0; fi
@@ -248,7 +320,23 @@ process_entry() {
   else
     # User scope: symlink, idempotent. mkdir -p so nested drop-in dirs
     # (e.g. vps-weekly-update.service.d/) exist on first install.
-    if live_newer_than_repo "$dest" "$repo"; then
+    # seat-caps.json: a stale checkout whose files were just git-checked-out
+    # has a *newer* mtime than live, so the #372 mtime guard misses it.
+    # Refuse a cap drop unless this file is origin/main's blob (merged
+    # reduction via fleet-ops-deploy) or the operator override is set.
+    if [[ "$src" == config/seat-caps.json ]]; then
+        if seat_caps_is_origin_main_blob "$repo"; then
+            :
+        elif why=$(seat_caps_would_downgrade "$dest" "$repo"); then
+            echo "REFUSE: $dest would lower live seat caps ($why) from $repo (fleet-ops#371)"
+            rc=1
+            return 0
+        elif live_newer_than_repo "$dest" "$repo"; then
+            echo "REFUSE: $dest is newer than repo copy $repo (will not overwrite live config)"
+            rc=1
+            return 0
+        fi
+    elif live_newer_than_repo "$dest" "$repo"; then
         echo "REFUSE: $dest is newer than repo copy $repo (will not overwrite live config)"
         rc=1
         return 0
