@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# bin/pi-audit-tally
+#
+# Tallies the three senior-auditor votes for one scout candidate and applies
+# the result to the GitHub issue: 2-of-3 PASS -> add agent-ready, drop
+# scout-candidate; 2-of-3 FAIL -> add discarded, drop scout-candidate, and
+# comment with the fail reasons; otherwise -> no action (pending).
+#
+# Args: <repo> <candidate>
+#
+# Environment seams:
+#   AUDIT_STATE_DIR    vote file tree
+#   AUDIT_GH           gh override
+#   AUDIT_DRY_RUN      1 = log, do not mutate labels
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${AUDIT_GH:-gh}"
+STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
+DRY_RUN="${AUDIT_DRY_RUN:-0}"
+
+log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+[ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
+repo="$1"
+candidate="$2"
+
+case_dir() {
+    printf '%s/%s/%s\n' "$STATE_DIR" "$repo" "$candidate"
+}
+
+votes_json() {
+    local dir
+    dir=$(case_dir)
+    shopt -s nullglob
+    local files=("$dir"/*.vote)
+    shopt -u nullglob
+    if [ "${#files[@]}" -eq 0 ]; then
+        printf '[]\n'
+        return
+    fi
+    jq -s '.' "${files[@]}"
+}
+
+main() {
+    local dir votes pass fail reasons
+    dir=$(case_dir)
+    if [ ! -d "$dir" ]; then
+        log "no votes yet for $repo/#$candidate"
+        exit 0
+    fi
+
+    votes=$(votes_json)
+    pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
+    fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
+    reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
+
+    log "$repo/#$candidate votes: PASS=$pass FAIL=$fail"
+
+    if [ "$pass" -ge 2 ]; then
+        log "$repo/#$candidate admitted (2-of-3 PASS)"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add agent-ready + remove scout-candidate for $repo/#$candidate"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label agent-ready >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (admit)"
+                exit 1
+            fi
+        fi
+        exit 0
+    fi
+
+    if [ "$fail" -ge 2 ]; then
+        log "$repo/#$candidate discarded (2-of-3 FAIL)"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add discarded + remove scout-candidate + comment for $repo/#$candidate"
+            log "discarded reasons:\n$reasons"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label discarded >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (discard)"
+                return 0  # still try to comment
+            fi
+            if ! "$GH" issue comment "$candidate" -R "Nishfleet/$repo" --body "Senior auditor panel (2-of-3) discarded this candidate. Reasons:\n\n$reasons" >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue comment FAILED (discard)"
+            fi
+        fi
+        exit 0
+    fi
+
+    log "$repo/#$candidate remains PENDING (PASS=$pass FAIL=$fail)"
+    exit 0
+}
+
+main

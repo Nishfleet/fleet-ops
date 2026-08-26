@@ -1,0 +1,24 @@
+[Unit]
+Description=Senior auditor panel vote for %i (fleet-ops#146)
+# Inherits OnFailure from the global service.d/10-escalate.conf drop-in, so a
+# StartLimitBurst-exhausted failure reaches the stop-escalation auditor path.
+# The global drop-in uses %n (full unit name) as the escalation instance.
+StartLimitIntervalSec=1h
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PI_UNIT_INSTANCE=%i
+WorkingDirectory=/home/nish
+# Retry once if the auditor output is malformed (missing PASS/FAIL, no
+# duplicates/north-star mention). After the second failure the unit enters
+# failed and the inherited OnFailure ladder takes over.
+Restart=on-failure
+RestartSec=60
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-audit-run %i'
+TimeoutStartSec=20min
+NoNewPrivileges=true
+PrivateTmp=true
