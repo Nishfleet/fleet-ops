@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# tests/fleet-failed-command-flagged.test.sh
+#
+# fleet-ops#535: session-close lint for "a failed command is ALWAYS flagged".
+# Offline. Live gh is stubbed. Proves:
+#   1. Clean assistant text / successful toolResult -> exit 0, FAILED-COMMAND-OK.
+#   2. isError + no later flag -> exit 1.
+#   3. isError plus later "the call failed" -> exit 0.
+#   4. grep/rg exit 1 (POSIX no-match) -> exit 0.
+#   5. Origin case: 404 Not Found walked past -> exit 1.
+#   6. Timeout unflagged -> exit 1.
+#   7. Auto-file with signal key, deduped on a second run.
+#   8. Missing helper fails loud.
+#   9. Contracts: heartbeat wiring, MANIFEST, nested CI host, matrix enforced.
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+bin="$repo_root/bin/fleet-failed-command-flagged"
+lib="$repo_root/lib/failed-command-flagged.py"
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -x "$bin" ]] || fail "not executable: $bin"
+[[ -f "$lib" ]] || fail "missing $lib"
+command -v python3 >/dev/null 2>&1 || fail "python3 missing"
+command -v jq >/dev/null 2>&1 || fail "jq missing"
+
+scratch="$(mktemp -d -t failed-command.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+sessions="$scratch/sessions/ws"
+mkdir -p "$sessions"
+
+gh_store="$scratch/gh-issues"
+mkdir -p "$gh_store"
+cat >"$scratch/gh" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+store="${GH_MOCK_STORE:?}"
+cmd="$1"; shift
+case "$cmd" in
+  issue)
+    sub="$1"; shift
+    case "$sub" in
+      create)
+        title=""; body=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --title) title="$2"; shift 2 ;;
+            --body) body="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        n=$(find "$store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+        f="$store/issue-$((n+1)).body"
+        printf '%s\n' "$title" > "$f"
+        printf '%s\n' "$body" >> "$f"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
+        ;;
+      list)
+        printf '[\n'
+        first=1
+        n=0
+        for f in "$store"/*.body; do
+          [ -f "$f" ] || continue
+          n=$((n+1))
+          body=$(tail -n +2 "$f")
+          if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
+          printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+        done
+        printf '\n]\n'
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+FAKE
+chmod +x "$scratch/gh"
+
+write_session() {
+  local name="$1"
+  local jsonl="$2"
+  printf '%s\n' "$jsonl" >"$sessions/$name.jsonl"
+  touch -d "2026-08-27T00:00:00Z" "$sessions/$name.jsonl"
+}
+
+run_bin() {
+  local file_issues="${1:-0}"
+  set +e
+  FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+  FLEET_FAILED_COMMAND_LIB="$lib" \
+  FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+  FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+  FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+  FLEET_FAILED_COMMAND_FILE_ISSUES="$file_issues" \
+  FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+  GH="$scratch/gh" \
+  GH_MOCK_STORE="$gh_store" \
+  FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+    "$bin" >/dev/null 2>"$scratch/err.log"
+  local rc=$?
+  set -e
+  echo "$rc"
+}
+
+# --- 1. clean session -------------------------------------------------------
+write_session "clean" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Ran the canary. It passed."},{"type":"toolCall","id":"call_ok","name":"bash","arguments":{"command":"true"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ok","toolName":"bash","isError":false,"content":[{"type":"text","text":"ok"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "clean session should exit 0 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-OK" "$scratch/err.log" || fail "clean session missing OK line"
+ok "clean session exits 0"
+
+# --- 2. isError, no flag ----------------------------------------------------
+write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on to the next task."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "swallowed failure should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "missing FAILED-COMMAND-SWALLOWED loud line"
+ok "isError without a later flag is swallowed"
+rm -f "$sessions/swallowed.jsonl"
+
+# --- 3. isError plus later flag ---------------------------------------------
+write_session "flagged" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the false call failed with 1, it is now the blocker."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "flagged failure should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "isError plus later flag is clean"
+rm -f "$sessions/flagged.jsonl"
+
+# --- 3b. "fails" in later text is also a flag (live BET 9 wording) ----------
+write_session "fails-word" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"node canary.mjs"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"mobile CTA below fold\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"unit tests pass, but the live run fails — mobile CTA is below the fold."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "'fails' wording should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "later text using 'fails' counts as a flag"
+rm -f "$sessions/fails-word.jsonl"
+
+# --- 3c. harness block is not a ran-and-failed command ----------------------
+write_session "harness-block" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_rm","name":"bash","arguments":{"command":"rm -rf /"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_rm","toolName":"bash","isError":true,"content":[{"type":"text","text":"Dangerous command blocked (no UI for confirmation)"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Skipping that path."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "harness block should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "harness-blocked command is not a swallowed failure"
+rm -f "$sessions/harness-block.jsonl"
+
+# --- 4. grep exit 1 is POSIX no-match ---------------------------------------
+write_session "grep-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_g","name":"bash","arguments":{"command":"grep nowhere /etc/hosts"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_g","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No matches. Continuing."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "grep exit 1 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "grep exit 1 is treated as no-match, not a swallowed failure"
+rm -f "$sessions/grep-nomatch.jsonl"
+
+# --- 5. origin case: 404 walked past ----------------------------------------
+write_session "origin-404" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_gh","name":"bash","arguments":{"command":"gh api -X PATCH /repos/Nishfleet/0509/branches/main/protection"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh","toolName":"bash","isError":true,"content":[{"type":"text","text":"Not Found\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"verify: strict is still true. Next task."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "404 walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+ok "origin 404 walked past is flagged"
+rm -f "$sessions/origin-404.jsonl"
+
+# --- 6. timeout unflagged ---------------------------------------------------
+write_session "timeout" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_t","name":"bash","arguments":{"command":"sleep 999"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_t","toolName":"bash","isError":true,"content":[{"type":"text","text":"Command timed out after 180 seconds"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"On to the next check."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "timeout walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+ok "timeout without a later flag is swallowed"
+rm -f "$sessions/timeout.jsonl"
+
+# --- 7. auto-file + dedupe --------------------------------------------------
+write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "auto-file run should exit 1 (got $rc) $(cat "$scratch/err2.log")"
+grep -q "FILED" "$scratch/err2.log" || { cat "$scratch/err2.log"; fail "auto-file did not file an issue"; }
+grep -rq "signal: failed-command-flagged/" "$scratch/gh-issues" || fail "filed issue body missing signal key"
+ok "auto-file creates an issue with the signal key"
+
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err3.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "second auto-file run should still exit 1 (got $rc)"
+grep -q "deduped" "$scratch/err3.log" || fail "second run did not dedupe $(cat "$scratch/err3.log")"
+grep -rl "signal: failed-command-flagged/" "$scratch/gh-issues" | wc -l | grep -q "^1$" \
+  || fail "signal key filed more than once (dedupe broken)"
+ok "auto-file dedupes the signal key on a second run"
+rm -f "$sessions/swallowed.jsonl"
+
+# --- 8. missing helper fails loud -------------------------------------------
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$scratch/no-such.py" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=0 \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err4.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc)"
+grep -q "FAILED-COMMAND-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
+ok "missing helper fails loud"
+
+# --- 9. contracts -----------------------------------------------------------
+grep -q 'fleet-failed-command-flagged' "$tier1" \
+  || fail "fleet-heartbeat-tier1 must invoke fleet-failed-command-flagged"
+grep -q 'failed_command_rc' "$tier1" \
+  || fail "fleet-heartbeat-tier1 must propagate failed_command_rc"
+grep -q 'bin/fleet-failed-command-flagged' "$repo_root/MANIFEST" \
+  || fail "MANIFEST must install bin/fleet-failed-command-flagged"
+grep -q 'lib/failed-command-flagged.py' "$repo_root/MANIFEST" \
+  || fail "MANIFEST must install lib/failed-command-flagged.py"
+grep -Fq 'bash "$here/fleet-failed-command-flagged.test.sh"' "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+jq -e '.rules[] | select(.id == "sr-failed-command-flagged" and .status == "enforced")' \
+  "$repo_root/config/rule-enforcement.json" >/dev/null \
+  || fail "sr-failed-command-flagged must be status=enforced in the matrix"
+ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, matrix enforced"
+
+echo "OK: fleet-failed-command-flagged: rc canary, grep exemption, auto-file dedupe"

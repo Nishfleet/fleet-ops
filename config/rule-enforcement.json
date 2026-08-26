@@ -281,10 +281,9 @@
     {
       "id": "sr-failed-command-flagged",
       "source": "global-standing-rules.md: A failed command is ALWAYS flagged, never walked past (Nish, 2026-08-24 - forbidden to repeat)",
-      "mechanism": "Worker prompt requires it; no session linter flags a swallowed non-zero",
-      "proof": "Nishfleet/fleet-ops#535",
-      "status": "queued(#535)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat session-close lint: Pi JSONL toolResult isError / non-zero exit / timeout without later assistant text naming the failure is LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped.",
+      "proof": "bin/fleet-failed-command-flagged; lib/failed-command-flagged.py; tests/fleet-failed-command-flagged.test.sh; fleet-heartbeat-tier1 block 17",
+      "status": "enforced"
     },
     {
       "id": "sr-watchdogs-dispatch",
