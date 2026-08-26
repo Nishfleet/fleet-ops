@@ -40,9 +40,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CRED_DIR="$REPO_ROOT/credentials"
-SERVER_PY="$SCRIPT_DIR/_worker-app-bootstrap-server.py"
+# Checkout: helper next to this wrapper, credentials at ../credentials.
+# Installed (MANIFEST): helper at ~/.local/lib/fleet-worker/, credentials
+# at ~/.config/fleet-worker/. Prefer the layout that actually exists so
+# `worker-app-bootstrap` works after install, not only from a checkout.
+first_existing() {
+  local candidate
+  for candidate in "$@"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "${@: -1}"
+}
+
+SERVER_PY="$(first_existing \
+  "$SCRIPT_DIR/_worker-app-bootstrap-server.py" \
+  "$HOME/.local/lib/fleet-worker/_worker-app-bootstrap-server.py")"
+CRED_MANIFEST="$(first_existing \
+  "$SCRIPT_DIR/../credentials/app-manifest.json" \
+  "$HOME/.config/fleet-worker/app-manifest.json")"
+CRED_HTML="$(first_existing \
+  "$SCRIPT_DIR/../credentials/bootstrap.html" \
+  "$HOME/.config/fleet-worker/bootstrap.html")"
 CREDS_FILE_DEFAULT="$HOME/.config/fleet-worker/nishfleet-worker.env"
 
 PORT="${WORKER_APP_BOOTSTRAP_PORT:-18099}"
@@ -111,9 +132,9 @@ fi
 
 # --- preconditions ---------------------------------------------------------
 command -v python3 >/dev/null 2>&1 || { echo "missing python3" >&2; exit 1; }
-[[ -f "$SERVER_PY" ]]              || { echo "missing $SERVER_PY" >&2; exit 1; }
-[[ -f "$CRED_DIR/app-manifest.json" ]] || { echo "missing $CRED_DIR/app-manifest.json" >&2; exit 1; }
-[[ -f "$CRED_DIR/bootstrap.html" ]]    || { echo "missing $CRED_DIR/bootstrap.html" >&2; exit 1; }
+[[ -f "$SERVER_PY" ]]     || { echo "missing $SERVER_PY" >&2; exit 1; }
+[[ -f "$CRED_MANIFEST" ]] || { echo "missing $CRED_MANIFEST" >&2; exit 1; }
+[[ -f "$CRED_HTML" ]]     || { echo "missing $CRED_HTML" >&2; exit 1; }
 
 mkdir -p "$(dirname "$CREDS_FILE")"
 ( umask 077; : > "$CREDS_FILE" )   # truncate / pre-create 0600
@@ -146,5 +167,5 @@ trap on_exit EXIT INT TERM
 } >&2
 
 LISTEN_ADDR="$LISTEN_ADDR" PORT="$PORT" TIMEOUT_S="$TIMEOUT_S" \
-  MANIFEST_PATH="$CRED_DIR/app-manifest.json" BOOTSTRAP_PATH="$CRED_DIR/bootstrap.html" \
+  MANIFEST_PATH="$CRED_MANIFEST" BOOTSTRAP_PATH="$CRED_HTML" \
   CREDS_FILE="$CREDS_FILE" PUBLIC_URL="$PUBLIC_URL" exec python3 "$SERVER_PY"
