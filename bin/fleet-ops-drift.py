@@ -17,6 +17,7 @@ Environment seams (overridden by tests):
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import re
 import subprocess
@@ -299,6 +300,69 @@ def check_extra_symlinks(checkout: Path, expected_dests: set[str]) -> None:
     log("no extra fleet symlinks in managed directories")
 
 
+def check_seat_inventory(checkout: Path) -> None:
+    """fleet-ops#217: every models.json provider must be declared in seat-caps.json,
+    cap=0 rows must carry a dated reason, and metered ceilings never exceed cap."""
+    models = HOME / ".pi" / "agent" / "models.json"
+    if not models.is_file():
+        log("seat-inventory: models.json not present, skipping subset check")
+        return
+
+    caps = checkout / "config" / "seat-caps.json"
+    if not caps.is_file():
+        fail_loud("SEAT-INVENTORY-DRIFT", f"seat-caps.json missing at {caps}")
+
+    try:
+        models_data = json.loads(models.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        fail_loud("SEAT-INVENTORY-DRIFT", f"models.json unreadable: {e}")
+
+    try:
+        caps_data = json.loads(caps.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        fail_loud("SEAT-INVENTORY-DRIFT", f"seat-caps.json unreadable: {e}")
+
+    model_providers = set(models_data.get("providers", {}).keys())
+    cap_providers = set(caps_data.get("providers", {}).keys())
+    missing = sorted(model_providers - cap_providers)
+    if missing:
+        fail_loud(
+            "SEAT-INVENTORY-DRIFT",
+            f"providers in models.json but missing from seat-caps.json: {', '.join(missing)}",
+        )
+
+    date_re = re.compile(r"\d{4}-\d{2}-\d{2}")
+    cap0_missing_reason: list[str] = []
+    cap0_undated: list[str] = []
+    metered_bad: list[str] = []
+    for p, v in caps_data.get("providers", {}).items():
+        if not isinstance(v, dict):
+            continue
+        cap = v.get("cap", 0)
+        if cap == 0:
+            reason = v.get("reason", "")
+            if not reason:
+                cap0_missing_reason.append(p)
+            elif not date_re.search(reason):
+                cap0_undated.append(p)
+        if v.get("class") == "metered":
+            ceiling = v.get("max_probe_ceiling", cap)
+            if isinstance(ceiling, (int, float)) and ceiling > cap:
+                metered_bad.append(p)
+
+    if cap0_missing_reason or cap0_undated or metered_bad:
+        parts: list[str] = []
+        if cap0_missing_reason:
+            parts.append(f"cap=0 missing reason: {', '.join(cap0_missing_reason)}")
+        if cap0_undated:
+            parts.append(f"cap=0 undated reason: {', '.join(cap0_undated)}")
+        if metered_bad:
+            parts.append(f"metered max_probe_ceiling > cap: {', '.join(metered_bad)}")
+        fail_loud("SEAT-INVENTORY-DRIFT", "; ".join(parts))
+
+    log("seat-inventory: cap map matches models.json, cap=0 rows dated, metered ceilings bounded")
+
+
 def main() -> None:
     checkout = find_checkout()
     expected_dests, expected_enabled = parse_manifest(checkout)
@@ -306,6 +370,7 @@ def main() -> None:
     check_checkout(checkout)
     check_manifest_install(checkout)
     check_enabled_units(checkout, expected_enabled)
+    check_seat_inventory(checkout)
     check_extra_symlinks(checkout, set(expected_dests.keys()))
 
     log("drift canary: clean")
