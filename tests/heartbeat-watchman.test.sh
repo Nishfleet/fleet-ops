@@ -101,7 +101,11 @@ export FAILED_FILE="$scratch/failed.units"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export FLEET_SEAT_HEALTH="$scratch/seat.json"
 export FLEET_SEAT_HEALTH_MAX_AGE_SEC=5400
+export FLEET_SEAT_LEDGER_DIR="$scratch/seats"
+export FLEET_SEAT_PER_SEAT_STALE_SEC=21600
+export FLEET_SEAT_PER_SEAT_STALE_PCT=50
 export PI_TRANSPORT_CHECK_UNIT="pi-transport-check.service"
+mkdir -p "$FLEET_SEAT_LEDGER_DIR"
 
 run_wm() { "$lib" "$@"; }
 
@@ -229,6 +233,113 @@ grep -q "start pi-transport-check.service" "$SYSTEMCTL_LOG" \
   || fail "missing file must start pi-transport-check"
 grep -q "SEAT-HEALTH" "$triage" || fail "missing file must report"
 ok "seat-health: missing file -> trigger + report"
+
+# ============================================================================
+# 3b. Per-seat ledger vs summary (fleet-ops#156 finding 14)
+# ============================================================================
+write_ledger() {
+  # $1=filename $2=age_minutes (0 = now)
+  python3 - "$FLEET_SEAT_LEDGER_DIR/$1" "$2" <<'PY'
+import json, datetime, sys
+from pathlib import Path
+path, age_min = sys.argv[1], int(sys.argv[2])
+when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=age_min)
+Path(path).write_text(json.dumps({
+    "provider": "x", "model": "y",
+    "health_class": "healthy",
+    "observed_at": when.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+}))
+PY
+}
+
+write_summary_now() {
+  python3 - "$scratch/seat.json" <<'PY'
+import json, datetime
+from pathlib import Path
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+Path(__import__('sys').argv[1]).write_text(json.dumps({
+    "provider": "minimax", "model": "MiniMax-M3",
+    "health_class": "healthy", "observed_at": now, "source": "test"
+}))
+PY
+}
+
+# missing ledger dir -> skip, no trigger
+export FLEET_SEAT_LEDGER_DIR="$scratch/no-such-seats"
+write_summary_now
+: >"$SYSTEMCTL_LOG"; : >"$triage"
+run_wm seat-health-per-seat
+grep -q "start pi-transport-check.service" "$SYSTEMCTL_LOG" \
+  && fail "missing ledger dir must not trigger: $(cat "$SYSTEMCTL_LOG")"
+grep -q "SEAT-HEALTH-PER-SEAT" "$triage" \
+  && fail "missing ledger dir must not loud-report: $(cat "$triage")"
+ok "seat-health-per-seat: missing ledger dir -> skip"
+
+# empty ledger dir -> skip
+export FLEET_SEAT_LEDGER_DIR="$scratch/seats"
+rm -f "$FLEET_SEAT_LEDGER_DIR"/*.json
+write_summary_now
+: >"$SYSTEMCTL_LOG"; : >"$triage"
+run_wm seat-health-per-seat
+grep -q "start pi-transport-check.service" "$SYSTEMCTL_LOG" \
+  && fail "empty ledger must not trigger: $(cat "$SYSTEMCTL_LOG")"
+ok "seat-health-per-seat: empty ledger -> skip"
+
+# summary fresh + 2/3 stale (>50%) -> trigger + loud
+# 400 min = 6.6h > STALE_SECS 6h; 1 min is fresh.
+write_summary_now
+write_ledger "a.json" 400
+write_ledger "b.json" 400
+write_ledger "c.json" 1
+: >"$SYSTEMCTL_LOG"; : >"$triage"
+run_wm seat-health-per-seat
+grep -q "start pi-transport-check.service" "$SYSTEMCTL_LOG" \
+  || fail "majority-stale must start pi-transport-check: $(cat "$SYSTEMCTL_LOG")"
+grep -q "SEAT-HEALTH-PER-SEAT" "$triage" \
+  || fail "majority-stale must report: $(cat "$triage")"
+ok "seat-health-per-seat: summary fresh + majority stale -> trigger + report"
+
+# summary fresh + 1/3 stale (<=50%) -> no trigger
+rm -f "$FLEET_SEAT_LEDGER_DIR"/*.json
+write_summary_now
+write_ledger "a.json" 400
+write_ledger "b.json" 1
+write_ledger "c.json" 1
+: >"$SYSTEMCTL_LOG"; : >"$triage"
+run_wm seat-health-per-seat
+grep -q "start pi-transport-check.service" "$SYSTEMCTL_LOG" \
+  && fail "minority-stale must not trigger: $(cat "$SYSTEMCTL_LOG")"
+grep -q "SEAT-HEALTH-PER-SEAT" "$triage" \
+  && fail "minority-stale must not loud-report: $(cat "$triage")"
+ok "seat-health-per-seat: summary fresh + minority stale -> no alarm"
+
+# summary stale + majority stale -> no extra alarm (summary check owns it)
+rm -f "$FLEET_SEAT_LEDGER_DIR"/*.json
+python3 - "$scratch/seat.json" <<'PY'
+import json, datetime
+from pathlib import Path
+old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=91)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+Path(__import__('sys').argv[1]).write_text(json.dumps({
+    "provider": "minimax", "model": "MiniMax-M3",
+    "health_class": "healthy", "observed_at": old, "source": "test"
+}))
+PY
+write_ledger "a.json" 400
+write_ledger "b.json" 400
+write_ledger "c.json" 400
+: >"$SYSTEMCTL_LOG"; : >"$triage"
+run_wm seat-health-per-seat
+grep -q "start pi-transport-check.service" "$SYSTEMCTL_LOG" \
+  && fail "stale summary must not extra-trigger per-seat: $(cat "$SYSTEMCTL_LOG")"
+ok "seat-health-per-seat: summary already stale -> no extra alarm"
+
+# never fails the tick
+set +e
+run_wm seat-health-per-seat
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "per-seat check must exit 0, got $rc"
+ok "seat-health-per-seat: never fails the tick"
 
 # ============================================================================
 # 4. fleet-heartbeat wrapper: ping on exit 0, not on failure

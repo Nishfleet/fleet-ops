@@ -4,7 +4,7 @@
 # Sourced by fleet-heartbeat (dead-man ping on success) and
 # fleet-heartbeat-tier1 (failed-unit repair-then-page, seat-health
 # freshness). Also runnable as:
-#   heartbeat-watchman.sh ping|process-failed|seat-health
+#   heartbeat-watchman.sh ping|process-failed|seat-health|seat-health-per-seat|seat-caps-drift
 #
 # No new units. Reuses healthchecks.io (HC_URL, ping on success only,
 # same pattern as siterep-uptime), hermes send --urgent, and
@@ -12,7 +12,8 @@
 #
 # Test overrides: CURL SYSTEMCTL HERMES JOURNALCTL HC_URL HC_TIMEOUT
 #   FLEET_HEARTBEAT_TRIAGE FLEET_SEAT_HEALTH FLEET_SEAT_HEALTH_MAX_AGE_SEC
-#   PI_TRANSPORT_CHECK_UNIT
+#   PI_TRANSPORT_CHECK_UNIT FLEET_SEAT_LEDGER_DIR FLEET_SEAT_PER_SEAT_STALE_SEC
+#   FLEET_SEAT_PER_SEAT_STALE_PCT PI_MODELS_JSON SEAT_CAPS_JSON
 
 # Defaults (safe to re-source).
 CURL="${CURL:-curl}"
@@ -24,6 +25,19 @@ TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-${TRIAGE:-/home/nish/workspaces/agent-state/FL
 SEAT_HEALTH="${FLEET_SEAT_HEALTH:-/home/nish/workspaces/agent-state/lanes/pi-seat-health.json}"
 SEAT_HEALTH_MAX_AGE_SEC="${FLEET_SEAT_HEALTH_MAX_AGE_SEC:-5400}"
 PI_TRANSPORT_CHECK_UNIT="${PI_TRANSPORT_CHECK_UNIT:-pi-transport-check.service}"
+# Per-seat ledger dir (mirrors lib/seat-lib.sh LEDGER_DIR). The single
+# SEAT_HEALTH summary is one seat's rollup; these per-seat files are the
+# real per-seat state seat_usable reads. fleet-ops#156 finding 14: the
+# summary can be fresh while this dir is mostly stale, masking the true
+# fleet seat picture. This check alarms on that divergence.
+SEAT_LEDGER_DIR="${FLEET_SEAT_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+# Same 6h "no data" threshold as seat-lib.sh STALE_SECS.
+SEAT_HEALTH_PER_SEAT_STALE_SEC="${FLEET_SEAT_PER_SEAT_STALE_SEC:-21600}"
+# Alarm when this integer percent of per-seat files are stale while the
+# summary is fresh. 50 = more than half the ledger is stale. Integer so
+# bash $(( )) cannot silently collapse a float.
+SEAT_HEALTH_PER_SEAT_STALE_PCT="${FLEET_SEAT_PER_SEAT_STALE_PCT:-50}"
+[[ "$SEAT_HEALTH_PER_SEAT_STALE_PCT" =~ ^[0-9]+$ ]] || SEAT_HEALTH_PER_SEAT_STALE_PCT=50
 
 _watchman_log() {
     if declare -F log >/dev/null 2>&1; then
@@ -191,6 +205,132 @@ PY
     return 0
 }
 
+# fleet-ops#156 finding 14: summary fresh + per-seat ledger mostly stale
+# is a masked fleet. Never fails the tick (returns 0); the loud line +
+# transport-check is the signal. Missing/empty ledger dir is skip, not
+# a fault — the summary check owns the no-data case.
+heartbeat_seat_health_per_seat_check() {
+    [[ -d "$SEAT_LEDGER_DIR" ]] || {
+        _watchman_log "seat-health-per-seat: no ledger dir at $SEAT_LEDGER_DIR — skip"
+        return 0
+    }
+    local counts summary_age total stale
+    counts="$(python3 - "$SEAT_LEDGER_DIR" "$SEAT_HEALTH" "$SEAT_HEALTH_MAX_AGE_SEC" "$SEAT_HEALTH_PER_SEAT_STALE_SEC" <<'PY'
+import json, sys, glob, os
+from datetime import datetime, timezone
+
+ledger, summary_path, max_age_s, stale_s = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+now = datetime.now(timezone.utc)
+
+def parse_obs(obs):
+    if not isinstance(obs, str) or not obs.strip():
+        return None
+    raw = obs.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        p = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if p.tzinfo is None:
+        p = p.replace(tzinfo=timezone.utc)
+    return p
+
+def summary_fresh():
+    try:
+        with open(summary_path, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return False
+    if not isinstance(d, dict):
+        return False
+    p = parse_obs(d.get("observed_at"))
+    if p is None:
+        return False
+    age = int((now - p).total_seconds())
+    return 0 <= age <= max_age_s
+
+files = sorted(glob.glob(os.path.join(ledger, "*.json")))
+stale = 0
+for path in files:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            e = json.load(fh)
+    except Exception:
+        stale += 1
+        continue
+    p = parse_obs(e.get("observed_at") if isinstance(e, dict) else None)
+    if p is None:
+        stale += 1
+        continue
+    age = int((now - p).total_seconds())
+    if age > stale_s or age < 0:
+        stale += 1
+print(("fresh" if summary_fresh() else "stale") + f" {len(files)} {stale}")
+PY
+    )" || {
+        _watchman_log "seat-health-per-seat: python failed — skip"
+        return 0
+    }
+    read -r summary_age total stale <<<"$counts"
+    : "${summary_age:=stale}" "${total:=0}" "${stale:=0}"
+    _watchman_log "seat-health-per-seat: total=$total fresh=$(( total - stale )) stale=$stale (stale_thresh=${SEAT_HEALTH_PER_SEAT_STALE_SEC}s pct=${SEAT_HEALTH_PER_SEAT_STALE_PCT}) summary=$summary_age"
+
+    if [[ "$summary_age" == "fresh" && "$total" -gt 0 ]]; then
+        if (( stale * 100 > total * SEAT_HEALTH_PER_SEAT_STALE_PCT )); then
+            "$SYSTEMCTL" --user start "$PI_TRANSPORT_CHECK_UNIT" >/dev/null 2>&1 || \
+                _watchman_log "seat-health-per-seat: trigger $PI_TRANSPORT_CHECK_UNIT failed"
+            _watchman_loud "SEAT-HEALTH-PER-SEAT" \
+                "divergence: summary fresh but $stale/$total per-seat files stale (>${SEAT_HEALTH_PER_SEAT_STALE_SEC}s, pct>${SEAT_HEALTH_PER_SEAT_STALE_PCT}) — summary masks stale fleet; triggered $PI_TRANSPORT_CHECK_UNIT"
+        fi
+    fi
+    return 0
+}
+
+# fleet-ops#156 finding 10: every models.json provider must appear in
+# seat-caps.json. cap 0 is an explicit decision; absence is silent skip
+# in seat-lib.sh with no alarm. Uses jq (already a fleet dependency).
+# Reads ONLY .providers keys — never apiKey/baseUrl/headers.
+# Return: 0 clean or skip, 1 drift, 2 structural.
+MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
+
+heartbeat_seat_caps_drift_check() {
+    command -v jq >/dev/null 2>&1 || {
+        _watchman_log "seat-caps-drift: jq missing — skip"
+        return 0
+    }
+    [[ -f "$MODELS_JSON" ]] || {
+        _watchman_log "seat-caps-drift: no models.json at $MODELS_JSON — skip"
+        return 0
+    }
+    [[ -f "$SEAT_CAPS_JSON" ]] || {
+        _watchman_log "seat-caps-drift: no seat-caps.json at $SEAT_CAPS_JSON — skip"
+        return 0
+    }
+    local drift
+    drift="$(jq -r '
+        (.providers | keys? // empty) as $m
+        | input.providers
+        | keys? // empty
+        | $m - .
+        | .[]
+    ' "$MODELS_JSON" "$SEAT_CAPS_JSON" 2>/dev/null)" || {
+        _watchman_log "seat-caps-drift: unparseable JSON — skip"
+        return 0
+    }
+    if [[ -n "$drift" ]]; then
+        local list
+        list="$(printf '%s' "$drift" | tr '\n' ',' | sed 's/,$//')"
+        _watchman_loud "SEAT-CAPS-DRIFT" \
+            "providers in models.json ABSENT from seat-caps.json (cap 0 is the explicit form): $list"
+        _watchman_log "seat-caps-drift: DRIFT $list"
+        return 1
+    fi
+    _watchman_log "seat-caps-drift: clean — every models.json provider has a seat-caps.json entry"
+    return 0
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -euo pipefail
     cmd="${1:-}"
@@ -198,8 +338,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         ping) heartbeat_ping_deadman ;;
         process-failed) heartbeat_process_failed_units ;;
         seat-health) heartbeat_seat_health_check ;;
+        seat-health-per-seat) heartbeat_seat_health_per_seat_check ;;
+        seat-caps-drift) heartbeat_seat_caps_drift_check ;;
         *)
-            printf 'usage: %s ping|process-failed|seat-health\n' "$0" >&2
+            printf 'usage: %s ping|process-failed|seat-health|seat-health-per-seat|seat-caps-drift\n' "$0" >&2
             exit 2
             ;;
     esac
