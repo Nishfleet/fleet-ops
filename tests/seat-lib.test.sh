@@ -725,3 +725,8 @@ set -e
   || fail "weekly pace: alpha at 80% of budget must be skipped in favour of beta, got: $out"
 ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
 
+# fleet-ops#202: memory.current vs VmRSS mismatch recorder (CI lists this
+# file, not ram-metric-compare.test.sh, because workers cannot edit
+# .github/workflows).
+bash "$here/ram-metric-compare.test.sh" || fail "ram-metric-compare tests failed"
+

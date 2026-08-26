@@ -152,6 +152,27 @@ the stock 50% (now neutralized) and not the kernel OOM. Soak up RAM until
 the target slice. Drill slice is `MemoryHigh=128M / MemoryMax=1G /
 MemorySwapMax=0 / RuntimeMaxSec=180` per the existing drill template.
 
+## Measurement mismatch — fleet-ops#202
+
+#193 sized a self-calibrate formula against a 35 MB RSS figure. That number
+is process VmRSS (`ps` / `/proc/PID/status`), not cgroup `memory.current`.
+
+Live sample 2026-08-26:
+
+- 12 live `pi-issue@` units
+- `memory.current` p95 = 822.6 MB (`p95_bytes=862556160`)
+- p95*3 clamps to the 1.5 GB ceiling
+- resulting RAM cap = 4 (below the old 0.75 G vibe of ~7-10)
+- `/proc/pressure/memory` `some avg10` was 1.53, not zero
+
+The admission formula is unchanged (`ram_gb_per_worker=0.75` in
+`config/seat-caps.json`). `bin/ram-metric-compare` records both metrics
+each heartbeat tick so a later ticket can decide whether admission should
+keep using `memory.current` (honest cgroup cost) or switch to VmRSS
+(closer to 35 MB, which would raise lanes).
+
+Do not cite the 35 MB figure as cgroup cost.
+
 ## Tuning — read first
 
 DO NOT raise `ManagedOOMMemoryPressureLimit` above 80% on this box.
