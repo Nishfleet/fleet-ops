@@ -259,5 +259,7 @@ ok "C: daily floor timer fires regardless of gap-board state (OnCalendar=*-*-*, 
 # verify-command line because that is a workflow edit).
 bash "$here/fleet-heartbeat-blind-audit-cadence.test.sh"
 bash "$here/prove-one-run-check.test.sh"
+# fleet-ops#368: stale-host Telegram page literals (blind-audit rank 2).
+bash "$here/fleet-heartbeat-failed-notify-shape.test.sh"
 
 echo "all phases passed"
