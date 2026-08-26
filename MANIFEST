@@ -103,6 +103,14 @@ lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
+# fleet-ops#388: control-plane restore drill. Proves the rebuild story on a
+# 6h cycle — backup freshness (system restic units, no sudo needed), fleet
+# control-plane files present + parseable (seat-caps, claims index, MANIFEST
+# srcs), and the critical paths under a restic backup source. A failed drill
+# escalates via the global service.d drop-in.
+bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
+systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
+systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26

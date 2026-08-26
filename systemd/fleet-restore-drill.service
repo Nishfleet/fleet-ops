@@ -1,0 +1,26 @@
+[Unit]
+Description=Fleet control-plane restore drill — prove the rebuild story on a cycle (fleet-ops#388)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# the rebuild story is a continuity invariant, not an event. A backup that
+# silently goes stale or corrupt is the failure mode this drill catches, and
+# staleness has no event to subscribe to — only a periodic proof closes the
+# gap. The drill is cheap (systemctl show + file parses, no restic I/O), so a
+# 6h cadence is proportionate: faster than the daily backup timer, slow
+# enough not to noise the triage file.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-restore-drill.service), so a failed drill summons a
+# senior auditor — backup staleness joins the escalation matrix mechanically.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-restore-drill'
+# The drill is local file + systemctl reads; bounded well under a minute.
+TimeoutStartSec=2min
+# Never restart: the timer is the retry. A failed drill escalates via the
+# global drop-in, not via Restart=.
+Restart=no

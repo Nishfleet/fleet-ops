@@ -114,6 +114,20 @@ FILE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_FILE_ISSUES:-1}"
 RULE_ISSUE_REPO="${FLEET_RULE_ENFORCEMENT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 RULE_NOW="${FLEET_RULE_ENFORCEMENT_NOW:-}"
 
+# Backup-staleness canary (fleet-ops#388). The system restic units are
+# readable via `systemctl show` (no sudo); a stale or failed backup is LOUD
+# here so it joins the escalation matrix every heartbeat tick. The deeper
+# restore drill (bin/fleet-restore-drill) runs on its own 6h timer; this is
+# the cheap every-tick freshness signal.
+RESTIC_BACKUP_TIMER="${FLEET_RESTIC_BACKUP_TIMER:-restic-r2-backup.timer}"
+RESTIC_BACKUP_SERVICE="${FLEET_RESTIC_BACKUP_SERVICE:-restic-r2-backup.service}"
+RESTIC_STALENESS_HOURS_DEFAULT=30
+RESTIC_STALENESS_HOURS="${FLEET_RESTIC_STALENESS_HOURS:-$RESTIC_STALENESS_HOURS_DEFAULT}"
+if ! [[ "$RESTIC_STALENESS_HOURS" =~ ^[0-9]+$ ]]; then
+    RESTIC_STALENESS_HOURS="$RESTIC_STALENESS_HOURS_DEFAULT"
+fi
+readonly RESTIC_STALENESS_HOURS
+
 log() {
     printf '[%s] [fleet-escalation-canary] %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -520,6 +534,53 @@ else
         fi
 
         log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Backup staleness — fleet-ops#388
+# ---------------------------------------------------------------------------
+# The fleet control plane lives in non-git state (agent-state, pi-packet,
+# user-unit install set). Restic backs it up (system unit, sources /home/nish),
+# but an unproven backup is decorative (#378). A stale or failed backup is
+# LOUD here so it joins the escalation matrix every heartbeat tick. The
+# deeper restore drill (bin/fleet-restore-drill, 6h timer) proves the full
+# rebuild story; this is the cheap every-tick freshness signal.
+#
+# FLEET_ESCALATION_CANARY_SKIP_BACKUP=1 skips this block (offline tests).
+log "10. checking backup staleness (restic-r2-backup)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_BACKUP:-0}" == "1" ]]; then
+    log "10.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_BACKUP=1)"
+else
+    _timer_active=$("$SYSTEMCTL" show "$RESTIC_BACKUP_TIMER" --property=ActiveState --value 2>/dev/null || true)
+    _timer_last=$("$SYSTEMCTL" show "$RESTIC_BACKUP_TIMER" --property=LastTriggerUSec --value 2>/dev/null || true)
+    _backup_result=$("$SYSTEMCTL" show "$RESTIC_BACKUP_SERVICE" --property=Result --value 2>/dev/null || true)
+    log "10.  - $RESTIC_BACKUP_TIMER ActiveState=$_timer_active LastTriggerUSec=$_timer_last"
+    log "10.  - $RESTIC_BACKUP_SERVICE Result=$_backup_result"
+    if [[ "$_timer_active" != "active" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER is not active (state=$_timer_active) — the daily backup is not scheduled, control plane is not being captured"
+        violations=$((violations + 1))
+    elif [[ -z "$_timer_last" ]] || [[ "$_timer_last" == "0" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER has never fired — no backup has run"
+        violations=$((violations + 1))
+    else
+        _last_epoch="$(date -d "$_timer_last" +%s 2>/dev/null || true)"
+        if [[ -z "$_last_epoch" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER LastTriggerUSec unparseable: '$_timer_last'"
+            violations=$((violations + 1))
+        else
+            _age_h=$(( ( $(date +%s) - _last_epoch ) / 3600 ))
+            if (( _age_h > RESTIC_STALENESS_HOURS )); then
+                loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_TIMER last fired ${_age_h}h ago — older than ${RESTIC_STALENESS_HOURS}h threshold. The control-plane backup is stale."
+                violations=$((violations + 1))
+            else
+                log "10.  - last backup ${_age_h}h ago (within ${RESTIC_STALENESS_HOURS}h threshold)"
+            fi
+        fi
+    fi
+    if [[ "$_backup_result" != "success" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_SERVICE last Result=$_backup_result (not success) — the last backup run failed"
+        violations=$((violations + 1))
     fi
 fi
 
