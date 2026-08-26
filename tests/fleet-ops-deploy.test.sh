@@ -13,6 +13,14 @@
 #   7. origin/main ahead + clean checkout: fleet-ops-deploy fast-forwards,
 #      installs the newly merged bin+unit, enables them, canary passes.
 #   8. Dirty checkout: fleet-ops-deploy blocks, does not merge, does not reset.
+#   9. Linked worktree (.git FILE) is accepted by fleet-ops-deploy (re-land #313).
+#  10. Live dest matching the checkout working tree is not enough: origin/main
+#      blob compare fails if dest bytes differ from origin/main (self-compare
+#      of checkout-vs-itself is impossible).
+#  11. Enable-link into a volatile path (/tmp outside the checkout) fails
+#      DRIFT-VOLATILE.
+#  12. install.sh refuses to overwrite a live file newer than the repo copy,
+#      and removes the paper-over heartbeat drop-in.
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -30,6 +38,22 @@ grep -q 'fleet-ops-deploy' "$repo_root/bin/fleet-heartbeat-tier1" \
     || fail "fleet-heartbeat-tier1 must invoke fleet-ops-deploy"
 grep -q 'deploy_rc' "$repo_root/bin/fleet-heartbeat-tier1" \
     || fail "fleet-heartbeat-tier1 must propagate deploy_rc"
+grep -q 'rev-parse --git-dir' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must use rev-parse --git-dir (worktree-safe), not [ -d .git ]"
+if grep -Fq '[ ! -d "$DEPLOY_CHECKOUT/.git" ]' "$repo_root/bin/fleet-ops-deploy"; then
+    fail "fleet-ops-deploy still uses [ ! -d .git ] which false-negatives on linked worktrees"
+fi
+grep -q 'FLEET_OPS_CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
+    "$repo_root/systemd/fleet-heartbeat.service" \
+    || fail "fleet-heartbeat.service must pin the canonical deploy-clone checkout"
+grep -q 'check_live_matches_origin_main' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must compare live dests to origin/main blobs"
+grep -q 'DRIFT-VOLATILE' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag volatile unit/enable-link paths"
+grep -q 'live_newer_than_repo' "$repo_root/install.sh" \
+    || fail "install.sh must refuse to overwrite a newer live config"
+grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the paper-over heartbeat drop-in"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -419,5 +443,121 @@ git -C "$checkout" diff --quiet -- bin/demo-script \
     && fail "scenario8: dirty tracked file was reset or discarded"
 [[ "$out" != *"stash"* ]] || fail "scenario8: deploy mentioned stash"
 ok "scenario8: dirty checkout blocks with no merge and no reset"
+
+# --- scenario 9: linked worktree (.git is a FILE) is a valid checkout --------
+: >"$enabled_units"
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" worktree add --detach -q "$scratch/linked-wt"
+[[ -f "$scratch/linked-wt/.git" ]] \
+    || fail "scenario9: setup expected .git to be a file on the linked worktree"
+[[ ! -d "$scratch/linked-wt/.git" ]] \
+    || fail "scenario9: setup expected .git NOT to be a directory on the linked worktree"
+if ! out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$scratch/linked-wt" \
+  FLEET_OPS_DRIFT_BIN="$canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    [[ "$out" != *"DEPLOY-CHECKOUT-MISSING"* ]] \
+        || fail "scenario9: linked worktree was rejected as missing checkout: $out"
+    fail "scenario9: deploy on a linked worktree failed: $out"
+fi
+[[ "$out" != *"DEPLOY-CHECKOUT-MISSING"* ]] \
+    || fail "scenario9: linked worktree was rejected as missing checkout: $out"
+ok "scenario9: linked worktree (.git file) is accepted"
+git -C "$checkout" worktree remove "$scratch/linked-wt"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+
+# --- scenario 10: origin/main blob compare cannot self-compare ----------------
+# dest is a symlink into the checkout (the production self-compare shape).
+# Mutate the working tree (dest follows). origin/main blobs are unchanged.
+# Calling check_live_matches_origin_main alone must FAIL with DRIFT-ORIGIN.
+# A self-comparison of dest vs working tree would PASS.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+git -C "$checkout" checkout -q -- systemd/demo.timer
+if ! pyout=$(
+  FLEET_OPS_AUDIT_LOG="$HOME/.local/state/fleet-ops/drift-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  HOME="$HOME" \
+  python3 - "$checkout" <<'PY' 2>&1
+import importlib.util
+import sys
+from pathlib import Path
+
+checkout = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "fleet_ops_drift", checkout / "bin" / "fleet-ops-drift.py"
+)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+(checkout / "systemd" / "demo.timer").write_text("# mutated working tree\n", encoding="utf-8")
+try:
+    mod.check_live_matches_origin_main(checkout)
+except SystemExit as e:
+    sys.exit(e.code if e.code is not None else 1)
+sys.exit(0)
+PY
+); then
+    [[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+        || fail "scenario10: expected DRIFT-ORIGIN when dest matches dirty worktree but not origin/main, got: $pyout"
+    ok "scenario10: origin/main blob compare fails when dest matches the working tree only"
+else
+    fail "scenario10: origin/main blob compare passed (self-comparison is possible): $pyout"
+fi
+git -C "$checkout" checkout -q -- systemd/demo.timer
+
+# --- scenario 11: enable-link into a volatile path outside the checkout ------
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+mkdir -p "$HOME/.config/systemd/user/timers.target.wants" "$scratch/volatile-outside"
+printf '[Timer]\nOnCalendar=*:00/30\n' > "$scratch/volatile-outside/rogue.timer"
+ln -sfn "$scratch/volatile-outside/rogue.timer" \
+    "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
+if out=$(run_canary); then
+    fail "scenario11: canary should fail on a wants-link into a volatile path, got: $out"
+fi
+[[ "$out" == *"DRIFT-VOLATILE"* ]] \
+    || fail "scenario11: volatile enable-link did not produce DRIFT-VOLATILE (got: $out)"
+ok "scenario11: enable-link into a volatile path fails DRIFT-VOLATILE"
+rm -f "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
+
+# --- scenario 12: install.sh refuses newer live config; removes paper-over ---
+stale="$scratch/stale-repo"
+mkdir -p "$stale/config"
+cp "$repo_root/install.sh" "$stale/install.sh"
+chmod +x "$stale/install.sh"
+printf 'stale-caps\n' > "$stale/config/seat-caps.json"
+printf 'live-caps\n' > "$scratch/live-caps.json"
+touch -d '2020-01-01T00:00:00' "$stale/config/seat-caps.json"
+touch -d '2026-08-26T00:00:00' "$scratch/live-caps.json"
+caps_dest="$scratch/caps-dest"
+ln -sfn "$scratch/live-caps.json" "$caps_dest"
+cat >"$stale/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest
+MANIFEST
+set +e
+refuse_out=$("$stale/install.sh" 2>&1)
+refuse_rc=$?
+set -e
+[[ "$refuse_rc" -eq 1 ]] || fail "scenario12: install.sh from a stale repo should refuse (rc=1), got rc=$refuse_rc out=$refuse_out"
+[[ "$refuse_out" == *"REFUSE:"* ]] \
+    || fail "scenario12: expected REFUSE line, got: $refuse_out"
+[[ "$(readlink -f "$caps_dest")" = "$(readlink -f "$scratch/live-caps.json")" ]] \
+    || fail "scenario12: live dest was overwritten by the stale repo"
+[[ "$(cat "$caps_dest")" = "live-caps" ]] \
+    || fail "scenario12: live caps content was changed"
+ok "scenario12: install.sh refuses to overwrite a newer live config"
+
+dropin="$HOME/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf"
+mkdir -p "$(dirname "$dropin")"
+printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/gc-able-worktree/fleet-ops-drift.py\n' > "$dropin"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -e "$dropin" ]] || fail "scenario12: paper-over heartbeat drop-in was not removed"
+ok "scenario12b: install.sh removes the paper-over heartbeat drop-in"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"

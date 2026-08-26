@@ -32,6 +32,28 @@ explicit manifest; GNU stow was rejected because its directory-sweep semantics
 conflict with the allowlist requirement (only listed files install, nothing
 more).
 
+install.sh refuses to overwrite a live file whose mtime is newer than the
+repo copy. That stops a stale checkout from replacing live seat caps.
+
+### Canonical checkout (fleet-ops#372)
+
+Live install source, the only tree `install.sh` and the heartbeat deploy
+step may run from:
+
+`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
+
+`fleet-heartbeat.service` pins `FLEET_OPS_CHECKOUT` to that path.
+`products/fleet-ops` still points at the worktree parent
+(`/home/nish/workspaces/tooling/fleet-ops`). That parent holds linked
+worktrees and carries the pre-rewrite init history (16 commits with no
+merge-base against `origin/main`). Do not install from it. Do not delete
+it while worktrees are attached.
+
+The drift canary compares live-installed files to `origin/main` blobs, not
+to the checkout working tree, so it cannot self-compare. It also fails if
+any installed unit file or enable-link resolves into `/tmp`, `/run`, or
+`agent-worktrees`.
+
 ### System-scope entries (fleet-ops#71)
 
 The MANIFEST may list entries under `/etc/systemd/system/...` — those are

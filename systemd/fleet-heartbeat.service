@@ -25,6 +25,11 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Canonical live-install checkout (fleet-ops#372). The products/fleet-ops
+# symlink still points at the worktree parent (pre-rewrite history, do not
+# install from it). Pinning here replaces the hand-built
+# fleet-heartbeat.service.d/10-deploy-checkout.conf drop-in.
+Environment=FLEET_OPS_CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 EnvironmentFile=-/home/nish/.config/fleet-heartbeat/hc.env
 WorkingDirectory=/home/nish
 ExecStart=/home/nish/.local/bin/fleet-heartbeat
