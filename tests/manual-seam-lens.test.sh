@@ -175,6 +175,13 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
+cat >"$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+# shellcheck shell=bash
+pick_seat() {
+    printf 'fakeprovider\tfakemodel'
+}
+FAKE_SEAT_LIB
+
 cat >"$scratch/plan.md" <<'EOF'
 last-heartbeat: 2026-08-26T05:43:00Z (durable-timer)
 last-blind-audit-run: 2026-08-26T12:00:00Z (completed, filed=4)
@@ -188,6 +195,7 @@ cat >"$scratch/seams-in.json" <<'JSON'
 }
 JSON
 
+set +e
 PATH="$scratch/fakebin:$PATH" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
@@ -195,14 +203,15 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PROMPT="$prompt" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
   AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
-  AUDIT_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
   AUDIT_PLAN_FILE="$scratch/plan.md" \
   AUDIT_FAKE_NOW="2026-08-26T16:00:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
   AUDIT_SEAM_EVIDENCE="$scratch/seams-in.json" \
-  "$audit" >"$scratch/run.log" 2>&1 || rc=$?
-rc=${rc:-0}
+  "$audit" >"$scratch/run.log" 2>&1
+rc=$?
+set -e
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
 
 report_dir=$(find "$scratch/state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)

@@ -219,6 +219,10 @@ jobs:
         bash tests/codex-orphan-reap.test.sh
         bash tests/escalation-coverage-canary.test.sh
         bash tests/reusable-workflows.test.sh
+        # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
+        # behavior so a reverted merge can no longer leave its issues closed.
+        bash tests/auto-revert-required-check-gate.test.sh
+        bash tests/reopen-reverted-issues.test.sh
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh

@@ -107,7 +107,7 @@ git config user.email "257724087+nish3451@users.noreply.github.com"
 git revert --no-edit "${merge_flag[@]}" "$HEAD_SHA"
 git checkout -b "$branch"
 git push origin "$branch"
-gh pr create --repo "$REPO" --base main --head "$branch" \
+pr_url="$(gh pr create --repo "$REPO" --base main --head "$branch" \
   --title "revert: auto-restore green main (reverts $short)" \
   --body "Automatic revert opened because a push-to-main CI workflow went red.
 
@@ -115,5 +115,14 @@ gh pr create --repo "$REPO" --base main --head "$branch" \
 - Reverts commit \`$short\`: \`$subject\`
 - Failing checks: $failing
 
-Automatic revert per the reversibility principle (FABLE-VERDICT §17); if this PR fails checks it will sit unmerged and loud."
-gh pr merge --auto --squash --repo "$REPO" "$branch"
+Automatic revert per the reversibility principle (FABLE-VERDICT §17); if this PR fails checks it will sit unmerged and loud.")"
+
+revert_pr="$(printf '%s' "$pr_url" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | tail -n1 | awk -F/ '{print $NF}')" || true
+if [[ -z "$revert_pr" ]]; then
+  echo "::error::could not parse revert PR number from create output" >&2
+  exit 1
+fi
+
+gh pr merge --auto --squash --repo "$REPO" "$revert_pr"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$script_dir/reopen-reverted-issues.sh" "$REPO" "$HEAD_SHA" "$revert_pr"

@@ -134,6 +134,7 @@ case "$cmd" in
         esac
       done
       record "PR_CREATE title=$title head=$head base=$base body=$body"
+      printf 'https://github.com/Nishfleet/fleet-ops/pull/999\n'
       exit 0
     elif [ "$sub" = "merge" ]; then
       record "PR_MERGE $*"
