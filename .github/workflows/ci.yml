@@ -113,6 +113,9 @@ jobs:
             /home/nish/.local/bin/fleet-heartbeat-tier2 \
             /home/nish/.local/bin/fleet-blind-audit \
             /home/nish/.local/bin/fleet-blind-audit-panel \
+            /home/nish/.local/bin/fleet-heartbeat-auditor \
+            /home/nish/.local/bin/pi-audit-run \
+            /home/nish/.local/bin/pi-audit-tally \
             /home/nish/.local/bin/fleet-deploy-check \
             /home/nish/.local/bin/fleet-seat-recovery \
             /home/nish/.local/bin/fleet-unjustified-wait \
@@ -217,6 +220,14 @@ jobs:
         # fleet-ops#153: lock the 0509 scout packet-assembly contract.
         bash tests/pi-scout-packet-assembly.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
+        # fleet-ops#414: senior-auditor admission panel (re-land of the #146
+        # panel that #229 delivered and #231 auto-reverted). Every
+        # scout-candidate issue is judged by a 3-seat panel
+        # (devin/glm-5-2, a free glm-5.3 seat, straitly/deepseek-v4-pro)
+        # before it may be labeled agent-ready. The live scout/audit starts
+        # are the outermost edges (real LLM side effects) and are stubbed;
+        # the dispatch DECISION and the admission TALLY are exercised.
+        bash tests/fleet-heartbeat-auditor.test.sh
         bash tests/fleet-blind-audit.test.sh
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
