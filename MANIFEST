@@ -82,6 +82,10 @@ bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
 bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair
+# fleet-ops#349: close stale auto-revert PRs before the queue pass can
+# auto-merge them. Heartbeat queues revert/ heads; a revert opened when
+# main was SHA X stays MERGEABLE after main moves.
+bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-sweep
 # fleet-ops#152: escalation coverage canary. Run by heartbeat-tier1 block 15;
 # proves the two-plane invariant (VPS unit-escalation coverage + GitHub
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)

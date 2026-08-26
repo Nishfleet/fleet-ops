@@ -417,3 +417,8 @@ fi
 ok "scenario B: Semgrep (required) failed -> revert PR created and armed"
 
 ok "auto-revert gates on required checks: non-required skips, required reverts"
+
+# fleet-ops#349: stale auto-revert PRs must close themselves so heartbeat
+# cannot auto-merge them after main has moved. A named ci.yml step is out
+# of band for the worker App (Contents cannot push workflow files).
+bash "$here/fleet-stale-auto-revert-sweep.test.sh"

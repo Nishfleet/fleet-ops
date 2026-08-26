@@ -12,6 +12,11 @@
 #      (or FLEET_OPS_CHECKOUT is set); worktree/CI copies skip it.
 #   1. Update the last-heartbeat: line in the plan file (so interactive
 #      sessions see the durable timer is alive).
+#   1b. Close stale auto-revert PRs (fleet-ops#349). Delegates to
+#      bin/fleet-stale-auto-revert-sweep BEFORE the queue pass. Heartbeat
+#      arms auto-merge on revert/ heads; a revert opened when main was SHA
+#      X stays MERGEABLE after main moves and would restore the wrong
+#      state (#246). Freshness-guard equivalent for already-open PRs.
 #   2. Queue green fleet-authored PRs (auto-merge per repo, respecting
 #      the hands-off list).
 #   3. Release orphaned claims (agent-in-progress + no live worker +
@@ -429,6 +434,36 @@ PY
     log "1. last-heartbeat updated to $new_ts"
 else
     log "1. WARN: no last-heartbeat: line found in plan file (freshness guard expected one)"
+fi
+
+# ============================================================================
+# 1b. CLOSE STALE AUTO-REVERT PRS (fleet-ops#349)
+# ============================================================================
+# Must run BEFORE the queue pass. Block 2 arms auto-merge on green revert/
+# heads. Auto-revert.yml only opens those PRs when main still IS the red
+# commit; once main moves, the PR is orphaned but still MERGEABLE. Closing
+# it here is the freshness guard for already-open PRs. Named reason this
+# is a sweep: the GitHub App has no webhooks, and auto-revert.yml only
+# fires on the next red CI. Heartbeat's existing timer is the observer.
+STALE_REVERT_BIN="${FLEET_STALE_REVERT_SWEEP:-/home/nish/.local/bin/fleet-stale-auto-revert-sweep}"
+stale_revert_rc=0
+if require_manifest_helper "$STALE_REVERT_BIN"; then
+    log "1b. stale-auto-revert sweep starting"
+    if FLEET_STALE_REVERT_REPOS="$queue_repos" \
+        FLEET_STALE_REVERT_HANDS_OFF="$hands_off" \
+        "$STALE_REVERT_BIN"; then
+        log "1b. stale-auto-revert sweep done"
+    else
+        log "1b. stale-auto-revert sweep FAILED — next tick retries"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "stale-auto-revert sweep missing at $STALE_REVERT_BIN — MANIFEST dest; silent skip would leave orphaned revert PRs mergeable (fleet-ops#349)"
+        stale_revert_rc=1
+    else
+        log "1b. stale-auto-revert sweep missing at $STALE_REVERT_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1292,7 +1327,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1302,6 +1337,9 @@ if [ "$deploy_rc" -ne 0 ]; then
 fi
 if [ "${blocked_rc:-0}" -ne 0 ]; then
     exit "$blocked_rc"
+fi
+if [ "${stale_revert_rc:-0}" -ne 0 ]; then
+    exit "$stale_revert_rc"
 fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
