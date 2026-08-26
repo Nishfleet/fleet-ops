@@ -258,10 +258,9 @@
     {
       "id": "sr-fleet-wipe-lessons",
       "source": "global-standing-rules.md: Lessons from the 2026-08-23 fleet wipe (all agents, both machines)",
-      "mechanism": "FLEET-PAUSED is code in AGENTS.md; argv[0] matching and push-before-delete are still prose",
-      "proof": "Nishfleet/fleet-ops#533",
-      "status": "queued(#533)",
-      "queued_since": "2026-08-27"
+      "mechanism": "CI scan rejects pgrep -f / pkill -f / ps|grep in bin/ and lib/; argv-running matches argv[0]/argv[1] only; worktree-remove refuses HEAD not on origin; heartbeat-tier1 block 5 no-ops enable --now when FLEET-PAUSED exists",
+      "proof": "bin/fleet-wipe-lessons-check; lib/fleet-wipe-lessons.py; tests/fleet-wipe-lessons.test.sh; bin/fleet-heartbeat-tier1 block 5; fleet-ops#533",
+      "status": "enforced"
     },
     {
       "id": "sr-find-proven-thing",

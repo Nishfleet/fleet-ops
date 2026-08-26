@@ -539,4 +539,9 @@ ok "rule-enforcement: no-agent-names gate drill"
 bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
 ok "rule-enforcement: vault-conflict-resolver drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, and vault-conflict drills"
+# fleet-ops#533: argv[0] + push-before-delete + FLEET-PAUSED. Same
+# nested-CI host so this token does not need a workflow edit.
+bash "$here/fleet-wipe-lessons.test.sh" || fail "fleet-wipe-lessons gate drill failed"
+ok "rule-enforcement: fleet-wipe-lessons gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, and wipe-lessons drills"

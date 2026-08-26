@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# fleet-wipe-lessons-check — argv[0] match + push-before-delete (fleet-ops#533).
+#
+# Implementation lives in lib/fleet-wipe-lessons.py.
+#
+# Usage:
+#   fleet-wipe-lessons-check scan [--root DIR]
+#   fleet-wipe-lessons-check argv-running NAME
+#   fleet-wipe-lessons-check count-argv NAME [--has FLAG VALUE]
+#   fleet-wipe-lessons-check worktree-remove PATH
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_WIPE_LESSONS_LIB:-$here/../lib/pi-packet/fleet-wipe-lessons.py}"
+[ -f "$lib" ] || lib="$here/../lib/fleet-wipe-lessons.py"
+[ -f "$lib" ] || { printf 'fleet-wipe-lessons-check: library missing: %s\n' "$lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

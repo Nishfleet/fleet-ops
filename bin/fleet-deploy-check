@@ -41,6 +41,11 @@ LOCK="${FLEET_DEPLOY_CHECK_LOCK:-/tmp/fleet-deploy-check.lock}"
 NO_DEPLOY="${FLEET_DEPLOY_CHECK_NO_DEPLOY:-0}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 export FLEET_OPS_TRIAGE="${FLEET_OPS_TRIAGE:-$TRIAGE}"
+_wipe_here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+WIPE_LIB="${FLEET_WIPE_LESSONS_LIB:-$_wipe_here/../lib/fleet-wipe-lessons.py}"
+if [[ ! -f "$WIPE_LIB" ]]; then
+    WIPE_LIB="${_wipe_here}/../lib/pi-packet/fleet-wipe-lessons.py"
+fi
 
 log() {
     printf '[%s] [fleet-deploy-check] %s\n' \
@@ -60,10 +65,12 @@ loud() {
 deploy_in_flight() {
     # systemctl --user is-active fleet-ops-deploy... is not a unit. Instead
     # check for a running fleet-ops-deploy process (the deploy step runs in
-    # the heartbeat's own process tree). The flock on the deploy's own lock
-    # is the authoritative gate — fleet-ops-deploy will fail loudly if it
+    # the heartbeat's own process tree). Match argv[0]/argv[1] only
+    # (fleet-ops#533): pgrep -f matches any later argument that merely
+    # carries the path. The flock on the deploy's own lock is the
+    # authoritative gate — fleet-ops-deploy will fail loudly if it
     # cannot take it — so this check is a soft pre-filter only.
-    pgrep -f 'bin/fleet-ops-deploy' >/dev/null 2>&1
+    python3 "$WIPE_LIB" argv-running fleet-ops-deploy >/dev/null 2>&1
 }
 
 main() {
