@@ -959,6 +959,9 @@ bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed
 # fleet-ops#515: session-close lint. Same CI constraint (worker token
 # cannot add a P14 line in .github/workflows/ci.yml).
 bash "$here/fleet-findings-queued.test.sh" || fail "fleet-findings-queued tests failed"
+# fleet-ops#514: session-close lint for decisions-ledger re-asks. Same
+# CI constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger tests failed"
 
 # fleet-ops#497: gate-integrity fixtures. CI lists this file, not the
 # gate-integrity tests, because workers cannot edit .github/workflows.
