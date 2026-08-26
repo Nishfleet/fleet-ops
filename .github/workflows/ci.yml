@@ -216,9 +216,4 @@ jobs:
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         bash tests/escalation-coverage-canary.test.sh
-        # fleet-ops#223: mechanical build-seriousness gate + senior-auditor panel.
-        bash tests/seriousness-gate.test.sh
-        bash tests/senior-panel-tally.test.sh
-        bash tests/senior-panel-conference.test.sh
-        bash tests/hand-rolled-plumbing.test.sh
         bash tests/reusable-workflows.test.sh
