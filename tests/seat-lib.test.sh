@@ -656,3 +656,121 @@ echo "$live" | grep -q 'pi-issue-wedged.json' \
 grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
   || fail "wedge probe: must log the stuck-activating reap"
 ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
+
+# --- fleet-ops#384: lane-refresh rows --------------------------------------
+# Production lock: the new slugs exist in config/seat-caps.json. Cap numbers
+# may be retuned (issue #59); the KEYS are the contract this issue landed.
+unset -f awk systemctl 2>/dev/null || true
+unset PI_SEAT_LIB_CHECK_SYSTEMD
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
+
+prod_caps="$repo_root/config/seat-caps.json"
+jq -e '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] > 0' "$prod_caps" >/dev/null \
+  || fail "#384 lock: openrouter must allowlist deepseek/deepseek-v4-flash-0731"
+jq -e '.providers.commandcode.models["minimax/minimax-m3-free"] > 0' "$prod_caps" >/dev/null \
+  || fail "#384 lock: commandcode must allowlist minimax/minimax-m3-free"
+jq -e '.providers.commandcode.models["MiniMaxAI/MiniMax-M3"]' "$prod_caps" >/dev/null \
+  && fail "#384 lock: metered MiniMaxAI/MiniMax-M3 must NOT be on commandcode"
+jq -e '.providers.openrouter.models["z-ai/glm-5.3-flash"]' "$prod_caps" >/dev/null \
+  && fail "#384 lock: glm-5.3-flash must NOT be allowlisted (no Pi catalog / no league)"
+[[ "$(jq -r '(.providers.zenmux.models // {}) | keys | length' "$prod_caps")" == "0" ]] \
+  || fail "#384 lock: zenmux must keep an empty model allowlist (live DS flash 3.7x OpenRouter)"
+jq -e '.providers.opencode.cap == 0' "$prod_caps" >/dev/null \
+  || fail "#384 lock: opencode stays cap=0 (no M3 free slug; minimax-m3 bills credits)"
+ok "#384 production lock: OpenRouter 0731 + CommandCode M3-free; no metered M3 double-wire; zenmux/opencode fail-closed"
+
+# pick_seat behaviour for those rows. Independent scratch map so a later cap
+# retune does not break this file (issue #59), but the slugs match production.
+refresh="$scratch/refresh-384"
+mkdir -p "$refresh/ledger"
+cat >"$refresh/models.json" <<'JSON'
+{
+  "providers": {
+    "cursor": {
+      "apiKey": "sk-literal",
+      "models": [ { "id": "composer-2.5", "cost": { "input": 0 }, "contextWindow": 200000 } ]
+    },
+    "commandcode": {
+      "apiKey": "sk-literal",
+      "models": [
+        { "id": "minimax/minimax-m3-free", "cost": { "input": 0 }, "contextWindow": 1000000 },
+        { "id": "deepseek/deepseek-v4-flash", "cost": { "input": 0 } },
+        { "id": "MiniMaxAI/MiniMax-M3", "cost": { "input": 0.3 } }
+      ]
+    },
+    "openrouter": {
+      "apiKey": "sk-literal",
+      "modelOverrides": {
+        "deepseek/deepseek-v4-flash-0731": { "contextWindow": 1310720 },
+        "z-ai/glm-5.3-flash": { "contextWindow": 1048576 }
+      }
+    },
+    "minimax": {
+      "apiKey": "sk-literal",
+      "models": [ { "id": "MiniMax-M3", "cost": { "input": 0.3 }, "contextWindow": 200000 } ]
+    }
+  }
+}
+JSON
+cat >"$refresh/seat-caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "cursor":      { "cap": 1, "class": "subscription", "models": { "composer-2.5": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "minimax/minimax-m3-free": 2, "deepseek/deepseek-v4-flash": 2 } },
+    "openrouter":  { "cap": 2, "class": "metered", "models": { "deepseek/deepseek-v4-flash-0731": 2 } },
+    "minimax":     { "cap": 2, "class": "metered", "models": { "MiniMax-M3": 2 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$refresh/models.json"
+export SEAT_CAPS_JSON="$refresh/seat-caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$refresh/ledger"
+export PI_PACKET_STATE="$refresh/state-m3"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "#384 m3: expected a pick, got rc=$rc"
+[[ "$out" == "cursor	composer-2.5" ]] \
+  || fail "#384 m3: expiry-first still cursor before free M3, got: $out"
+
+printf "cursor/composer-2.5\n" >"$refresh/tried-free.txt"
+export PI_PACKET_STATE="$refresh/state-m3-free"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$refresh/tried-free.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "#384 m3-free: expected a pick, got rc=$rc"
+[[ "$out" == "commandcode	minimax/minimax-m3-free" ]] \
+  || fail "#384 m3-free: expected commandcode/minimax-m3-free before DS-flash and before metered, got: $out"
+if echo "$out" | grep -q "MiniMaxAI/MiniMax-M3"; then
+  fail "#384 m3-free: metered MiniMaxAI slug must never be picked, got: $out"
+fi
+
+printf "cursor/composer-2.5\ncommandcode/minimax/minimax-m3-free\ncommandcode/deepseek/deepseek-v4-flash\n" >"$refresh/tried-metered.txt"
+export PI_PACKET_STATE="$refresh/state-or"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$refresh/tried-metered.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "#384 or: expected a metered pick, got rc=$rc out=$out"
+[[ "$out" == "openrouter	deepseek/deepseek-v4-flash-0731" ]] \
+  || fail "#384 or: expected openrouter/deepseek-v4-flash-0731 (metered, after free), got: $out"
+if echo "$out" | grep -q "glm-5.3-flash"; then
+  fail "#384 or: glm-5.3-flash must not be picked, got: $out"
+fi
+grep -q "not in cap-map allowlist for openrouter" "$PI_PACKET_STATE/watch.log" \
+  || fail "#384 or: glm-5.3-flash must be rejected by the openrouter allowlist"
+
+printf "cursor/composer-2.5\ncommandcode/minimax/minimax-m3-free\ncommandcode/deepseek/deepseek-v4-flash\nopenrouter/deepseek/deepseek-v4-flash-0731\n" >"$refresh/tried-minimax.txt"
+export PI_PACKET_STATE="$refresh/state-mm"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$refresh/tried-minimax.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "#384 minimax-last: expected a pick, got rc=$rc"
+[[ "$out" == "minimax	MiniMax-M3" ]] \
+  || fail "#384 minimax-last: direct MiniMax-M3 must stay last among metered, got: $out"
+ok "#384 pick_seat: free CommandCode M3-free before OpenRouter DS-0731 before MiniMax; metered M3 slug and GLM flash rejected"
