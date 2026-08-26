@@ -466,3 +466,9 @@ grep -q 'terminal delivery not wired (#76)' "$triage" || fail "scenario11: triag
 ok "scenario11: #76 wiring incomplete -> PENDING naming the delivery gap"
 
 ok "escalation-coverage-canary: covers VPS + GitHub planes, exclusions, and pending holes"
+
+# fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
+# this CI-listed file so hosted runners run it without a workflow edit
+# (worker tokens cannot push .github/workflows/**).
+bash "$here/entitled-wired-canary.test.sh"
+

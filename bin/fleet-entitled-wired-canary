@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# fleet-entitled-wired-canary — entitled-vs-wired seat inventory (fleet-ops#387).
+#
+# Every heartbeat tick, diff config/entitled-seats.json against live
+# seat-caps.json:
+#   1. Every entitled seat has a providers row.
+#   2. cap=0 rows carry a dated reason (YYYY-MM-DD in .reason).
+#   3. The row's class matches the inventory (subscription is an alias of
+#      prepaid-quota). A prepaid-quota entitlement labelled "free" is a
+#      violation — that is the Ollama Cloud mislabel that drained the weekly
+#      quota while cline was walled.
+#
+# Violations go LOUD (triage + stderr) and auto-file one fleet-ops issue per
+# finding (deduped on an open issue whose body contains the marker). The
+# canary then exits 1 so fleet-heartbeat.service lands in --state=failed.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 15.
+#
+# Environment seams (tests):
+#   FLEET_ENTITLED_SEATS_JSON   inventory file
+#   SEAT_CAPS_JSON              cap map
+#   FLEET_HEARTBEAT_TRIAGE      triage file
+#   FLEET_ENTITLED_CANARY_REPO  default Nishfleet/fleet-ops
+#   FLEET_ENTITLED_CANARY_FILE  1 (default) file issues; 0 skip gh
+#   GH                          gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+ENTITLED_JSON="${FLEET_ENTITLED_SEATS_JSON:-$FLEET_OPS_REPO/config/entitled-seats.json}"
+if [[ ! -f "$ENTITLED_JSON" ]]; then
+    ENTITLED_JSON="${HOME}/.local/state/pi-packet/entitled-seats.json"
+fi
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_ENTITLED_CANARY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_ENTITLED_CANARY_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-entitled-wired-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+norm_class() {
+    case "$1" in
+        subscription) printf '%s\n' prepaid-quota ;;
+        prepaid-quota|metered|free) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+dated_reason() {
+    local reason="$1"
+    [[ "$reason" =~ [0-9]{4}-[0-9]{2}-[0-9]{2} ]]
+}
+
+# File one issue for a finding. Dedup: an open issue whose body contains
+# the exact marker. Best-effort — a gh failure is logged, not silent.
+file_finding() {
+    local id="$1" kind="$2" title="$3" body="$4"
+    local marker="entitled-wired-canary: ${id} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_ENTITLED_CANARY_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+if [[ ! -f "$ENTITLED_JSON" ]]; then
+    loud "ENTITLED-WIRED-VIOLATION" "inventory missing: $ENTITLED_JSON"
+    exit 1
+fi
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "ENTITLED-WIRED-VIOLATION" "seat-caps missing: $SEAT_CAPS_JSON"
+    exit 1
+fi
+if ! jq -e . "$ENTITLED_JSON" >/dev/null 2>&1; then
+    loud "ENTITLED-WIRED-VIOLATION" "inventory unparseable: $ENTITLED_JSON"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "ENTITLED-WIRED-VIOLATION" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+violations=0
+
+while IFS=$'\t' read -r id want_class; do
+    [[ -n "$id" ]] || continue
+    want_class=$(norm_class "$want_class")
+
+    if ! jq -e --arg id "$id" '.providers[$id] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+        loud "ENTITLED-WIRED-VIOLATION" "entitled seat $id has no seat-caps row"
+        file_finding "$id" "missing-row" \
+            "entitled-vs-wired: $id has no seat-caps row" \
+            "The entitled inventory lists \`${id}\` but config/seat-caps.json has no providers.${id} row. Capacity-is-measured (2026-08-26): every entitled seat must be wired or screaming. Add a row (free lanes first) or a cap=0 row with a dated reason."
+        violations=$((violations + 1))
+        continue
+    fi
+
+    cap=$(jq -r --arg id "$id" '
+        .providers[$id] as $v
+        | if ($v|type)=="number" then $v else ($v.cap // 0) end
+    ' "$SEAT_CAPS_JSON")
+    got_class=$(jq -r --arg id "$id" '
+        .providers[$id] as $v
+        | if ($v|type)=="number" then "free" else ($v.class // "free") end
+    ' "$SEAT_CAPS_JSON")
+    got_class=$(norm_class "$got_class")
+    reason=$(jq -r --arg id "$id" '
+        .providers[$id] as $v
+        | if ($v|type)=="object" then ($v.reason // "") else "" end
+    ' "$SEAT_CAPS_JSON")
+
+    if [[ "$got_class" != "$want_class" ]]; then
+        loud "ENTITLED-WIRED-VIOLATION" "seat $id class=$got_class entitled=$want_class (mislabeled)"
+        file_finding "$id" "class-mismatch" \
+            "entitled-vs-wired: $id class is $got_class, entitled $want_class" \
+            "\`${id}\` is entitled as \`${want_class}\` but seat-caps.json says \`${got_class}\`. Prepaid seats labelled free get drained first. Set class to ${want_class}."
+        violations=$((violations + 1))
+    fi
+
+    if [[ "$cap" == "0" ]] && ! dated_reason "$reason"; then
+        loud "ENTITLED-WIRED-VIOLATION" "seat $id cap=0 without a dated reason"
+        file_finding "$id" "cap0-no-reason" \
+            "entitled-vs-wired: $id cap=0 has no dated reason" \
+            "\`${id}\` is entitled and capped at 0, but \`.reason\` does not contain a YYYY-MM-DD date. cap=0 requires a dated reason so idle entitlement cannot hide."
+        violations=$((violations + 1))
+    fi
+done < <(jq -r '.seats[] | [.id, .class] | @tsv' "$ENTITLED_JSON")
+
+if (( violations > 0 )); then
+    log "FAIL: $violations entitled-vs-wired violation(s)"
+    exit 1
+fi
+
+loud "ENTITLED-WIRED-OK" "every entitled seat has a seat-caps row; cap=0 rows are dated; classes match"
+exit 0

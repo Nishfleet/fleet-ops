@@ -4,9 +4,12 @@
 #
 # P4-A (2026-08-25): per-seat caps replace the legacy single '4 Devin workers'
 # cap. Caps live in config/seat-caps.json (not hardcoded) so fleet-ops PRs can
-# tune them without touching code. Selection order stays expiry-first
-# (devin -> cursor -> cline -> free -> minimax-metered); caps add an UPPER
-# bound per provider and per model, never a lower one.
+# tune them without touching code. Selection order (fleet-ops#387): free
+# lanes first, then prepaid-quota alternating (never stack one prepaid dry),
+# then metered last. prepaid_providers_in_order is expiry-first among
+# prepaid. Caps add an UPPER bound per provider and per model, never a lower
+# one. Classes: free / prepaid-quota / metered (subscription is an alias of
+# prepaid-quota).
 #
 # Survivors justified against systemd: systemd Restart= restarts the SAME
 # ExecStart — it cannot choose a different provider/model seat. Seat rotation
@@ -61,15 +64,22 @@ declare -A SEAT_PROVIDER_CAP=()
 declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_PROVIDER_CLASS=()
 declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
+declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
+declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 SEAT_FREE_ORDER=""
+SEAT_PREPAID_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
+SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
 
 load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
     SEAT_PROVIDER_CLASS=()
     SEAT_PROVIDER_BENCH_DEFAULT=()
+    SEAT_PROVIDER_QUOTA_WINDOW=()
+    SEAT_PROVIDER_WEEKLY_BUDGET=()
     SEAT_FREE_ORDER=""
+    SEAT_PREPAID_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
 
     [[ -f "$SEAT_CAPS_JSON" ]] || { seat_log "seat-caps: NO CAPS FILE at $SEAT_CAPS_JSON — falling back to no-cap behaviour"; return 1; }
@@ -85,6 +95,8 @@ load_seat_caps() {
     while IFS=$'\t' read -r p cap class bench_def; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
+        # subscription is the pre-#387 name for prepaid-quota.
+        [[ "$class" == "subscription" ]] && class="prepaid-quota"
         SEAT_PROVIDER_CLASS["$p"]="$class"
         [[ "$bench_def" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_BENCH_DEFAULT["$p"]="$bench_def"
     # A provider may be a bare number (shorthand for cap=N, class=free, no
@@ -104,6 +116,13 @@ load_seat_caps() {
     done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    while IFS=$'\t' read -r p window budget; do
+        [[ -n "$p" ]] || continue
+        [[ -n "$window" ]] && SEAT_PROVIDER_QUOTA_WINDOW["$p"]="$window"
+        [[ "$budget" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_WEEKLY_BUDGET["$p"]="$budget"
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.quota_window // ""), ($v.weekly_budget // "")] else [$k, "", ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     _seat_caps_loaded=1
     return 0
@@ -136,9 +155,11 @@ model_cap() {
 }
 
 class_of() {
-    local p="$1"
+    local p="$1" c
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    echo "${SEAT_PROVIDER_CLASS[$p]:-free}"
+    c="${SEAT_PROVIDER_CLASS[$p]:-free}"
+    [[ "$c" == "subscription" ]] && c="prepaid-quota"
+    echo "$c"
 }
 
 # Default bench window (seconds) for a provider's quota/cap 429 when the
@@ -755,6 +776,104 @@ count_degraded_total() {
     echo "$n"
 }
 
+# --- prepaid weekly pacing + alternate-never-stack (fleet-ops#387) ----------
+# Local counter of picks this ISO week, per provider. Not the provider's
+# real meter — an estimate so a wall elsewhere cannot drain one prepaid
+# seat to zero overnight. When weekly_budget is unset, pacing is a no-op
+# and alternation still spreads the load.
+_prepaid_iso_week() { date -u +%G-W%V; }
+
+_prepaid_usage_path() {
+    echo "$STATE_DIR/prepaid-usage/${1}.json"
+}
+
+_prepaid_usage() {
+    local p="$1" f week count
+    week=$(_prepaid_iso_week)
+    f=$(_prepaid_usage_path "$p")
+    [[ -f "$f" ]] || { echo 0; return; }
+    local stored
+    stored=$(jq -r '.week // ""' "$f" 2>/dev/null || true)
+    [[ "$stored" == "$week" ]] || { echo 0; return; }
+    count=$(jq -r '.count // 0' "$f" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    echo "$count"
+}
+
+_record_prepaid_pick() {
+    local p="$1" f week count tmp
+    week=$(_prepaid_iso_week)
+    f=$(_prepaid_usage_path "$p")
+    mkdir -p "$STATE_DIR/prepaid-usage"
+    count=$(_prepaid_usage "$p")
+    count=$((count + 1))
+    tmp="$f.tmp.$$"
+    jq -nc --arg w "$week" --argjson c "$count" '{week:$w,count:$c}' >"$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        return 0
+    }
+    mv "$tmp" "$f"
+}
+
+# Return 0 if this prepaid provider is over the weekly pace threshold.
+_prepaid_paced() {
+    local p="$1"
+    local window="${SEAT_PROVIDER_QUOTA_WINDOW[$p]:-}"
+    local budget="${SEAT_PROVIDER_WEEKLY_BUDGET[$p]:-0}"
+    [[ "$window" == "weekly" ]] || return 1
+    [[ "$budget" =~ ^[0-9]+$ ]] || return 1
+    (( budget > 0 )) || return 1
+    local usage thresh
+    usage=$(_prepaid_usage "$p")
+    thresh=$(( budget * SEAT_PACE_PCT / 100 ))
+    (( usage >= thresh ))
+}
+
+# Re-order a seat list (provider\tmodel entries) by a provider-order string.
+_order_seats_by() {
+    local order="$1"
+    shift
+    local -a src=("$@")
+    local -a ordered=()
+    local fprov fm in_ordered x
+    for fprov in $order; do
+        for fm in "${src[@]}"; do
+            if [[ "$fm" == "$fprov"$'\t'* ]]; then
+                ordered+=("$fm")
+            fi
+        done
+    done
+    for fm in "${src[@]}"; do
+        in_ordered=0
+        for x in "${ordered[@]:-}"; do
+            [[ "$x" == "$fm" ]] && in_ordered=1 && break
+        done
+        (( in_ordered )) || ordered+=("$fm")
+    done
+    if (( ${#ordered[@]} > 0 )); then
+        printf '%s\n' "${ordered[@]}"
+    fi
+}
+
+# Round-robin pick from a seat list. Persists the index in STATE_DIR so
+# successive pick_seat calls alternate instead of stacking the first seat.
+_rr_pick() {
+    local idx_file="$1"
+    shift
+    local -a seats=("$@")
+    local n=${#seats[@]}
+    (( n > 0 )) || return 1
+    local idx=0
+    if [[ -f "$idx_file" ]]; then
+        idx=$(cat "$idx_file" 2>/dev/null || echo 0)
+        [[ "$idx" =~ ^[0-9]+$ ]] || idx=0
+    fi
+    local pick=$(( idx % n ))
+    printf '%s\n' "${seats[$pick]}"
+    mkdir -p "$STATE_DIR"
+    echo $(( idx + 1 )) >"$idx_file"
+}
+
 # Pick a different seat than the failed one(s).
 # Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
@@ -783,14 +902,12 @@ pick_seat() {
         done <"$tried_file"
     fi
 
-    # Buckets for the expiry-first selection order:
-    #   1) devin (subscription, prepaid allowance that expires first)
-    #   2) cursor (subscription)
-    #   3) cline (subscription)
-    #   4) free tier (config-driven order, default ollama -> commandcode -> hetzner)
-    #   5) minimax direct — METERED (per-token); tried LAST so the prepaid
-    #      allowances burn down before we spend money.
-    local -a devin_seats=() cursor_seats=() cline_seats=() free_seats=() metered_seats=()
+    # Buckets (fleet-ops#387):
+    #   1) free lanes first (true free — never a prepaid seat mislabeled free)
+    #   2) prepaid-quota, alternating across live prepaid so one weekly-quota
+    #      seat cannot be drained dry while others sit idle
+    #   3) metered last (per-token; spend after prepaid/free)
+    local -a free_seats=() prepaid_seats=() metered_seats=()
 
     local p m free capable p_cap m_cap p_active m_active class
     # `free` is emitted by enumerate_seats for parity with the legacy contract;
@@ -862,55 +979,58 @@ pick_seat() {
         fi
 
         class=$(class_of "$p")
-        # Bucket by CLASS from the cap map, not by provider name. The old
-        # case matched literal names and dropped everything else into
-        # free_seats, so class_of() was computed and discarded and any
-        # credit-bearing provider that was not named "minimax" (openrouter,
-        # zenmux) was spent as if it were free.
+        # Bucket by CLASS from the cap map, not by provider name. prepaid-quota
+        # includes the old "subscription" alias (normalized in class_of).
         case "$class" in
-            subscription)
-                case "$p" in
-                    devin)  devin_seats+=("$p"$'\t'"$m") ;;
-                    cursor) cursor_seats+=("$p"$'\t'"$m") ;;
-                    cline)  cline_seats+=("$p"$'\t'"$m") ;;
-                    *)      cline_seats+=("$p"$'\t'"$m") ;;
-                esac ;;
-            metered)      metered_seats+=("$p"$'\t'"$m") ;;
-            *)            free_seats+=("$p"$'\t'"$m") ;;
+            prepaid-quota) prepaid_seats+=("$p"$'\t'"$m") ;;
+            metered)       metered_seats+=("$p"$'\t'"$m") ;;
+            *)             free_seats+=("$p"$'\t'"$m") ;;
         esac
     done < <(enumerate_seats)
 
-    # Free-tier order: explicit from the cap map (default ollama, commandcode, hetzner).
-    # Re-bucket free_seats in that order. Stable: anything not in the configured
-    # order keeps its relative enumerate_seats order at the end.
-    if [[ -n "$SEAT_FREE_ORDER" ]]; then
-        local -a free_ordered=()
-        local fprov fm
-        for fprov in $SEAT_FREE_ORDER; do
-            for fm in "${free_seats[@]}"; do
-                if [[ "$fm" == "$fprov"* ]]; then
-                    free_ordered+=("$fm")
-                fi
-            done
-        done
-        for fm in "${free_seats[@]}"; do
-            local in_ordered=0
-            for x in "${free_ordered[@]:-}"; do
-                [[ "$x" == "$fm" ]] && in_ordered=1 && break
-            done
-            (( in_ordered )) || free_ordered+=("$fm")
-        done
-        free_seats=("${free_ordered[@]}")
+    if [[ -n "$SEAT_FREE_ORDER" ]] && (( ${#free_seats[@]} > 0 )); then
+        mapfile -t free_seats < <(_order_seats_by "$SEAT_FREE_ORDER" "${free_seats[@]}")
+    fi
+    if [[ -n "$SEAT_PREPAID_ORDER" ]] && (( ${#prepaid_seats[@]} > 0 )); then
+        mapfile -t prepaid_seats < <(_order_seats_by "$SEAT_PREPAID_ORDER" "${prepaid_seats[@]}")
     fi
 
-    # Expiry-first: devin -> cursor -> cline -> free -> minimax (metered).
-    local -n arr
-    for arr in devin_seats cursor_seats cline_seats free_seats metered_seats; do
-        if (( ${#arr[@]} > 0 )); then
-            printf '%s\n' "${arr[0]}"
-            return 0
+    # Weekly-quota pacing: skip prepaid seats over the pace threshold when
+    # another prepaid seat is still under it. All-paced fail-opens (work
+    # must not stall).
+    if (( ${#prepaid_seats[@]} > 0 )); then
+        local -a prepaid_live=() prepaid_paced_seats=()
+        local fm_p
+        for fm_p in "${prepaid_seats[@]}"; do
+            p="${fm_p%%$'\t'*}"
+            if _prepaid_paced "$p"; then
+                prepaid_paced_seats+=("$fm_p")
+            else
+                prepaid_live+=("$fm_p")
+            fi
+        done
+        if (( ${#prepaid_live[@]} > 0 )); then
+            prepaid_seats=("${prepaid_live[@]}")
+        else
+            prepaid_seats=("${prepaid_paced_seats[@]}")
         fi
-    done
+    fi
+
+    # Free first, then prepaid (alternate), then metered.
+    local chosen="" chosen_p=""
+    if (( ${#free_seats[@]} > 0 )); then
+        chosen="${free_seats[0]}"
+    elif (( ${#prepaid_seats[@]} > 0 )); then
+        chosen=$(_rr_pick "$STATE_DIR/prepaid-rr.idx" "${prepaid_seats[@]}")
+        chosen_p="${chosen%%$'\t'*}"
+        _record_prepaid_pick "$chosen_p"
+    elif (( ${#metered_seats[@]} > 0 )); then
+        chosen="${metered_seats[0]}"
+    fi
+    if [[ -n "$chosen" ]]; then
+        printf '%s\n' "$chosen"
+        return 0
+    fi
 
     # P15: loud stall beats a garbage seat. Every allowlisted seat was dead or
     # capped — return 1 (caller must not spawn anything) and say so, rather

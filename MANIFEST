@@ -28,6 +28,7 @@ prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
+config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
@@ -75,6 +76,11 @@ bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-r
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
 # so the first install lands it with zero hands.
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
+# fleet-ops#387: entitled-vs-wired canary. Run by heartbeat-tier1 block 15.
+# Diffs entitled-seats.json against seat-caps.json every tick; missing row,
+# cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
+# and auto-files. No new scheduler.
+bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
 # fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
 # timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a
 # local panel, and files gap-audit issues linked to a durable report.
