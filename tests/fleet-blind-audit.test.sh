@@ -96,6 +96,44 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
+# --- self-contained seat environment --------------------------------------
+# The bin sources seat-lib.sh, which reads PI_MODELS_JSON, SEAT_CAPS_JSON,
+# PI_PACKET_STATE and PI_SEAT_HEALTH_LEDGER_DIR. Without fixtures the test
+# silently inherited the live VPS files ($HOME/.pi/agent/models.json etc.),
+# so it passed on the VPS and failed in CI (no models.json -> pick_seat finds
+# no capable seat -> bin exits 1 -> `set -e` killed the test before the
+# `rc=$?` line, with no FAIL line on the log). Build a scratch seat world so
+# the test runs identically everywhere.
+seat_home="$scratch/home"; mkdir -p "$seat_home"
+seat_state="$scratch/seat-state"; mkdir -p "$seat_state/attempts" "$seat_state/active-seats"
+seat_ledger="$scratch/seat-ledger"; mkdir -p "$seat_ledger"
+seat_models="$scratch/models.json"
+seat_caps="$scratch/seat-caps.json"
+
+# Minimal models.json: one capable, free devin seat (reasoning + 200k ctx).
+cat > "$seat_models" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "swe-1-7", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 }
+      ]
+    }
+  }
+}
+JSON
+
+# Cap map allowlists devin/swe-1-7 (cap 4). No apiKey field -> fail-open.
+cat > "$seat_caps" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": [],
+  "providers": {
+    "devin": { "cap": 4, "class": "subscription", "models": { "swe-1-7": 4 } }
+  }
+}
+JSON
+
 plan="$scratch/plan.md"
 cat > "$plan" <<'EOF'
 last-heartbeat: 2026-08-26T05:43:00Z (durable-timer)
@@ -103,7 +141,16 @@ EOF
 
 mkdir -p "$scratch/state"
 
+# `set +e` around the bin call so a nonzero exit reaches the `rc=$?` check
+# and prints run.log + a FAIL line. Under `set -e` a failing bin killed the
+# test silently (the original CI symptom: no FAIL line, just exit 1).
+set +e
 PATH="$scratch/fakebin:$PATH" \
+  HOME="$seat_home" \
+  PI_PACKET_STATE="$seat_state" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$seat_ledger" \
+  PI_MODELS_JSON="$seat_models" \
+  SEAT_CAPS_JSON="$seat_caps" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$scratch/state" \
@@ -116,8 +163,8 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/run.log" 2>&1
-
 rc=$?
+set -e
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
 
 # Find the one report directory.
