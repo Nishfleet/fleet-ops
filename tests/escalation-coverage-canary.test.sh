@@ -567,19 +567,67 @@ ok "scenario11: #76 wiring incomplete -> PENDING naming the delivery gap"
 # ============================================================================
 # Catches the #351 omission: pi-intake-repair-run was wired to a unit and
 # MANIFEST but never added to SANCTIONED_PI_RUNNERS, so every heartbeat tick
-# failed the canary (auditor summon 2026-08-26T16:18Z).
+# failed the canary (auditor summon 2026-08-26T16:18Z). fleet-ops#393 is the
+# named follow-up: pin that wrapper AND the unit->wrapper class so a sibling
+# cannot drop off the list without failing this test.
 canary_src="$repo_root/bin/fleet-escalation-canary"
+pi_print_re='^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print'
+
+mapfile -t sanctioned_runners < <(
+  awk '
+    /^SANCTIONED_PI_RUNNERS=\(/ { inarr=1; next }
+    inarr && /^\)/ { exit }
+    inarr {
+      gsub(/^[ \t]+/, "")
+      gsub(/[ \t]+$/, "")
+      if ($0 ~ /^#/ || $0 == "") next
+      print $0
+    }
+  ' "$canary_src"
+)
+[[ ${#sanctioned_runners[@]} -gt 0 ]] || fail "scenario12: SANCTIONED_PI_RUNNERS array is empty"
+
+in_sanctioned() {
+  local want="$1" r
+  for r in "${sanctioned_runners[@]}"; do
+    [[ "$r" == "$want" ]] && return 0
+  done
+  return 1
+}
+
+in_sanctioned "pi-intake-repair-run" \
+  || fail "scenario12: pi-intake-repair-run must stay on SANCTIONED_PI_RUNNERS (fleet-ops#393)"
+
 mapfile -t live_pi_runners < <(
   grep -R -l --exclude='fleet-escalation-canary' \
-    -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
+    -E "$pi_print_re" \
     "$repo_root/bin" 2>/dev/null || true
 )
 [[ ${#live_pi_runners[@]} -gt 0 ]] || fail "scenario12: expected live pi wrappers under bin/"
 for f in "${live_pi_runners[@]}"; do
   name=$(basename "$f")
-  grep -qE "^[[:space:]]+${name}$" "$canary_src" \
+  in_sanctioned "$name" \
     || fail "scenario12: bin/$name invokes pi --print but is missing from SANCTIONED_PI_RUNNERS"
 done
+
+# Unit side of the same class: a systemd ExecStart that points at a bin
+# wrapper which invokes pi --print must have that wrapper on the list.
+# This is the #351 / #393 shape (unit wired, wrapper live, list missed).
+while IFS= read -r -d '' unit; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == ExecStart=* ]] || continue
+    if [[ "$line" =~ /home/nish/.local/bin/([A-Za-z0-9._-]+) ]]; then
+      wrapper="${BASH_REMATCH[1]}"
+      [[ "$wrapper" == "pi" ]] && continue
+      bin_path="$repo_root/bin/$wrapper"
+      [[ -f "$bin_path" ]] || continue
+      grep -qE "$pi_print_re" "$bin_path" || continue
+      in_sanctioned "$wrapper" \
+        || fail "scenario12: $(basename "$unit") ExecStart=$wrapper invokes pi --print but is missing from SANCTIONED_PI_RUNNERS"
+    fi
+  done < "$unit"
+done < <(find "$repo_root/systemd" -name '*.service' -print0)
+
 ok "scenario12: every live bin/ pi --print wrapper is on SANCTIONED_PI_RUNNERS"
 
 ok "escalation-coverage-canary: covers VPS + GitHub planes, exclusions, and pending holes"
