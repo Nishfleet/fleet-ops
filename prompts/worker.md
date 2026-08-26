@@ -93,7 +93,7 @@ Steps:
      CHECKOUT=/home/nish/workspaces/products/<repo>
    `git -C "$CHECKOUT" fetch origin`
    `git -C "$CHECKOUT" worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> claim/issue-<N>`
-   (git will create the local branch tracking origin/claim/issue-<N>; if the worktree dir already exists from your own prior attempt, reuse it.) Work ONLY inside that worktree.
+   (git will create the local branch tracking origin/claim/issue-<N>; if the worktree dir already exists from your own prior attempt, reuse it.) Work ONLY inside that worktree. Never check out a feature or auditor branch on the fleet-ops deploy-clone itself (fleet-ops#477); that checkout must stay on main.
 4. If the issue is under-specified or the approach genuinely ambiguous: do NOT guess. Comment your concrete proposal and open questions on the issue, then
    `gh issue edit <N> -R Nishfleet/<repo> --add-label agent-blocked --remove-label agent-in-progress`,
    and end that comment with one or more machine-readable blocker lines so

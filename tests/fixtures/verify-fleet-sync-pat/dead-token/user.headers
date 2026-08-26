@@ -1,0 +1,4 @@
+HTTP/2 401
+content-type: application/json; charset=utf-8
+x-oauth-scopes:
+x-accepted-github-permissions:
