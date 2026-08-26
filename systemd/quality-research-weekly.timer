@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly quality>speed>efficiency research sweep — Sun 03:00 IST
+# Named reason: research is inherently periodic. The outside world changes
+# weekly (new tools, GitHub features, agent-quality evidence). A weekly
+# delta sweep catches what changed since the recos file's date without
+# re-deriving the baseline. Sunday 03:00 IST is off-peak (low fleet churn).
+# Ledger: 2026-08-25 | continuous research.
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00 Asia/Kolkata
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
