@@ -1177,7 +1177,7 @@ heartbeat_seat_health_check
 log "13. seat-health freshness done"
 
 # ============================================================================
-# 14. RAM MEASUREMENT (fleet-ops#45)
+# 14. RAM MEASUREMENT (fleet-ops#45) + metric compare (fleet-ops#202)
 # ============================================================================
 # Mechanical re-measurement of peak RSS across fleet worker units. The
 # 0.75 in seat-caps.json's ram_gb_per_worker is the floor; a re-derive
@@ -1188,6 +1188,11 @@ log "13. seat-health freshness done"
 # touches the cap map. Drift between the live distribution and
 # ram_gb_per_worker is a HUMAN action (re-derive from a fresh
 # measurement, then a PR).
+#
+# ram-metric-compare (fleet-ops#202) then samples live pi-issue@ units
+# for BOTH cgroup memory.current and process VmRSS, so the 35 MB vs
+# ~800 MB mismatch cannot silently return as "RSS means cgroup". It
+# also never edits the cap map.
 #
 # Skipped silently if ram-measure is not installed; the .local/bin
 # symlink is a fleet-ops install step (MANIFEST + ./install.sh), so a
@@ -1203,6 +1208,16 @@ if [ -x "$RAM_BIN" ]; then
     fi
 else
     log "14. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
+fi
+COMPARE_BIN="${FLEET_RAM_COMPARE_BIN:-/home/nish/.local/bin/ram-metric-compare}"
+if [ -x "$COMPARE_BIN" ]; then
+    if compare_summary="$("$COMPARE_BIN" 2>/dev/null)"; then
+        log "14. ram-metric-compare: $compare_summary"
+    else
+        log "14. ram-metric-compare: non-zero exit (rc=$?) — state file may be stale"
+    fi
+else
+    log "14. ram-metric-compare helper missing at $COMPARE_BIN — skip (not installed; re-run ./install.sh)"
 fi
 
 # ============================================================================

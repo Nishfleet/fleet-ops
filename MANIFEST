@@ -168,6 +168,10 @@ systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config
 # timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
 # with a rolling 10-run history.
 bin/ram-measure /home/nish/.local/bin/ram-measure
+# fleet-ops#202: live memory.current vs VmRSS compare so the 35 MB vs
+# ~800 MB mismatch stays measured. Pure observability — never edits
+# ram_gb_per_worker. State at ~/.local/state/ram-measurement/
+bin/ram-metric-compare /home/nish/.local/bin/ram-metric-compare
 # fleet-ops#389: ledger-supersession pass on the memory curator. A new
 # decisions-ledger line makes the next curator tick mark conflicting
 # compiled / agent memories SUPERSEDED-BY:<date+title> (no delete, no
