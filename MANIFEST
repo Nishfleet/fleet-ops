@@ -25,6 +25,7 @@ prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
 prompts/intake-repair.md /home/nish/.pi/agent/prompts/intake-repair.md
 prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
+prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
@@ -61,7 +62,18 @@ bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
-bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+# fleet-ops#146: 12h drain-rate work buffer + senior-auditor admission panel.
+# Replaces the low-water-mark count threshold with buffer_hours =
+# ready_count / drain_rate; scout-candidate issues pass a 3-seat panel
+# (devin/glm-5-2, free glm-5.3, straitly/deepseek-v4-pro, 2-of-3) before
+# they may carry agent-ready. Auditor calls are systemd template units that
+# inherit the global OnFailure escalation ladder.
+bin/fleet-heartbeat-buffer /home/nish/.local/bin/fleet-heartbeat-buffer
+bin/fleet-heartbeat-auditor /home/nish/.local/bin/fleet-heartbeat-auditor
+bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
+bin/pi-audit-tally /home/nish/.local/bin/pi-audit-tally
+prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
+systemd/pi-audit@.service /home/nish/.config/systemd/user/pi-audit@.service
 bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair
 # fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
 # timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a

@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# bin/fleet-heartbeat-buffer
+#
+# Computes the 12-hour drain-rate work buffer per enrolled repo and dispatches
+# pi-scout@<repo> when the queue is below target. Replaces the earlier
+# low-water-mark count threshold (fleet-ops#147) with a time-based buffer:
+#     buffer_hours = ready_count / drain_rate
+# where drain_rate is issues completed per hour over the trailing 6h window.
+#
+# Dispatch rules (all per repo):
+#   - drain_rate = 0  -> buffer infinite, never dispatch (no work is draining).
+#   - buffer >= hysteresis (default 14h) -> queue full, clear refill stamp.
+#   - buffer < target (default 12h)      -> start a scout pass (one at a time).
+#   - target <= buffer < hysteresis and the refill stamp is still fresh
+#     (default 2h)                       -> keep dispatching (hysteresis).
+#   - otherwise                          -> in the hysteresis deadband, rest.
+#
+# The helper also supports a --gate <repo> mode used by pi-scout@.service's
+# ExecCondition: exit 0 if the repo's buffer is below target (service may run),
+# exit 1 if it is at/above target or data is missing (service is skipped).
+#
+# Exit codes (main):
+#   0  tick clean; any per-repo gh blips are logged but not escalated.
+#   2  config missing / unreadable.
+#
+# Environment seams:
+#   FLEET_INTAKE_REPOS_JSON        source of enrolled repos
+#   FLEET_HEARTBEAT_LOG_DIR        log + stamp directory
+#   FLEET_HEARTBEAT_TRIAGE         loud findings file
+#   FLEET_BUFFER_TARGET_HOURS      default 12
+#   FLEET_BUFFER_HYSTERESIS_HOURS  default 14
+#   FLEET_BUFFER_DRAIN_WINDOW_HOURS default 6
+#   FLEET_BUFFER_REFILL_FRESH_S    default 7200 (2h)
+#   FLEET_BUFFER_LANE_CEILING      override; otherwise seat_max_concurrent
+#   FLEET_BUFFER_DRY_RUN           1 = log dispatch, do not start units
+#   GH, SYSTEMCTL, PI_PACKET_SEAT_LIB  overrides for tests
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-$HOME/.local/state/fleet-heartbeat}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="${FLEET_BUFFER_STATE_DIR:-$LOG_DIR/buffer}"
+STAMP_DIR="$STATE_DIR/stamps"
+
+TARGET_HOURS="${FLEET_BUFFER_TARGET_HOURS:-12}"
+HYSTERESIS_HOURS="${FLEET_BUFFER_HYSTERESIS_HOURS:-14}"
+DRAIN_WINDOW_HOURS="${FLEET_BUFFER_DRAIN_WINDOW_HOURS:-6}"
+REFILL_FRESH_S="${FLEET_BUFFER_REFILL_FRESH_S:-7200}"
+DRY_RUN="${FLEET_BUFFER_DRY_RUN:-0}"
+
+mkdir -p "$LOG_DIR" "$STAMP_DIR"
+
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+log() {
+    printf '[%s] [fleet-heartbeat-buffer] %s\n' "$(ts)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    printf '[%s] [BUFFER-%s] %s\n' "$(ts)" "$tag" "$*" >&2
+    {
+        printf '\n[%s] [BUFFER-%s] %s\n' "$(ts)" "$tag" "$*"
+    } >> "$TRIAGE" 2>/dev/null || true
+}
+
+# --- preflight ----------------------------------------------------------------
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+[ -f "$INTAKE_JSON" ] || { log "FATAL: intake-repos.json missing: $INTAKE_JSON"; exit 2; }
+jq empty "$INTAKE_JSON" >/dev/null 2>&1 || { log "FATAL: intake-repos.json is not valid JSON: $INTAKE_JSON"; exit 2; }
+
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+if [ -f "$SEAT_LIB" ]; then
+    # shellcheck source=/dev/null
+    source "$SEAT_LIB"
+else
+    log "WARN: seat-lib missing: $SEAT_LIB — lane-ceiling cap disabled"
+    seat_max_concurrent() { echo 9999; }
+fi
+
+lane_ceiling() {
+    if [ -n "${FLEET_BUFFER_LANE_CEILING:-}" ]; then
+        printf '%s\n' "$FLEET_BUFFER_LANE_CEILING"
+    else
+        seat_max_concurrent
+    fi
+}
+
+# --- helpers ------------------------------------------------------------------
+repo_list() {
+    jq -r '.repos[]?.name' "$INTAKE_JSON" 2>/dev/null || true
+}
+
+ready_count() {
+    local repo="$1" out
+    out=$("$GH" issue list -R "Nishfleet/$repo" -l agent-ready --state open --json number --limit 200 --jq length 2>&1) || {
+        log "$repo: ready_count gh FAILED: $out"
+        return 1
+    }
+    case "$out" in
+        ''|*[!0-9]*) log "$repo: ready_count returned non-numeric: $out"; return 1 ;;
+    esac
+    printf '%s\n' "$out"
+}
+
+# Issues completed (merged claim/issue-* PRs) in the trailing drain window.
+merged_count() {
+    local repo="$1" cutoff out
+    cutoff=$(date -u -d "${DRAIN_WINDOW_HOURS} hours ago" +%FT%TZ)
+    out=$("$GH" pr list -R "Nishfleet/$repo" --state merged --json number,mergedAt,headRefName --limit 200 2>&1) || {
+        log "$repo: merged_count gh FAILED: $out"
+        return 1
+    }
+    # Select only worker PRs (head ref claim/issue-*) merged within the window.
+    printf '%s\n' "$out" | jq -r --arg cutoff "$cutoff" '[.[] | select(.mergedAt > $cutoff and (.headRefName | startswith("claim/issue-")))] | length'
+}
+
+# Buffer in tenths of an hour. drain_count == 0 -> infinite (99999).
+buffer_tenths() {
+    local ready="$1" drain="$2"
+    awk -v r="$ready" -v d="$drain" -v w="$DRAIN_WINDOW_HOURS" 'BEGIN {
+        if (d == 0) { print 99999; exit }
+        if (r !~ /^[0-9]+$/ || d !~ /^[0-9]+$/ || w !~ /^[0-9]+$/) { print 99999; exit }
+        print int((10 * w * r) / d)
+    }'
+}
+
+unit_active() {
+    local unit="$1"
+    local state
+    state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    case "$state" in
+        active|activating) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Count active/activating pi-scout@* instances across all repos.
+active_scout_count() {
+    local n=0 line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        n=$((n + 1))
+    done < <("$SYSTEMCTL" --user list-units 'pi-scout@*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+stamp_path() {
+    local repo="$1"
+    printf '%s/%s.refill\n' "$STAMP_DIR" "$repo"
+}
+
+stamp_fresh() {
+    local repo="$1" age="${2:-$REFILL_FRESH_S}" stamp now then_s
+    stamp=$(stamp_path "$repo")
+    [ -f "$stamp" ] || return 1
+    now=$(date -u +%s)
+    then_s=$(date -u -d "$(cat "$stamp")" +%s 2>/dev/null || echo 0)
+    [ "$then_s" -gt 0 ] 2>/dev/null || return 1
+    (( now - then_s < age ))
+}
+
+write_stamp() {
+    local repo="$1"
+    ts > "$(stamp_path "$repo")"
+}
+
+clear_stamp() {
+    local repo="$1"
+    rm -f "$(stamp_path "$repo")"
+}
+
+format_buffer() {
+    local tenths="$1"
+    awk -v t="$tenths" 'BEGIN { printf "%.1f", t/10 }'
+}
+
+# --- repo decision ------------------------------------------------------------
+compute_repo() {
+    local repo="$1"
+    local ready drain bt
+    ready=$(ready_count "$repo" 2>/dev/null || true)
+    [ -n "$ready" ] || { log "$repo: skipping — ready_count unavailable"; return; }
+    drain=$(merged_count "$repo" 2>/dev/null || true)
+    [ -n "$drain" ] || { log "$repo: skipping — merged_count unavailable"; return; }
+    bt=$(buffer_tenths "$ready" "$drain")
+
+    printf 'repo=%s ready=%s drain_6h=%s buffer_h=%s\n' "$repo" "$ready" "$drain" "$(format_buffer "$bt")" >&2
+
+    if [ "$drain" -eq 0 ]; then
+        log "$repo: drain_rate=0 (no claim/issue PRs merged in last ${DRAIN_WINDOW_HOURS}h) — buffer infinite, scouts rest"
+        clear_stamp "$repo"
+        return
+    fi
+
+    local target=$((TARGET_HOURS * 10))
+    local hysteresis=$((HYSTERESIS_HOURS * 10))
+
+    if [ "$bt" -ge "$hysteresis" ]; then
+        log "$repo: buffer $(format_buffer "$bt")h >= hysteresis ${HYSTERESIS_HOURS}h — full, scouts rest"
+        clear_stamp "$repo"
+        return
+    fi
+
+    # Decide whether this repo is in an active refill cycle.
+    local in_refill=0
+    if [ "$bt" -lt "$target" ] || stamp_fresh "$repo"; then
+        in_refill=1
+    fi
+
+    if [ "$in_refill" -eq 0 ]; then
+        log "$repo: buffer $(format_buffer "$bt")h in deadband (${TARGET_HOURS}-${HYSTERESIS_HOURS}h) and no active refill — scouts rest"
+        return
+    fi
+
+    # Refill is wanted.
+    if unit_active "pi-scout@${repo}.service"; then
+        log "$repo: buffer $(format_buffer "$bt")h low but pi-scout@${repo} already active — waiting"
+        return
+    fi
+
+    local ceiling active_scouts
+    ceiling=$(lane_ceiling)
+    active_scouts=$(active_scout_count)
+    if [ "$active_scouts" -ge "$ceiling" ]; then
+        log "$repo: buffer $(format_buffer "$bt")h low but active_scout_count=$active_scouts >= ceiling=$ceiling — capacity bound"
+        return
+    fi
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "$repo: DRY-RUN would start pi-scout@${repo}.service (buffer=$(format_buffer "$bt")h, ready=$ready, drain=$drain)"
+        write_stamp "$repo"
+        return
+    fi
+
+    if ! "$SYSTEMCTL" --user start --no-block "pi-scout@${repo}.service" >/dev/null 2>&1; then
+        log "$repo: systemctl start pi-scout@${repo}.service FAILED"
+        return
+    fi
+
+    write_stamp "$repo"
+    loud "REFILL" "repo=$repo ready=$ready drain_6h=$drain buffer_h=$(format_buffer "$bt") ceiling=$active_scouts/$ceiling action=start pi-scout@${repo}.service"
+}
+
+# --- gate mode (used by pi-scout@.service ExecCondition) ----------------------
+gate_repo() {
+    local repo="$1"
+    local ready drain bt
+    if [ -z "$repo" ]; then
+        log "--gate requires a repo argument"
+        exit 1
+    fi
+    ready=$(ready_count "$repo" 2>/dev/null || true)
+    [ -n "$ready" ] || { log "gate $repo: ready_count unavailable — skip"; exit 1; }
+    drain=$(merged_count "$repo" 2>/dev/null || true)
+    [ -n "$drain" ] || { log "gate $repo: merged_count unavailable — skip"; exit 1; }
+    bt=$(buffer_tenths "$ready" "$drain")
+
+    local target=$((TARGET_HOURS * 10))
+
+    if [ "$drain" -eq 0 ]; then
+        log "gate $repo: drain_rate=0 — buffer infinite, skip"
+        exit 1
+    fi
+    if [ "$bt" -lt "$target" ]; then
+        log "gate $repo: buffer $(format_buffer "$bt")h < target ${TARGET_HOURS}h — run"
+        exit 0
+    fi
+    log "gate $repo: buffer $(format_buffer "$bt")h >= target ${TARGET_HOURS}h — skip"
+    exit 1
+}
+
+# --- main ----------------------------------------------------------------------
+main() {
+    if [ "${1:-}" = "--gate" ]; then
+        gate_repo "${2:-}"
+    fi
+
+    local repo
+    while IFS= read -r repo; do
+        [ -n "$repo" ] || continue
+        compute_repo "$repo" || true
+    done < <(repo_list)
+}
+
+main "$@"

@@ -12,9 +12,9 @@
 #
 #   1. JSON is valid (jq parses it).
 #   2. checkout_root is the path intake/worker assume (/home/nish/workspaces/products).
-#   3. required_labels is exactly the three labels the pi-intake@.service
-#      ExecCondition silently no-ops without — agent-ready, agent-in-progress,
-#      agent-blocked — in that order.
+#   3. required_labels is exactly the set the intake/auditor pipeline depends
+#      on — agent-ready, agent-in-progress, agent-blocked, scout-candidate,
+#      discarded — in that order.
 #   4. repos is a non-empty array of objects each with a non-empty `name`.
 #   5. No duplicate repo names within `repos`.
 #   6. `repos` is sorted ascending by name (deterministic — reconciler diffs
@@ -41,8 +41,8 @@ jq '.' "$file" >/dev/null || fail "intake-repos.json is not valid JSON"
 [[ "$(jq -r '.checkout_root' "$file")" == "/home/nish/workspaces/products" ]] \
   || fail "checkout_root must be /home/nish/workspaces/products, got $(jq -r '.checkout_root' "$file")"
 
-# 3. required_labels — exactly the three, in order.
-expected_labels='["agent-ready","agent-in-progress","agent-blocked"]'
+# 3. required_labels — the labels the intake/auditor pipeline depends on, in order.
+expected_labels='["agent-ready","agent-in-progress","agent-blocked","scout-candidate","discarded"]'
 got_labels="$(jq -c '.required_labels' "$file")"
 [[ "$got_labels" == "$expected_labels" ]] \
   || fail "required_labels must be $expected_labels, got $got_labels"
