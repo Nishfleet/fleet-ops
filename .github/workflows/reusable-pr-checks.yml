@@ -1,0 +1,204 @@
+# Reusable PR checks — the CI standard, defined once in fleet-ops.
+#
+# Call from a consumer:
+#   jobs:
+#     pr-checks:
+#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main
+#       with:
+#         node-version: "24"
+#         install-command: npm ci
+#         verify-command: npm test && npm run build
+#       secrets: inherit
+#
+# Same-repo callers use ./.github/workflows/reusable-pr-checks.yml (this commit).
+#
+# Updates on this file propagate to every consumer that pins a moving ref.
+# Never copy these steps into a caller; pass inputs instead.
+#
+# Standing CI standard (vault global-standing-rules.md), by construction:
+#   1. timeout-minutes on the job.
+#   2. concurrency + cancel-in-progress (PR/push only — callers must not use
+#      this workflow for deploy/release/migration).
+#   3. dependency caching via setup-node cache: npm when install-command is set.
+#   4. one batched job: install + verify + secret scan.
+#   5. expensive verify gated INSIDE the job by a changed-files check, so the
+#      job always reports (a skipped required check would freeze every PR).
+#   6. fetch-depth: 0 — git-diff path gating and gitleaks both need history.
+#   7. gitleaks SARIF artifact retention-days: 7.
+#   8. gitleaks exit-code contract: 0 clean, 2 leaks, anything else scanner error.
+#   9. gitleaks runs on every PR when scan-secrets is true, including docs-only.
+#  10. no CI that watches CI.
+#
+# Secret scan uses the gitleaks BINARY (not gitleaks/gitleaks-action). The
+# action requires a GITLEAKS_LICENSE on Nishfleet org repos and fails without
+# it (verified 2026-08-24, run 32697545503).
+
+name: Reusable PR checks
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node version for setup-node. Empty string skips Node setup."
+        type: string
+        required: false
+        default: "24"
+      install-command:
+        description: "Dependency install (e.g. npm ci). Empty string skips install and npm cache."
+        type: string
+        required: false
+        default: "npm ci"
+      verify-command:
+        description: "Test/build command after install. Empty string skips verify. Skipped on docs-only PRs."
+        type: string
+        required: false
+        default: "npm test"
+      python-version:
+        description: "Python version for setup-python. Empty string skips Python setup."
+        type: string
+        required: false
+        default: ""
+      scan-secrets:
+        description: "Run gitleaks in this job. Set false when the caller already has a required Gitleaks job (expand/contract)."
+        type: boolean
+        required: false
+        default: true
+      timeout-minutes:
+        description: "Job timeout. Default 20 (~3x a healthy node PR). Shell-only callers should pass 5."
+        type: number
+        required: false
+        default: 20
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-checks:
+    name: PR checks
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect code changes (docs-only fast path)
+        id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base="${BASE}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$base" "${HEAD}" \
+            | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git' \
+            | grep -q .; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: inputs.python-version != '' && steps.changes.outputs.code == 'true'
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up Node (with npm cache)
+        if: inputs.node-version != '' && steps.changes.outputs.code == 'true' && inputs.install-command != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Set up Node (no cache)
+        if: inputs.node-version != '' && steps.changes.outputs.code == 'true' && inputs.install-command == ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        if: steps.changes.outputs.code == 'true' && inputs.install-command != ''
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: eval "$INSTALL_COMMAND"
+
+      - name: Verify (test + build)
+        if: steps.changes.outputs.code == 'true' && inputs.verify-command != ''
+        env:
+          VERIFY_COMMAND: ${{ inputs.verify-command }}
+        run: eval "$VERIFY_COMMAND"
+
+      - name: Install gitleaks (pinned binary + sha256)
+        if: inputs.scan-secrets
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="v8.30.1"
+          GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3e2470eb"
+          ARCHIVE="gitleaks_8.30.1_linux_x64.tar.gz"
+          URL="https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/${ARCHIVE}"
+          curl -fsSL --retry 3 --retry-delay 2 -o "${ARCHIVE}" "${URL}"
+          echo "${GITLEAKS_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          install -d "${HOME}/.local/bin"
+          tar -xzf "${ARCHIVE}" -C "${HOME}/.local/bin" gitleaks
+          chmod +x "${HOME}/.local/bin/gitleaks"
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Scan for secrets
+        if: inputs.scan-secrets
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          log_opts=""
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              log_opts="--no-merges --first-parent ${PR_BASE}..${PR_HEAD}"
+              ;;
+            push)
+              if [ "${PUSH_BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+                log_opts="-1"
+              else
+                log_opts="--no-merges --first-parent ${PUSH_BEFORE}..${GITHUB_SHA}"
+              fi
+              ;;
+          esac
+          args=(detect --redact -v --exit-code=2 --report-format=sarif --report-path=results.sarif)
+          if [ -n "$log_opts" ]; then
+            args+=(--log-opts "${log_opts}")
+          fi
+          set +e
+          gitleaks "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "No leaks detected"
+          elif [ "$rc" -eq 2 ]; then
+            echo "::error::Leaks detected — see results.sarif for details"
+            exit 1
+          else
+            echo "::error::Unexpected exit code [$rc] from gitleaks"
+            exit 1
+          fi
+
+      - name: Upload gitleaks SARIF (ephemeral)
+        if: ${{ always() && inputs.scan-secrets }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gitleaks-sarif
+          path: results.sarif
+          retention-days: 7
+          if-no-files-found: ignore
