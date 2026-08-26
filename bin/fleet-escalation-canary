@@ -11,9 +11,13 @@
 #        explicit anti-recursion exclusion list.
 #     2. No fleet execution path exists outside a systemd unit: only the
 #        sanctioned bin wrappers invoke `pi --print --provider` directly.
-#     3. Terminal delivery exists for NISH-ESCALATIONS.md and failed-units
-#        state. Until fleet-ops#76 lands, this is a standing loud PENDING
-#        finding — the canary does not pretend the invariant is met.
+#     3. Terminal delivery (#76): dead-man ping (healthchecks.io on a
+#        successful heartbeat tick), failed-unit pager (hermes --urgent after
+#        a failed repair), and seat-health freshness (observed_at < 90min,
+#        else trigger pi-transport-check). Wired when lib/heartbeat-watchman.sh
+#        defines the three functions AND bin/fleet-heartbeat + tier1 wire them
+#        AND the service loads hc.env via EnvironmentFile. A marker file still
+#        suppresses the finding; missing wiring = standing loud PENDING.
 #     4. Red-CI-on-ownerless-PR coverage (#124). Until #124's guard marker is
 #        present, a standing loud PENDING finding.
 #     5. system-scope fleet artifacts are documented as kernel/oomd-supervised
@@ -239,13 +243,40 @@ for f in "${pi_matching[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 3. terminal delivery path (#76 pending)
+# 3. terminal delivery path (#76): dead-man ping + failed-unit pager + seat-health
 # ---------------------------------------------------------------------------
-log "3. checking terminal delivery path"
+# Observes the REAL wiring in the fleet-ops repo, not just a marker. The
+# delivery is wired when ALL of these hold:
+#   - lib/heartbeat-watchman.sh defines the three delivery functions
+#     (heartbeat_ping_deadman, heartbeat_page_units, heartbeat_seat_health_check)
+#   - bin/fleet-heartbeat wires the dead-man ping (healthchecks.io on success)
+#   - bin/fleet-heartbeat-tier1 wires the failed-unit pager (heartbeat_page_units)
+#     + seat-health freshness (heartbeat_seat_health_check)
+#   - systemd/fleet-heartbeat.service loads hc.env (HC_URL) via EnvironmentFile
+# A marker file still suppresses the finding (escape hatch for environments
+# where the wiring lives outside the repo). Missing wiring = loud PENDING,
+# matching the bridge block's contract.
+log "3. checking terminal delivery path (#76)"
+watchman_lib="$FLEET_OPS_REPO/lib/heartbeat-watchman.sh"
+heartbeat_bin="$FLEET_OPS_REPO/bin/fleet-heartbeat"
+tier1_bin="$FLEET_OPS_REPO/bin/fleet-heartbeat-tier1"
+heartbeat_svc="$FLEET_OPS_REPO/systemd/fleet-heartbeat.service"
 if [[ -f "$DELIVERY_MARKER" ]]; then
     log "3.  - delivery marker present: $DELIVERY_MARKER"
+elif [[ -f "$watchman_lib" ]] \
+    && grep -q 'heartbeat_ping_deadman' "$watchman_lib" 2>/dev/null \
+    && grep -q 'heartbeat_page_units' "$watchman_lib" 2>/dev/null \
+    && grep -q 'heartbeat_seat_health_check' "$watchman_lib" 2>/dev/null \
+    && [[ -f "$heartbeat_bin" ]] \
+    && grep -q 'heartbeat_ping_deadman' "$heartbeat_bin" 2>/dev/null \
+    && [[ -f "$tier1_bin" ]] \
+    && grep -q 'heartbeat_page_units' "$tier1_bin" 2>/dev/null \
+    && grep -q 'heartbeat_seat_health_check' "$tier1_bin" 2>/dev/null \
+    && [[ -f "$heartbeat_svc" ]] \
+    && grep -qi 'EnvironmentFile=.*hc\.env' "$heartbeat_svc" 2>/dev/null; then
+    log "3.  - delivery wired: watchman lib + heartbeat dead-man + tier1 pager/seat-health + hc.env EnvironmentFile"
 else
-    loud "ESCALATION-CANARY-PENDING" "terminal delivery not wired (#76) — NISH-ESCALATIONS.md and failed-units state have no live pager/dead-man ping yet"
+    loud "ESCALATION-CANARY-PENDING" "terminal delivery not wired (#76) — dead-man ping, failed-unit pager, or seat-health freshness wiring missing in fleet-ops (marker, watchman lib, heartbeat/tier1 wiring, or hc.env EnvironmentFile absent)"
     pending=$((pending + 1))
 fi
 
