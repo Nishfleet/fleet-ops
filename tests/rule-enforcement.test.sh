@@ -41,6 +41,17 @@ count=$(jq '.rules | length' "$matrix")
 [[ "$count" -gt 0 ]] || fail "matrix.rules is empty"
 ok "committed matrix is valid ($count rules)"
 
+# fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
+# rows even when the live vault is absent (CI skips the live join).
+for src in \
+  "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" \
+  "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes"
+do
+  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
+  [[ "$status" == "enforced" ]] || fail "matrix must have $src as enforced, got ${status:-missing}"
+  ok "matrix row for $src is enforced"
+done
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e
