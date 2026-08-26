@@ -4,9 +4,7 @@
   "required_labels": [
     "agent-ready",
     "agent-in-progress",
-    "agent-blocked",
-    "scout-candidate",
-    "discarded"
+    "agent-blocked"
   ],
   "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> — intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo — the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
   "repos": [
