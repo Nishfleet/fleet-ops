@@ -53,10 +53,9 @@
     {
       "id": "sr-research-before-build",
       "source": "global-standing-rules.md: Research before build \u2014 always (Nish, 2026-08-18)",
-      "mechanism": "No gate that a build skipped last30days / official docs",
-      "proof": "Nishfleet/fleet-ops#517",
-      "status": "queued(#517)",
-      "queued_since": "2026-08-27"
+      "mechanism": "PR gate: a new bin/ file requires a research: line naming last30days/official docs/live search plus compared options; worker prompt runs the checker; drill rejects a fixture that skips it",
+      "proof": "bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#517",
+      "status": "enforced"
     },
     {
       "id": "sr-gha-overflow",
