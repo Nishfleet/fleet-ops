@@ -47,7 +47,6 @@ record_args="$scratch/pi.args"
 record_stdin="$scratch/pi.stdin"
 
 export PI_PACKET_SEAT_LIB="$stub_lib"
-export PI_PACKET_ASSEMBLY_LIB="$repo_root/lib/packet-assembly.sh"
 export PI_BIN="$fake_pi"
 export SCOUT_PROMPT_DIR="$repo_root/prompts"
 export PI_RECORD_ARGS="$record_args"

@@ -6,19 +6,14 @@
 # TARGET line, calls pick_seat from lib/seat-lib.sh, and runs
 # pi --print --provider <provider> --model <model> on the assembled packet.
 #
-# For the 0509 scout, the packet is research-seeded deterministically by
-# lib/packet-assembly.sh (market signal, category research, north-star rule,
-# repo reality). The scout fails loud if the market signal is stale or missing.
-#
 # Args:
 #   $1 = repo instance (e.g. fleet-ops)
 #   $2 = prompt name (scout or scout-repair)
 #
 # Environment:
-#   PI_PACKET_SEAT_LIB      path to seat-lib.sh
-#   PI_PACKET_ASSEMBLY_LIB  path to packet-assembly.sh
-#   SCOUT_PROMPT_DIR        prompt directory (default ~/.pi/agent/prompts)
-#   PI_BIN                  pi binary (default ~/.local/bin/pi)
+#   PI_PACKET_SEAT_LIB  path to seat-lib.sh
+#   SCOUT_PROMPT_DIR    prompt directory (default ~/.pi/agent/prompts)
+#   PI_BIN              pi binary (default ~/.local/bin/pi)
 
 set -euo pipefail
 
@@ -28,10 +23,6 @@ export HOME="${HOME:-/home/nish}"
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
-
-PACKET_ASM_LIB="${PI_PACKET_ASSEMBLY_LIB:-$HOME/.local/lib/pi-packet/packet-assembly.sh}"
-# shellcheck source=../lib/packet-assembly.sh source-path=SCRIPTDIR
-source "$PACKET_ASM_LIB"
 
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 PROMPT_DIR="${SCOUT_PROMPT_DIR:-$HOME/.pi/agent/prompts}"
@@ -67,39 +58,23 @@ nm=$(printf '%s' "$seat" | cut -f2)
 
 seat_log "pi-scout-run: $repo/$prompt_name running on $np/$nm (weight=$weight)"
 
-# Build the packet.
-# - 0509 scout: use the shared packet-assembly library (research-seeded).
-# - Everything else: prompt + TARGET line (legacy shape).
+# Build the TARGET line.
 case "$prompt_name" in
     scout)
-        if [[ "$repo" == "0509" ]]; then
-            packet=$(mktemp)
-            # shellcheck disable=SC2064
-            trap "rm -f '$packet'" EXIT INT TERM
-            if ! packet_assemble_0509_scout "$prompt_file" "$repo" "$packet"; then
-                seat_log "pi-scout-run: $repo/$prompt_name ABORT — market signal stale/missing"
-                echo "pi-scout-run: $repo/$prompt_name market signal stale or missing — aborting" >&2
-                exit 1
-            fi
-            seat_log "pi-scout-run: $repo/$prompt_name research-seeded packet assembled"
-            "$PI_BIN" --print --provider "$np" --model "$nm" < "$packet"
-        else
-            {
-                cat "$prompt_file"
-                echo
-                echo "TARGET REPO: Nishfleet/${repo}"
-            } | "$PI_BIN" --print --provider "$np" --model "$nm"
-        fi
+        target_line="TARGET REPO: Nishfleet/${repo}"
         ;;
     scout-repair)
-        {
-            cat "$prompt_file"
-            echo
-            echo "TARGET: scout unit pi-scout@${repo}.service, repo Nishfleet/${repo}"
-        } | "$PI_BIN" --print --provider "$np" --model "$nm"
+        target_line="TARGET: scout unit pi-scout@${repo}.service, repo Nishfleet/${repo}"
         ;;
     *)
         echo "pi-scout-run: unknown prompt name: $prompt_name" >&2
         exit 1
         ;;
 esac
+
+# Run pi. The packet is the prompt plus a blank line and the TARGET line.
+{
+    cat "$prompt_file"
+    echo
+    echo "$target_line"
+} | "$PI_BIN" --print --provider "$np" --model "$nm"
