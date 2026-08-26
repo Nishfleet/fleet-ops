@@ -220,4 +220,5 @@ jobs:
         bash tests/seriousness-gate.test.sh
         bash tests/senior-panel-tally.test.sh
         bash tests/senior-panel-conference.test.sh
+        bash tests/hand-rolled-plumbing.test.sh
         bash tests/reusable-workflows.test.sh

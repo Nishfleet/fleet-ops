@@ -117,7 +117,8 @@ jobs:
             --arg closingIssueBody "$closing_body" \
             --argjson ciCheckRuns "$ci_runs" \
             --argjson triggers "$triggers" \
-            '{repo:$repo, prNumber:$prNumber, prTitle:$prTitle, prBody:$prBody, diff:$diff, changedFiles:$changedFiles, additions:$additions, deletions:$deletions, closingIssueNumber:$closingIssueNumber, closingIssueBody:$closingIssueBody, ciCheckRuns:$ciCheckRuns, triggers:$triggers}')"
+            --arg headSha "${{ github.event.pull_request.head.sha }}" \
+            '{repo:$repo, prNumber:$prNumber, prTitle:$prTitle, prBody:$prBody, diff:$diff, changedFiles:$changedFiles, additions:$additions, deletions:$deletions, closingIssueNumber:$closingIssueNumber, closingIssueBody:$closingIssueBody, ciCheckRuns:$ciCheckRuns, triggers:$triggers, headSha:$headSha}')"
 
           result="$(printf '%s' "$packet" | node .github/scripts/senior-panel-conference.mjs)"
           conf_result="$(printf '%s' "$result" | jq -r '.result')"

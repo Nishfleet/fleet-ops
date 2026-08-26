@@ -38,6 +38,12 @@
 
 import { readFileSync } from "node:fs";
 import { tallyConference, normaliseVerdict, REQUIRED_SEATS } from "./senior-panel-tally.mjs";
+import {
+  HAND_BUILT_PLUMBING_BAN,
+  detectHandRolledPlumbing,
+} from "./hand-rolled-plumbing.mjs";
+
+export { HAND_BUILT_PLUMBING_BAN, detectHandRolledPlumbing };
 
 /**
  * @typedef {import("./senior-panel-tally.mjs").Verdict} Verdict
@@ -56,6 +62,9 @@ import { tallyConference, normaliseVerdict, REQUIRED_SEATS } from "./senior-pane
  *   closingIssueBody: string,
  *   ciCheckRuns: { name: string, conclusion: string, url: string }[],
  *   triggers: string[],
+ *   headSha: string,
+ *   handBuiltPlumbingBan: string,
+ *   plumbingFindings: import("./hand-rolled-plumbing.mjs").PlumbingFinding[],
  * }} ContextPacket
  *
  * @typedef {{
@@ -99,6 +108,9 @@ export function buildContextPacket(input) {
     closingIssueBody: String(input.closingIssueBody || ""),
     ciCheckRuns: Array.isArray(input.ciCheckRuns) ? input.ciCheckRuns : [],
     triggers: Array.isArray(input.triggers) ? input.triggers : [],
+    headSha: String(input.headSha || ""),
+    handBuiltPlumbingBan: HAND_BUILT_PLUMBING_BAN,
+    plumbingFindings: Array.isArray(input.plumbingFindings) ? input.plumbingFindings : [],
   };
 }
 
@@ -211,7 +223,24 @@ export async function liveDispatch(packet, xv, io) {
  */
 export function renderComment(r) {
   const header = `### Senior-auditor conference — ${r.result}`;
-  const lines = [header, "", `Mode: \`${r.mode}\` | PR triggers: \`${r.packet.triggers.join("`, `") || "none"}\``, ""];
+  const shaMark = r.packet.headSha ? `<!-- senior-panel:${r.packet.headSha} -->` : "";
+  const lines = [
+    header,
+    shaMark,
+    "",
+    `Mode: \`${r.mode}\` | PR triggers: \`${r.packet.triggers.join("`, `") || "none"}\``,
+    "",
+  ];
+  if (r.packet.plumbingFindings && r.packet.plumbingFindings.length > 0) {
+    lines.push(
+      "**HARD REJECTION (not a judgment call)** — hand-rolled orchestration in the diff.",
+      "",
+    );
+    for (const f of r.packet.plumbingFindings) {
+      lines.push(`- \`${f.id}\` in \`${f.path}\` — replace with ${f.replacement} (${f.evidence})`);
+    }
+    lines.push("");
+  }
   if (r.result === "PENDING") {
     lines.push(
       `The conference could not convene 2-of-3 (${r.tally.missing} seat(s) walled).`,
@@ -256,10 +285,21 @@ export async function runConference(packetInput, opts = {}) {
     .trim();
 
   const packet = buildContextPacket(packetInput);
+  packet.plumbingFindings = detectHandRolledPlumbing(packet.diff);
 
   let verdicts;
   let escalated = false;
-  if (mode === "live") {
+  if (packet.plumbingFindings.length > 0) {
+    // Mechanical REJECT — Nish 2026-08-26: not a judgment call.
+    const why = packet.plumbingFindings
+      .map((f) => `${f.id} in ${f.path} — replace with ${f.replacement}`)
+      .join("; ");
+    verdicts = AUDITOR_SEATS.map((s) => ({
+      seat: s.seat,
+      verdict: "REJECT",
+      reason: `HARD REJECTION (not a judgment call): ${why}`,
+    }));
+  } else if (mode === "live") {
     const round1 = await liveDispatch(packet, {}, opts.io);
     // Round 2: re-dispatch with the cross-view. The bridge performs the
     // confer; we feed it round-1 so auditors see each other's verdicts.
@@ -296,7 +336,7 @@ function usage() {
     "Reads a context-packet JSON on stdin and prints the conference result.",
     "Packet: { repo, prNumber, prTitle, prBody, diff, changedFiles,",
     "  additions, deletions, closingIssueNumber, closingIssueBody,",
-    "  ciCheckRuns, triggers }",
+    "  ciCheckRuns, triggers, headSha }",
     "",
     "Flags:",
     "  --stub          force stub mode (deterministic, no network)",
