@@ -750,3 +750,8 @@ bash "$here/entitled-wired-canary.test.sh"
 # .github/workflows/**).
 bash "$here/fleet-restore-drill.test.sh"
 
+# fleet-ops#455: four-plane resilience drill. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens
+# cannot push .github/workflows/**).
+bash "$here/fleet-resilience-drill.test.sh"
+
