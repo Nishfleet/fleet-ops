@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/pi-issue-run-defensive-mkdir.test.sh
 #
-# fleet-ops#63: $ATTEMPTS_DIR was wiped from under running workers
+# fleet-ops#63 / #122: $ATTEMPTS_DIR was wiped from under running workers
 # (race with a concurrent worker, tmpfiles.d rule, external cleanup).
 # The startup `mkdir -p` is not enough — recreate inline before the
 # tried-seats append. This test proves the inline mkdir is wired up and
@@ -25,48 +25,30 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t pi-issue-run-mkdir.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Stub HOME so ATTEMPTS_DIR lands in the scratch dir.
+# --- scratch environment ---------------------------------------------------
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
-# Point the seat-lib.sh include at the repo's real copy so the script
-# can source its seat accounting. The default would be
-# $HOME/.local/lib/pi-packet/seat-lib.sh (the install symlink target).
+STATE_DIR="$scratch/state"
+mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
+LEDGER="$scratch/ledger"
+mkdir -p "$LEDGER"
+ISSUES_DIR="$scratch/issues"
+mkdir -p "$ISSUES_DIR"
+
+export PI_PACKET_STATE="$STATE_DIR"
+export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
+export PI_ISSUES_DIR="$ISSUES_DIR"
 export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
 
-# Drop a minimal seat-caps.json + a minimal models.json into the scratch
-# HOME so load_seat_caps succeeds and pick_seat has at least one seat
-# (devin/swe-1-7). The point of this test is the mkdir behavior, not
-# seat selection — we want the script to reach the tried-seats write.
-mkdir -p "$HOME/.local/state/pi-packet"
-cat >"$HOME/.local/state/pi-packet/seat-caps.json" <<'JSON'
-{
-  "ram_gb_per_worker": 1.5,
-  "free_providers_in_order": ["ollama"],
-  "providers": {
-    "devin": {
-      "cap": 4,
-      "class": "subscription",
-      "models": { "swe-1-7": 4 }
-    }
-  }
-}
-JSON
-# Point enumerate_seats at a minimal models.json with one allowlisted
-# seat so pick_seat succeeds and the script reaches the tried-seats
-# write. The point of this test is the mkdir behavior, not seat
-# selection — a single devin/swe-1-7 row is enough.
-export PI_MODELS_JSON="$repo_root/tests/fixtures/minimal-models.json"
+stub_bin="$scratch/stub-bin"
+mkdir -p "$stub_bin"
 
 # Stub `pi`: any invocation is a success with a stdout large enough to
 # pass the no-op-detection 20-byte threshold (pi-issue-run treats
 # <20B output as a no-op and re-seats; we want a real success exit so
 # the script's mkdir + tried-seats write has happened by the time we
-# inspect state). pi-issue-run sources PI_BIN from seat-lib.sh
-# (default: $HOME/.local/bin/pi); point PI_BIN directly so we don't
-# have to symlink under the scratch HOME.
-stub_bin="$scratch/stub-bin"
-mkdir -p "$stub_bin"
+# inspect state).
 cat >"$stub_bin/pi" <<'STUB'
 #!/usr/bin/env bash
 # Pretend we did real work — emit a success line that's safely above
@@ -92,21 +74,53 @@ exit 1
 STUB
 chmod +x "$stub_bin/worker-token"
 
+# Stub `systemctl` so this test does not depend on real active units or a
+# real seat-health ledger. Empty responses make the active-seat counting
+# functions return 0, giving `pick_seat` a clean cap count.
+cat >"$stub_bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$stub_bin/systemctl"
+
 export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
 
-# Pre-create the issues state dir + a packet so the script proceeds.
-# Note: pi-issue-run hardcodes the state dir to /home/nish/.local/state/pi-issues
-# (the canonical install path), not $HOME/.local. We write there because
-# running under nish's account during the test.
-STATE_PATH="/home/nish/.local/state/pi-issues"
-mkdir -p "$STATE_PATH"
-echo 'noop' > "$STATE_PATH/pi-issue-mkdir-test.in"
-# ATTEMPTS_DIR is created by seat-lib.sh sourced from the script (via
-# `mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"`). Let the script create it
-# so we don't shadow the real path.
+# --- stub inputs -----------------------------------------------------------
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+export PI_MODELS_JSON="$scratch/models.json"
 
-# --- Case 1: normal run — tries file is written, attempts dir survives ---
-ATTEMPTS_PATH="$HOME/.local/state/pi-packet/attempts"
+cat >"$SEAT_CAPS_JSON" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": [],
+  "providers": {
+    "devin": {
+      "cap": 4,
+      "class": "subscription",
+      "models": { "swe-1-7": 4 }
+    }
+  }
+}
+JSON
+
+cat >"$PI_MODELS_JSON" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "swe-1-7", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 }
+      ]
+    }
+  }
+}
+JSON
+
+# Pre-create the issues state dir + a packet so the script proceeds.
+echo 'noop' > "$ISSUES_DIR/pi-issue-mkdir-test.in"
+
+ATTEMPTS_PATH="$STATE_DIR/attempts"
+
+# --- Case 1: normal run — tries file is written, attempts dir survives -----
 set +e
 "$bin" pi-issue-mkdir-test 2>"$scratch/err.log"
 rc=$?
@@ -146,6 +160,7 @@ append_line=$(grep -nF "printf '%s/%s\\n' \"\$np\" \"\$nm\" >>\"\$tried_file\"" 
 inline=$(awk '/^# Defensive recreate/ { flag=1; next } flag && /^mkdir -p "\$ATTEMPTS_DIR"/ { print NR; exit }' "$bin")
 [[ -n "$inline" ]] || fail "pi-issue-run missing defensive inline mkdir -p \$ATTEMPTS_DIR (between seat pick and tried-seats append)"
 ok "inline defensive mkdir is wired between seat pick and tried-seats append"
+
 # --- Case 4 (P15): hang watchdog — a pi that never finalizes must be
 # killed by the wrapper's timeout, logged, and surfaced as rc!=0 so
 # systemd re-seats. This is the fleet-ops#83 wedge: pi does tool work
@@ -169,7 +184,7 @@ export PI_BIN="$stub_hang/pi"
 # Fresh instance so pick_seat still has a seat to route to (the tried-seats
 # file from cases 1-3 already excluded devin/swe-1-7).
 HANG_INST="pi-issue-mkdir-hang"
-echo noop > "$STATE_PATH/$HANG_INST.in"
+echo noop > "$ISSUES_DIR/$HANG_INST.in"
 set +e
 timeout 30 "$bin" "$HANG_INST" 2>"$scratch/err3.log"
 rc=$?
@@ -177,6 +192,6 @@ set -e
 [[ "$rc" != "0" ]] || fail "P15: hung pi should exit non-zero, got rc=$rc"
 # The marker lands in the unit err file (the wrapper appends it there for
 # seat-health/pick_seat to distinguish a hang from a spawn ETIMEDOUT).
-HANG_ERR="$STATE_PATH/$HANG_INST.err"
+HANG_ERR="$ISSUES_DIR/$HANG_INST.err"
 grep -q "PI HANG WATCHDOG" "$HANG_ERR" || fail "P15: unit err file missing PI HANG WATCHDOG marker: $(cat "$HANG_ERR")"
 ok "P15: hung pi killed by wrapper watchdog (PI_HANG_TIMEOUT_S), marker written, rc!=0"
