@@ -124,6 +124,13 @@ load_seat_caps() {
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
 
+    # fleet-ops#602: the read loops below must use LOCAL variables. bash's
+    # `local` is DYNAMIC scoping, so a bare `p`/`m` here would write into the
+    # caller's variable of the same name — a lazy-loading model_cap()/class_of()
+    # would have its own $p/$m clobbered to the last jq line before its lookup
+    # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
+    # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
+    local p m cap class bench_def window budget
     while IFS=$'\t' read -r p cap class bench_def; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"

@@ -9,8 +9,17 @@
 #
 # Roles:
 #   devin            -> devin/glm-5-2
-#   free-glm-5-3     -> free seat serving glm-5.3 per seat-caps allowlist
-#   straitly         -> straitly/deepseek/deepseek-v4-pro
+#   free-glm-5-3     -> a free-class seat (seat-caps class=free). Previously
+#                      hard-matched the zenmux z-ai/glm-5.3 model, which went
+#                      credentials_bad (2026-08-25) and had no other glm-5.3
+#                      free seat anywhere -> NO-USABLE-SEAT every heartbeat
+#                      tick -> every free-glm-5-3 audit unit failed -> the
+#                      escalation layer summoned the auditor (2026-08-27).
+#                      Free is a class, not a model: pick any class=free seat
+#                      with a model cap > 0 (commandcode ds-flash, hetzner
+#                      qwen), fall back to any usable capable seat, and only
+#                      then admit total wall.
+#   straitly         -> straitly/deepseek/deepseek-v4-pro (default seat)
 #
 # Environment seams:
 #   AUDIT_STATE_DIR              vote file tree (default ~/.local/state/fleet-audit)
@@ -45,9 +54,35 @@ if [ -f "$SEAT_LIB" ]; then
     source "$SEAT_LIB"
 fi
 
+# Force-load the seat-caps map up front. load_seat_caps' read loops write to
+# $p/$m in the caller's dynamic scope, so any lazy load inside
+# model_cap/provider_cap/class_of clobbers THEIR local $p/$m (bash local is
+# dynamic scoping) and the lookup reads the wrong key (fleet-ops#602). This
+# mirrors pick_seat, which also force-loads before iterating.
+if command -v load_seat_caps >/dev/null 2>&1; then
+    load_seat_caps || true
+fi
+
 log() { printf '[%s] [pi-audit-run] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
-find_free_glm53_seat() {
+# True when the seat ledger marks the seat poison_ladder (a poison-ladder
+# seat is never picked by pick_seat either; mirror that here so the auditor
+# does not route onto a seat the fleet deliberately avoids).
+seat_is_poison() {
+    local p="$1" m="$2" f pl
+    f=$(seat_ledger_path "$p" "$m" 2>/dev/null) || return 1
+    [ -f "$f" ] || return 1
+    pl=$(jq -r '.poison_ladder // false' "$f" 2>/dev/null || echo false)
+    [ "$pl" = "true" ]
+}
+
+find_free_seat() {
+    # A free-class seat with a nonzero model cap, healthy (seat_usable), and
+    # not poison-ladder. Free is a class per seat-caps.json (commandcode,
+    # hetzner, opencode, orcarouter, groq, inferx), NOT the zenmux glm-5.3
+    # model specifically (that seat is credentials_bad since 2026-08-25 and
+    # no other glm-5.3 free seat exists -> hard-matching it made the whole
+    # free-glm-5-3 role NO-USABLE-SEAT -> unit-failure escalation loop).
     if [ -n "${AUDIT_FREE_GLM53_SEAT:-}" ]; then
         printf '%s\t%s\n' "${AUDIT_FREE_GLM53_SEAT%%:*}" "${AUDIT_FREE_GLM53_SEAT#*:}"
         return 0
@@ -58,13 +93,43 @@ find_free_glm53_seat() {
     local p m _capable
     while IFS=$'\t' read -r p m _ _capable; do
         [ -n "$p" ] || continue
-        [[ "$m" == *glm-5.3* ]] || continue
         [ "$(class_of "$p" 2>/dev/null || echo "")" = "free" ] || continue
         [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
         seat_usable "$p" "$m" 2>/dev/null || continue
+        seat_is_poison "$p" "$m" 2>/dev/null && continue
         printf '%s\t%s\n' "$p" "$m"
         return 0
     done < <(enumerate_seats)
+    return 1
+}
+
+# Fallback: any usable capable seat (not class-restricted). Keeps the panel
+# from NO-USABLE-SEAT'ing when every free seat is momentarily benched while
+# strong seats are healthy. Logged, so the degradation is visible.
+find_any_capable_seat() {
+    local p m _capable
+    while IFS=$'\t' read -r p m _ _capable; do
+        [ -n "$p" ] || continue
+        [ "$_capable" = "1" ] || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        seat_is_poison "$p" "$m" 2>/dev/null && continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done < <(enumerate_seats)
+    return 1
+}
+
+resolve_free_role() {
+    local seat
+    if seat=$(find_free_seat); then
+        printf '%s\n' "$seat"
+        return 0
+    fi
+    log "no free-class seat usable; falling back to any capable seat"
+    if seat=$(find_any_capable_seat); then
+        printf '%s\n' "$seat"
+        return 0
+    fi
     return 1
 }
 
@@ -79,13 +144,33 @@ resolve_seat() {
             fi
             ;;
         free-glm-5-3|free)
-            find_free_glm53_seat
+            resolve_free_role
             ;;
         straitly)
             if [ -n "${AUDIT_STRAITLY_SEAT:-}" ]; then
                 printf '%s\t%s\n' "${AUDIT_STRAITLY_SEAT%%:*}" "${AUDIT_STRAITLY_SEAT#*:}"
             else
-                printf 'straitly\tdeepseek/deepseek-v4-pro\n'
+                # Default straitly seat (seat-caps class=metered). If the
+                # default is dead, rotate within the provider like free does.
+                if seat_usable straitly deepseek/deepseek-v4-pro 2>/dev/null; then
+                    printf 'straitly\tdeepseek/deepseek-v4-pro\n'
+                else
+                    local p m _capable seat2
+                    seat2=""
+                    while IFS=$'\t' read -r p m _ _capable; do
+                        [ "$p" = "straitly" ] || continue
+                        [ -n "$m" ] || continue
+                        seat_usable "$p" "$m" 2>/dev/null || continue
+                        seat2="$p\t$m"
+                        break
+                    done < <(enumerate_seats)
+                    if [ -n "$seat2" ]; then
+                        printf '%s\n' "$seat2"
+                    else
+                        log "no usable straitly seat (default deepseek-v4-pro unavailable)"
+                        return 1
+                    fi
+                fi
             fi
             ;;
         *)
