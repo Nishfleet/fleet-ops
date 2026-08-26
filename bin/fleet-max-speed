@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# fleet-max-speed — hunt artificial limiters (fleet-ops#516 / sr-max-speed).
+#
+# Standing rule (Nish, 2026-08-18): max speed is the default. Only three
+# brakes are legitimate: money, safety, hardware. Everything else that
+# slows work down is a bug — single-threaded defaults, one-job-per-N
+# gates, polite waiting, "deliberately conservative" throttles.
+#
+# This detector scans production bin/ and lib/ (not tests/) for those
+# patterns. A nearby `LEGAL-BRAKE: money|safety|hardware` comment (same
+# line or up to 5 lines above) is the named exception. The detector
+# itself is skipped so its ban-list comments are not findings.
+#
+# Decision: any unannotated hit -> LOUD line + exit 1 (heartbeat tick
+# fails) + one auto-filed issue, deduped by signal key.
+#
+# Environment seams (tests):
+#   FLEET_MAX_SPEED_ROOT          repo root to scan (default: this checkout)
+#   FLEET_MAX_SPEED_SLEEP_SECS    sleep N is a hit when N >= this (default 5)
+#   FLEET_HEARTBEAT_TRIAGE        loud-line dest
+#   GH / FLEET_MAX_SPEED_ISSUE_REPO / FLEET_MAX_SPEED_FILE_ISSUES
+#
+# Exit: 0 = no artificial limiters. Non-zero = at least one hit.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ROOT="${FLEET_MAX_SPEED_ROOT:-$(cd "$here/.." && pwd)}"
+SLEEP_MIN="${FLEET_MAX_SPEED_SLEEP_SECS:-5}"
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
+GH="${GH:-gh}"
+ISSUE_REPO="${FLEET_MAX_SPEED_ISSUE_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_MAX_SPEED_FILE_ISSUES:-1}"
+
+SIGNAL_PREFIX="signal: max-speed/"
+
+log() {
+    printf '[%s] [fleet-max-speed] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# --- scan -------------------------------------------------------------------
+# Prints one finding per line: path:line:kind:excerpt
+# Empty output = clean.
+scan() {
+    python3 - "$ROOT" "$SLEEP_MIN" <<'PY'
+import os, re, sys
+
+root = os.path.abspath(sys.argv[1])
+sleep_min = int(sys.argv[2])
+skip_names = {"fleet-max-speed"}
+scan_dirs = ("bin", "lib")
+
+phrase_re = re.compile(
+    r"deliberately conservative|one-job-per|one job per|"
+    r"polite wait|single-threaded default|artificially limit",
+    re.I,
+)
+# Shell `sleep N` as a command, not `/bin/sleep N` (stub payloads).
+sleep_re = re.compile(
+    r"(?:^|&&|\|\||;)\s*sleep\s+(\d+)(?:\.\d+)?\b"
+)
+conc_re = re.compile(
+    r"\b(?:MAX_CONCURRENT|MAX_JOBS|max_jobs)\s*=\s*1\b"
+    r"|xargs\s+-P\s*1\b"
+    r"|--max-procs\s*=\s*1\b"
+)
+brake_re = re.compile(r"LEGAL-BRAKE:\s*(money|safety|hardware)\b", re.I)
+
+def is_text(path: str) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            chunk = fh.read(4096)
+    except OSError:
+        return False
+    if not chunk:
+        return True
+    if b"\0" in chunk:
+        return False
+    return True
+
+def window_has_brake(lines: list[str], idx: int) -> bool:
+    start = max(0, idx - 5)
+    for i in range(start, idx + 1):
+        if brake_re.search(lines[i]):
+            return True
+    return False
+
+findings = []
+for dirname in scan_dirs:
+    base = os.path.join(root, dirname)
+    if not os.path.isdir(base):
+        continue
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in {".git", "__pycache__"}]
+        for name in filenames:
+            if name in skip_names:
+                continue
+            path = os.path.join(dirpath, name)
+            if not is_text(path):
+                continue
+            rel = os.path.relpath(path, root)
+            try:
+                text = open(path, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
+                kinds = []
+                m = sleep_re.search(line)
+                if m and int(m.group(1)) >= sleep_min:
+                    kinds.append("sleep")
+                if phrase_re.search(line):
+                    kinds.append("phrase")
+                if conc_re.search(line):
+                    kinds.append("concurrency")
+                if not kinds:
+                    continue
+                if window_has_brake(lines, i):
+                    continue
+                excerpt = line.strip()[:160]
+                findings.append(f"{rel}:{i+1}:{','.join(kinds)}:{excerpt}")
+
+for row in findings:
+    print(row)
+PY
+}
+
+file_findings() {
+    local slug="$1" msg="$2"
+    [[ "$FILE_ISSUES" == "1" ]] || { log "auto-file: skipped (FLEET_MAX_SPEED_FILE_ISSUES=0)"; return 0; }
+    command -v "$GH" >/dev/null 2>&1 || { log "auto-file: gh missing — cannot file"; return 0; }
+    local signal="${SIGNAL_PREFIX}${slug}"
+    set +e
+    local open_json
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    set -e
+    if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"${open_json:-[]}" >/dev/null 2>&1; then
+        log "auto-file: $slug already open (deduped)"
+        return 0
+    fi
+    local title="fix(max-speed): $slug — artificial limiter (not money/safety/hardware)"
+    local body
+    body="The sr-max-speed standing rule (Nish, 2026-08-18) is enforced by bin/fleet-max-speed. It found an artificial limiter — a throttle that is not one of the three legal brakes (money, safety, hardware).
+
+- finding: $msg
+- detector: bin/fleet-max-speed (heartbeat tier1)
+- legal brakes: annotate with \`LEGAL-BRAKE: money|safety|hardware — <reason>\` on or above the line, or remove the limiter.
+
+Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
+
+$signal"
+    set +e
+    local created
+    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    local rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]] && [[ -n "$created" ]]; then
+        log "auto-file: FILED $slug -> $created"
+    else
+        log "auto-file: failed to file $slug (rc=$rc)"
+    fi
+}
+
+# ============================================================================
+# main
+# ============================================================================
+log "max-speed scan starting (root=$ROOT sleep_min=${SLEEP_MIN}s)"
+
+if [[ ! -d "$ROOT" ]]; then
+    loud "ARTIFICIAL-LIMITER-FAIL" "scan root missing: $ROOT"
+    exit 1
+fi
+
+set +e
+hits=$(scan)
+scan_rc=$?
+set -e
+if [[ "$scan_rc" -ne 0 ]]; then
+    loud "ARTIFICIAL-LIMITER-FAIL" "scanner exited $scan_rc"
+    exit 1
+fi
+
+count=0
+if [[ -n "$hits" ]]; then
+    count=$(printf '%s\n' "$hits" | grep -c . || true)
+fi
+log "scan complete: hits=$count"
+
+if [[ "$count" -gt 0 ]]; then
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        loud "ARTIFICIAL-LIMITER" "$row"
+    done <<<"$hits"
+    file_findings "artificial-limiter" "detector found $count artificial limiter(s) — see triage"
+    loud "ARTIFICIAL-LIMITER-FAIL" "artificial limiters=$count — sr-max-speed violated (throttle is not money/safety/hardware); heartbeat tick will fail"
+    exit 1
+fi
+
+loud "MAX-SPEED-OK" "no artificial limiters in bin/ lib/ (sleep>=${SLEEP_MIN}s, banned phrases, concurrency=1) — sr-max-speed holds"
+exit 0

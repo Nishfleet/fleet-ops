@@ -676,3 +676,6 @@ docs/github-push-channel.md /home/nish/.local/share/fleet-ops/docs/github-push-c
 bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
 systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
 systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer
+# fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
+# Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
+bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
