@@ -936,3 +936,8 @@ ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-t
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
 bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
+
+# fleet-ops#523: token-efficiency PR gate for prompt assemblers. Nested
+# host so the worker token does not need to edit .github/workflows/**.
+bash "$here/fleet-token-efficiency.test.sh" || fail "token-efficiency gate drill failed"
+ok "rule-enforcement: token-efficiency gate drill"
