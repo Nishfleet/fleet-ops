@@ -561,4 +561,8 @@ ok "rule-enforcement: fleet-wipe-lessons gate drill"
 bash "$here/fleet-cline-glm53-canary.test.sh" || fail "cline glm53 canary drill failed"
 ok "rule-enforcement: ClinePass GLM 5.3 flash canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, and cline-glm53 drills"
+# fleet-ops#523: token-efficiency PR gate for prompt assemblers.
+bash "$here/fleet-token-efficiency.test.sh" || fail "token-efficiency gate drill failed"
+ok "rule-enforcement: token-efficiency gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, cline-glm53, and token-efficiency drills"

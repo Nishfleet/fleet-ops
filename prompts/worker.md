@@ -87,6 +87,15 @@ so HEAD that is not on origin is refused. Run
 `bin/fleet-wipe-lessons-check scan --root <checkout>`
 before opening the PR.
 
+Token efficiency without quality loss (fleet-ops#523): every custom prompt
+assembler must keep static content first and byte-identical, put volatile
+context (timestamps, run IDs, the actual question) last, avoid hard
+max_tokens output caps, never starve context with `head -c` / `head -n`
+truncation, use sorted file lists, and keep prompt-template placeholders
+(double-curly style) at the end. Run
+`bin/fleet-token-efficiency-check --name-status <(git diff --name-status origin/main...HEAD)`
+before opening the PR and fix any REJECT it reports.
+
 D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:
 - **Rollback rolls back code, never data.** D1, KV, R2 and Durable Objects sit outside the Worker version, and D1 has no down-migrations anywhere. A migration that breaks the previous code makes the fleet's auto-revert silently impossible. Treat every migration as one-way.
 - **One phase per PR.** The order is: add nullable column -> dual-write -> backfill -> read-switch -> drop. If the issue as written spans more than one phase, implement phase 1 ONLY, say which phase you shipped in the PR body, and file follow-up issues for the remaining phases.

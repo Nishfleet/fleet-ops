@@ -130,10 +130,9 @@
     {
       "id": "sr-token-efficiency",
       "source": "global-standing-rules.md: Token efficiency without quality loss (Nish, 2026-08-20)",
-      "mechanism": "No check on prompt layout / cache-marker discipline in custom assemblers",
-      "proof": "Nishfleet/fleet-ops#523",
-      "status": "queued(#523)",
-      "queued_since": "2026-08-27"
+      "mechanism": "PR gate: bin/fleet-token-efficiency-check scans changed custom assemblers and prompt templates for static-before-volatile layout, hard max_tokens caps, head -c/head -n context starvation, in-place template substitution, and unsorted file lists",
+      "proof": "bin/fleet-token-efficiency-check; lib/fleet-token-efficiency-check.py; tests/fleet-token-efficiency.test.sh; prompts/worker.md",
+      "status": "enforced"
     },
     {
       "id": "sr-verify-harness",
