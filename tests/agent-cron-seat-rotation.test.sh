@@ -322,6 +322,43 @@ grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$
   || fail "scratch install did not enable --now the agent-cron timer: $(cat "$calls")"
 ok "scratch install.sh enable --now invoked for the [Install] timer"
 
+# --- fleet-ops#236: a stub that exits 0 but prints nothing must not skip enable --now ----
+# The is-enabled exit code alone is not enough: a broken stub (or a missing
+# user bus on a CI runner) can exit 0 with no state. install.sh must look at
+# the state text before it decides the unit is already enabled.
+calls2="$scratch/systemctl.calls2"
+: >"$calls2"
+mkdir -p "$scratch/fake-bin-zero"
+cat >"$scratch/fake-bin-zero/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SYSTEMCTL_CALLS:?}"
+if [ "${1:-}" = "--user" ]; then
+  shift
+fi
+cmd="${1:-}"
+case "$cmd" in
+  is-enabled)
+    # Broken always-0, no-output stub. install.sh must still enable --now.
+    exit 0
+    ;;
+  daemon-reload|enable|start)
+    exit 0
+    ;;
+  *)
+    printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
+    exit 1
+    ;;
+esac
+FAKE
+chmod +x "$scratch/fake-bin-zero/systemctl"
+export SYSTEMCTL_CALLS="$calls2"
+SYSTEMCTL="$scratch/fake-bin-zero/systemctl" PATH="$scratch/fake-bin-zero:$PATH" \
+  "$install_scratch/install.sh" >/dev/null 2>&1 || true
+# Remove the is-enabled call, then assert enable --now was still attempted.
+grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$calls2" \
+  || fail "install.sh skipped enable --now for a zero-output is-enabled stub: $(cat "$calls2")"
+ok "install.sh enables --now even when is-enabled exits 0 without printing enabled"
+
 # --- systemd-analyze verify on the unit files -------------------------------
 # NOTE: unit-file verification is owned by the dedicated `systemd-analyze` CI
 # job (.github/workflows/ci.yml), which stubs the VPS ExecStart paths
