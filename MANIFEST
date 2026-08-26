@@ -94,6 +94,7 @@ bin/fleet-ops-drift.py /home/nish/.local/bin/fleet-ops-drift
 systemd/intake-reconcile.path /home/nish/.config/systemd/user/intake-reconcile.path
 systemd/intake-reconcile.service /home/nish/.config/systemd/user/intake-reconcile.service
 systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.timer
+systemd/intake-reconcile.service.d/10-deploy-checkout.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/10-deploy-checkout.conf
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
 systemd/stop-escalation.path /home/nish/.config/systemd/user/stop-escalation.path
