@@ -16,6 +16,12 @@ behind) is invisible to extra-symlink and extra-enabled checks: the files
 are regular, not symlinks, and the timer is often disabled. DRIFT-MISSING-EXEC
 auto-files (deduped) so that class cannot sit silent.
 
+fleet-ops#370: the hand-built fleet-heartbeat.service.d/10-deploy-checkout.conf
+drop-in papered over auto-reverted #313 and pointed FLEET_OPS_DRIFT_BIN at a
+GC-able agent-worktree, so the canary compared the clone against itself.
+DRIFT-PAPER-OVER auto-files (deduped) if that drop-in or a worktree canary
+path comes back. Extra-symlink / DRIFT-VOLATILE miss .conf drop-ins.
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -25,7 +31,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE and DRIFT-MISSING-EXEC; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER; 0 skip gh
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   GH                              gh binary (tests stub this)
 """
@@ -60,6 +66,10 @@ CANONICAL_CHECKOUT = Path(
 )
 SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
 ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
+PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
+PAPER_OVER_DROPIN = (
+    HOME / ".config" / "systemd" / "user" / "fleet-heartbeat.service.d" / "10-deploy-checkout.conf"
+)
 _EXECSTART_PREFIXES = frozenset("-@+!")
 
 FLEET_PREFIXES = (
@@ -191,6 +201,23 @@ def auto_file_orphan_exec(msg: str) -> None:
     auto_file_drift(
         ORPHAN_EXEC_MARKER,
         "Orphan systemd unit: ExecStart binary missing",
+        extra,
+        msg,
+    )
+
+
+def auto_file_paper_over(msg: str) -> None:
+    """File one issue if the #313 paper-over drop-in or worktree canary returns."""
+    extra = (
+        "fleet-heartbeat.service pins FLEET_OPS_CHECKOUT to the deploy-clone. "
+        "Do not add fleet-heartbeat.service.d/10-deploy-checkout.conf and do "
+        "not point FLEET_OPS_DRIFT_BIN at agent-worktrees. install.sh and "
+        "fleet-ops-deploy remove the drop-in; this canary auto-files when it "
+        "still appears (fleet-ops#370)."
+    )
+    auto_file_drift(
+        PAPER_OVER_MARKER,
+        "Paper-over heartbeat drop-in or worktree drift canary is back",
         extra,
         msg,
     )
@@ -469,6 +496,61 @@ def check_live_matches_origin_main(checkout: Path) -> None:
     log(f"live dests match origin/main ({origin_main[:12]}) blobs")
 
 
+def is_agent_worktree_path(path: Path) -> bool:
+    """True if path is under an agent-worktrees directory (GC-able)."""
+    if "agent-worktrees" in path.parts:
+        return True
+    return "/agent-worktrees/" in str(path)
+
+
+def check_papered_heartbeat_dropin() -> None:
+    """Fail if the #313 paper-over drop-in is back (fleet-ops#370).
+
+    DRIFT-VOLATILE only looks at unit files and enable-links. A .conf drop-in
+    that overrides FLEET_OPS_DRIFT_BIN is invisible to that check.
+    """
+    dropin = PAPER_OVER_DROPIN
+    if not dropin.exists() and not dropin.is_symlink():
+        log("no paper-over heartbeat drop-in")
+        return
+    msg = (
+        f"paper-over drop-in present: {dropin} (fleet-ops#370). "
+        "Canonical checkout is pinned on fleet-heartbeat.service; "
+        "this drop-in previously pointed FLEET_OPS_DRIFT_BIN at a GC-able "
+        "agent-worktree and masked origin/main drift."
+    )
+    auto_file_paper_over(msg)
+    fail_loud("DRIFT-PAPER-OVER", msg)
+
+
+def check_volatile_canary_bin() -> None:
+    """Fail if FLEET_OPS_DRIFT_BIN points at a GC-able agent-worktree.
+
+    Do not inspect __file__: workers run this test from
+    agent-worktrees/issue-fleet-ops-N, which is a legitimate checkout of
+    the code under test. The production bug was the *override* pointing
+    the installed canary at a different worktree than the deploy-clone.
+    """
+    env_bin = os.environ.get("FLEET_OPS_DRIFT_BIN", "")
+    if not env_bin:
+        log("FLEET_OPS_DRIFT_BIN unset (installed canary path)")
+        return
+    env_p = Path(env_bin)
+    try:
+        env_r = env_p.resolve()
+    except OSError:
+        env_r = env_p
+    if not (is_agent_worktree_path(env_p) or is_agent_worktree_path(env_r)):
+        log("FLEET_OPS_DRIFT_BIN is not an agent-worktree path")
+        return
+    msg = (
+        "FLEET_OPS_DRIFT_BIN is a GC-able agent-worktree (fleet-ops#370): "
+        f"{env_bin} -> {env_r}"
+    )
+    auto_file_paper_over(msg)
+    fail_loud("DRIFT-PAPER-OVER", msg)
+
+
 def check_volatile_unit_paths(checkout: Path) -> None:
     """Fail if any installed unit file or enable-link resolves into a volatile path."""
     user_systemd = HOME / ".config" / "systemd" / "user"
@@ -725,6 +807,8 @@ def main() -> None:
     checkout = find_checkout()
     expected_dests, expected_enabled = parse_manifest(checkout)
 
+    check_papered_heartbeat_dropin()
+    check_volatile_canary_bin()
     check_canonical_source(checkout, expected_dests)
     check_checkout(checkout)
     check_manifest_install(checkout)

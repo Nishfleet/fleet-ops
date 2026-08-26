@@ -44,6 +44,29 @@ deploy_audit() {
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
 
+# fleet-ops#370: the paper-over drop-in must die even when merge is later
+# blocked (dirty/non-ff). install.sh also removes it on a successful install.
+dropin="${HOME}/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf"
+if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+    rm -f "$dropin"
+    log "removed paper-over drop-in: $dropin (fleet-ops#370)"
+    systemctl --user daemon-reload >/dev/null 2>&1 \
+        || log "WARN: daemon-reload after drop-in removal failed"
+fi
+
+# The same drop-in pointed FLEET_OPS_DRIFT_BIN at a GC-able worktree. Env
+# for this tick is already set; refusing the path stops the self-compare.
+canary_resolved=$(readlink -f "$CANARY" 2>/dev/null || printf '%s' "$CANARY")
+canary_is_worktree=0
+case "$CANARY" in */agent-worktrees/*) canary_is_worktree=1 ;; esac
+case "$canary_resolved" in */agent-worktrees/*) canary_is_worktree=1 ;; esac
+if [ "$canary_is_worktree" = 1 ]; then
+    loud "DEPLOY-DRIFT-BIN-VOLATILE" \
+        "FLEET_OPS_DRIFT_BIN is a GC-able worktree path ($CANARY); use $HOME/.local/bin/fleet-ops-drift (fleet-ops#370)"
+    deploy_audit "fleet-ops" "drift-bin-volatile" "$CANARY"
+    exit 1
+fi
+
 # Worktrees carry a .git FILE (gitdir pointer), not a directory. `[ ! -d .git ]`
 # false-negatives on a linked worktree and turns every heartbeat tick red
 # (fleet-ops#313, auto-reverted twice). rev-parse --git-dir accepts both shapes.
