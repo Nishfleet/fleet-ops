@@ -60,19 +60,19 @@
    "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
   },
   "hetzner": {
-   "cap": 4,
+   "cap": 2,
    "class": "free",
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
+   "_cap_note": "Nish 2026-08-26: capped at 2"
   },
   "zenmux": {
-   "cap": 4,
+   "cap": 2,
    "class": "metered",
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
+   "_cap_note": "Nish 2026-08-26: capped at 2"
   },
   "openrouter": {
-   "cap": 4,
+   "cap": 2,
    "class": "metered",
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
+   "_cap_note": "Nish 2026-08-26: capped at 2"
   },
   "groq": {
    "cap": 0,
