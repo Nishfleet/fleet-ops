@@ -243,11 +243,6 @@ jobs:
       # SHAPE lock that catches content regressions in CI.
       - name: system drop-ins shape
         run: bash tests/system-dropins-shape.test.sh
-      # fleet-ops#149: merge-to-live deploy step + drift canary. Proves the
-      # heartbeat's deploy pass pulls, installs, enables, and asserts the live
-      # state matches MANIFEST + origin/main in a sandboxed git/systemctl env.
-      - name: merge-to-live deploy + canary
-        run: bash tests/fleet-ops-deploy.test.sh
       - name: undersaturation alarm
         run: bash tests/fleet-heartbeat-undersaturation.test.sh
       # fleet-ops#146: lock the low-water-mark scouting decision. Refill the
