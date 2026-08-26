@@ -122,10 +122,9 @@
     {
       "id": "sr-debug-playbook",
       "source": "global-standing-rules.md: Debugging sessions end with a playbook note (Nish, 2026-08-19)",
-      "mechanism": "Nothing detects a multi-attempt debug that skipped the vault playbook note",
-      "proof": "Nishfleet/fleet-ops#522",
-      "status": "queued(#522)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat session-close lint: Pi JSONL sessions with two or more real failed toolResults and no four-heading vault playbook (SIGNATURE / ROOT CAUSE / FIX THAT WORKED / DEAD ENDS) are LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped. A single failure is not this rule (#535).",
+      "proof": "bin/fleet-debug-playbook; lib/debug-playbook.py; tests/fleet-debug-playbook.test.sh; fleet-heartbeat-tier1 block 18; fleet-ops#522",
+      "status": "enforced"
     },
     {
       "id": "sr-token-efficiency",

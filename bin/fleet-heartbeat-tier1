@@ -1380,6 +1380,29 @@ else
 fi
 
 # ============================================================================
+# 18. DEBUG-PLAYBOOK SESSION-CLOSE LINT (fleet-ops#522)
+# ============================================================================
+# Every tick, prove "debugging sessions end with a playbook note": recent
+# Pi sessions with two or more real failed toolResults and no four-heading
+# vault playbook (SIGNATURE / ROOT CAUSE / FIX THAT WORKED / DEAD ENDS)
+# are LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is
+# skipped. A single failure is not this rule (#535). The tick fails so a
+# multi-attempt debug without the note cannot vanish when the session ends.
+DEBUG_PLAYBOOK_BIN="${FLEET_DEBUG_PLAYBOOK_BIN:-/home/nish/.local/bin/fleet-debug-playbook}"
+debug_playbook_rc=0
+if [ -x "$DEBUG_PLAYBOOK_BIN" ]; then
+    log "18. debug-playbook session-close lint starting"
+    if "$DEBUG_PLAYBOOK_BIN"; then
+        log "18. debug-playbook session-close lint complete"
+    else
+        debug_playbook_rc=$?
+        log "18. debug-playbook session-close lint FAILED (rc=$debug_playbook_rc) — a multi-attempt debug never filed the vault note; unit will land in --state=failed"
+    fi
+else
+    log "18. debug-playbook helper missing at $DEBUG_PLAYBOOK_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
 # ============================================================================
 # Every tick, prove "deferral requires a named clock": every benched seat,
@@ -1677,7 +1700,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1747,6 +1770,9 @@ if [ "${decisions_ledger_rc:-0}" -ne 0 ]; then
 fi
 if [ "${failed_command_rc:-0}" -ne 0 ]; then
     exit "$failed_command_rc"
+fi
+if [ "${debug_playbook_rc:-0}" -ne 0 ]; then
+    exit "$debug_playbook_rc"
 fi
 if [ "${unjustified_rc:-0}" -ne 0 ]; then
     exit "${unjustified_rc}"

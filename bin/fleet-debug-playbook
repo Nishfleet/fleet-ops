@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# fleet-debug-playbook — session-close lint (fleet-ops#522).
+#
+# Standing rule: debugging sessions end with a playbook note. A multi-attempt
+# debug (two or more real failed toolResults) that never filed the four-
+# heading vault note (SIGNATURE / ROOT CAUSE / FIX THAT WORKED / DEAD ENDS)
+# is an unfinished repair. This detector scans recent Pi session JSONL and
+# auto-files when the playbook shape is missing.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 every tick.
+# Exit 0: no missing playbooks in the window. Exit 1: at least one
+# (LOUD + auto-filed, deduped by signal: debug-playbook/<slug>).
+# Exit 1 also if the helper itself is broken (missing python/lib).
+#
+# Environment seams (tests override all of these):
+#   FLEET_DEBUG_PLAYBOOK_SESSIONS   default ~/.pi/agent/sessions
+#   FLEET_DEBUG_PLAYBOOK_LIB        python helper
+#   FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS   default 24
+#   FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES  default 20 (skip in-flight sessions)
+#   FLEET_DEBUG_PLAYBOOK_NOW        ISO timestamp
+#   FLEET_DEBUG_PLAYBOOK_FILE_ISSUES    1 (default) / 0
+#   FLEET_DEBUG_PLAYBOOK_ISSUE_REPO     default Nishfleet/fleet-ops
+#   FLEET_DEBUG_PLAYBOOK_CAP            default 5
+#   FLEET_HEARTBEAT_TRIAGE
+#   GH
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+GH="${GH:-gh}"
+SESSIONS="${FLEET_DEBUG_PLAYBOOK_SESSIONS:-$HOME/.pi/agent/sessions}"
+LIB="${FLEET_DEBUG_PLAYBOOK_LIB:-$_canon_repo/lib/debug-playbook.py}"
+# Only fall back to the installed copy when the caller did not pin LIB.
+if [[ -z "${FLEET_DEBUG_PLAYBOOK_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/debug-playbook.py" ]]; then
+    LIB="${HOME}/.local/lib/pi-packet/debug-playbook.py"
+fi
+WINDOW_HOURS="${FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS:-24}"
+GRACE_MINUTES="${FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES:-20}"
+NOW_ISO="${FLEET_DEBUG_PLAYBOOK_NOW:-}"
+FILE_ISSUES="${FLEET_DEBUG_PLAYBOOK_FILE_ISSUES:-1}"
+ISSUE_REPO="${FLEET_DEBUG_PLAYBOOK_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_DEBUG_PLAYBOOK_CAP:-5}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+log() {
+    printf '[%s] [fleet-debug-playbook] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "DEBUG-PLAYBOOK-BROKEN" "python3 missing — cannot lint sessions"
+    exit 1
+fi
+if [[ ! -f "$LIB" ]]; then
+    loud "DEBUG-PLAYBOOK-BROKEN" "helper missing at $LIB"
+    exit 1
+fi
+
+scan_args=(scan --root "$SESSIONS" --window-hours "$WINDOW_HOURS" --grace-minutes "$GRACE_MINUTES")
+if [[ -n "$NOW_ISO" ]]; then
+    scan_args+=(--now "$NOW_ISO")
+fi
+
+set +e
+report=$(python3 "$LIB" "${scan_args[@]}" 2>/tmp/debug-playbook.err)
+scan_rc=$?
+set -e
+
+if [[ "$scan_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$report"; then
+    loud "DEBUG-PLAYBOOK-BROKEN" "helper produced no JSON (rc=$scan_rc) $(tr '\n' ' ' </tmp/debug-playbook.err 2>/dev/null)"
+    exit 1
+fi
+
+finding_count=$(jq '.findings | length' <<<"$report")
+scanned=$(jq -r '.scanned' <<<"$report")
+log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "DEBUG-PLAYBOOK-OK" "no missing debug playbooks in window (scanned=$scanned)"
+    exit 0
+fi
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    set -e
+    open_json="${open_json:-[]}"
+fi
+
+filed=0
+while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    slug=$(jq -r '.slug' <<<"$row")
+    snippet=$(jq -r '.snippet' <<<"$row")
+    path=$(jq -r '.path' <<<"$row")
+    attempts=$(jq -r '.attempts // "?"' <<<"$row")
+    loud "DEBUG-PLAYBOOK-MISSING" "session=$slug attempts=$attempts path=$path snippet=$snippet"
+
+    [[ "$FILE_ISSUES" == "1" ]] || continue
+    [[ "$filed" -lt "$CAP" ]] || continue
+    command -v "$GH" >/dev/null 2>&1 || continue
+
+    signal="signal: debug-playbook/${slug}"
+    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        log "auto-file: $slug already open (deduped)"
+        continue
+    fi
+
+    title="fix(debug-playbook): $slug — multi-attempt debug with no playbook note"
+    body="The session-close lint (fleet-ops#522, standing rule: debugging sessions end with a playbook note) found a Pi session with two or more real failed attempts and no four-heading vault playbook (SIGNATURE / ROOT CAUSE / FIX THAT WORKED / DEAD ENDS).
+
+- session: \`$path\`
+- attempts: $attempts
+- snippet: $snippet
+- detector: bin/fleet-debug-playbook (heartbeat tier1)
+
+Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
+
+$signal"
+    set +e
+    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    create_rc=$?
+    set -e
+    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+        log "auto-file: FILED $slug -> $created"
+        filed=$((filed + 1))
+    else
+        log "auto-file: failed to file $slug (rc=$create_rc)"
+    fi
+done < <(jq -c '.findings[]' <<<"$report")
+
+loud "DEBUG-PLAYBOOK-FAIL" "missing playbooks=$finding_count — a multi-attempt debug never filed the vault note; heartbeat tick will fail"
+exit 1
