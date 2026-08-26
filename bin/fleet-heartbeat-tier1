@@ -1075,7 +1075,7 @@ fi
 CADENCE_LIB="${FLEET_BLIND_AUDIT_CADENCE_LIB:-$HOME/.local/lib/pi-packet/blind-audit-cadence.sh}"
 audit_canary_status="ok"
 if [ -f "$CADENCE_LIB" ]; then
-    # shellcheck source=../lib/blind-audit-cadence.sh
+    # shellcheck source=../lib/blind-audit-cadence.sh source-path=SCRIPTDIR
     source "$CADENCE_LIB"
     heartbeat_blind_audit_cadence_canary
 else

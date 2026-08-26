@@ -52,17 +52,23 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$body_file" ] && [ -n "$name_status_file" ] || usage
+# shellcheck disable=SC2015  # A && B || C IS the guard pattern here, not "if-then-else" — both clauses are checks that should route to usage().
+if [ -z "$body_file" ] || [ -z "$name_status_file" ]; then
+    usage
+fi
 [ -f "$body_file" ] || { printf 'prove-one-run-check: body file not found: %s\n' "$body_file" >&2; exit 2; }
 
 # --- new machinery? --------------------------------------------------------
 # git diff --name-status: A\tpath, M\tpath, R100\told\tnew, C100\told\tnew.
+# Note: shell `*` matches across `/` in case statements, so a single
+# `systemd/*.service` arm already covers any depth (systemd/foo.service,
+# systemd/sub/foo.service). Two separate arms for depth would shadow
+# each other (SC2221/SC2222) — keep one.
 is_machinery_path() {
     local path="$1"
     case "$path" in
         *.d/*) return 1 ;;
         systemd/*.service|systemd/*.timer|systemd/*.path|systemd/*.socket) return 0 ;;
-        systemd/*/*.service|systemd/*/*.timer|systemd/*/*.path|systemd/*/*.socket) return 0 ;;
         .github/workflows/*.yml|.github/workflows/*.yaml) return 0 ;;
         template/.github/workflows/*.yml|template/.github/workflows/*.yaml) return 0 ;;
         *) return 1 ;;
