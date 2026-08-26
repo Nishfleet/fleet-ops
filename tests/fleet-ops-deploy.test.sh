@@ -27,6 +27,8 @@
 #      cap drop (fleet-ops-deploy path).
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
+#  14. An already-enabled unit whose wants-link points at /tmp/fleet-ops-p13
+#      is reenabled by install.sh (fleet-ops#369 skip-if-enabled hole).
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -69,6 +71,10 @@ grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the paper-over heartbeat drop-in"
 grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
     || fail "install.sh must refuse to install from a non-canonical workspaces checkout"
+grep -q 'fleet-ops#369' "$repo_root/install.sh" \
+    || fail "install.sh must refuse volatile /tmp checkouts (fleet-ops#369)"
+grep -q 'wants_link_is_stale' "$repo_root/install.sh" \
+    || fail "install.sh must reenable units whose wants-link does not match this checkout"
 grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must refuse a non-canonical FLEET_OPS_CHECKOUT"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
@@ -85,6 +91,9 @@ scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
+# Scratch checkouts live under /tmp; fleet-ops#369 refuses those unless
+# the test explicitly opts in. This overlay never writes live dests.
+export FLEET_OPS_ALLOW_NONCANONICAL=1
 mkdir -p "$HOME/.local/bin" \
          "$HOME/.config/systemd/user" \
          "$HOME/.pi/agent/prompts" \
@@ -214,6 +223,7 @@ systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
 #!/usr/bin/env bash
 enabled_file="${FLEET_OPS_FAKE_ENABLED:-/dev/null}"
+calls_file="${FLEET_OPS_FAKE_CALLS:-/dev/null}"
 mkdir -p "$(dirname "$enabled_file")" 2>/dev/null || true
 
 if [ "${1:-}" = "--user" ]; then
@@ -223,6 +233,7 @@ cmd="${1:-}"
 if [ "$#" -gt 0 ]; then
   shift
 fi
+printf '%s %s\n' "$cmd" "$*" >> "$calls_file"
 
 case "$cmd" in
   is-enabled)
@@ -240,7 +251,7 @@ case "$cmd" in
   daemon-reload)
     exit 0
     ;;
-  enable)
+  enable|reenable)
     for u in "$@"; do
       [ -n "$u" ] || continue
       case "$u" in
@@ -550,6 +561,29 @@ fi
     || fail "scenario11: volatile enable-link did not produce DRIFT-VOLATILE (got: $out)"
 ok "scenario11: enable-link into a volatile path fails DRIFT-VOLATILE"
 rm -f "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
+
+# --- scenario 14: already-enabled wants-link into /tmp/fleet-ops-p13 ---------
+# The live incident: is-enabled was true, so install.sh skipped enable and
+# left timers.target.wants/fleet-heartbeat.timer pointing at a tmpfiles-clean
+# path. Plant the same shape against demo.timer and prove reenable fires.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+p13="$scratch/fleet-ops-p13/systemd"
+mkdir -p "$p13" "$HOME/.config/systemd/user/timers.target.wants"
+printf '[Timer]\nOnCalendar=*:00/30\n[Install]\nWantedBy=timers.target\n' \
+    >"$p13/demo.timer"
+ln -sfn "$p13/demo.timer" \
+    "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+calls_log="$scratch/systemctl.calls"
+: >"$calls_log"
+export FLEET_OPS_FAKE_CALLS="$calls_log"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 \
+    || fail "scenario14: install.sh failed while healing a stale wants-link"
+grep -Eq -- '^reenable demo\.timer' "$calls_log" \
+    || fail "scenario14: install.sh did not reenable demo.timer (calls=$(tr '\n' ' ' <"$calls_log"))"
+ok "scenario14: install.sh reenables an already-enabled unit whose wants-link points at /tmp/fleet-ops-p13"
+rm -f "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+unset FLEET_OPS_FAKE_CALLS
 
 # --- scenario 12: install.sh refuses newer live config; removes paper-over ---
 stale="$scratch/stale-repo"

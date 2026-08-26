@@ -334,7 +334,7 @@ case "$cmd" in
   daemon-reload)
     exit 0
     ;;
-  enable)
+  enable|reenable)
     for u in "$@"; do
       [ -n "$u" ] || continue
       case "$u" in
@@ -366,6 +366,7 @@ set -e
 mkdir -p "$scratch/home" "$scratch/xdg"
 SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
   HOME="$scratch/home" XDG_RUNTIME_DIR="$scratch/xdg" \
+  FLEET_OPS_ALLOW_NONCANONICAL=1 \
   env -u DBUS_SESSION_BUS_ADDRESS \
   "$install_scratch/install.sh"
 [[ -L "$scratch/user-units/agent-cron-0509-daily-market-signal.timer" ]] \
@@ -401,7 +402,7 @@ case "$cmd" in
     # Broken always-0, no-output stub. install.sh must still enable --now.
     exit 0
     ;;
-  daemon-reload|enable|start)
+  daemon-reload|enable|reenable|start)
     exit 0
     ;;
   *)
@@ -414,6 +415,7 @@ chmod +x "$scratch/fake-bin-zero/systemctl"
 export SYSTEMCTL_CALLS="$calls2"
 SYSTEMCTL="$scratch/fake-bin-zero/systemctl" PATH="$scratch/fake-bin-zero:$PATH" \
   HOME="$scratch/home" XDG_RUNTIME_DIR="$scratch/xdg" \
+  FLEET_OPS_ALLOW_NONCANONICAL=1 \
   env -u DBUS_SESSION_BUS_ADDRESS \
   "$install_scratch/install.sh" >/dev/null 2>&1 || true
 # Remove the is-enabled call, then assert enable --now was still attempted.

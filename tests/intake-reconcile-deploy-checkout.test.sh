@@ -71,13 +71,13 @@ fi
 case "${1:-}" in
   daemon-reload|start) exit 0 ;;
   is-enabled) exit 1 ;;
-  enable) exit 0 ;;
+  enable|reenable) exit 0 ;;
   *) printf 'unexpected systemctl call: %s\n' "$*" >&2; exit 1 ;;
 esac
 FAKE
 chmod +x "$systemctl_fake"
 
-PATH="$scratch:$PATH" "$checkout/install.sh" >"$scratch/install.out" 2>&1 || {
+FLEET_OPS_ALLOW_NONCANONICAL=1 PATH="$scratch:$PATH" "$checkout/install.sh" >"$scratch/install.out" 2>&1 || {
   cat "$scratch/install.out" >&2
   fail "install.sh failed in scratch HOME"
 }

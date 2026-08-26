@@ -8,6 +8,7 @@
 #   3. install.sh --check from a hotfix still runs (auditors need DIFF).
 #   4. install.sh from the canonical overlay path succeeds.
 #   5. FLEET_OPS_ALLOW_NONCANONICAL=1 overrides the refuse.
+#   5b. install.sh refuses a /tmp clone (fleet-ops#369; the P13 hole #176 left).
 #   6. fleet-ops-deploy refuses a non-canonical FLEET_OPS_CHECKOUT.
 #   7. drift canary DRIFT-SOURCE + auto-files when checkout is a hotfix.
 #   8. drift canary WRONG-SYMLINK + auto-files when a dest points at a hotfix.
@@ -19,6 +20,11 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 
+# Parent tests (fleet-ops-deploy.test.sh) export ALLOW=1 for /tmp scratch
+# installs. This file must not inherit that, or every REFUSE scenario is a
+# false pass.
+unset FLEET_OPS_ALLOW_NONCANONICAL
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -27,6 +33,8 @@ ok()   { echo "OK: $*"; }
 [[ -f "$repo_root/bin/fleet-ops-drift.py" ]] || fail "missing bin/fleet-ops-drift.py"
 grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
     || fail "install.sh must define refuse_noncanonical_install"
+grep -q 'fleet-ops#369' "$repo_root/install.sh" \
+    || fail "install.sh must refuse volatile /tmp checkouts (fleet-ops#369)"
 grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must emit DEPLOY-NONCANONICAL"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
@@ -72,7 +80,7 @@ if [ "${1:-}" = "--user" ]; then
   shift
 fi
 case "${1:-}" in
-  daemon-reload|enable|start) exit 0 ;;
+  daemon-reload|enable|reenable|start) exit 0 ;;
   is-enabled) exit 1 ;;
   *) exit 0 ;;
 esac
@@ -129,6 +137,28 @@ SYSTEMCTL="$systemctl_fake" FLEET_OPS_ALLOW_NONCANONICAL=1 "$hotfix/install.sh" 
 [[ "$(readlink -f "$demo_dest")" = "$(readlink -f "$hotfix/bin/demo-script")" ]] \
     || fail "scenario5: ALLOW=1 did not install from hotfix"
 ok "scenario5: FLEET_OPS_ALLOW_NONCANONICAL=1 overrides the refuse"
+rm -f "$demo_dest"
+SYSTEMCTL="$systemctl_fake" "$canon/install.sh" >/dev/null 2>&1 || true
+
+# --- 5b. /tmp clone (the #369 hole #176 left open) refuses -------------------
+# Scratch is already under /tmp, but the overlay workspaces root is inside
+# it. A sibling clone outside that overlay is the live P13 shape.
+tmp_clone="$scratch/tmp-clone"
+mkdir -p "$tmp_clone/bin" "$tmp_clone/systemd"
+cp "$repo_root/install.sh" "$tmp_clone/install.sh"
+chmod +x "$tmp_clone/install.sh"
+printf 'tmp\n' >"$tmp_clone/bin/demo-script"
+cp "$canon/MANIFEST" "$tmp_clone/MANIFEST"
+rm -f "$demo_dest"
+set +e
+tmp_out=$(SYSTEMCTL="$systemctl_fake" "$tmp_clone/install.sh" 2>&1)
+tmp_rc=$?
+set -e
+[[ "$tmp_rc" -eq 1 ]] || fail "scenario5b: /tmp clone install should rc=1, got $tmp_rc out=$tmp_out"
+[[ "$tmp_out" == *"REFUSE:"* ]] || fail "scenario5b: expected REFUSE, got: $tmp_out"
+[[ "$tmp_out" == *"fleet-ops#369"* ]] || fail "scenario5b: refuse must cite fleet-ops#369, got: $tmp_out"
+[[ ! -e "$demo_dest" ]] || fail "scenario5b: /tmp clone retargeted dest"
+ok "scenario5b: install.sh refuses a /tmp clone (fleet-ops#369)"
 rm -f "$demo_dest"
 SYSTEMCTL="$systemctl_fake" "$canon/install.sh" >/dev/null 2>&1 || true
 
@@ -224,5 +254,5 @@ grep -q 'issue create' "$gh_log" && fail "scenario9: must not file a duplicate (
 [[ "$canary_out" == *"dedup:"* ]] || fail "scenario9: expected dedup log, got: $canary_out"
 ok "scenario9: open issue with the marker is not filed twice"
 
-echo "OK: canonical checkout guard refuses hotfix/issue worktrees and auto-files DRIFT-SOURCE"
+echo "OK: canonical checkout guard refuses hotfix/issue worktrees, /tmp clones, and auto-files DRIFT-SOURCE"
 exit 0
