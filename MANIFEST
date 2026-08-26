@@ -248,6 +248,12 @@ bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 # that auto-file audition+wire / bench tickets from `pi --list-models`.
 # Invoked by heartbeat-tier1 block 21.
 bin/fleet-free-roster-canary /home/nish/.local/bin/fleet-free-roster-canary
+# fleet-ops#536: proven-only Pi extension allowlist canary (sr-pi-extensions-proven).
+# Fail-loud if ~/.pi/agent/extensions or settings.json packages/extensions
+# wires an id that is not in config/pi-extensions-allowlist.json proven[],
+# or re-enables a banned id. Invoked by heartbeat-tier1 block 22.
+bin/fleet-pi-extensions-canary /home/nish/.local/bin/fleet-pi-extensions-canary
+config/pi-extensions-allowlist.json /home/nish/.local/state/pi-packet/pi-extensions-allowlist.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

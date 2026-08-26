@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# fleet-pi-extensions-canary — proven-only Pi extension gate (fleet-ops#536).
+#
+# Standing rule sr-pi-extensions-proven (Nish 2026-08-24): reach for Pi
+# extensions before writing anything, but install only ones proven on a
+# real task in this environment. Pi auto-discovers ~/.pi/agent/extensions
+# and also loads settings.json packages[] / extensions[]. Official docs
+# have no proven-install allowlist (settings.extensions is additive extra
+# paths; pi config only toggles already-installed package resources).
+#
+# This canary is the class prevention: every heartbeat tick, the live
+# wired set is diffed against config/pi-extensions-allowlist.json.
+#   1. An id not in proven -> LOUD + auto-file + exit 1 (unproven-wired).
+#   2. A banned id that is live again -> LOUD + auto-file + exit 1
+#      (banned-wired). The disabled-*.ts leftovers stay quiet.
+#   3. Missing or malformed allowlist -> LOUD + exit 1 (watcher broken).
+#
+# .bak and .disabled files are not Pi auto-discovery targets and are
+# ignored. Subdirs without index.ts are ignored (Pi loads */index.ts).
+# Absence of a proven id is not a fail: the rule is install-only-proven,
+# not must-install-all-proven.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 22.
+#
+# Environment seams (tests):
+#   FLEET_PI_EXTENSIONS_DIR         default $HOME/.pi/agent/extensions
+#   FLEET_PI_SETTINGS_JSON          default $HOME/.pi/agent/settings.json
+#   FLEET_PI_EXTENSIONS_ALLOWLIST   default $FLEET_OPS_REPO/config/pi-extensions-allowlist.json
+#   FLEET_HEARTBEAT_TRIAGE          triage file
+#   FLEET_PI_EXTENSIONS_REPO        default Nishfleet/fleet-ops
+#   FLEET_PI_EXTENSIONS_FILE        1 (default) file issues; 0 skip gh
+#   FLEET_PI_EXTENSIONS_CAP         per-tick file cap (default 5)
+#   GH                              gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+EXT_DIR="${FLEET_PI_EXTENSIONS_DIR:-$HOME/.pi/agent/extensions}"
+SETTINGS_JSON="${FLEET_PI_SETTINGS_JSON:-$HOME/.pi/agent/settings.json}"
+ALLOWLIST="${FLEET_PI_EXTENSIONS_ALLOWLIST:-$FLEET_OPS_REPO/config/pi-extensions-allowlist.json}"
+if [[ ! -f "$ALLOWLIST" ]]; then
+    ALLOWLIST="${HOME}/.local/state/pi-packet/pi-extensions-allowlist.json"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_PI_EXTENSIONS_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_PI_EXTENSIONS_FILE:-1}"
+FILE_CAP="${FLEET_PI_EXTENSIONS_CAP:-5}"
+
+log() {
+    printf '[%s] [fleet-pi-extensions-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# File one issue for a finding. Dedup: an open issue whose body contains
+# the exact marker. Best-effort — a gh failure is logged, not silent.
+file_finding() {
+    local id="$1" kind="$2" title="$3" body="$4"
+    local marker="pi-extensions-canary: ${id} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_PI_EXTENSIONS_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+scratch=$(mktemp -d -t pi-ext-canary.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+if [[ ! -f "$ALLOWLIST" ]]; then
+    loud "PI-EXTENSIONS-WATCHER-BROKEN" "allowlist missing: $ALLOWLIST"
+    file_finding "allowlist" "watcher-broken" \
+        "pi extensions allowlist missing (sr-pi-extensions-proven)" \
+        "The proven-extension canary cannot run: \`$ALLOWLIST\` is missing.
+
+Without the allowlist, an unproven Pi extension can be dropped into ~/.pi/agent/extensions and stay wired. Restore config/pi-extensions-allowlist.json.
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+    exit 1
+fi
+
+if ! jq -e 'type == "object" and (.proven | type == "array") and (.banned | type == "array")' \
+    "$ALLOWLIST" >/dev/null 2>&1; then
+    loud "PI-EXTENSIONS-WATCHER-BROKEN" "allowlist malformed: $ALLOWLIST"
+    file_finding "allowlist" "watcher-broken" \
+        "pi extensions allowlist malformed (sr-pi-extensions-proven)" \
+        "The proven-extension canary cannot parse \`$ALLOWLIST\`. Need an object with proven[] and banned[] arrays.
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+    exit 1
+fi
+
+jq -r '.proven[] | .id // empty' "$ALLOWLIST" | awk 'NF' | sort -u >"$scratch/proven.txt"
+jq -r '.banned[] | .id // empty' "$ALLOWLIST" | awk 'NF' | sort -u >"$scratch/banned.txt"
+
+if comm -12 "$scratch/proven.txt" "$scratch/banned.txt" | grep -q .; then
+    overlap=$(comm -12 "$scratch/proven.txt" "$scratch/banned.txt" | tr '\n' ' ')
+    loud "PI-EXTENSIONS-WATCHER-BROKEN" "id in both proven and banned: $overlap"
+    file_finding "allowlist" "watcher-broken" \
+        "pi extensions allowlist overlap (sr-pi-extensions-proven)" \
+        "These ids are in both proven and banned: $overlap
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+    exit 1
+fi
+
+: >"$scratch/live.txt"
+if [[ -d "$EXT_DIR" ]]; then
+    for f in "$EXT_DIR"/*.ts; do
+        [[ -f "$f" ]] || continue
+        base="${f##*/}"
+        case "$base" in
+            *'.bak'*|*.disabled*) continue ;;
+        esac
+        printf '%s\n' "${base%.ts}" >>"$scratch/live.txt"
+    done
+    for d in "$EXT_DIR"/*/; do
+        [[ -d "$d" ]] || continue
+        [[ -f "${d}index.ts" ]] || continue
+        name="${d%/}"
+        name="${name##*/}"
+        printf '%s\n' "$name" >>"$scratch/live.txt"
+    done
+fi
+
+if [[ -f "$SETTINGS_JSON" ]]; then
+    if ! jq -e . "$SETTINGS_JSON" >/dev/null 2>&1; then
+        loud "PI-EXTENSIONS-WATCHER-BROKEN" "settings.json unreadable: $SETTINGS_JSON"
+        file_finding "settings" "watcher-broken" \
+            "pi settings.json unreadable (sr-pi-extensions-proven)" \
+            "The proven-extension canary cannot parse \`$SETTINGS_JSON\`. packages[] and extensions[] are install vectors.
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+        exit 1
+    fi
+    jq -r '.packages // [] | .[] | select(type=="string" and length>0)' \
+        "$SETTINGS_JSON" >>"$scratch/live.txt"
+    jq -r '.extensions // [] | .[] | select(type=="string" and length>0)' \
+        "$SETTINGS_JSON" >>"$scratch/live.txt"
+fi
+
+sort -u "$scratch/live.txt" -o "$scratch/live.txt"
+
+filed=0
+violations=0
+while IFS= read -r id || [[ -n "${id:-}" ]]; do
+    [[ -n "${id:-}" ]] || continue
+    kind=""
+    title=""
+    body=""
+    if grep -Fxq -- "$id" "$scratch/banned.txt"; then
+        kind="banned-wired"
+        title="banned Pi extension re-wired: $id"
+        reason=$(jq -r --arg id "$id" \
+            '.banned[] | select(.id==$id) | .reason // "banned"' "$ALLOWLIST")
+        body="Standing rule sr-pi-extensions-proven: this extension was banned and is live again.
+
+- id: \`$id\`
+- reason: $reason
+- live from: \`$EXT_DIR\` or \`$SETTINGS_JSON\`
+
+Disable it (rename to .disabled-<reason>) or remove the package from settings.json. Do not add it to proven without a real-task run log.
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+    elif ! grep -Fxq -- "$id" "$scratch/proven.txt"; then
+        kind="unproven-wired"
+        title="unproven Pi extension wired: $id"
+        body="Standing rule sr-pi-extensions-proven: an extension is wired that is not on the proven allowlist.
+
+- id: \`$id\`
+- live from: \`$EXT_DIR\` or \`$SETTINGS_JSON\`
+
+Before it stays installed: exercise it on a genuine task, confirm it under this box's seats / depth-1 spawn guard / systemd-run / lane caps, and record the run log. Then add the id to config/pi-extensions-allowlist.json proven[]. Until then, uninstall it.
+
+Pi ships example extensions; shipped is not proven.
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+    else
+        continue
+    fi
+    violations=$((violations + 1))
+    loud "PI-EXTENSIONS-VIOLATION" "$kind id=$id"
+    if [[ "$filed" -lt "$FILE_CAP" ]]; then
+        file_finding "$id" "$kind" "$title" "$body"
+        filed=$((filed + 1))
+    else
+        log "cap reached ($FILE_CAP); deferring $kind id=$id"
+    fi
+done < "$scratch/live.txt"
+
+if [[ "$violations" -gt 0 ]]; then
+    exit 1
+fi
+
+{
+    printf '\n[%s] [PI-EXTENSIONS-OK] wired extensions match the proven allowlist\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} >> "$TRIAGE" 2>/dev/null || true
+log "OK: live set matches proven allowlist"
+exit 0

@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "_comment": "sr-pi-extensions-proven (fleet-ops#536). Only these ids may be wired under ~/.pi/agent/extensions or in settings.json packages/extensions. Add a row after a real-task run log exists. .bak and .disabled files are not live. A banned id that reappears as a live .ts or package is a gate fail.",
+  "proven": [
+    {
+      "id": "bash-spawn-hook",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-25; systemd-run spawn ownership for bash"
+    },
+    {
+      "id": "confirm-destructive",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; confirm before destructive bash"
+    },
+    {
+      "id": "cursor-provider",
+      "kind": "global-dir",
+      "proof": "live VPS 2026-08-23; Cursor Ultra custom provider"
+    },
+    {
+      "id": "devin-provider",
+      "kind": "global-dir",
+      "proof": "live VPS 2026-08-23; Devin Pro custom provider"
+    },
+    {
+      "id": "dirty-repo-guard",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; refuse writes on a dirty checkout"
+    },
+    {
+      "id": "handoff",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; session handoff command"
+    },
+    {
+      "id": "notify",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; desktop notify on session events"
+    },
+    {
+      "id": "packet-verdict",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-25; EXTLOAD-OK packet-verdict mode=print-safe"
+    },
+    {
+      "id": "permission-gate",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; confirm before privileged commands"
+    },
+    {
+      "id": "plan-mode",
+      "kind": "global-dir",
+      "proof": "live VPS 2026-08-23; stock Pi plan-mode example, exercised on VPS"
+    },
+    {
+      "id": "protected-paths",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; block writes to secrets paths"
+    },
+    {
+      "id": "seat-health",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-26; lib/seat-lib.sh reads the ledger it writes"
+    },
+    {
+      "id": "spawn-guard-core",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-25; depth-1 spawn guard"
+    },
+    {
+      "id": "stop-judge",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-26; stop-hook judge for destructive calls"
+    },
+    {
+      "id": "structured-output",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; stock Pi structured_output tool"
+    },
+    {
+      "id": "subagent",
+      "kind": "global-dir",
+      "proof": "live VPS 2026-08-23; stock Pi subagent, constrained by spawn-guard-core"
+    },
+    {
+      "id": "todo",
+      "kind": "global-file",
+      "proof": "live VPS 2026-08-23; stock Pi todo list tool"
+    },
+    {
+      "id": "git:github.com/stnly/pi-grok",
+      "kind": "package",
+      "proof": "settings.json packages; grok CLI provider package, live 2026-08-26"
+    }
+  ],
+  "banned": [
+    {
+      "id": "auto-commit-on-exit",
+      "kind": "global-file",
+      "reason": "disabled-20260825-git-add-A: git add -A on session exit"
+    },
+    {
+      "id": "git-checkpoint",
+      "kind": "global-file",
+      "reason": "disabled-20260825-stash-collision: stash collides with other agents"
+    }
+  ]
+}
