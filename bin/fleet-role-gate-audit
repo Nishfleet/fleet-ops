@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# fleet-role-gate-audit — inescapable per-role quality gates (fleet-ops#457).
+#
+# Every heartbeat tick:
+#   1. Enumerate catalogued fleet roles and verify each gate still exists.
+#   2. Run the named bypass checks (scout admission, #376 sweep, etc.).
+#   3. Flag a prompt or unit that appeared with no catalog row.
+#   4. Auto-file each finding (deduped on signal: role-quality-gate/<id>).
+#
+# No new scheduler. Run by fleet-heartbeat-tier1.
+#
+# Exit 0: audit ran (findings filed or clean).
+# Exit 1: auditor itself is broken (missing python/catalog) — fail loud.
+#
+# Environment seams (tests override all of these):
+#   FLEET_OPS_REPO
+#   FLEET_ROLE_GATES_JSON          catalog
+#   FLEET_ROLE_GATES_LIB           python helper
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_ROLE_GATES_FILE          1 (default) file issues; 0 skip gh
+#   FLEET_ROLE_GATES_REPO          default Nishfleet/fleet-ops
+#   FLEET_ROLE_GATES_EXTRA_PROMPT  drill: a prompt name not in the catalog
+#   FLEET_ROLE_GATES_EXTRA_UNIT    drill: a unit name not in the catalog
+#   GH
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+CATALOG="${FLEET_ROLE_GATES_JSON:-$FLEET_OPS_REPO/config/role-quality-gates.json}"
+LIB="${FLEET_ROLE_GATES_LIB:-$FLEET_OPS_REPO/lib/role-quality-gates.py}"
+if [[ ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/role-quality-gates.py" ]]; then
+    LIB="${HOME}/.local/lib/pi-packet/role-quality-gates.py"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_ROLE_GATES_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_ROLE_GATES_FILE:-1}"
+EXTRA_PROMPT="${FLEET_ROLE_GATES_EXTRA_PROMPT:-}"
+EXTRA_UNIT="${FLEET_ROLE_GATES_EXTRA_UNIT:-}"
+
+log() {
+    printf '[%s] [fleet-role-gate-audit] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "ROLE-GATE-AUDITOR-BROKEN" "python3 missing — cannot audit role gates"
+    exit 1
+fi
+if [[ ! -f "$CATALOG" ]]; then
+    loud "ROLE-GATE-AUDITOR-BROKEN" "catalog missing at $CATALOG"
+    exit 1
+fi
+if [[ ! -f "$LIB" ]]; then
+    loud "ROLE-GATE-AUDITOR-BROKEN" "helper missing at $LIB"
+    exit 1
+fi
+
+audit_args=(audit --repo-root "$FLEET_OPS_REPO" --catalog "$CATALOG")
+[[ -n "$EXTRA_PROMPT" ]] && audit_args+=(--extra-prompt "$EXTRA_PROMPT")
+[[ -n "$EXTRA_UNIT" ]] && audit_args+=(--extra-unit "$EXTRA_UNIT")
+
+set +e
+report=$(python3 "$LIB" "${audit_args[@]}" 2>/tmp/role-gate-audit.err)
+rc=$?
+set -e
+
+if ! jq -e . >/dev/null 2>&1 <<<"$report"; then
+    loud "ROLE-GATE-AUDITOR-BROKEN" "helper produced no JSON (rc=$rc) $(tr '\n' ' ' </tmp/role-gate-audit.err 2>/dev/null)"
+    exit 1
+fi
+
+finding_count=$(jq '.findings | length' <<<"$report")
+log "roles=$(jq .role_count <<<"$report") findings=$finding_count rc=$rc"
+
+if [[ "$finding_count" == "0" ]]; then
+    log "all roles gated"
+    exit 0
+fi
+
+cap=$(jq -r '.auto_file_cap_per_tick // 5' "$CATALOG")
+filed=0
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]]; then
+    open_json=$("$GH" issue list -R "$REPO" --state open --json number,body --limit 200 2>/dev/null || printf '[]')
+fi
+
+while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    fid=$(jq -r '.id' <<<"$row")
+    detail=$(jq -r '.detail' <<<"$row")
+    kind=$(jq -r '.kind' <<<"$row")
+    loud "ROLE-GATE-BYPASS" "id=$fid kind=$kind $detail"
+
+    [[ "$FILE_ISSUES" == "1" ]] || continue
+    [[ "$filed" -lt "$cap" ]] || continue
+
+    signal="signal: role-quality-gate/${fid}"
+    if printf '%s' "$open_json" | jq -e --arg s "$signal" '.[] | select(.body | tostring | contains($s))' >/dev/null 2>&1; then
+        log "dedup: open issue already carries $signal"
+        continue
+    fi
+
+    title="feat(quality): role gate bypass — ${fid}"
+    body=$(printf '%s\n\n%s\n\n%s\n' \
+        "The per-role quality-gate auditor (fleet-ops#457) found a bypass." \
+        "$detail" \
+        "$signal")
+    if created=$("$GH" issue create -R "$REPO" --title "$title" --body "$body" 2>/tmp/role-gate-create.err); then
+        log "FILED $fid -> $created"
+        filed=$((filed + 1))
+    else
+        log "WARN: failed to file $fid $(tr '\n' ' ' </tmp/role-gate-create.err 2>/dev/null)"
+    fi
+done < <(jq -c '.findings[]' <<<"$report")
+
+# Findings are the deliverable (auto-filed). The auditor itself ran; do not
+# fail the heartbeat tick the way a broken helper does.
+exit 0

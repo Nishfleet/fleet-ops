@@ -1,0 +1,79 @@
+{
+  "_comment": "fleet-ops#457: every fleet role names a quality gate its output cannot bypass. The heartbeat role-gate auditor re-runs this catalog every tick. A prompt or unit with no row is a finding, auto-filed.",
+  "issue_repo": "Nishfleet/fleet-ops",
+  "auto_file_cap_per_tick": 5,
+  "control_plane_repos": ["fleet-ops"],
+  "roles": [
+    {
+      "id": "scout",
+      "gate": "senior admission panel (scout-candidate -> 2-of-3 PASS -> agent-ready)",
+      "proof": [
+        "prompts/scout.md",
+        "prompts/auditor.md",
+        "bin/fleet-heartbeat-auditor",
+        "bin/pi-audit-tally",
+        "systemd/pi-audit@.service"
+      ],
+      "units": ["pi-scout@.service", "pi-scout-repair@.service"],
+      "prompts": ["scout.md", "scout-repair.md"],
+      "bypass_checks": ["scout_agent_ready_product", "sweep_blank_approval"]
+    },
+    {
+      "id": "planner",
+      "gate": "intake only lists agent-ready (post-admission); cannot claim unlabeled or scout-candidate",
+      "proof": ["prompts/intake.md", "bin/pi-intake-run", "lib/intake-priority.sh"],
+      "units": ["pi-intake@.service", "pi-intake-repair@.service"],
+      "prompts": ["intake.md", "intake-repair.md"],
+      "bypass_checks": ["intake_lists_agent_ready_only"]
+    },
+    {
+      "id": "builder",
+      "gate": "CI required checks + auto-revert + review pipeline; conference queued(#223)",
+      "proof": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/auto-revert.yml",
+        "prompts/worker.md"
+      ],
+      "units": ["pi-issue@.service", "pi-packet@.service"],
+      "prompts": ["worker.md"],
+      "bypass_checks": ["builder_ci_and_auto_revert"]
+    },
+    {
+      "id": "reviewer",
+      "gate": "overturn-rate on the quality scoreboard; identity-separated attestation (fleet-ops#413)",
+      "proof": ["lib/attest-identity-gate.py", "bin/attest-identity-gate"],
+      "units": [],
+      "prompts": [],
+      "bypass_checks": ["reviewer_attestation_gate"]
+    },
+    {
+      "id": "senior-auditor",
+      "gate": "overturn-rate on the scoreboard; panel is 2-of-3 and cannot self-admit",
+      "proof": ["prompts/auditor.md", "prompts/senior-conference.md", "bin/pi-audit-tally"],
+      "units": ["pi-audit@.service"],
+      "prompts": ["auditor.md", "senior-conference.md"],
+      "bypass_checks": ["senior_cannot_self_admit"]
+    },
+    {
+      "id": "orchestrator",
+      "gate": "verdict-line discipline (guard_pi_packet) on every packet",
+      "proof": ["lib/guard_pi_packet.py", "bin/pi-packet-guard", "prompts/heartbeat.md"],
+      "units": ["fleet-heartbeat.service", "pi-packet@.service"],
+      "prompts": ["heartbeat.md"],
+      "bypass_checks": ["orchestrator_verdict_guard"]
+    },
+    {
+      "id": "audit",
+      "gate": "blind-audit panel PASS before filing; this mechanical role-gate audit covers the auditor itself",
+      "proof": [
+        "prompts/blind-audit.md",
+        "lib/blind-audit-panel.py",
+        "bin/fleet-blind-audit",
+        "bin/fleet-role-gate-audit"
+      ],
+      "units": ["fleet-blind-audit.service"],
+      "prompts": ["blind-audit.md"],
+      "bypass_checks": ["audit_has_panel"]
+    }
+  ]
+}

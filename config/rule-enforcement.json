@@ -635,10 +635,9 @@
     {
       "id": "led-quality-inescapable",
       "source": "decisions-ledger.md: 2026-08-26 | quality is INESCAPABLE, every role",
-      "mechanism": "Every role's output passes a quality gate it cannot bypass; routing is quality-weighted via fail-closed seat machinery",
-      "proof": "fleet-ops #456 #457; mechanism issue filed by canary",
-      "status": "queued(#460)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Per-role gate catalog + heartbeat auditor auto-files bypasses; quality-weighted pick_seat excludes over-threshold lanes from heavy work; drills in tests/role-quality-gates.test.sh and tests/quality-routing.test.sh",
+      "proof": "config/role-quality-gates.json; bin/fleet-role-gate-audit; lib/quality-routing.py; lib/seat-lib.sh; tests/role-quality-gates.test.sh; tests/quality-routing.test.sh",
+      "status": "enforced"
     },
     {
       "id": "led-researchers-join",

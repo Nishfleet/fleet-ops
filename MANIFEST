@@ -40,6 +40,12 @@ lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 # fleet-ops#383: join helper for the rule-enforcement canary step.
 lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
+# fleet-ops#457: per-role quality gates + quality-weighted seat routing.
+config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
+config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
+lib/role-quality-gates.py /home/nish/.local/lib/pi-packet/role-quality-gates.py
+lib/quality-routing.py /home/nish/.local/lib/pi-packet/quality-routing.py
+bin/fleet-role-gate-audit /home/nish/.local/bin/fleet-role-gate-audit
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run

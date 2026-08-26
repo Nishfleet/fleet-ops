@@ -15,8 +15,10 @@
 # ignored). gap-audit is a topic label, not a lifecycle label: findings
 # filed with only gap-audit are invisible to intake until this sweep
 # adds agent-ready (fleet-ops#402 leftovers; the auditor now dual-labels
-# at create time, this is the observe-to-close path).
+# at create time, this is the observe-to-close path). scout-candidate is
+# the admission-queue lifecycle label (fleet-ops#457).
 #   agent-ready / agent-in-progress / agent-blocked
+#   scout-candidate
 #   nish-reserved
 #   noise-class
 #   drill:*   (any label whose name starts with drill:)
@@ -28,8 +30,12 @@
 #       → nish-reserved
 #   title starts with "drill:" (any case)
 #       → drill:lifecycle
-#   otherwise
-#       → agent-ready
+#   gap-audit topic label already present
+#       → agent-ready  (already judged by the blind-audit panel)
+#   repo is Nishfleet/fleet-ops (control-plane)
+#       → agent-ready  (builder gate: CI + conference + auto-revert)
+#   otherwise (product repos)
+#       → scout-candidate  (fleet-ops#457: admission, not blank approval)
 #
 # Environment (tests override all of these):
 #   LIFECYCLE_SWEEP_REPOS       newline-separated owner/name list
@@ -57,7 +63,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 classify() {
     local title="$1"
-    local lower
+    local repo="${2:-}"
+    local lower short
     if [[ "$title" == "AUTO-REVERT SKIP"* || "$title" == "AUTO-REVERT HALT"* ]]; then
         printf '%s\n' "noise-class"
         return 0
@@ -69,6 +76,15 @@ classify() {
     fi
     if [[ "$lower" == drill:* ]]; then
         printf '%s\n' "drill:lifecycle"
+        return 0
+    fi
+    # fleet-ops#457: product-repo unlabeled issues go to admission, not
+    # blank agent-ready. Control-plane (fleet-ops) stays on the builder
+    # gate (CI + conference + auto-revert) because the product auditor
+    # FAILs fleet/CI tooling by design.
+    short="${repo##*/}"
+    if [[ -n "$short" && "$short" != "fleet-ops" ]]; then
+        printf '%s\n' "scout-candidate"
         return 0
     fi
     printf '%s\n' "agent-ready"
@@ -109,6 +125,7 @@ label_color() {
         noise-class)     printf '%s' "CFD3D7" ;;
         drill:lifecycle) printf '%s' "EDEDED" ;;
         agent-ready)     printf '%s' "0E8A16" ;;
+        scout-candidate) printf '%s' "FBCA04" ;;
         *)               printf '%s' "EDEDED" ;;
     esac
 }
@@ -119,6 +136,7 @@ label_desc() {
         noise-class)     printf '%s' "Not work (halt notices, noise); not agent-ready" ;;
         drill:lifecycle) printf '%s' "Lifecycle-label drill fixture (fleet-ops#376)" ;;
         agent-ready)     printf '%s' "Auto: ready for a worker to claim" ;;
+        scout-candidate) printf '%s' "Queued for senior admission; not yet agent-ready" ;;
         *)               printf '%s' "Lifecycle label (fleet-ops#376)" ;;
     esac
 }
@@ -126,7 +144,7 @@ label_desc() {
 is_lifecycle_label() {
     local name="$1"
     case "$name" in
-        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class) return 0 ;;
+        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate) return 0 ;;
         drill:*) return 0 ;;
     esac
     return 1
@@ -249,7 +267,14 @@ while IFS= read -r repo; do
             continue
         fi
 
-        label=$(classify "$title")
+        # gap-audit leftovers already passed the blind-audit panel (#402).
+        # That is a gate, so they become agent-ready rather than re-queued
+        # for scout admission.
+        if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
+            label="agent-ready"
+        else
+            label=$(classify "$title" "$repo")
+        fi
         log "  $repo#$num: unlabeled → $label ($title)"
         if apply_label "$repo" "$num" "$label"; then
             relabeled=$((relabeled + 1))

@@ -47,12 +47,14 @@ direction B (a `claim/issue-<N>` branch whose issue is NOT `agent-in-progress`
 orphaned branches (issue missing/closed, no open PR). It defers direction A
 (agent-in-progress + no worker + no PR) to §3. Do not redo that sweep either.
 
-Tier 1 §6b also runs `lifecycle-label-sweep` every tick (fleet-ops#376): any
+Tier 1 §6b also runs `lifecycle-label-sweep` every tick (fleet-ops#376 / #457): any
 open issue in an enrolled repo that lacks a lifecycle label (`agent-ready` /
 `agent-in-progress` / `agent-blocked` / `nish-reserved` / `noise-class` /
-`drill:*`) is labelled within one tick. Default is `agent-ready`. Titles
-starting `AUTO-REVERT SKIP` or `AUTO-REVERT HALT` get `noise-class`; titles
-containing `FLAG-for-Nish` get `nish-reserved`. Do not redo that sweep.
+`scout-candidate` / `drill:*`) is labelled within one tick. Product repos
+default to `scout-candidate` (admission, not blank approval). `fleet-ops`
+defaults to `agent-ready` (builder gate). Titles starting `AUTO-REVERT SKIP`
+or `AUTO-REVERT HALT` get `noise-class`; titles containing `FLAG-for-Nish`
+get `nish-reserved`. Do not redo that sweep.
 
 ---
 

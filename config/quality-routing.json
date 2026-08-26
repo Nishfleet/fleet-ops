@@ -1,0 +1,10 @@
+{
+  "_comment": "fleet-ops#457: quality-weighted routing thresholds. Same config-PR discipline as seat-caps.json. Seniors tune the numbers; the structure is not optional.",
+  "_comment_baseline": "fleet-ops#456 names the 2/29/49% baseline to beat (revert / post-merge defect / churn). Cuts fire when a lane is clearly worse than that floor, not on noise. Evidence: 2x the 2% revert floor = 4%; defect cut 40% sits above the 29% baseline with room for one bad week; overturn cut 25% is 1-in-4 senior verdicts reversed.",
+  "_comment_action": "Over any cut: the lane is excluded from heavy/keystone packets (need_capable=1) and still eligible for light work so it can earn recovery. Metrics back under every cut restore heavy routing. Missing or stale snapshot: no cuts (do not brick the ladder) but the role-gate auditor files SNAPSHOT_MISSING/STALE.",
+  "revert_rate_cut": 0.04,
+  "defect_rate_cut": 0.40,
+  "overturn_rate_cut": 0.25,
+  "stale_snapshot_secs": 86400,
+  "missing_snapshot": "allow"
+}
