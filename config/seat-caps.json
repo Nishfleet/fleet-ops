@@ -107,6 +107,14 @@
       "cap": 0,
       "class": "prepaid-quota",
       "reason": "2026-08-26 SuperGrok covers grok.com/CLI, not the x.ai API. pi has no grok-cli adapter (fleet-ops#41)."
+    },
+    "straitly": {
+      "cap": 2,
+      "class": "metered",
+      "models": {
+        "deepseek/deepseek-v4-pro": 2
+      },
+      "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' \u2014 approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol stays orchestration-only (never a worker); qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule)."
     }
   },
   "free_providers_in_order": [
