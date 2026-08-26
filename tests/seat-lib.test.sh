@@ -10,8 +10,9 @@
 #      "loud stall beats a garbage seat" rule: rc=1, no stdout, loud log).
 #   2. A provider with NO cap-map entry is rejected (the allowlist escape
 #      that let groq/openai/gpt-oss-20b through on 2026-08-25).
-#   3. A model capped at 0 in the map (devin/glm-5-2:0, devin/swe-1-7:0)
-#      is rejected even if its provider cap > 0.
+#   3. A model capped at 0 in the map is rejected even if its provider cap
+#      > 0. That block is per-model, not per-provider: a sibling with cap>0
+#      stays pickable (fleet-ops#108).
 #   4. Healthy allowlisted seats: free lanes first, then prepaid-quota
 #      (alternating), then metered. A prepaid seat mislabeled free is a
 #      config bug the entitled-vs-wired canary catches (fleet-ops#387).
@@ -36,6 +37,11 @@ command -v jq >/dev/null || fail "jq required"
 
 scratch="$(mktemp -d -t seat-lib-p15.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
+
+# Offline: live pi-issue@ units must not fill the scratch caps and rotate
+# pick_seat into prepaid (fleet-ops#108 / #142 / #509). The wedge-age
+# probe below turns this back on with a stubbed systemctl.
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
 
 # A models.json with a deliberately non-allowlisted provider (groq) and a
 # non-allowlisted model on an allowlisted provider (ollama/gpt-oss:20b).
@@ -166,17 +172,64 @@ ledger="$scratch/ledger-modelcap0"
 mkdir -p "$ledger"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 export PI_PACKET_STATE="$scratch/state-modelcap0"
-# devin has provider cap=4 but both models cap=0; prove the model-level 0 also blocks.
+# Both devin models are cap=0 in the scratch map. pick_seat must skip those
+# models (not the whole provider-name prefix) and pick a free lane instead.
+# The old `^(devin|groq)` grep plus "devin/groq must never be picked" fail
+# text looked like a provider-wide ban, which is how fleet-ops#108 was filed.
 set +e
 out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "modelcap0 ledger: expected a pick, got rc=$rc"
-if echo "$out" | grep -qE "^(devin|groq)"; then
-  fail "modelcap0 ledger: devin/groq must never be picked, got: $out"
-fi
-grep -q "cap=0" "$PI_PACKET_STATE/watch.log" \
-  || fail "modelcap0 ledger: devin must be rejected (cap=0)"
+[[ "$rc" == "0" ]] || fail "modelcap0: expected a free-lane pick, got rc=$rc out=$out"
+[[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
+  || fail "modelcap0: expected a free lane, not a cap=0 prepaid model, got: $out"
+grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
+  || fail "modelcap0: must log model cap=0 skip for glm-5-2"
+grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
+  || fail "modelcap0: must log model cap=0 skip for swe-1-7"
+
+# --- invariant 3b: cap=0 is per-model, not per-provider (fleet-ops#108) ---
+# Same provider, one model at 0, sibling at 4. A provider-wide block would
+# return rc=1. Ignoring model cap=0 would pick glm-5-2 (listed first).
+cat >"$scratch/models-mixedcap.json" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "glm-5-2", "cost": { "input": 0 } },
+        { "id": "swe-1-7", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-mixedcap.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "subscription", "models": { "glm-5-2": 0, "swe-1-7": 4 } }
+  }
+}
+JSON
+ledger="$scratch/ledger-mixedcap"
+mkdir -p "$ledger"
+export PI_MODELS_JSON="$scratch/models-mixedcap.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps-mixedcap.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export PI_PACKET_STATE="$scratch/state-mixedcap"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "mixedcap: sibling swe-1-7 must stay pickable when glm-5-2 is cap=0, got rc=$rc out=$out"
+[[ "$out" == "devin	swe-1-7" ]] \
+  || fail "mixedcap: expected devin/swe-1-7 (the cap>0 sibling), got: $out"
+grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
+  || fail "mixedcap: must skip glm-5-2 for model cap=0"
+grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
+  && fail "mixedcap: must not skip the cap>0 sibling"
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
 # --- invariant 1: ALL DEAD -> loud stall, rc=1, no stdout -----------------
 ledger="$scratch/ledger-alldead"
@@ -640,6 +693,7 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export PI_MODELS_JSON="$scratch/models.json"
 
 ok "allowlist: no-entry provider and cap-0 models rejected"
+ok "mixedcap: glm-5-2 cap=0 does not block sibling swe-1-7 on the same provider"
 ok "loud stall: all-dead returns rc=1 with NO USABLE SEAT, empty stdout"
 ok "free-first: free lane picked ahead of prepaid on a clean ledger"
 ok "rate_limited: stale marker retried, fresh marker excluded"
@@ -720,6 +774,11 @@ echo "$live" | grep -q 'pi-issue-wedged.json' \
 grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
   || fail "wedge probe: must log the stuck-activating reap"
 ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
+
+# Later pick_seat cases are offline again. The stubbed systemctl above would
+# also isolate them, but the default must stay 0 so a future edit that drops
+# the stub cannot re-bleed live units into scratch caps (fleet-ops#108).
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
 
 # --- fleet-ops#387: prepaid lanes alternate instead of stacking ------------
 cat >"$scratch/models-rr.json" <<'JSON'
@@ -859,6 +918,12 @@ ok "437-listed: allowlisted Qwen/Qwen3.6-35B-A3B-FP8 is pickable"
 
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
+# fleet-ops#108: this file is already on ci.yml verify-command. Workers cannot
+# add a new workflow line (no Workflows permission). Fail here if it is dropped.
+grep -Fq 'bash tests/seat-lib.test.sh' "$repo_root/.github/workflows/ci.yml" \
+  || fail "ci.yml verify-command must run tests/seat-lib.test.sh (fleet-ops#108)"
+ok "ci.yml still invokes this file"
 
 # fleet-ops#202: memory.current vs VmRSS mismatch recorder (CI lists this
 # file, not ram-metric-compare.test.sh, because workers cannot edit
