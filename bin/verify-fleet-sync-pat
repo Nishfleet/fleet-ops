@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# verify-fleet-sync-pat — FLEET_SYNC_PAT probe (fleet-ops#482).
+#
+# Pure evaluator + thin online fetcher. No dispatch, no GitHub writes.
+# A token that is set but missing the `workflow` scope or org push access
+# is REJECT (exit 1) before BetaHuhn runs.
+#
+# Usage:
+#   verify-fleet-sync-pat                       # online: reads $FLEET_SYNC_PAT
+#   verify-fleet-sync-pat --token <tok>         # online with explicit token
+#   verify-fleet-sync-pat --from-fixtures <dir> # offline: replay recorded
+#                                               # HTTP responses (tests)
+#   verify-fleet-sync-pat --ledger-line
+#
+# The implementation lives in lib/verify-fleet-sync-pat.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${VERIFY_FLEET_SYNC_PAT_LIB:-$here/../lib/pi-packet/verify-fleet-sync-pat.py}"
+[ -f "$lib" ] || lib="$here/../lib/verify-fleet-sync-pat.py"
+[ -f "$lib" ] || { echo "verify-fleet-sync-pat: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"
