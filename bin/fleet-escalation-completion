@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# fleet-escalation-completion — escalation COMPLETION invariant (fleet-ops#468,
+# decisions-ledger 2026-08-27 "escalation matrix FIXES, not just routes").
+#
+# The coverage canary (fleet-escalation-canary) proves every failure path
+# LANDS in the matrix. This companion proves every chain TERMINATES in a
+# verified fix. A chain that starts (STOP-REASON non-terminal) but never
+# reaches detector-green or a genuinely Nish-reserved wall is a STALL —
+# and a stalled escalation chain is the same class of silent death as a
+# wedged fleet.
+#
+# Chain model (per STOP-REASON hash, tracked in a state dir):
+#   TRIP    STOP-REASON.json reason != terminal       (first_seen recorded)
+#   TICKET  stop-escalation-seen.txt hash count >= 1  (auditor dispatched)
+#   CLAIM   AUDITOR-LOG.md contains a `## <ISO> — SENIOR AUDITOR` block
+#           written after first_seen
+#   FIX     the underlying detector is green (failed unit no longer failed)
+#   WALL    NISH-ESCALATIONS.md contains "hash=<hash>" (CAP-REACHED — the
+#           2-dispatch budget was spent; the chain is genuinely on Nish's
+#           board, the ONLY legal human terminal short of detector-green)
+#   TERMINAL detector-green (STOP-REASON reason=auditor-resolved/boundary:*/cooldown_active)
+#            OR the trip's detector is green (unit recovered) while the
+#            STOP-REASON was advanced to a terminal reason.
+#
+# Legal terminals ONLY:
+#   1. detector-green — the failure is verifiably fixed (the failed unit is
+#      no longer failed, or STOP-REASON was advanced to auditor-resolved).
+#   2. Nish-reserved wall — NISH-ESCALATIONS.md holds the hash (money/creds/
+#      legal/2-dispatch-cap spent). NOT cooldown_active by itself (that is
+#      an internal circuit hold, not a fix).
+#
+# Pipeline-active guard: the escalation pipeline (stop-escalation.service)
+# is ITSELF the fix-closer (its auditor writes auditor-resolved). A chain
+# whose detector went green while the pipeline is actively dispatching is
+# NOT stale — the closeout is in flight. Only when the pipeline is idle
+# (stop-escalation not active/activating) does a green-detector-plus-
+# non-terminal-STOP-REASON become a STALE-TRIP worth failing loud on.
+# Same guard applies to the stall ladder: a live dispatch resets the
+# progress clock, so a chain mid-dispatch is never "stalled".
+#
+# Stall ladder (alternating repair / fail-loud, mirror of the
+# fleet-heartbeat-undersaturation pattern):
+#   - chain older than CYCLE_BUDGET, no FIX/WALL, pipeline idle:
+#       first stale tick  -> LOUD + re-fire the auditor (restart
+#                            stop-escalation.service; its own 2-dispatch cap
+#                            prevents a storm), set stall marker.
+#       consecutive stale -> FAIL LOUD (exit 1). fleet-heartbeat.service
+#                            lands in --state=failed -> OnFailure ->
+#                            unit-escalation@fleet-heartbeat.service -> the
+#                            SENIOR-AUDITOR pipeline is re-summoned with the
+#                            trip fresh. That IS the ladder climbing.
+#   - healthy (terminal reached / no open chain): clear markers, exit 0.
+#
+# Stale-trip detection (the "detector-green or wall are the ONLY terminals"
+# teeth): a non-terminal STOP-REASON sitting on a GREEN detector (failed
+# unit already recovered) AND a pipeline that is IDLE means the chain was
+# fixed but never closed and nothing is coming to close it — FAIL LOUD
+# (the auditor is needed to close it; a green detector with an open
+# STOP-REASON would otherwise re-summon an auditor forever).
+#
+# Anti-recursion: this bin runs inside fleet-heartbeat.service (already
+# escalation-covered). Its own failure lands in unit-escalation — the same
+# ladder it is enforcing, one level up. It creates no unit/OnFailure of its
+# own. stop-escalation.service is excluded from the re-fire set (it would
+# self-trigger).
+#
+# Environment seams (tests):
+#   FLEET_ESCALATION_COMPLETION_STATE  state dir (default
+#                                      $AS/fleet-escalation-completion)
+#   FLEET_ESCALATION_COMPLETION_BUDGET cycle budget seconds (default 86400)
+#   FLEET_STOP_REASON                  STOP-REASON.json path
+#   FLEET_STOP_ESCALATION_SEEN         stop-escalation-seen.txt
+#   FLEET_NISH_ESCALATIONS             NISH-ESCALATIONS.md
+#   FLEET_AUDITOR_LOG                  AUDITOR-LOG.md
+#   FLEET_ESCALATION_COMPLETION_SYSTEMCTL  systemctl (tests)
+#   FLEET_ESCALATION_COMPLETION_NOW    ISO timestamp override (tests)
+#   FLEET_ESCALATION_COMPLETION_DRY_RUN 1 = never restart stop-escalation (tests)
+#
+# Exit: 0 = no open chain, or open chain within budget / already climbing.
+#       Non-zero = stale chain needing fail-loud (heartbeat unit fails ->
+#       unit-escalation ladder), or stale-trip on green detector.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="${FLEET_ESCALATION_COMPLETION_STATE:-$AS/fleet-escalation-completion}"
+BUDGET="${FLEET_ESCALATION_COMPLETION_BUDGET:-86400}"  # 24h == daily-sweep floor
+STOP_REASON="${FLEET_STOP_REASON:-$AS/STOP-REASON.json}"
+SEEN="${FLEET_STOP_ESCALATION_SEEN:-$AS/stop-escalation-seen.txt}"
+NISH="${FLEET_NISH_ESCALATIONS:-$AS/NISH-ESCALATIONS.md}"
+AUDITOR_LOG="${FLEET_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}"
+SYSTEMCTL="${FLEET_ESCALATION_COMPLETION_SYSTEMCTL:-systemctl}"
+NOW_ISO="${FLEET_ESCALATION_COMPLETION_NOW:-}"
+DRY="${FLEET_ESCALATION_COMPLETION_DRY_RUN:-0}"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+    printf '[%s] [fleet-escalation-completion] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+# Legal terminal reasons for STOP-REASON.json. unit-failure/daily-sweep are
+# OPEN (the chain is being worked); boundary:* is a Nish-reserved wall;
+# cooldown_active holds the circuit with its own clock; auditor-resolved is
+# the auditor's closeout.
+reason_is_terminal() {
+    local r="$1"
+    case "$r" in
+        ""|boundary:*|cooldown_active|auditor-resolved) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The chain's underlying detector: for unit-failure, the failed unit must
+# have recovered. Green = not in failed state and last Result != failure
+# (or the unit is no longer loaded — it was reset/removed).
+detector_green() {
+    local unit="$1"
+    [[ -n "$unit" ]] || return 1
+    local result state
+    result=$("$SYSTEMCTL" --user show "$unit" --property=Result --value 2>/dev/null || true)
+    state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    if [[ "$state" == "failed" ]]; then
+        return 1
+    fi
+    # Result reflects the LAST run. exit-code/signal/oom-kill = the chain's
+    # detector is red. success/empty (unloaded) = green.
+    case "$result" in
+        ""|success) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# NISH-ESCALATIONS.md is the human board: CAP-REACHED lines carry
+# "hash=<hash>". A hash there = the 2-dispatch budget was spent and the
+# chain is genuinely on Nish's board — a legal Nish-reserved wall.
+nish_wall_reached() {
+    local hash="$1"
+    [[ -f "$NISH" ]] || return 1
+    grep -q "hash=$hash" "$NISH" 2>/dev/null && return 0
+    return 1
+}
+
+auditor_dispatched() {
+    local hash="$1"
+    [[ -f "$SEEN" ]] || return 1
+    grep -qF "$hash " "$SEEN" 2>/dev/null && return 0
+    return 1
+}
+
+# An auditor diagnosis block written AFTER the trip's first_seen proves the
+# chain moved past TRIP (alarm -> ticket -> claim). The dispatcher requires
+# a `## <ISO> — SENIOR AUDITOR` heading; we accept that or the two
+# alternative greppable lines it also accepts.
+auditor_claimed() {
+    local first_seen_epoch="$1"
+    [[ -f "$AUDITOR_LOG" ]] || return 1
+    grep -qE '^## [0-9TZ:+-]+ — SENIOR AUDITOR' "$AUDITOR_LOG" 2>/dev/null || return 1
+    # Best-effort recency: the newest auditor block must postdate first_seen.
+    local newest
+    newest=$(grep -oE '^## [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z — SENIOR AUDITOR' \
+        "$AUDITOR_LOG" 2>/dev/null | tail -1 || true)
+    if [[ -n "$newest" ]]; then
+        local iso
+        iso=$(printf '%s' "$newest" | sed 's/^## //; s/ — SENIOR AUDITOR$//')
+        local epoch=0
+        epoch=$(date -u -d "$iso" +%s 2>/dev/null || echo 0)
+        if [[ "$epoch" =~ ^[0-9]+$ ]] && (( epoch > 0 )); then
+            (( epoch >= first_seen_epoch )) && return 0
+            return 1
+        fi
+    fi
+    return 0
+}
+
+chain_state_file() { printf '%s/%s.json\n' "$STATE_DIR" "$1"; }
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+now=$(now_epoch)
+violations=0
+
+# If there is no STOP-REASON, or it is terminal, every open chain is done.
+# Prune the state dir of chains older than 2x budget; nothing to enforce.
+if [[ ! -f "$STOP_REASON" ]] || reason_is_terminal "$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)"; then
+    # Prune: old chain files (older than 2x budget) are historical.
+    find "$STATE_DIR" -name '*.json' -mmin +$(( (BUDGET * 2) / 60 )) -delete 2>/dev/null || true
+    log "no open escalation chain (STOP-REASON absent or terminal) — clean"
+    exit 0
+fi
+
+reason=$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)
+unit=$(jq -r '.detail.unit // ""' "$STOP_REASON" 2>/dev/null || true)
+hash=$(sha256sum "$STOP_REASON" | awk '{print $1}')
+log "open escalation chain: reason=$reason unit=$unit hash=${hash:0:12}"
+
+# Pipeline-active guard: a live dispatch means the closeout is in flight —
+# the chain is progressing, not stalled. Use the mocked systemctl in tests.
+escalation_pipeline_active() {
+    local st
+    st=$("$SYSTEMCTL" --user is-active stop-escalation.service 2>/dev/null || true)
+    case "$st" in
+        active|activating) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Load / create the chain state.
+cf=$(chain_state_file "$hash")
+first_seen="$now"
+stall_count=0
+if [[ -f "$cf" ]]; then
+    first_seen=$(jq -r '.first_seen // ""' "$cf" 2>/dev/null || true)
+    stall_count=$(jq -r '.stall_count // 0' "$cf" 2>/dev/null || echo 0)
+    [[ "$first_seen" =~ ^[0-9]+$ ]] || first_seen="$now"
+    [[ "$stall_count" =~ ^[0-9]+$ ]] || stall_count=0
+fi
+age=$(( now - first_seen ))
+
+# The only legal terminals. If the chain already reached one, we are clean
+# and the marker is cleared.
+if detector_green "$unit"; then
+    # FIX reached: the failed unit recovered. If the closeout (auditor-
+    # resolved/boundary:*) is missing BUT the pipeline is actively working
+    # the trip, the closeout is in flight — progress, not stale. Only when
+    # the pipeline is idle is an open non-terminal STOP-REASON a stale trip.
+    if ! reason_is_terminal "$reason"; then
+        if escalation_pipeline_active; then
+            log "chain ${hash:0:12} detector-green; STOP-REASON non-terminal but stop-escalation is actively dispatching — closeout in flight"
+            printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"pending-closeout"}\n' "$hash" "$now" > "$cf"
+            exit 0
+        fi
+        loud "ESCALATION-COMPLETION-STALE-TRIP" "chain ${hash:0:12} detector-green but STOP-REASON reason=$reason is NOT terminal and stop-escalation is IDLE — fix was never closed (auditor-resolved/boundary:* required)"
+        violations=$((violations + 1))
+    else
+        loud "ESCALATION-COMPLETION-GREEN" "chain ${hash:0:12} unit=$unit is detector-green and STOP-REASON terminal — FIX reached and closed"
+    fi
+    printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"green"}\n' "$hash" "$now" > "$cf"
+    exit "$violations"
+fi
+
+if nish_wall_reached "$hash"; then
+    log "chain ${hash:0:12} reached NISH-ESCALATIONS.md (hash in board) — Nish-reserved wall, legal terminal"
+    printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"nish-wall"}\n' "$hash" "$now" > "$cf"
+    exit 0
+fi
+
+# Open chain, detector not green, no Nish wall. Within budget: in-flight,
+# nothing to do beyond persisting state (progress visibility only).
+printf '{"hash":"%s","first_seen":%s,"stall_count":%s}\n' "$hash" "$first_seen" "$stall_count" > "$cf"
+if (( age < BUDGET )); then
+    log "chain ${hash:0:12} in-flight (age=${age}s < budget=${BUDGET}s; dispatched=$(auditor_dispatched "$hash" && echo yes || echo no)) — not stale"
+    exit 0
+fi
+
+# Past budget but a dispatch is live: the chain is progressing right now
+# (a dispatch can run up to ~23 min) — not stalled. Persist and exit 0.
+if escalation_pipeline_active; then
+    log "chain ${hash:0:12} age=${age}s past budget but stop-escalation is actively dispatching — closeout in flight, not stalled"
+    exit 0
+fi
+
+# Stale: older than the cycle budget and neither terminal reached.
+loud "ESCALATION-COMPLETION-STALLED" "chain ${hash:0:12} reason=$reason unit=$unit age=${age}s exceeds ${BUDGET}s budget; dispatched=$(auditor_dispatched "$hash" && echo yes || echo no); claimed=$(auditor_claimed "$first_seen" && echo yes || echo no)"
+
+if [[ "$stall_count" -eq 0 ]]; then
+    # First stale tick: repair — re-fire the auditor pipeline so the trip is
+    # fresh (stop-escalation.service has its own 2-dispatch cap per hash, so
+    # a re-fire cannot storm). Then mark so the next stale tick fails loud.
+    if [[ "$DRY" == "1" ]]; then
+        log "DRY: would restart stop-escalation.service (stall repair)"
+    else
+        if "$SYSTEMCTL" --user restart stop-escalation.service 2>/dev/null; then
+            log "repair: restarted stop-escalation.service (stall re-fire)"
+        else
+            log "repair: restart stop-escalation.service FAILED (best-effort; will fail loud next tick)"
+        fi
+    fi
+    printf '{"hash":"%s","first_seen":%s,"stall_count":1}\n' "$hash" "$first_seen" > "$cf"
+    loud "ESCALATION-COMPLETION-REPAIR" "chain ${hash:0:12} stalled past budget — re-fired auditor; will fail loud if still stalled next tick"
+    exit 0
+fi
+
+# Consecutive stale tick: fail loud. fleet-heartbeat.service lands failed ->
+# unit-escalation -> SENIOR-AUDITOR with the trip fresh. That is the ladder.
+loud "ESCALATION-COMPLETION-FAIL-LOUD" "chain ${hash:0:12} stalled past budget AND repair re-fire did not clear it — escalation ladder climbed"
+printf '{"hash":"%s","first_seen":%s,"stall_count":0}\n' "$hash" "$first_seen" > "$cf"
+exit 1

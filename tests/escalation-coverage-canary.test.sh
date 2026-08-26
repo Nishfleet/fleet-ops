@@ -755,3 +755,8 @@ bash "$here/fleet-restore-drill.test.sh"
 # cannot push .github/workflows/**).
 bash "$here/fleet-resilience-drill.test.sh"
 
+# fleet-ops#480: escalation completion enforcer. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens cannot
+# push .github/workflows/**).
+bash "$here/fleet-escalation-completion.test.sh"
+
