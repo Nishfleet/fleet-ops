@@ -21,6 +21,10 @@
 #      DRIFT-VOLATILE.
 #  12. install.sh refuses to overwrite a live file newer than the repo copy,
 #      and removes the paper-over heartbeat drop-in.
+#  12c. install.sh refuses a seat-caps cap drop even when the repo file has
+#      a newer mtime (git checkout refreshes mtime; fleet-ops#371).
+#  12d. origin/main blob matching the repo file is allowed to land a merged
+#      cap drop (fleet-ops-deploy path).
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
 #
@@ -57,6 +61,10 @@ grep -q 'DRIFT-VOLATILE' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag volatile unit/enable-link paths"
 grep -q 'live_newer_than_repo' "$repo_root/install.sh" \
     || fail "install.sh must refuse to overwrite a newer live config"
+grep -q 'seat_caps_would_downgrade' "$repo_root/install.sh" \
+    || fail "install.sh must refuse a seat-caps cap drop even when mtime is newer (fleet-ops#371)"
+grep -q 'fleet-ops#371' "$repo_root/install.sh" \
+    || fail "install.sh cap-drop refuse must name fleet-ops#371"
 grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the paper-over heartbeat drop-in"
 grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
@@ -576,6 +584,77 @@ printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/gc-able-worktree/fleet-ops-drift.py
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -e "$dropin" ]] || fail "scenario12: paper-over heartbeat drop-in was not removed"
 ok "scenario12b: install.sh removes the paper-over heartbeat drop-in"
+
+# --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
+# git checkout of a stale commit stamps the working tree now, so the #372
+# mtime guard would allow the overwrite. Live is the post-#331 snapshot
+# (devin 4 / ollama 4); repo is the pre-#331 snapshot (devin 0 / ollama 2).
+stale371="$scratch/stale-caps-mtime-hole"
+mkdir -p "$stale371/config"
+cp "$repo_root/install.sh" "$stale371/install.sh"
+chmod +x "$stale371/install.sh"
+cat >"$stale371/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":0},"ollama":{"cap":2,"models":{"deepseek-v4-flash:0731":2}}}}
+JSON
+cat >"$scratch/live-caps-371.json" <<'JSON'
+{"providers":{"devin":{"cap":4,"quota_bench_default_s":900},"ollama":{"cap":4,"models":{"deepseek-v4-flash:0731":4}}}}
+JSON
+touch -d '2020-01-01T00:00:00' "$scratch/live-caps-371.json"
+touch -d '2026-08-26T20:35:00' "$stale371/config/seat-caps.json"
+caps_dest371="$scratch/caps-dest-371"
+ln -sfn "$scratch/live-caps-371.json" "$caps_dest371"
+cat >"$stale371/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest371
+MANIFEST
+set +e
+refuse371_out=$("$stale371/install.sh" 2>&1)
+refuse371_rc=$?
+set -e
+[[ "$refuse371_rc" -eq 1 ]] || fail "scenario12c: cap drop with newer repo mtime should refuse (rc=1), got rc=$refuse371_rc out=$refuse371_out"
+[[ "$refuse371_out" == *"fleet-ops#371"* ]] \
+    || fail "scenario12c: expected fleet-ops#371 REFUSE, got: $refuse371_out"
+[[ "$refuse371_out" == *"devin:4->0"* ]] \
+    || fail "scenario12c: REFUSE must name the devin 4->0 drop, got: $refuse371_out"
+[[ "$(readlink -f "$caps_dest371")" = "$(readlink -f "$scratch/live-caps-371.json")" ]] \
+    || fail "scenario12c: live dest was overwritten by the stale repo"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest371")" = "4" ]] \
+    || fail "scenario12c: live devin cap was changed"
+ok "scenario12c: install.sh refuses a seat-caps cap drop even when repo mtime is newer"
+
+# --- scenario 12d: origin/main blob may land a merged cap drop --------------
+canon371="$scratch/canon-seat-caps"
+mkdir -p "$canon371/config"
+cp "$repo_root/install.sh" "$canon371/install.sh"
+chmod +x "$canon371/install.sh"
+cat >"$canon371/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":3}}}
+JSON
+cat >"$scratch/live-caps-ff.json" <<'JSON'
+{"providers":{"devin":{"cap":4}}}
+JSON
+touch -d '2026-08-26T20:35:00' "$scratch/live-caps-ff.json"
+touch -d '2020-01-01T00:00:00' "$canon371/config/seat-caps.json"
+caps_dest_ff="$scratch/caps-dest-ff"
+ln -sfn "$scratch/live-caps-ff.json" "$caps_dest_ff"
+cat >"$canon371/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_ff
+MANIFEST
+git -C "$canon371" init -q -b main
+git -C "$canon371" config user.email "test@example.com"
+git -C "$canon371" config user.name "Test"
+git -C "$canon371" add config/seat-caps.json MANIFEST install.sh
+git -C "$canon371" commit -q -m "merged cap drop"
+git -C "$canon371" update-ref refs/remotes/origin/main HEAD
+set +e
+ff_out=$("$canon371/install.sh" 2>&1)
+ff_rc=$?
+set -e
+[[ "$ff_rc" -eq 0 ]] || fail "scenario12d: origin/main blob should be allowed to land, got rc=$ff_rc out=$ff_out"
+[[ "$(readlink -f "$caps_dest_ff")" = "$(readlink -f "$canon371/config/seat-caps.json")" ]] \
+    || fail "scenario12d: dest was not retargeted at origin/main seat-caps"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_ff")" = "3" ]] \
+    || fail "scenario12d: dest did not pick up the merged cap"
+ok "scenario12d: origin/main seat-caps blob is allowed to land a merged cap drop"
 
 # --- scenario 13: leftover unit whose ExecStart binary is missing (fleet-ops#285)
 # The GitHub-hosted replacement left .service/.timer files on disk after the
