@@ -539,7 +539,7 @@ _seat_list_unit() {
         # Only accept unit names (must end with .service).
         [[ "$u" == *.service ]] || continue
         echo "$u"
-    done < <(systemctl --user list-units 'pi-issue-*.service' 'pi-packet-*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
+    done < <(systemctl --user list-units 'pi-issue@*.service' 'pi-packet@*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
 }
 
 # --- stale active-seat registry self-healing (2026-08-25) -----------------
@@ -754,10 +754,11 @@ count_degraded_total() {
             n=$((n+1))
         fi
     done < <(_seat_live_registry_files)
-    # Legacy grep path: scan pi-issue-*/pi-packet-* units in activating
+    # Legacy grep path: scan pi-issue@*/pi-packet@* units in activating
     # state (cheap) and filter by SubState=auto-restart. Same as
     # _seat_list_unit but restricted to the activating state, so the
-    # filter is bounded.
+    # filter is bounded. At-sign globs: template instances are
+    # pi-issue@<inst>.service (fleet-ops#28 / #103 / #355).
     local u sub state
     while IFS= read -r u; do
         [[ -n "$u" ]] || continue
@@ -775,7 +776,7 @@ count_degraded_total() {
             [[ -f "$ACTIVE_SEATS_DIR/pi-packet-${instance2}.json" ]] && continue
             n=$((n+1))
         fi
-    done < <(systemctl --user list-units 'pi-issue-*.service' 'pi-packet-*.service' --state=activating --no-legend --plain 2>/dev/null \
+    done < <(systemctl --user list-units 'pi-issue@*.service' 'pi-packet@*.service' --state=activating --no-legend --plain 2>/dev/null \
                 | awk '{print $1}' | grep -E '\.service$' || true)
     echo "$n"
 }
