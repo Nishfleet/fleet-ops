@@ -353,8 +353,15 @@ seat_usable() {
         seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
         return 1
     fi
+    # usable_at is the source of truth for any backoff it sets, regardless of
+    # marker freshness. A stale quota_exhausted or transient_fault marker whose
+    # usable_at is still in the future must stay benched.
+    if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
+        seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc, observed_at ${observed:-<empty>})"
+        return 1
+    fi
     if ! _seat_observed_fresh "$observed"; then
-        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
+        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s, usable_at passed) — assuming usable"
         return 0
     fi
     if [[ "$dead" == "true" ]]; then
@@ -376,10 +383,6 @@ seat_usable() {
         fi
         seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s or usable_at passed) — assuming usable"
         return 0
-    fi
-    if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
-        seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc)"
-        return 1
     fi
     return 0
 }
@@ -1141,7 +1144,7 @@ is_quota_cap_error() {
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
     # Quota/cap signal words (hard wall, not a transient retry).
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|rate[[:space:]]+limit[[:space:]]+exceeded|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|rate[[:space:]]+limit[[:space:]]+exceeded|message[[:space:]]+rate[[:space:]]+limit|overall[[:space:]]+message[[:space:]]+rate[[:space:]]+limit|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider

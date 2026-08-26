@@ -17,8 +17,8 @@
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
-#   4. P13-B spawn-phase failure marker: if pi dies in < SPAWN_FAIL_MAX_S
-#      (default 120s) AND the captured output contains an ETIMEDOUT pattern
+#   4. P13-B spawn-phase failure marker: if pi exits non-zero AND the
+#      captured output contains an ETIMEDOUT pattern
 #      paired with a spawn/socket/connect/child/handshake neighbour, write
 #      a per-seat ledger entry via mark_seat_spawn_fail (seat-lib.sh).
 #   4b. fleet-ops#90 quota/cap wall bench: if pi exits non-zero with a
@@ -231,7 +231,7 @@ spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
 # non-zero exit so systemd restart picks a different seat. The marker
 # sets usable_at = now + 5 min, so the OUTBOUND retry also skips it.
 spawn_fail_triggered=0
-if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
+if (( rc != 0 )); then
     out_for_scan=""
     err_for_scan=""
     [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
