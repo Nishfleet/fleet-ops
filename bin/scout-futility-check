@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# scout-futility-check — green-and-empty scout detector (fleet-ops#454).
+#
+# The supply chain already covers crash, dead timer, and dead heartbeat.
+# The remaining hole is FUTILITY: pi-scout@ exits 0, files nothing, every
+# supervision layer stays green, and low-water skipped_fresh even blocks
+# a retry. A judge/provider/quality stall then loops quietly forever.
+#
+# This helper is the class prevention. It snapshots the agent-ready buffer
+# around each scout completion (ExecStartPre begin / ExecStopPost end on
+# pi-scout@.service). N consecutive green runs with no net ready-work
+# increase while the buffer is below the 12-issue (12h) cap emit a LOUD
+# SCOUT-FUTILITY line and auto-file an escalate-senior ticket. Restarts
+# cannot fix this; senior judgment can.
+#
+# Always exit 0. A broken tracker must not fail the scout (that would
+# trip OnFailure repair and hide the green-and-empty case). The `-`
+# prefix on the unit's ExecStartPre/StopPost is belt-and-suspenders.
+#
+# Usage:
+#   scout-futility-check begin <repo>
+#   scout-futility-check end   <repo> [exit_code]
+#
+# Environment seams (tests):
+#   GH                         default gh
+#   FLEET_HEARTBEAT_TRIAGE     triage file
+#   SCOUT_FUTILITY_STATE_DIR   per-repo state (default ~/.local/state/scout-futility)
+#   SCOUT_FUTILITY_N           consecutive dry runs before escalate (default 3)
+#   SCOUT_FUTILITY_BUFFER      "below the 12h buffer" cap in ready issues (default 12)
+#   SCOUT_FUTILITY_REPO        repo to file tickets in (default Nishfleet/fleet-ops)
+#   SCOUT_FUTILITY_FILE        1 (default) file issues; 0 skip gh create
+#   SCOUT_FUTILITY_READY_COUNT override ready count (fixture scout)
+#   EXIT_STATUS / SERVICE_RESULT  systemd ExecStopPost env when argv omits exit_code
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}"
+N="${SCOUT_FUTILITY_N:-3}"
+BUFFER="${SCOUT_FUTILITY_BUFFER:-12}"
+FILE_REPO="${SCOUT_FUTILITY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${SCOUT_FUTILITY_FILE:-1}"
+
+log() {
+    printf '[%s] [scout-futility-check] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    echo "usage: scout-futility-check begin <repo> | end <repo> [exit_code]" >&2
+}
+
+# Fail-open: never take the scout down with us.
+safe_exit() {
+    exit 0
+}
+
+trap safe_exit EXIT
+
+is_uint() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+valid_repo() {
+    case "${1:-}" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+ready_count() {
+    local repo="$1" n
+    if [[ -n "${SCOUT_FUTILITY_READY_COUNT:-}" ]]; then
+        printf '%s\n' "$SCOUT_FUTILITY_READY_COUNT"
+        return 0
+    fi
+    n=$("$GH" issue list -R "Nishfleet/${repo}" -l agent-ready --state open \
+        --json number --limit 200 --jq 'length' 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+state_path() {
+    printf '%s/%s.state\n' "$STATE_DIR" "$1"
+}
+
+lock_path() {
+    printf '%s/%s.lock\n' "$STATE_DIR" "$1"
+}
+
+read_field() {
+    local file="$1" key="$2" line
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            "${key}="*) printf '%s\n' "${line#"${key}"=}"; return 0 ;;
+        esac
+    done <"$file"
+}
+
+write_state() {
+    local file="$1"
+    shift
+    local tmp
+    tmp=$(mktemp "${file}.XXXXXX")
+    {
+        printf '# scout-futility state\n'
+        printf '%s\n' "$@"
+    } >"$tmp"
+    mv -f "$tmp" "$file"
+}
+
+with_lock() {
+    local repo="$1"
+    local lock
+    lock=$(lock_path "$repo")
+    exec 9>"$lock"
+    flock 9
+}
+
+signal_key() {
+    printf 'signal: scout-futility/%s\n' "$1"
+}
+
+file_escalation() {
+    local repo="$1" dry="$2" before="$3" after="$4"
+    local marker title body_file existing
+    marker=$(signal_key "$repo")
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (SCOUT_FUTILITY_FILE=$FILE_ISSUES) $marker"
+        return 0
+    fi
+    existing=$("$GH" issue list -R "$FILE_REPO" --state open --limit 100 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" \
+            '.[] | select((.body // "") | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $FILE_REPO#$existing already carries $marker"
+        return 0
+    fi
+    title="[escalate-senior] scout futility: Nishfleet/${repo} ran green ${dry} times with no ready-work increase"
+    body_file=$(mktemp)
+    cat >"$body_file" <<EOF
+Scout futility (fleet-ops#454). \`pi-scout@${repo}\` completed green ${dry} times in a row with no net ready-work increase while the buffer stayed below ${BUFFER} (the 12h work-buffer cap). Supervision is green (timer, OnFailure repair, low-water skipped_fresh) so this loops forever without a human.
+
+This is a judge, provider, or quality problem, not a crash. Do not restart the scout. Route to the senior-auditor panel.
+
+## Evidence
+- repo: Nishfleet/${repo}
+- consecutive_dry: ${dry}
+- last before -> after: ${before} -> ${after}
+- buffer_threshold: ${BUFFER}
+- N: ${N}
+
+${marker}
+EOF
+    if "$GH" issue create -R "$FILE_REPO" \
+        --title "$title" \
+        --body-file "$body_file" \
+        --label escalate-senior \
+        --label agent-ready >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+    rm -f "$body_file"
+}
+
+cmd_begin() {
+    local repo="$1" before file
+    valid_repo "$repo" || { log "begin: invalid repo '$repo'"; return 0; }
+    is_uint "$N" || { log "begin: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
+    mkdir -p "$STATE_DIR"
+    with_lock "$repo"
+    before=$(ready_count "$repo")
+    file=$(state_path "$repo")
+    if ! is_uint "$before"; then
+        log "begin: $repo ready count not numeric ('$before') — skip snapshot"
+        return 0
+    fi
+    write_state "$file" \
+        "before=${before}" \
+        "begin_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "consecutive_dry=$(read_field "$file" consecutive_dry)" \
+        "last_after=$(read_field "$file" last_after)" \
+        "last_exit=$(read_field "$file" last_exit)" \
+        "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "begin: $repo ready_before=$before"
+}
+
+resolve_exit() {
+    local arg="${1:-}"
+    if is_uint "$arg"; then
+        printf '%s\n' "$arg"
+        return 0
+    fi
+    if [[ "${SERVICE_RESULT:-}" == "success" ]]; then
+        printf '0\n'
+        return 0
+    fi
+    if is_uint "${EXIT_STATUS:-}"; then
+        printf '%s\n' "$EXIT_STATUS"
+        return 0
+    fi
+    # Unknown result: do not treat as green.
+    printf '1\n'
+}
+
+cmd_end() {
+    local repo="$1"
+    local exit_code
+    exit_code=$(resolve_exit "${2:-}")
+    local file before after dry next_dry
+    valid_repo "$repo" || { log "end: invalid repo '$repo'"; return 0; }
+    is_uint "$N" || { log "end: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
+    is_uint "$BUFFER" || { log "end: SCOUT_FUTILITY_BUFFER not a uint: $BUFFER"; return 0; }
+    [[ "$N" -ge 1 ]] || { log "end: SCOUT_FUTILITY_N must be >= 1"; return 0; }
+    mkdir -p "$STATE_DIR"
+    with_lock "$repo"
+    file=$(state_path "$repo")
+    before=$(read_field "$file" before)
+    if ! is_uint "$before"; then
+        log "end: $repo missing begin snapshot — skip"
+        return 0
+    fi
+    after=$(ready_count "$repo")
+    if ! is_uint "$after"; then
+        log "end: $repo ready count not numeric ('$after') — skip"
+        return 0
+    fi
+    dry=$(read_field "$file" consecutive_dry)
+    is_uint "$dry" || dry=0
+    next_dry=$dry
+    if [[ "$exit_code" != "0" ]]; then
+        log "end: $repo exit=$exit_code (not green) — leave consecutive_dry=$dry"
+    elif [[ "$after" -ge "$BUFFER" ]]; then
+        next_dry=0
+        log "end: $repo ready_after=$after >= buffer=$BUFFER — reset consecutive_dry"
+    elif [[ "$after" -gt "$before" ]]; then
+        next_dry=0
+        log "end: $repo ready $before -> $after (net increase) — reset consecutive_dry"
+    else
+        next_dry=$((dry + 1))
+        log "end: $repo ready $before -> $after (no net increase, below buffer=$BUFFER) consecutive_dry=$next_dry"
+        if [[ "$next_dry" -ge "$N" ]]; then
+            loud "SCOUT-FUTILITY" "repo=Nishfleet/${repo} consecutive_dry=${next_dry} (N=${N}) ready ${before}->${after} below buffer=${BUFFER}. green scout filed nothing; escalate-senior, do not restart"
+            file_escalation "$repo" "$next_dry" "$before" "$after"
+        fi
+    fi
+    write_state "$file" \
+        "before=" \
+        "begin_at=" \
+        "consecutive_dry=${next_dry}" \
+        "last_before=${before}" \
+        "last_after=${after}" \
+        "last_exit=${exit_code}" \
+        "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+[[ $# -ge 2 ]] || { usage; safe_exit; }
+
+case "$1" in
+    begin) cmd_begin "$2" ;;
+    end)   cmd_end "$2" "${3:-}" ;;
+    *)     usage ;;
+esac
