@@ -30,6 +30,9 @@ manifest="$here/MANIFEST"
 
 mode=""
 check_system=0
+user_unit_changed=0
+system_unit_changed=0
+declare -a to_enable=()
 for arg in "$@"; do
   case "$arg" in
     --check)      mode="--" ;;           # distinct from empty so we can
@@ -59,6 +62,40 @@ fi
 # Returns 0 if the destination is under /etc/, 1 otherwise. Used to route
 # each MANIFEST line to the user/system handler.
 dest_is_system() { case "$1" in /etc/*) return 0;; *) return 1;; esac; }
+
+# Returns 0 if the source path is a systemd unit/drop-in that requires a
+# daemon-reload when changed.
+is_unit_src() { case "$1" in systemd/*) return 0;; *) return 1;; esac; }
+
+# Returns 0 if the source path is a user-scope installable unit (not a
+# template, has [Install]) and should be enabled by install.sh.
+is_installable_unit() {
+    local src=$1
+    case "$src" in
+        systemd/*.service|systemd/*.timer|systemd/*.path)
+            # Skip template base units (instances come from intake-reconcile).
+            case "$src" in *@*) return 1;; esac
+            # Skip system-scope drop-ins (handled by --system path).
+            case "$src" in systemd/system/*) return 1;; esac
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+unit_has_install() { grep -qE '^\[Install\]$' "$1" 2>/dev/null; }
+
+# Returns 0 if the installed destination already matches the repo file.
+# Treats a symlink to the repo file OR a byte-identical regular file as OK.
+unit_file_matches() {
+    local dest=$1 repo=$2
+    if [ -L "$dest" ]; then
+        [ "$(readlink -f "$dest" 2>/dev/null)" = "$repo" ] && return 0
+    elif [ -f "$dest" ] && cmp -s "$dest" "$repo" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
 
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
@@ -95,11 +132,20 @@ process_entry() {
       rc=1
       return 0
     fi
+    if [[ "$src" == systemd/system/* ]] && ! unit_file_matches "$dest" "$repo"; then
+        system_unit_changed=1
+    fi
     sudo install -D -m 0644 -o root -g root "$repo" "$dest"
     echo "installed (system): $dest"
   else
     # User scope: symlink, idempotent. mkdir -p so nested drop-in dirs
     # (e.g. vps-weekly-update.service.d/) exist on first install.
+    if is_unit_src "$src" && ! unit_file_matches "$dest" "$repo"; then
+        user_unit_changed=1
+    fi
+    if [ "$do_user_install" = 1 ] && is_installable_unit "$src" && unit_has_install "$repo"; then
+        to_enable+=("$(basename "$src")")
+    fi
     mkdir -p "$(dirname "$dest")"
     ln -sfn "$repo" "$dest"
   fi
@@ -127,16 +173,48 @@ if [ "$mode" = "--" ]; then
 fi
 
 if [ "$do_user_install" = 1 ]; then
-  systemctl --user daemon-reload
+  # Only daemon-reload when a user-scope systemd unit/drop-in actually
+  # changed. First install on a fresh box still reloads because every unit
+  # is new. Bin/prompt/config changes do not waste a reload.
+  if [ "$user_unit_changed" = 1 ]; then
+    systemctl --user daemon-reload
+  fi
+  # Enable every non-template, [Install]-carrying unit declared by MANIFEST.
+  # .path and .timer are also started with --now; .service is enabled only
+  # so its timer/path is the trigger.
+  for unit in "${to_enable[@]:-}"; do
+    [ -n "$unit" ] || continue
+    case "$unit" in
+      *.path|*.timer)
+        if ! systemctl --user is-enabled "$unit" >/dev/null 2>&1; then
+          systemctl --user enable --now "$unit"
+          echo "enabled+started: $unit"
+        fi
+        ;;
+      *.service)
+        if ! systemctl --user is-enabled "$unit" >/dev/null 2>&1; then
+          systemctl --user enable "$unit"
+          echo "enabled: $unit"
+        fi
+        ;;
+    esac
+  done
   # fleet-ops#32: the reconciler was fail-closed on gh label-check errors,
   # so it was stopped/disabled. Once this fixed version is installed, the
   # path unit (fired by intake-repos.json changes) and the 30-minute timer
-  # can be safely re-enabled.
-  systemctl --user enable intake-reconcile.path
-  systemctl --user enable --now intake-reconcile.timer
+  # can be safely re-enabled. The loop above already handles these two, but
+  # the historical call is kept here as a no-op safety net.
+  if ! systemctl --user is-enabled intake-reconcile.path >/dev/null 2>&1; then
+    systemctl --user enable --now intake-reconcile.path
+  fi
+  if ! systemctl --user is-enabled intake-reconcile.timer >/dev/null 2>&1; then
+    systemctl --user enable --now intake-reconcile.timer
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.
-  sudo systemctl daemon-reload
+  if [ "$system_unit_changed" = 1 ]; then
+    sudo systemctl daemon-reload
+  fi
 fi
 exit "$rc"
