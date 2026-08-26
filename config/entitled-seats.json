@@ -57,7 +57,7 @@
     {
       "id": "opencode",
       "class": "free",
-      "note": "OpenCode Zen (ledger name opencode-go). hy3-free is live; MiniMax M3 via this pipe is fleet-ops#384."
+      "note": "OpenCode Zen (ledger name opencode-go). hy3-free is live; MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
     },
     {
       "id": "orcarouter",

@@ -865,3 +865,7 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 # .github/workflows).
 bash "$here/ram-metric-compare.test.sh" || fail "ram-metric-compare tests failed"
 
+# fleet-ops#435: same CI constraint. Lock the OpenCode MiniMax M3 billing
+# gate and free-slug detector through this listed file.
+bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3-catalog-canary tests failed"
+
