@@ -1,0 +1,17 @@
+[Unit]
+Description=Fleet seat-recovery trigger (fire intake on NO-USABLE-SEAT -> usable, fleet-ops#468)
+
+# Event-driven: any write to the per-seat health ledger (a seat-health
+# extension update) wakes this service. It compares the current "any seat
+# usable?" verdict against the last one and fires pi-intake@<repo>.service
+# INSTANTLY on the recovery transition — no waiting for the 15-min tick.
+# Time-based bench expiry is the heartbeat's slow-path floor; this is the
+# fast path for the common case (a health write marks a seat usable).
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-seat-recovery
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# fleet-seat-recovery — fire intake the INSTANT a seat becomes available
+# (fleet-ops#468, decisions-ledger 2026-08-27 TOP GEAR).
+#
+# Named reason: seat-recovery dead time. A rate-limited/benched/exhausted
+# fleet previously waited for the 15-minute intake tick (devin exited its
+# 2-min burst at 18:50Z but intake waited until the :00/:15/:30/:45 tick).
+# TOP GEAR: seat recovery fires intake INSTANTLY.
+#
+# Design (no polling, no new dispatcher):
+#   fleet-seat-recovery.path (systemd PathChanged on the seats ledger dir)
+#   -> fleet-seat-recovery.service -> this bin.
+#   A systemd .path unit is event-driven: any write to the seats/ dir
+#   (a seat-health ledger update) wakes the service. The bin then:
+#     1. Snapshot the current "no usable seat" verdict from the ledger
+#        (seat-lib.sh seat_usable, the same authority pick_seat uses).
+#     2. Compare with the last persisted verdict (state file).
+#     3. On the NO-USABLE-SEAT -> seat-available transition, start
+#        pi-intake@<repo>.timer / pi-intake@<repo>.service for every
+#        enrolled repo (systemd triggers, not polling).
+#
+# Time-based expiry (a bench_until that passes while nobody writes a new
+# ledger file) is handled by the HEARTBEAT'S OWN block: the fleet-heartbeat
+# tick already runs seat_usable pick_seat paths every 30 min, and this
+# detector also re-arms itself on every service start. The .path watcher
+# is the fast path for the common case (a seat-health write marks the
+# seat usable); the heartbeat is the slow-path floor.
+#
+# Anti-thrash: only fire on the TRANSITION, and at most once per
+# FIRE_COOLDOWN_SECS. A seat that flaps usable/unusable cannot re-trigger
+# intake storms — the cooldown is the burst limiter.
+#
+# Environment seams (tests):
+#   FLEET_SEAT_LEDGER_DIR        ledger dir (default agent-state/lanes/seats)
+#   FLEET_SEAT_RECOVERY_STATE    state file for last verdict (default
+#                                /run/user/$UID/fleet-seat-recovery.state)
+#   FLEET_SEAT_RECOVERY_COOLDOWN fire cooldown seconds (default 120)
+#   FLEET_SEAT_RECOVERY_REPOS    space-separated repo list override (tests)
+#   FLEET_SEAT_RECOVERY_DRY_RUN  1 = print the systemctl argv, don't run
+#   FLEET_SEAT_RECOVERY_SYSTEMCTL systemctl path (tests)
+#   FLEET_SEAT_RECOVERY_NOW      ISO timestamp override (tests)
+#   PI_SEAT_HEALTH_LEDGER_DIR    passed through to seat-lib.sh
+#
+# Exit: 0 always (a path trigger that finds no transition is not a failure;
+#       the unit is oneshot, failure only on internal error).
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+LEDGER_DIR="${FLEET_SEAT_LEDGER_DIR:-$AS/lanes/seats}"
+DEFAULT_STATE="/run/user/$(id -u)/fleet-seat-recovery.state"
+STATE="${FLEET_SEAT_RECOVERY_STATE:-$DEFAULT_STATE}"
+COOLDOWN="${FLEET_SEAT_RECOVERY_COOLDOWN:-120}"
+REPOS="${FLEET_SEAT_RECOVERY_REPOS:-}"
+DRY="${FLEET_SEAT_RECOVERY_DRY_RUN:-0}"
+SYSTEMCTL="${FLEET_SEAT_RECOVERY_SYSTEMCTL:-systemctl}"
+NOW_ISO="${FLEET_SEAT_RECOVERY_NOW:-}"
+
+# Seat-lib (the routing authority). Same pick_seat/seat_usable the workers
+# use, so this detector's verdict is exactly what a worker would conclude.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+if [[ -f "$SEAT_LIB" ]]; then
+    # shellcheck disable=SC1090
+    source "$SEAT_LIB"
+else
+    # Repo copy fallback (tests / fresh checkout).
+    # shellcheck disable=SC1090
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/seat-lib.sh"
+fi
+
+log() {
+    printf '[%s] [fleet-seat-recovery] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+# Does ANY enrolled, cap-allowed seat currently rate as usable?
+# Returns 0 (usable exists) / 1 (no usable seat).
+any_seat_usable() {
+    local p m
+    # pick_seat "" "" 0 returns a usable seat or nothing. It already
+    # excludes cap-map-allowed seats, credential-less providers, benched
+    # seats, dead seats, and cap-saturated ones. Empty = NO-USABLE-SEAT.
+    local seat
+    seat=$(pick_seat "" "" 0 2>/dev/null || true)
+    if [[ -n "$seat" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+enrolled_repos() {
+    if [[ -n "$REPOS" ]]; then
+        printf '%s\n' $REPOS
+        return 0
+    fi
+    # Read the declared intake set (same source the reconciler converges).
+    local cf="${FLEET_INTAKE_REPOS_JSON:-$AS/../products/fleet-ops/config/intake-repos.json}"
+    if [[ -f "$cf" ]]; then
+        jq -r '.repos[]?.name // empty' "$cf" 2>/dev/null || true
+    fi
+}
+
+main() {
+    local now last_verdict cur_verdict last_ts rc=0
+    now=$(now_epoch)
+
+    # Load the last persisted verdict.
+    last_verdict="unknown"
+    last_ts=0
+    if [[ -f "$STATE" ]]; then
+        read -r last_verdict last_ts < "$STATE" 2>/dev/null || true
+        [[ -n "$last_verdict" ]] || last_verdict="unknown"
+        [[ "$last_ts" =~ ^[0-9]+$ ]] || last_ts=0
+    fi
+
+    # Current verdict.
+    if any_seat_usable; then
+        cur_verdict="usable"
+    else
+        cur_verdict="no-usable"
+    fi
+    log "ledger verdict: last=$last_verdict cur=$cur_verdict (state=$STATE)"
+
+    # Persist the verdict (atomic-ish; the .path trigger is per-write and
+    # this file lives in /run — a lost write only delays the next detection).
+    printf '%s %s\n' "$cur_verdict" "$now" > "$STATE"
+
+    # Transition NO-USABLE-SEAT -> seat-available: the thing TOP GEAR wants
+    # fired instantly. Other transitions (usable->no-usable, or no-change)
+    # are not intake events.
+    if [[ "$last_verdict" != "no-usable" ]] || [[ "$cur_verdict" != "usable" ]]; then
+        log "no NO-USABLE-SEAT -> usable transition (last=$last_verdict cur=$cur_verdict) — nothing to fire"
+        return 0
+    fi
+
+    # Cooldown: at most one firing per COOLDOWN seconds.
+    if (( last_ts > 0 )) && (( now - last_ts < COOLDOWN )); then
+        log "transition detected but within cooldown (${COOLDOWN}s) — skipping fire"
+        return 0
+    fi
+
+    log "SEAT-RECOVERY: NO-USABLE-SEAT -> usable — firing intake instantly"
+    local repo
+    for repo in $(enrolled_repos); do
+        [[ -n "$repo" ]] || continue
+        if [[ "$DRY" == "1" ]]; then
+            log "DRY: would start pi-intake@$repo.service"
+            continue
+        fi
+        if "$SYSTEMCTL" --user start "pi-intake@$repo.service" 2>/dev/null; then
+            log "started pi-intake@$repo.service"
+        else
+            log "WARN: could not start pi-intake@$repo.service (rc=$?)"
+        fi
+    done
+    return 0
+}
+
+main "$@"

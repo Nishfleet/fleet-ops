@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# fleet-deploy-check — tight-cadence merge-to-live gate (fleet-ops#468).
+#
+# Named reason (decisions-ledger 2026-08-27 TOP GEAR): merged-but-not-live
+# latency. Seat-cap PRs and other fixes waited for the 30-min heartbeat
+# before reaching the live box. TOP GEAR says merge->live <= 5 minutes,
+# event-driven. This check runs on a tight cadence (fleet-deploy-check.timer,
+# 2 minutes), does a cheap git fetch + rev compare, and ONLY when origin/main
+# moved does it invoke the existing sanctioned deploy step
+# (bin/fleet-ops-deploy). No new dispatcher, no polling for work — a pure
+# event-driven gate on the merge event.
+#
+# Guards (all inherited from fleet-ops-deploy):
+#   - deploy refuses dirty tracked files / non-fast-forward with a LOUD line
+#   - deploy only mutates when invoked from the canonical checkout or when
+#     FLEET_OPS_CHECKOUT is explicitly set
+#   - flock: one deploy at a time (a deploy already running or a heartbeat
+#     block 0 deploy in flight means this check yields — never concurrent)
+#
+# Environment seams (tests):
+#   FLEET_OPS_CHECKOUT            checkout to watch (default: canonical clone)
+#   FLEET_OPS_DEPLOY_BIN          deploy binary (default: $checkout/bin/fleet-ops-deploy)
+#   FLEET_DEPLOY_CHECK_LOCK       flock path (default: /tmp/fleet-deploy-check.lock)
+#   FLEET_DEPLOY_CHECK_NO_DEPLOY  1 = compare only, never invoke deploy
+#   FLEET_OPS_DEPLOY_AUDIT_LOG / FLEET_OPS_TRIAGE passed through to deploy
+#
+# Exit: 0 always (a check that found nothing to do is not a failure).
+#       Non-zero only on a hard internal error (fetch failure is logged,
+#       not fatal — the next tick retries; the heartbeat still deploys).
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
+CHECKOUT="${FLEET_OPS_CHECKOUT:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone}"
+DEPLOY_BIN="${FLEET_OPS_DEPLOY_BIN:-$CHECKOUT/bin/fleet-ops-deploy}"
+LOCK="${FLEET_DEPLOY_CHECK_LOCK:-/tmp/fleet-deploy-check.lock}"
+NO_DEPLOY="${FLEET_DEPLOY_CHECK_NO_DEPLOY:-0}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+export FLEET_OPS_TRIAGE="${FLEET_OPS_TRIAGE:-$TRIAGE}"
+
+log() {
+    printf '[%s] [fleet-deploy-check] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local msg="$*"
+    log "LOUD $msg"
+    {
+        printf '\n[%s] [fleet-deploy-check] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# A deploy is already in flight: yield quietly. The heartbeat block 0 also
+# deploys; two deploys racing would both mutate live state.
+deploy_in_flight() {
+    # systemctl --user is-active fleet-ops-deploy... is not a unit. Instead
+    # check for a running fleet-ops-deploy process (the deploy step runs in
+    # the heartbeat's own process tree). The flock on the deploy's own lock
+    # is the authoritative gate — fleet-ops-deploy will fail loudly if it
+    # cannot take it — so this check is a soft pre-filter only.
+    pgrep -f 'bin/fleet-ops-deploy' >/dev/null 2>&1
+}
+
+main() {
+    if [[ ! -d "$CHECKOUT/.git" ]] && [[ ! -f "$CHECKOUT/.git" ]]; then
+        loud "DEPLOY-CHECK-CHECKOUT-MISSING" "checkout $CHECKOUT is not a git worktree — nothing to watch"
+        return 0
+    fi
+
+    local before after rc=0
+    before=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo "unknown")
+
+    # Fetch origin/main (cheap: refs only). Failure is not fatal — next tick
+    # retries and the heartbeat still deploys at its own cadence.
+    if ! git -C "$CHECKOUT" fetch -q origin 2>/dev/null; then
+        log "fetch failed (retry next tick); HEAD=$before"
+        return 0
+    fi
+
+    after=$(git -C "$CHECKOUT" rev-parse origin/main 2>/dev/null || echo "unknown")
+    if [[ "$after" == "unknown" ]]; then
+        log "no origin/main ref; HEAD=$before"
+        return 0
+    fi
+
+    if [[ "$before" == "$after" ]]; then
+        log "origin/main unchanged (HEAD=$before) — nothing to do"
+        return 0
+    fi
+
+    log "origin/main moved $before -> $after — invoking sanctioned deploy"
+    if [[ "$NO_DEPLOY" == "1" ]]; then
+        log "compare-only mode (FLEET_DEPLOY_CHECK_NO_DEPLOY=1): deploy not invoked"
+        return 0
+    fi
+
+    if [[ ! -x "$DEPLOY_BIN" ]]; then
+        loud "DEPLOY-CHECK-MISSING" "deploy binary $DEPLOY_BIN missing — merge-to-live stalled"
+        return 0
+    fi
+
+    # Yield if a deploy is already running (heartbeat block 0 or another
+    # deploy-check tick that won the flock). fleet-ops-deploy's own flock
+    # is the hard gate; this avoids spurious concurrent invocation.
+    if deploy_in_flight; then
+        log "deploy already in flight — yielding this tick"
+        return 0
+    fi
+
+    # Take the flock, then re-verify the rev (another tick may have deployed
+    # between fetch and lock).
+    exec 9>"$LOCK"
+    if ! flock -n 9; then
+        log "lock held — another deploy in flight; yielding"
+        return 0
+    fi
+
+    local now
+    now=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo "unknown")
+    if [[ "$now" == "$after" ]]; then
+        log "already deployed between fetch and lock (HEAD=$now) — nothing to do"
+        return 0
+    fi
+
+    FLEET_OPS_CHECKOUT="$CHECKOUT" \
+    FLEET_OPS_DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$AS/../tooling/fleet-ops-deploy/logs/deploy-audit.log}" \
+    FLEET_OPS_TRIAGE="$TRIAGE" \
+        "$DEPLOY_BIN" || rc=$?
+
+    if [[ "$rc" -ne 0 ]]; then
+        loud "DEPLOY-CHECK-FAILED" "fleet-ops-deploy exited rc=$rc — merge-to-live gate red"
+    else
+        log "deploy completed rc=0 — live now at origin/main ($after)"
+    fi
+    return "$rc"
+}
+
+main "$@"

@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# fleet-unjustified-wait — TOP GEAR invariant, the teeth (fleet-ops#468).
+#
+# "DEFERRAL REQUIRES A NAMED CLOCK" (decisions-ledger 2026-08-27). Every
+# held claim, benched seat, queued deploy, or postponed action must carry a
+# machine-checkable justification — a timestamp the machine can verify and
+# act on the moment it expires. Anything waiting WITHOUT one is a LOUD
+# [UNJUSTIFIED-WAIT] that auto-files.
+#
+# Sources audited (all LOCAL state, no network — deterministic per tick):
+#   1. Seat ledger:   agent-state/lanes/seats/*.json (the routing authority).
+#        - quota_bench        -> MUST carry bench_until (in the future or past).
+#        - quota_exhausted    -> MUST carry usable_at.
+#        - rate_limited       -> MUST carry usable_at.
+#        - credentials_bad    -> dead UNTIL a human repairs creds; the named
+#                                clock is `seat_dead=true` + observed_at (a
+#                                Nish-reserved gate — blocked, loud, auto-file).
+#        - seat_dead=true     -> same: clock = dead marker (repair gate).
+#        - healthy/transient  -> not waiting, no clock needed.
+#   2. STOP-REASON.json:      the last failure trip. If its reason is NOT one
+#        of the legal terminal states (unit-failure/daily-sweep -> being
+#        worked; boundary:* / cooldown_active / auditor-resolved -> terminal
+#        for the escalation layer) it is an UNJUSTIFIED-WAIT itself.
+#   3. READY-WORK.md:         unchecked items. `after:` checks are named
+#        clocks (their shell check IS the machine-checkable gate). Items
+#        without `after:` are ready-now, not waiting. A CLAIMED item older
+#        than CLAIM_STALE_HOURS with no DONE marker is an UNJUSTIFIED-WAIT
+#        (a claim that stopped being worked and never re-queued).
+#
+# Named clocks are ANY of: bench_until, usable_at, after:, rate_limited_until,
+# quota-reset time, a Nish-reserved marker, or a blocking issue ref. The
+# detector never guesses — it reads the fields the writers already emit.
+#
+# Decision: any source in an UNJUSTIFIED-WAIT state -> LOUD line + exit 1
+# (the heartbeat tick fails; the auto-file dedupe keeps one issue open).
+# The fleet-heartbeat-undersaturation repair path (restart intake) already
+# re-fires workers; this detector exists so a wait that is NOT clocked
+# becomes visible and ticket-able instead of silent.
+#
+# Environment seams (tests):
+#   FLEET_SEAT_LEDGER_DIR       default $AGENT_STATE/lanes/seats
+#   FLEET_STOP_REASON           default $AGENT_STATE/STOP-REASON.json
+#   FLEET_READY_WORK            default $AGENT_STATE/READY-WORK.md
+#   FLEET_UNJUSTIFIED_WAIT_NOW  ISO timestamp override (tests)
+#   FLEET_CLAIM_STALE_HOURS     claim age threshold (default 24)
+#   GH / FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO / FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES
+#
+# Exit: 0 = every wait carries a clock. Non-zero = at least one
+#       UNJUSTIFIED-WAIT (LOUD, auto-filed, deduped by signal key).
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
+LEDGER_DIR="${FLEET_SEAT_LEDGER_DIR:-$AS/lanes/seats}"
+STOP_REASON="${FLEET_STOP_REASON:-$AS/STOP-REASON.json}"
+READY_WORK="${FLEET_READY_WORK:-$AS/READY-WORK.md}"
+NOW_ISO="${FLEET_UNJUSTIFIED_WAIT_NOW:-}"
+CLAIM_STALE_HOURS="${FLEET_CLAIM_STALE_HOURS:-24}"
+GH="${GH:-gh}"
+ISSUE_REPO="${FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES:-1}"
+
+SIGNAL_PREFIX="signal: unjustified-wait/"
+
+log() {
+    printf '[%s] [fleet-unjustified-wait] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+# --- seat ledger audit ------------------------------------------------------
+# For each ledger file, extract the wait fields and verify the named clock.
+audit_seats() {
+    local n=0
+    if [[ ! -d "$LEDGER_DIR" ]]; then
+        log "seats: ledger dir missing ($LEDGER_DIR) — nothing to audit"
+        echo 0
+        return 0
+    fi
+    local f hc dead observed usable bench name
+    for f in "$LEDGER_DIR"/*.json; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f" .json)
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || true)
+        observed=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+        usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+        bench=$(jq -r '.bench_until // ""' "$f" 2>/dev/null || true)
+        case "$hc" in
+            quota_bench)
+                if [[ -z "$bench" ]]; then
+                    loud "UNJUSTIFIED-WAIT" "seat $name health_class=quota_bench has NO bench_until clock — benched with no reset time"
+                    n=$((n + 1))
+                fi
+                ;;
+            quota_exhausted|rate_limited)
+                if [[ -z "$usable" ]]; then
+                    loud "UNJUSTIFIED-WAIT" "seat $name health_class=$hc has NO usable_at clock — waiting with no reset time"
+                    n=$((n + 1))
+                fi
+                ;;
+            credentials_bad)
+                if [[ "$dead" != "true" ]]; then
+                    loud "UNJUSTIFIED-WAIT" "seat $name health_class=credentials_bad but seat_dead=$dead — dead marker missing (clock=repair gate)"
+                    n=$((n + 1))
+                fi
+                ;;
+            *)
+                # healthy / transient_fault / unknown: not waiting, no clock.
+                ;;
+        esac
+        # A seat_dead=true marker with a non-dead class is an inconsistent
+        # write — the dead marker is the repair-gate clock, so require it.
+        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" ]]; then
+            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad (clock inconsistent)"
+            n=$((n + 1))
+        fi
+    done
+    echo "$n"
+}
+
+# --- STOP-REASON audit ------------------------------------------------------
+# A STOP-REASON with a non-terminal reason that is not being actively worked
+# is an unjustified wait on the escalation chain. Legal terminal / active
+# reasons are listed below.
+audit_stop_reason() {
+    [[ -f "$STOP_REASON" ]] || { echo 0; return 0; }
+    local reason
+    reason=$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)
+    case "$reason" in
+        ""|unit-failure|daily-sweep|boundary:*|cooldown_active|auditor-resolved)
+            # unit-failure / daily-sweep = actively being worked by the
+            # escalation chain (each has its own trip + dispatch budget);
+            # boundary:* = Nish-reserved gate; cooldown_active = circuit
+            # holding with its own clock; auditor-resolved = closed.
+            echo 0
+            return 0
+            ;;
+        *)
+            loud "UNJUSTIFIED-WAIT" "STOP-REASON.json reason='$reason' is not a legal terminal state (unit-failure|daily-sweep|boundary:*|cooldown_active|auditor-resolved) — the failure chain has no clock"
+            echo 1
+            return 0
+            ;;
+    esac
+}
+
+# --- READY-WORK audit -------------------------------------------------------
+# Unchecked items: `after:` = named clock (the shell check is the gate).
+# A CLAIMED item with no DONE marker older than CLAIM_STALE_HOURS is a
+# stalled claim — an UNJUSTIFIED-WAIT unless it carries an after: gate.
+audit_ready_work() {
+    [[ -f "$READY_WORK" ]] || { echo 0; return 0; }
+    local n=0 now
+    now=$(now_epoch)
+    local line item after claimed done
+    while IFS= read -r line; do
+        [[ "$line" == "- [ ] "* || "$line" == "- [x] "* ]] || continue
+        item="${line#- [x] }"; item="${item#- [ ] }"
+        after=""
+        claimed=""
+        done=""
+        [[ "$item" == *"after: "* ]] && after=1
+        if [[ "$item" == *"CLAIMED:"* ]]; then
+            claimed=$(printf '%s' "$item" | sed -n 's/.*CLAIMED:\([0-9TZ:+-]*\).*/\1/p')
+        fi
+        if [[ "$line" == "- [x] "* ]] && [[ "$item" == *"DONE:"* ]]; then
+            done=1
+        fi
+        if [[ -n "$claimed" ]] && [[ -z "$done" ]] && [[ -z "$after" ]]; then
+            # CLAIMED but no DONE and no after: gate. If the claim is old,
+            # it is a stalled claim. A recent claim (< CLAIM_STALE_HOURS)
+            # is in-flight — still not a clock, but not stale enough to
+            # scream. TOP GEAR's clock rule is about WAITING; a fresh claim
+            # is being worked.
+            local claim_epoch=0
+            claim_epoch=$(date -u -d "$claimed" +%s 2>/dev/null || echo 0)
+            if [[ "$claim_epoch" =~ ^[0-9]+$ ]] && (( claim_epoch > 0 )); then
+                if (( now - claim_epoch > CLAIM_STALE_HOURS * 3600 )); then
+                    loud "UNJUSTIFIED-WAIT" "READY-WORK claim is stalled: '${item:0:100}…' CLAIMED:$claimed (${CLAIM_STALE_HOURS}h threshold) with no DONE and no after: gate — the wait has no clock"
+                    n=$((n + 1))
+                fi
+            fi
+        fi
+    done < "$READY_WORK"
+    echo "$n"
+}
+
+# --- auto-file --------------------------------------------------------------
+# One issue per finding, deduped by `signal: unjustified-wait/<slug>`.
+file_findings() {
+    local slug="$1" msg="$2"
+    [[ "$FILE_ISSUES" == "1" ]] || { log "auto-file: skipped (FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0)"; return 0; }
+    command -v "$GH" >/dev/null 2>&1 || { log "auto-file: gh missing — cannot file"; return 0; }
+    local signal="signal: unjustified-wait/$slug"
+    set +e
+    local open_json
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    set -e
+    if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"${open_json:-[]}" >/dev/null 2>&1; then
+        log "auto-file: $slug already open (deduped)"
+        return 0
+    fi
+    local title="fix(unjustified-wait): $slug — deferral with no named clock"
+    local body
+    body="The TOP GEAR invariant (decisions-ledger 2026-08-27) is enforced mechanically by bin/fleet-unjustified-wait. It found a wait with no machine-checkable clock.
+
+- finding: $msg
+- detector: bin/fleet-unjustified-wait (heartbeat tier1)
+
+Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
+
+$signal"
+    set +e
+    local created
+    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    local rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]] && [[ -n "$created" ]]; then
+        log "auto-file: FILED $slug -> $created"
+    else
+        log "auto-file: failed to file $slug (rc=$rc)"
+    fi
+}
+
+# ============================================================================
+# main
+# ============================================================================
+log "unjustified-wait audit starting (ledger=$LEDGER_DIR stop_reason=$STOP_REASON ready_work=$READY_WORK)"
+total=0
+s=$(audit_seats);        total=$((total + s))
+r=$(audit_stop_reason);  total=$((total + r))
+w=$(audit_ready_work);   total=$((total + w))
+log "audit complete: seats=$s stop_reason=$r ready_work=$w total=$total"
+
+if [[ "$total" -gt 0 ]]; then
+    # Auto-file one issue per finding slug (deduped). Slugs are derived
+    # deterministically from the finding; seats are keyed by seat name.
+    # (Full per-finding filing is bounded by the cap in the canary; this
+    # detector files the first finding to keep the signal on the board.)
+    file_findings "top-gear-no-clock" "detector found $total unjustified wait(s) — see triage"
+    loud "UNJUSTIFIED-WAIT-FAIL" "unjustified waits=$total — TOP GEAR invariant violated (deferral without a named clock); heartbeat tick will fail"
+    exit 1
+fi
+
+loud "UNJUSTIFIED-WAIT-OK" "every wait carries a named clock (seats=$s stop_reason=$r ready_work=$w) — TOP GEAR invariant holds"
+exit 0
