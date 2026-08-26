@@ -75,6 +75,35 @@ set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 
+# --- self-snapshot (P15-live-replace race) --------------------------------
+# This script is ExecStart'ed by pi-issue@.service and is installed as a
+# symlink into a git checkout (fleet-ops-deploy-clone). The deploy clone is
+# fast-forwarded on every fleet-ops merge, and a git pull atomically replaces
+# the file under the symlink. A bash process mid-execution of a replaced file
+# splices old+new bytes and dies with a random 'command not found' (proven
+# 2026-08-27: pi-issue@fleet-ops-458, exit 127, 'es: command not found').
+# Snapshot our own path to a private copy so a mid-run replace cannot corrupt
+# this execution; seat-lib is sourced from the same checkout and is covered by
+# the same race, so copy it too when it lives in this repo. Tests override via
+# PI_PACKET_SEAT_LIB / PI_ISSUE_RUN_SELF — never re-resolve a stale copy.
+_SELF="$(readlink -f "${BASH_SOURCE[0]:-}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]:-}")"
+if [[ -n "$_SELF" && -f "$_SELF" && -z "${PI_ISSUE_RUN_SELF:-}" ]]; then
+    _TMP="${TMPDIR:-/tmp}"
+    _SELF_COPY="$_TMP/pi-issue-run.self.$$.sh"
+    if cp "$_SELF" "$_SELF_COPY" 2>/dev/null; then
+        chmod 700 "$_SELF_COPY" 2>/dev/null || true
+        export PI_ISSUE_RUN_SELF="$_SELF_COPY"
+        trap 'rm -f "$_SELF_COPY"' EXIT INT TERM
+        # Re-exec from the stable snapshot: this running bash is already
+        # mid-execution of a possibly-stale inode, so the only safe point
+        # to hand over is here at the top of the script.
+        if [[ "${PI_ISSUE_RUN_REEXEC:-0}" != 1 ]]; then
+            export PI_ISSUE_RUN_REEXEC=1
+            exec bash "$_SELF_COPY" "$@"
+        fi
+    fi
+fi
+
 # Source shared seat logic. SEAT_LIB defaults to the install symlink; tests
 # may override via PI_PACKET_SEAT_LIB. The directive points to the canonical
 # source file in the repo (the install symlinks this same file), so static

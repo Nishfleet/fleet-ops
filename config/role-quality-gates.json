@@ -74,6 +74,14 @@
       "units": ["fleet-blind-audit.service"],
       "prompts": ["blind-audit.md"],
       "bypass_checks": ["audit_has_panel"]
+    },
+    {
+      "id": "researcher",
+      "gate": "adopted-delta rate on the quality scoreboard; frontier deltas enter through the admission pipeline, paired with auditors",
+      "proof": ["prompts/researcher.md", "bin/fleet-researcher-run", "systemd/fleet-researcher.service"],
+      "units": ["fleet-researcher.service"],
+      "prompts": ["researcher.md"],
+      "bypass_checks": ["researcher_delta_contract"]
     }
   ]
 }
