@@ -118,12 +118,16 @@ export LOADED_UNITS="$loaded"
 export ON_FAILURE_DIR="$onf_dir"
 
 # Block 10 (fleet-ops#388): backup-staleness state for the fake systemctl.
+# Block 11 (fleet-ops#529): vault-conflict-resolver state uses the same dir.
 backup_state="$scratch/backup_state"
 mkdir -p "$backup_state"
 export BACKUP_STATE_DIR="$backup_state"
 export FLEET_RESTIC_BACKUP_TIMER="restic-r2-backup.timer"
 export FLEET_RESTIC_BACKUP_SERVICE="restic-r2-backup.service"
 export FLEET_RESTIC_STALENESS_HOURS=30
+export FLEET_VAULT_CONFLICT_TIMER="vault-conflict-resolver.timer"
+export FLEET_VAULT_CONFLICT_SERVICE="vault-conflict-resolver.service"
+export FLEET_VAULT_CONFLICT_STALE_HOURS=1
 
 # write_backup_fresh — green backup: timer active, fired 5h ago, service success.
 write_backup_fresh() {
@@ -154,6 +158,28 @@ write_backup_inactive() {
   printf 'inactive\n' >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.ActiveState"
   printf '\n' >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.LastTriggerUSec"
   printf 'success\n' >"$backup_state/${FLEET_RESTIC_BACKUP_SERVICE}.Result"
+}
+
+# write_vault_conflict_fresh — green handler: timer active, fired 2m ago.
+write_vault_conflict_fresh() {
+  local last
+  last="$(date -u -d '2 minutes ago' '+%a %Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date -u '+%a %Y-%m-%d %H:%M:%S %Z')"
+  printf 'active\n' >"$backup_state/${FLEET_VAULT_CONFLICT_TIMER}.ActiveState"
+  printf '%s\n' "$last" >"$backup_state/${FLEET_VAULT_CONFLICT_TIMER}.LastTriggerUSec"
+  printf 'success\n' >"$backup_state/${FLEET_VAULT_CONFLICT_SERVICE}.Result"
+  mkdir -p "$repo/lib"
+  cp "$repo_root/lib/vault-conflict-resolver.py" "$repo/lib/vault-conflict-resolver.py"
+}
+
+write_vault_conflict_inactive() {
+  printf 'inactive\n' >"$backup_state/${FLEET_VAULT_CONFLICT_TIMER}.ActiveState"
+  printf '\n' >"$backup_state/${FLEET_VAULT_CONFLICT_TIMER}.LastTriggerUSec"
+  printf 'success\n' >"$backup_state/${FLEET_VAULT_CONFLICT_SERVICE}.Result"
+}
+
+write_vault_conflict_failed() {
+  write_vault_conflict_fresh
+  printf 'failed\n' >"$backup_state/${FLEET_VAULT_CONFLICT_SERVICE}.Result"
 }
 
 # intake-repos.json + fleet-repos.json defaults (overridden per scenario).
@@ -268,6 +294,8 @@ WF
   write_covered_vault
   # Block 10 default: green backup so existing two-plane scenarios stay green.
   write_backup_fresh
+  # Block 11 default: green vault-conflict handler + fixture resolver.
+  write_vault_conflict_fresh
 }
 
 # ============================================================================
@@ -739,6 +767,114 @@ grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_BACKUP=1)' <<<"$env_out" || fail "sc
 ok "scenario16: skip flag suppresses block 10"
 
 ok "escalation-coverage-canary: block 10 backup staleness (fleet-ops#388) covered"
+
+# ============================================================================
+# Scenario 17 (fleet-ops#529): vault-conflict timer inactive -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_vault_conflict_inactive
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario17: must exit 1 (inactive vault-conflict timer), got $env_rc ($env_out)"
+grep -q 'vault-conflict' "$triage" || fail "scenario17: triage must name vault-conflict"
+grep -q 'not active' "$triage" || fail "scenario17: triage must name the inactive timer"
+ok "scenario17: inactive vault-conflict timer -> VIOLATION"
+
+# ============================================================================
+# Scenario 18 (fleet-ops#529): vault-conflict service failed -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_vault_conflict_failed
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario18: must exit 1 (failed resolver), got $env_rc ($env_out)"
+grep -q 'last Result=failed' "$triage" || fail "scenario18: triage must name the failed resolver result"
+ok "scenario18: failed vault-conflict service -> VIOLATION naming Result"
+
+# ============================================================================
+# Scenario 19 (fleet-ops#529): resolver missing -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/lib/vault-conflict-resolver.py"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario19: must exit 1 (missing resolver), got $env_rc ($env_out)"
+grep -q 'resolver missing' "$triage" || fail "scenario19: triage must name the missing resolver"
+ok "scenario19: missing resolver -> VIOLATION (2026-08-23 wipe class)"
+
+# ============================================================================
+# Scenario 20 (fleet-ops#529): skip flag suppresses block 11
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_vault_conflict_inactive
+export FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1
+
+run_canary
+
+unset FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT
+[[ "$env_rc" == 0 ]] || fail "scenario20: must exit 0 (skip flag), got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1)' <<<"$env_out" || fail "scenario20: canary must log the SKIP"
+! grep -q 'vault-conflict:' "$triage" || fail "scenario20: skip flag must suppress vault-conflict"
+ok "scenario20: skip flag suppresses block 11"
+
+# ============================================================================
+# Scenario 21 (fleet-ops#529): fresh handler + fixture clear -> no violation
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario21: must exit 0 (fresh handler), got $env_rc ($env_out)"
+grep -q 'fixture \*.sync-conflict-\* cleared' <<<"$env_out" \
+  || grep -q 'fixture *.sync-conflict-* cleared' <<<"$env_out" \
+  || fail "scenario21: canary must log fixture cleared (out=$env_out)"
+! grep -q 'vault-conflict:' "$triage" || fail "scenario21: fresh handler must not raise vault-conflict"
+ok "scenario21: fixture *.sync-conflict-* cleared -> OK"
+
+ok "escalation-coverage-canary: block 11 vault-conflict (fleet-ops#529) covered"
 
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit

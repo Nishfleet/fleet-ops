@@ -1,0 +1,29 @@
+[Unit]
+Description=Auto-resolve Syncthing conflicts in the nish-vault (fleet-ops#529)
+Documentation=file:/home/nish/.local/bin/vault-conflict-resolver
+# Named reason for this oneshot: any *.sync-conflict-* file freezes every
+# vault writer on Mac and VPS. The 2026-08-23 control-plane wipe deleted
+# the timer and the freeze sat until a human noticed on 2026-08-24. The
+# unit lives in fleet-ops so deploy restores it; the heartbeat canary
+# screams if it dies.
+ConditionPathIsDirectory=/home/nish/workspaces/tooling/nish-vault
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/usr/bin/python3 /home/nish/.local/bin/vault-conflict-resolver
+# Exit 1 is reserved for a future "conflicts found, worker dispatched"
+# signal; treat it as success so a dispatch does not trip unit-escalation.
+SuccessExitStatus=0 1
+TimeoutStartSec=2min
+Restart=no
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+StateDirectory=vault-conflict-resolver
+
+[Install]
+WantedBy=default.target

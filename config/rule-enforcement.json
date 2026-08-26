@@ -193,10 +193,9 @@
     {
       "id": "sr-vault-sync-conflicts",
       "source": "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)",
-      "mechanism": "Freeze-on-conflict is prose; confirm the Syncthing conflict handler still fires",
-      "proof": "Nishfleet/fleet-ops#529",
-      "status": "queued(#529)",
-      "queued_since": "2026-08-27"
+      "mechanism": "vault-conflict-resolver.timer every 10 min resolves identical / append-superset / missing-base and quarantines divergent *.sync-conflict-* files; freeze-on-conflict remains (memory-ledger-supersede exits 2); heartbeat canary block 11 plants a fixture conflict and screams if the timer dies or the handler no longer clears it",
+      "proof": "lib/vault-conflict-resolver.py; systemd/vault-conflict-resolver.timer; bin/fleet-escalation-canary block 11; tests/vault-conflict-resolver.test.sh; tests/memory-ledger-supersede.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-claim-surface",
@@ -282,10 +281,9 @@
     {
       "id": "sr-failed-command-flagged",
       "source": "global-standing-rules.md: A failed command is ALWAYS flagged, never walked past (Nish, 2026-08-24 - forbidden to repeat)",
-      "mechanism": "Worker prompt requires it; no session linter flags a swallowed non-zero",
-      "proof": "Nishfleet/fleet-ops#535",
-      "status": "queued(#535)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat session-close lint: Pi JSONL toolResult isError / non-zero exit / timeout without later assistant text naming the failure is LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped.",
+      "proof": "bin/fleet-failed-command-flagged; lib/failed-command-flagged.py; tests/fleet-failed-command-flagged.test.sh; fleet-heartbeat-tier1 block 17",
+      "status": "enforced"
     },
     {
       "id": "sr-watchdogs-dispatch",
