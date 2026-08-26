@@ -31,9 +31,11 @@ Steps:
    d. Write the worker prompt to a packet file so pi-issue-run (the seat-rotating wrapper) can pick its own seat at run time:
       `mkdir -p /home/nish/.local/state/pi-issues`
       `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
-   e. Activate the template unit. pi-issue@.service runs pi-issue-run, which calls pick_seat (devin -> cursor -> cline -> free -> minimax) honouring the per-seat and per-model caps from seat-caps.json. systemd's Restart=on-failure + OnFailure=pi-issue-failed@ re-seats on failure and stops cleanly when retries are exhausted.
-      `systemctl --user start --no-block pi-issue@<repo>-N.service 2>&1 || { echo "spawn failed for <repo>-N: $?"; skip; }`
-      `--no-block` is mandatory: pi-issue@.service is Type=oneshot, so a plain `systemctl start` blocks until the worker finishes (up to 45 min each) and serializes the whole tick past its own timeout. Fire-and-forget the worker; its own Restart=/OnFailure= handle completion and failure.
-      If the unit is already activating, --no-block returns 0 immediately — that worker is already live, skip.
+   e. Activate the template unit via `pi-issue-start` (never a raw
+      `systemctl --user start` of a live oneshot — that queues a second
+      start, burns StartLimitBurst, and the reaper will release the claim
+      while the first worker is still running).
+      `pi-issue-start <repo>-N 2>&1 || { echo "spawn failed for <repo>-N: $?"; skip; }`
+      If it prints no-op, that worker is already live — skip.
    f. slots = slots - 1.
 4. Print one line per issue (claimed+spawned / skipped-claim-lost / skipped-capacity), exit 0.
