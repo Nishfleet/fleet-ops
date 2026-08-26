@@ -11,8 +11,10 @@ script, or prompt lands unseen.
 - `bin/` — shell scripts the units exec.
 - `prompts/` — Pi agent prompts fed to workers on stdin.
 - `config/` — fleet configuration. `seat-caps.json` is the per-seat ceiling
-  map; `intake-repos.json` is the declared set of repos enrolled in
-  pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
+  map; `entitled-seats.json` is the entitled inventory the capacity chain
+  and entitled-vs-wired canary diff against those rows; `intake-repos.json`
+  is the declared set of repos enrolled in pi-intake/pi-scout (see
+  [Intake enrolment](#intake-enrolment)).
 - `MANIFEST` — one line per file: `<repo-relative-path> <absolute-install-path>`.
 - `install.sh` — symlinks each manifest entry into its live path, then
   `systemctl --user daemon-reload`. `--check` reports drift without changing

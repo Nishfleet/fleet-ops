@@ -213,10 +213,9 @@
     {
       "id": "sr-prepaid-max-util",
       "source": "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)",
-      "mechanism": "No utilization canary on prepaid seats (expiry-waste is how SuperGrok drained unused)",
-      "proof": "needs a seat-utilization heartbeat line",
-      "status": "queued(#416)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Capacity chain per-tick verdict names LANE-LIMITED walled prepaid seats and auto-files; entitled-vs-wired canary refuses prepaid labelled free",
+      "proof": "bin/fleet-capacity-chain; tests/fleet-capacity-chain.test.sh; bin/fleet-entitled-wired-canary",
+      "status": "enforced"
     },
     {
       "id": "sr-devin-4-wide",
@@ -235,8 +234,8 @@
     {
       "id": "sr-box-75-80",
       "source": "global-standing-rules.md: The box runs at 75-80% capacity minimum (Nish, 2026-08-20)",
-      "mechanism": "Heartbeat undersaturation watchdog + low-water-mark fail loud when ready work sits next to idle seats",
-      "proof": "bin/fleet-heartbeat-undersaturation; bin/fleet-heartbeat-low-water-mark; tests/fleet-heartbeat-undersaturation.test.sh",
+      "mechanism": "Heartbeat undersaturation wedge (#75) plus capacity-chain utilization undersat (running < min(live caps, RAM envelope) while ready work exists) and low-water-mark refill",
+      "proof": "bin/fleet-heartbeat-undersaturation; bin/fleet-heartbeat-low-water-mark; bin/fleet-capacity-chain; tests/fleet-capacity-chain.test.sh",
       "status": "enforced"
     },
     {
@@ -544,8 +543,8 @@
     {
       "id": "led-lanes",
       "source": "decisions-ledger.md: 2026-08-25 | lanes",
-      "mechanism": "pick_seat + seat-caps.json under the RAM governor; go-ham is the default, caps are the brake",
-      "proof": "config/seat-caps.json; lib/seat-lib.sh; tests/seat-lib.test.sh",
+      "mechanism": "pick_seat + seat-caps.json under the RAM governor; capacity-chain drill proves SATURATED / LANE-LIMITED / WORK-LIMITED on every heartbeat tick",
+      "proof": "config/seat-caps.json; lib/seat-lib.sh; bin/fleet-capacity-chain; tests/seat-lib.test.sh; tests/fleet-capacity-chain.test.sh",
       "status": "enforced"
     },
     {

@@ -89,6 +89,10 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
 # and auto-files. No new scheduler.
 bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
+# fleet-ops#418: capacity chain (wired→probed→saturated→supplied + drill).
+# Run by heartbeat-tier1 block 16. Link 1 is the entitled-vs-wired canary
+# (block 15). Observe findings LOUD + auto-file; a failed drill fails the tick.
+bin/fleet-capacity-chain /home/nish/.local/bin/fleet-capacity-chain
 # fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
 # timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a
 # local panel, and files gap-audit issues linked to a durable report.

@@ -72,6 +72,10 @@
 #  15. Entitled-vs-wired canary (fleet-ops#387). Diffs entitled-seats.json
 #      against seat-caps.json: missing row, cap=0 without a dated reason,
 #      or a prepaid seat mislabeled free. LOUD + auto-files. No new timer.
+#  16. Capacity chain (fleet-ops#418). Delegates to bin/fleet-capacity-chain:
+#      entitled→wired (link 1 is block 15), wired→probed, probed→saturated,
+#      saturated→supplied, then the fixture drill. Observe findings LOUD +
+#      auto-file and do not fail the tick. A failed drill DOES fail the unit.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -1173,9 +1177,37 @@ else
 fi
 
 # ============================================================================
+# 16. CAPACITY CHAIN (fleet-ops#418)
+# ============================================================================
+# Entitled → wired → probed → saturated → supplied, then the fixture drill.
+# Link 1 is block 15 (fleet-entitled-wired-canary). This block owns the rest
+# plus the e2e drill. Observe is best-effort (LOUD + auto-file; rc not
+# propagated) so a standing AIMD-stale gap cannot brick PR queue or the #75
+# wedge alarm. The drill is the e2e proof: a failed hop fails this unit.
+CAPACITY_BIN="${FLEET_CAPACITY_CHAIN:-/home/nish/.local/bin/fleet-capacity-chain}"
+capacity_rc=0
+if [ -x "$CAPACITY_BIN" ]; then
+    log "16. capacity-chain observe starting"
+    if "$CAPACITY_BIN" --observe; then
+        log "16. capacity-chain observe complete"
+    else
+        log "16. capacity-chain observe rc=$?, logged and auto-filed, not propagated"
+    fi
+    log "16. capacity-chain drill starting"
+    if "$CAPACITY_BIN" --drill; then
+        log "16. capacity-chain drill complete"
+    else
+        capacity_rc=$?
+        log "16. capacity-chain drill FAILED (rc=$capacity_rc) — chain hop failed; unit will land in --state=failed"
+    fi
+else
+    log "16. capacity-chain helper missing at $CAPACITY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc capacity_rc=$capacity_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
 # red-pr-repair, or a heartbeat canary may fail loud; all route to
 # the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
@@ -1193,5 +1225,8 @@ if [ "$canary_rc" -ne 0 ]; then
 fi
 if [ "$entitled_canary_rc" -ne 0 ]; then
     exit "$entitled_canary_rc"
+fi
+if [ "$capacity_rc" -ne 0 ]; then
+    exit "$capacity_rc"
 fi
 exit 0
