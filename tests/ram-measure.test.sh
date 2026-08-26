@@ -305,5 +305,56 @@ RAM_STATE_DIR="$scratch/state7" bash "$bin" >/dev/null 2>&1 \
     || fail "ram-measure must exit 0 even on the empty-fleet path"
 ok "7. exit code is 0 on every observed path"
 
+# =========================================================================
+# 8. numeric peak + infinity high/max still exits 0 and records the unit
+#    (fleet-ops#204: jq --argjson "infinity" is invalid JSON -> non-zero
+#    exit -> set -euo pipefail kills the script. The throttled/hit_max
+#    regex guards already handled infinity, but the jq call did not.)
+# =========================================================================
+: >"$FAKE_LIST_FILE"
+: >"$FAKE_ACTIVE_FILE"
+: >"$FAKE_PEAK_FILE"
+: >"$FAKE_HIGH_FILE"
+: >"$FAKE_MAX_FILE"
+
+# A unit with a real numeric peak but NO MemoryHigh / MemoryMax caps
+# (systemd reports "infinity" for both). This is the unit-file drift
+# shape the issue calls out: live workers have 3G/6G caps, but a future
+# unit without them must not crash the heartbeat sample.
+seed_unit "pi-issue@uncapped-01.service" inactive
+printf '%s|%s\n' "pi-issue@uncapped-01.service" "$((GIB * 3 / 2))" >> "$FAKE_PEAK_FILE"
+printf '%s|%s\n' "pi-issue@uncapped-01.service" "infinity"          >> "$FAKE_HIGH_FILE"
+printf '%s|%s\n' "pi-issue@uncapped-01.service" "infinity"          >> "$FAKE_MAX_FILE"
+# A second unit whose high/max were never set at all (systemd's
+# "[not set]" sentinel). jq --argjson rejects "[not set]" as invalid
+# JSON on every jq build, so this unit is the deterministic repro for
+# the crash the issue describes.
+seed_unit "pi-issue@notset-01.service" inactive
+printf '%s|%s\n' "pi-issue@notset-01.service" "$((GIB * 3 / 4))" >> "$FAKE_PEAK_FILE"
+# high/max left unseeded -> the fake systemctl returns "[not set]".
+# A third capped unit so the run has a real distribution.
+seed_unit "pi-issue@capped-01.service" inactive; seed_peak "pi-issue@capped-01.service" $((GIB / 2))
+
+state8="$scratch/state8"
+out=$(RAM_STATE_DIR="$state8" bash "$bin" 2>/dev/null) \
+    || fail "ram-measure must exit 0 with numeric peak + non-numeric high/max (fleet-ops#204)"
+echo "$out" | grep -q '^ram: n=3 ' || fail "all three units must be recorded; got: $out"
+echo "$out" | grep -q 'no-data=0 ' || fail "no no-data expected; got: $out"
+
+# Each uncapped unit must appear in top_units with null high/max bytes
+# and throttled=0 / hit_memory_max=0 (a non-numeric cap cannot have
+# been hit).
+for u in pi-issue@uncapped-01.service pi-issue@notset-01.service; do
+    h=$(jq -r --arg u "$u" '.top_units[] | select(.unit==$u) | .memory_high_bytes' "$state8/ram-measurement.json")
+    m=$(jq -r --arg u "$u" '.top_units[] | select(.unit==$u) | .memory_max_bytes' "$state8/ram-measurement.json")
+    th=$(jq -r --arg u "$u" '.top_units[] | select(.unit==$u) | .throttled' "$state8/ram-measurement.json")
+    hm=$(jq -r --arg u "$u" '.top_units[] | select(.unit==$u) | .hit_memory_max' "$state8/ram-measurement.json")
+    [[ "$h" == "null" ]] || fail "$u memory_high_bytes must be null (got: $h)"
+    [[ "$m" == "null" ]] || fail "$u memory_max_bytes must be null (got: $m)"
+    [[ "$th" == "0" ]] || fail "$u must not be throttled (got: $th)"
+    [[ "$hm" == "0" ]] || fail "$u must not have hit max (got: $hm)"
+done
+ok "8. numeric peak + non-numeric high/max exits 0, records unit, null caps"
+
 echo
 echo "ALL OK"
