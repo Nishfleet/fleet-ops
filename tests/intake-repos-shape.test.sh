@@ -94,6 +94,12 @@ fleet2_excluded="$(jq -r '[.excluded[] | select(.name=="fleet2" and .permanent==
 [[ "$fleet2_excluded" == "1" ]] \
   || fail "fleet2 must be listed in excluded with permanent=true (standing rule)"
 
+# fleet-ops#156 finding 12: leftover seo-fix-kit units must be declared
+# (deferred), not invisible undeclared-drift.
+seo_deferred="$(jq -r '[.deferred[]? | select(.name=="seo-fix-kit")] | length' "$file")"
+[[ "$seo_deferred" == "1" ]] \
+  || fail "seo-fix-kit must be listed in deferred (stops undeclared-drift on leftover units)"
+
 echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count excluded, fleet2 guard live)"
 
 # fleet-ops#29: the agent-blocked label is a live queue, not a parking lot.
@@ -114,3 +120,7 @@ bash "$here/claim-reconcile.test.sh"
 # Workers implementing these issues must NEVER touch the live user
 # manager; the test runs entirely against stubbed systemctl + gh.
 bash "$here/intake-reconcile.test.sh"
+# fleet-ops#156 findings 10/14: worker App cannot push .github/workflows/ci.yml.
+# Gate the new watchman tests from this already-listed CI file.
+bash "$here/seat-caps-drift.test.sh"
+bash "$here/heartbeat-watchman.test.sh"
