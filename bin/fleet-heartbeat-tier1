@@ -236,8 +236,7 @@ unit_recovery_class() {
 {
   "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
   "claim_repos": ["Nishfleet/fleet-ops", "Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
-  "hands_off": [],
-  "verify_timers": ["pi-scout@0509.timer", "pi-intake@0509.timer", "pi-scout@siterep-public.timer", "pi-intake@siterep-public.timer"]
+  "hands_off": []
 }
 JSON
     log "wrote default $REPOS_JSON"
@@ -247,7 +246,15 @@ JSON
 queue_repos=$(jq -r '.queue_repos[]' "$REPOS_JSON")
 claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON")
 hands_off=$(jq -r '.hands_off[]' "$REPOS_JSON" 2>/dev/null || true)
-verify_timers=$(jq -r '.verify_timers[]' "$REPOS_JSON")
+
+# Derive the timer verification list from the declared intake repo set. The
+# reconciler (bin/intake-reconcile) uses config/intake-repos.json as the single
+# source of truth for enrolment; heartbeat §5 must use the same source or its
+# verify list drifts the moment a repo is added/removed (fleet-ops#156 finding 9).
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+[ -f "$INTAKE_REPOS_JSON" ] || { log "FATAL: $INTAKE_REPOS_JSON missing"; exit 2; }
+jq empty "$INTAKE_REPOS_JSON" >/dev/null 2>&1 || { log "FATAL: $INTAKE_REPOS_JSON invalid JSON"; exit 2; }
+verify_timers=$(jq -r '.repos[]? | "pi-scout@\(.name).timer", "pi-intake@\(.name).timer"' "$INTAKE_REPOS_JSON")
 
 # is_hands_off <repo>
 is_hands_off() {
