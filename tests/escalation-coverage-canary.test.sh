@@ -8,7 +8,9 @@
 #   2. A service missing unit-escalation@<unit>.service -> exit 1, named.
 #   3. A bin script with an unwrapped `pi --print --provider` -> exit 1, named.
 #   4. Excluded services (anti-recursion set) are skipped.
-#   5. Marker files for #76 and #124 suppress the pending findings.
+#   5. Marker files for #76 and #124 suppress the pending findings; #76 is
+#      also suppressed by observing the real delivery wiring in the repo
+#      (watchman lib + heartbeat/tier1 wiring + hc.env EnvironmentFile).
 #
 # GitHub plane:
 #   6. auto-revert.yml + red-on-main-detector.yml present -> covered.
@@ -215,6 +217,7 @@ on:
 WF
   rm -f "$FLEET_ESCALATION_CANARY_DELIVERY" "$FLEET_ESCALATION_CANARY_REDCI" "$FLEET_ESCALATION_CANARY_BRIDGE"
   rm -f "$repo/.github/workflows/ci-failure-escalation.yml" "$repo/.github/scripts/ci-failure-escalation-detector.mjs"
+  rm -rf "${repo:?}/lib" "${repo:?}/systemd"
   write_covered_vault
 }
 
@@ -241,6 +244,35 @@ sanctioned_wrapper() {
 : # "$PI_BIN" --print --provider devin --model glm-5-2 < packet.md
 PI
   chmod +x "$repo/bin/$name"
+}
+
+# Wire the #76 terminal delivery paths in the scratch repo so the canary's
+# block 3 sees real wiring (not just a marker). Mirrors the live fleet-ops
+# layout: lib/heartbeat-watchman.sh + bin/fleet-heartbeat + tier1 + service.
+wire_delivery() {
+  mkdir -p "$repo/lib" "$repo/systemd"
+  cat >"$repo/lib/heartbeat-watchman.sh" <<'SH'
+#!/usr/bin/env bash
+heartbeat_ping_deadman() { :; }
+heartbeat_page_units() { :; }
+heartbeat_seat_health_check() { :; }
+SH
+  cat >"$repo/bin/fleet-heartbeat" <<'SH'
+#!/usr/bin/env bash
+source "$0.watchman"
+heartbeat_ping_deadman
+SH
+  chmod +x "$repo/bin/fleet-heartbeat"
+  cat >"$repo/bin/fleet-heartbeat-tier1" <<'SH'
+#!/usr/bin/env bash
+heartbeat_page_units
+heartbeat_seat_health_check
+SH
+  chmod +x "$repo/bin/fleet-heartbeat-tier1"
+  cat >"$repo/systemd/fleet-heartbeat.service" <<'SVC'
+[Service]
+EnvironmentFile=-/home/nish/.config/fleet-heartbeat/hc.env
+SVC
 }
 
 # ============================================================================
@@ -432,5 +464,53 @@ run_canary
 ! grep -q 'senior-auditor bridge not wired' "$triage" || fail "scenario9: bridge files must suppress PENDING without marker"
 grep -q 'pending=0' "$triage" || fail "scenario9: OK line must show pending=0"
 ok "scenario9: bridge files present -> wired without marker"
+
+# ============================================================================
+# Scenario 10: #76 delivery wired in the repo (no marker) -> PENDING suppressed
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+wire_delivery
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+mkdir -p "$repo/.github/scripts"
+: >"$repo/.github/workflows/ci-failure-escalation.yml"
+: >"$repo/.github/scripts/ci-failure-escalation-detector.mjs"
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario10: must exit 0, got $env_rc ($env_out)"
+! grep -q 'terminal delivery not wired (#76)' "$triage" || fail "scenario10: #76 PENDING must be suppressed by real wiring"
+grep -q 'delivery wired' <<<"$env_out" || fail "scenario10: canary must log the delivery-wired observation"
+grep -q 'pending=0' "$triage" || fail "scenario10: OK line must show pending=0 (all paths wired)"
+ok "scenario10: #76 delivery wiring observed -> PENDING suppressed without marker"
+
+# ============================================================================
+# Scenario 11: #76 delivery wiring incomplete (no hc.env EnvironmentFile) -> PENDING
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+wire_delivery
+# Remove the hc.env EnvironmentFile line so the dead-man config is unwired.
+cat >"$repo/systemd/fleet-heartbeat.service" <<'SVC'
+[Service]
+ExecStart=/bin/true
+SVC
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario11: must exit 0 (PENDING not fail), got $env_rc ($env_out)"
+grep -q 'terminal delivery not wired (#76)' "$triage" || fail "scenario11: triage must name #76 delivery as PENDING"
+! grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario11: incomplete wiring must be PENDING not VIOLATION"
+ok "scenario11: #76 wiring incomplete -> PENDING naming the delivery gap"
 
 ok "escalation-coverage-canary: covers VPS + GitHub planes, exclusions, and pending holes"

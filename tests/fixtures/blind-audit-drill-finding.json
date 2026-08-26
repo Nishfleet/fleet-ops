@@ -1,0 +1,11 @@
+{
+  "findings": [
+    {
+      "rank": 1,
+      "title": "drill fixture: orphan unit with no OnFailure chain",
+      "body": "Synthetic finding used only to prove fleet-blind-audit files accepted findings as gap-audit issues linked to the report. Not a live fleet gap.",
+      "severity": "high",
+      "evidence": "tests/fixtures/blind-audit-drill-finding.json"
+    }
+  ]
+}

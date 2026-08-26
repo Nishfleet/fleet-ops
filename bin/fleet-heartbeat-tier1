@@ -30,6 +30,11 @@
 #      machine-checkable dependency is closed/merged, flip back to
 #      agent-ready. Nish-decision blocks stay labelled and are published
 #      (count + oldest age) into the triage file.
+#   6b. Lifecycle-label unlabeled open issues (fleet-ops#376). Intake only
+#      sees agent-ready, so an issue with no lifecycle label is invisible
+#      forever. Sweep enrolled repos; default agent-ready; AUTO-REVERT
+#      SKIP/HALT → noise-class; FLAG-for-Nish → nish-reserved; drill:*
+#      titles → drill:lifecycle. Log relabeled=N on the tick line.
 #   8. Undersaturation alarm + throughput line (fleet-ops#75). Delegates to
 #      bin/fleet-heartbeat-undersaturation: counts ready/claimed work and
 #      live pi-issue workers; if work>0 and running==0 it repairs (reset-
@@ -858,6 +863,35 @@ else
 fi
 
 # ============================================================================
+# 6b. LIFECYCLE-LABEL UNLABELED OPEN ISSUES (fleet-ops#376)
+# ============================================================================
+# Named reason for this sweep: intake's ExecCondition / list is
+# `-l agent-ready`. An issue filed with no lifecycle label never enters
+# the queue (live: #290/#304/#308 sat OPEN unlabeled while the
+# conference-gate re-land died around them). The GitHub App has no
+# webhooks, so there is no event to subscribe to. Heartbeat's existing
+# 30-minute timer is the observer; this is not a new schedule.
+relabeled=0
+LIFECYCLE_BIN="${FLEET_LIFECYCLE_SWEEP:-/home/nish/.local/bin/lifecycle-label-sweep}"
+if [ -x "$LIFECYCLE_BIN" ]; then
+    log "6b. lifecycle-label-sweep starting"
+    lifecycle_repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_REPOS_JSON")
+    lifecycle_out=""
+    if lifecycle_out=$(LIFECYCLE_SWEEP_REPOS="$lifecycle_repos" \
+        LIFECYCLE_SWEEP_LOCKDIR="${XDG_RUNTIME_DIR}/lifecycle-label-sweep" \
+        LIFECYCLE_SWEEP_INTAKE_JSON="$INTAKE_REPOS_JSON" \
+        "$LIFECYCLE_BIN"); then
+        log "6b. lifecycle-label-sweep done: $lifecycle_out"
+        relabeled=$(printf '%s' "$lifecycle_out" | sed -n 's/.*relabeled=\([0-9][0-9]*\).*/\1/p')
+        relabeled=${relabeled:-0}
+    else
+        log "6b. lifecycle-label-sweep FAILED — next tick retries"
+    fi
+else
+    log "6b. lifecycle-label-sweep missing at $LIFECYCLE_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # 7. DEGRADED-LANE REPORT (fleet-ops#63)
 # ============================================================================
 # For every pi-issue@* / pi-packet@* unit in activating/auto-restart state, publish a
@@ -1117,7 +1151,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
 # red-pr-repair, or the escalation-coverage canary may fail loud; all route to
 # the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).

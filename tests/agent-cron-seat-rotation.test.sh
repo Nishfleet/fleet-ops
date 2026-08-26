@@ -231,13 +231,19 @@ grep -q '^\[Install\]$' "$timer" \
   || fail "timer must carry [Install] so systemctl enable can hook it"
 grep -q '^WantedBy=timers.target$' "$timer" \
   || fail "timer [Install] must WantedBy=timers.target"
-grep -Eq -- 'systemctl --user enable --now agent-cron-0509-daily-market-signal\.timer' "$install_sh" \
+grep -Fq -- '"$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signal.timer' "$install_sh" \
   || fail "install.sh must enable --now agent-cron-0509-daily-market-signal.timer"
 ok "timer has [Install] and install.sh enables it"
 
 # Behavioral: a scratch install with stub systemctl must actually invoke
 # enable --now. Destinations stay under $scratch so this cannot mutate the
 # live user bus. A comment-only enable line would fail this.
+#
+# fleet-ops#290: GitHub's runner has no user systemd bus. A stub that
+# always exits 0 makes is-enabled look already-enabled, so install.sh
+# skips enable --now and P14 goes red. Same shape as
+# tests/fleet-ops-deploy.test.sh: quoted fake, is-enabled -> 1, enable
+# recorded. SYSTEMCTL= is how the rest of fleet-ops injects the stub.
 install_scratch="$scratch/install-root"
 mkdir -p "$install_scratch/systemd" "$scratch/fake-bin" "$scratch/user-units"
 cp -a "$install_sh" "$install_scratch/install.sh"
@@ -249,18 +255,38 @@ systemd/agent-cron-0509-daily-market-signal.timer $scratch/user-units/agent-cron
 MANIFEST
 calls="$scratch/systemctl.calls"
 : >"$calls"
-cat >"$scratch/fake-bin/systemctl" <<FAKE
+cat >"$scratch/fake-bin/systemctl" <<'FAKE'
 #!/usr/bin/env bash
-printf '%s\n' "\$*" >>"$calls"
-# Simulate a fresh box: units are not yet enabled, so is-enabled returns non-zero.
-# Every other systemctl command (daemon-reload, enable --now, etc.) succeeds.
-case "\$*" in
-  *'is-enabled'*) exit 1 ;;
-  *) exit 0 ;;
+printf '%s\n' "$*" >>"${SYSTEMCTL_CALLS:?}"
+if [ "${1:-}" = "--user" ]; then
+  shift
+fi
+cmd="${1:-}"
+case "$cmd" in
+  is-enabled)
+    # Fresh box: nothing enabled. Always-0 here is the #290 regression.
+    exit 1
+    ;;
+  daemon-reload|enable|start)
+    exit 0
+    ;;
+  *)
+    printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
+    exit 1
+    ;;
 esac
 FAKE
 chmod +x "$scratch/fake-bin/systemctl"
-PATH="$scratch/fake-bin:$PATH" "$install_scratch/install.sh"
+export SYSTEMCTL_CALLS="$calls"
+set +e
+"$scratch/fake-bin/systemctl" --user is-enabled agent-cron-0509-daily-market-signal.timer
+stub_is_enabled_rc=$?
+set -e
+: >"$calls"
+[[ "$stub_is_enabled_rc" == "1" ]] \
+  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#290), got $stub_is_enabled_rc"
+SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
+  "$install_scratch/install.sh"
 [[ -L "$scratch/user-units/agent-cron-0509-daily-market-signal.timer" ]] \
   || fail "scratch install must symlink the timer"
 grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$calls" \

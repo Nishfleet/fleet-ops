@@ -61,6 +61,7 @@ prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-mark
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
+bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
 bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
