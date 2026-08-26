@@ -6,6 +6,7 @@
 #   - a healthy seat dispatches the auditor and writes a diagnosis block
 #   - a timeout / empty / failed dispatch does NOT consume the 2-dispatch budget
 #   - the 2-dispatch cap is enforced
+#   - auditor-resolved closeouts skip (do not re-summon)
 #
 # Runs entirely offline with stubbed seat-lib.sh and a fake `pi` binary.
 set -euo pipefail
@@ -104,6 +105,30 @@ grep -q 'LADDER-WALLED' "$STOP_ESCALATION_NISH" || fail "empty ladder: expected 
 ok "fully-walled ladder -> LADDER-WALLED (no NISH on a healthy seat)"
 
 : > "$STOP_ESCALATION_NISH"
+
+# ---------------------------------------------------------------------------
+# Invariant 1b: auditor-resolved is a closeout, not a fresh fault.
+# Writing reason=auditor-resolved changes the STOP-REASON sha256, so
+# PathChanged re-fires. Without this skip the closeout summons another auditor.
+# ---------------------------------------------------------------------------
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"auditor-resolved","resolved_from":"unit-failure"}
+JSON
+export STOP_ESCALATION_TEST_SEAT_MODE=healthy
+export STOP_ESCALATION_TEST_PI_MODE=block
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "auditor-resolved: expected exit 0, got $rc"
+[[ ! -s "$STOP_ESCALATION_AUDITOR_LOG" ]] || fail "auditor-resolved: must not dispatch (AUDITOR-LOG should stay empty)"
+[[ ! -s "$STOP_ESCALATION_SEEN" ]] || fail "auditor-resolved: must not consume dispatch budget"
+[[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "auditor-resolved: must not write NISH-ESCALATIONS"
+ok "auditor-resolved closeout -> skip (no dispatch, no budget)"
+
+# Restore a real fault for the remaining invariants.
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-34.service"}}
+JSON
 
 # ---------------------------------------------------------------------------
 # Invariant 2: healthy seat + real block -> dispatch consumed one budget, no NISH
