@@ -330,6 +330,24 @@ This repo copies files in. The symlink cutover (making the live paths point
 here) is a separate, later step. Until then the live paths are real files and
 `install.sh --check` will report every entry as a DIFF.
 
+## Four-plane resilience drill — `fleet-resilience-drill` (issue #455)
+
+Single-VPS resilience is detection + repair + a regular drill, not a second
+copy of a stateless thing. The adopted-delta list and specs live in
+[docs/resilience-blueprint.md](docs/resilience-blueprint.md). The VNC
+break-glass runbook is [docs/break-glass-access.md](docs/break-glass-access.md).
+
+```
+fleet-resilience-drill          # run the four-plane drill, print proof, exit 0/1
+fleet-resilience-drill --check  # report whether the repo files are present
+```
+
+The drill never kills live tailscaled or live heartbeat. Resurrection is an
+isolated `Restart=always` stub. State recovery reuses #388. Compute
+break-glass is GitHub-hosted runners. Keystone healthchecks.io URLs (intake,
+scout, reconcile, restore) live in `~/.config/fleet-ops/keystone-hc.env`;
+unset URLs are a LOUD skip, not a silent pass.
+
 ## systemd-oomd drill — `oomd-drill` (issue #62)
 
 The fleet's RAM policy is a five-layer tree, owned by this repo and documented

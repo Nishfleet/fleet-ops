@@ -1,0 +1,20 @@
+[Unit]
+Description=Fleet four-plane resilience drill — prove detection+repair+drill on a cycle (fleet-ops#455)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# untested redundancy is false confidence. Each plane's failure (dead
+# heartbeat restart policy, public SSH, stale restore drill, missing
+# break-glass runbook, unconfigured keystone dead-man) is silent without a
+# periodic proof. Daily is faster than a silent week and slower than the
+# 30-minute heartbeat. 05:47 is off the :00/:17 cluster.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-resilience-drill'
+TimeoutStartSec=3min
+Restart=no

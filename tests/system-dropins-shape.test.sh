@@ -32,12 +32,14 @@ ok()   { echo "OK: $*"; }
 
 gov="$repo_root/systemd/system/user-1000.slice.d/50-ram-governor.conf"
 ndk="$repo_root/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf"
+ts="$repo_root/systemd/system/tailscaled.service.d/50-restart-always.conf"
 manifest="$repo_root/MANIFEST"
 install="$repo_root/install.sh"
 
 # 1. File existence.
 [[ -f "$gov" ]] || fail "missing: $gov"
 [[ -f "$ndk" ]] || fail "missing: $ndk"
+[[ -f "$ts" ]] || fail "missing: $ts"
 
 # 2. 50-ram-governor.conf shape.
 grep -q '^\[Slice\]$' "$gov" \
@@ -71,10 +73,22 @@ fi
 #    the --system handler.
 gov_line="systemd/system/user-1000.slice.d/50-ram-governor.conf /etc/systemd/system/user-1000.slice.d/50-ram-governor.conf"
 ndk_line="systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf"
+ts_line="systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/tailscaled.service.d/50-restart-always.conf"
 grep -Fxq "$gov_line" "$manifest" \
   || fail "MANIFEST missing entry: $gov_line"
 grep -Fxq "$ndk_line" "$manifest" \
   || fail "MANIFEST missing entry: $ndk_line"
+grep -Fxq "$ts_line" "$manifest" \
+  || fail "MANIFEST missing entry: $ts_line"
+
+# fleet-ops#455: tailscaled is the access-plane lifeline. Restart=always
+# plus no start limit so systemd never benches it.
+grep -q '^\[Unit\]$' "$ts" || fail "50-restart-always.conf: missing [Unit] (StartLimitIntervalSec lives there)"
+grep -q '^StartLimitIntervalSec=0$' "$ts" \
+  || fail "50-restart-always.conf: StartLimitIntervalSec=0"
+grep -q '^\[Service\]$' "$ts" || fail "50-restart-always.conf: missing [Service]"
+grep -q '^Restart=always$' "$ts" || fail "50-restart-always.conf: Restart=always"
+grep -q '^RestartSec=5s$' "$ts" || fail "50-restart-always.conf: RestartSec=5s"
 
 # 5. install.sh mode handling.
 chmod +x "$install" 2>/dev/null || true
@@ -119,7 +133,7 @@ else
 fi
 ok "install.sh --system: handles missing passwordless sudo path"
 
-echo "OK: system drop-ins shape locked (50-ram-governor + 50-no-distro-oomd-kill, MANIFEST entries live, install.sh routing works)"
+echo "OK: system drop-ins shape locked (50-ram-governor + 50-no-distro-oomd-kill + tailscaled Restart=always, MANIFEST entries live, install.sh routing works)"
 
 # fleet-ops#62: drill tooling. CI lists THIS file explicitly; the worker
 # GitHub App cannot add a workflow step, so the drill test rides along.

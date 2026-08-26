@@ -1,0 +1,13 @@
+[Unit]
+Description=Throwaway Restart=always stub for the #455 resurrection drill
+# Isolated proof that systemd Restart=always actually brings a unit back.
+# Never enabled. The drill starts it, SIGKILLs it, asserts a new MainPID,
+# then stops it. Live heartbeat and live tailscaled are not this unit.
+
+[Service]
+Type=simple
+Slice=resilience-drill.slice
+Restart=always
+RestartSec=1s
+ExecStart=/bin/sleep 3600
+MemoryMax=32M

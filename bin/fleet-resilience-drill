@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# fleet-resilience-drill — prove the four-plane single-VPS resilience
+# blueprint on a cycle (fleet-ops#455).
+#
+# Real resilience here is detection + auto-repair + a regular drill, not
+# a second copy of a stateless thing. This script is the drill. Isolated
+# stubs only — it never kills live tailscaled or live heartbeat (that
+# kill is a rejected delta: Tailscale is the only SSH path).
+#
+# Planes:
+#   1. supervision_resurrection — Restart=always stub is killed and comes back
+#   2. access_policy            — tailscaled active + Restart=always, no
+#                                 public SSH
+#   3. access_runbook           — break-glass VNC runbook + blueprint headings
+#   4. state_restore            — fleet-restore-drill timer armed + last Result
+#   5. compute_breakglass       — CI workflows run on GitHub-hosted runners
+#   6. keystone_deadman         — HC_URL_* for intake/scout/reconcile/restore
+#                                 (unset = SKIP + LOUD, not a silent pass)
+#
+# Result JSON: $AGENT_STATE/fleet-resilience-drill/last-run.json
+# LOUD lines go to the heartbeat triage file. Any FAIL exits 1 (the global
+# OnFailure drop-in pages). SKIP is LOUD and does not fail the unit.
+#
+# Usage: fleet-resilience-drill           # run the drill
+#        fleet-resilience-drill --check  # repo files present (no system calls)
+#
+# Env (tests):
+#   SYSTEMCTL SYSTEMD_RUN SS CURL FLEET_OPS_REPO AGENT_STATE
+#   FLEET_HEARTBEAT_TRIAGE KEYSTONE_HC_ENV FLEET_RESILIENCE_DRILL_OFFLINE
+#
+# Proven-thing check (standing rule, 2026-08-23):
+#   0. Read systemd Restart=/RestartSec=/StartLimitIntervalSec, healthchecks.io
+#      HTTP ping (same as lib/heartbeat-watchman.sh), systemd-run --user,
+#      bin/fleet-restore-drill, bin/oomd-drill.
+#   1. restore-drill covers state only. heartbeat-watchman pings the heartbeat
+#      check only. oomd-drill covers memory kill only. None of them runs a
+#      four-plane schedule, hardens tailscaled, or pings the other keystones.
+#   2. Chaos Monkey / Litmus / Gremlin assume a second node. Killing the only
+#      SSH path on this box is the opposite of "minimize blast radius"
+#      (principlesofchaos.org).
+#   3. healthchecks.io free tier is already in use. Paid HA is banned (zero
+#      spend). A second VPS waits for revenue (Nish).
+#   4. This file is the remaining glue: schedule + isolated stub + policy
+#      checks + best-effort keystone pings.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+SYSTEMD_RUN="${SYSTEMD_RUN:-systemd-run}"
+SS="${SS:-ss}"
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="$AGENT_STATE/fleet-resilience-drill"
+RESULTS="$STATE_DIR/last-run.json"
+KEYSTONE_HC_ENV="${KEYSTONE_HC_ENV:-$HOME/.config/fleet-ops/keystone-hc.env}"
+OFFLINE="${FLEET_RESILIENCE_DRILL_OFFLINE:-0}"
+STUB_UNIT="resilience-drill-stub.service"
+
+BLUEPRINT="$FLEET_OPS_REPO/docs/resilience-blueprint.md"
+RUNBOOK="$FLEET_OPS_REPO/docs/break-glass-access.md"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+  printf '[%s] [fleet-resilience-drill] %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+  local tag="$1"; shift
+  local msg="$*"
+  log "LOUD [$tag] $msg"
+  {
+    printf '\n[%s] [%s] %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+  } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+RESULTS_LOG="$STATE_DIR/results.jsonl"
+: >"$RESULTS_LOG"
+
+record() {
+  # record name status proof
+  jq -c -n --arg name "$1" --arg status "$2" --arg proof "$3" \
+    '{name:$name, status:$status, proof:$proof}' >>"$RESULTS_LOG"
+}
+
+systemctl_show() {
+  local unit="$1" prop="$2"
+  "$SYSTEMCTL" show "$unit" --property="$prop" --value 2>/dev/null || true
+}
+
+systemctl_user_show() {
+  local unit="$1" prop="$2"
+  "$SYSTEMCTL" --user show "$unit" --property="$prop" --value 2>/dev/null || true
+}
+
+# ----------------------------------------------------------------------------
+# --check: repo files only, no system calls (CI / pre-install).
+# ----------------------------------------------------------------------------
+check_env() {
+  # --check always looks next to this script. FLEET_OPS_REPO is a test seam
+  # for the live drill, not for "are the files in the repo that shipped me".
+  local rc=0 f repo
+  repo="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+  FLEET_OPS_REPO="$repo"
+  for f in \
+    bin/fleet-resilience-drill \
+    bin/keystone-hc-ping \
+    systemd/fleet-resilience-drill.service \
+    systemd/fleet-resilience-drill.timer \
+    systemd/resilience-drill.slice \
+    systemd/resilience-drill-stub-restart.service \
+    systemd/system/tailscaled.service.d/50-restart-always.conf \
+    docs/resilience-blueprint.md \
+    docs/break-glass-access.md
+  do
+    if [[ -e "$FLEET_OPS_REPO/$f" ]]; then
+      log "ready: $f"
+    else
+      log "MISSING: $f"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+# ----------------------------------------------------------------------------
+# planes
+# ----------------------------------------------------------------------------
+plane_resurrection() {
+  local name="supervision_resurrection"
+  if [[ "$OFFLINE" == "1" ]]; then
+    "$SYSTEMD_RUN" --user --unit="${STUB_UNIT%.service}" /bin/sleep 3600 \
+      >/dev/null 2>&1 || true
+    if "$SYSTEMCTL" --user is-active --quiet "$STUB_UNIT" 2>/dev/null \
+        || "$SYSTEMCTL" --user is-active "$STUB_UNIT" >/dev/null 2>&1; then
+      record "$name" "pass" "offline: systemd-run stub reported active after start (Restart=always path exercised via fake)"
+      return 0
+    fi
+    record "$name" "fail" "offline: stub $STUB_UNIT not active after systemd-run"
+    loud "RESURRECTION-FAIL" "offline stub $STUB_UNIT did not come back"
+    return 1
+  fi
+
+  "$SYSTEMCTL" --user stop "$STUB_UNIT" >/dev/null 2>&1 || true
+  "$SYSTEMCTL" --user reset-failed "$STUB_UNIT" >/dev/null 2>&1 || true
+  # --collect is -G (unload after stop). Do not pass --collect=no; that flag
+  # does not exist and makes systemd-run fail closed.
+  if ! "$SYSTEMD_RUN" --user --unit="${STUB_UNIT%.service}" \
+      --property=Restart=always --property=RestartSec=1s \
+      /bin/sleep 3600 >/dev/null 2>&1; then
+    record "$name" "fail" "systemd-run failed to start $STUB_UNIT"
+    loud "RESURRECTION-FAIL" "could not start isolated Restart=always stub"
+    return 1
+  fi
+
+  local before after waited
+  before=$("$SYSTEMCTL" --user show "$STUB_UNIT" --property=MainPID --value 2>/dev/null || echo 0)
+  "$SYSTEMCTL" --user kill -s SIGKILL "$STUB_UNIT" >/dev/null 2>&1 || true
+  waited=0
+  after=0
+  while (( waited < 15 )); do
+    sleep 1
+    waited=$((waited + 1))
+    if "$SYSTEMCTL" --user is-active --quiet "$STUB_UNIT" 2>/dev/null; then
+      after=$("$SYSTEMCTL" --user show "$STUB_UNIT" --property=MainPID --value 2>/dev/null || echo 0)
+      if [[ -n "$after" && "$after" != "0" && "$after" != "$before" ]]; then
+        break
+      fi
+    fi
+  done
+  "$SYSTEMCTL" --user stop "$STUB_UNIT" >/dev/null 2>&1 || true
+  "$SYSTEMCTL" --user reset-failed "$STUB_UNIT" >/dev/null 2>&1 || true
+
+  if [[ -n "$after" && "$after" != "0" && "$after" != "$before" ]]; then
+    record "$name" "pass" "stub $STUB_UNIT MainPID $before -> $after after SIGKILL (Restart=always)"
+    return 0
+  fi
+  record "$name" "fail" "stub $STUB_UNIT did not restart after SIGKILL (before=$before after=$after waited=${waited}s)"
+  loud "RESURRECTION-FAIL" "Restart=always stub did not come back after kill"
+  return 1
+}
+
+plane_access_policy() {
+  local name="access_policy"
+  local rc=0
+  local ts_state ts_restart
+  ts_state="$(systemctl_show tailscaled.service ActiveState)"
+  ts_restart="$(systemctl_show tailscaled.service Restart)"
+
+  if [[ "$ts_state" != "active" ]]; then
+    loud "TAILSCALE-DOWN" "tailscaled.service ActiveState=$ts_state (want active)"
+    rc=1
+  fi
+  if [[ "$ts_restart" != "always" ]]; then
+    loud "TAILSCALE-RESTART" "tailscaled.service Restart=$ts_restart (want always; install systemd/system/tailscaled.service.d/50-restart-always.conf via ./install.sh --system)"
+    rc=1
+  fi
+
+  local ss_out public=0
+  ss_out="$("$SS" -ltn 2>/dev/null || true)"
+  if printf '%s\n' "$ss_out" | grep -Eq '0\.0\.0\.0:22|[[:space:]]\*:22|[[:space:]]\[::\]:22'; then
+    loud "PUBLIC-SSH" "sshd is listening on a public wildcard (:22 on 0.0.0.0 or [::]) — ACL lockdown is broken"
+    public=1
+    rc=1
+  fi
+
+  if (( rc != 0 )); then
+    record "$name" "fail" "tailscaled state=$ts_state restart=$ts_restart public_ssh=$public"
+    return 1
+  fi
+  record "$name" "pass" "tailscaled active Restart=always, ssh not on 0.0.0.0:22"
+  return 0
+}
+
+plane_runbook() {
+  local name="access_runbook"
+  local missing=() h
+  if [[ ! -f "$BLUEPRINT" ]]; then
+    loud "BLUEPRINT" "missing $BLUEPRINT"
+    record "$name" "fail" "blueprint file missing"
+    return 1
+  fi
+  if [[ ! -f "$RUNBOOK" ]]; then
+    loud "BLUEPRINT" "missing $RUNBOOK"
+    record "$name" "fail" "runbook file missing"
+    return 1
+  fi
+  for h in \
+    "they do X" \
+    "we do Y" \
+    "adopting X means Z" \
+    "Rejected" \
+    "Spec: supervision" \
+    "Spec: state recovery" \
+    "Spec: access plane" \
+    "Spec: compute plane" \
+    "Spec: drill schedule" \
+    "Break-glass: netcup VNC" \
+    "Break-glass: GitHub-hosted runners"
+  do
+    if ! grep -qi "$h" "$BLUEPRINT"; then
+      missing+=("$h")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    loud "BLUEPRINT" "resilience blueprint missing required heading(s): ${missing[*]}"
+    record "$name" "fail" "missing headings: ${missing[*]}"
+    return 1
+  fi
+  if ! grep -qi 'VNC' "$RUNBOOK" || ! grep -qi 'public SSH' "$RUNBOOK"; then
+    loud "BLUEPRINT" "break-glass-access.md must name VNC and the no-public-SSH lock"
+    record "$name" "fail" "runbook missing VNC or public SSH lock"
+    return 1
+  fi
+  record "$name" "pass" "blueprint + VNC runbook headings present"
+  return 0
+}
+
+plane_state() {
+  local name="state_restore"
+  local tstate result
+  tstate="$(systemctl_user_show fleet-restore-drill.timer ActiveState)"
+  result="$(systemctl_user_show fleet-restore-drill.service Result)"
+  if [[ "$OFFLINE" == "1" ]]; then
+    tstate="$(systemctl_show fleet-restore-drill.timer ActiveState)"
+    result="$(systemctl_show fleet-restore-drill.service Result)"
+  fi
+  if [[ "$tstate" != "active" ]]; then
+    loud "RESTORE-DRILL-TIMER" "fleet-restore-drill.timer ActiveState=$tstate (want active; #388 is the state plane)"
+    record "$name" "fail" "restore-drill timer not active ($tstate)"
+    return 1
+  fi
+  case "$result" in
+    success|"")
+      record "$name" "pass" "fleet-restore-drill.timer active Result=${result:-unset-treated-as-fresh}"
+      return 0
+      ;;
+    *)
+      loud "RESTORE-DRILL-RESULT" "fleet-restore-drill.service Result=$result (want success)"
+      record "$name" "fail" "restore-drill last Result=$result"
+      return 1
+      ;;
+  esac
+}
+
+plane_compute() {
+  local name="compute_breakglass"
+  local wf="$FLEET_OPS_REPO/.github/workflows"
+  if [[ ! -d "$wf" ]]; then
+    loud "COMPUTE-BREAKGLASS" "no .github/workflows in $FLEET_OPS_REPO"
+    record "$name" "fail" "workflows dir missing"
+    return 1
+  fi
+  if grep -R --include='*.yml' --include='*.yaml' -E 'runs-on:[[:space:]]*(\[.*self-hosted|self-hosted)' "$wf" >/dev/null 2>&1; then
+    loud "COMPUTE-BREAKGLASS" "a workflow pins runs-on: self-hosted — off-box GitHub-hosted runners are the compute break-glass"
+    record "$name" "fail" "self-hosted runner pin found"
+    return 1
+  fi
+  if ! grep -R --include='*.yml' --include='*.yaml' -E 'runs-on:[[:space:]]*.*ubuntu-latest' "$wf" >/dev/null 2>&1; then
+    loud "COMPUTE-BREAKGLASS" "no GitHub-hosted ubuntu-latest workflow found"
+    record "$name" "fail" "no ubuntu-latest runs-on"
+    return 1
+  fi
+  record "$name" "pass" "CI workflows use GitHub-hosted ubuntu-latest (off-box compute)"
+  return 0
+}
+
+plane_keystone_hc() {
+  local name="keystone_deadman"
+  local missing=() key
+  if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
+    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore and drop HC_URL_* there. Heartbeat already has its own check."
+    record "$name" "skip" "env file missing"
+    return 0
+  fi
+  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE; do
+    if ! grep -q "^${key}=.\+" "$KEYSTONE_HC_ENV"; then
+      missing+=("$key")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    loud "KEYSTONE-HC-UNCONFIGURED" "unset in $KEYSTONE_HC_ENV: ${missing[*]} — free-tier checks, not the heartbeat URL (sharing it would mask a dead heartbeat)"
+    record "$name" "skip" "unset: ${missing[*]}"
+    return 0
+  fi
+  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE all set"
+  return 0
+}
+
+write_results() {
+  local all_pass
+  all_pass="$(jq -s -c 'all(.[]; .status == "pass" or .status == "skip")' "$RESULTS_LOG")"
+  jq -s -c --arg ran "$(now_iso)" --argjson all_pass "$all_pass" \
+    '{ran_at:$ran, all_pass:$all_pass, results:.}' "$RESULTS_LOG" >"$RESULTS"
+  if [[ -n "${GAP_LOOP_STATE_DIR:-}" && -d "${GAP_LOOP_STATE_DIR}" ]]; then
+    cp -f "$RESULTS" "$GAP_LOOP_STATE_DIR/resilience-drill-results.json" 2>/dev/null || true
+  fi
+}
+
+run_drill() {
+  log "fleet resilience drill starting (repo=$FLEET_OPS_REPO offline=$OFFLINE)"
+  local rc=0
+  plane_resurrection || rc=1
+  plane_access_policy || rc=1
+  plane_runbook || rc=1
+  plane_state || rc=1
+  plane_compute || rc=1
+  plane_keystone_hc || rc=1
+  write_results
+  if (( rc == 0 )); then
+    log "OK: fleet-ops#455 four-plane drill pass (see $RESULTS)"
+    printf 'OK: fleet-ops#455 four-plane drill pass\n'
+    exit 0
+  fi
+  log "FAIL: one or more planes failed (see LOUD lines and $RESULTS)"
+  exit 1
+}
+
+case "${1:-}" in
+  --check) check_env ;;
+  "")      command -v jq >/dev/null 2>&1 || { log "jq missing"; exit 1; }
+           run_drill ;;
+  *)       log "usage: fleet-resilience-drill [--check]"; exit 2 ;;
+esac

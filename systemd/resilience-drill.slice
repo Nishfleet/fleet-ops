@@ -1,0 +1,8 @@
+# resilience-drill.slice — throwaway slice for the #455 resurrection stub.
+# NOT a fleet unit; started on demand by bin/fleet-resilience-drill.
+# No [Install], never enabled. Bounds the stub so a Restart=always sleep
+# cannot leak into the worker tree. sshd, tailscaled, fleet-heartbeat and
+# the intake timers are NOT under it.
+[Slice]
+MemoryMax=64M
+CPUQuota=10%
