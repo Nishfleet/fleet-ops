@@ -93,4 +93,18 @@ Steps:
 6. Commit with a clear message. Push early and again when done: `git push origin claim/issue-<N>`.
 7. Open the PR:
    `gh pr create -R Nishfleet/<repo> --head claim/issue-<N> --title "<concise title>" --body "<what changed and why>. Verification: <exact commands run and their results>. Closes #<N>"`
-8. Print exactly one final line: the PR URL. Exit 0.
+8. Arm the merge queue — this is your LAST mandatory step, not an optional
+   extra. A PR left unarmed is an incomplete packet. The fleet standard
+   (Nish, 2026-08-25): green PRs enter the merge queue automatically, no
+   orchestrator hand needed. Arming on open means the queue fires the moment
+   required checks pass, with no second round-trip:
+   `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>`
+   (`--auto --squash` adds to the merge queue on queue-enabled repos and arms
+   auto-merge-on-green on the rest — one command, both shapes. Never queue a
+   fork PR, a draft, or a PR you marked `[no-merge]` in the title.) If the arm
+   fails because checks are still pending, that is fine — `--auto` waits. If it
+   fails for a permissions reason, say so in the PR body and stop; do not
+   hand-merge. The `auto-enqueue.yml` workflow and the weekly standards sweep
+   are backstops that re-arm anything this step missed — but arming here is the
+   primary path and is required.
+9. Print exactly one final line: the PR URL. Exit 0.
