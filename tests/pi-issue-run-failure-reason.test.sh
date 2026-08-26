@@ -20,6 +20,13 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
 mkdir -p "$HOME" "$scratch/xdg"
+
+# P14 (fleet-ops#549): the worker App creds file must exist and mint before
+# pi runs. This test is about the failure-reason log, not identity — stub a
+# working App identity so the run reaches pi.
+mkdir -p "$HOME/.config/fleet-worker"
+: >"$HOME/.config/fleet-worker/nishfleet-worker.env"
+chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
 state_dir="$scratch/state"
 issues_dir="$scratch/issues"
 ledger_dir="$scratch/ledger"
@@ -36,6 +43,14 @@ echo 'simulated pi failure: boom' >&2
 exit 1
 EOF
 chmod +x "$scratch/bin/pi"
+
+cat >"$scratch/bin/worker-token" <<'EOF'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+exit 0
+EOF
+chmod +x "$scratch/bin/worker-token"
+export WORKER_TOKEN_BIN="$scratch/bin/worker-token"
 
 # Stub seat-lib that uses the real seat_log (so it writes to stderr), forces
 # a specific seat, and avoids systemd/ledger dependencies.
