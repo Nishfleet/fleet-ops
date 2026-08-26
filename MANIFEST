@@ -30,7 +30,6 @@ prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-rep
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
-lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
