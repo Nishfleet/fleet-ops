@@ -22,6 +22,12 @@ GC-able agent-worktree, so the canary compared the clone against itself.
 DRIFT-PAPER-OVER auto-files (deduped) if that drop-in or a worktree canary
 path comes back. Extra-symlink / DRIFT-VOLATILE miss .conf drop-ins.
 
+fleet-ops#477: the canonical deploy-clone must stay on branch main. A named
+non-main branch (auditor/hotfix) makes merge-to-live DEPLOY-BLOCKED once the
+branch is not an ancestor of origin/main. DRIFT-OFF-MAIN auto-files (deduped).
+`--file-off-main` files that class without running the rest of the canary so
+fleet-ops-deploy can file when it blocks before the canary runs.
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -31,7 +37,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN; 0 skip gh
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
   FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
@@ -70,6 +76,7 @@ SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
 ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
 PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
+OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
 PAPER_OVER_DROPIN = (
     HOME / ".config" / "systemd" / "user" / "fleet-heartbeat.service.d" / "10-deploy-checkout.conf"
 )
@@ -238,6 +245,23 @@ def auto_file_products_symlink(msg: str) -> None:
     auto_file_drift(
         PRODUCTS_MARKER,
         "products/fleet-ops still not the deploy-clone",
+        extra,
+        msg,
+    )
+
+
+def auto_file_off_main(msg: str) -> None:
+    """File one issue if the deploy-clone is on a named non-main branch."""
+    extra = (
+        "The canonical deploy-clone must stay on branch main. Park auditor "
+        "or hotfix work as its own worktree; do not check that branch out on "
+        "the live clone. Heartbeat merge-to-live will DEPLOY-BLOCK once HEAD "
+        "is not an ancestor of origin/main (squash-merged auditor commits "
+        "diverge). This canary auto-files that class (fleet-ops#477)."
+    )
+    auto_file_drift(
+        OFF_MAIN_MARKER,
+        "Live fleet-ops-deploy-clone is on a named branch, not main",
         extra,
         msg,
     )
@@ -665,6 +689,19 @@ def check_checkout(checkout: Path) -> None:
         fail_loud("DRIFT-CHECKOUT", f"git rev-parse origin/main failed: {origin_main}")
     origin_main = origin_main.strip()
 
+    rc, branch, _ = run(
+        ["git", "-C", str(checkout), "symbolic-ref", "--short", "HEAD"],
+        check=False,
+    )
+    branch = branch.strip() if rc == 0 else ""
+    if branch and branch != "main":
+        msg = (
+            f"canonical checkout is on branch {branch}, not main "
+            f"(HEAD {head[:12]}, origin/main {origin_main[:12]}; fleet-ops#477)"
+        )
+        auto_file_off_main(msg)
+        fail_loud("DRIFT-OFF-MAIN", msg)
+
     if head != origin_main:
         fail_loud("DRIFT-CHECKOUT", f"checkout stale: HEAD {head[:12]} != origin/main {origin_main[:12]}")
 
@@ -861,7 +898,17 @@ def check_missing_execstarts() -> None:
     log("no user unit ExecStart points at a missing binary")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["--file-off-main"]:
+        msg = (
+            args[1]
+            if len(args) > 1
+            else "canonical deploy-clone is on a named branch other than main (fleet-ops#477)"
+        )
+        auto_file_off_main(msg)
+        sys.exit(0)
+
     checkout = find_checkout()
     expected_dests, expected_enabled = parse_manifest(checkout)
 

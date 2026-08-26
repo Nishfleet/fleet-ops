@@ -31,6 +31,11 @@
 #      (fleet-ops#370). A second tick with the marker open does not re-file.
 #  15. FLEET_OPS_DRIFT_BIN under agent-worktrees fails DEPLOY-DRIFT-BIN-VOLATILE.
 #  16. fleet-ops-deploy removes the paper-over drop-in even when merge is blocked.
+#  17. A named non-main branch on the deploy checkout (HEAD == origin/main)
+#      DEPLOY-BLOCKs, does not rewind the auditor branch, auto-files
+#      deploy-clone-off-main: fleet-ops#477. The canary emits DRIFT-OFF-MAIN
+#      and dedups. An auditor branch that is an ancestor of origin/main is
+#      not fast-forwarded (that would move the auditor pointer).
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -100,6 +105,16 @@ grep -q 'check_products_symlink' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must retarget products/fleet-ops when worktrees can move (fleet-ops#410)"
 grep -q 'products-symlink-stale: fleet-ops#410' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file a stuck products/fleet-ops symlink (fleet-ops#410)"
+grep -q 'DRIFT-OFF-MAIN' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag a named non-main branch on the deploy checkout (fleet-ops#477)"
+grep -q 'deploy-clone-off-main: fleet-ops#477' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file off-main checkout with the #477 marker"
+grep -q 'not main (fleet-ops#477)' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must block a named non-main branch (fleet-ops#477)"
+grep -q -- '--file-off-main' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must auto-file off-main via the canary --file-off-main flag"
+grep -q 'fleet-ops#477' "$repo_root/prompts/worker.md" \
+    || fail "worker.md must tell workers not to check out branches on the deploy-clone (fleet-ops#477)"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -931,6 +946,127 @@ ok "scenario16: blocked deploy still removes the paper-over drop-in"
 git -C "$checkout" checkout -q -- bin/demo-script
 [ "$(git -C "$checkout" rev-parse HEAD)" = "$block_head" ] \
     || fail "scenario16: blocked deploy mutated HEAD"
+
+# --- scenario 17: named non-main branch on the deploy checkout (fleet-ops#477)
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" checkout -q -b auditor/off-main-477
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
+    || fail "scenario17: setup expected named auditor branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17: setup expected HEAD to match origin/main"
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+off_gh_log="$scratch/gh-off-main.log"
+off_gh="$scratch/gh-off-main"
+: >"$off_gh_log"
+echo '[]' >"$scratch/open-off-main.json"
+cat >"$off_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/4770"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$off_gh"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_deploy
+); then
+    fail "scenario17: deploy should block on a named non-main branch, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario17: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"not main"* ]] \
+    || fail "scenario17: expected not-main reason (got: $out)"
+[[ "$out" == *"fleet-ops#477"* ]] \
+    || fail "scenario17: expected fleet-ops#477 (got: $out)"
+grep -q 'issue create' "$off_gh_log" \
+    || fail "scenario17: must auto-file (log=$(cat "$off_gh_log"))"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
+    || fail "scenario17: deploy discarded the auditor branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17: deploy moved HEAD"
+ok "scenario17: named non-main branch DEPLOY-BLOCKs, keeps the auditor branch, auto-files"
+
+: >"$off_gh_log"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario17b: canary should fail on a named non-main branch, got: $out"
+fi
+[[ "$out" == *"DRIFT-OFF-MAIN"* ]] \
+    || fail "scenario17b: expected DRIFT-OFF-MAIN (got: $out)"
+grep -q 'issue create' "$off_gh_log" \
+    || fail "scenario17b: canary must auto-file (log=$(cat "$off_gh_log"))"
+ok "scenario17b: canary DRIFT-OFF-MAIN auto-files when checkout is not on main"
+
+: >"$off_gh_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario17c: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$off_gh_log" \
+    && fail "scenario17c: must not file a duplicate (log=$(cat "$off_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario17c: expected dedup log, got: $out"
+ok "scenario17c: open issue with the #477 marker is not filed twice"
+
+behind_on_auditor=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -B tmp-advance-main origin/main
+printf '\n# 477-advance\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "advance main past auditor"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q auditor/off-main-477
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$behind_on_auditor" ] \
+    || fail "scenario17d: setup did not leave auditor behind origin/main"
+git -C "$checkout" merge-base --is-ancestor HEAD origin/main \
+    || fail "scenario17d: setup expected auditor HEAD to be an ancestor of origin/main"
+: >"$off_gh_log"
+echo '[]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_deploy
+); then
+    fail "scenario17d: deploy must not fast-forward a named non-main branch, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario17d: expected DEPLOY-BLOCKED (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
+    || fail "scenario17d: deploy left the auditor branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$behind_on_auditor" ] \
+    || fail "scenario17d: deploy fast-forwarded the auditor branch onto origin/main"
+ok "scenario17d: ancestor auditor branch is not fast-forwarded onto origin/main"
+git -C "$checkout" checkout -q -B main origin/main
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
