@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+# fleet-free-roster-canary — free-model roster freshness (fleet-ops#518).
+#
+# Standing rule `sr-free-model-roster` (global-standing-rules.md, Nish
+# 2026-08-18): the fleet's free-model roster stays fresh and quality-gated.
+# The old fleet2 roster scout (lib/fleet_roster_scout.py) was deleted in the
+# 08-23 wipe, leaving no live enforcer — this canary is the Pi-native
+# replacement. No new scheduler; run by fleet-heartbeat-tier1.
+#
+# Three layers, mirroring opencode-m3-catalog-canary (fleet-ops#435) and
+# fleet-paid-flash-canary (fleet-ops#436):
+#
+#   1. GATES (fail-loud, exit 1) — the class prevention:
+#      a. Ollama carve-out (binding, Nish 2026-08-20): the Ollama Pro account
+#         is DeepSeek V4 flash EXCLUSIVE. The roster scout must NEVER poll the
+#         Ollama catalog (fetch exclusion — this canary does not read ollama
+#         models from `pi --list-models`), and any non-deepseek-v4-flash model
+#         allowlisted in seat-caps providers.ollama.models is LOUD + auto-filed
+#         + exit 1. This restores the deleted hard diff-guard (commit a2ff1a3).
+#      b. Penny-for-speed ordering: every free-class provider with cap>0 and a
+#         non-empty .models map must appear in free_providers_in_order. A free
+#         lane missing from the front of the ladder is LOUD + auto-filed +
+#         exit 1 (free lanes lead, paid lanes trail).
+#
+#   2. DETECTORS (observe-to-open, tick stays green, exit 0) — the freshness
+#      watch, so a human never re-checks the catalog by hand:
+#      a. New free lane: for every free-class provider with cap>0 (ollama
+#         excluded — carve-out), a catalog slug matching the fleet free-form
+#         convention (`-free` suffix or `*-pass/` prefix, the opencode-m3 /
+#         cline-pass precedent) that is NOT in the seat-caps allowlist auto-
+#         files an "audition + wire" ticket (deduped, capped). The audition
+#         league quality bench stays a scout judgment carried in the filed
+#         ticket — same hand-off shape as paid-flash-canary.
+#      b. Stale lane: a wired free-form slug on a free-class provider that has
+#         left the live catalog auto-files a "bench stale slug" ticket.
+#
+#   3. FAIL-LOUD on broken canary: pi missing / `pi --list-models` failed ->
+#      exit 1 (the freshness watch is the canary's purpose; a broken watch is
+#      the blind spot returning). Gates run first and do not need pi.
+#
+# Exit codes:
+#   0  gates clean (detectors may have filed; filing never fails the tick)
+#   1  a gate violation, or the canary itself is broken (pi/catalog unread)
+#
+# Environment seams (tests):
+#   FLEET_FREE_ROSTER_CATALOG_JSON  list-models stdout fixture (overrides pi).
+#                                    TSV: lines of "<provider> <model> ...".
+#   FLEET_ENTITLED_SEATS_JSON       inventory file
+#   SEAT_CAPS_JSON                  cap map
+#   FLEET_HEARTBEAT_TRIAGE          triage file
+#   FLEET_FREE_ROSTER_REPO          default Nishfleet/fleet-ops
+#   FLEET_FREE_ROSTER_FILE          1 (default) file issues; 0 skip gh
+#   FLEET_FREE_ROSTER_CAP           per-tick file cap (default 5)
+#   GH                              gh binary (tests stub this)
+#   PI                              pi binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+PI="${PI:-pi}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+ENTITLED_JSON="${FLEET_ENTITLED_SEATS_JSON:-$FLEET_OPS_REPO/config/entitled-seats.json}"
+if [[ ! -f "$ENTITLED_JSON" ]]; then
+    ENTITLED_JSON="${HOME}/.local/state/pi-packet/entitled-seats.json"
+fi
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_FREE_ROSTER_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_FREE_ROSTER_FILE:-1}"
+FILE_CAP="${FLEET_FREE_ROSTER_CAP:-5}"
+
+log() {
+    printf '[%s] [fleet-free-roster-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Fleet free-form convention (opencode-m3-canary / cline-pass precedent):
+# `-free` suffix (hy3-free, minimax-m3-free, laguna-s-2.1-free) or a
+# `*-pass/` prefix (cline-pass/deepseek-v4-flash).
+is_free_form() {
+    local id="${1,,}"
+    [[ "$id" == *-free ]] && return 0
+    [[ "$id" == *"-pass/"* ]] && return 0
+    return 1
+}
+
+# Ollama carve-out: only DeepSeek V4 flash variants may be allowlisted.
+# Matches deepseek-v4-flash, deepseek-v4-flash:0731, deepseek/deepseek-v4-flash.
+is_ds_v4_flash() {
+    local id="${1,,}"
+    [[ "$id" =~ deepseek.*v4.*flash ]]
+}
+
+norm_class() {
+    case "$1" in
+        subscription) printf '%s\n' prepaid-quota ;;
+        prepaid-quota|metered|free) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+file_finding() {
+    local id="$1" kind="$2" title="$3" body="$4"
+    local marker="free-roster-canary: ${id} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_FREE_ROSTER_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+# ---- load config -----------------------------------------------------------
+if [[ ! -f "$ENTITLED_JSON" ]]; then
+    loud "FREE-ROSTER-VIOLATION" "entitled inventory missing: $ENTITLED_JSON"
+    exit 1
+fi
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "FREE-ROSTER-VIOLATION" "seat-caps missing: $SEAT_CAPS_JSON"
+    exit 1
+fi
+if ! jq -e . "$ENTITLED_JSON" >/dev/null 2>&1; then
+    loud "FREE-ROSTER-VIOLATION" "entitled inventory unparseable: $ENTITLED_JSON"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "FREE-ROSTER-VIOLATION" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+violations=0
+
+# ---- GATE 1a: Ollama carve-out (hard diff-guard, no catalog poll) ----------
+# The carve-out is binding (Nish 2026-08-20). The scout must NEVER poll the
+# Ollama catalog, so this gate reads seat-caps only — never `pi --list-models`
+# for ollama. Any non-deepseek-v4-flash model in providers.ollama.models is a
+# violation that drains the shared weekly quota.
+ollama_models=()
+while IFS= read -r k; do
+    [[ -n "$k" ]] && ollama_models+=("$k")
+done < <(jq -r '.providers.ollama.models // {} | keys[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+for slug in "${ollama_models[@]}"; do
+    if ! is_ds_v4_flash "$slug"; then
+        loud "FREE-ROSTER-VIOLATION" \
+            "Ollama carve-out: non-deepseek-v4-flash model allowlisted on ollama: $slug"
+        file_finding "ollama" "carve-out-violation" \
+            "Ollama carve-out violation: $slug allowlisted on ollama" \
+            "config/seat-caps.json providers.ollama.models includes \`${slug}\`. The Ollama Pro account is DeepSeek V4 flash EXCLUSIVE (Nish 2026-08-20, binding): every request on any model bills the same shared weekly quota the deepseek-v4-flash workhorse lane needs, and auditions burned ~65% of a week across 14 models before the rule landed. Remove \`${slug}\` from the ollama allowlist; keep only deepseek-v4-flash variants. The roster canary must never poll the Ollama catalog — this gate reads seat-caps only. Restores the deleted fleet2 hard diff-guard (commit a2ff1a3)."
+        violations=$((violations + 1))
+    fi
+done
+
+# ---- GATE 1b: penny-for-speed ordering -------------------------------------
+# Every free-class provider with cap>0 and a non-empty .models map must be in
+# free_providers_in_order. Free lanes lead the ladder; a free lane missing
+# from the order is a penny-for-speed violation.
+free_order_set=()
+while IFS= read -r p; do
+    [[ -n "$p" ]] && free_order_set+=("$p")
+done < <(jq -r '.free_providers_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+declare -A in_free_order=()
+for p in "${free_order_set[@]}"; do
+    in_free_order["$p"]=1
+done
+
+# Free-class providers with cap>0 and a non-empty models map.
+while IFS=$'\t' read -r pid pclass pcap mcount; do
+    [[ -n "$pid" ]] || continue
+    pclass=$(norm_class "$pclass")
+    [[ "$pclass" == "free" ]] || continue
+    [[ "$pcap" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$mcount" =~ ^[1-9][0-9]*$ ]] || continue
+    if [[ -z "${in_free_order[$pid]:-}" ]]; then
+        loud "FREE-ROSTER-VIOLATION" \
+            "penny-for-speed: free provider $pid (cap=$pcap, $mcount model(s)) missing from free_providers_in_order"
+        file_finding "$pid" "missing-from-free-order" \
+            "penny-for-speed: $pid missing from free_providers_in_order" \
+            "config/seat-caps.json lists \`${pid}\` as free, cap=${pcap}, with ${mcount} allowlisted model(s), but it is not in \`free_providers_in_order\`. The standing rule (Nish 2026-08-18) puts free lanes at the front of every ladder and paid lanes as small-cap spillover behind them (penny-for-speed). Add \`${pid}\` to free_providers_in_order so pick_seat tries it before any metered lane."
+        violations=$((violations + 1))
+    fi
+done < <(jq -r '
+    .providers | to_entries[] | .key as $k | .value as $v
+    | [$k,
+       (if ($v|type)=="number" then "free" else ($v.class // "free") end),
+       (if ($v|type)=="number" then $v else ($v.cap // 0) end),
+       (if ($v|type)=="object" and ($v.models|type)=="object" then ($v.models|length) else 0 end)]
+    | @tsv
+' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+# Gates are fail-loud. If a gate failed, do not proceed to detectors — the
+# roster is in violation and the heartbeat must land in --state=failed.
+if (( violations > 0 )); then
+    log "FAIL: $violations free-roster gate violation(s)"
+    exit 1
+fi
+
+# ---- DETECTORS: read the live Pi catalog -----------------------------------
+# Free-class providers with cap>0 (the roster we keep fresh). ollama is
+# excluded by class (prepaid-quota) AND by an explicit carve-out guard — the
+# scout must never poll the Ollama catalog.
+free_providers=()
+while IFS=$'\t' read -r pid pclass pcap; do
+    [[ -n "$pid" ]] || continue
+    pclass=$(norm_class "$pclass")
+    [[ "$pclass" == "free" ]] || continue
+    [[ "$pcap" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$pid" == "ollama" ]] && continue
+    free_providers+=("$pid")
+done < <(jq -r '
+    .providers | to_entries[] | .key as $k | .value as $v
+    | [$k,
+       (if ($v|type)=="number" then "free" else ($v.class // "free") end),
+       (if ($v|type)=="number" then $v else ($v.cap // 0) end)]
+    | @tsv
+' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+catalog_out=""
+if [[ -n "${FLEET_FREE_ROSTER_CATALOG_JSON:-}" && -f "${FLEET_FREE_ROSTER_CATALOG_JSON:-}" ]]; then
+    catalog_out=$(cat "$FLEET_FREE_ROSTER_CATALOG_JSON")
+else
+    if ! command -v "$PI" >/dev/null 2>&1; then
+        loud "FREE-ROSTER-WATCHER-BROKEN" "pi binary not found ($PI); cannot watch free roster"
+        exit 1
+    fi
+    if ! catalog_out=$("$PI" --list-models 2>/dev/null); then
+        loud "FREE-ROSTER-WATCHER-BROKEN" "pi --list-models exited non-zero; cannot watch free roster"
+        exit 1
+    fi
+fi
+
+# provider -> newline-joined model ids, from the catalog TSV.
+declare -A catalog_models=()
+while IFS=$'\t ' read -r p m _rest; do
+    [[ -n "$p" && -n "$m" ]] || continue
+    [[ "$p" == "provider" ]] && continue   # header row
+    [[ "$p" == "EXTLOAD-OK" ]] && continue # extension boot line
+    catalog_models["$p"]+="${m}"$'\n'
+done <<< "$catalog_out"
+
+filed=0
+for pid in "${free_providers[@]}"; do
+    # allowlisted slugs for this provider
+    declare -A allow_set=()
+    while IFS= read -r s; do
+        [[ -n "$s" ]] && allow_set["$s"]=1
+    done < <(jq -r --arg id "$pid" '.providers[$id].models // {} | keys[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    cat_slugs="${catalog_models[$pid]:-}"
+
+    # Detector 2a: new free lane in catalog, not allowlisted -> audition + wire.
+    while IFS= read -r slug; do
+        [[ -n "$slug" ]] || continue
+        is_free_form "$slug" || continue
+        if [[ -z "${allow_set[$slug]:-}" ]]; then
+            if (( filed >= FILE_CAP )); then
+                log "cap reached ($FILE_CAP): deferring $pid/$slug to a later tick"
+                continue
+            fi
+            loud "FREE-ROSTER-AVAILABLE" \
+                "free slug on $pid not wired: $slug — filing audition+wire"
+            file_finding "${pid}:${slug}" "free-slug-available" \
+                "Audition + wire free $pid slug $slug" \
+                "fleet-free-roster-canary (fleet-ops#518) detected that \`${pid}\` (free-class, cap>0) now lists \`${slug}\` in Pi's catalog, matching the fleet free-form convention (\`-free\` suffix or \`*-pass/\` prefix). It is not in config/seat-caps.json providers.${pid}.models. Per sr-free-model-roster: every new free candidate auditions through the fleet-eval league BEFORE joining a work ladder — free but bad is still bad (league mean must beat the worst incumbent on the ladder or it stays benched). Run the scout/admission quality bench on real fleet packets, prove one live spawn through pi (switched-on-and-proven), check the meter shows zero spend, then allowlist only this slug with a dated reason (capacity-is-measured). Do not wire a billing slug."
+            filed=$((filed + 1))
+        fi
+    done <<< "$cat_slugs"
+
+    # Detector 2b: wired free-form slug gone from catalog -> bench stale lane.
+    for slug in "${!allow_set[@]}"; do
+        is_free_form "$slug" || continue
+        if ! printf '%s\n' "$cat_slugs" | grep -qxF "$slug"; then
+            if (( filed >= FILE_CAP )); then
+                log "cap reached ($FILE_CAP): deferring stale $pid/$slug to a later tick"
+                continue
+            fi
+            loud "FREE-ROSTER-STALE" \
+                "wired free slug on $pid left the catalog: $slug — filing bench"
+            file_finding "${pid}:${slug}" "stale-slug" \
+                "Bench stale free $pid slug $slug (no longer in catalog)" \
+            "fleet-free-roster-canary (fleet-ops#518) detected that \`${slug}\` is allowlisted in config/seat-caps.json providers.${pid}.models but is no longer in Pi's \`${pid}\` catalog. The roster must stay fresh: a wired free lane that has disappeared is dead weight on the ladder. Set its cap to 0 (or remove it from the models map) with a dated reason (capacity-is-measured). If the provider republished it under a new slug, audition the new slug through the fleet-eval league before rewiring."
+            filed=$((filed + 1))
+        fi
+    done
+    unset allow_set
+done
+
+if (( filed > 0 )); then
+    loud "FREE-ROSTER-FILED" "$filed freshness ticket(s) filed; gates clean; tick stays green"
+else
+    loud "FREE-ROSTER-OK" "gates clean; no unwired free slug and no stale wired free slug on free-class providers"
+fi
+exit 0
