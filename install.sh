@@ -162,6 +162,12 @@ if [ "$do_user_install" = 1 ]; then
   # can be safely re-enabled.
   systemctl --user enable intake-reconcile.path
   systemctl --user enable --now intake-reconcile.timer
+  # fleet-ops#183: the 0509 daily-market-signal timer ships in MANIFEST with
+  # [Install], but was never enabled, so the cron never scheduled. Dedicated
+  # enable rather than a generic [Install] loop: templates (pi-intake@ /
+  # pi-scout@) are instantiated by the reconciler, and siterep-deploy.timer
+  # deliberately omits [Install] so it cannot be auto-started.
+  systemctl --user enable --now agent-cron-0509-daily-market-signal.timer
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

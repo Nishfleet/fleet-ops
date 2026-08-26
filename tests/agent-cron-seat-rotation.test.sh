@@ -20,6 +20,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/agent-cron-run"
 svc="$repo_root/systemd/agent-cron-0509-daily-market-signal.service"
+timer="$repo_root/systemd/agent-cron-0509-daily-market-signal.timer"
+install_sh="$repo_root/install.sh"
 manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -211,6 +213,48 @@ grep -Fxq "systemd/agent-cron-0509-daily-market-signal.service /home/nish/.confi
 grep -Fxq "systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer" "$manifest" \
   || fail "MANIFEST missing: agent-cron timer"
 ok "MANIFEST entries present for runner + service + timer"
+
+# --- install.sh enables the [Install] timer (fleet-ops#183) -----------------
+# The timer was in MANIFEST with [Install] and still not-found on the live
+# host because install.sh only enabled intake-reconcile. Lock both the
+# unit shape and the installer call so a later unit with [Install] cannot
+# be added the same way without the enable line.
+[[ -f "$timer" ]] || fail "timer unit not found: $timer"
+[[ -x "$install_sh" ]] || fail "not executable: $install_sh"
+grep -q '^\[Install\]$' "$timer" \
+  || fail "timer must carry [Install] so systemctl enable can hook it"
+grep -q '^WantedBy=timers.target$' "$timer" \
+  || fail "timer [Install] must WantedBy=timers.target"
+grep -Eq -- 'systemctl --user enable --now agent-cron-0509-daily-market-signal\.timer' "$install_sh" \
+  || fail "install.sh must enable --now agent-cron-0509-daily-market-signal.timer"
+ok "timer has [Install] and install.sh enables it"
+
+# Behavioral: a scratch install with stub systemctl must actually invoke
+# enable --now. Destinations stay under $scratch so this cannot mutate the
+# live user bus. A comment-only enable line would fail this.
+install_scratch="$scratch/install-root"
+mkdir -p "$install_scratch/systemd" "$scratch/fake-bin" "$scratch/user-units"
+cp -a "$install_sh" "$install_scratch/install.sh"
+cp -a "$timer" "$install_scratch/systemd/agent-cron-0509-daily-market-signal.timer"
+cp -a "$svc" "$install_scratch/systemd/agent-cron-0509-daily-market-signal.service"
+cat >"$install_scratch/MANIFEST" <<MANIFEST
+systemd/agent-cron-0509-daily-market-signal.service $scratch/user-units/agent-cron-0509-daily-market-signal.service
+systemd/agent-cron-0509-daily-market-signal.timer $scratch/user-units/agent-cron-0509-daily-market-signal.timer
+MANIFEST
+calls="$scratch/systemctl.calls"
+: >"$calls"
+cat >"$scratch/fake-bin/systemctl" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$calls"
+exit 0
+FAKE
+chmod +x "$scratch/fake-bin/systemctl"
+PATH="$scratch/fake-bin:$PATH" "$install_scratch/install.sh"
+[[ -L "$scratch/user-units/agent-cron-0509-daily-market-signal.timer" ]] \
+  || fail "scratch install must symlink the timer"
+grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$calls" \
+  || fail "scratch install did not enable --now the agent-cron timer: $(cat "$calls")"
+ok "scratch install.sh enable --now invoked for the [Install] timer"
 
 # --- systemd-analyze verify on the unit files -------------------------------
 # NOTE: unit-file verification is owned by the dedicated `systemd-analyze` CI
