@@ -134,3 +134,9 @@ console.log("OK: fixture audit finds compliant, gaps, and ineligible repos");
 '
 
 echo "OK: ci-standards-audit.mjs fixtures and pure functions"
+
+# fleet-ops#154: P14 must not inline-verify units whose ExecStart is a VPS
+# path. Worker App tokens cannot push .github/workflows/**, so this lock
+# rides on a test already listed in verify-command rather than a new
+# workflow step.
+bash "$here/p14-unstubbed-unit-verify.test.sh"
