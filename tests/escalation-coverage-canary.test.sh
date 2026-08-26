@@ -745,6 +745,11 @@ ok "escalation-coverage-canary: block 10 backup staleness (fleet-ops#388) covere
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/entitled-wired-canary.test.sh"
 
+# fleet-ops#424: leftover AIMD meter canary. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens
+# cannot push .github/workflows/**).
+bash "$here/aimd-meter-canary.test.sh"
+
 # fleet-ops#388: restore drill. Invoked from this CI-listed file so hosted
 # runners run it without a workflow edit (worker tokens cannot push
 # .github/workflows/**).

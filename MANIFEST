@@ -96,6 +96,10 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
 # and auto-files. No new scheduler.
 bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
+# fleet-ops#424: leftover AIMD meter canary. Run by heartbeat-tier1 block 17.
+# AIMD symbols missing from seat-lib.sh while learned-caps-audit.log remains
+# goes LOUD and auto-files. No new scheduler.
+bin/fleet-aimd-meter-canary /home/nish/.local/bin/fleet-aimd-meter-canary
 # fleet-ops#157/#378: recurring mechanical blind audit. One oneshot unit +
 # daily timer (primary) + heartbeat drained-board bonus; cadence-overdue
 # screams through tier1 §11. Dispatches a pi reviewer, runs findings through

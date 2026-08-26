@@ -794,3 +794,8 @@ ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another p
 # .github/workflows).
 bash "$here/ram-metric-compare.test.sh" || fail "ram-metric-compare tests failed"
 
+# fleet-ops#424: AIMD re-land. Invoked from this CI-listed file so hosted
+# runners run it without a workflow edit (worker tokens cannot push
+# .github/workflows/**).
+bash "$here/seat-lib-aimd.test.sh" || fail "AIMD learned-cap tests failed"
+
