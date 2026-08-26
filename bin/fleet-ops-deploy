@@ -44,7 +44,7 @@ deploy_audit() {
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
 
-if ! git -C "$DEPLOY_CHECKOUT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
     loud "DEPLOY-CHECKOUT-MISSING" "no git checkout at $DEPLOY_CHECKOUT"
     exit 1
 fi
