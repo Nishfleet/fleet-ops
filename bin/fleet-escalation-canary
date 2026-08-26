@@ -124,6 +124,7 @@ SANCTIONED_PI_RUNNERS=(
     fleet-blind-audit
     fleet-heartbeat-tier2
     pi-intake-run
+    pi-intake-repair-run
     pi-issue-run
     pi-packet-run
     pi-scout-run

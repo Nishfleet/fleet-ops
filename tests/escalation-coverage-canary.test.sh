@@ -385,4 +385,24 @@ run_canary
 grep -q 'pending=0' "$triage" || fail "scenario9: OK line must show pending=0"
 ok "scenario9: bridge files present -> wired without marker"
 
+# ============================================================================
+# Scenario 10: live bin/ wrappers that invoke pi --print must be sanctioned
+# ============================================================================
+# Catches the #351 omission: pi-intake-repair-run was wired to a unit and
+# MANIFEST but never added to SANCTIONED_PI_RUNNERS, so every heartbeat tick
+# failed the canary (auditor summon 2026-08-26T16:18Z).
+canary_src="$repo_root/bin/fleet-escalation-canary"
+mapfile -t live_pi_runners < <(
+  grep -R -l --exclude='fleet-escalation-canary' \
+    -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
+    "$repo_root/bin" 2>/dev/null || true
+)
+[[ ${#live_pi_runners[@]} -gt 0 ]] || fail "scenario10: expected live pi wrappers under bin/"
+for f in "${live_pi_runners[@]}"; do
+  name=$(basename "$f")
+  grep -qE "^[[:space:]]+${name}$" "$canary_src" \
+    || fail "scenario10: bin/$name invokes pi --print but is missing from SANCTIONED_PI_RUNNERS"
+done
+ok "scenario10: every live bin/ pi --print wrapper is on SANCTIONED_PI_RUNNERS"
+
 ok "escalation-coverage-canary: covers VPS + GitHub planes, exclusions, and pending holes"
