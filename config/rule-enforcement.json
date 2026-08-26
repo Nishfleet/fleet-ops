@@ -671,6 +671,22 @@
       "proof": "decisions-ledger 2026-08-27; fleet-ops #146",
       "status": "queued(#416)",
       "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-top-gear-everywhere",
+      "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
+      "mechanism": "TOP GEAR invariant: deferral requires a named clock; merge-to-live <=5min event-driven; seat-recovery fires intake instantly",
+      "proof": "fleet-ops #468; mechanism issue #479 filed by canary",
+      "status": "queued(#479)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-escalation-matrix-fixes",
+      "source": "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes",
+      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal",
+      "proof": "fleet-ops #468 comment; mechanism issue #480 filed by canary",
+      "status": "queued(#480)",
+      "queued_since": "2026-08-27"
     }
   ]
 }
