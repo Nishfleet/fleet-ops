@@ -46,6 +46,12 @@ lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
 # Heartbeat-tier1 block 15; fail-loud + auto-file on unqueued offers.
 lib/findings-queued.py /home/nish/.local/lib/pi-packet/findings-queued.py
 bin/fleet-findings-queued /home/nish/.local/bin/fleet-findings-queued
+# fleet-ops#514: session-close lint for "check the decisions ledger
+# before asking Nish". Heartbeat-tier1 block 16; fail-loud + auto-file
+# on ledger-overlapping re-asks. Claude PreToolUse remains the
+# AskUserQuestion choke; this covers Pi and other JSONL sessions.
+lib/decisions-ledger.py /home/nish/.local/lib/pi-packet/decisions-ledger.py
+bin/fleet-decisions-ledger /home/nish/.local/bin/fleet-decisions-ledger
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json

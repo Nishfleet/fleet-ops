@@ -6,6 +6,7 @@
 - Live coverage check: `python3 lib/rule-enforcement.py join --rules $STANDING_RULES --ledger $DECISIONS_LEDGER --matrix config/rule-enforcement.json`
 - Rule-enforcement tests: `bash tests/rule-enforcement.test.sh`
 - Findings-queued session-close lint: `bash tests/fleet-findings-queued.test.sh`
+- Decisions-ledger session-close lint: `bash tests/fleet-decisions-ledger.test.sh`
 - Escalation canary tests: `bash tests/escalation-coverage-canary.test.sh`
 - Full P14 suite: `bash tests/manifest-shape.test.sh && bash tests/intake-repos-shape.test.sh && ...` (see `.github/workflows/ci.yml`)
 

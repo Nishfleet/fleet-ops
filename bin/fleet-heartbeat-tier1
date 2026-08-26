@@ -1293,6 +1293,28 @@ else
 fi
 
 # ============================================================================
+# 16. DECISIONS-LEDGER SESSION-CLOSE LINT (fleet-ops#514)
+# ============================================================================
+# Every tick, prove "check the decisions ledger before asking Nish":
+# recent Pi sessions whose assistant ask tokens already sit on a ledger
+# line, without the ledger-checked escape, are LOUD + auto-filed. Claude
+# PreToolUse still covers AskUserQuestion; this is the harness-agnostic
+# gate. The tick fails so a re-ask cannot vanish when the session ends.
+DECISIONS_LEDGER_BIN="${FLEET_DECISIONS_LEDGER_BIN:-/home/nish/.local/bin/fleet-decisions-ledger}"
+decisions_ledger_rc=0
+if [ -x "$DECISIONS_LEDGER_BIN" ]; then
+    log "16. decisions-ledger session-close lint starting"
+    if "$DECISIONS_LEDGER_BIN"; then
+        log "16. decisions-ledger session-close lint complete"
+    else
+        decisions_ledger_rc=$?
+        log "16. decisions-ledger session-close lint FAILED (rc=$decisions_ledger_rc) — a decided question was re-asked; unit will land in --state=failed"
+    fi
+else
+    log "16. decisions-ledger helper missing at $DECISIONS_LEDGER_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
 # ============================================================================
 # Every tick, prove "deferral requires a named clock": every benched seat,
@@ -1499,7 +1521,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1542,6 +1564,9 @@ if [ "${researcher_dispatch_rc:-0}" -ne 0 ]; then
 fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"
+fi
+if [ "${decisions_ledger_rc:-0}" -ne 0 ]; then
+    exit "$decisions_ledger_rc"
 fi
 if [ "${unjustified_rc:-0}" -ne 0 ]; then
     exit "${unjustified_rc}"

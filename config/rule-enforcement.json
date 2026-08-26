@@ -7,10 +7,9 @@
     {
       "id": "sr-decisions-ledger",
       "source": "global-standing-rules.md: Decisions ledger \u2014 check before asking Nish (Nish's direct order, 2026-08-25)",
-      "mechanism": "Claude Code PreToolUse hook only; other agents can still re-ask",
-      "proof": "Nishfleet/fleet-ops#514",
-      "status": "queued(#514)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat session-close lint: Pi JSONL assistant asks whose tokens overlap a ledger line without ledger-checked are LOUD + auto-filed. Claude PreToolUse hook remains the AskUserQuestion choke (vault guard_decisions_ledger.py).",
+      "proof": "bin/fleet-decisions-ledger; lib/decisions-ledger.py; tests/fleet-decisions-ledger.test.sh; fleet-heartbeat-tier1 block 16; nish-vault/_system/shared-memory/guards/guard_decisions_ledger.py",
+      "status": "enforced"
     },
     {
       "id": "sr-quality-speed-efficiency",
