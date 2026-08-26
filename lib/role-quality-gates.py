@@ -34,6 +34,10 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-restore",
     "fleet-resilience",
     "resilience-drill",
+    # fleet-ops#529: vault conflict handler is recovery plumbing, not a
+    # judging/building role. Classifying it here (same as fleet-resilience)
+    # keeps the catalog audit green after that unit landed on main.
+    "vault-conflict-resolver",
     "fleet-console",
     "fleet-heartbeat-failed-notify",
     "fleet-deploy-check",
