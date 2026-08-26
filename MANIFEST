@@ -25,6 +25,7 @@ prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
 prompts/intake-repair.md /home/nish/.pi/agent/prompts/intake-repair.md
 prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
+prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
@@ -57,7 +58,11 @@ bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
-bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+bin/fleet-heartbeat-buffer /home/nish/.local/bin/fleet-heartbeat-buffer
+bin/fleet-heartbeat-auditor /home/nish/.local/bin/fleet-heartbeat-auditor
+bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
+bin/pi-audit-tally /home/nish/.local/bin/pi-audit-tally
+systemd/pi-audit@.service /home/nish/.config/systemd/user/pi-audit@.service
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26
