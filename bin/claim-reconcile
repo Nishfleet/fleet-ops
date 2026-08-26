@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# claim-reconcile — self-heal split-brain and garbage claim branches (fleet-ops#39).
+#
+# The claim-side twin of blocked-reconcile (#29). Both are states nothing
+# ever re-examined: a claim branch that exists without the agent-in-progress
+# label is invisible to intake (the pre-flight ls-remote finds the branch and
+# skips the issue forever), and an unnumbered claim/issue- branch belongs to
+# no issue and can never be released by the normal path. tier 1 §3 only
+# iterates issues labelled agent-in-progress, so it catches direction A
+# (label without branch/worker) but is blind to directions B and C. This
+# sweep iterates BRANCHES, so it sees what §3 cannot.
+#
+# Named reason this is a sweep, not an event: the GitHub App has no webhooks
+# (credentials/app-manifest.json events=[]), so a push that lands between the
+# branch push and the label swap has no event to subscribe to. Heartbeat's
+# existing 30-minute timer is the observer; this is not a new schedule.
+#
+# Three fault directions, all repaired here:
+#   B. Branch without label — claim/issue-<N> exists, issue <N> is open, the
+#      issue's label is NOT agent-in-progress (it is agent-ready, agent-blocked,
+#      or unlabelled), no live worker, no open PR. Intake's pre-flight sees the
+#      branch and skips the issue forever. Release the branch; leave the label
+#      (agent-ready is already queueable; agent-blocked stays Nish's call).
+#   C. Unnumbered / non-numeric — claim/issue- with empty <N>, or <N> that is
+#      not an integer. Belongs to no issue. Delete on sight.
+#   Orphaned — claim/issue-<N> exists but issue <N> is missing or closed, and
+#      no open PR references it. The branch is pure garbage. Delete it.
+#
+# Direction A (agent-in-progress + no live worker + no open PR) is OWNED by
+# tier 1 §3 — this sweep deliberately skips branches whose issue carries the
+# agent-in-progress label so the two never double-process the same claim. §3
+# runs first in the tick; by the time this runs, any A orphan is already
+# flipped to agent-ready and its branch deleted, so what remains is B/C/orphan.
+#
+# Safety (same as §3 and the heartbeat prompt §4):
+#   - Never release a claim whose pi-issue@<repo>-<N> unit is live (active or
+#     activating — activating/auto-restart is a crash-looper that still holds
+#     the lane; StartLimitBurst / OnFailure is its release path, not this).
+#   - Never release a claim with an open claim/issue-<N> PR — that is work in
+#     flight.
+#   - The label flip is NOT this sweep's job (it never touches agent-in-progress
+#     issues). A failed branch delete therefore cannot strand an issue: the
+#     worst case is a garbage branch survives one more tick.
+#
+# Environment (tests override all of these):
+#   CLAIM_RECONCILE_REPOS     newline-separated owner/name list
+#   CLAIM_RECONCILE_INTAKE_JSON  default repo list (intake-repos.json)
+#   CLAIM_RECONCILE_LOCKDIR   flock directory
+#   CLAIM_RECONCILE_DRY_RUN   if 1, print actions and mutate nothing
+#   CLAIM_RECONCILE_NOW       ISO-8601 UTC clock (for comment timestamps)
+#   SYSTEMCTL                 systemctl binary (test seam)
+#
+# Exit 0 on a clean sweep or overlapping no-op. Non-zero only on unexpected
+# failure (missing jq, unreadable intake file).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+INTAKE_JSON="${CLAIM_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+LOCKDIR="${CLAIM_RECONCILE_LOCKDIR:-${XDG_RUNTIME_DIR}/claim-reconcile}"
+DRY="${CLAIM_RECONCILE_DRY_RUN:-0}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+log() {
+    printf '[%s] [claim-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_iso() {
+    if [ -n "${CLAIM_RECONCILE_NOW:-}" ]; then
+        printf '%s' "$CLAIM_RECONCILE_NOW"
+    else
+        date -u +%FT%TZ
+    fi
+}
+
+mkdir -p "$LOCKDIR"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
+
+repos=""
+if [ -n "${CLAIM_RECONCILE_REPOS:-}" ]; then
+    repos="$CLAIM_RECONCILE_REPOS"
+else
+    [ -f "$INTAKE_JSON" ] || { log "FATAL: intake file missing: $INTAKE_JSON"; exit 2; }
+    repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+    case "$repos" in
+        *Nishfleet/fleet-ops*) ;;
+        *) repos=$(printf '%s\nNishfleet/fleet-ops\n' "$repos") ;;
+    esac
+fi
+
+NOW_ISO=$(now_iso)
+released_b=0
+released_orphan=0
+released_c=0
+skipped_live=0
+skipped_pr=0
+skipped_progress=0
+failed=0
+
+# is_live_worker <short> <issue_n>
+# Mirrors tier 1 §3 exactly: active,activating both count as live; the
+# SubState is queried only to log degraded vs busy (we hold either way).
+is_live_worker() {
+    local short="$1" issue_n="$2"
+    local unit="pi-issue@${short}-${issue_n}.service"
+    if "$SYSTEMCTL" --user list-units "$unit" --state=active,activating --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -qx "$unit"; then
+        local sub
+        sub=$("$SYSTEMCTL" --user show "$unit" --property=SubState --value 2>/dev/null || echo unknown)
+        log "  $unit: worker LIVE (sub=$sub) — hold"
+        return 0
+    fi
+    # Transient fable-p* / pi-issue workers running outside the template.
+    if "$SYSTEMCTL" --user list-units --no-legend --type=service --state=running 2>/dev/null \
+        | awk '{print $1}' | grep -E "(fable-p|pi-issue)" | grep -q "${short}-${issue_n}"; then
+        log "  $unit: transient worker active — hold"
+        return 0
+    fi
+    return 1
+}
+
+# has_open_pr <repo> <issue_n>
+has_open_pr() {
+    local repo="$1" issue_n="$2"
+    gh pr list -R "$repo" --head "claim/issue-${issue_n}" --state open --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1
+}
+
+# delete_branch <repo> <branch>   (tolerates already-gone)
+delete_branch() {
+    local repo="$1" branch="$2"
+    if [ "$DRY" = "1" ]; then
+        log "DRY delete $repo ref $branch"
+        return 0
+    fi
+    if ! gh api "repos/${repo}/git/refs/heads/${branch}" >/dev/null 2>&1; then
+        return 0   # already gone — normal
+    fi
+    if gh api "repos/${repo}/git/refs/heads/${branch}" -X DELETE >/dev/null 2>&1; then
+        return 0
+    fi
+    log "  $repo: branch delete FAILED ($branch) — will retry next tick"
+    return 1
+}
+
+# comment_release <repo> <issue_n> <direction> <detail>
+comment_release() {
+    local repo="$1" issue_n="$2" direction="$3" detail="$4"
+    local body
+    body="claim branch released by claim-reconcile at ${NOW_ISO} (direction ${direction}: ${detail})"
+    if [ "$DRY" = "1" ]; then
+        log "DRY comment $repo#$issue_n: $body"
+        return 0
+    fi
+    gh issue comment "$issue_n" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+}
+
+log "sweep starting now=$NOW_ISO"
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    short="${repo#*/}"
+    log "repo $repo"
+
+    # List claim branches. per_page=100 is plenty — claim branches are few
+    # and short-lived (a worker releases its own on success); a repo with
+    # >100 concurrent claim branches has a far bigger problem than this sweep.
+    branches_json=$(gh api "repos/${repo}/branches?per_page=100" 2>/dev/null) || {
+        log "  $repo: gh api branches FAILED — skip"
+        continue
+    }
+    # Filter to claim/issue-* and emit one name per line.
+    branch_names=$(printf '%s' "$branches_json" \
+        | jq -r '.[] | select(.name | startswith("claim/issue-")) | .name')
+
+    while IFS= read -r branch; do
+        [ -z "$branch" ] && continue
+        # Strip the "claim/issue-" prefix to get <N>.
+        n="${branch#claim/issue-}"
+
+        # Direction C: unnumbered or non-numeric. Belongs to no issue.
+        if [ -z "$n" ] || ! [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+            log "  $repo: $branch — direction C (unnumbered/non-numeric N='$n') — delete"
+            if delete_branch "$repo" "$branch"; then
+                released_c=$((released_c + 1))
+            else
+                failed=$((failed + 1))
+            fi
+            continue
+        fi
+
+        # Live worker holds the lane regardless of label state.
+        if is_live_worker "$short" "$n"; then
+            skipped_live=$((skipped_live + 1))
+            continue
+        fi
+        # Open PR = work in flight, regardless of label state.
+        if has_open_pr "$repo" "$n"; then
+            log "  $repo#$n: open claim PR exists — hold"
+            skipped_pr=$((skipped_pr + 1))
+            continue
+        fi
+
+        # Fetch the issue's state + labels. Missing issue = orphaned branch.
+        issue_json=$(gh issue view "$n" -R "$repo" --json number,state,labels 2>/dev/null) || true
+        if [ -z "$issue_json" ]; then
+            log "  $repo: $branch — orphaned (issue $n missing) — delete branch"
+            if delete_branch "$repo" "$branch"; then
+                released_orphan=$((released_orphan + 1))
+            else
+                failed=$((failed + 1))
+            fi
+            continue
+        fi
+
+        issue_state=$(printf '%s' "$issue_json" | jq -r '.state')
+        has_progress=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | if index("agent-in-progress") then "yes" else "no" end')
+
+        # A closed issue is orphaned regardless of label: §3 only iterates
+        # OPEN issues, so a closed agent-in-progress issue would never be
+        # released by §3 — its branch would sit forever. Handle it here.
+        if [ "$issue_state" = "closed" ]; then
+            log "  $repo: $branch — orphaned (issue $n closed) — delete branch"
+            if delete_branch "$repo" "$branch"; then
+                released_orphan=$((released_orphan + 1))
+                comment_release "$repo" "$n" "orphan" "issue closed, no live worker, no open PR"
+            else
+                failed=$((failed + 1))
+            fi
+            continue
+        fi
+
+        # Issue is open. Direction A is owned by tier 1 §3 — skip
+        # agent-in-progress issues so the two sweeps never double-process the
+        # same claim. §3 runs first and flips the label + deletes the branch;
+        # if it failed to delete, the next tick §3 retries. We do NOT touch
+        # it here.
+        if [ "$has_progress" = "yes" ]; then
+            log "  $repo#$n: agent-in-progress (direction A owned by tier1 §3) — skip"
+            skipped_progress=$((skipped_progress + 1))
+            continue
+        fi
+
+        # Issue is open and NOT agent-in-progress → direction B. The branch
+        # is invisible to intake (ls-remote finds it and skips the issue).
+        # Release the branch; leave the label alone (agent-ready is already
+        # queueable, agent-blocked stays Nish's call).
+        has_blocked=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | if index("agent-blocked") then "yes" else "no" end')
+        if [ "$has_blocked" = "yes" ]; then
+            detail="branch existed without agent-in-progress; issue agent-blocked, label kept"
+        else
+            detail="branch existed without agent-in-progress label; intake was blind to it"
+        fi
+        log "  $repo: $branch — direction B (issue open, label not agent-in-progress) — delete branch"
+        if delete_branch "$repo" "$branch"; then
+            released_b=$((released_b + 1))
+            comment_release "$repo" "$n" "B" "$detail"
+        else
+            failed=$((failed + 1))
+        fi
+    done <<< "$branch_names"
+done <<< "$repos"
+
+log "sweep done: B=$released_b orphan=$released_orphan C=$released_c skipped_live=$skipped_live skipped_pr=$skipped_pr skipped_progress=$skipped_progress failed=$failed"
+printf 'claim-reconcile B=%s orphan=%s C=%s skipped_live=%s skipped_pr=%s skipped_progress=%s failed=%s\n' \
+    "$released_b" "$released_orphan" "$released_c" "$skipped_live" "$skipped_pr" "$skipped_progress" "$failed"
+exit 0

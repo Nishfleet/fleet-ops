@@ -101,6 +101,11 @@ echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count exclude
 # (workflow files are out of band for the worker App). Run them here so a
 # regression cannot merge green.
 bash "$here/blocked-reconcile.test.sh"
+# fleet-ops#39: claim-reconcile self-heals split-brain and garbage claim
+# branches. A named tests/claim-reconcile.test.sh step in ci.yml is out of
+# band for the worker App (Contents cannot push workflow files). Run it
+# here so a regression cannot merge green.
+bash "$here/claim-reconcile.test.sh"
 # fleet-ops#32 / #129: same pattern for the declared-set reconciler — the
 # intake-repos.json shape is meaningless without bin/intake-reconcile, so
 # gate on both. The P14 tests job runs this file; a named
