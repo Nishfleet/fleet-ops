@@ -118,6 +118,12 @@ Every one of those issues must additionally satisfy:
 
 If you cannot decompose the candidate into phases, drop it.
 
+**Gate-integrity spec-quality gate:** if a candidate would make a worker remove or skip a test, or edit a gate-owned path (`.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, design-system ratchet/ceiling, CI runner scripts), the issue spec must require:
+- A `test-removal-justified: <true reason>` trailer in the commit that removes or skips the test, if any test is removed or skipped.
+- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited.
+- If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
+Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
+
 **Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run.
 
 ## Step 4 — File issues

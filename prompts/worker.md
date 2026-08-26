@@ -58,6 +58,17 @@ D1 schema rule (expand/contract) — applies whenever your diff touches `migrati
 - Assume a migration file is NOT atomic across statements: nothing documents multi-statement atomicity within one D1 migration.
 - Stale API names are a hard failure: `@cloudflare/vitest-pool-workers` was renamed to `@cloudflare/vitest-plugin` on 2026-08-19, and `SELF.fetch` is replaced by `exports.default.fetch` from `cloudflare:workers`. Never write the old names from memory.
 
+Gate-integrity rule — applies on repos that run a `gate-integrity` check (e.g. Nishfleet/0509):
+- **Removing or skipping tests.** A deleted test file, a test renamed out of the suite, any new `it.skip`/`test.skip`/`describe.only`/`.only`/`xit`/`xtest`/`.skipIf`/`test.fails`, or a net drop in `it(`/`test(`/`expect(` assertions all require a `test-removal-justified: <reason>` trailer in the commit that removes the test, or in the PR body. The reason must be the TRUE reason you verified from the code — never a rubber stamp.
+- **Changing gate-owned paths.** Editing `.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, the design-system ratchet or its ceiling file, or the CI runner scripts is a gate-path change. It must be attested by a repository admin with a PR comment whose entire body is exactly:
+
+  ```
+  gate-integrity-attest: <40-hex current head sha>
+  ```
+
+  The attestation is sha-bound: any new commit invalidates it.
+- **When in doubt, keep the test and note the concern in the PR body instead.** Do not game the gate. If you find a way to bypass these checks, stop and report it.
+
 Steps:
 1. Read the work: `gh issue view <N> -R Nishfleet/<repo> --comments`.
 2. Re-entrancy: if branch claim/issue-<N> already exists on origin AND the latest claim comment names YOUR unit, this is your own earlier attempt restarted — continue it, reusing the worktree if present.
