@@ -117,3 +117,6 @@ bash "$here/intake-reconcile.test.sh"
 # 2026-08-26 split-brain: intake-reconcile must read deploy-clone
 # intake-repos.json. Named ci.yml step is out of band for the worker App.
 bash "$here/intake-reconcile-deploy-checkout.test.sh"
+# fleet-ops#376: unlabeled open issues must get a lifecycle label within one
+# existing heartbeat tick. Named ci.yml step is out of band for the worker App.
+bash "$here/lifecycle-label-sweep.test.sh"

@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# lifecycle-label-sweep — every open issue in an enrolled repo gets a
+# lifecycle label within one heartbeat tick (fleet-ops#376).
+#
+# Intake only lists `-l agent-ready`. An issue filed with no lifecycle
+# label is invisible forever — the live instance was #290/#304/#308 sitting
+# OPEN with zero labels while the conference-gate re-land died around them.
+#
+# Named reason this is a sweep, not an event: the nishfleet-worker GitHub
+# App has no webhooks (credentials/app-manifest.json events=[]), so an
+# unlabeled `gh issue create` has nothing to subscribe to. Heartbeat's
+# existing 30-minute timer is the observer; this is not a new schedule.
+#
+# Lifecycle labels (exactly one required; extra non-lifecycle labels are
+# ignored):
+#   agent-ready / agent-in-progress / agent-blocked
+#   nish-reserved
+#   noise-class
+#   drill:*   (any label whose name starts with drill:)
+#
+# Classification of issues that currently have none of those:
+#   title starts with "AUTO-REVERT SKIP" or "AUTO-REVERT HALT"
+#       → noise-class  (halt notice, not work)
+#   title contains "FLAG-for-Nish" (any case)
+#       → nish-reserved
+#   title starts with "drill:" (any case)
+#       → drill:lifecycle
+#   otherwise
+#       → agent-ready
+#
+# Environment (tests override all of these):
+#   LIFECYCLE_SWEEP_REPOS       newline-separated owner/name list
+#   LIFECYCLE_SWEEP_INTAKE_JSON default repo list (intake-repos.json)
+#   LIFECYCLE_SWEEP_LOCKDIR     flock directory
+#   LIFECYCLE_SWEEP_DRY_RUN     if 1, print actions and mutate nothing
+#   LIFECYCLE_SWEEP_NOW         ISO-8601 UTC clock (comment timestamps)
+#   LIFECYCLE_SWEEP_DRILL       if 1, file an unlabeled fixture, sweep,
+#                               assert it now carries a lifecycle label,
+#                               then close the fixture
+#
+# Modes:
+#   --classify TITLE   print the lifecycle label for TITLE (no network)
+#   --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
+#   (default)          sweep enrolled repos
+#
+# Exit 0 on a clean sweep, overlapping no-op, or a passing drill.
+# Non-zero on unexpected failure or a failing drill.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+classify() {
+    local title="$1"
+    local lower
+    if [[ "$title" == "AUTO-REVERT SKIP"* || "$title" == "AUTO-REVERT HALT"* ]]; then
+        printf '%s\n' "noise-class"
+        return 0
+    fi
+    lower=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')
+    if [[ "$lower" == *"flag-for-nish"* ]]; then
+        printf '%s\n' "nish-reserved"
+        return 0
+    fi
+    if [[ "$lower" == drill:* ]]; then
+        printf '%s\n' "drill:lifecycle"
+        return 0
+    fi
+    printf '%s\n' "agent-ready"
+}
+
+if [ "${1:-}" = "--classify" ]; then
+    shift
+    [ $# -ge 1 ] || { echo "lifecycle-label-sweep --classify needs a title" >&2; exit 2; }
+    classify "$*"
+    exit 0
+fi
+
+if [ "${1:-}" = "--drill" ]; then
+    LIFECYCLE_SWEEP_DRILL=1
+    shift
+fi
+
+INTAKE_JSON="${LIFECYCLE_SWEEP_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+LOCKDIR="${LIFECYCLE_SWEEP_LOCKDIR:-${XDG_RUNTIME_DIR}/lifecycle-label-sweep}"
+DRY="${LIFECYCLE_SWEEP_DRY_RUN:-0}"
+DRILL="${LIFECYCLE_SWEEP_DRILL:-0}"
+
+log() {
+    printf '[%s] [lifecycle-label-sweep] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_iso() {
+    if [ -n "${LIFECYCLE_SWEEP_NOW:-}" ]; then
+        printf '%s' "$LIFECYCLE_SWEEP_NOW"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+label_color() {
+    case "$1" in
+        nish-reserved)   printf '%s' "5319E7" ;;
+        noise-class)     printf '%s' "CFD3D7" ;;
+        drill:lifecycle) printf '%s' "EDEDED" ;;
+        agent-ready)     printf '%s' "0E8A16" ;;
+        *)               printf '%s' "EDEDED" ;;
+    esac
+}
+
+label_desc() {
+    case "$1" in
+        nish-reserved)   printf '%s' "Reserved for Nish; agents must not claim" ;;
+        noise-class)     printf '%s' "Not work (halt notices, noise); not agent-ready" ;;
+        drill:lifecycle) printf '%s' "Lifecycle-label drill fixture (fleet-ops#376)" ;;
+        agent-ready)     printf '%s' "Auto: ready for a worker to claim" ;;
+        *)               printf '%s' "Lifecycle label (fleet-ops#376)" ;;
+    esac
+}
+
+is_lifecycle_label() {
+    local name="$1"
+    case "$name" in
+        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class) return 0 ;;
+        drill:*) return 0 ;;
+    esac
+    return 1
+}
+
+issue_has_lifecycle() {
+    local labels_json="$1"
+    local name
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        if is_lifecycle_label "$name"; then
+            return 0
+        fi
+    done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
+    return 1
+}
+
+mkdir -p "$LOCKDIR"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
+
+repos=""
+if [ -n "${LIFECYCLE_SWEEP_REPOS:-}" ]; then
+    repos="$LIFECYCLE_SWEEP_REPOS"
+else
+    [ -f "$INTAKE_JSON" ] || { log "FATAL: intake file missing: $INTAKE_JSON"; exit 2; }
+    repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+    case "$repos" in
+        *Nishfleet/fleet-ops*) ;;
+        *) repos=$(printf '%s\nNishfleet/fleet-ops\n' "$repos") ;;
+    esac
+fi
+
+NOW_ISO=$(now_iso)
+relabeled=0
+skipped=0
+failed=0
+drill_repo=""
+drill_num=""
+
+ensure_label() {
+    local repo="$1" name="$2"
+    local color desc
+    color=$(label_color "$name")
+    desc=$(label_desc "$name")
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo: ensure label $name"
+        return 0
+    fi
+    gh label create "$name" -R "$repo" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
+}
+
+apply_label() {
+    local repo="$1" num="$2" label="$3"
+    local body
+    body="lifecycle-label: ${label} by fleet-heartbeat at ${NOW_ISO} (unlabeled open issue; fleet-ops#376)"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: add-label $label"
+        return 0
+    fi
+    ensure_label "$repo" "$label"
+    if ! gh issue edit "$num" -R "$repo" --add-label "$label" >/dev/null; then
+        log "  $repo#$num: add-label $label FAILED — retry next tick"
+        return 1
+    fi
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    return 0
+}
+
+if [ "$DRILL" = "1" ]; then
+    drill_repo=$(printf '%s\n' "$repos" | awk 'NF{print; exit}')
+    [ -n "$drill_repo" ] || { log "FATAL: drill needs a repo"; exit 2; }
+    if [ "$DRY" = "1" ]; then
+        log "DRY drill: would file unlabeled fixture on $drill_repo"
+        drill_num="0"
+    else
+        drill_url=$(gh issue create -R "$drill_repo" \
+            --title "drill: unlabeled-lifecycle fixture" \
+            --body "Unlabeled fixture for fleet-ops#376. The sweep must apply a lifecycle label within this tick, then this issue is closed." \
+            2>/dev/null) || {
+            log "FATAL: drill could not file fixture on $drill_repo"
+            exit 2
+        }
+        drill_num="${drill_url##*/}"
+        if [ -z "$drill_num" ] || ! [[ "$drill_num" =~ ^[1-9][0-9]*$ ]]; then
+            log "FATAL: drill create returned unusable url '$drill_url'"
+            exit 2
+        fi
+        log "drill filed $drill_repo#$drill_num unlabeled"
+    fi
+fi
+
+log "sweep starting now=$NOW_ISO"
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    log "repo $repo"
+
+    if ! list_json=$(gh issue list -R "$repo" --state open \
+        --json number,title,labels --limit 500 2>/dev/null); then
+        log "  $repo: gh issue list FAILED — skip"
+        continue
+    fi
+
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+
+        if issue_has_lifecycle "$labels_json"; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        label=$(classify "$title")
+        log "  $repo#$num: unlabeled → $label ($title)"
+        if apply_label "$repo" "$num" "$label"; then
+            relabeled=$((relabeled + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+done <<< "$repos"
+
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s\n' \
+    "$relabeled" "$skipped" "$failed"
+
+if [ "$DRILL" = "1" ]; then
+    if [ "$DRY" = "1" ]; then
+        echo "drill ok: dry-run (no fixture filed)"
+        exit 0
+    fi
+    view_json=$(gh issue view "$drill_num" -R "$drill_repo" --json labels,title 2>/dev/null) || {
+        log "FATAL: drill could not view $drill_repo#$drill_num"
+        exit 1
+    }
+    drill_labels=$(printf '%s' "$view_json" | jq -c '.labels // []')
+    if issue_has_lifecycle "$drill_labels"; then
+        log "drill ok: $drill_repo#$drill_num now has a lifecycle label"
+        gh issue close "$drill_num" -R "$drill_repo" --reason "not planned" >/dev/null 2>&1 || true
+        echo "drill ok: $drill_repo#$drill_num labeled"
+        exit 0
+    fi
+    log "FATAL: drill fixture $drill_repo#$drill_num still unlabeled after the tick"
+    gh issue close "$drill_num" -R "$drill_repo" --reason "not planned" >/dev/null 2>&1 || true
+    echo "drill FAIL: $drill_repo#$drill_num still unlabeled" >&2
+    exit 1
+fi
+
+exit 0

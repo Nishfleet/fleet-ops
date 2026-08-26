@@ -7,14 +7,17 @@
 # (credentials/app-manifest.json events=[]), so there is nothing to
 # subscribe to. Heartbeat's existing 30-minute timer is the observer.
 #
-# Two cases:
+# Two cases, both verified live (fleet-ops#364):
 #   work-item  — machine-checkable. Explicit `blocked-on:` lines (or a
 #                title/body `blocked by #N` / `owner/repo#N` / GitHub URL).
-#                If every listed dependency is a closed issue or a merged
-#                PR, flip agent-blocked → agent-ready.
-#   nish-decision — not machine-checkable. Leave the label, record last
-#                checked, publish into the heartbeat triage file (the
-#                existing desk-triage route). Never auto-requeue.
+#                Query each listed issue/PR; CLOSED / MERGED = resolved.
+#                Struck-through `~~blocked-on: ...~~` body lines are ignored.
+#   nish-decision — resolved when a later comment (or body line) carries
+#                `decision-resolved:`. Until then, leave the label and
+#                publish into the heartbeat triage file.
+# When every listed blocker is resolved, flip agent-blocked → agent-ready
+# and comment the evidence. Unparseable issues (no blocked-on lines) stay
+# on the desk-triage route and are never auto-requeued.
 #
 # Bare `#N` mentions in prose are ignored (e.g. "dropped in #937" is
 # history, not a blocker). Workers must write `blocked-on:` lines.
@@ -62,6 +65,27 @@ BLOCKED_BY = re.compile(
 SKIP_COMMENT = re.compile(
     r"(?i)^(claimed by |claim branch released|blocked-checked:)"
 )
+DECISION_RESOLVED = re.compile(r"(?im)^decision-resolved:\s*")
+STRUCK_LINE = re.compile(r"^\s*(?:[-*]\s+)?~~.+~~\s*$")
+
+
+def live_text(text):
+    lines = []
+    for line in (text or "").splitlines():
+        if STRUCK_LINE.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def comments_have_decision_resolved(comments):
+    for c in comments:
+        b = (c.get("body") if isinstance(c, dict) else "") or ""
+        if SKIP_COMMENT.match(b.lstrip()):
+            continue
+        if DECISION_RESOLVED.search(b):
+            return True
+    return False
 
 
 def parse_ref(raw, owner, repo):
@@ -148,12 +172,15 @@ def extract(issue):
     title = issue.get("title") or ""
     body = issue.get("body") or ""
     comments = issue.get("comments") or []
-    texts = [title, body]
+    nish_resolved = comments_have_decision_resolved(comments)
+    if DECISION_RESOLVED.search(live_text(body)):
+        nish_resolved = True
+    texts = [live_text(title), live_text(body)]
     for c in comments:
         b = (c.get("body") if isinstance(c, dict) else "") or ""
         if SKIP_COMMENT.match(b.lstrip()):
             continue
-        texts.append(b)
+        texts.append(live_text(b))
     deps = []
     seen = set()
     nish = False
@@ -174,14 +201,20 @@ def extract(issue):
                 continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
-    kind = NISH if (nish or not deps) else "work-item"
-    return {"kind": kind, "deps": deps}
+    nish_unresolved = bool(nish) and not nish_resolved
+    kind = NISH if (nish_unresolved or not deps) else "work-item"
+    return {
+        "kind": kind,
+        "deps": deps,
+        "nish": bool(nish),
+        "nish_resolved": bool(nish_resolved),
+    }
 
 
 def main():
     raw = sys.stdin.read()
     if not raw.strip():
-        print(json.dumps({"kind": NISH, "deps": []}))
+        print(json.dumps({"kind": NISH, "deps": [], "nish": False, "nish_resolved": False}))
         return
     print(json.dumps(extract(json.loads(raw)), separators=(",", ":")))
 
@@ -415,36 +448,61 @@ while IFS= read -r repo; do
         action="still-blocked"
         remaining=""
         cleared=""
-        if [ "$kind" = "work-item" ]; then
-            all_cleared=1
-            while IFS= read -r dep; do
-                [ -z "$dep" ] && continue
-                d_owner=$(printf '%s' "$dep" | jq -r '.owner')
-                d_repo=$(printf '%s' "$dep" | jq -r '.repo')
-                d_num=$(printf '%s' "$dep" | jq -r '.number')
-                d_ref=$(printf '%s' "$dep" | jq -r '.ref')
-                st=$(printf '%s' "$dep" | jq -r '.state // empty')
-                if [ -z "$st" ]; then
-                    st=$(dep_status "$d_owner" "$d_repo" "$d_num")
-                fi
-                if is_cleared "$st"; then
-                    if [ -n "$cleared" ]; then
-                        cleared="$cleared, ${d_ref} (${st})"
-                    else
-                        cleared="${d_ref} (${st})"
-                    fi
-                else
-                    all_cleared=0
-                    if [ -n "$remaining" ]; then
-                        remaining="$remaining, ${d_ref} (${st})"
-                    else
-                        remaining="${d_ref} (${st})"
-                    fi
-                fi
-            done < <(printf '%s' "$extracted" | jq -c '.deps[]')
-            if [ "$all_cleared" -eq 1 ]; then
-                action="requeue"
+        all_cleared=1
+        machine=0
+        nish_flag=$(printf '%s' "$extracted" | jq -r '.nish // false')
+        nish_resolved=$(printf '%s' "$extracted" | jq -r '.nish_resolved // false')
+
+        while IFS= read -r dep; do
+            [ -z "$dep" ] && continue
+            machine=1
+            d_owner=$(printf '%s' "$dep" | jq -r '.owner')
+            d_repo=$(printf '%s' "$dep" | jq -r '.repo')
+            d_num=$(printf '%s' "$dep" | jq -r '.number')
+            d_ref=$(printf '%s' "$dep" | jq -r '.ref')
+            st=$(printf '%s' "$dep" | jq -r '.state // empty')
+            if [ -z "$st" ]; then
+                st=$(dep_status "$d_owner" "$d_repo" "$d_num")
             fi
+            if is_cleared "$st"; then
+                if [ -n "$cleared" ]; then
+                    cleared="$cleared, ${d_ref} (${st})"
+                else
+                    cleared="${d_ref} (${st})"
+                fi
+            else
+                all_cleared=0
+                if [ -n "$remaining" ]; then
+                    remaining="$remaining, ${d_ref} (${st})"
+                else
+                    remaining="${d_ref} (${st})"
+                fi
+            fi
+        done < <(printf '%s' "$extracted" | jq -c '.deps[]')
+
+        if [ "$nish_flag" = "true" ] || [ "$nish_resolved" = "true" ]; then
+            machine=1
+            if [ "$nish_resolved" = "true" ]; then
+                if [ -n "$cleared" ]; then
+                    cleared="$cleared, nish-decision (decision-resolved)"
+                else
+                    cleared="nish-decision (decision-resolved)"
+                fi
+            else
+                all_cleared=0
+                if [ -n "$remaining" ]; then
+                    remaining="$remaining, nish-decision"
+                else
+                    remaining="nish-decision"
+                fi
+            fi
+        fi
+
+        if [ "$machine" -eq 0 ]; then
+            all_cleared=0
+        fi
+        if [ "$all_cleared" -eq 1 ]; then
+            action="requeue"
         fi
 
         if [ "$action" = "requeue" ]; then

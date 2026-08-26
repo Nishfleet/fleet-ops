@@ -93,7 +93,12 @@ Steps:
    One line per dependency. Use `nish-decision` when the blocker is a Nish
    call (money, privacy, security, legal, product direction, deploy). Prose
    `#n` mentions are ignored — without `blocked-on:` the issue sits on the
-   desk-triage list until a human answers. Then
+   desk-triage list until a human answers. blocked-reconcile verifies each
+   blocker live: CLOSED `owner/repo#n` issues resolve; a later comment that
+   answers a nish-decision MUST include a `decision-resolved:` line so
+   detection is deterministic. Strike through each resolved body line
+   (`~~blocked-on: Nishfleet/<repo>#<n>~~`, `~~blocked-on: nish-decision~~`).
+   Then
    release the claim: `git push origin :refs/heads/claim/issue-<N>`, remove your worktree, print "blocked: proposal posted", exit 0.
 5. Otherwise implement: the smallest durable change that fully solves the issue, following the repo's own conventions. Then run the Execution IS the review inner loop to a green run. Only after that, run the repo's own tests/checks locally (what its CI would run) and make them pass. If /home/nish/.local/bin/sgscan exists, run it on your diff and fix anything it rates ERROR.
 6. Commit with a clear message. Push early and again when done: `git push origin claim/issue-<N>`.

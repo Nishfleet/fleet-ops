@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # tests/blocked-reconcile.test.sh
 #
-# Proves the agent-blocked reconciler (fleet-ops#29):
+# Proves the agent-blocked reconciler (fleet-ops#29 / #364):
 #   - work-item deps come from blocked-on: lines, "blocked by #N", and
 #     GitHub's native blockedBy field — not from prose #N mentions
 #   - a closed issue / merged PR requeues (agent-blocked → agent-ready)
 #   - a closed-unmerged PR does not
-#   - nish-decision issues stay labelled and are published with count+age
+#   - nish-decision issues stay labelled until a later comment carries
+#     `decision-resolved:`; then they requeue from live state
+#   - struck-through ~~blocked-on:~~ body lines are ignored
 #   - overlapping sweeps no-op
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +76,24 @@ ok "GitHub native blockedBy is a work-item dep"
 got=$(extract '{"repo":"Nishfleet/0509","number":10,"title":"x","body":"blocked-on: #10\n","comments":[]}')
 [[ "$(printf '%s' "$got" | jq '.deps|length')" == "0" ]] || fail "self-ref: $got"
 ok "self-reference is ignored"
+
+got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: nish-decision\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish')" == "true" ]] || fail "nish flag: $got"
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "false" ]] || fail "unresolved nish: $got"
+ok "unresolved nish-decision sets nish=true nish_resolved=false"
+
+# fleet-ops#364 fixture body: closed-deps-plus-nish, matching #180's shape.
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":180,"title":"gap-closure loop","body":"blocked-on: #149\nblocked-on: #153\nblocked-on: nish-decision\n","comments":[{"body":"approved as written. Claim and build.\n\ndecision-resolved:\n"}]}')
+[[ "$(printf '%s' "$got" | jq -r '.nish')" == "true" ]] || fail "180 nish: $got"
+[[ "$(printf '%s' "$got" | jq -r '.nish_resolved')" == "true" ]] || fail "180 resolved: $got"
+[[ "$(printf '%s' "$got" | jq '.deps|length')" == "2" ]] || fail "180 deps: $got"
+[[ "$(printf '%s' "$got" | jq -r '.deps[0].ref')" == "Nishfleet/fleet-ops#149" ]] || fail "180 dep0: $got"
+ok "decision-resolved: in a later comment marks nish-decision resolved; deps stay recorded"
+
+got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"~~blocked-on: #10~~\n~~blocked-on: nish-decision~~\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq '.deps|length')" == "0" ]] || fail "struck dep leaked: $got"
+[[ "$(printf '%s' "$got" | jq -r '.nish')" == "false" ]] || fail "struck nish leaked: $got"
+ok "struck-through blocked-on lines are ignored"
 
 # --- live sweep with mocked gh --------------------------------------------
 scratch=$(mktemp -d)
@@ -243,7 +263,67 @@ grep -q 'requeued=0' <<<"$out" || fail "in-progress skip requeued: $out"
 [[ -s "$scratch/edits.log" ]] && fail "in-progress must not edit: $(cat "$scratch/edits.log")"
 ok "agent-in-progress + agent-blocked is left alone"
 
-# Case 6: overlapping flock no-op
+# Case 6: fleet-ops#364 fixture — closed issue deps + unanswered nish-decision stay blocked
+mkdir -p "$scratch/api/Nishfleet/0509/issues"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":180,"title":"gap-closure loop","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-180.json" <<'JSON'
+{"title":"gap-closure loop","body":"blocked-on: #149\nblocked-on: #153\nblocked-on: nish-decision\n","createdAt":"2026-08-25T06:00:00Z","comments":[]}
+JSON
+echo '{"state":"closed"}' >"$scratch/api/Nishfleet/0509/issues/149.json"
+echo '{"state":"closed"}' >"$scratch/api/Nishfleet/0509/issues/153.json"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err180-blocked.txt")
+grep -q 'requeued=0' <<<"$out" || fail "unanswered nish must not requeue: $out"
+grep -q 'count=1' <<<"$out" || fail "unanswered nish stays in queue: $out"
+[[ -s "$scratch/edits.log" ]] && fail "unanswered nish must not flip labels: $(cat "$scratch/edits.log")"
+grep -q 'nish-decision' "$scratch/comments.log" || fail "sticky should name remaining nish-decision: $(cat "$scratch/comments.log")"
+ok "closed deps + unanswered nish-decision stay blocked"
+
+# Case 7: same fixture body, later comment has decision-resolved: → requeue
+cat >"$scratch/view-180.json" <<'JSON'
+{"title":"gap-closure loop","body":"blocked-on: #149\nblocked-on: #153\nblocked-on: nish-decision\n","createdAt":"2026-08-25T06:00:00Z","comments":[{"body":"approved as written. Claim and build.\n\ndecision-resolved:\n"}]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err180-resolved.txt")
+grep -q 'requeued=1' <<<"$out" || fail "resolved nish + closed deps should requeue: $out"
+grep -q 'count=0' <<<"$out" || fail "resolved fixture should drain: $out"
+grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "364 missing label remove: $(cat "$scratch/edits.log")"
+grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "364 missing label add: $(cat "$scratch/edits.log")"
+grep -q 'blocker cleared' "$scratch/comments.log" || fail "364 missing evidence comment: $(cat "$scratch/comments.log")"
+grep -q 'nish-decision' "$scratch/comments.log" || fail "evidence should name nish-decision: $(cat "$scratch/comments.log")"
+ok "fixture body + decision-resolved: requeues from live state"
+
+# Case 8: drill — close a fixture blocker, next pass flips the label
+cat >"$scratch/list.json" <<'JSON'
+[{"number":90,"title":"drill","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-90.json" <<'JSON'
+{"title":"drill","body":"blocked-on: #10\n","createdAt":"2026-08-25T06:00:00Z","comments":[]}
+JSON
+echo '{"state":"open"}' >"$scratch/api/Nishfleet/0509/issues/10.json"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-drill-open.txt")
+grep -q 'requeued=0' <<<"$out" || fail "drill open dep must stay blocked: $out"
+[[ -s "$scratch/edits.log" ]] && fail "drill must not flip while open: $(cat "$scratch/edits.log")"
+
+echo '{"state":"closed"}' >"$scratch/api/Nishfleet/0509/issues/10.json"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err-drill-closed.txt")
+grep -q 'requeued=1' <<<"$out" || fail "drill next pass must requeue: $out"
+grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "drill missing label remove: $(cat "$scratch/edits.log")"
+grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "drill missing label add: $(cat "$scratch/edits.log")"
+ok "drill: close fixture blocker, next reconcile pass flips the label"
+
+# Case 9: overlapping flock no-op
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock-overlap"
 mkdir -p "$BLOCKED_RECONCILE_LOCKDIR"
 exec 9>"$BLOCKED_RECONCILE_LOCKDIR/sweep.lock"
@@ -253,7 +333,9 @@ exec 9>&-
 printf '%s\n' "$out" | grep -q 'no-op' || fail "overlap must print no-op, got: $out"
 ok "overlapping sweep is a no-op"
 
-# Case 7: contracts exist so the classifier keeps working
+# Case 10: contracts exist so the classifier keeps working
 grep -q 'blocked-on:' "$repo_root/prompts/worker.md" || fail "worker.md must tell workers to write blocked-on: lines"
+grep -q 'decision-resolved:' "$repo_root/prompts/worker.md" || fail "worker.md must tell answerers to write decision-resolved:"
+grep -q '~~blocked-on:' "$repo_root/prompts/worker.md" || fail "worker.md must tell workers to strike through resolved blocked-on lines"
 grep -q 'blocked-reconcile' "$repo_root/bin/fleet-heartbeat-tier1" || fail "tier1 must call blocked-reconcile"
 ok "worker.md and heartbeat-tier1 carry the contract"
