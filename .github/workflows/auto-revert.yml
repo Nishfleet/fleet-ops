@@ -30,6 +30,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 # Parallel failures serialize: two red workflows for the same push (or two
 # pushes close together) must not race to revert. One at a time, in arrival

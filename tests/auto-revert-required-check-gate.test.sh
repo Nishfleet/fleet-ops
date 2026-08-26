@@ -83,6 +83,21 @@ case "$cmd" in
     shift
     if [ "$sub" = "list" ]; then
       record "ISSUE_LIST $*"
+      jq_filter=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --jq) jq_filter="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      if [ -n "${GH_HALT_ISSUE_NUMBER:-}" ]; then
+        json="[{\"number\": $GH_HALT_ISSUE_NUMBER}]"
+        if [ -n "$jq_filter" ]; then
+          printf '%s\n' "$json" | jq -r "$jq_filter"
+        else
+          printf '%s\n' "$json"
+        fi
+      fi
       exit 0
     elif [ "$sub" = "create" ]; then
       title=""; body=""; label=""
@@ -210,6 +225,43 @@ if grep -q "PR_CREATE\|PR_MERGE" "$calls_a"; then
   fail "scenario A: must not open or merge a revert PR, got calls: $(cat "$calls_a")"
 fi
 ok "scenario A: only P14 tests / PR checks failed -> halt issue, no revert"
+
+# Scenario A2 (dedup): the open halt issue already exists (GH_HALT_ISSUE_NUMBER
+# set), so halt() must comment on it instead of creating a new one.
+calls_a2="$scratch/calls-a2"
+: > "$calls_a2"
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$head_sha" \
+    RUN_NAME="CI" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/125" \
+    GH_CALLS_FILE="$calls_a2" \
+    REQUIRED_CONTEXTS_JSON="$required_contexts" \
+    CHECK_RUNS_JSON="$check_runs_a" \
+    GH_HALT_ISSUE_NUMBER="42" \
+    bash "$script"
+) >"$scratch/scenario-a2.out" 2>"$scratch/scenario-a2.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario A2: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-a2.err"))"
+grep -q "ISSUE_LIST" "$calls_a2" \
+  || fail "scenario A2: expected halt() to look up the existing open issue, got calls: $(cat "$calls_a2")"
+grep -q "ISSUE_COMMENT" "$calls_a2" \
+  || fail "scenario A2: expected a comment on the existing halt issue, got calls: $(cat "$calls_a2")"
+if grep -q "ISSUE_CREATE" "$calls_a2"; then
+  fail "scenario A2: must not create a new halt issue when one is already open, got calls: $(cat "$calls_a2")"
+fi
+if grep -q "PR_CREATE\|PR_MERGE" "$calls_a2"; then
+  fail "scenario A2: must not open or merge a revert PR, got calls: $(cat "$calls_a2")"
+fi
+ok "scenario A2: existing halt issue -> comment, no duplicate ISSUE_CREATE"
 
 # Scenario B: the required Semgrep check failed. Should open a revert PR.
 check_runs_b="$scratch/check-runs-b.json"
