@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# orphan-release-drill — fleet-ops#180 detector drill for the heartbeat §3
+# orphan release (fleet-ops#222).
+#
+# Manufactures each of the THREE orphan shapes with stub units and proves the
+# production release path releases ALL of them in one tick, with the released
+# count matching. This is the fault-injection proof that the detector actually
+# fires — the gap-closure loop (#180) requires one per detector touched.
+#
+# The three shapes (fleet-ops#222):
+#   (a) unit dead (inactive) + claim branch exists + no PR
+#   (b) unit dead (failed)   + branch already reaped + no PR  (the frozen-four)
+#   (c) unit in auto-restart with MainPID=0 (crash-loop, no process) + no PR
+#
+# Why stubs, not live units: the release action deletes a real claim branch
+# and flips a real issue label, so a live drill would damage a real repo. The
+# drill fakes systemctl + gh and runs the EXACT production release function
+# (lib/orphan-release.sh, sourced by fleet-heartbeat-tier1 §3) — so it proves
+# the real code path, not a re-implementation. The live-check is the shared
+# lib/worker-live.sh (the same one the OnFailure reaper uses), so the drill
+# also pins that the two callers cannot drift.
+#
+# Usage: orphan-release-drill          # run the 3-shape proof, print PROOF, exit 0/1
+#        orphan-release-drill --check  # verify the libs + script are present
+#
+# Exit: 0 = all three shapes released in one tick, count matches, shape (c)
+#       unit was stopped. 1 = any shape did not release, or the count mismatched.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+
+WORKER_LIVE_LIB="${WORKER_LIVE_LIB:-$repo_root/lib/worker-live.sh}"
+ORPHAN_RELEASE_LIB="${ORPHAN_RELEASE_LIB:-$repo_root/lib/orphan-release.sh}"
+
+log() { printf '[orphan-release-drill] %s\n' "$*" >&2; }
+fail() { log "FAIL: $*"; exit 1; }
+
+check_env() {
+    [ -f "$WORKER_LIVE_LIB" ] || fail "missing lib/worker-live.sh at $WORKER_LIVE_LIB"
+    [ -f "$ORPHAN_RELEASE_LIB" ] || fail "missing lib/orphan-release.sh at $ORPHAN_RELEASE_LIB"
+    command -v jq >/dev/null 2>&1 || fail "jq required (used by the open-PR check)"
+    bash -n "$WORKER_LIVE_LIB" || fail "worker-live.sh: bash syntax error"
+    bash -n "$ORPHAN_RELEASE_LIB" || fail "orphan-release.sh: bash syntax error"
+    log "prerequisites ok (libs present, jq available)"
+}
+
+run_drill() {
+    # shellcheck source=../lib/worker-live.sh source-path=SCRIPTDIR
+    source "$WORKER_LIVE_LIB"
+    # shellcheck source=../lib/orphan-release.sh source-path=SCRIPTDIR
+    source "$ORPHAN_RELEASE_LIB"
+
+    local state_dir branch_dir stop_log label_log
+    DRILL_SCRATCH="$(mktemp -d -t orphan-release-drill.XXXXXX)"
+    state_dir="$DRILL_SCRATCH/state"
+    branch_dir="$DRILL_SCRATCH/branches"
+    stop_log="$DRILL_SCRATCH/stop.log"
+    label_log="$DRILL_SCRATCH/label.log"
+    mkdir -p "$state_dir" "$branch_dir"
+    trap 'rm -rf "$DRILL_SCRATCH"' EXIT INT TERM
+
+    # --- manufacture the three orphan shapes as stub unit state -------------
+    # Each shape is a fake pi-issue unit + a fake claim branch + no open PR.
+    #   146: shape (a) — inactive/dead, branch EXISTS
+    #   152: shape (b) — failed/dead,  branch already reaped (absent)
+    #   157: shape (c) — activating/auto-restart/MainPID=0, branch EXISTS
+    write_state() {  # <issue> <active> <mainpid> <sub>
+        printf '%s\t%s\t%s\n' "$2" "$3" "$4" >"$state_dir/$1"
+    }
+    write_state 146 inactive 0 dead
+    write_state 152 failed 0 failed
+    write_state 157 activating 0 auto-restart
+    : >"$branch_dir/146"   # branch exists
+    # 152: no branch file (already reaped)
+    : >"$branch_dir/157"   # branch exists
+    : >"$stop_log"; : >"$label_log"
+
+    # --- fake systemctl: models show / list-units / stop --------------------
+    cat >"$DRILL_SCRATCH/fakectl" <<'FAKE'
+#!/usr/bin/env bash
+shift  # --user
+case "$1" in
+  show)
+    prop=""; unit=""; shift
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -p) prop="$2"; shift 2 ;;
+        --property=*) prop="${1#--property=}"; shift ;;
+        --value) shift ;;
+        -*) shift ;;            # other flags we don't model
+        *) unit="$1"; shift ;;  # the unit name (any position)
+      esac
+    done
+    # unit looks like pi-issue@fleet-ops-146.service -> issue 146
+    iss="${unit#pi-issue@fleet-ops-}"
+    iss="${iss%.service}"
+    f="$STATE_DIR/$iss"
+    [[ -f "$f" ]] || { echo ""; exit 0; }
+    IFS=$'\t' read -r active main sub <"$f"
+    case "$prop" in
+      ActiveState) printf '%s' "$active" ;;
+      MainPID)     printf '%s' "$main" ;;
+      SubState)    printf '%s' "$sub" ;;
+      *) echo "" ;;
+    esac
+    exit 0
+    ;;
+  list-units)
+    # No transient fable-p* / pi-issue running workers in the drill.
+    exit 0
+    ;;
+  stop)
+    shift  # drop 'stop'
+    unit="$1"
+    iss="${unit#pi-issue@fleet-ops-}"
+    iss="${iss%.service}"
+    printf '%s\n' "$iss" >>"$STOP_LOG"
+    # Stopping an auto-restart unit moves it to inactive/dead.
+    printf 'inactive\t0\tdead\n' >"$STATE_DIR/$iss"
+    exit 0
+    ;;
+  *) echo "unexpected systemctl: $*" >&2; exit 1 ;;
+esac
+FAKE
+    chmod +x "$DRILL_SCRATCH/fakectl"
+
+    # --- fake gh: models pr list / api refs / issue edit / issue comment -----
+    cat >"$DRILL_SCRATCH/fakegh" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  pr)
+    # gh pr list -R <repo> --head claim/issue-N --state open --json number
+    # No open PRs in the drill.
+    echo '[]'
+    exit 0
+    ;;
+  api)
+    shift  # drop 'api'
+    # Either: repos/<repo>/git/refs/heads/claim/issue-N   (probe)
+    # Or:     repos/<repo>/git/refs/heads/claim/issue-N -X DELETE
+    ref="$1"; shift
+    iss="${ref##*/claim/issue-}"
+    if [[ "${1:-}" == "-X" && "${2:-}" == "DELETE" ]]; then
+      if [[ -f "$BRANCH_DIR/$iss" ]]; then
+        rm -f "$BRANCH_DIR/$iss"
+        exit 0
+      fi
+      exit 1
+    fi
+    # probe: branch exists?
+    [[ -f "$BRANCH_DIR/$iss" ]] && exit 0
+    exit 1
+    ;;
+  issue)
+    sub="$2"; shift 2  # 'issue' <sub> ...
+    # gh issue edit N -R <repo> --remove-label ... --add-label ...
+    # gh issue comment N -R <repo> --body ...
+    if [[ "$sub" == "edit" ]]; then
+      iss="$1"; shift
+      printf '%s\n' "$iss" >>"$LABEL_LOG"
+      exit 0
+    fi
+    # comment: no-op success
+    exit 0
+    ;;
+  *) echo "unexpected gh: $*" >&2; exit 1 ;;
+esac
+FAKE
+    chmod +x "$DRILL_SCRATCH/fakegh"
+
+    # --- run ONE tick of the §3 release loop over the three issues ----------
+    # Export the fake seams: the fake systemctl/gh scripts are subprocesses and
+    # need STATE_DIR/BRANCH_DIR/STOP_LOG/LABEL_LOG in their environment; the
+    # function reads SYSTEMCTL/GH. `VAR=val func` would NOT reach the subprocess.
+    export SYSTEMCTL="$DRILL_SCRATCH/fakectl"
+    export GH="$DRILL_SCRATCH/fakegh"
+    export STATE_DIR="$state_dir"
+    export BRANCH_DIR="$branch_dir"
+    export STOP_LOG="$stop_log"
+    export LABEL_LOG="$label_log"
+    local repo="Nishfleet/fleet-ops" short="fleet-ops"
+    local released=0
+    local issues="146 152 157"
+    for issue_n in $issues; do
+        if orphan_release_for_issue "$repo" "$issue_n" "$short"; then
+            released=$((released+1))
+        fi
+    done
+
+    # --- prove all three released, count matches, shape (c) was stopped -----
+    local proof=""
+    proof+="\nPROOF: orphan-release drill (fleet-ops#222 / #180 detector set)"
+    proof+="\n  shapes: (a) inactive+branch, (b) failed+no-branch, (c) auto-restart+MainPID=0"
+    proof+="\n  released: $released / 3"
+
+    [ "$released" -eq 3 ] || fail "expected 3 releases, got $released"
+
+    # Shape (a): branch 146 was deleted.
+    [ ! -f "$branch_dir/146" ] || fail "shape (a): branch 146 should have been deleted"
+    proof+="\n  shape (a) #146: branch deleted, label flipped -> OK"
+    # Shape (b): no branch to delete, label flipped anyway.
+    if [ -f "$branch_dir/152" ]; then fail "shape (b): branch 152 should not exist"; fi
+    proof+="\n  shape (b) #152: no branch (already reaped), label flipped -> OK"
+    # Shape (c): branch 157 deleted AND unit was stopped.
+    [ ! -f "$branch_dir/157" ] || fail "shape (c): branch 157 should have been deleted"
+    grep -qx "157" "$stop_log" || fail "shape (c): unit 157 should have been stopped (so intake can re-dispatch)"
+    proof+="\n  shape (c) #157: unit stopped, branch deleted, label flipped -> OK"
+
+    # All three label flips recorded (count matches the released count).
+    local label_count; label_count=$(wc -l <"$label_log" | tr -d ' ')
+    [ "$label_count" -eq 3 ] || fail "label flip count $label_count != 3 (released=$released)"
+    proof+="\n  label flips recorded: $label_count (matches released count)"
+
+    # Shape (c) unit is now inactive after the stop (proves the stop took effect).
+    IFS=$'\t' read -r c_active _ c_sub <"$state_dir/157"
+    [ "$c_active" = "inactive" ] || fail "shape (c): unit 157 should be inactive after stop, got $c_active"
+    proof+="\n  shape (c) #157 post-stop state: $c_active/$c_sub (was activating/auto-restart)"
+
+    printf '%b\n' "$proof"
+    printf '\nReproduce: orphan-release-drill\n'
+    log "drill passed: 3/3 orphan shapes released in one tick"
+}
+
+case "${1:-}" in
+  --check) check_env; log "ready: run 'orphan-release-drill' to execute the 3-shape proof" ;;
+  "")      check_env; run_drill ;;
+  -h|--help) sed -n '2,33p' "$0" | sed 's/^# \?//'; exit 0 ;;
+  *)       fail "usage: orphan-release-drill [--check]" ;;
+esac
