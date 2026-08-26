@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# fleet-researcher-dispatch — event-driven researcher trigger (fleet-ops#458).
+#
+# Deterministic. No LLM. Called from heartbeat-tier1 every tick. Starts
+# fleet-researcher.service when a named trigger is live and cadence has
+# not been cut. Domain staleness is checked here (the heartbeat is the
+# backstop; there is no researcher timer).
+#
+# Triggers:
+#   (a) quality-metric plateau or regression (#456 snapshot, if present)
+#   (b) seat-map hash change vs last research run
+#   (c) a plane with no research in N weeks (default 28d)
+#   (d) every Nth gap-closure cycle (default 4, cycle % 4 == 1)
+#   (e) a failed gap-closure cycle
+#
+# Exit 0 = decision made (started, skipped, or cadence-cut).
+# Exit 1 = dispatcher broken (helper missing/unreadable in a hard way).
+# Missing optional snapshots (quality, gap) are not broken — those
+# triggers simply do not fire until #456/#180 land their files.
+#
+# Environment seams (tests):
+#   RESEARCHER_STATE_DIR RESEARCHER_QUALITY_JSON RESEARCHER_GAP_JSON
+#   RESEARCHER_SEAT_MAP  RESEARCHER_LIB  RESEARCHER_FAKE_NOW
+#   RESEARCHER_STALE_DAYS RESEARCHER_NTH_CYCLE RESEARCHER_MIN_INTERVAL_S
+#   RESEARCHER_DISABLE=1  SYSTEMCTL  GH
+#   FLEET_HEARTBEAT_TRIAGE
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH="${GH:-gh}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="${RESEARCHER_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-researcher}"
+QUALITY_JSON="${RESEARCHER_QUALITY_JSON:-$STATE_DIR/../quality-scoreboard.json}"
+GAP_JSON="${RESEARCHER_GAP_JSON:-$STATE_DIR/../gap-closure/state.json}"
+SEAT_MAP="${RESEARCHER_SEAT_MAP:-$HOME/.local/state/pi-packet/entitled-seats.json}"
+UNIT="${RESEARCHER_UNIT:-fleet-researcher.service}"
+STALE_DAYS="${RESEARCHER_STALE_DAYS:-28}"
+NTH_CYCLE="${RESEARCHER_NTH_CYCLE:-4}"
+MIN_INTERVAL_S="${RESEARCHER_MIN_INTERVAL_S:-7200}"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_fallback="$(cd "$here/.." && pwd)"
+LIB="${RESEARCHER_LIB:-$HOME/.local/lib/pi-packet/researcher-delta.py}"
+[ -f "$LIB" ] || LIB="$repo_fallback/lib/researcher-delta.py"
+
+log() {
+    printf '[%s] [fleet-researcher-dispatch] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $*"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$*"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+if [ "${RESEARCHER_DISABLE:-0}" = "1" ]; then
+    log "disabled via RESEARCHER_DISABLE=1"
+    exit 0
+fi
+
+[ -f "$LIB" ] || { log "FATAL: researcher-delta.py missing: $LIB"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { log "FATAL: python3 missing"; exit 1; }
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 1; }
+
+mkdir -p "$STATE_DIR"
+state="$STATE_DIR/state.json"
+python3 "$LIB" init --state "$state" >/dev/null \
+    || { log "FATAL: could not init state $state"; exit 1; }
+
+# Refresh filed -> adopted/discarded from live labels (best-effort).
+labels_file="$STATE_DIR/labels-refresh.json"
+python3 - "$state" "$labels_file" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+keys = []
+for row in state.get("deltas") or []:
+    if row.get("status") == "filed" and row.get("repo") and row.get("issue"):
+        keys.append((str(row["repo"]), str(row["issue"])))
+json.dump(keys, open(sys.argv[2], "w"), indent=2)
+PY
+
+if [ -s "$labels_file" ] && [ "${RESEARCHER_REFRESH_LABELS:-1}" = "1" ]; then
+    mapfile -t pairs < <(jq -r '.[] | "\(.[0]) \(.[1])"' "$labels_file" 2>/dev/null || true)
+    : >"$labels_file"
+    printf '{\n' >"$labels_file.tmp"
+    first=1
+    for pair in "${pairs[@]:-}"; do
+        [ -n "$pair" ] || continue
+        repo="${pair%% *}"
+        issue="${pair##* }"
+        raw=$("$GH" issue view "$issue" -R "Nishfleet/$repo" --json labels 2>/dev/null || echo '{"labels":[]}')
+        names=$(printf '%s' "$raw" | jq -c '[.labels[]?.name]' 2>/dev/null || echo '[]')
+        if [ "$first" -eq 1 ]; then
+            first=0
+        else
+            printf ',\n' >>"$labels_file.tmp"
+        fi
+        printf '  "%s/%s": %s' "$repo" "$issue" "$names" >>"$labels_file.tmp"
+    done
+    printf '\n}\n' >>"$labels_file.tmp"
+    mv "$labels_file.tmp" "$labels_file"
+    python3 "$LIB" refresh --state "$state" --labels "$labels_file" --write >/dev/null \
+        || log "WARN: label refresh failed (will retry next tick)"
+fi
+
+seat_hash=""
+if [ -f "$SEAT_MAP" ]; then
+    seat_hash=$(sha256sum "$SEAT_MAP" | awk '{print $1}')
+fi
+
+quality_args=()
+gap_args=()
+[ -f "$QUALITY_JSON" ] && quality_args=(--quality "$QUALITY_JSON")
+[ -f "$GAP_JSON" ] && gap_args=(--gap "$GAP_JSON")
+now_args=()
+[ -n "${RESEARCHER_FAKE_NOW:-}" ] && now_args=(--now "$RESEARCHER_FAKE_NOW")
+
+unit_state=$("$SYSTEMCTL" --user is-active "$UNIT" 2>/dev/null || echo unknown)
+active_args=()
+case "$unit_state" in
+    active|activating) active_args=(--unit-active) ;;
+esac
+
+set +e
+verdict=$(python3 "$LIB" decide \
+    --state "$state" \
+    "${quality_args[@]}" \
+    "${gap_args[@]}" \
+    ${seat_hash:+--seat-hash "$seat_hash"} \
+    "${now_args[@]}" \
+    --stale-days "$STALE_DAYS" \
+    --nth-cycle "$NTH_CYCLE" \
+    --min-interval-s "$MIN_INTERVAL_S" \
+    "${active_args[@]}")
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] || [ -z "$verdict" ]; then
+    log "FATAL: decide failed rc=$rc"
+    exit 1
+fi
+
+dispatch=$(printf '%s' "$verdict" | jq -r '.dispatch')
+skip=$(printf '%s' "$verdict" | jq -r '.skip')
+triggers=$(printf '%s' "$verdict" | jq -r '.triggers | join(",")')
+rate=$(printf '%s' "$verdict" | jq -r '.adoption_rate')
+cut=$(printf '%s' "$verdict" | jq -r '.cadence_cut')
+
+log "decide dispatch=$dispatch skip=${skip:-none} cut=$cut rate=$rate triggers=${triggers:-none} unit=$unit_state"
+
+if [ "$dispatch" != "true" ]; then
+    if [ "$skip" = "cadence-cut" ]; then
+        loud "RESEARCHER-CADENCE-CUT" "adopted-delta rate=$rate below floor — researcher run skipped"
+    fi
+    exit 0
+fi
+
+printf '%s\n' "$verdict" >"$STATE_DIR/last-verdict.json"
+# Stamp last_dispatch_at so a sticky trigger cannot re-fire every 30 min.
+python3 - "$state" "${RESEARCHER_FAKE_NOW:-}" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path = sys.argv[1]
+now = sys.argv[2] or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+state = json.load(open(path, encoding="utf-8"))
+state["last_dispatch_at"] = now
+json.dump(state, open(path, "w"), indent=2, sort_keys=True)
+open(path, "a").write("\n")
+PY
+
+log "starting $UNIT (triggers=$triggers)"
+if ! "$SYSTEMCTL" --user start --no-block "$UNIT" >/dev/null 2>&1; then
+    loud "RESEARCHER-START-FAIL" "systemctl start $UNIT failed (triggers=$triggers)"
+    exit 0
+fi
+log "started $UNIT"
+exit 0
