@@ -50,3 +50,8 @@ echo inactive >"$fake/state"
 out="$(SYSTEMCTL="$fake/systemctl" "$bin" fleet-ops-20)"
 grep -q '^start ' "$fake/called" || fail "inactive must call start, called=$(cat "$fake/called")"
 ok "inactive worker calls systemctl start"
+
+# fleet-ops#82: this file is already on ci.yml verify-command. Workers cannot
+# add a new workflow line (no Workflows permission). The exec-review prompt
+# contract rides here so CI fails if someone deletes it from prompts/worker.md.
+bash "$here/exec-review-prompt.test.sh" || fail "exec-review prompt contract tests failed"

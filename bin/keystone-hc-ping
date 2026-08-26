@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# keystone-hc-ping — best-effort healthchecks.io ping for one keystone timer
+# (fleet-ops#455). Ping on SUCCESS of intake / scout / reconcile / restore.
+# Never prints the URL. Always exits 0 (a missed ping must not fail the
+# keystone unit; the resilience drill LOUDs unconfigured URLs instead).
+#
+# Usage: keystone-hc-ping <intake|scout|reconcile|restore>
+#
+# Env:
+#   KEYSTONE_HC_ENV  file of HC_URL_* assignments (default
+#                    ~/.config/fleet-ops/keystone-hc.env). Missing file = skip.
+#   CURL, HC_TIMEOUT
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+
+CURL="${CURL:-curl}"
+HC_TIMEOUT="${HC_TIMEOUT:-10}"
+ENV_FILE="${KEYSTONE_HC_ENV:-$HOME/.config/fleet-ops/keystone-hc.env}"
+
+log() {
+  printf '[%s] [keystone-hc-ping] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+name="${1:-}"
+case "$name" in
+  intake|scout|reconcile|restore) ;;
+  *)
+    log "usage: keystone-hc-ping <intake|scout|reconcile|restore>"
+    exit 0
+    ;;
+esac
+
+var="HC_URL_${name^^}"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  log "skip ($name): env file unset"
+  exit 0
+fi
+
+# Source only HC_URL_* assignments. Do not eval the rest of the file.
+url=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+  case "$line" in
+    "${var}="*) url="${line#*=}" ;;
+  esac
+done <"$ENV_FILE"
+
+if [[ -z "$url" ]]; then
+  log "skip ($name): $var unset"
+  exit 0
+fi
+
+if "$CURL" -fsS -m "$HC_TIMEOUT" "$url" >/dev/null 2>&1; then
+  log "dead-man: $name ping ok"
+else
+  log "dead-man: $name ping failed (best-effort)"
+fi
+exit 0

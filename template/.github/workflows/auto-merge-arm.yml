@@ -12,6 +12,6 @@ concurrency:
 
 jobs:
   arm:
-    uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@v1
     secrets:
       AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}

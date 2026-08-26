@@ -62,6 +62,12 @@ bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
 bin/pi-scout-run /home/nish/.local/bin/pi-scout-run
+# fleet-ops#454: green-and-empty scout detector. N consecutive scout
+# completions with no net ready-work increase while below the 12h
+# buffer LOUD + auto-file escalate-senior. Wired as ExecStartPre /
+# ExecStopPost on pi-scout@.service; leading '-' so a tracker fault
+# cannot skip the scout or trip OnFailure repair.
+bin/scout-futility-check /home/nish/.local/bin/scout-futility-check
 bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 # fleet-ops#143: version-control the agent-cron runner + the daily market
 # signal unit. The runner rotates seats via pick_seat (replacing the
@@ -142,6 +148,20 @@ systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audi
 bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
 systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
 systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
+systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/fleet-restore-drill.service.d/10-keystone-hc.conf
+# fleet-ops#455: four-plane resilience drill + keystone dead-man pings +
+# tailscaled Restart=always. Isolated stubs only; never kills live
+# tailscaled. Daily timer; named reason is in the unit file.
+bin/fleet-resilience-drill /home/nish/.local/bin/fleet-resilience-drill
+bin/keystone-hc-ping /home/nish/.local/bin/keystone-hc-ping
+systemd/fleet-resilience-drill.service /home/nish/.config/systemd/user/fleet-resilience-drill.service
+systemd/fleet-resilience-drill.timer /home/nish/.config/systemd/user/fleet-resilience-drill.timer
+systemd/resilience-drill.slice /home/nish/.config/systemd/user/resilience-drill.slice
+systemd/resilience-drill-stub-restart.service /home/nish/.config/systemd/user/resilience-drill-stub-restart.service
+systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-keystone-hc.conf
+systemd/pi-scout@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-scout@.service.d/10-keystone-hc.conf
+systemd/intake-reconcile.service.d/20-keystone-hc.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/20-keystone-hc.conf
+systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/tailscaled.service.d/50-restart-always.conf
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26

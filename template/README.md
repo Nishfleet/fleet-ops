@@ -3,11 +3,12 @@
 Copy `template/.github/workflows/` into a new repo as `.github/workflows/`
 and `template/.fleet/gate-integrity.yml` to `.fleet/gate-integrity.yml`.
 
-Those callers point at the central reusable workflows in `Nishfleet/fleet-ops`.
-Do not copy the steps out of the reusable files. Change behaviour with `inputs`.
+Those callers point at the central reusable workflows in `Nishfleet/fleet-ops`
+at `@v1`. Do not copy the steps out of the reusable files. Change behaviour with
+`inputs`.
 
-After this lands, a `v1` branch on fleet-ops will be the pin that auto-updates.
-Until that branch exists, the callers use `@main`.
+`v1` is the compatible pin. It moves only for compatible changes. A breaking
+change gets a `v2` branch and a new pin.
 
 ## What you get
 

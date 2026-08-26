@@ -54,4 +54,33 @@ ok "step 5 invokes the inner loop"
   || fail "systemd/exec-review@.service must not exist (inner loop is agentic, not Restart=)"
 ok "no exec-review dispatcher"
 
+# fleet-ops#82: CI host lock. Workers cannot add a verify-command line.
+# This file must stay listed in ci.yml OR invoked from a test that already
+# is (currently pi-issue-start.test.sh). Dropping both is the original bug:
+# CI goes green while the prompt contract is deleted.
+ci_yml="$repo_root/.github/workflows/ci.yml"
+host="$repo_root/tests/pi-issue-start.test.sh"
+listed=0
+hosted=0
+grep -Fq 'bash tests/exec-review-prompt.test.sh' "$ci_yml" && listed=1
+grep -Fq 'bash "$here/exec-review-prompt.test.sh"' "$host" && hosted=1
+if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
+  fail "exec-review-prompt.test.sh has no CI host (fleet-ops#82): list it in ci.yml or invoke it from pi-issue-start.test.sh"
+fi
+ok "CI host exists (ci.yml listed=$listed pi-issue-start hosted=$hosted)"
+
+# Empty-host drill: the same greps against empty files miss both hosts,
+# so the lock above is not a tautology (fleet-ops#366).
+empty=$(mktemp -d)
+trap 'rm -rf "$empty"' EXIT
+: >"$empty/ci.yml"
+: >"$empty/host.test.sh"
+empty_listed=0
+empty_hosted=0
+grep -Fq 'bash tests/exec-review-prompt.test.sh' "$empty/ci.yml" && empty_listed=1
+grep -Fq 'bash "$here/exec-review-prompt.test.sh"' "$empty/host.test.sh" && empty_hosted=1
+[[ "$empty_listed" -eq 0 && "$empty_hosted" -eq 0 ]] \
+  || fail "empty-host drill must miss both hosts (listed=$empty_listed hosted=$empty_hosted)"
+ok "empty-host drill trips (neither host matches empty files)"
+
 echo "OK: worker.md carries the execution-is-review inner loop"

@@ -110,6 +110,10 @@ if grep -qE '^ExecStart=.*(--provider|--model)' \
 fi
 grep -q "pi-scout-run %i scout" "$repo_root/systemd/pi-scout@.service" \
   || fail "pi-scout@.service ExecStart must invoke pi-scout-run"
+grep -q "scout-futility-check begin %i" "$repo_root/systemd/pi-scout@.service" \
+  || fail "pi-scout@.service must snapshot ready-work before the scout (fleet-ops#454)"
+grep -q "scout-futility-check end %i" "$repo_root/systemd/pi-scout@.service" \
+  || fail "pi-scout@.service must snapshot ready-work after the scout (fleet-ops#454)"
 grep -q "pi-scout-run %i scout-repair" "$repo_root/systemd/pi-scout-repair@.service" \
   || fail "pi-scout-repair@.service ExecStart must invoke pi-scout-run"
 ok "unit files do not hard-code provider/model"

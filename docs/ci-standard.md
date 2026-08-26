@@ -19,7 +19,8 @@ should call. It is `workflow_call` only. Guarantees that are not optional:
 - gitleaks (pinned binary, no license) when `scan-secrets` is true.
 
 Same-repo caller: `uses: ./.github/workflows/reusable-pr-checks.yml`.
-Other repos: `uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main`.
+Other repos: `uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@v1`.
+`v1` moves only for compatible changes. A break is `v2`.
 
 `.github/workflows/reusable-auto-merge-arm.yml` is the matching auto-merge job.
 Callers keep the `pull_request` trigger and pass `AUTO_REVERT_PAT` explicitly.

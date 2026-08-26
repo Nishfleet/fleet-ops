@@ -63,10 +63,14 @@ if grep -q 'secrets: inherit' "$caller_arm" "$template_arm" "$template_ci" "$ci"
 fi
 ok "fleet-ops auto-merge-arm calls the reusable workflow"
 
-grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main' "$template_ci" \
-  || fail "template ci.yml must call Nishfleet/fleet-ops reusable-pr-checks.yml@main"
-grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@main' "$template_arm" \
-  || fail "template auto-merge-arm.yml must call Nishfleet/fleet-ops reusable-auto-merge-arm.yml@main"
+grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@v1' "$template_ci" \
+  || fail "template ci.yml must call Nishfleet/fleet-ops reusable-pr-checks.yml@v1"
+grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@v1' "$template_arm" \
+  || fail "template auto-merge-arm.yml must call Nishfleet/fleet-ops reusable-auto-merge-arm.yml@v1"
+# fleet-ops#69: @main would follow every ops commit. v1 moves only for compatible changes.
+if grep -q '@main' "$repo_root"/template/.github/workflows/*.yml; then
+  fail "template callers must pin @v1, not @main"
+fi
 # Callers pass inputs; they must not inline npm ci / gitleaks install.
 if grep -E 'npm ci|gitleaks git|actions/setup-node' "$template_ci" | grep -v 'install-command\|verify-command\|node-version'; then
   fail "template ci.yml looks like it copied reusable steps instead of passing inputs"
