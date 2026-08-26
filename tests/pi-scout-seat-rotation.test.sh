@@ -27,6 +27,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
 export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
+repo_privacy() { echo "public"; }
+packet_repo() { echo ""; }
 pick_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
@@ -90,6 +92,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
 export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
+repo_privacy() { echo "public"; }
+packet_repo() { echo ""; }
 pick_seat() { :; return 1; }
 EOF
 

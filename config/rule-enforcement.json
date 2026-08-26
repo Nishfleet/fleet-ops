@@ -88,10 +88,9 @@
     {
       "id": "sr-free-tier-privacy",
       "source": "global-standing-rules.md: Free-tier privacy line (2026-08-18)",
-      "mechanism": "No packet-product check routing private-repo work off free lanes",
-      "proof": "Nishfleet/fleet-ops#520",
-      "status": "queued(#520)",
-      "queued_since": "2026-08-27"
+      "mechanism": "pick_seat privacy guard: a private-repo target (resolved from the packet TARGET line via packet_repo + config/repo-privacy.json) skips every free-class seat; fail-closed rc=1 when only free seats remain. Wired into pi-issue-run, pi-packet-run, pi-scout-run, pi-intake-repair-run. Drilled every heartbeat tick by fleet-escalation-canary block 11 (live scratch pick_seat drill + config/repo-privacy.json validity + default_policy=private check).",
+      "proof": "lib/seat-lib.sh pick_seat privacy arg + repo_privacy/packet_repo; config/repo-privacy.json; bin/pi-issue-run, bin/pi-packet-run, bin/pi-scout-run, bin/pi-intake-repair-run; bin/fleet-escalation-canary block 11; tests/repo-privacy-guard.test.sh; tests/escalation-coverage-canary.test.sh scenarios 17-20; Nishfleet/fleet-ops#520",
+      "status": "enforced"
     },
     {
       "id": "sr-quality-outranks",

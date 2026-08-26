@@ -292,6 +292,17 @@ on:
   workflow_call:
 WF
 
+# Block 11 (fleet-ops#520): the free-tier privacy guard drills against the
+# real lib/seat-lib.sh + config/repo-privacy.json. This test exercises the
+# rule-enforcement coverage path, not the privacy guard itself (that is
+# covered by tests/repo-privacy-guard.test.sh and escalation-coverage-canary
+# scenarios 17-20), so install the fixtures and skip block 11 here to keep
+# the drill focused on the rule-coverage join.
+mkdir -p "$drill/repo/lib"
+cp "$repo_root/lib/seat-lib.sh" "$drill/repo/lib/seat-lib.sh"
+cp "$repo_root/config/repo-privacy.json" "$drill/repo/config/repo-privacy.json"
+export FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1
+
 cat >"$drill/standing.md" <<'EOF'
 # fixture
 ## Covered fixture rule (Nish, 2026-08-26)

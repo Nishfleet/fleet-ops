@@ -969,4 +969,7 @@ bash "$here/gate-integrity.test.sh" || fail "gate-integrity tests failed"
 bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests failed"
 # fleet-ops#497: gate-integrity reusable shape. Same CI constraint.
 bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"
+# fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
+# privacy guard test, because workers cannot edit .github/workflows.
+bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
 

@@ -56,6 +56,14 @@ on:
   workflow_call:
 WF
 
+# Block 11 (fleet-ops#520): the free-tier privacy guard drills against the
+# real lib/seat-lib.sh + config/repo-privacy.json. Copy both into the scratch
+# repo so the canary's $FLEET_OPS_REPO points at fixtures that satisfy block 11
+# by default; dedicated scenarios below mutate them to force violations.
+mkdir -p "$repo/lib"
+cp "$repo_root/lib/seat-lib.sh" "$repo/lib/seat-lib.sh"
+cp "$repo_root/config/repo-privacy.json" "$repo/config/repo-privacy.json"
+
 state="$scratch/agent_state"
 mkdir -p "$state"
 
@@ -265,6 +273,11 @@ WF
   rm -f "$FLEET_ESCALATION_CANARY_DELIVERY" "$FLEET_ESCALATION_CANARY_REDCI" "$FLEET_ESCALATION_CANARY_BRIDGE"
   rm -f "$repo/.github/workflows/ci-failure-escalation.yml" "$repo/.github/scripts/ci-failure-escalation-detector.mjs"
   rm -rf "${repo:?}/lib" "${repo:?}/systemd"
+  # Block 11 (fleet-ops#520): restore the privacy-guard fixtures that the
+  # rm -rf lib just removed so block 11 stays green by default.
+  mkdir -p "$repo/lib"
+  cp "$repo_root/lib/seat-lib.sh" "$repo/lib/seat-lib.sh"
+  cp "$repo_root/config/repo-privacy.json" "$repo/config/repo-privacy.json"
   write_covered_vault
   # Block 10 default: green backup so existing two-plane scenarios stay green.
   write_backup_fresh
@@ -738,7 +751,97 @@ grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_BACKUP=1)' <<<"$env_out" || fail "sc
 ! grep -q 'backup staleness' "$triage" || fail "scenario16: skip flag must suppress staleness"
 ok "scenario16: skip flag suppresses block 10"
 
+# ============================================================================
+# Scenario 17 (fleet-ops#520): privacy guard — config missing -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/config/repo-privacy.json"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario17: must exit 1, got $env_rc ($env_out)"
+grep -q 'privacy guard: config/repo-privacy.json missing' "$triage" \
+  || fail "scenario17: triage must name the missing privacy map"
+ok "scenario17: missing config/repo-privacy.json -> VIOLATION naming it"
+
+# ============================================================================
+# Scenario 18 (fleet-ops#520): privacy guard — broken JSON -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+printf 'not json{' >"$repo/config/repo-privacy.json"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario18: must exit 1, got $env_rc ($env_out)"
+grep -q 'privacy guard: config/repo-privacy.json unparseable' "$triage" \
+  || fail "scenario18: triage must name the unparseable privacy map"
+ok "scenario18: unparseable config/repo-privacy.json -> VIOLATION naming it"
+
+# ============================================================================
+# Scenario 19 (fleet-ops#520): privacy guard — default_policy widened -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+cat >"$repo/config/repo-privacy.json" <<'JSON'
+{"default_policy":"public","public":["0509"],"private":["0509-telemetry"]}
+JSON
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario19: must exit 1, got $env_rc ($env_out)"
+grep -q 'default_policy is not .private.' "$triage" \
+  || fail "scenario19: triage must name the widened default_policy"
+ok "scenario19: default_policy=public -> VIOLATION naming the fail-open widening"
+
+# ============================================================================
+# Scenario 20 (fleet-ops#520): privacy guard — skip flag suppresses block 11
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/config/repo-privacy.json"
+export FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1
+
+run_canary
+
+unset FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD
+[[ "$env_rc" == 0 ]] || fail "scenario20: must exit 0 (skip flag), got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1)' <<<"$env_out" \
+  || fail "scenario20: canary must log the SKIP"
+! grep -q 'privacy guard' "$triage" || fail "scenario20: skip flag must suppress privacy guard"
+ok "scenario20: skip flag suppresses block 11"
+
 ok "escalation-coverage-canary: block 10 backup staleness (fleet-ops#388) covered"
+ok "escalation-coverage-canary: block 11 free-tier privacy guard (fleet-ops#520) covered"
 
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit

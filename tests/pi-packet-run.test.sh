@@ -45,6 +45,10 @@ task_weight() {
   echo "light"
 }
 
+# fleet-ops#520: stub the privacy helpers the wrapper now calls.
+repo_privacy() { echo "public"; }
+packet_repo() { echo ""; }
+
 # First call (empty tried file) returns devin/glm-5-2. Once devin is in the
 # tried-seats file, return a different seat (cursor/composer-2.5).
 pick_seat() {

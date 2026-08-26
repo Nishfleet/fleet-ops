@@ -45,6 +45,13 @@
 #        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
 #        When a previously auto-filed source is now `enforced`, the canary
 #        comments `canary-covered:` on the open issue (observe-to-close).
+#    10. Backup staleness (fleet-ops#388): the system restic unit is fresh and
+#        successful, or LOUD.
+#    11. Free-tier privacy guard (fleet-ops#520): config/repo-privacy.json
+#        ships and is valid (default_policy=private), and a live scratch drill
+#        proves pick_seat privacy=private never returns a free-class seat and
+#        fails closed when only free seats remain. LOUD the same tick a
+#        regression re-opens the leak.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -86,6 +93,8 @@
 #                                       auto-files a distinct mechanism issue for
 #                                       each queued row owned by an umbrella issue.
 #   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
+#   FLEET_REPO_PRIVACY_JSON             config/repo-privacy.json source (block 11)
+#   FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD  1 skips block 11 (offline tests)
 
 set -Eeuo pipefail
 
@@ -664,6 +673,101 @@ else
     if [[ "$_backup_result" != "success" ]]; then
         loud "ESCALATION-CANARY-VIOLATION" "backup staleness: $RESTIC_BACKUP_SERVICE last Result=$_backup_result (not success) — the last backup run failed"
         violations=$((violations + 1))
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 11. Free-tier privacy guard (fleet-ops#520)
+# ---------------------------------------------------------------------------
+# Vault "Free-tier privacy line" (2026-08-18): no-card free LLM tiers train on
+# prompts, so free-class seats may only process PUBLIC-repo work. The guard
+# lives in lib/seat-lib.sh pick_seat (privacy=private skips every free-class
+# seat, fail-closed rc=1 when only free seats remain). This block drills it
+# every heartbeat tick on a fully scratch config (never touches live seat
+# state) so a regression that re-opens the leak is LOUD the same tick, not at
+# the next CI run. It also asserts config/repo-privacy.json ships and is valid
+# so a deleted/broken privacy map cannot silently revert every repo to the
+# fail-closed default (or, worse, widen it).
+#
+# FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1 skips this block (offline tests).
+log "11. checking free-tier privacy guard (fleet-ops#520)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD:-0}" == "1" ]]; then
+    log "11.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1)"
+else
+    _privacy_json="${FLEET_REPO_PRIVACY_JSON:-$FLEET_OPS_REPO/config/repo-privacy.json}"
+    _seat_lib_privacy="${FLEET_OPS_REPO}/lib/seat-lib.sh"
+    if [[ ! -f "$_privacy_json" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: config/repo-privacy.json missing at $_privacy_json — the free-tier privacy map is gone, every repo falls to the fail-closed default"
+        violations=$((violations + 1))
+    elif ! jq -e . "$_privacy_json" >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: config/repo-privacy.json unparseable — the free-tier privacy map is broken"
+        violations=$((violations + 1))
+    elif [[ "$(jq -r '.default_policy // "private"' "$_privacy_json")" != "private" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: config/repo-privacy.json default_policy is not 'private' — the fail-closed default was widened; an unclassified private repo could leak to a free lane"
+        violations=$((violations + 1))
+    elif [[ ! -f "$_seat_lib_privacy" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "privacy guard: lib/seat-lib.sh missing — cannot drill the pick_seat privacy guard"
+        violations=$((violations + 1))
+    elif ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "privacy guard: jq missing — cannot validate config or run the drill"
+        pending=$((pending + 1))
+    else
+        # Live drill on a scratch config: a private target with a free seat
+        # AND a prepaid seat available must pick the prepaid seat, never the
+        # free one. A private target with ONLY a free seat must fail-closed
+        # rc=1 (no stdout). Both runs use isolated state dirs + ledger so
+        # live seat state is untouched.
+        _drill="$(mktemp -d -t privacy-guard-drill.XXXXXX)"
+        cat >"$_drill/models.json" <<'JSON'
+{"providers":{"ollama":{"models":[{"id":"deepseek-v4-flash:0731","cost":{"input":0}}]},"devin":{"models":[{"id":"glm-5-2","cost":{"input":0}}]}}}
+JSON
+        cat >"$_drill/seat-caps.json" <<'JSON'
+{"ram_gb_per_worker":1.5,"free_providers_in_order":["ollama"],"providers":{"ollama":{"cap":2,"class":"free","models":{"deepseek-v4-flash:0731":2}},"devin":{"cap":4,"class":"prepaid-quota","models":{"glm-5-2":4}}}}
+JSON
+        cat >"$_drill/repo-privacy.json" <<'JSON'
+{"default_policy":"private","public":["0509"],"private":["0509-telemetry"]}
+JSON
+        mkdir -p "$_drill/ledger"
+        _drill_rc=0
+        set +e
+        _out1=$(PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+                PI_MODELS_JSON="$_drill/models.json" \
+                SEAT_CAPS_JSON="$_drill/seat-caps.json" \
+                REPO_PRIVACY_JSON="$_drill/repo-privacy.json" \
+                QUALITY_SCOREBOARD_JSON="$_drill/no-sb" \
+                QUALITY_ROUTING_JSON="$_drill/no-qr" \
+                PI_SEAT_HEALTH_LEDGER_DIR="$_drill/ledger" \
+                PI_PACKET_STATE="$_drill/state-private" \
+                bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" private' "$_seat_lib_privacy" 2>/dev/null)
+        _rc1=$?
+        # Only-free-available: block devin via tried-seats so just free remains.
+        printf 'devin/glm-5-2\n' >"$_drill/tried-onlyfree"
+        _out2=$(PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+                PI_MODELS_JSON="$_drill/models.json" \
+                SEAT_CAPS_JSON="$_drill/seat-caps.json" \
+                REPO_PRIVACY_JSON="$_drill/repo-privacy.json" \
+                QUALITY_SCOREBOARD_JSON="$_drill/no-sb" \
+                QUALITY_ROUTING_JSON="$_drill/no-qr" \
+                PI_SEAT_HEALTH_LEDGER_DIR="$_drill/ledger" \
+                PI_PACKET_STATE="$_drill/state-onlyfree" \
+                bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1" private' "$_seat_lib_privacy" "$_drill/tried-onlyfree" 2>/dev/null)
+        _rc2=$?
+        set -e
+        rm -rf "$_drill"
+        if [[ "$_rc1" -ne 0 ]] || [[ "$_out1" != "devin	glm-5-2" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "privacy guard: private target picked '$_out1' (rc=$_rc1) — expected prepaid devin/glm-5-2, never a free lane. The free-tier privacy guard is broken."
+            violations=$((violations + 1))
+            _drill_rc=1
+        elif [[ "$_rc2" -ne 1 ]] || [[ -n "$_out2" ]]; then
+            loud "ESCALATION-CANARY-VIOLATION" "privacy guard: private target with only a free seat returned '$_out2' (rc=$_rc2) — expected fail-closed rc=1 with no stdout. The free-tier privacy guard leaks to a free lane."
+            violations=$((violations + 1))
+            _drill_rc=1
+        else
+            log "11.  - drill: private target -> prepaid (devin/glm-5-2); only-free -> fail-closed rc=1 (no leak)"
+        fi
+        if [[ "$_drill_rc" -eq 0 ]]; then
+            log "11.  - config/repo-privacy.json valid, default_policy=private, guard fires"
+        fi
     fi
 fi
 

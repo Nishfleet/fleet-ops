@@ -72,7 +72,17 @@ weight=$(task_weight "$pkt")
 need_capable=0
 [[ "$weight" == "heavy" ]] && need_capable=1
 
-seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" || true)
+# Free-tier privacy line (fleet-ops#520): a private-repo target never routes
+# to a free-class lane. Derive the repo from the packet's TARGET line and
+# resolve its visibility via config/repo-privacy.json (fail-closed).
+pkt_repo=$(packet_repo "$pkt")
+pkt_privacy="public"
+if [[ -n "$pkt_repo" ]]; then
+    pkt_privacy=$(repo_privacy "$pkt_repo")
+fi
+seat_log "pi-packet-run: $pid target repo=${pkt_repo:-<none>} privacy=$pkt_privacy"
+
+seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$pkt_privacy" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
     exit 1
