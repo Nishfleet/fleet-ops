@@ -45,10 +45,9 @@
     {
       "id": "sr-max-speed",
       "source": "global-standing-rules.md: Max speed is the default, forever (Nish, 2026-08-18)",
-      "mechanism": "RAM governor and seat caps exist as the three legal brakes; nothing hunts artificial limiters",
-      "proof": "Nishfleet/fleet-ops#516",
-      "status": "queued(#516)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Source hunter bin/fleet-max-speed flags unannotated sleep>=5s, banned throttle phrases, and concurrency=1 in bin/ and lib/; LEGAL-BRAKE: money|safety|hardware is the only named exception. Wired into fleet-heartbeat-tier1 (fail-loud + auto-file). RAM governor and seat caps remain the three legal brakes.",
+      "proof": "bin/fleet-max-speed; tests/fleet-max-speed.test.sh; bin/fleet-heartbeat-tier1; MANIFEST dest /home/nish/.local/bin/fleet-max-speed",
+      "status": "enforced"
     },
     {
       "id": "sr-research-before-build",

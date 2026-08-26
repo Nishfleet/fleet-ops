@@ -1294,6 +1294,27 @@ else
 fi
 
 # ============================================================================
+# 15. MAX-SPEED DETECTOR (fleet-ops#516 sr-max-speed)
+# ============================================================================
+# Every tick, hunt artificial limiters in production bin/ and lib/: sleeps
+# used as throttles, banned limiter phrases, and concurrency=1 defaults.
+# Only money/safety/hardware (LEGAL-BRAKE) may slow work down. Hits are
+# LOUD + auto-filed; the tick fails so the invariant has teeth.
+MAX_SPEED_BIN="${FLEET_MAX_SPEED:-/home/nish/.local/bin/fleet-max-speed}"
+max_speed_rc=0
+if [ -x "$MAX_SPEED_BIN" ]; then
+    log "15. max-speed detector starting"
+    if "$MAX_SPEED_BIN"; then
+        log "15. max-speed detector complete"
+    else
+        max_speed_rc=$?
+        log "15. max-speed detector FAILED (rc=$max_speed_rc) — sr-max-speed violated; unit will land in --state=failed"
+    fi
+else
+    log "15. max-speed detector missing at $MAX_SPEED_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # 15. ESCALATION-COMPLETION ENFORCER (fleet-ops#468 matrix FIXES, not just routes)
 # ============================================================================
 # Every tick, prove every open escalation chain TERMINATES: detector-green
@@ -1478,7 +1499,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1521,6 +1542,9 @@ if [ "${researcher_dispatch_rc:-0}" -ne 0 ]; then
 fi
 if [ "${unjustified_rc:-0}" -ne 0 ]; then
     exit "${unjustified_rc}"
+fi
+if [ "${max_speed_rc:-0}" -ne 0 ]; then
+    exit "${max_speed_rc}"
 fi
 if [ "${escalation_completion_rc:-0}" -ne 0 ]; then
     exit "${escalation_completion_rc}"

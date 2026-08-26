@@ -275,3 +275,6 @@ systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-reco
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
 bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
+# fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
+# Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
+bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed

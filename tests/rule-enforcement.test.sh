@@ -407,3 +407,7 @@ grep -q 'already has an open mechanism issue' <<<"$env_out" \
 ok "drill: open issue with signal key is deduped"
 
 ok "rule-enforcement: matrix, join, stale queued, advisory, and auto-file drill"
+
+# fleet-ops#516: sr-max-speed hunter. CI lists this file, not
+# fleet-max-speed.test.sh (workers cannot edit .github/workflows).
+bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
