@@ -5,6 +5,11 @@
 # LLM is dead. Idempotent — safe to run as often as the timer fires.
 #
 # Responsibilities (one per labelled block, in order):
+#   0. Merge-to-live deploy (fleet-ops#149). Fast-forward the deploy checkout
+#      to origin/main, run install.sh, enable MANIFEST units, run the drift
+#      canary. Dirty or non-ff checkouts block (no reset, no stash). Divergence
+#      fails the unit. Only runs when this process is the installed heartbeat
+#      (or FLEET_OPS_CHECKOUT is set); worktree/CI copies skip it.
 #   1. Update the last-heartbeat: line in the plan file (so interactive
 #      sessions see the durable timer is alive).
 #   2. Queue green fleet-authored PRs (auto-merge per repo, respecting
@@ -299,6 +304,47 @@ is_hands_off() {
     done <<< "$hands_off"
     return 1
 }
+
+# ============================================================================
+# 0. MERGE-TO-LIVE DEPLOY + DRIFT CANARY (fleet-ops#149)
+# ============================================================================
+# Before any orchestration work, make sure the installed units are exactly
+# what origin/main declares. A dirty tracked file or non-ff branch blocks
+# the update with a LOUD line — no reset, no stash.
+#
+# Production: systemd starts /home/nish/.local/bin/fleet-heartbeat-tier1.
+# Tests invoke the repo copy by path, which must not fetch/merge a worktree
+# or run install.sh against the live box. Set FLEET_OPS_CHECKOUT to force.
+DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$LOG_DIR/deploy-audit.log}"
+deploy_rc=0
+should_run_deploy=0
+if [ -n "${FLEET_OPS_CHECKOUT:-}" ]; then
+    should_run_deploy=1
+    DEPLOY_CHECKOUT="$FLEET_OPS_CHECKOUT"
+else
+    _installed=$(readlink -f /home/nish/.local/bin/fleet-heartbeat-tier1 2>/dev/null || true)
+    _self=$(readlink -f "$0" 2>/dev/null || true)
+    if [ -n "$_installed" ] && [ -n "$_self" ] && [ "$_self" = "$_installed" ]; then
+        should_run_deploy=1
+        DEPLOY_CHECKOUT=$(cd "$(dirname "$_self")/.." && pwd)
+    fi
+fi
+
+if [ "$should_run_deploy" = 1 ]; then
+    log "0. deploy step starting: checkout=$DEPLOY_CHECKOUT"
+    deploy_bin="$DEPLOY_CHECKOUT/bin/fleet-ops-deploy"
+    if [ ! -x "$deploy_bin" ]; then
+        loud "DEPLOY-MISSING" "fleet-ops-deploy not in checkout at $deploy_bin"
+        deploy_rc=1
+    else
+        FLEET_OPS_CHECKOUT="$DEPLOY_CHECKOUT" \
+        FLEET_OPS_DEPLOY_AUDIT_LOG="$DEPLOY_AUDIT_LOG" \
+        FLEET_OPS_TRIAGE="$TRIAGE" \
+            "$deploy_bin" || deploy_rc=$?
+    fi
+else
+    log "0. deploy step skipped (invocation is not the installed heartbeat)"
+fi
 
 # ============================================================================
 # 1. UPDATE last-heartbeat: LINE IN PLAN FILE
@@ -1043,10 +1089,13 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc"
-# Propagate the first non-zero fail-loud exit. Either the undersaturation
-# alarm or the red-pr-repair escalator may fail loud; both route to the same
-# pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc"
+# Propagate the first non-zero fail-loud exit. Deploy, undersaturation, or
+# red-pr-repair may fail loud; all route to the same pager
+# (fleet-heartbeat.service -> --state=failed -> page + Telegram).
+if [ "$deploy_rc" -ne 0 ]; then
+    exit "$deploy_rc"
+fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
 fi

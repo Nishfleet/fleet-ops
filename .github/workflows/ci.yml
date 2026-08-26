@@ -204,6 +204,7 @@ jobs:
         bash tests/seat-lib-degraded.test.sh
         bash tests/stop-escalation-dispatch.test.sh
         bash tests/system-dropins-shape.test.sh
+        bash tests/fleet-ops-deploy.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         bash tests/mass-close-guard.test.sh
