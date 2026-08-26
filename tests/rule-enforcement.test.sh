@@ -60,10 +60,13 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report vault sync conflicts as enforced covered_rows (fleet-ops#529): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report sr-find-proven-thing as enforced covered_rows (fleet-ops#534): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report GLM 5.3 flash ClinePass as enforced covered_rows (fleet-ops#462): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
   ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
+  ok "live join: GLM 5.3 flash ClinePass source is enforced (observe-to-close for #462)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -553,4 +556,9 @@ ok "rule-enforcement: vault-conflict-resolver drill"
 bash "$here/fleet-wipe-lessons.test.sh" || fail "fleet-wipe-lessons gate drill failed"
 ok "rule-enforcement: fleet-wipe-lessons gate drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, and wipe-lessons drills"
+# fleet-ops#462: ClinePass GLM 5.3 flash canary. Same nested-CI host so
+# this token does not need a workflow edit.
+bash "$here/fleet-cline-glm53-canary.test.sh" || fail "cline glm53 canary drill failed"
+ok "rule-enforcement: ClinePass GLM 5.3 flash canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, and cline-glm53 drills"

@@ -34,7 +34,8 @@
       "models": {
         "cline-pass/minimax-m3": 2,
         "cline-pass/deepseek-v4-flash": 2
-      }
+      },
+      "_comment_glm53": "2026-08-27: ClinePass GLM 5.3 flash (fleet-ops#462). Probe 2026-08-26: cline-pass/glm-5.3-flash and cline-pass/glm-5-3-flash 404. Official docs list cline-pass/glm-5.3 (non-flash, quota) not flash. Do not allowlist a guessed flash slug or the non-flash glm-5.3. bin/fleet-cline-glm53-canary auto-files when a cline-pass GLM 5.3 flash slug appears in Pi's catalog; wiring requires a live spawn + weekly-cap-bypass meter check + models.json entry."
     },
     "minimax": {
       "cap": 2,

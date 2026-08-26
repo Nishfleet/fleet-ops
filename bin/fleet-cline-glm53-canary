@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# fleet-cline-glm53-canary — ClinePass GLM 5.3 flash watch (fleet-ops#462).
+#
+# Ledger 2026-08-26: "GLM 5.3 flash free on ClinePass — wire it and go ham.
+# Slug + weekly-cap-bypass must be PROVEN live before routing." Probe that
+# night: pi --provider cline auth OK, guessed slugs cline-pass/glm-5.3-flash
+# and cline-pass/glm-5-3-flash both 404. Official ClinePass docs still list
+# cline-pass/glm-5.3 (non-flash, quota) and no flash id. Pi's catalog on
+# 2026-08-27 still has only cline-pass/deepseek-v4-flash and
+# cline-pass/minimax-m3. Custom-provider models also need a models.json
+# entry (orcarouter lesson).
+#
+# This canary is the class prevention:
+#   1. GATES (fail-loud, exit 1):
+#      a. Billing prefix: a GLM 5.3 flash slug allowlisted on cline without
+#         the cline-pass/ subscription prefix (would bill credits).
+#      b. Wrong model: cline-pass/glm-5.3 (non-flash) allowlisted as if it
+#         were the free flash lane.
+#      c. Unproven slug: a cline-pass GLM 5.3 flash id allowlisted that is
+#         not in Pi's cline catalog (the 2026-08-26 guessed-404 class).
+#      d. models.json: a proven flash slug allowlisted without a matching
+#         providers.cline.models[].id (cannot route without resolve_model).
+#   2. DETECTOR (observe-to-open, tick stays green, exit 0): when the cline
+#      catalog grows a cline-pass GLM 5.3 flash slug that is not yet
+#      allowlisted, auto-file a prove-bypass + models.json + wire ticket.
+#      Discovery must not fail the heartbeat.
+#   3. FAIL-LOUD on a broken watch: pi missing / list-models failed and no
+#      catalog fixture -> exit 1.
+#
+# Never spawn a guessed slug. Catalog + seat-caps + models.json only.
+# Weekly-cap-bypass is a live spawn + meter check on the filed ticket, not
+# this canary.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 23.
+#
+# Environment seams (tests):
+#   SEAT_CAPS_JSON
+#   FLEET_CLINE_GLM53_CATALOG     list-models stdout fixture (overrides pi)
+#   FLEET_CLINE_GLM53_MODELS_JSON models.json fixture (overrides live)
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_CLINE_GLM53_REPO        default Nishfleet/fleet-ops
+#   FLEET_CLINE_GLM53_FILE        1 (default) file issues; 0 skip gh
+#   PI                            pi binary (tests stub this)
+#   GH                            gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+PI="${PI:-pi}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+MODELS_JSON="${FLEET_CLINE_GLM53_MODELS_JSON:-${HOME}/.pi/agent/models.json}"
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_CLINE_GLM53_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_CLINE_GLM53_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-cline-glm53-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# GLM 5.3 flash, not glm-5.2 / glm-5.3 (non-flash) / glm-5-turbo.
+is_glm53_flash() {
+    local id="${1,,}"
+    [[ "$id" == *glm-5.3-flash* || "$id" == *glm-5-3-flash* ]]
+}
+
+# GLM 5.3 family (flash or not). Used to catch wiring the quota glm-5.3
+# as if it were the free flash lane.
+is_glm53_family() {
+    local id="${1,,}"
+    [[ "$id" == *glm-5.3* || "$id" == *glm-5-3* ]]
+}
+
+is_cline_pass() {
+    local id="${1,,}"
+    [[ "$id" == cline-pass/* ]]
+}
+
+file_finding() {
+    local kind="$1" slug="$2" title="$3" body="$4"
+    local marker="fleet-cline-glm53-canary: ${kind} ${slug}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_CLINE_GLM53_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+emit_cline_catalog_ids() {
+    local out
+    if [[ -n "${FLEET_CLINE_GLM53_CATALOG:-}" ]]; then
+        if [[ ! -f "$FLEET_CLINE_GLM53_CATALOG" ]]; then
+            log "WARN: FLEET_CLINE_GLM53_CATALOG missing: $FLEET_CLINE_GLM53_CATALOG"
+            return 1
+        fi
+        out=$(cat "$FLEET_CLINE_GLM53_CATALOG")
+    else
+        if ! command -v "$PI" >/dev/null 2>&1; then
+            log "FAIL: pi binary not found ($PI)"
+            return 1
+        fi
+        if ! out=$("$PI" --list-models 2>/dev/null); then
+            log "FAIL: pi --list-models exited non-zero"
+            return 1
+        fi
+    fi
+    printf '%s\n' "$out" \
+        | grep -v '^EXTLOAD-OK' \
+        | grep -v '^provider ' \
+        | awk '$1 == "cline" { print $2 }'
+}
+
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "CLINE-GLM53-WATCHER-BROKEN" "seat-caps missing: $SEAT_CAPS_JSON"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "CLINE-GLM53-WATCHER-BROKEN" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+mapfile -t allowlisted < <(jq -r '.providers.cline.models // {} | keys[]' "$SEAT_CAPS_JSON")
+
+violations=0
+for slug in "${allowlisted[@]}"; do
+    [[ -n "$slug" ]] || continue
+    if is_glm53_flash "$slug" && ! is_cline_pass "$slug"; then
+        loud "CLINE-GLM53-VIOLATION" "billing GLM 5.3 flash slug allowlisted on cline: $slug"
+        file_finding "billing-wired" "$slug" \
+            "cline allowlisted billing GLM 5.3 flash slug $slug" \
+            "config/seat-caps.json providers.cline.models includes \`${slug}\` without the \`cline-pass/\` prefix. That form bills credits. Remove it. Wire only a \`cline-pass/\` GLM 5.3 flash slug after Pi lists it AND one live spawn plus a ClinePass weekly-cap meter check shows the free flash tier either bypasses the weekly cap or is benched until reset. models.json providers.cline.models must gain the same id (orcarouter lesson). Follow-up from fleet-ops#462."
+        violations=$((violations + 1))
+        continue
+    fi
+    if is_glm53_family "$slug" && ! is_glm53_flash "$slug"; then
+        loud "CLINE-GLM53-VIOLATION" "non-flash GLM 5.3 slug allowlisted on cline as if it were free flash: $slug"
+        file_finding "nonflash-wired" "$slug" \
+            "cline allowlisted non-flash GLM 5.3 slug $slug" \
+            "config/seat-caps.json providers.cline.models includes \`${slug}\`. Official ClinePass docs list \`cline-pass/glm-5.3\` (non-flash, quota) and no flash id. The ledger line is GLM 5.3 *flash* free on ClinePass (fleet-ops#462). Remove the non-flash id. Wait for a \`cline-pass/\` flash slug in Pi's catalog, then prove weekly-cap-bypass with one live spawn plus a meter check before routing."
+        violations=$((violations + 1))
+    fi
+done
+
+catalog_rc=0
+catalog_out=""
+if ! catalog_out=$(emit_cline_catalog_ids); then
+    catalog_rc=1
+fi
+
+if [[ "$catalog_rc" -ne 0 ]]; then
+    loud "CLINE-GLM53-WATCHER-BROKEN" "pi --list-models unavailable; cannot watch ClinePass GLM 5.3 flash"
+    if (( violations > 0 )); then
+        log "FAIL: $violations GLM 5.3 allowlist violation(s) (catalog unread)"
+    fi
+    exit 1
+fi
+
+declare -A catalog_set=()
+while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    catalog_set["$slug"]=1
+done <<< "$catalog_out"
+
+declare -A allow_set=()
+for slug in "${allowlisted[@]}"; do
+    [[ -n "$slug" ]] || continue
+    allow_set["$slug"]=1
+done
+
+# Unproven-slug gate: cline-pass flash allowlisted but absent from catalog.
+for slug in "${allowlisted[@]}"; do
+    [[ -n "$slug" ]] || continue
+    if is_glm53_flash "$slug" && is_cline_pass "$slug"; then
+        if [[ -z "${catalog_set[$slug]:-}" ]]; then
+            loud "CLINE-GLM53-VIOLATION" "unproven GLM 5.3 flash slug allowlisted on cline (not in Pi catalog): $slug"
+            file_finding "unproven-wired" "$slug" \
+                "cline allowlisted unproven GLM 5.3 flash slug $slug" \
+                "config/seat-caps.json providers.cline.models includes \`${slug}\` but Pi's cline catalog does not list it. The 2026-08-26 probe 404'd cline-pass/glm-5.3-flash and cline-pass/glm-5-3-flash. Remove the guessed id. The heartbeat canary files a prove+wire ticket when the real slug appears. fleet-ops#462."
+            violations=$((violations + 1))
+        fi
+    fi
+done
+
+# models.json gate: a catalog-proven flash slug that is allowlisted must
+# also exist as providers.cline.models[].id.
+models_ids=""
+if [[ -f "$MODELS_JSON" ]] && jq -e . "$MODELS_JSON" >/dev/null 2>&1; then
+    models_ids=$(jq -r '.providers.cline.models // [] | .[] | .id // empty' "$MODELS_JSON")
+fi
+declare -A models_set=()
+while IFS= read -r mid; do
+    [[ -n "$mid" ]] || continue
+    models_set["$mid"]=1
+done <<< "$models_ids"
+
+for slug in "${allowlisted[@]}"; do
+    [[ -n "$slug" ]] || continue
+    if is_glm53_flash "$slug" && is_cline_pass "$slug" && [[ -n "${catalog_set[$slug]:-}" ]]; then
+        if [[ -z "${models_set[$slug]:-}" ]]; then
+            loud "CLINE-GLM53-VIOLATION" "allowlisted GLM 5.3 flash slug missing from models.json: $slug"
+            file_finding "models-json-missing" "$slug" \
+                "cline GLM 5.3 flash slug $slug missing from models.json" \
+                "seat-caps allowlists \`${slug}\` and Pi lists it on cline, but ~/.pi/agent/models.json providers.cline.models has no matching id. Custom-provider models need models.json + resolve_model (orcarouter lesson). Add the entry before routing. fleet-ops#462."
+            violations=$((violations + 1))
+        fi
+    fi
+done
+
+discovered=0
+while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    if is_glm53_flash "$slug" && is_cline_pass "$slug"; then
+        if [[ -z "${allow_set[$slug]:-}" ]]; then
+            loud "CLINE-GLM53-AVAILABLE" "catalog has unwired ClinePass GLM 5.3 flash slug: $slug"
+            file_finding "flash-slug-available" "$slug" \
+                "prove and wire ClinePass GLM 5.3 flash slug $slug" \
+                "Pi \`--list-models\` now lists cline \`${slug}\`. It is not in seat-caps providers.cline.models. Per the 2026-08-26 ledger line (fleet-ops#462 / #384): (1) one live spawn on this exact slug, (2) read the ClinePass weekly-cap meter minutes after — fail closed if it bills credits; if it bypasses the weekly cap, wire with class/cap as the evidence shows; if it shares the weekly cap, wire anyway and let quota-bench hold it until reset, (3) add the same id to ~/.pi/agent/models.json providers.cline.models (orcarouter lesson), (4) add a dated seat-caps row (capacity-is-measured). Do not wire cline-pass/glm-5.3 (non-flash) or a slug that 404s."
+            discovered=$((discovered + 1))
+        else
+            log "ClinePass GLM 5.3 flash slug already allowlisted: $slug"
+        fi
+    fi
+done <<< "$catalog_out"
+
+if (( violations > 0 )); then
+    log "FAIL: $violations GLM 5.3 allowlist violation(s)"
+    exit 1
+fi
+
+if (( discovered > 0 )); then
+    log "CLINE-GLM53-AVAILABLE: $discovered unwired flash slug(s); issues filed; tick stays green"
+    exit 0
+fi
+
+loud "CLINE-GLM53-OK" "no unproven or billing GLM 5.3 flash slug on cline; no unwired cline-pass flash slug in catalog"
+exit 0

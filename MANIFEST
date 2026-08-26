@@ -257,6 +257,12 @@ bin/fleet-free-roster-canary /home/nish/.local/bin/fleet-free-roster-canary
 # or re-enables a banned id. Invoked by heartbeat-tier1 block 22.
 bin/fleet-pi-extensions-canary /home/nish/.local/bin/fleet-pi-extensions-canary
 config/pi-extensions-allowlist.json /home/nish/.local/state/pi-packet/pi-extensions-allowlist.json
+# fleet-ops#462: ClinePass GLM 5.3 flash canary (led-glm-5-3-free-clinepass).
+# Fail-loud if seat-caps allowlists a billing / non-flash / unproven flash
+# slug, or a proven slug missing from models.json. Observe-to-open when a
+# cline-pass GLM 5.3 flash slug appears in Pi's catalog. Heartbeat-tier1
+# block 23.
+bin/fleet-cline-glm53-canary /home/nish/.local/bin/fleet-cline-glm53-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
