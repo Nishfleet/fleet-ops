@@ -209,7 +209,7 @@ violations=0
 # Prune the state dir of chains older than 2x budget; nothing to enforce.
 if [[ ! -f "$STOP_REASON" ]] || reason_is_terminal "$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)"; then
     # Prune: old chain files (older than 2x budget) are historical.
-    find "$STATE_DIR" -name '*.json' -mmin +$(( BUDGET / 60 * 2 )) -delete 2>/dev/null || true
+    find "$STATE_DIR" -name '*.json' -mmin +$(( (BUDGET * 2) / 60 )) -delete 2>/dev/null || true
     log "no open escalation chain (STOP-REASON absent or terminal) — clean"
     exit 0
 fi

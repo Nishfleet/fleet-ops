@@ -97,13 +97,12 @@ audit_seats() {
         echo 0
         return 0
     fi
-    local f hc dead observed usable bench name
+    local f hc dead usable bench name
     for f in "$LEDGER_DIR"/*.json; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f" .json)
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || true)
-        observed=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
         usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
         bench=$(jq -r '.bench_until // ""' "$f" 2>/dev/null || true)
         case "$hc" in
@@ -172,21 +171,21 @@ audit_ready_work() {
     [[ -f "$READY_WORK" ]] || { echo 0; return 0; }
     local n=0 now
     now=$(now_epoch)
-    local line item after claimed done
+    local line item after claimed done_flag
     while IFS= read -r line; do
         [[ "$line" == "- [ ] "* || "$line" == "- [x] "* ]] || continue
         item="${line#- [x] }"; item="${item#- [ ] }"
         after=""
         claimed=""
-        done=""
+        done_flag=""
         [[ "$item" == *"after: "* ]] && after=1
         if [[ "$item" == *"CLAIMED:"* ]]; then
             claimed=$(printf '%s' "$item" | sed -n 's/.*CLAIMED:\([0-9TZ:+-]*\).*/\1/p')
         fi
         if [[ "$line" == "- [x] "* ]] && [[ "$item" == *"DONE:"* ]]; then
-            done=1
+            done_flag=1
         fi
-        if [[ -n "$claimed" ]] && [[ -z "$done" ]] && [[ -z "$after" ]]; then
+        if [[ -n "$claimed" ]] && [[ -z "$done_flag" ]] && [[ -z "$after" ]]; then
             # CLAIMED but no DONE and no after: gate. If the claim is old,
             # it is a stalled claim. A recent claim (< CLAIM_STALE_HOURS)
             # is in-flight — still not a clock, but not stale enough to
@@ -211,7 +210,7 @@ file_findings() {
     local slug="$1" msg="$2"
     [[ "$FILE_ISSUES" == "1" ]] || { log "auto-file: skipped (FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0)"; return 0; }
     command -v "$GH" >/dev/null 2>&1 || { log "auto-file: gh missing — cannot file"; return 0; }
-    local signal="signal: unjustified-wait/$slug"
+    local signal="${SIGNAL_PREFIX}${slug}"
     set +e
     local open_json
     open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)

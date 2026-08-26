@@ -103,7 +103,7 @@ any_seat_usable() {
 
 enrolled_repos() {
     if [[ -n "$REPOS" ]]; then
-        printf '%s\n' $REPOS
+        printf '%s\n' "$REPOS"
         return 0
     fi
     # Read the declared intake set (same source the reconciler converges).
@@ -114,7 +114,7 @@ enrolled_repos() {
 }
 
 main() {
-    local now last_verdict cur_verdict last_ts rc=0
+    local now last_verdict cur_verdict last_ts
     now=$(now_epoch)
 
     # Load the last persisted verdict.
