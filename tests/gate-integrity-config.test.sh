@@ -144,3 +144,15 @@ fi
 
 printf '\n%s passed, %s failed\n' "$PASS_COUNT" "$FAIL_COUNT"
 test "$FAIL_COUNT" -eq 0
+
+# fleet-ops#497: CI host lock. Workers cannot add a verify-command line.
+# This file must stay listed in ci.yml OR invoked from seat-lib.test.sh.
+ci_yml="$repo_root/.github/workflows/ci.yml"
+listed=0
+hosted=0
+grep -Fq 'bash tests/gate-integrity-config.test.sh' "$ci_yml" && listed=1 || true
+grep -Fq 'bash "$here/gate-integrity-config.test.sh"' "$here/seat-lib.test.sh" && hosted=1 || true
+if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
+  fail "gate-integrity-config.test.sh has no CI host (fleet-ops#497): list it in ci.yml or invoke it from seat-lib.test.sh"
+fi
+echo "OK: CI host exists (ci.yml listed=$listed seat-lib hosted=$hosted)"

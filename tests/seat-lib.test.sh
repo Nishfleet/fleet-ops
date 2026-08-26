@@ -960,3 +960,10 @@ bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed
 # cannot add a P14 line in .github/workflows/ci.yml).
 bash "$here/fleet-findings-queued.test.sh" || fail "fleet-findings-queued tests failed"
 
+# fleet-ops#497: gate-integrity fixtures. CI lists this file, not the
+# gate-integrity tests, because workers cannot edit .github/workflows.
+bash "$here/gate-integrity.test.sh" || fail "gate-integrity tests failed"
+bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests failed"
+# fleet-ops#497: gate-integrity reusable shape. Same CI constraint.
+bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"
+
