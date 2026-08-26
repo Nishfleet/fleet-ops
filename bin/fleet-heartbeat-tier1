@@ -36,6 +36,13 @@
 #      4h timer stays as the floor; this only pulls a scout LOOK sooner.
 #      Best-effort nudge — a CONFIG error is logged + LOUD but NOT propagated
 #      (a broken refill must not stop queuing/reclaim/wedge alarm).
+#  11. Red-PR repair (fleet-ops#124). Delegates to
+#      bin/fleet-heartbeat-red-pr-repair: for each open claim/issue-* PR
+#      whose checks are red AND whose pi-issue unit has no live worker for
+#      >1 tick, dispatches one repair worker onto the existing claim branch
+#      (loop-to-green per #80), bounded 2 attempts per PR, then fails LOUD
+#      into the paging path (#76/#86). Same non-zero-exit -> page contract
+#      as block 8.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -887,10 +894,43 @@ else
 fi
 
 # ============================================================================
+# 11. RED-PR REPAIR — re-dispatch onto orphaned red fleet-worker PRs (#124)
+# ============================================================================
+# The blind spot neither the queue pass (2) nor the orphan sweep (3) covers:
+# a worker opened a PR, exited, and CI came back red. The claim branch blocks
+# re-claiming (intake skips it), the agent-in-progress label blocks
+# re-queueing, and no machinery watched fleet PRs for red checks. This block
+# delegates to bin/fleet-heartbeat-red-pr-repair: for each open claim/issue-*
+# PR whose checks are red AND whose pi-issue unit has no live worker for >1
+# tick, it dispatches one repair worker onto the existing claim branch
+# (loop-to-green per #80), bounded RED_PR_MAX_ATTEMPTS (default 2), then
+# fails loud into the paging path (#76/#86). A non-zero exit propagates so
+# fleet-heartbeat.service lands in --state=failed -> page.
+REDPR_BIN="${FLEET_HEARTBEAT_REDPR:-/home/nish/.local/bin/fleet-heartbeat-red-pr-repair}"
+redpr_rc=0
+if [ -x "$REDPR_BIN" ]; then
+    log "11. red-pr-repair pass starting"
+    if "$REDPR_BIN"; then
+        log "11. red-pr-repair pass complete"
+    else
+        redpr_rc=$?
+        log "11. red-pr-repair: FAIL LOUD (rc=$redpr_rc) — a red PR exhausted its repair budget; unit will land in --state=failed"
+    fi
+else
+    log "11. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc"
+# Propagate the first non-zero fail-loud exit. Either the undersaturation
+# alarm or the red-pr-repair escalator may fail loud; both route to the same
+# pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
+fi
+if [ "$redpr_rc" -ne 0 ]; then
+    exit "$redpr_rc"
 fi
 exit 0
