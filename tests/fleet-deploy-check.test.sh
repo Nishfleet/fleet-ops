@@ -13,7 +13,9 @@
 #   4. origin/main moved, deploy invoked once, deploy bin logs rc=0 -> exit 0.
 #   5. origin/main moved, deploy invoked, deploy bin exits 1 -> LOUD
 #      DEPLOY-CHECK-FAILED, exit 1.
-#   6. Deploy already in flight (pgrep match) -> yields, deploy NOT invoked.
+#   6. Deploy already in flight (argv[0] match) -> yields, deploy NOT invoked.
+#   6b. A later argument that merely carries bin/fleet-ops-deploy is NOT
+#       in-flight (fleet-ops#533: never pgrep -f).
 #   7. Already deployed between fetch and lock -> no second deploy.
 
 set -euo pipefail
@@ -131,8 +133,8 @@ ok "deploy failure louds DEPLOY-CHECK-FAILED, exit 1"
 # --- 6. deploy already in flight -> yields -----------------------------------
 advance_origin "remote-five"
 n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
-# Simulate an in-flight deploy: a process whose cmdline contains
-# bin/fleet-ops-deploy (matches the pgrep pre-filter).
+# Simulate an in-flight deploy: argv[0] basename fleet-ops-deploy
+# (fleet-ops#533: match argv[0]/argv[1], never pgrep -f).
 mkdir -p "$scratch/inflight/bin"
 cp /bin/sleep "$scratch/inflight/bin/fleet-ops-deploy"
 "$scratch/inflight/bin/fleet-ops-deploy" 30 &
@@ -147,8 +149,26 @@ n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
 [[ "$n_after" == "$n_before" ]] || fail "deploy must not be invoked when in-flight"
 ok "in-flight deploy -> yields, no deploy"
 
+# --- 6b. a later argument that merely carries the path must NOT yield ------
+advance_origin "remote-five-b"
+n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+python3 -c 'import time,sys; time.sleep(20)' bin/fleet-ops-deploy &
+arg_pid=$!
+sleep 0.3
+rc=$(run_bin 0)
+kill "$arg_pid" 2>/dev/null || true
+wait "$arg_pid" 2>/dev/null || true
+[[ "$rc" == "0" ]] || fail "argument-only match should exit 0 (got $rc)"
+if grep -q "yielding this tick" "$scratch/err.log"; then
+  fail "argument-only bin/fleet-ops-deploy must not look in-flight"
+fi
+n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+[[ "$n_after" -gt "$n_before" ]] || fail "argument-only match must still invoke deploy"
+ok "argument-only cmdline match is not in-flight"
+
 # --- 7. already deployed between fetch and lock -------------------------------
 advance_origin "remote-six"
+n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
 # Hold the lock so the bin cannot take it.
 exec 9>"$lock"
 flock 9

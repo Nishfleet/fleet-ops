@@ -901,6 +901,14 @@ fi
 #  the fleet itself owns, not user code.)
 verified=0
 re_enabled=0
+# fleet-ops#533 / wipe lesson: a repair robot will override an operator
+# pause unless FLEET-PAUSED is CODE. The 2026-08-23
+# fleet-schedule-drift-watchdog enable --now'd 92 deliberately stopped
+# timers. This block no-ops while the marker is present.
+FLEET_PAUSED_MARKER="${FLEET_PAUSED_MARKER:-/home/nish/workspaces/agent-state/FLEET-PAUSED}"
+if [ -f "$FLEET_PAUSED_MARKER" ]; then
+    log "5. timer-arm pass SKIPPED — FLEET-PAUSED marker present at $FLEET_PAUSED_MARKER"
+else
 log "5. timer-arm pass starting"
 while IFS= read -r t; do
     [ -z "$t" ] && continue
@@ -935,6 +943,7 @@ while IFS= read -r t; do
     re_enabled=$((re_enabled+1))
 done <<< "$verify_timers"
 log "5. timer-arm pass complete: verified=$verified re_enabled=$re_enabled"
+fi
 
 # ============================================================================
 # 6. RECONCILE agent-blocked ISSUES

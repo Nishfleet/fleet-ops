@@ -40,6 +40,9 @@ bin/research-before-build-check /home/nish/.local/bin/research-before-build-chec
 # fleet-ops#519: no agent names on Nish's work — PR-body + commit-message lint.
 lib/fleet-no-agent-names-check.py /home/nish/.local/lib/pi-packet/fleet-no-agent-names-check.py
 bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
+# fleet-ops#533: argv[0]/argv[1] process match + push-before-delete.
+lib/fleet-wipe-lessons.py /home/nish/.local/lib/pi-packet/fleet-wipe-lessons.py
+bin/fleet-wipe-lessons-check /home/nish/.local/bin/fleet-wipe-lessons-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
