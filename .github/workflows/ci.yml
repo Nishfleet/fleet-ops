@@ -100,6 +100,7 @@ jobs:
             /home/nish/.local/bin/pi-issue-run \
             /home/nish/.local/bin/pi-packet-run \
             /home/nish/.local/bin/pi-intake-run \
+            /home/nish/.local/bin/agent-cron-run \
             /home/nish/.local/bin/intake-reconcile \
             /home/nish/.local/bin/pi-issue-failed-reap \
             /home/nish/.local/bin/siterep-deploy \
@@ -213,6 +214,12 @@ jobs:
         run: bash tests/pi-issue-failed-reap.test.sh
       - name: repair rotation
         run: bash tests/repair-rotation.test.sh
+      # fleet-ops#143: lock the agent-cron seat-rotation contract — a
+      # transient 429 on one seat no longer kills the daily cron; pick_seat
+      # routes to a healthy alt, and a fully-walled ladder fails loud as
+      # before. Also locks the Restart= policy on the cron service unit.
+      - name: agent-cron seat rotation
+        run: bash tests/agent-cron-seat-rotation.test.sh
       # fleet-ops#36: lock the seat-selection contract — cap-map allowlist,
       # model cap-0, loud stall, expiry-first order, rate-limit retry, and
       # the credential precheck (an allowlisted provider whose apiKey

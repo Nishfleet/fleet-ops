@@ -1,0 +1,36 @@
+[Unit]
+Description=Agent-agnostic cron: 0509 daily market signal (migrated from hermes 7a46414b01b6)
+# Agent-agnostic substrate per agent-agnostic-audit-2026-08-25.md Surface 1.
+# Schedule moved from hermes cron; original hermes job is now PAUSED but
+# preserved as migration provenance (never deleted).
+#
+# fleet-ops#143: the ExecStart wrapper (agent-cron-run) now rotates seats via
+# pick_seat instead of gating on the single-snapshot lanes/pi-seat-health.json.
+# Restart=on-failure re-runs ExecStart, which picks a DIFFERENT seat each
+# retry, so a transient fleet 429 in the wrong minute delays the daily job
+# instead of killing it for the day. RestartSec=15min + StartLimitBurst=3
+# bounds the retry window: three re-seats within the hour, then the unit goes
+# to failed until the next timer trigger (tomorrow).
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WORKDIR=/home/nish/workspaces/products/0509
+Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
+Environment=PROMPTS_DIR=/home/nish/workspaces/agent-state/cron-prompts
+Environment=PI_BIN=/home/nish/.local/bin/pi
+ExecStart=/home/nish/.local/bin/agent-cron-run 0509-daily-market-signal
+# Retry policy — a transient fleet 429 delays the job, not kills it for the
+# day. systemd re-runs ExecStart (which re-seats via pick_seat) up to
+# StartLimitBurst times within StartLimitIntervalSec.
+Restart=on-failure
+RestartSec=900
+# Hang detection: a cron active longer than this is terminated into `failed`.
+# (TimeoutStartSec, not RuntimeMaxSec: systemd ignores RuntimeMaxSec on
+# Type=oneshot.) agent-cron-run also bounds pi itself (PI_HANG_TIMEOUT_S) to
+# 42min, shorter than this, so a wedge clears its seat before this fires.
+TimeoutStartSec=45min
