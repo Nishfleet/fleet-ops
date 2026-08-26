@@ -1,0 +1,29 @@
+name: Gate integrity
+
+# Thin caller. GitHub evaluates THIS file from the base branch under
+# pull_request_target, then runs the fleet-ops reusable. Repo-specific
+# globs are inputs here (or, once the reusable lands, `.fleet/gate-integrity.yml`
+# on BASE). Do not copy steps out of the reusable.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gate-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-integrity:
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      gate-globs: '[".github/workflows/**", ".github/scripts/**", ".github/CODEOWNERS", ".gitleaksignore", ".gitleaks.toml", ".semgrepignore", ".semgrep.yml", ".semgrep.yaml", ".fleet/**"]'
+      ratchet-paths: "[]"

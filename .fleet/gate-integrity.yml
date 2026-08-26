@@ -1,0 +1,16 @@
+# fleet-ops own gate set. Decision script and config loader are gate-owned
+# because editing them changes the rules every consumer is judged by.
+gate_globs:
+  - ".github/workflows/**"
+  - ".github/scripts/**"
+  - ".github/CODEOWNERS"
+  - ".gitleaksignore"
+  - ".gitleaks.toml"
+  - ".semgrepignore"
+  - ".semgrep.yml"
+  - ".semgrep.yaml"
+  - ".fleet/**"
+  - "lib/gate-integrity-config.sh"
+  - "tests/gate-integrity.test.sh"
+  - "tests/gate-integrity-config.test.sh"
+ratchet_paths: []

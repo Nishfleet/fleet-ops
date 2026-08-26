@@ -1,0 +1,13 @@
+# Default gate set for a new Nishfleet repo. Override by replacing this file
+# (that edit is itself a gate-owned path and needs an admin attestation).
+gate_globs:
+  - ".github/workflows/**"
+  - ".github/scripts/**"
+  - ".github/CODEOWNERS"
+  - ".gitleaksignore"
+  - ".gitleaks.toml"
+  - ".semgrepignore"
+  - ".semgrep.yml"
+  - ".semgrep.yaml"
+  - ".fleet/**"
+ratchet_paths: []
