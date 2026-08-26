@@ -7,8 +7,9 @@
 #   3. Builds a sealed packet from prompts/blind-audit.md + live context.
 #   4. Dispatches a pi reviewer to produce findings.json and report.md.
 #   5. Runs each finding through the local panel (stub until #146).
-#   6. Files accepted findings as gap-audit issues linked to the report,
-#      then appends the filed URLs back into report.md (the reviewer is
+#   6. Files accepted findings as gap-audit + agent-ready issues linked to
+#      the report (panel PASS is the quality gate; fleet-ops#402), then
+#      appends the filed URLs back into report.md (the reviewer is
 #      forbidden from filing, so the report must not be the last word).
 #   7. Writes a verdict log (including issue URLs) to agent-state.
 #   8. Exits 1 if any PASS finding was not filed (cap skips do not count).
@@ -218,11 +219,18 @@ if [ "$DRILL" != "1" ]; then
     source "$SEAT_LIB"
 fi
 
-# Ensure the gap-audit label exists in the target repo. Swallow "already exists".
+# Ensure the topic + lifecycle labels exist. Swallow "already exists".
+# agent-ready is required: intake and pi-issue@* list that label only
+# (fleet-ops#402). gap-audit alone parks findings on the gap-board.
 if [ "$DRY_RUN" != "1" ]; then
     if ! gh label view gap-audit -R "$REPO" >/dev/null 2>&1; then
         gh label create gap-audit -R "$REPO" --color FBCA04 --description "Mechanical blind-audit finding" >/dev/null 2>&1 || {
             log "WARN: could not create gap-audit label (it may already exist or token lacks admin)"
+        }
+    fi
+    if ! gh label view agent-ready -R "$REPO" >/dev/null 2>&1; then
+        gh label create agent-ready -R "$REPO" --color 0E8A16 --description "Auto: ready for a worker to claim" >/dev/null 2>&1 || {
+            log "WARN: could not create agent-ready label (it may already exist or token lacks admin)"
         }
     fi
 fi
@@ -525,7 +533,7 @@ while IFS= read -r finding; do
         } > "$body_file"
 
         set +e
-        new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit 2>&1)
+        new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>&1)
         new_rc=$?
         set -e
         if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then

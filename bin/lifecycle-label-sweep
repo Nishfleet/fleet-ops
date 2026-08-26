@@ -12,7 +12,10 @@
 # existing 30-minute timer is the observer; this is not a new schedule.
 #
 # Lifecycle labels (exactly one required; extra non-lifecycle labels are
-# ignored):
+# ignored). gap-audit is a topic label, not a lifecycle label: findings
+# filed with only gap-audit are invisible to intake until this sweep
+# adds agent-ready (fleet-ops#402 leftovers; the auditor now dual-labels
+# at create time, this is the observe-to-close path).
 #   agent-ready / agent-in-progress / agent-blocked
 #   nish-reserved
 #   noise-class

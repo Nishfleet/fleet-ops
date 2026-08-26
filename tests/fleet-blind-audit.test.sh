@@ -5,7 +5,7 @@
 #   - builds a packet from prompts/blind-audit.md
 #   - dispatches a pi reviewer
 #   - runs findings through the panel
-#   - files gap-audit issues (up to the cap)
+#   - files gap-audit + agent-ready issues (up to the cap; fleet-ops#402)
 #   - writes a durable report and verdict log
 #   - skips duplicates and active deliberate states
 #   - treats expired deliberate states as loud findings
@@ -36,6 +36,11 @@ grep -q 'audit-target-noncanonical: fleet-ops#367' "$bin" \
     || fail "fleet-blind-audit must auto-file with the #367 marker"
 grep -q 'fleet-ops-deploy-clone' "$repo_root/prompts/blind-audit.md" \
     || fail "blind-audit prompt must name the canonical deploy-clone so reviewers do not re-file #367"
+# fleet-ops#402: panel-PASS findings must be filed with agent-ready or
+# intake/pi-issue never see them. This grep is the class guard — a create
+# that only stamps gap-audit is a failed run.
+grep -E 'gh issue create .*--label agent-ready' "$bin" \
+    || fail "fleet-blind-audit must file panel-PASS findings with --label agent-ready (fleet-ops#402)"
 
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
@@ -199,11 +204,15 @@ grep -F 'https://github.com/Nishfleet/fleet-ops/issues/9999' "$report_dir/report
 [[ -n $(jq -R -c 'fromjson | select(.rank=="1" and .issue=="https://github.com/Nishfleet/fleet-ops/issues/9999")' "$verdicts") ]] \
   || fail "verdicts.jsonl rank 1 missing issue URL"
 
-# gh issue create must use --body-file (not --body) and the gap-audit label.
+# gh issue create must use --body-file (not --body) and both labels.
+# gap-audit alone is the #402 class: findings sit on the gap-board with
+# no owner because intake lists agent-ready only.
 grep -E 'CREATE .*--body-file ' "$scratch/gh-create.log" >/dev/null \
   || fail "gh issue create was not invoked with --body-file: $(cat "$scratch/gh-create.log")"
 grep -E 'CREATE .*--label gap-audit' "$scratch/gh-create.log" >/dev/null \
   || fail "gh issue create missing --label gap-audit: $(cat "$scratch/gh-create.log")"
+grep -E 'CREATE .*--label agent-ready' "$scratch/gh-create.log" >/dev/null \
+  || fail "gh issue create missing --label agent-ready (fleet-ops#402): $(cat "$scratch/gh-create.log")"
 
 ok "fleet-blind-audit: panel, filing, dedupe, deliberate-state loud, stamp, report ledger"
 
@@ -244,7 +253,9 @@ grep -F 'https://github.com/Nishfleet/fleet-ops/issues/9999' "$drill_dir/report.
   || fail "drill verdicts.jsonl missing filed issue URL"
 grep -E 'CREATE .*--body-file ' "$drill_log" >/dev/null \
   || fail "drill gh create missing --body-file"
-ok "drill: fixture finding filed as gap-audit issue with report linked"
+grep -E 'CREATE .*--label agent-ready' "$drill_log" >/dev/null \
+  || fail "drill gh create missing --label agent-ready (fleet-ops#402): $(cat "$drill_log")"
+ok "drill: fixture finding filed as gap-audit + agent-ready issue with report linked"
 
 # ============================================================================
 # Fail-loud: PASS finding + gh create failure must exit 1 (not silent success).

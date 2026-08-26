@@ -192,6 +192,21 @@ grep -q -- '--add-label noise-class' "$scratch/edits.log" \
   || fail "halt-only add-label: $(cat "$scratch/edits.log")"
 ok "auto-revert-halt alone is not a lifecycle label; SKIP still gets noise-class"
 
+# Case 5b: gap-audit only (live #367–#371 shape) → agent-ready (fleet-ops#402).
+# gap-audit is a topic label, not a lifecycle label. Without this, findings
+# sit on the gap-board and intake never claims them.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":368,"title":"[gap-audit] fleet-heartbeat-failed-notify.service Telegram page names the wrong host","labels":[{"name":"gap-audit"}]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err5b.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "gap-audit-only relabeled: $out"
+grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+  || fail "gap-audit-only add-label: $(cat "$scratch/edits.log")"
+ok "gap-audit only → agent-ready (fleet-ops#402 leftovers)"
+
 # Case 6: drill:* already present → skip
 cat >"$scratch/list.json" <<'JSON'
 [{"number":7,"title":"drill leftover","labels":[{"name":"drill:oomd"}]}]
