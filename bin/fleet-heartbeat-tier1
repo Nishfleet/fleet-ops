@@ -696,8 +696,9 @@ log "3. orphan-pass complete: released=$released"
 # them. It defers direction A to §3 (skips agent-in-progress issues) so the
 # two sweeps never double-process the same claim. Same safety contract as
 # §3: never release a claim with a live worker or an open PR.
+claim_reconcile_rc=0
 CLAIM_BIN="${FLEET_CLAIM_RECONCILE:-/home/nish/.local/bin/claim-reconcile}"
-if [ -x "$CLAIM_BIN" ]; then
+if require_manifest_helper "$CLAIM_BIN"; then
     log "3b. claim-reconcile starting"
     if CLAIM_RECONCILE_REPOS="$(printf '%s\n' "$claim_repos")" \
         CLAIM_RECONCILE_LOCKDIR="${XDG_RUNTIME_DIR}/claim-reconcile" \
@@ -707,7 +708,13 @@ if [ -x "$CLAIM_BIN" ]; then
         log "3b. claim-reconcile FAILED — next tick retries"
     fi
 else
-    log "3b. claim-reconcile missing at $CLAIM_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "claim-reconcile helper missing at $CLAIM_BIN — MANIFEST dest; silent skip disabled the split-brain/garbage claim sweep (fleet-ops#485)"
+        claim_reconcile_rc=1
+    else
+        log "3b. claim-reconcile helper missing at $CLAIM_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -987,8 +994,9 @@ fi
 # webhooks, so there is no event to subscribe to. Heartbeat's existing
 # 30-minute timer is the observer; this is not a new schedule.
 relabeled=0
+lifecycle_rc=0
 LIFECYCLE_BIN="${FLEET_LIFECYCLE_SWEEP:-/home/nish/.local/bin/lifecycle-label-sweep}"
-if [ -x "$LIFECYCLE_BIN" ]; then
+if require_manifest_helper "$LIFECYCLE_BIN"; then
     log "6b. lifecycle-label-sweep starting"
     lifecycle_repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_REPOS_JSON")
     lifecycle_out=""
@@ -1003,7 +1011,13 @@ if [ -x "$LIFECYCLE_BIN" ]; then
         log "6b. lifecycle-label-sweep FAILED — next tick retries"
     fi
 else
-    log "6b. lifecycle-label-sweep missing at $LIFECYCLE_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — MANIFEST dest; silent skip disabled the lifecycle-label sweep (fleet-ops#485)"
+        lifecycle_rc=1
+    else
+        log "6b. lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1107,16 +1121,22 @@ fi
 # fail-loud still wins the unit's exit code.
 LOW_WATER_BIN="${FLEET_HEARTBEAT_LOW_WATER:-/home/nish/.local/bin/fleet-heartbeat-low-water-mark}"
 low_water_rc=0
-if [ -x "$LOW_WATER_BIN" ]; then
+if require_manifest_helper "$LOW_WATER_BIN"; then
     log "9. low-water-mark scouting pass starting"
     if "$LOW_WATER_BIN"; then
         log "9. low-water-mark pass complete"
     else
-        low_water_rc=$?
-        log "9. low-water-mark: CONFIG error (rc=$low_water_rc) — logged + LOUD triage line written; not propagated (best-effort nudge)"
+        _low_rc=$?
+        log "9. low-water-mark: CONFIG error (rc=$_low_rc) — logged + LOUD triage line written; not propagated (best-effort nudge)"
     fi
 else
-    log "9. low-water-mark helper missing at $LOW_WATER_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "low-water-mark helper missing at $LOW_WATER_BIN — MANIFEST dest; silent skip disabled the low-water-mark scout nudge (fleet-ops#485)"
+        low_water_rc=1
+    else
+        log "9. low-water-mark helper missing at $LOW_WATER_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1215,7 +1235,7 @@ fi
 # propagates so fleet-heartbeat.service lands in --state=failed.
 REDPR_BIN="${FLEET_HEARTBEAT_REDPR:-/home/nish/.local/bin/fleet-heartbeat-red-pr-repair}"
 redpr_rc=0
-if [ -x "$REDPR_BIN" ]; then
+if require_manifest_helper "$REDPR_BIN"; then
     log "12. red-pr-repair pass starting"
     if "$REDPR_BIN"; then
         log "12. red-pr-repair pass complete"
@@ -1224,7 +1244,13 @@ if [ -x "$REDPR_BIN" ]; then
         log "12. red-pr-repair: FAIL LOUD (rc=$redpr_rc) — a red PR exhausted its repair budget; unit will land in --state=failed"
     fi
 else
-    log "12. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "red-pr-repair helper missing at $REDPR_BIN — MANIFEST dest; silent skip disabled the red-PR repair pass (fleet-ops#485)"
+        redpr_rc=1
+    else
+        log "12. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1257,17 +1283,25 @@ log "13. seat-health freshness done"
 # Skipped silently if ram-measure is not installed; the .local/bin
 # symlink is a fleet-ops install step (MANIFEST + ./install.sh), so a
 # missing binary is a config drift, not a code bug.
+ram_measure_rc=0
 RAM_BIN="${FLEET_RAM_MEASURE_BIN:-/home/nish/.local/bin/ram-measure}"
-if [ -x "$RAM_BIN" ]; then
+if require_manifest_helper "$RAM_BIN"; then
     if ram_summary="$("$RAM_BIN" 2>/dev/null)"; then
         log "14. ram-measure: $ram_summary"
     else
         # Measurement is observability; an unexpected non-zero here is
         # logged but does NOT fail the tick.
-        log "14. ram-measure: non-zero exit (rc=$?) — state file may be stale"
+        _ram_rc=$?
+        log "14. ram-measure: non-zero exit (rc=$_ram_rc) — state file may be stale"
     fi
 else
-    log "14. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "ram-measure helper missing at $RAM_BIN — MANIFEST dest; silent skip disabled the RAM measurement pass (fleet-ops#485)"
+        ram_measure_rc=1
+    else
+        log "14. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
+    fi
 fi
 COMPARE_BIN="${FLEET_RAM_COMPARE_BIN:-/home/nish/.local/bin/ram-metric-compare}"
 if [ -x "$COMPARE_BIN" ]; then
@@ -1405,7 +1439,7 @@ fi
 # and creates no unit/OnFailure of its own.
 CANARY_BIN="${FLEET_ESCALATION_CANARY:-/home/nish/.local/bin/fleet-escalation-canary}"
 canary_rc=0
-if [ -x "$CANARY_BIN" ]; then
+if require_manifest_helper "$CANARY_BIN"; then
     log "15. escalation-coverage canary starting"
     if "$CANARY_BIN"; then
         log "15. escalation-coverage canary complete"
@@ -1414,7 +1448,13 @@ if [ -x "$CANARY_BIN" ]; then
         log "15. escalation-coverage canary FAILED (rc=$canary_rc) — two-plane invariant violated; unit will land in --state=failed"
     fi
 else
-    log "15. escalation-coverage canary missing at $CANARY_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "escalation-coverage canary missing at $CANARY_BIN — MANIFEST dest; silent skip disabled the two-plane invariant check (fleet-ops#485)"
+        canary_rc=1
+    else
+        log "15. escalation-coverage canary missing at $CANARY_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1425,7 +1465,7 @@ fi
 # Violations auto-file and fail the tick (same pager as block 14).
 ENTITLED_CANARY_BIN="${FLEET_ENTITLED_WIRED_CANARY:-/home/nish/.local/bin/fleet-entitled-wired-canary}"
 entitled_canary_rc=0
-if [ -x "$ENTITLED_CANARY_BIN" ]; then
+if require_manifest_helper "$ENTITLED_CANARY_BIN"; then
     log "15. entitled-vs-wired canary starting"
     if "$ENTITLED_CANARY_BIN"; then
         log "15. entitled-vs-wired canary complete"
@@ -1434,7 +1474,13 @@ if [ -x "$ENTITLED_CANARY_BIN" ]; then
         log "15. entitled-vs-wired canary FAILED (rc=$entitled_canary_rc) — idle entitlement is invisible capacity; unit will land in --state=failed"
     fi
 else
-    log "15. entitled-vs-wired canary missing at $ENTITLED_CANARY_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "entitled-vs-wired canary missing at $ENTITLED_CANARY_BIN — MANIFEST dest; silent skip disabled the entitlement wiring check (fleet-ops#485)"
+        entitled_canary_rc=1
+    else
+        log "15. entitled-vs-wired canary missing at $ENTITLED_CANARY_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1446,7 +1492,7 @@ fi
 # unit's existing OnFailure. No new unit.
 WORKER_APP_CANARY_BIN="${FLEET_WORKER_APP_CANARY:-/home/nish/.local/bin/worker-app-canary}"
 worker_app_canary_rc=0
-if [ -x "$WORKER_APP_CANARY_BIN" ]; then
+if require_manifest_helper "$WORKER_APP_CANARY_BIN"; then
     log "16. worker-app identity canary starting"
     if "$WORKER_APP_CANARY_BIN"; then
         log "16. worker-app identity canary complete"
@@ -1455,7 +1501,13 @@ if [ -x "$WORKER_APP_CANARY_BIN" ]; then
         log "16. worker-app identity canary FAILED (rc=$worker_app_canary_rc) — DEAD APP IDENTITY; unit will land in --state=failed"
     fi
 else
-    log "16. worker-app identity canary missing at $WORKER_APP_CANARY_BIN — skip (not installed)"
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "worker-app identity canary missing at $WORKER_APP_CANARY_BIN — MANIFEST dest; silent skip disabled the App-identity freshness check (fleet-ops#485)"
+        worker_app_canary_rc=1
+    else
+        log "16. worker-app identity canary missing at $WORKER_APP_CANARY_BIN — skip (not installed)"
+    fi
 fi
 
 # ============================================================================
@@ -1601,7 +1653,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1618,8 +1670,20 @@ fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
 fi
+if [ "${claim_reconcile_rc:-0}" -ne 0 ]; then
+    exit "${claim_reconcile_rc}"
+fi
+if [ "${lifecycle_rc:-0}" -ne 0 ]; then
+    exit "${lifecycle_rc}"
+fi
+if [ "$low_water_rc" -ne 0 ]; then
+    exit "$low_water_rc"
+fi
 if [ "$redpr_rc" -ne 0 ]; then
     exit "$redpr_rc"
+fi
+if [ "${ram_measure_rc:-0}" -ne 0 ]; then
+    exit "${ram_measure_rc}"
 fi
 if [ "$canary_rc" -ne 0 ]; then
     exit "$canary_rc"
