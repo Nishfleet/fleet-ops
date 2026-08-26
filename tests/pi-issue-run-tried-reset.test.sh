@@ -33,6 +33,23 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
+# P14 (fleet-ops#549): the worker App creds file must exist and mint before
+# pi runs. This test is about tried-seats rotation, not identity — stub a
+# working App identity so the run reaches pi.
+mkdir -p "$HOME/.config/fleet-worker"
+: >"$HOME/.config/fleet-worker/nishfleet-worker.env"
+chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+stub_bin="$scratch/stub-bin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/worker-token" <<'STUB'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+exit 0
+STUB
+chmod +x "$stub_bin/worker-token"
+export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+export PATH="$stub_bin:$PATH"
+
 STATE_DIR="$scratch/state"
 mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
 ISSUES_DIR="$scratch/issues"

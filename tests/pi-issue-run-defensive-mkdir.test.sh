@@ -29,6 +29,13 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
+# P14 (fleet-ops#549): the worker App creds file must exist and mint before
+# pi runs. This test is about the defensive mkdir, not identity — stub a
+# working App identity so the run reaches pi.
+mkdir -p "$HOME/.config/fleet-worker"
+: >"$HOME/.config/fleet-worker/nishfleet-worker.env"
+chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+
 STATE_DIR="$scratch/state"
 mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
 LEDGER="$scratch/ledger"
@@ -70,12 +77,14 @@ exit 0
 STUB
 chmod +x "$stub_bin/gh"
 
-# Stub `worker-token`: never invoked.
+# Stub `worker-token`: mint succeeds so the run reaches pi (P14 gate).
 cat >"$stub_bin/worker-token" <<'STUB'
 #!/usr/bin/env bash
-exit 1
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+exit 0
 STUB
 chmod +x "$stub_bin/worker-token"
+export WORKER_TOKEN_BIN="$stub_bin/worker-token"
 
 # Poisoned systemctl: if pick_seat still lists live units, this reports the
 # test seat as fully occupied (cap=1 below) and the run fails with an empty
