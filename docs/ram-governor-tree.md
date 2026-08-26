@@ -152,7 +152,7 @@ the stock 50% (now neutralized) and not the kernel OOM. Soak up RAM until
 the target slice. Drill slice is `MemoryHigh=128M / MemoryMax=1G /
 MemorySwapMax=0 / RuntimeMaxSec=180` per the existing drill template.
 
-## Measurement mismatch — fleet-ops#202
+## Measurement mismatch and admission decision — fleet-ops#202 / #489
 
 #193 sized a self-calibrate formula against a 35 MB RSS figure. That number
 is process VmRSS (`ps` / `/proc/PID/status`), not cgroup `memory.current`.
@@ -162,14 +162,21 @@ Live sample 2026-08-26:
 - 12 live `pi-issue@` units
 - `memory.current` p95 = 822.6 MB (`p95_bytes=862556160`)
 - p95*3 clamps to the 1.5 GB ceiling
-- resulting RAM cap = 4 (below the old 0.75 G vibe of ~7-10)
 - `/proc/pressure/memory` `some avg10` was 1.53, not zero
 
-The admission formula is unchanged (`ram_gb_per_worker=0.75` in
-`config/seat-caps.json`). `bin/ram-metric-compare` records both metrics
-each heartbeat tick so a later ticket can decide whether admission should
-keep using `memory.current` (honest cgroup cost) or switch to VmRSS
-(closer to 35 MB, which would raise lanes).
+2026-08-27 rolling sample (`~/.local/state/ram-measurement/ram-metric-compare.json`):
+
+- 14 live `pi-issue@` units
+- `memory.current` p95 = 1163.1 MB
+- process `VmRSS` p95 = 2.8 MB
+- ratio 411.8
+
+fleet-ops#489 decided to keep `memory.current` for admission. The formula
+is now `ram_gb_per_worker = min(memory.current p95 * 3, 1.5)`.
+`config/seat-caps.json` sets `ram_gb_per_worker=1.5`, the clamped ceiling.
+That keeps lanes tight (~4) and does not undercount what the cgroup
+actually charges. Process VmRSS is much smaller, so using it would raise
+lanes but undercount real cost.
 
 Do not cite the 35 MB figure as cgroup cost.
 

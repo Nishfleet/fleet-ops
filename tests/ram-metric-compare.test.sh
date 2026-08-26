@@ -7,7 +7,7 @@
 #      reports mismatch=1 and those p95s. Does not edit ram_gb_per_worker.
 #   2. Equal metrics report mismatch=0.
 #   3. Zero units still exit 0 and write a state file.
-#   4. Admission formula is unchanged (0.75 G seed; no self-calibrate).
+#   4. Admission formula uses memory.current p95*3 clamped to 1.5 GB (fleet-ops#489).
 #   5. Comments that cite 35 MB must label it as process VmRSS and must
 #      also cite memory.current + fleet-ops#202 (so the class cannot
 #      silently return as "RSS means cgroup").
@@ -93,16 +93,16 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission formula unchanged
+# 4. admission formula uses memory.current p95*3, no self-calibrate
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.75" ]] \
-    || fail "ram_gb_per_worker must stay 0.75 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "1.5" ]] \
+    || fail "ram_gb_per_worker must be 1.5 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
-    fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#202 does not change the formula)"
+    fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula unchanged (0.75 G, no self-calibrate)"
+ok "4. admission formula is 1.5 G from memory.current p95*3, no self-calibrate"
 
 # =========================================================================
 # 5. 35 MB cannot be cited as cgroup memory.current
