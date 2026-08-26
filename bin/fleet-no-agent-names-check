@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# fleet-no-agent-names-check — reject agent attribution in commits/PRs.
+# (fleet-ops#519).
+#
+# Implementation lives in lib/fleet-no-agent-names-check.py.
+#
+# Usage:
+#   fleet-no-agent-names-check --pr-body FILE --commit-range RANGE
+#   fleet-no-agent-names-check --pr-body FILE
+#   fleet-no-agent-names-check --commit-range RANGE
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_NO_AGENT_NAMES_LIB:-$here/../lib/pi-packet/fleet-no-agent-names-check.py}"
+[ -f "$lib" ] || lib="$here/../lib/fleet-no-agent-names-check.py"
+[ -f "$lib" ] || { printf 'fleet-no-agent-names-check: library missing: %s\n' "$lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"
