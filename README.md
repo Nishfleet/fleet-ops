@@ -48,10 +48,13 @@ step may run from:
 parent retargets to the deploy-clone and auto-files
 `audit-target-noncanonical: fleet-ops#367`.
 `products/fleet-ops` still points at the worktree parent
-(`/home/nish/workspaces/tooling/fleet-ops`). That parent holds linked
-worktrees and carries the pre-rewrite init history (16 commits with no
-merge-base against `origin/main`). Do not install from it. Do not delete
-it while worktrees are attached.
+(`/home/nish/workspaces/tooling/fleet-ops`) until no linked worktrees
+remain there. `fleet-ops-retarget-products` (run with `--apply` by the
+drift canary) then points the symlink at the deploy-clone. That parent
+holds linked worktrees and carries the pre-rewrite init history (16
+commits with no merge-base against `origin/main`). Do not install from
+it. Do not delete it while worktrees are attached. New fleet-ops
+worktrees are created from the deploy-clone (fleet-ops#410).
 
 The drift canary compares live-installed files to `origin/main` blobs, not
 to the checkout working tree, so it cannot self-compare. It also fails if

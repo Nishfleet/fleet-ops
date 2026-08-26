@@ -129,6 +129,9 @@ bin/intake-reconcile /home/nish/.local/bin/intake-reconcile
 # origin/main, runs install.sh, then this canary fails loud on any drift.
 bin/fleet-ops-deploy /home/nish/.local/bin/fleet-ops-deploy
 bin/fleet-ops-drift.py /home/nish/.local/bin/fleet-ops-drift
+# fleet-ops#410: retarget products/fleet-ops at the deploy-clone once no
+# worktrees remain on the pre-rewrite parent. Drift canary runs --apply.
+bin/fleet-ops-retarget-products /home/nish/.local/bin/fleet-ops-retarget-products
 systemd/intake-reconcile.path /home/nish/.config/systemd/user/intake-reconcile.path
 systemd/intake-reconcile.service /home/nish/.config/systemd/user/intake-reconcile.service
 systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.timer

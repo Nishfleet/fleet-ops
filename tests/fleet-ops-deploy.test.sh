@@ -96,12 +96,19 @@ if grep -q 'FLEET_OPS_DRIFT_BIN=' "$repo_root/systemd/fleet-heartbeat.service"; 
 fi
 [[ ! -e "$repo_root/systemd/fleet-heartbeat.service.d/10-deploy-checkout.conf" ]] \
     || fail "repo must not ship the paper-over heartbeat drop-in"
+grep -q 'check_products_symlink' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must retarget products/fleet-ops when worktrees can move (fleet-ops#410)"
+grep -q 'products-symlink-stale: fleet-ops#410' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file a stuck products/fleet-ops symlink (fleet-ops#410)"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
+# fleet-ops#410: do not let the canary --apply the live products/fleet-ops
+# symlink while this scratch checkout is under test.
+export FLEET_OPS_PRODUCTS_LINK="$scratch/products-fleet-ops-absent"
 mkdir -p "$HOME/.local/bin" \
          "$HOME/.config/systemd/user" \
          "$HOME/.pi/agent/prompts" \
@@ -888,3 +895,6 @@ bash "$here/canonical-checkout-guard.test.sh"
 
 # fleet-ops#175: same CI-list constraint; required-bins drill rides along.
 bash "$here/manifest-required-bins.test.sh"
+
+# fleet-ops#410: same CI-list constraint; products-symlink retarget rides along.
+bash "$here/fleet-ops-retarget-products.test.sh"

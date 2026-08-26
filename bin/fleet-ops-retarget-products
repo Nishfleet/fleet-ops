@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# fleet-ops-retarget-products — point products/fleet-ops at the deploy-clone
+# once no git worktrees remain on the pre-rewrite parent (fleet-ops#410).
+#
+# Default is --check (no mutation). The drift canary passes --apply so a
+# heartbeat tick retargets when it is safe. Never deletes the worktree parent.
+#
+# Exit:
+#   0  already canonical, link absent, or --apply succeeded
+#   2  waiting: attached worktrees still sit on the parent (not a failure)
+#   1  error: not a symlink, apply failed, or --check would retarget
+#
+# Environment seams (tests overlay these; live defaults are the VPS paths):
+#   FLEET_OPS_WORKSPACES_ROOT
+#   FLEET_OPS_CANONICAL_CHECKOUT
+#   FLEET_OPS_PRODUCTS_LINK
+#   FLEET_OPS_WORKTREE_PARENT
+
+set -euo pipefail
+
+mode=check
+case "${1:-}" in
+  --apply) mode=apply ;;
+  --check|"") mode=check ;;
+  -h|--help)
+    printf '%s\n' "usage: $0 [--check|--apply]"
+    exit 0
+    ;;
+  *)
+    printf 'fleet-ops-retarget-products: unknown arg %s\n' "$1" >&2
+    exit 1
+    ;;
+esac
+
+ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+products="${FLEET_OPS_PRODUCTS_LINK:-$ws_root/products/fleet-ops}"
+parent="${FLEET_OPS_WORKTREE_PARENT:-$ws_root/tooling/fleet-ops}"
+
+resolve() {
+  readlink -f "$1" 2>/dev/null || printf '%s\n' "$1"
+}
+
+log() {
+  printf 'fleet-ops-retarget-products: %s\n' "$*"
+}
+
+count_attached() {
+  local parent_r path pr
+  local n=0
+  parent_r=$(resolve "$parent")
+  if ! git -C "$parent" rev-parse --git-dir >/dev/null 2>&1; then
+    printf '0'
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        path="${line#worktree }"
+        ;;
+      "")
+        if [ -n "${path:-}" ]; then
+          pr=$(resolve "$path")
+          if [ "$pr" != "$parent_r" ] && [ -e "$path" ]; then
+            n=$((n + 1))
+          fi
+        fi
+        path=""
+        ;;
+    esac
+  done < <({ git -C "$parent" worktree list --porcelain; printf '\n'; })
+  printf '%s' "$n"
+}
+
+if [ ! -e "$products" ] && [ ! -L "$products" ]; then
+  log "PRODUCTS-LINK-ABSENT path=$products"
+  exit 0
+fi
+
+if [ -e "$products" ] && [ ! -L "$products" ]; then
+  log "PRODUCTS-REFUSE: $products exists and is not a symlink (fleet-ops#410)"
+  exit 1
+fi
+
+got=$(resolve "$products")
+want=$(resolve "$canon")
+
+if [ "$got" = "$want" ]; then
+  log "PRODUCTS-CANONICAL products=$products -> $want"
+  exit 0
+fi
+
+n=$(count_attached)
+if [ "$n" -gt 0 ]; then
+  log "PRODUCTS-STALE-WAITING n=$n parent=$parent products=$products canon=$canon"
+  exit 2
+fi
+
+if [ "$mode" = check ]; then
+  log "WOULD-RETARGET products=$products -> $canon (fleet-ops#410)"
+  exit 1
+fi
+
+mkdir -p "$(dirname "$products")"
+ln -sfn -- "$canon" "$products"
+got=$(resolve "$products")
+if [ "$got" != "$want" ]; then
+  log "PRODUCTS-APPLY-FAILED products=$products resolved=$got want=$want"
+  exit 1
+fi
+if [ ! -e "$parent" ]; then
+  log "PRODUCTS-APPLY-FAILED parent vanished after retarget: $parent"
+  exit 1
+fi
+log "PRODUCTS-RETARGETED products=$products -> $want"
+exit 0
