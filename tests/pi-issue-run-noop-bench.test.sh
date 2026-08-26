@@ -51,6 +51,7 @@ export PI_ISSUES_DIR="$ISSUES_DIR"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
 mkdir -p "$XDG_RUNTIME_DIR"
 
 stub_bin="$scratch/stub-bin"
@@ -82,6 +83,24 @@ export WORKER_TOKEN_BIN="$stub_bin/worker-token"
 
 cat >"$stub_bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
+args=" $* "
+# fleet-ops#142/#508: if pick_seat consults live unit counts, this poison stub
+# reports the fixture seats as fully occupied and the test fails.
+if [[ "$args" == *" list-units "* ]]; then
+  for i in 1 2 3 4; do
+    printf 'pi-issue@poison-glm-5-2-%s.service loaded active running poison\n' "$i"
+    printf 'pi-issue@poison-swe-1-7-%s.service loaded active running poison\n' "$i"
+  done
+  exit 0
+fi
+if [[ "$args" == *" show "* ]] && [[ "$args" == *"ExecStart"* ]]; then
+  if [[ "$args" == *"glm-5-2"* ]]; then
+    printf '/bin/sh -c --provider devin --model glm-5-2\n'
+  else
+    printf '/bin/sh -c --provider devin --model swe-1-7\n'
+  fi
+  exit 0
+fi
 exit 0
 STUB
 chmod +x "$stub_bin/systemctl"
