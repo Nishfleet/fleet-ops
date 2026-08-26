@@ -18,7 +18,7 @@ gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number
 ```
 
 Let `ready_count` = length of that list. If `ready_count >= 12`, print "supply full (agent-ready >= 12)", exit 0.
-Let `label_budget = 12 - ready_count`. You may apply `agent-ready` to at most `label_budget` issues this run (new or relabeled).
+Let `label_budget = 12 - ready_count`. You may apply `scout-candidate` (or `agent-ready` on fleet-ops only) to at most `label_budget` issues this run (new or relabeled).
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 
@@ -140,17 +140,23 @@ EOF
 
 Record each new issue number.
 
-Apply `agent-ready` only within `label_budget`:
+Apply `scout-candidate` (not `agent-ready`) within `label_budget`, so the
+senior admission panel judges the issue before intake can see it:
 ```bash
-gh issue edit <N> -R Nishfleet/<repo> --add-label agent-ready
+gh issue edit <N> -R Nishfleet/<repo> --add-label scout-candidate
 ```
+
+Exception: TARGET REPO `Nishfleet/fleet-ops` is control-plane. Those issues
+already sit behind CI + conference + auto-revert, and the product auditor
+FAILS fleet/CI tooling by design. Apply `agent-ready` there, still within
+`label_budget`.
 
 Prefer labeling the highest product-impact issues first. Do not label more than `label_budget` total.
 
 ## Step 5 — Summary (stdout)
 
 Print one line per action:
-- `filed #N: <title> [agent-ready|unlabeled]`
+- `filed #N: <title> [scout-candidate|agent-ready|unlabeled]`
 - `skipped: <reason>` for rejected dupes or missing termination
 - `supply: ready_count=<before> filed=<k> labeled=<m>`
 

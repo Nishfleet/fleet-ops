@@ -38,6 +38,11 @@ PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 # tests and fleet-ops overrides point at a different map without editing
 # the install path.
 SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
+# fleet-ops#457: quality-weighted routing overlay. Missing scoreboard =
+# no cuts (do not brick pick_seat). Over-threshold lanes lose heavy work.
+QUALITY_ROUTING_JSON="${QUALITY_ROUTING_JSON:-$HOME/.local/state/pi-packet/quality-routing.json}"
+QUALITY_SCOREBOARD_JSON="${QUALITY_SCOREBOARD_JSON:-$HOME/workspaces/agent-state/quality-scoreboard/snapshot.json}"
+QUALITY_ROUTING_PY="${QUALITY_ROUTING_PY:-$HOME/.local/lib/pi-packet/quality-routing.py}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
@@ -70,6 +75,33 @@ SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
 SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
+
+# fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
+# cuts. Empty when the scoreboard is missing/stale. Loaded once per pick.
+_quality_routing_loaded=0
+declare -A QUALITY_HEAVY_BAN=()
+
+load_quality_routing() {
+    QUALITY_HEAVY_BAN=()
+    _quality_routing_loaded=1
+    local py="$QUALITY_ROUTING_PY"
+    if [[ ! -f "$py" ]]; then
+        local here_py
+        here_py="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/quality-routing.py"
+        [[ -f "$here_py" ]] && py="$here_py"
+    fi
+    [[ -f "$py" ]] || return 0
+    [[ -f "$QUALITY_ROUTING_JSON" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local lane
+    while IFS= read -r lane; do
+        [[ -n "$lane" ]] || continue
+        QUALITY_HEAVY_BAN["$lane"]=1
+        seat_log "quality-routing: $lane excluded from heavy/keystone work"
+    done < <(python3 "$py" heavy-bans \
+        --thresholds "$QUALITY_ROUTING_JSON" \
+        --scoreboard "${QUALITY_SCOREBOARD_JSON:-}" 2>/dev/null || true)
+}
 
 load_seat_caps() {
     SEAT_PROVIDER_CAP=()
@@ -894,6 +926,7 @@ pick_seat() {
 
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
 
     # Reset the per-call credential cache so a provider is resolved once
     # per selection pass (fleet-ops#36). A provider with several models
@@ -969,6 +1002,10 @@ pick_seat() {
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
             seat_log "seat $p/$m skipped (not capable for heavy task)"
+            continue
+        fi
+        if (( need_capable )) && [[ -n "${QUALITY_HEAVY_BAN[$p/$m]:-}" ]]; then
+            seat_log "seat $p/$m skipped (quality-routing: over threshold, light work only)"
             continue
         fi
         if ! seat_usable "$p" "$m"; then

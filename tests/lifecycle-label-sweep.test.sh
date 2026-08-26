@@ -26,7 +26,7 @@ ok()   { echo "OK: $*"; }
 # --- classify (offline, no gh) --------------------------------------------
 got=$("$bin" --classify "fix(seats): Devin rate-limit never benches")
 [[ "$got" == "agent-ready" ]] || fail "default classify: $got"
-ok "plain title → agent-ready"
+ok "plain title without repo → agent-ready (title-only classify)"
 
 got=$("$bin" --classify "AUTO-REVERT SKIP: only non-required checks failed")
 [[ "$got" == "noise-class" ]] || fail "skip classify: $got"
@@ -126,7 +126,7 @@ export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-08-26T16:00:00Z"
 unset LIFECYCLE_SWEEP_DRILL || true
 
-# Case 1: unlabeled generic → agent-ready
+# Case 1: unlabeled generic on a product repo → scout-candidate (fleet-ops#457)
 cat >"$scratch/list.json" <<'JSON'
 [{"number":381,"title":"fix(seats): Devin rate-limit never benches","labels":[]}]
 JSON
@@ -136,11 +136,24 @@ JSON
 
 out=$("$bin" 2>"$scratch/err1.txt")
 grep -q 'relabeled=1' <<<"$out" || fail "generic relabeled: $out"
-grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+grep -q -- '--add-label scout-candidate' "$scratch/edits.log" \
   || fail "generic add-label: $(cat "$scratch/edits.log")"
-grep -q 'lifecycle-label: agent-ready' "$scratch/comments.log" \
+grep -q 'lifecycle-label: scout-candidate' "$scratch/comments.log" \
   || fail "generic comment: $(cat "$scratch/comments.log")"
-ok "unlabeled generic issue → agent-ready"
+ok "unlabeled generic issue on 0509 → scout-candidate (admission, not blank approval)"
+
+# Case 1b: unlabeled generic on fleet-ops → agent-ready (builder gate)
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":457,"title":"feat(quality): inescapable per-role gates","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err1b.txt")
+grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+  || fail "fleet-ops generic add-label: $(cat "$scratch/edits.log")"
+ok "unlabeled generic issue on fleet-ops → agent-ready (builder gate)"
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
 # Case 2: AUTO-REVERT SKIP (live #361 shape) → noise-class, not agent-ready
 cat >"$scratch/list.json" <<'JSON'

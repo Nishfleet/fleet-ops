@@ -56,8 +56,11 @@ actionable gaps. Look especially for:
    event-driven, or vice versa, without a named reason.
 6. **Hand-built plumbing** — bash loops, retry ledgers, or custom dispatchers
    that systemd/Pi already provides.
-7. **Lost work** — ownerless open PRs, dead claim branches, orphan issues, or
-   units stuck in `failed`/`activating`.
+8. **Ungated fleet roles** — a prompt or systemd unit that produces work
+   without a named quality gate. The mechanical checker is
+   `bin/fleet-role-gate-audit` (fleet-ops#457); still flag anything it
+   would miss, especially a new role that stamps `agent-ready` without
+   admission judging.
 8. **Recurred failure classes** — a failure class that came back after a
    closed 'fix' (same signal key firing again post-close). Every hit is an
    automatic finding. The harness also hunts this mechanically and merges

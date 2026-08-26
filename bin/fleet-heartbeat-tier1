@@ -1379,9 +1379,30 @@ else
 fi
 
 # ============================================================================
+# 19. PER-ROLE QUALITY-GATE AUDIT (fleet-ops#457)
+# ============================================================================
+# Every role's output must pass a gate it cannot bypass. This mechanical
+# checker re-runs the catalog every tick so a new role cannot ship gateless.
+# Findings auto-file (deduped). Fail loud only when the auditor itself is
+# broken. No new scheduler.
+ROLE_GATE_BIN="${FLEET_ROLE_GATE_AUDIT:-/home/nish/.local/bin/fleet-role-gate-audit}"
+role_gate_rc=0
+if [ -x "$ROLE_GATE_BIN" ]; then
+    log "19. role-gate audit starting"
+    if "$ROLE_GATE_BIN"; then
+        log "19. role-gate audit complete"
+    else
+        role_gate_rc=$?
+        log "19. role-gate audit FAILED (rc=$role_gate_rc) — auditor broken; unit will land in --state=failed"
+    fi
+else
+    log "19. role-gate audit missing at $ROLE_GATE_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1415,5 +1436,8 @@ if [ "${opencode_m3_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${paid_flash_canary_rc:-0}" -ne 0 ]; then
     exit "$paid_flash_canary_rc"
+fi
+if [ "${role_gate_rc:-0}" -ne 0 ]; then
+    exit "$role_gate_rc"
 fi
 exit 0

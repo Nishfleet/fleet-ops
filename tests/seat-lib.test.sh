@@ -112,6 +112,10 @@ JSON
 
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+# fleet-ops#457: isolate from a live quality scoreboard so overlay
+# cuts cannot leak into the allowlist contract tests.
+export QUALITY_SCOREBOARD_JSON="$scratch/no-quality-scoreboard.json"
+export QUALITY_ROUTING_JSON="$scratch/no-quality-routing.json"
 
 # --- invariant 2: provider with NO cap-map entry is rejected --------------
 ledger="$scratch/ledger-noentry"
@@ -937,4 +941,11 @@ bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3-catalog-can
 # fleet-ops#449 / #216 / #491: bin/ram-measure contract. CI lists this
 # file, not ram-measure.test.sh (workers cannot edit .github/workflows).
 bash "$here/ram-measure.test.sh" || fail "ram-measure tests failed"
+
+# fleet-ops#457: quality-weighted routing. Same CI constraint.
+bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
+# fleet-ops#457: per-role gate audit. rule-enforcement.test.sh currently
+# fails validate-matrix on a pre-existing duplicate-source pair, so this
+# file is the listed CI host.
+bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed"
 
