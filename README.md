@@ -43,6 +43,10 @@ step may run from:
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
 
 `fleet-heartbeat.service` pins `FLEET_OPS_CHECKOUT` to that path.
+`fleet-blind-audit.service` pins `AUDIT_REPO_ROOT` to the same path
+(fleet-ops#367). A run pointed at `products/fleet-ops` or the worktree
+parent retargets to the deploy-clone and auto-files
+`audit-target-noncanonical: fleet-ops#367`.
 `products/fleet-ops` still points at the worktree parent
 (`/home/nish/workspaces/tooling/fleet-ops`). That parent holds linked
 worktrees and carries the pre-rewrite init history (16 commits with no

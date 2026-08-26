@@ -48,6 +48,9 @@ fi
 grep -q 'FLEET_OPS_CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
     "$repo_root/systemd/fleet-heartbeat.service" \
     || fail "fleet-heartbeat.service must pin the canonical deploy-clone checkout"
+grep -q 'AUDIT_REPO_ROOT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
+    "$repo_root/systemd/fleet-blind-audit.service" \
+    || fail "fleet-blind-audit.service must pin AUDIT_REPO_ROOT to the canonical deploy-clone"
 grep -q 'check_live_matches_origin_main' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must compare live dests to origin/main blobs"
 grep -q 'DRIFT-VOLATILE' "$repo_root/bin/fleet-ops-drift.py" \

@@ -21,6 +21,22 @@ ok()   { echo "OK: $*"; }
 
 [[ -x "$bin" ]] || fail "not executable: $bin"
 
+# fleet-ops#367: the live auditor must inspect the deploy-clone. The
+# products/fleet-ops default is the worktree parent; auditing it files
+# 48 false MANIFEST DIFFs (the 2026-08-26T15:11Z run that opened #367).
+grep -q 'AUDIT_REPO_ROOT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone' \
+    "$repo_root/systemd/fleet-blind-audit.service" \
+    || fail "fleet-blind-audit.service must pin AUDIT_REPO_ROOT to the canonical deploy-clone"
+if grep -Eq 'REPO_ROOT="\$\{AUDIT_REPO_ROOT:-/home/nish/workspaces/products/fleet-ops\}"' "$bin"; then
+    fail "fleet-blind-audit default AUDIT_REPO_ROOT is still the worktree parent"
+fi
+grep -q 'AUDIT-NONCANONICAL' "$bin" \
+    || fail "fleet-blind-audit must log AUDIT-NONCANONICAL when pointed at the worktree parent"
+grep -q 'audit-target-noncanonical: fleet-ops#367' "$bin" \
+    || fail "fleet-blind-audit must auto-file with the #367 marker"
+grep -q 'fleet-ops-deploy-clone' "$repo_root/prompts/blind-audit.md" \
+    || fail "blind-audit prompt must name the canonical deploy-clone so reviewers do not re-file #367"
+
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
@@ -281,4 +297,165 @@ grep -F 'Unfiled PASS findings: 1' "$fail_dir/report.md" >/dev/null \
   || fail "fail-loud report.md did not record unfiled PASS"
 
 ok "fail-loud: unfiled PASS finding exits 1 and is recorded in the report"
+
+# ============================================================================
+# fleet-ops#367: auditing products/fleet-ops (worktree parent) retargets to
+# the canonical deploy-clone and auto-files. Overlay FLEET_OPS_WORKSPACES_ROOT
+# so this never touches the live box.
+# ============================================================================
+ws367="$scratch/ws367"
+canon367="$ws367/tooling/fleet-ops-deploy-clone"
+parent367="$ws367/tooling/fleet-ops"
+products367="$ws367/products/fleet-ops"
+mkdir -p "$canon367/docs" "$parent367" "$ws367/products"
+ln -sfn "$parent367" "$products367"
+printf '# overlay deliberate states\n' >"$canon367/docs/deliberate-states.md"
+
+noncanon_state="$scratch/noncanon-state"
+noncanon_plan="$scratch/noncanon-plan.md"
+noncanon_log="$scratch/noncanon-create.log"
+mkdir -p "$noncanon_state"
+: > "$noncanon_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$noncanon_plan"
+
+noncanon_rc=0
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$noncanon_log" \
+  FLEET_OPS_WORKSPACES_ROOT="$ws367" \
+  FLEET_OPS_CANONICAL_CHECKOUT="$canon367" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$products367" \
+  AUDIT_STATE_DIR="$noncanon_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$noncanon_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:23:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/noncanon.log" 2>&1 || noncanon_rc=$?
+[[ $noncanon_rc == 0 ]] || { cat "$scratch/noncanon.log"; fail "noncanonical-root drill exited $noncanon_rc"; }
+grep -F 'AUDIT-NONCANONICAL' "$scratch/noncanon.log" >/dev/null \
+    || fail "noncanonical products/fleet-ops root did not log AUDIT-NONCANONICAL: $(cat "$scratch/noncanon.log")"
+grep -F "$canon367" "$scratch/noncanon.log" >/dev/null \
+    || fail "AUDIT-NONCANONICAL log did not name the canonical checkout"
+grep -E 'CREATE .*--body-file ' "$noncanon_log" >/dev/null \
+    || fail "noncanonical auto-file missing --body-file: $(cat "$noncanon_log")"
+grep -F 'Blind audit targeted non-canonical' "$noncanon_log" >/dev/null \
+    || fail "noncanonical auto-file missing detector title: $(cat "$noncanon_log")"
+ok "noncanonical products/fleet-ops root retargets and auto-files"
+
+# Same class via the worktree parent path (not the products symlink).
+parent_state="$scratch/parent-state"
+parent_plan="$scratch/parent-plan.md"
+parent_log="$scratch/parent-create.log"
+mkdir -p "$parent_state"
+: > "$parent_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$parent_plan"
+parent_rc=0
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$parent_log" \
+  FLEET_OPS_WORKSPACES_ROOT="$ws367" \
+  FLEET_OPS_CANONICAL_CHECKOUT="$canon367" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$parent367" \
+  AUDIT_STATE_DIR="$parent_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$parent_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:24:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/parent.log" 2>&1 || parent_rc=$?
+[[ $parent_rc == 0 ]] || { cat "$scratch/parent.log"; fail "parent-root drill exited $parent_rc"; }
+grep -F 'AUDIT-NONCANONICAL' "$scratch/parent.log" >/dev/null \
+    || fail "worktree-parent root did not log AUDIT-NONCANONICAL"
+ok "noncanonical tooling/fleet-ops parent retargets"
+
+# AUDIT_ALLOW_NONCANONICAL=1 skips retarget (tests/auditors that mean it).
+allow_state="$scratch/allow-state"
+allow_plan="$scratch/allow-plan.md"
+mkdir -p "$allow_state"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$allow_plan"
+allow_rc=0
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$scratch/allow-create.log" \
+  FLEET_OPS_WORKSPACES_ROOT="$ws367" \
+  FLEET_OPS_CANONICAL_CHECKOUT="$canon367" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$products367" \
+  AUDIT_STATE_DIR="$allow_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$allow_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:25:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/allow.log" 2>&1 || allow_rc=$?
+[[ $allow_rc == 0 ]] || { cat "$scratch/allow.log"; fail "allow-noncanonical drill exited $allow_rc"; }
+if grep -F 'AUDIT-NONCANONICAL' "$scratch/allow.log" >/dev/null; then
+    fail "AUDIT_ALLOW_NONCANONICAL=1 still retargeted: $(cat "$scratch/allow.log")"
+fi
+ok "AUDIT_ALLOW_NONCANONICAL=1 skips retarget"
+
+# Dedup: an open issue already carrying the marker -> no second detector create.
+dedup_gh="$scratch/dedupgh"
+mkdir -p "$dedup_gh"
+cat > "$dedup_gh/gh" <<'DEDUP_GH'
+#!/usr/bin/env bash
+subcmd="${1:-}"
+shift || true
+case "$subcmd" in
+  label) exit 0 ;;
+  issue)
+    case "${1:-}" in
+      list)
+        printf '%s\n' '[{"number":367,"title":"stale","body":"audit-target-noncanonical: fleet-ops#367\n"}]'
+        ;;
+      create)
+        printf 'CREATE %s\n' "$*" >> "${GH_CREATE_LOG:-/dev/null}"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
+        ;;
+    esac
+    exit 0
+    ;;
+  pr) printf '%s\n' '[]'; exit 0 ;;
+  *) exit 0 ;;
+esac
+DEDUP_GH
+chmod +x "$dedup_gh/gh"
+
+dedup_state="$scratch/dedup-state"
+dedup_plan="$scratch/dedup-plan.md"
+dedup_log="$scratch/dedup-create.log"
+mkdir -p "$dedup_state"
+: > "$dedup_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$dedup_plan"
+dedup_rc=0
+PATH="$dedup_gh:$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$dedup_log" \
+  FLEET_OPS_WORKSPACES_ROOT="$ws367" \
+  FLEET_OPS_CANONICAL_CHECKOUT="$canon367" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$products367" \
+  AUDIT_STATE_DIR="$dedup_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$dedup_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:26:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/dedup.log" 2>&1 || dedup_rc=$?
+[[ $dedup_rc == 0 ]] || { cat "$scratch/dedup.log"; fail "dedup drill exited $dedup_rc"; }
+grep -F 'AUDIT-NONCANONICAL' "$scratch/dedup.log" >/dev/null \
+    || fail "dedup run did not still retarget"
+grep -F 'Blind audit targeted non-canonical' "$dedup_log" >/dev/null \
+    && fail "dedup still filed a second detector issue: $(cat "$dedup_log")"
+grep -F 'dedup:' "$scratch/dedup.log" >/dev/null \
+    || fail "dedup run did not log dedup: $(cat "$scratch/dedup.log")"
+ok "open #367-marker issue suppresses a second detector file"
 
