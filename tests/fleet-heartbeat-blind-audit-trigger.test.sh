@@ -259,7 +259,8 @@ ok "C: daily floor timer fires regardless of gap-board state (OnCalendar=*-*-*, 
 # verify-command line because that is a workflow edit).
 bash "$here/fleet-heartbeat-blind-audit-cadence.test.sh"
 bash "$here/prove-one-run-check.test.sh"
-# fleet-ops#517: new bin/ files need a research: line (same CI step).
+# fleet-ops#517 / #534: new bin/ files need research: and help-first:
+# (same CI step, same checker).
 bash "$here/research-before-build-check.test.sh"
 # fleet-ops#368: stale-host Telegram page literals (blind-audit rank 2).
 bash "$here/fleet-heartbeat-failed-notify-shape.test.sh"

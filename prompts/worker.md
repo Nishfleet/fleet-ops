@@ -65,10 +65,12 @@ before opening the PR. Armed without ran is a failed run (fleet-ops#378).
 A PR that adds a new file under `bin/` is not done without a `research:` line
 naming a last-30-days-scale pass (`last30days`, official docs, or equivalent
 live search), the existing options that were compared, and why they lost or
-were adopted. Run
+were adopted, AND a `help-first:` line naming which existing tool's `--help`
+(or man / official docs) was read and why it does not already do this. Run
 `bin/research-before-build-check --body <pr-body-file> --name-status <(git diff --name-status origin/main...HEAD)`
 before opening the PR. Hand-building what already exists is a failed run
-(fleet-ops#517).
+(fleet-ops#517). Skipping `--help` and hand-building a flag that already
+exists is a failed run (fleet-ops#534).
 
 Agent names are forbidden on Nish's work. No `Co-Authored-By` trailers, no
 "Generated with" footers, and no agent names in the PR body or issue comments
@@ -129,6 +131,6 @@ Steps:
 5. Otherwise implement: the smallest durable change that fully solves the issue, following the repo's own conventions. Then run the Execution IS the review inner loop to a green run. Only after that, run the repo's own tests/checks locally (what its CI would run) and make them pass. If /home/nish/.local/bin/sgscan exists, run it on your diff and fix anything it rates ERROR.
 6. Commit with a clear message. Push early and again when done: `git push origin claim/issue-<N>`.
 7. Open the PR:
-   `gh pr create -R Nishfleet/<repo> --head claim/issue-<N> --title "<concise title>" --body "<what changed and why>. Verification: <exact commands run and their results>. run-proof: <journal lines, run URL, or systemctl/journalctl transcript — required when this PR adds a unit, timer, or workflow>. research: <last30days|official docs|live search> compared <options>; <why they lost or were adopted — required when this PR adds a new bin/ file>. Closes #<N>"`
-   The `Verification:` section (with journalctl/systemctl/exit-code/URL/fenced-block evidence) satisfies the prove-one-run gate (fleet-ops#378). An explicit `run-proof: journal|url|service|transcript <value>` line is also accepted and is the louder signal. A `research:` line satisfies the research-before-build gate (fleet-ops#517) when the diff adds a new `bin/` file.
+   `gh pr create -R Nishfleet/<repo> --head claim/issue-<N> --title "<concise title>" --body "<what changed and why>. Verification: <exact commands run and their results>. run-proof: <journal lines, run URL, or systemctl/journalctl transcript — required when this PR adds a unit, timer, or workflow>. research: <last30days|official docs|live search> compared <options>; <why they lost or were adopted — required when this PR adds a new bin/ file>. help-first: ran <tool> --help; <why it does not already do this — required when this PR adds a new bin/ file>. Closes #<N>"`
+   The `Verification:` section (with journalctl/systemctl/exit-code/URL/fenced-block evidence) satisfies the prove-one-run gate (fleet-ops#378). An explicit `run-proof: journal|url|service|transcript <value>` line is also accepted and is the louder signal. A `research:` line satisfies the research-before-build gate (fleet-ops#517) when the diff adds a new `bin/` file. A `help-first:` line satisfies the find-the-proven-thing gate (fleet-ops#534) on the same new `bin/` file.
 8. Print exactly one final line: the PR URL. Exit 0.

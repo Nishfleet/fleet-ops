@@ -266,10 +266,9 @@
     {
       "id": "sr-find-proven-thing",
       "source": "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)",
-      "mechanism": "Overlaps research-before-build; no --help-first gate on new scripts",
-      "proof": "Nishfleet/fleet-ops#534",
-      "status": "queued(#534)",
-      "queued_since": "2026-08-27"
+      "mechanism": "PR gate: a new bin/ file requires a help-first: line naming which existing tool --help (or man / official docs) was read and why it does not already do this; same checker as research-before-build; worker prompt runs it; drill rejects a fixture that skips it",
+      "proof": "bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#534",
+      "status": "enforced"
     },
     {
       "id": "sr-doc-only-suite",
