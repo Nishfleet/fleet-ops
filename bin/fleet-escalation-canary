@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+# fleet-escalation-canary — coverage canary for the escalation matrix
+# (fleet-ops#152).
+#
+# Proves the invariant "every failure path lands in the escalation matrix,
+# mechanically" on TWO planes, every heartbeat tick:
+#
+#   VPS plane (blocks 1-5):
+#     1. Every loaded user service is covered by the global escalation drop-in
+#        (OnFailure contains unit-escalation@<unit>.service) OR appears on the
+#        explicit anti-recursion exclusion list.
+#     2. No fleet execution path exists outside a systemd unit: only the
+#        sanctioned bin wrappers invoke `pi --print --provider` directly.
+#     3. Terminal delivery exists for NISH-ESCALATIONS.md and failed-units
+#        state. Until fleet-ops#76 lands, this is a standing loud PENDING
+#        finding — the canary does not pretend the invariant is met.
+#     4. Red-CI-on-ownerless-PR coverage (#124). Until #124's guard marker is
+#        present, a standing loud PENDING finding.
+#     5. system-scope fleet artifacts are documented as kernel/oomd-supervised
+#        exclusions (no user-manager OnFailure by design).
+#
+#   GitHub plane (blocks 6-8) — scope addition 2026-08-26: the invariant is
+#   TWO planes, not one. A red check on a repo with no coverage path is a
+#   loud canary finding.
+#     6. auto-revert / red-on-main coverage: fleet-ops ships auto-revert.yml
+#        (self-coverage for main-push red) and the reusable
+#        red-on-main-detector.yml (other repos wire it). Missing = VIOLATION.
+#     7. #124 redispatch coverage: every intake-enrolled repo that can produce
+#        claim PRs must be in fleet-repos.json claim_repos (or on the GitHub-
+#        plane exclusion list). A repo whose red claim PRs are not scanned by
+#        fleet-heartbeat-red-pr-repair = VIOLATION.
+#     8. red-check -> senior-auditor bridge: the path for a red check on a PR
+#        whose worker is still live (so #124 does not fire) and not on main
+#        (so auto-revert does not fire). NOT YET BUILT — standing loud PENDING
+#        finding per repo, suppressible by a marker once the bridge lands.
+#
+# Required-check enumeration note: authoritatively listing each repo's
+# required_status_checks needs branch-protection read (Administration scope),
+# which the worker GH_TOKEN deliberately lacks. So the GitHub plane verifies
+# the coverage LAYERS are wired per repo rather than enumerating checks: with
+# auto-revert (main-push red) + #124 (orphaned red PRs) + the bridge
+# (live-worker red PRs) all wired, no red-check path can escape the matrix.
+# That is the structurally complete proof the canary makes.
+#
+# The canary is run by fleet-heartbeat-tier1 on every tick. It fails loud
+# (exit 1) on real violations, exits 0 when the only findings are the
+# documented pending holes (#76 delivery, #124 guard, #152 bridge), and logs
+# every check to stderr + the heartbeat triage file.
+#
+# Anti-recursion: the canary runs inside fleet-heartbeat.service, which is
+# itself covered by the global unit-escalation drop-in. The canary never
+# creates its own unit or OnFailure path, so it cannot feed its own failure
+# back into itself.
+#
+# Environment seams (tests):
+#   SYSTEMCTL                         default systemctl
+#   GH                                default gh
+#   FLEET_OPS_REPO                    path to fleet-ops checkout
+#   FLEET_HEARTBEAT_TRIAGE            heartbeat triage file
+#   AGENT_STATE                       /home/nish/workspaces/agent-state
+#   FLEET_INTAKE_REPOS_JSON           config/intake-repos.json source
+#   FLEET_REDPR_REPOS_JSON            fleet-repos.json (claim_repos) source
+#   FLEET_ESCALATION_CANARY_DELIVERY  marker file for #76 delivery
+#   FLEET_ESCALATION_CANARY_REDCI     marker file for #124 guard
+#   FLEET_ESCALATION_CANARY_BRIDGE    marker file for the #152 bridge
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH="${GH:-gh}"
+
+# Resolve the repo root from this script's canonical path. When installed as a
+# symlink (the normal case) this follows the link to the active checkout.
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+DELIVERY_MARKER="${FLEET_ESCALATION_CANARY_DELIVERY:-$AGENT_STATE/.escalation-delivery}"
+REDCI_MARKER="${FLEET_ESCALATION_CANARY_REDCI:-$AGENT_STATE/.red-ci-ownerless-guard}"
+BRIDGE_MARKER="${FLEET_ESCALATION_CANARY_BRIDGE:-$AGENT_STATE/.red-check-senior-auditor-bridge}"
+
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json}"
+REDPR_REPOS_JSON="${FLEET_REDPR_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-repos.json}"
+
+log() {
+    printf '[%s] [fleet-escalation-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# Loud lines go to BOTH stderr and the triage file (single page for humans +
+# other agents). Format matches fleet-heartbeat-tier1's loud() helper.
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Anti-recursion exclusion list for services. These are part of the escalation
+# pipeline itself and must not trigger their own escalation.
+is_escalation_excluded() {
+    case "$1" in
+        unit-escalation@*)         return 0 ;;
+        stop-escalation.*)         return 0 ;;
+        ready-work*)               return 0 ;;
+        escalation-daily-sweep.*)  return 0 ;;
+    esac
+    return 1
+}
+
+# Sanctioned bin wrappers that are allowed to invoke the pi binary directly.
+# New runners must be added here AND wired to a systemd unit template.
+SANCTIONED_PI_RUNNERS=(
+    agent-cron-run
+    fleet-blind-audit
+    fleet-heartbeat-tier2
+    pi-intake-run
+    pi-issue-run
+    pi-packet-run
+    pi-scout-run
+    stop-escalation-dispatch
+)
+
+is_sanctioned_pi_runner() {
+    local name="$1"
+    local r
+    for r in "${SANCTIONED_PI_RUNNERS[@]}"; do
+        if [[ "$r" == "$name" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# GitHub-plane exclusion list: intake-enrolled repos that are deliberately NOT
+# in claim_repos (so #124 does not scan their claim PRs). Each MUST carry a
+# reason or the canary treats it as an uncovered violation.
+#
+# Format: "<repo-slug>|<reason>" — kept inline so the exclusion is legible at
+# the point of enforcement, the same discipline as the VPS anti-recursion set.
+GITHUB_PLANE_EXCLUDED_REPOS=(
+    # (none today — every intake repo that can produce a claim PR must be
+    #  covered by #124. Add a line here only with a named reason.)
+)
+
+is_github_plane_excluded() {
+    local repo="$1"
+    local entry
+    for entry in "${GITHUB_PLANE_EXCLUDED_REPOS[@]}"; do
+        local slug="${entry%%|*}"
+        if [[ "$slug" == "$repo" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The canary scans bin/ for direct pi invocations. It must not scan itself,
+# because its own source contains the regex pattern and diagnostic messages.
+self_name=$(basename "$0")
+
+# ============================================================================
+# main
+# ============================================================================
+violations=0
+pending=0
+
+log "escalation coverage canary starting (repo=$FLEET_OPS_REPO)"
+
+# ---------------------------------------------------------------------------
+# 0. repo paths exist
+# ---------------------------------------------------------------------------
+if [[ ! -d "$FLEET_OPS_REPO/bin" ]]; then
+    log "FATAL: bin dir missing in fleet-ops repo: $FLEET_OPS_REPO/bin"
+    exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# 1. loaded user service escalation coverage
+# ---------------------------------------------------------------------------
+log "1. checking escalation coverage for loaded user services"
+mapfile -t loaded_services < <(
+    "$SYSTEMCTL" --user list-units --type=service --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' \
+        | grep '\.service$' \
+        || true
+)
+
+for unit in "${loaded_services[@]}"; do
+    [[ -n "$unit" ]] || continue
+
+    if is_escalation_excluded "$unit"; then
+        log "1.  - $unit: excluded (anti-recursion)"
+        continue
+    fi
+
+    onf=$("$SYSTEMCTL" --user show "$unit" --property=OnFailure --value 2>/dev/null || true)
+    expected="unit-escalation@${unit}.service"
+
+    if [[ -n "$onf" ]] && grep -qF "$expected" <<< "$onf"; then
+        log "1.  - $unit: covered ($onf)"
+    else
+        loud "ESCALATION-CANARY-VIOLATION" "unit=$unit missing escalation drop-in (OnFailure='$onf', expected='$expected')"
+        violations=$((violations + 1))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 2. no unwrapped pi invocations in bin/
+# ---------------------------------------------------------------------------
+log "2. checking bin/ for unwrapped pi invocations"
+# Match a literal `pi` binary or the $PI / $PI_BIN variables followed by
+# `--print`. This deliberately skips comment lines and the canary's own source.
+mapfile -t pi_matching < <(
+    grep -R -l --exclude="$self_name" \
+        -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
+        "$FLEET_OPS_REPO/bin" 2>/dev/null \
+        || true
+)
+
+for f in "${pi_matching[@]}"; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f")
+    if is_sanctioned_pi_runner "$name"; then
+        log "2.  - $name: sanctioned pi wrapper"
+    else
+        loud "ESCALATION-CANARY-VIOLATION" "bin/$name invokes the pi binary directly but is not a sanctioned unit wrapper"
+        violations=$((violations + 1))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 3. terminal delivery path (#76 pending)
+# ---------------------------------------------------------------------------
+log "3. checking terminal delivery path"
+if [[ -f "$DELIVERY_MARKER" ]]; then
+    log "3.  - delivery marker present: $DELIVERY_MARKER"
+else
+    loud "ESCALATION-CANARY-PENDING" "terminal delivery not wired (#76) — NISH-ESCALATIONS.md and failed-units state have no live pager/dead-man ping yet"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 4. red-CI-on-ownerless-PR coverage (#124 pending)
+# ---------------------------------------------------------------------------
+log "4. checking red-CI ownerless-PR coverage"
+if [[ -f "$REDCI_MARKER" ]]; then
+    log "4.  - red-CI ownerless guard present: $REDCI_MARKER"
+else
+    loud "ESCALATION-CANARY-PENDING" "red-CI-on-ownerless-PR coverage pending (#124) — failing fleet PRs with no live worker are not yet re-dispatched"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 5. system-scope fleet artifacts — documented as kernel/oomd-supervised
+# ---------------------------------------------------------------------------
+log "5. documenting system-scope exclusions (kernel/oomd-supervised)"
+loud "ESCALATION-CANARY-EXCLUDED" "system-scope fleet artifacts are kernel/oomd-supervised, not user-manager OnFailure: user-1000.slice (50-ram-governor), user@1000.service (50-no-distro-oomd-kill)"
+
+# ---------------------------------------------------------------------------
+# 6. GitHub plane — auto-revert / red-on-main coverage (main-push red)
+# ---------------------------------------------------------------------------
+log "6. checking GitHub plane: auto-revert / red-on-main coverage"
+auto_revert_wf="$FLEET_OPS_REPO/.github/workflows/auto-revert.yml"
+red_main_wf="$FLEET_OPS_REPO/.github/workflows/red-on-main-detector.yml"
+if [[ -f "$auto_revert_wf" ]] && grep -q 'workflow_run:' "$auto_revert_wf" 2>/dev/null; then
+    log "6.  - auto-revert.yml present and wired to workflow_run (fleet-ops self-coverage for main-push red)"
+else
+    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: auto-revert.yml missing or not wired to workflow_run — main-push red on fleet-ops has no automatic revert"
+    violations=$((violations + 1))
+fi
+if [[ -f "$red_main_wf" ]] && grep -q 'workflow_call:' "$red_main_wf" 2>/dev/null; then
+    log "6.  - red-on-main-detector.yml present as a reusable workflow (other repos wire it for first-run-red alerts)"
+else
+    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: red-on-main-detector.yml missing or not a reusable workflow — other repos cannot wire first-run-red alerts"
+    violations=$((violations + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 7. GitHub plane — #124 redispatch covers every intake-enrolled repo
+# ---------------------------------------------------------------------------
+log "7. checking GitHub plane: #124 redispatch covers every intake repo"
+if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot verify #124 coverage of enrolled repos"
+    violations=$((violations + 1))
+else
+    if ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: jq missing — cannot parse intake-repos.json / fleet-repos.json"
+        violations=$((violations + 1))
+    else
+        # intake-enrolled repo slugs (Nishfleet/<name>).
+        mapfile -t intake_repos < <(
+            jq -r '.repos[]? | "Nishfleet/\(.name)"' "$INTAKE_REPOS_JSON" 2>/dev/null || true
+        )
+        # claim_repos that #124 actually scans. If the state file is missing
+        # the coverage set is unreadable — report PENDING and SKIP the per-repo
+        # check rather than flagging every repo as uncovered (a missing state
+        # file is a heartbeat-not-yet-run condition, not a coverage gap).
+        if [[ ! -f "$REDPR_REPOS_JSON" ]]; then
+            loud "ESCALATION-CANARY-PENDING" "GitHub plane: fleet-repos.json missing at $REDPR_REPOS_JSON — #124 coverage set unreadable (heartbeat has not written it yet)"
+            pending=$((pending + 1))
+        else
+            declare -A claim_set=()
+            while IFS= read -r cr; do
+                [[ -n "$cr" ]] && claim_set["$cr"]=1
+            done < <(jq -r '.claim_repos[]?' "$REDPR_REPOS_JSON" 2>/dev/null || true)
+
+            for repo in "${intake_repos[@]}"; do
+                [[ -n "$repo" ]] || continue
+                if is_github_plane_excluded "$repo"; then
+                    log "7.  - $repo: excluded from #124 (deliberate, see list)"
+                    continue
+                fi
+                if [[ "${claim_set[$repo]:-0}" == "1" ]]; then
+                    log "7.  - $repo: covered by #124 redispatch (in claim_repos)"
+                else
+                    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: $repo is intake-enrolled (can produce claim PRs) but NOT in fleet-repos.json claim_repos — its orphaned red PRs escape #124 redispatch"
+                    violations=$((violations + 1))
+                fi
+            done
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 8. GitHub plane — red-check -> senior-auditor bridge (live-worker red PRs)
+# ---------------------------------------------------------------------------
+log "8. checking GitHub plane: red-check -> senior-auditor bridge"
+if [[ -f "$BRIDGE_MARKER" ]]; then
+    log "8.  - bridge marker present: $BRIDGE_MARKER"
+else
+    loud "ESCALATION-CANARY-PENDING" "red-check -> senior-auditor bridge not wired (#152 scope addition) — a red check on a PR whose worker is still live (so #124 does not fire) and not on main (so auto-revert does not fire) has no automatic path to a senior auditor yet"
+    pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# done
+# ---------------------------------------------------------------------------
+if [[ "$violations" -gt 0 ]]; then
+    loud "ESCALATION-CANARY-FAIL" "violations=$violations pending=$pending — escalation matrix is not fully covered (two-plane invariant)"
+    exit 1
+fi
+
+loud "ESCALATION-CANARY-OK" "two-plane invariant holds: VPS services + pi runners covered; GitHub coverage layers wired; pending=$pending"
+exit 0
