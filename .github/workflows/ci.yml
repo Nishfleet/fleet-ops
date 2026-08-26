@@ -209,4 +209,5 @@ jobs:
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
+        bash tests/escalation-coverage-canary.test.sh
         bash tests/reusable-workflows.test.sh
