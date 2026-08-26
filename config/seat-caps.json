@@ -42,12 +42,11 @@
       }
     },
     "ollama": {
-      "cap": 4,
+      "cap": 2,
       "class": "free",
       "models": {
-        "deepseek-v4-flash:0731": 4
-      },
-      "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin)"
+        "deepseek-v4-flash:0731": 2
+      }
     },
     "commandcode": {
       "cap": 2,
