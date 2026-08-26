@@ -266,6 +266,14 @@ bin/ram-metric-compare /home/nish/.local/bin/ram-metric-compare
 # rewritten prose). Drop-in appends ExecStart on nish-memory-curator.
 bin/memory-ledger-supersede.py /home/nish/.local/bin/memory-ledger-supersede
 systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.config/systemd/user/nish-memory-curator.service.d/10-ledger-supersede.conf
+# fleet-ops#529: adopt the live vault-conflict-resolver into deploy so the
+# 2026-08-23 wipe cannot silently delete the timer again. Syncthing itself
+# only writes *.sync-conflict-* copies (no resolve command — syncthing
+# --help / cli --help). The freeze is memory-ledger-supersede; this unit
+# is the self-clearing half.
+lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
+systemd/vault-conflict-resolver.service /home/nish/.config/systemd/user/vault-conflict-resolver.service
+systemd/vault-conflict-resolver.timer /home/nish/.config/systemd/user/vault-conflict-resolver.timer
 # fleet-ops#85: hourly reaper for stale interactive Claude/ccd-cli sessions
 # in session-*.scope. SIGTERM then SIGKILL; skips dirty/claim worktrees.
 # N=8h from the 2026-08-27 idle tail (live pile at 0h, stale cluster from 6h).

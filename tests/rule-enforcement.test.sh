@@ -56,8 +56,11 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report vault sync conflicts as enforced covered_rows (fleet-ops#529): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
+  ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -449,6 +452,7 @@ run_drill() {
     GH_COMMENTED="${GH_COMMENTED:-/dev/null}" \
     GH_OPEN_ISSUES="${GH_OPEN_ISSUES:-}" \
     FLEET_ESCALATION_CANARY_SKIP_BACKUP="${FLEET_ESCALATION_CANARY_SKIP_BACKUP:-0}" \
+    FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT="${FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT:-0}" \
     "$canary" 2>&1
   )
   env_rc=$?
@@ -500,6 +504,7 @@ printf '%s\n' '[{"number":479,"title":"mechanism for TOP GEAR","body":"- source:
 export GH_OPEN_ISSUES="$drill/open.json"
 export GH_COMMENTED="$commented"
 export FLEET_ESCALATION_CANARY_SKIP_BACKUP=1
+export FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT=1
 run_drill
 [[ "$env_rc" == "0" ]] || fail "observe-to-close: canary must exit 0 when covered (rc=$env_rc out=$env_out)"
 if grep -q create "$created"; then
@@ -528,4 +533,10 @@ ok "drill: canary-covered marker is not posted twice"
 bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"
 ok "rule-enforcement: no-agent-names gate drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, and no-agent-names drill"
+# fleet-ops#529: conflict-file canary. Invoked from this CI-listed file so
+# hosted runners run it without a workflow edit (worker tokens cannot push
+# .github/workflows/**).
+bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
+ok "rule-enforcement: vault-conflict-resolver drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, and vault-conflict drills"
