@@ -246,6 +246,12 @@ calls="$scratch/systemctl.calls"
 cat >"$scratch/fake-bin/systemctl" <<FAKE
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$calls"
+# Fresh scratch install: nothing is enabled yet. A stub that always
+# exits 0 makes install.sh skip enable --now (fleet-ops#252), which is
+# what auto-reverted the first #222 land.
+case " \$* " in
+  *" is-enabled "*) exit 1 ;;
+esac
 exit 0
 FAKE
 chmod +x "$scratch/fake-bin/systemctl"
