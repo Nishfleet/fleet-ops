@@ -87,6 +87,8 @@ run_bin() {
   FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:00:00Z" \
   FLEET_CLAIM_STALE_HOURS="24" \
   FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0 \
+  FLEET_OPS_REPO="$scratch" \
+  SYSTEMD_ANALYZE="${SYSTEMD_ANALYZE:-systemd-analyze}" \
   GH="$scratch/gh" \
   GH_MOCK_STORE="$gh_store" \
   FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO="Nishfleet/fleet-ops" \
@@ -215,4 +217,54 @@ grep -rl "signal: unjustified-wait/" "$scratch/gh-issues" | wc -l | grep -q "^1$
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
 
-echo "OK: fleet-unjustified-wait: clock audit, loud fail, auto-file dedupe"
+# --- 9. timer gate audit ----------------------------------------------------
+# Prepare a clean scratch repo with a systemd/ dir so the timer audit is
+# exercised against fixtures, not the live VPS units.
+rm -rf "$scratch/systemd"
+mkdir -p "$scratch/systemd"
+
+# 9a. periodic timer with Named reason is clean
+printf '%s\n' '[Timer]' '# Named reason: daily signal is a true periodic cadence' 'OnCalendar=*-*-* 08:15:00' >"$scratch/systemd/periodic.timer"
+rm -rf "$scratch/seats"
+mkdir -p "$scratch/seats"
+cat >"$scratch/seats/good.json" <<'JSON'
+{"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"observed_at":"2026-08-27T00:00:00Z"}
+JSON
+: >"$scratch/STOP-REASON.json"
+: >"$scratch/READY-WORK.md"
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || fail "periodic timer with Named reason should exit 0 (got $rc)"
+ok "periodic timer with Named reason is clean"
+
+# 9b. future one-shot with no named gate is a violation
+rm -f "$scratch/systemd"/*.timer
+printf '%s\n' '[Timer]' 'OnCalendar=2026-09-01 00:00:00' >"$scratch/systemd/future-nogate.timer"
+rc=$(run_bin)
+[[ "$rc" == "1" ]] || fail "future one-shot with no named gate should exit 1 (got $rc)"
+grep -q "future-nogate.timer" "$scratch/err.log" || fail "missing future-nogate.timer mention"
+grep -q "OnCalendar='2026-09-01 00:00:00'" "$scratch/err.log" || fail "missing OnCalendar mention"
+ok "future one-shot with no named gate is flagged"
+
+# 9c. future one-shot with named-gate comment is clean
+rm -f "$scratch/systemd"/*.timer
+printf '%s\n' '[Timer]' '# named-gate: third-party API rate-limit reset on 2026-09-01' 'OnCalendar=2026-09-01 00:00:00' >"$scratch/systemd/future-gate.timer"
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || fail "future one-shot with named-gate comment should exit 0 (got $rc)"
+ok "future one-shot with named-gate comment is clean"
+
+# 9d. future one-shot with Named reason in linked .service file is clean
+rm -f "$scratch/systemd"/*.timer
+printf '%s\n' '[Timer]' 'OnCalendar=2026-09-01 00:00:00' 'Unit=future-svc.service' >"$scratch/systemd/future-svc.timer"
+printf '%s\n' '[Unit]' 'Description=fixture' '# Named reason: data window closes on 2026-09-01' >"$scratch/systemd/future-svc.service"
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || fail "future one-shot with Named reason in .service should exit 0 (got $rc)"
+ok "future one-shot with Named reason in linked .service is clean"
+
+# 9e. past one-shot is not a future deferral and is clean
+rm -f "$scratch/systemd"/*.timer "$scratch/systemd"/*.service
+printf '%s\n' '[Timer]' 'OnCalendar=2026-08-01 00:00:00' >"$scratch/systemd/past-nogate.timer"
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || fail "past one-shot with no gate should exit 0 (got $rc)"
+ok "past one-shot with no gate is ignored (not parked on a future date)"
+
+echo "OK: fleet-unjustified-wait: clock audit, timer gates, loud fail, auto-file dedupe"

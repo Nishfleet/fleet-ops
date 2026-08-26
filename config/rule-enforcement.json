@@ -108,10 +108,9 @@
     {
       "id": "sr-nothing-waits-tomorrow",
       "source": "global-standing-rules.md: Nothing waits for tomorrow (Nish, 2026-08-18, sharpens everything-happens-now)",
-      "mechanism": "No lint for a one-shot timer parked on a future date without a named physical gate",
-      "proof": "Nishfleet/fleet-ops#521",
-      "status": "queued(#521)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Unit-file canary in bin/fleet-unjustified-wait: every OnCalendar one-shot with a future Next elapse must carry a named physical gate (`# Named reason ...`, `# named-gate: ...`, or `# physical-gate: ...`) in the .timer file or its linked .service file",
+      "proof": "bin/fleet-unjustified-wait; tests/fleet-unjustified-wait.test.sh; systemd/*.timer",
+      "status": "enforced"
     },
     {
       "id": "sr-verify-before-answering",
