@@ -64,7 +64,7 @@ function gh(args, { json = false, allowFail = false } = {}) {
 }
 
 function parseArgs(argv) {
-  const opts = { apply: false, dryRun: true, orgs: [], format: "markdown", outDir: null };
+  const opts = { apply: false, dryRun: true, orgs: [], format: "markdown", outDir: null, repo: null, onlyLabels: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--apply") { opts.apply = true; opts.dryRun = false; }
@@ -72,8 +72,10 @@ function parseArgs(argv) {
     else if (a === "--org") { opts.orgs.push(argv[++i]); }
     else if (a === "--format") { opts.format = argv[++i]; }
     else if (a === "--out-dir") { opts.outDir = argv[++i]; }
+    else if (a === "--repo") { opts.repo = argv[++i]; }
+    else if (a === "--only-labels") { opts.onlyLabels = true; }
     else if (a === "-h" || a === "--help") {
-      console.error("usage: repo-standards-apply.mjs [--apply|--dry-run] --org Nishfleet --org nish3451 --format json|markdown --out-dir DIR");
+      console.error("usage: repo-standards-apply.mjs [--apply|--dry-run] [--repo OWNER/NAME] [--only-labels] --org Nishfleet --org nish3451 --format json|markdown --out-dir DIR");
       process.exit(0);
     }
   }
@@ -83,18 +85,28 @@ function parseArgs(argv) {
 
 function listRepos(org) {
   // --no-archived keeps archived repos out; the hands-off list is a second net.
-  return gh(["repo", "list", org, "--limit", "200", "--no-archived", "--json", "nameWithOwner,isFork,primaryLanguage,languages,repositoryTopics", "-q", ".[] | select(.isFork|not)"], { json: true }) || [];
+  // gh repo list --json ... -q emits one JSON object per line (jq -c semantics
+  // per row), so parse line-by-line into an array. Flatten the nested
+  // language/topic shape here so the rest of the script sees simple fields.
+  const out = gh(["repo", "list", org, "--limit", "200", "--no-archived", "--json",
+    "nameWithOwner,isFork,primaryLanguage,languages,repositoryTopics",
+    "-q", '.[] | select(.isFork|not) | {nameWithOwner, primaryLanguage: (.primaryLanguage.name // ""), languages: [.languages[].node.name], topics: [(.repositoryTopics // []) | .[].name]}'],
+    { allowFail: true });
+  if (!out) return [];
+  return out.split("\n").map((s) => s.trim()).filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
 }
 
 function repoLanguages(r) {
   const langs = [];
-  if (r.primaryLanguage) langs.push(r.primaryLanguage.name);
-  if (Array.isArray(r.languages)) for (const l of r.languages) langs.push(l.name);
-  return langs;
+  if (r.primaryLanguage) langs.push(r.primaryLanguage);
+  if (Array.isArray(r.languages)) for (const l of r.languages) langs.push(l);
+  return langs.filter(Boolean);
 }
 
 function repoTopics(r) {
-  return (r.repositoryTopics || []).map((t) => t.name || t);
+  return (r.topics || []).map((t) => t.name || t);
 }
 
 function getBranchProtection(repo, branch) {
@@ -175,8 +187,8 @@ function checkLabels(repo, exceptions) {
     findings.push({ rule: "label-triad", status: "excepted", detail: "exception declared" });
     return findings;
   }
-  const labels = gh(["api", `repos/${repo}/labels`, "--paginate", "-q", ".[].name"], { allowFail: true }) || [];
-  const labelSet = new Set(labels.split("\n").map((s) => s.trim()).filter(Boolean));
+  const labels = gh(["api", `repos/${repo}/labels`, "--paginate", "-q", ".[].name"], { allowFail: true }) || "";
+  const labelSet = new Set(String(labels).split("\n").map((s) => s.trim()).filter(Boolean));
   for (const lbl of LABEL_TRIAD) {
     if (!labelSet.has(lbl.name)) {
       findings.push({ rule: "label-triad", status: "drift", detail: `label "${lbl.name}" missing`, fix: "apply-api", label: lbl });
@@ -307,19 +319,27 @@ function processRepo(repo, r, fleetOpsSha, opts) {
   // callers) is left to the existing repo-file-sync-action path or a follow-up
   // PR — this script does not open file PRs directly to keep one writer per
   // repo (the file-sync action already owns that surface).
+  //
+  // --only-labels scopes the apply to the label triad only. Branch-protection
+  // apply is OFF by default even in --apply mode because required-context case
+  // sensitivity (e.g. fleet-ops requires "Semgrep" but the standard declares
+  // "semgrep") can stall every PR in a repo if the casing does not match the
+  // workflow's job name exactly. Branch-protection apply is a follow-up once
+  // the context-name reconciliation lands.
   if (opts.apply) {
     for (const f of findings) {
       if (f.fix === "apply-api" && f.rule === "label-triad" && f.label) {
         applyLabel(repo, f.label);
       }
     }
-    // Branch protection: apply once with the union of contexts.
-    const bpDrift = findings.some((f) => f.rule === "branch-protection" && f.status === "drift");
-    if (bpDrift) {
-      const branch = settings.default_branch;
-      const bp = getBranchProtection(repo, branch);
-      const existingCtxs = (bp && bp.required_status_checks && bp.required_status_checks.contexts) || [];
-      applyBranchProtectionViaTemp(repo, branch, repoType, existingCtxs);
+    if (!opts.onlyLabels) {
+      const bpDrift = findings.some((f) => f.rule === "branch-protection" && f.status === "drift");
+      if (bpDrift) {
+        const branch = settings.default_branch;
+        const bp = getBranchProtection(repo, branch);
+        const existingCtxs = (bp && bp.required_status_checks && bp.required_status_checks.contexts) || [];
+        applyBranchProtectionViaTemp(repo, branch, repoType, existingCtxs);
+      }
     }
   }
 
@@ -401,6 +421,7 @@ function main() {
   const results = [];
   for (const r of repos) {
     const repo = r.nameWithOwner;
+    if (opts.repo && repo !== opts.repo) continue;
     try {
       results.push(processRepo(repo, r, fleetOpsSha, opts));
     } catch (e) {
