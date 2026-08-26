@@ -309,6 +309,7 @@ cat >"$drill/standing.md" <<'EOF'
 EOF
 cat >"$drill/ledger.md" <<'EOF'
 - 2026-08-26 | covered ledger rule | a decision
+- 2026-08-26 | untracked ledger rule that must scream | a decision
 EOF
 cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
 {
@@ -470,15 +471,17 @@ run_drill
 [[ "$env_rc" == "1" ]] || fail "drill: canary must exit 1, got $env_rc ($env_out)"
 grep -q 'Untracked fixture rule that must scream' "$drill/triage.md" \
   || fail "drill: triage must name the untracked heading"
+grep -q 'untracked ledger rule that must scream' "$drill/triage.md" \
+  || fail "drill: triage must name the untracked ledger entry (fleet-ops#474)"
 grep -q 'ESCALATION-CANARY-VIOLATION' "$drill/triage.md" \
   || fail "drill: triage missing VIOLATION"
 create_count=$(grep -c create "$created" 2>/dev/null || echo 0)
-[[ "$create_count" == "2" ]] || fail "drill: expected 2 gh issue create calls (uncovered + queued), got $create_count (log=$(cat "$glog"))"
+[[ "$create_count" == "3" ]] || fail "drill: expected 3 gh issue create calls (uncovered standing + uncovered ledger + queued), got $create_count (log=$(cat "$glog"))"
 grep -q 'FILED' <<<"$env_out" || fail "drill: canary must log FILED (out=$env_out)"
-ok "drill: extra heading and queued row are flagged and auto-filed"
+ok "drill: extra heading, uncovered ledger entry, and queued row are flagged and auto-filed"
 
 # Replay: open issue with the signal key -> no second create for either.
-printf '%s\n' '[{"number":77,"title":"already","body":"signal: rule-enforcement/sr-untracked-fixture-rule-that-must-scream-nish-2026-08-26"},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
+printf '%s\n' '[{"number":77,"title":"already","body":"signal: rule-enforcement/sr-untracked-fixture-rule-that-must-scream-nish-2026-08-26"},{"number":79,"title":"ledger","body":"signal: rule-enforcement/led-2026-08-26-untracked-ledger-rule-that-must-scream"},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
   >"$drill/open.json"
 : >"$created"
 : >"$drill/triage.md"
@@ -500,6 +503,9 @@ cat >"$drill/standing.md" <<'EOF'
 # fixture
 ## Covered fixture rule (Nish, 2026-08-26)
 ## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
+EOF
+cat >"$drill/ledger.md" <<'EOF'
+- 2026-08-26 | covered ledger rule | a decision
 EOF
 : >"$created"
 : >"$drill/triage.md"
