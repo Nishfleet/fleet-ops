@@ -64,6 +64,14 @@ GH="${GH:-gh}"
 ISSUE_REPO="${FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES:-1}"
 
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-}"
+if [[ -z "$FLEET_OPS_REPO" ]]; then
+    _canon_script=$(readlink -f "$0")
+    _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+    FLEET_OPS_REPO="$_canon_repo"
+fi
+SYSTEMD_ANALYZE="${SYSTEMD_ANALYZE:-systemd-analyze}"
+
 SIGNAL_PREFIX="signal: unjustified-wait/"
 
 log() {
@@ -86,6 +94,97 @@ now_epoch() {
     else
         date -u +%s
     fi
+}
+
+# --- timer gate audit -------------------------------------------------------
+# Nothing waits for tomorrow (global-standing-rules.md). A one-shot
+# OnCalendar parked on a future date is a deferral; it is only allowed when
+# the timer or its linked service file names the physical gate in a comment
+# (`# Named reason ...`, `# named-gate: ...`, or `# physical-gate: ...`).
+
+timer_dir() {
+    echo "${FLEET_TIMER_DIR:-$FLEET_OPS_REPO/systemd}"
+}
+
+is_one_shot_future() {
+    local out="$1"
+    # systemd-analyze calendar --iterations 2 on a periodic spec prints a
+    # second iteration; one-shot specs do not.
+    if grep -q 'Iteration #2' <<<"$out"; then
+        return 1
+    fi
+    # A one-shot in the past reports "Next elapse: never".
+    if grep -q 'Next elapse: never' <<<"$out"; then
+        return 1
+    fi
+    # A future one-shot reports a concrete "Next elapse: ...".
+    grep -q 'Next elapse:' <<<"$out"
+}
+
+has_named_gate() {
+    local timer="$1"
+    local service=""
+    local f
+
+    # Use the Unit= from the timer file if present; otherwise assume the
+    # matching .service file.
+    service=$(grep -E '^[[:space:]]*Unit=' "$timer" 2>/dev/null | head -n1 | sed 's/^[[:space:]]*Unit=//;s/[[:space:]]*#.*//;s/[[:space:]]*$//' || true)
+    if [[ -z "$service" ]]; then
+        service="${timer%.timer}.service"
+    elif [[ "$service" != */* ]]; then
+        service="$(timer_dir)/$service"
+    fi
+
+    for f in "$timer" "$service"; do
+        [[ -f "$f" ]] || continue
+        if grep -Eiq '^[[:space:]]*#.*(Named reason|named-gate|physical-gate)' "$f"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+audit_timer_gates() {
+    local n=0
+    local tdir now base timer name line spec out
+    tdir=$(timer_dir)
+
+    if [[ ! -d "$tdir" ]]; then
+        log "timer gates: no $tdir"
+        echo 0
+        return 0
+    fi
+
+    now=$(now_epoch)
+    base=$(date -u -d "@$now" '+%Y-%m-%d %H:%M:%S')
+
+    for timer in "$tdir"/*.timer; do
+        [[ -f "$timer" ]] || continue
+        name=$(basename "$timer")
+
+        while IFS= read -r line; do
+            spec="${line#OnCalendar=}"
+            # strip inline comments and whitespace
+            spec="${spec%%#*}"
+            spec=$(printf '%s' "$spec" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            [[ -n "$spec" ]] || continue
+
+            out=$("$SYSTEMD_ANALYZE" calendar --iterations 2 --base-time="$base" "$spec" 2>/dev/null || true)
+            if ! is_one_shot_future "$out"; then
+                continue
+            fi
+
+            if has_named_gate "$timer"; then
+                log "timer gates: $name OnCalendar='$spec' has a named physical gate"
+                continue
+            fi
+
+            loud "UNJUSTIFIED-WAIT" "one-shot timer $name OnCalendar='$spec' is parked on a future date with no named physical gate"
+            n=$((n + 1))
+        done < <(grep -E '^[[:space:]]*OnCalendar=' "$timer" 2>/dev/null || true)
+    done
+
+    echo "$n"
 }
 
 # --- seat ledger audit ------------------------------------------------------
@@ -244,12 +343,13 @@ $signal"
 # ============================================================================
 # main
 # ============================================================================
-log "unjustified-wait audit starting (ledger=$LEDGER_DIR stop_reason=$STOP_REASON ready_work=$READY_WORK)"
+log "unjustified-wait audit starting (ledger=$LEDGER_DIR stop_reason=$STOP_REASON ready_work=$READY_WORK timers=$(timer_dir))"
 total=0
 s=$(audit_seats);        total=$((total + s))
 r=$(audit_stop_reason);  total=$((total + r))
 w=$(audit_ready_work);   total=$((total + w))
-log "audit complete: seats=$s stop_reason=$r ready_work=$w total=$total"
+t=$(audit_timer_gates);  total=$((total + t))
+log "audit complete: seats=$s stop_reason=$r ready_work=$w timers=$t total=$total"
 
 if [[ "$total" -gt 0 ]]; then
     # Auto-file one issue per finding slug (deduped). Slugs are derived
@@ -261,5 +361,5 @@ if [[ "$total" -gt 0 ]]; then
     exit 1
 fi
 
-loud "UNJUSTIFIED-WAIT-OK" "every wait carries a named clock (seats=$s stop_reason=$r ready_work=$w) — TOP GEAR invariant holds"
+loud "UNJUSTIFIED-WAIT-OK" "every wait carries a named clock (seats=$s stop_reason=$r ready_work=$w timers=$t) — TOP GEAR invariant holds"
 exit 0
