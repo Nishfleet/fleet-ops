@@ -268,7 +268,7 @@ ok "timer has [Install] and install.sh enables it"
 # enable --now. Destinations stay under $scratch so this cannot mutate the
 # live user bus. A comment-only enable line would fail this.
 #
-# fleet-ops#228 / #290: GitHub's runner has no user systemd bus. A stub
+# fleet-ops#228 / #254 / #290: GitHub's runner has no user systemd bus. A stub
 # that always exits 0 makes is-enabled look already-enabled, so install.sh
 # skips enable --now and P14 goes red. Track the fake enabled state in a
 # file so is-enabled returns non-zero until enable is recorded, exactly as
@@ -334,7 +334,7 @@ stub_is_enabled_rc=$?
 set -e
 : >"$calls"
 [[ "$stub_is_enabled_rc" == "1" ]] \
-  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#290), got $stub_is_enabled_rc"
+  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#254, fleet-ops#290), got $stub_is_enabled_rc"
 SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
   "$install_scratch/install.sh"
 [[ -L "$scratch/user-units/agent-cron-0509-daily-market-signal.timer" ]] \
@@ -349,7 +349,7 @@ post_is_enabled_rc=$?
 set -e
 [[ "$post_is_enabled_rc" == "0" ]] \
   || fail "stub is-enabled must return 0 after enable --now (fleet-ops#228), got $post_is_enabled_rc"
-ok "scratch install.sh enable --now invoked for the [Install] timer"
+ok "scratch install.sh enable --now invoked for the [Install] timer (fleet-ops#254)"
 
 # --- fleet-ops#236: a stub that exits 0 but prints nothing must not skip enable --now ----
 # The is-enabled exit code alone is not enough: a broken stub (or a missing
