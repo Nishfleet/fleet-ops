@@ -1,29 +1,40 @@
 #!/usr/bin/env bash
 # research-before-build-check — reject a new bin/ tool with no research pass
-# (fleet-ops#517).
+# (fleet-ops#517) and no --help-first receipt (fleet-ops#534).
 #
 # Standing rule (Nish, 2026-08-18): "Research before build — always."
 # Before hand-building a new tool, run a last-30-days-scale pass
 # (last30days, official docs, or equivalent live search), name what was
 # compared, and say why it lost (or that one was adopted).
 #
+# Standing rule (Nish, 2026-08-23): "Find the proven thing before you
+# build anything." STEP 0 is automatic: read the tool you already run
+# (`--help` / man / official docs) BEFORE researching and BEFORE
+# building. A new bin/ file that skips that receipt is the restic-forget
+# incident class.
+#
 # Usage:
 #   research-before-build-check --body FILE --name-status FILE
 #   git diff --name-status origin/main...HEAD | research-before-build-check --body FILE --name-status -
 #
-# Exit 0: no new bin/ file, or a well-formed research: line is present.
-# Exit 1: new bin/ file and no research: proof (the drill reject).
+# Exit 0: no new bin/ file, or well-formed research: AND help-first: lines.
+# Exit 1: new bin/ file and missing proof (the drill reject).
 # Exit 2: usage error.
 #
 # Proof: a line matching ^research:\s+\S that names both:
 #   1. a live-search marker (last30days / official docs / live search /
 #      web search / websearch / context7)
 #   2. an alternatives marker (compared / checked / adopted / rejected)
+# And a line matching ^help-first:\s+\S that names both:
+#   1. a STEP 0 marker (--help / man / official docs)
+#   2. why the existing tool does not already do this
 #
 # The GitHub required-check workflow is a follow-up (nishfleet-worker has
 # no Workflows permission). This binary is the gate; tests are the drill.
 # Market PR-template Actions (pr-template-enforcer, Danger) lost for the
-# same reason: they need a workflow this token cannot push.
+# same reason: they need a workflow this token cannot push. A second
+# bin/help-first-check clone lost because this checker already is the
+# proven gate; #534 extends it.
 
 set -euo pipefail
 
@@ -115,5 +126,26 @@ if ! printf '%s\n' "$research_lines" | grep -qiE 'compared|checked|adopted|rejec
     exit 1
 fi
 
-printf 'OK: research: line present (new bin/: %s)\n' "$new_tools"
+# --- help-first? (fleet-ops#534) ------------------------------------------
+set +e
+help_lines="$(printf '%s\n' "$body" | grep -E '^[[:space:]]*help-first:[[:space:]]*\S')"
+set -e
+
+if [ -z "$help_lines" ]; then
+    printf 'REJECT: new bin/ file (%s) with no help-first: line. Add help-first: naming which existing tool --help (or man / official docs) was read and why it does not already do this. Skipping --help and hand-building a flag that already exists is not done.\n' "$new_tools" >&2
+    exit 1
+fi
+
+# GNU grep treats a leading --help pattern as its own flag; -- ends options.
+if ! printf '%s\n' "$help_lines" | grep -qiE -- '--help|[[:space:]]man[[:space:]]|official[[:space:]]+docs'; then
+    printf 'REJECT: help-first: line on new bin/ file (%s) is missing a --help / man / official docs marker. STEP 0 is read the tool you already run.\n' "$new_tools" >&2
+    exit 1
+fi
+
+if ! printf '%s\n' "$help_lines" | grep -qiE 'no |not |cannot|missing|unusable|does not|doesn.t|lost|rejected'; then
+    printf 'REJECT: help-first: line on new bin/ file (%s) is missing why the existing tool does not already do this.\n' "$new_tools" >&2
+    exit 1
+fi
+
+printf 'OK: research: and help-first: lines present (new bin/: %s)\n' "$new_tools"
 exit 0
