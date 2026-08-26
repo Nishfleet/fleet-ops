@@ -41,7 +41,8 @@
 #     9. Rule-enforcement coverage (fleet-ops#383): every vault standing rule
 #        and ledger decision names a live enforcer in
 #        config/rule-enforcement.json. Missing or stale queued = VIOLATION;
-#        uncovered rules auto-file a mechanism issue.
+#        uncovered rules and queued rows owned by an umbrella tracker
+#        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -78,6 +79,10 @@
 #   FLEET_RULE_ENFORCEMENT_LIB        lib/rule-enforcement.py
 #   FLEET_RULE_ENFORCEMENT_FILE_ISSUES  1 (default) auto-file uncovered rules; 0 skips
 #   FLEET_RULE_ENFORCEMENT_ISSUE_REPO   Nishfleet/fleet-ops
+#   FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES comma-separated issue numbers that are
+#                                       umbrella trackers (e.g. 416). The canary
+#                                       auto-files a distinct mechanism issue for
+#                                       each queued row owned by an umbrella issue.
 #   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
 
 set -Eeuo pipefail
@@ -113,6 +118,8 @@ fi
 FILE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_FILE_ISSUES:-1}"
 RULE_ISSUE_REPO="${FLEET_RULE_ENFORCEMENT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 RULE_NOW="${FLEET_RULE_ENFORCEMENT_NOW:-}"
+UMBRELLA_ISSUES_RAW="${FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES:-}"
+mapfile -t UMBRELLA_ISSUES < <(printf '%s\n' "$UMBRELLA_ISSUES_RAW" | tr ',' '\n' | grep -v '^$' || true)
 
 # Backup-staleness canary (fleet-ops#388). The system restic units are
 # readable via `systemctl show` (no sudo); a stale or failed backup is LOUD
@@ -449,6 +456,7 @@ else
         violations=$((violations + 1))
     else
         uncovered_n=$(jq '.uncovered | length' <<<"$rule_report")
+        queued_n=$(jq '.queued | length' <<<"$rule_report")
         stale_n=$(jq '.stale_queued | length' <<<"$rule_report")
         malformed_n=$(jq '.malformed | length' <<<"$rule_report")
         extra_n=$(jq '.extra_matrix | length' <<<"$rule_report")
@@ -479,9 +487,11 @@ else
             pending=$((pending + 1))
         done < <(jq -r '.extra_matrix[].source' <<<"$rule_report")
 
-        # Auto-file uncovered rules. Deduped by `signal: rule-enforcement/<id>`
-        # in the issue body. Cap per tick so a vault dump cannot open 80 issues.
-        if [[ "$FILE_RULE_ISSUES" == "1" ]] && [[ "$uncovered_n" -gt 0 ]]; then
+        # Auto-file mechanism issues. Uncovered rules and queued rows owned by an
+        # umbrella tracker (FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES) are each
+        # deduped by `signal: rule-enforcement/<id>` in the issue body. Cap per
+        # tick so a vault dump cannot open 80 issues.
+        if [[ "$FILE_RULE_ISSUES" == "1" ]] && { [[ "$uncovered_n" -gt 0 ]] || { [[ "$queued_n" -gt 0 ]] && [[ ${#UMBRELLA_ISSUES[@]} -gt 0 ]]; }; }; then
             cap=$(jq '.auto_file_cap_per_tick' <<<"$rule_report")
             filed=0
             skipped_dup=0
@@ -497,36 +507,58 @@ else
                     log "9.  WARN: could not list open issues for dedupe (gh rc=$gh_list_rc)"
                 fi
             else
-                log "9.  WARN: gh missing — cannot auto-file uncovered rules"
+                log "9.  WARN: gh missing — cannot auto-file mechanism issues"
             fi
-            while IFS= read -r item; do
-                [[ -n "$item" ]] || continue
+
+            declare -A UMBRELLA_MAP=()
+            for u in "${UMBRELLA_ISSUES[@]}"; do
+                [[ -n "$u" ]] && UMBRELLA_MAP["$u"]=1
+            done
+
+            file_item() {
+                local item="$1"
+                local context="$2"
+                local rid issue_n signal title body created create_rc
                 rid=$(jq -r '.id' <<<"$item")
                 signal="signal: rule-enforcement/${rid}"
                 if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$open_json" >/dev/null 2>&1; then
                     skipped_dup=$((skipped_dup + 1))
                     log "9.  - $rid: already has an open mechanism issue (deduped)"
-                    continue
+                    return 0
                 fi
                 if [[ "$filed" -ge "$cap" ]]; then
                     skipped_cap=$((skipped_cap + 1))
-                    continue
+                    return 0
                 fi
                 title=$(python3 "$RULE_LIB" issue-title --json "$item")
                 body=$(python3 "$RULE_LIB" issue-body --json "$item")
-                if [[ "$FILE_RULE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+                if command -v "$GH" >/dev/null 2>&1; then
                     set +e
                     created=$("$GH" issue create -R "$RULE_ISSUE_REPO" --title "$title" --body "$body" 2>/tmp/rule-enforcement-create.err)
                     create_rc=$?
                     set -e
                     if [[ "$create_rc" -eq 0 ]]; then
                         filed=$((filed + 1))
-                        log "9.  FILED $rid -> $created"
+                        log "9.  FILED $context/$rid -> $created"
                     else
-                        log "9.  WARN: failed to file $rid (rc=$create_rc) $(tr '\n' ' ' </tmp/rule-enforcement-create.err 2>/dev/null)"
+                        log "9.  WARN: failed to file $context/$rid (rc=$create_rc) $(tr '\n' ' ' </tmp/rule-enforcement-create.err 2>/dev/null)"
                     fi
                 fi
+            }
+
+            while IFS= read -r item; do
+                [[ -n "$item" ]] || continue
+                file_item "$item" "uncovered"
             done < <(jq -c '.uncovered[]' <<<"$rule_report")
+
+            while IFS= read -r item; do
+                [[ -n "$item" ]] || continue
+                issue_n=$(jq -r '.issue' <<<"$item")
+                if [[ "${UMBRELLA_MAP[$issue_n]:-0}" == "1" ]]; then
+                    file_item "$item" "queued"
+                fi
+            done < <(jq -c '.queued[]' <<<"$rule_report")
+
             if [[ "$skipped_cap" -gt 0 ]]; then
                 loud "ESCALATION-CANARY-PENDING" "rule-enforcement: auto-file cap reached (filed=$filed cap=$cap remaining=$skipped_cap) — next tick continues"
                 pending=$((pending + 1))
@@ -534,7 +566,7 @@ else
             log "9.  auto-file: filed=$filed deduped=$skipped_dup cap-skipped=$skipped_cap"
         fi
 
-        log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"
+        log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n queued=$queued_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"
     fi
 fi
 

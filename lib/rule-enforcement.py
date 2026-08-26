@@ -201,6 +201,7 @@ def join(
             matrix_by_source[src] = rule
 
     uncovered: list[dict[str, Any]] = []
+    queued: list[dict[str, Any]] = []
     stale_queued: list[dict[str, Any]] = []
     malformed: list[dict[str, Any]] = []
     covered = 0
@@ -262,7 +263,10 @@ def join(
                 "queued_since": since,
                 "age_days": age,
                 "stale_days": stale_days,
+                "mechanism": entry.get("mechanism"),
+                "proof": entry.get("proof"),
             }
+            queued.append(payload)
             if age > stale_days:
                 stale_queued.append(payload)
             else:
@@ -303,6 +307,7 @@ def join(
         "queued_ok": queued_ok,
         "violations": violations,
         "uncovered": uncovered,
+        "queued": queued,
         "stale_queued": stale_queued,
         "malformed": malformed,
         "extra_matrix": extra,
@@ -333,10 +338,34 @@ def issue_title(item: dict[str, Any]) -> str:
 def issue_body(item: dict[str, Any]) -> str:
     rid = item.get("id") or "unknown"
     src = item.get("source") or ""
+    signal = SIGNAL_FMT.format(id=rid)
+    if "queued_since" in item or "age_days" in item:
+        since = item.get("queued_since") or "unknown"
+        age = item.get("age_days")
+        stale = item.get("stale_days") or "?"
+        age_text = f"{age}" if age is not None else "?"
+        mech = item.get("mechanism") or "not specified"
+        proof = item.get("proof") or "not specified"
+        return (
+            "The rule-coverage canary (fleet-ops#383) found a queued rule "
+            "with no live enforcer.\n\n"
+            f"- rule id: `{rid}`\n"
+            f"- source: `{src}`\n"
+            f"- queued since: `{since}` (age: {age_text} days, stale after: {stale})\n"
+            f"- current mechanism: {mech}\n"
+            f"- current proof: {proof}\n"
+            "- required: a named gate / canary step / semgrep rule / systemd "
+            "unit / CI check / drill, plus a proof pointer, recorded in "
+            "`config/rule-enforcement.json` as `enforced`.\n\n"
+            "Do not close this until the canary reports this source as covered "
+            "on a real heartbeat tick (observe-to-close).\n\n"
+            f"{signal}\n"
+        )
     reason = item.get("reason") or "no matrix entry"
     return (
         "The rule-coverage canary (fleet-ops#383) found a standing rule "
         "with no live enforcer.\n\n"
+        f"- rule id: `{rid}`\n"
         f"- source: `{src}`\n"
         f"- reason: {reason}\n"
         "- required: a named gate / canary step / semgrep rule / systemd "
@@ -344,7 +373,7 @@ def issue_body(item: dict[str, Any]) -> str:
         "`config/rule-enforcement.json` as `enforced`.\n\n"
         "Do not close this until the canary reports this source as covered "
         "on a real heartbeat tick (observe-to-close).\n\n"
-        f"{SIGNAL_FMT.format(id=rid)}\n"
+        f"{signal}\n"
     )
 
 
@@ -360,6 +389,7 @@ def cmd_join(args: argparse.Namespace) -> int:
             "violations": len(errors),
             "malformed": [{"reason": e} for e in errors],
             "uncovered": [],
+            "queued": [],
             "stale_queued": [],
             "extra_matrix": [],
             "covered": 0,

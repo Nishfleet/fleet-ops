@@ -126,6 +126,50 @@ jq -e '.violations == 0 and .uncovered == []' "$scratch/covered.json" >/dev/null
   || fail "complete fixture must have zero violations: $(cat "$scratch/covered.json")"
 ok "join: complete fixture is green"
 
+# --- queued row in report ---------------------------------------------------
+cat >"$scratch/queued-rules.md" <<'EOF'
+# fixture
+## Covered fixture rule (Nish, 2026-08-26)
+## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
+EOF
+cat >"$scratch/queued-matrix.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "sr-covered-fixture",
+      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-covered-fixture",
+      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-queued-fixture",
+      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
+      "mechanism": "not yet",
+      "proof": "fleet-ops#1",
+      "status": "queued(#1)",
+      "queued_since": "2026-08-26"
+    }
+  ]
+}
+EOF
+python3 "$lib" join --rules "$scratch/queued-rules.md" --ledger "$scratch/covered-ledger.md" \
+  --matrix "$scratch/queued-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/queued.json"
+jq -e '.queued | length == 1' "$scratch/queued.json" >/dev/null \
+  || fail "queued fixture must report one queued row: $(cat "$scratch/queued.json")"
+jq -e '.queued[0].mechanism == "not yet" and .queued[0].proof == "fleet-ops#1"' "$scratch/queued.json" >/dev/null \
+  || fail "queued row must carry mechanism and proof: $(jq -c '.queued[0]' "$scratch/queued.json")"
+ok "join: queued rows include mechanism and proof"
+
 # --- stale queued -----------------------------------------------------------
 cat >"$scratch/stale-matrix.json" <<'EOF'
 {
@@ -206,6 +250,7 @@ cat >"$drill/standing.md" <<'EOF'
 # fixture
 ## Covered fixture rule (Nish, 2026-08-26)
 ## Untracked fixture rule that must scream (Nish, 2026-08-26)
+## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
 EOF
 cat >"$drill/ledger.md" <<'EOF'
 - 2026-08-26 | covered ledger rule | a decision
@@ -228,6 +273,14 @@ cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
       "mechanism": "test gate",
       "proof": "tests/rule-enforcement.test.sh",
       "status": "enforced"
+    },
+    {
+      "id": "sr-queued-fixture",
+      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
+      "mechanism": "not yet",
+      "proof": "fleet-ops#1",
+      "status": "queued(#1)",
+      "queued_since": "2026-08-26"
     }
   ]
 }
@@ -315,6 +368,7 @@ run_drill() {
     FLEET_RULE_ENFORCEMENT_LIB="$lib" \
     FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_ISSUE_REPO="Nishfleet/fleet-ops" \
+    FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z" \
     GH_LOG="$glog" \
     GH_CREATED="$created" \
@@ -332,12 +386,13 @@ grep -q 'Untracked fixture rule that must scream' "$drill/triage.md" \
   || fail "drill: triage must name the untracked heading"
 grep -q 'ESCALATION-CANARY-VIOLATION' "$drill/triage.md" \
   || fail "drill: triage missing VIOLATION"
-grep -q create "$created" || fail "drill: gh issue create was not called (log=$(cat "$glog"))"
+create_count=$(grep -c create "$created" 2>/dev/null || echo 0)
+[[ "$create_count" == "2" ]] || fail "drill: expected 2 gh issue create calls (uncovered + queued), got $create_count (log=$(cat "$glog"))"
 grep -q 'FILED' <<<"$env_out" || fail "drill: canary must log FILED (out=$env_out)"
-ok "drill: extra heading is flagged and an issue is auto-filed"
+ok "drill: extra heading and queued row are flagged and auto-filed"
 
-# Replay: open issue with the signal key -> no second create.
-printf '%s\n' '[{"number":77,"title":"already","body":"signal: rule-enforcement/sr-untracked-fixture-rule-that-must-scream-nish-2026-08-26"}]' \
+# Replay: open issue with the signal key -> no second create for either.
+printf '%s\n' '[{"number":77,"title":"already","body":"signal: rule-enforcement/sr-untracked-fixture-rule-that-must-scream-nish-2026-08-26"},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
   >"$drill/open.json"
 : >"$created"
 : >"$drill/triage.md"
