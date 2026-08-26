@@ -1,114 +1,107 @@
 {
- "_comment_": "P4-A: per-seat capacity map. Replaces the legacy single '4 Devin workers' cap with per-provider + per-model caps, a RAM governor, and a metered-seat class so subscription seats are exhausted before paid-per-token ones.",
- "_comment_order": "Expiry-first selection order (Nish, 2026-08-22): devin -> cursor -> cline -> free -> minimax (metered). Implemented in seat-lib.sh pick_seat; this file is data only.",
- "_comment_ram_governor": "ram_gb_per_worker=0.75 (2026-08-26). Measured LIVE worker RSS: mean 35 MB, total 0.07 GiB across running workers - the fleet's actual footprint is tiny. The previous 1.28 was the median of completed-unit MemoryPeak (n=14, p95 4.4 GB, max 4.8 GB), i.e. sized for the worst case. Sizing on typical is only safe BECAUSE the tail is now bounded three ways: per-worker MemoryHigh=3G throttles, RuntimeMaxSec=45min kills a wedge, and systemd-oomd kills at 80%/60s. Before those existed, the conservative number was correct. With ~10 GiB MemAvailable and the 2500 MB floor this yields ~10 lanes instead of 4, and the launch floor still recomputes every call so the ceiling falls automatically as memory is consumed. Re-derive from measurement, never edit by feel.",
- "_comment_cursor_grok": "cursor/cursor-grok-4.6-high: probe-and-exclude. One strike already (spawnSync ETIMEDOUT at 2026-08-25 00:47 IST). Probed twice after the strike and it responds healthy; cap held at 1 to limit blast radius. Raise to 2 if it stays clean for a week.",
- "_comment_minimax": "minimax direct (MiniMax-M3) classified as 'metered' per models.json cost field (input $0.30/M, output $1.20/M) even though the model name says 'Yearly Plus' \u2014 the cost field is the source of truth and 'Yearly Plus' is just a tier label. Selection order puts it LAST so subscription seats burn down first.",
- "_comment_ollama_rule": "ollama cap only covers deepseek-v4-flash:0731 \u2014 the DeepSeek-flash-only standing rule bans ollama/kimi-k2.7-code, ollama/deepseek-v4-pro:0813, and ollama/gpt-oss:20b. seat-lib.sh enumerate_seats() emits every model in models.json; the cap map here is the allowlist by being the only entries listed. (Code-level enforcement is a follow-up if the rule is ever loosened.)",
- "ram_gb_per_worker": 0.75,
- "_comment_quota_bench": "quota_bench_default_s (fleet-ops#90): fallback bench window in seconds used by seat-lib.sh mark_seat_quota_bench when a provider returns a quota/cap 429 whose error text carries NO explicit reset window. cline=604800 (ClinePass weekly cap), devin=900 (devin 15-min message rate limit). A walled seat is benched until the advertised reset window (parsed from the error) or this default, then fail-open after it expires \u2014 never charged to the work item.",
- "providers": {
-  "devin": {
-   "cap": 4,
-   "class": "subscription",
-   "quota_bench_default_s": 900,
-   "models": {
-    "glm-5-2": 4,
-    "swe-1-7": 4
-   }
+  "_comment_": "P4-A: per-seat capacity map. Replaces the legacy single '4 Devin workers' cap with per-provider + per-model caps, a RAM governor, and a metered-seat class so subscription seats are exhausted before paid-per-token ones.",
+  "_comment_order": "Expiry-first selection order (Nish, 2026-08-22): devin -> cursor -> cline -> free -> minimax (metered). Implemented in seat-lib.sh pick_seat; this file is data only.",
+  "_comment_ram_governor": "ram_gb_per_worker=0.75 (2026-08-26, fleet-ops#45). The governor is sized on the TYPICAL worker, not the worst case: live worker RSS measured at mean 35 MB, total 0.07 GiB across running workers, so 0.75 leaves 3x headroom for hot working sets while the divide still fits ~10 lanes in ~10 GiB MemAvailable after the 2500 MB launch floor. The 1.28 that was here before 2026-08-26 was the median of completed-unit MemoryPeak (n=14, p95 4.4 GB, max 4.8 GB) - i.e. sized for the worst case, which the comment said was correct until per-worker caps existed. Now they do: MemoryHigh=3G throttles one worker, MemoryMax=6G is the hard stop, TimeoutStartSec=45min kills a wedge, and systemd-oomd kills at 80%/60s. The tail is bounded by the cgroup, not by a pessimistic per-worker budget, so a single 4.8 GB outlier throttles rather than taking the box into swap. Mechanical re-measurement: `bin/ram-measure` (also wired into fleet-heartbeat-tier1 section 13, history at ~/.local/state/ram-measurement/ram-measurement.json, rolling 10 runs). A re-derive of this number is `ram-measure` + a PR; the heartbeat only makes the measurement automatic, it never edits this file. Per-task-weight cap: NOT applied. task_weight() in seat-lib.sh distinguishes heavy vs light packets, but the 4.8 GB outlier was a single failed worker, not a class of task (n=14: median 1.28, p95 4.4, max 4.8 - the tail is one data point). Live heavy workers measure 0.8 GB. Revisit if the rolling ram-measure history ever shows heavy-class p95 sustained > 3 GB.",
+  "_comment_cursor_grok": "cursor/cursor-grok-4.6-high: probe-and-exclude. One strike already (spawnSync ETIMEDOUT at 2026-08-25 00:47 IST). Probed twice after the strike and it responds healthy; cap held at 1 to limit blast radius. Raise to 2 if it stays clean for a week.",
+  "_comment_minimax": "minimax direct (MiniMax-M3) classified as 'metered' per models.json cost field (input $0.30/M, output $1.20/M) even though the model name says 'Yearly Plus' — the cost field is the source of truth and 'Yearly Plus' is just a tier label. Selection order puts it LAST so subscription seats burn down first.",
+  "_comment_ollama_rule": "ollama cap only covers deepseek-v4-flash:0731 — the DeepSeek-flash-only standing rule bans ollama/kimi-k2.7-code, ollama/deepseek-v4-pro:0813, and ollama/gpt-oss:20b. seat-lib.sh enumerate_seats() emits every model in models.json; the cap map here is the allowlist by being the only entries listed. (Code-level enforcement is a follow-up if the rule is ever loosened.)",
+  "ram_gb_per_worker": 0.75,
+  "_comment_quota_bench": "quota_bench_default_s (fleet-ops#90): fallback bench window in seconds used by seat-lib.sh mark_seat_quota_bench when a provider returns a quota/cap 429 whose error text carries NO explicit reset window. cline=604800 (ClinePass weekly cap), devin=900 (devin 15-min message rate limit). A walled seat is benched until the advertised reset window (parsed from the error) or this default, then fail-open after it expires — never charged to the work item.",
+  "providers": {
+    "devin": {
+      "cap": 4,
+      "class": "subscription",
+      "quota_bench_default_s": 900,
+      "models": {
+        "glm-5-2": 4,
+        "swe-1-7": 4
+      }
+    },
+    "cursor": {
+      "cap": 1,
+      "class": "subscription",
+      "models": {
+        "composer-2.5": 1,
+        "cursor-grok-4.6-high": 1
+      }
+    },
+    "cline": {
+      "cap": 2,
+      "class": "subscription",
+      "quota_bench_default_s": 604800,
+      "models": {
+        "cline-pass/minimax-m3": 2,
+        "cline-pass/deepseek-v4-flash": 2
+      }
+    },
+    "minimax": {
+      "cap": 2,
+      "class": "metered",
+      "models": {
+        "MiniMax-M3": 2
+      }
+    },
+    "ollama": {
+      "cap": 2,
+      "class": "free",
+      "models": {
+        "deepseek-v4-flash:0731": 2
+      }
+    },
+    "commandcode": {
+      "cap": 2,
+      "class": "free",
+      "models": {
+        "deepseek/deepseek-v4-flash": 2
+      }
+    },
+    "hetzner": {
+      "cap": 2,
+      "class": "free"
+    },
+    "zenmux": {
+      "cap": 2,
+      "class": "metered"
+    },
+    "openrouter": {
+      "cap": 2,
+      "class": "metered"
+    },
+    "groq": {
+      "cap": 0,
+      "class": "free"
+    },
+    "inferx": {
+      "cap": 0,
+      "class": "free"
+    },
+    "opencode": {
+      "cap": 0,
+      "class": "free"
+    },
+    "opencode-anthropic": {
+      "cap": 0,
+      "class": "free"
+    },
+    "orcarouter": {
+      "cap": 0,
+      "class": "free"
+    },
+    "grok": {
+      "cap": 0,
+      "class": "subscription"
+    }
   },
-  "cursor": {
-   "cap": 1,
-   "class": "subscription",
-   "models": {
-    "composer-2.5": 1,
-    "cursor-grok-4.6-high": 1
-   }
-  },
-  "cline": {
-   "cap": 4,
-   "class": "subscription",
-   "quota_bench_default_s": 604800,
-   "models": {
-    "cline-pass/minimax-m3": 4,
-    "cline-pass/deepseek-v4-flash": 4
-   },
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
-  },
-  "minimax": {
-   "cap": 4,
-   "class": "metered",
-   "models": {
-    "MiniMax-M3": 4
-   },
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
-  },
-  "ollama": {
-   "cap": 4,
-   "class": "free",
-   "models": {
-    "deepseek-v4-flash:0731": 4
-   },
-   "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin)"
-  },
-  "commandcode": {
-   "cap": 4,
-   "class": "free",
-   "models": {
-    "deepseek/deepseek-v4-flash": 4
-   },
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
-  },
-  "hetzner": {
-   "cap": 4,
-   "class": "free",
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
-  },
-  "zenmux": {
-   "cap": 4,
-   "class": "metered",
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
-  },
-  "openrouter": {
-   "cap": 4,
-   "class": "metered",
-   "_cap_note": "Nish 2026-08-26: baseline 4 ('most can go upto 4, some more' \u2014 AIMD may probe above only where #217 allows)"
-  },
-  "groq": {
-   "cap": 0,
-   "class": "free"
-  },
-  "inferx": {
-   "cap": 0,
-   "class": "free"
-  },
-  "opencode": {
-   "cap": 0,
-   "class": "free"
-  },
-  "opencode-anthropic": {
-   "cap": 0,
-   "class": "free"
-  },
-  "orcarouter": {
-   "cap": 0,
-   "class": "free"
-  },
-  "grok": {
-   "cap": 0,
-   "class": "subscription"
-  }
- },
- "free_providers_in_order": [
-  "ollama",
-  "commandcode",
-  "hetzner",
-  "zenmux",
-  "openrouter"
- ],
- "_comment_cursor": "cursor provider cap=1 (2026-08-25): cursor flakes with spawnSync ETIMEDOUT on long-running jobs; short probes are fine. The provider cap holds the fleet to one cursor worker at a time, and the code-level capable-provider whitelist in seat-lib.sh keeps cursor out of the heavy-task rotation. Raise to 2 if cursor stays clean on long jobs for a week.",
- "_comment_devin": "devin provider cap=4 (2026-08-25): devin hit its message rate limit at ~01:30 IST tonight. Auto-restart backoff in pi-issue@.service (Restart=on-failure, RestartSteps=3, ~6 min effective retry) handles the recovery, so the cap stays at 4. If rate-limit hits become daily, lower to 3.",
- "_comment_seat_roster": "Nish 2026-08-25: ALL seats available everywhere so work never stops. Ten seats probed live and answering: devin, cursor, cline, ollama (Ollama Cloud), minimax, commandcode, openrouter, grok (SuperGrok via grok-cli), zenmux, hetzner. zenmux and hetzner carry FREE lanes as well as credits, and openrouter has free lanes alongside credits - none of them are metered-only, so none is capped 0. Only providers with no working credential stay at 0.",
- "_comment_credits": "zenmux and openrouter both carry FREE lanes AND paid credits (Nish, 2026-08-25). class=metered records that, but seat-lib.sh computes class_of() and then ignores it - pick_seat buckets by literal provider name, so both currently sit in the FREE bucket and their credits can be spent as if free. free_providers_in_order is the only working control until that is fixed (fleet-ops#42): free lanes first, credit-bearing seats last.",
- "_comment_grok": "grok cap=0 (2026-08-26): SuperGrok's subscription covers the grok.com app and the grok CLI, NOT the x.ai API. pi reaching api.x.ai/v1 with the CLI's own OAuth token returns 403 'You have run out of credits or need a Grok subscription'. pi also has NO registered grok-cli adapter ('No API provider registered for api: grok-cli'), so the CLI route is not reachable from pi either. Raising this cap requires either x.ai API credits (money - Nish only) or a pi custom-provider extension wrapping the grok CLI. Tracked in fleet-ops#41."
+  "free_providers_in_order": [
+    "ollama",
+    "commandcode",
+    "hetzner",
+    "zenmux",
+    "openrouter"
+  ],
+  "_comment_cursor": "cursor provider cap=1 (2026-08-25): cursor flakes with spawnSync ETIMEDOUT on long-running jobs; short probes are fine. The provider cap holds the fleet to one cursor worker at a time, and the code-level capable-provider whitelist in seat-lib.sh keeps cursor out of the heavy-task rotation. Raise to 2 if cursor stays clean on long jobs for a week.",
+  "_comment_devin": "devin provider cap=4 (2026-08-25): devin hit its message rate limit at ~01:30 IST tonight. Auto-restart backoff in pi-issue@.service (Restart=on-failure, RestartSteps=3, ~6 min effective retry) handles the recovery, so the cap stays at 4. If rate-limit hits become daily, lower to 3.",
+  "_comment_seat_roster": "Nish 2026-08-25: ALL seats available everywhere so work never stops. Ten seats probed live and answering: devin, cursor, cline, ollama (Ollama Cloud), minimax, commandcode, openrouter, grok (SuperGrok via grok-cli), zenmux, hetzner. zenmux and hetzner carry FREE lanes as well as credits, and openrouter has free lanes alongside credits - none of them are metered-only, so none is capped 0. Only providers with no working credential stay at 0.",
+  "_comment_credits": "zenmux and openrouter both carry FREE lanes AND paid credits (Nish, 2026-08-25). class=metered records that, but seat-lib.sh computes class_of() and then ignores it - pick_seat buckets by literal provider name, so both currently sit in the FREE bucket and their credits can be spent as if free. free_providers_in_order is the only working control until that is fixed (fleet-ops#42): free lanes first, credit-bearing seats last.",
+  "_comment_grok": "grok cap=0 (2026-08-26): SuperGrok's subscription covers the grok.com app and the grok CLI, NOT the x.ai API. pi reaching api.x.ai/v1 with the CLI's own OAuth token returns 403 'You have run out of credits or need a Grok subscription'. pi also has NO registered grok-cli adapter ('No API provider registered for api: grok-cli'), so the CLI route is not reachable from pi either. Raising this cap requires either x.ai API credits (money - Nish only) or a pi custom-provider extension wrapping the grok CLI. Tracked in fleet-ops#41."
 }
