@@ -40,6 +40,9 @@ bin/research-before-build-check /home/nish/.local/bin/research-before-build-chec
 # fleet-ops#519: no agent names on Nish's work — PR-body + commit-message lint.
 lib/fleet-no-agent-names-check.py /home/nish/.local/lib/pi-packet/fleet-no-agent-names-check.py
 bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
+# fleet-ops#533: argv[0]/argv[1] process match + push-before-delete.
+lib/fleet-wipe-lessons.py /home/nish/.local/lib/pi-packet/fleet-wipe-lessons.py
+bin/fleet-wipe-lessons-check /home/nish/.local/bin/fleet-wipe-lessons-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
@@ -248,6 +251,12 @@ bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 # that auto-file audition+wire / bench tickets from `pi --list-models`.
 # Invoked by heartbeat-tier1 block 21.
 bin/fleet-free-roster-canary /home/nish/.local/bin/fleet-free-roster-canary
+# fleet-ops#536: proven-only Pi extension allowlist canary (sr-pi-extensions-proven).
+# Fail-loud if ~/.pi/agent/extensions or settings.json packages/extensions
+# wires an id that is not in config/pi-extensions-allowlist.json proven[],
+# or re-enables a banned id. Invoked by heartbeat-tier1 block 22.
+bin/fleet-pi-extensions-canary /home/nish/.local/bin/fleet-pi-extensions-canary
+config/pi-extensions-allowlist.json /home/nish/.local/state/pi-packet/pi-extensions-allowlist.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

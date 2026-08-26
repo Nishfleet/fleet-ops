@@ -258,18 +258,16 @@
     {
       "id": "sr-fleet-wipe-lessons",
       "source": "global-standing-rules.md: Lessons from the 2026-08-23 fleet wipe (all agents, both machines)",
-      "mechanism": "FLEET-PAUSED is code in AGENTS.md; argv[0] matching and push-before-delete are still prose",
-      "proof": "Nishfleet/fleet-ops#533",
-      "status": "queued(#533)",
-      "queued_since": "2026-08-27"
+      "mechanism": "CI scan rejects pgrep -f / pkill -f / ps|grep in bin/ and lib/; argv-running matches argv[0]/argv[1] only; worktree-remove refuses HEAD not on origin; heartbeat-tier1 block 5 no-ops enable --now when FLEET-PAUSED exists",
+      "proof": "bin/fleet-wipe-lessons-check; lib/fleet-wipe-lessons.py; tests/fleet-wipe-lessons.test.sh; bin/fleet-heartbeat-tier1 block 5; fleet-ops#533",
+      "status": "enforced"
     },
     {
       "id": "sr-find-proven-thing",
       "source": "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)",
-      "mechanism": "Overlaps research-before-build; no --help-first gate on new scripts",
-      "proof": "Nishfleet/fleet-ops#534",
-      "status": "queued(#534)",
-      "queued_since": "2026-08-27"
+      "mechanism": "PR gate: a new bin/ file requires a help-first: line naming which existing tool --help (or man / official docs) was read and why it does not already do this; same checker as research-before-build; worker prompt runs it; drill rejects a fixture that skips it",
+      "proof": "bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#534",
+      "status": "enforced"
     },
     {
       "id": "sr-doc-only-suite",
@@ -295,10 +293,9 @@
     {
       "id": "sr-pi-extensions-proven",
       "source": "global-standing-rules.md: Pi extensions: prefer them, but install only the proven (Nish, 2026-08-24)",
-      "mechanism": "No install gate that a new extension is proven before it is wired",
-      "proof": "Nishfleet/fleet-ops#536",
-      "status": "queued(#536)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat allowlist canary: live ~/.pi/agent/extensions (*.ts and */index.ts) plus settings.json packages[] and extensions[] must be in config/pi-extensions-allowlist.json proven[]. A banned id that is live again, or any id not on proven, is LOUD + auto-filed + exit 1. Missing or malformed allowlist fails loud (watcher broken). .bak and .disabled files are ignored.",
+      "proof": "bin/fleet-pi-extensions-canary; config/pi-extensions-allowlist.json; tests/fleet-pi-extensions-canary.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#536",
+      "status": "enforced"
     },
     {
       "id": "sr-ambiguity-authoritative",

@@ -901,6 +901,14 @@ fi
 #  the fleet itself owns, not user code.)
 verified=0
 re_enabled=0
+# fleet-ops#533 / wipe lesson: a repair robot will override an operator
+# pause unless FLEET-PAUSED is CODE. The 2026-08-23
+# fleet-schedule-drift-watchdog enable --now'd 92 deliberately stopped
+# timers. This block no-ops while the marker is present.
+FLEET_PAUSED_MARKER="${FLEET_PAUSED_MARKER:-/home/nish/workspaces/agent-state/FLEET-PAUSED}"
+if [ -f "$FLEET_PAUSED_MARKER" ]; then
+    log "5. timer-arm pass SKIPPED — FLEET-PAUSED marker present at $FLEET_PAUSED_MARKER"
+else
 log "5. timer-arm pass starting"
 while IFS= read -r t; do
     [ -z "$t" ] && continue
@@ -935,6 +943,7 @@ while IFS= read -r t; do
     re_enabled=$((re_enabled+1))
 done <<< "$verify_timers"
 log "5. timer-arm pass complete: verified=$verified re_enabled=$re_enabled"
+fi
 
 # ============================================================================
 # 6. RECONCILE agent-blocked ISSUES
@@ -1567,9 +1576,32 @@ else
 fi
 
 # ============================================================================
+# 22. PI EXTENSIONS PROVEN-ALLOWLIST CANARY (fleet-ops#536)
+# ============================================================================
+# sr-pi-extensions-proven (Nish 2026-08-24): reach for Pi extensions, but
+# install only ones proven on a real task. Pi auto-discovers
+# ~/.pi/agent/extensions and settings.json packages/extensions with no
+# proven-install gate. This canary diffs the live wired set against
+# config/pi-extensions-allowlist.json. Unproven or re-enabled banned ids
+# fail loud and auto-file.
+PI_EXT_CANARY_BIN="${FLEET_PI_EXTENSIONS_CANARY:-/home/nish/.local/bin/fleet-pi-extensions-canary}"
+pi_extensions_canary_rc=0
+if [ -x "$PI_EXT_CANARY_BIN" ]; then
+    log "22. pi-extensions proven-allowlist canary starting"
+    if "$PI_EXT_CANARY_BIN"; then
+        log "22. pi-extensions proven-allowlist canary complete"
+    else
+        pi_extensions_canary_rc=$?
+        log "22. pi-extensions proven-allowlist canary FAILED (rc=$pi_extensions_canary_rc) — unproven or banned extension wired; unit will land in --state=failed"
+    fi
+else
+    log "22. pi-extensions proven-allowlist canary missing at $PI_EXT_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1612,6 +1644,9 @@ if [ "${researcher_dispatch_rc:-0}" -ne 0 ]; then
 fi
 if [ "${free_roster_canary_rc:-0}" -ne 0 ]; then
     exit "$free_roster_canary_rc"
+fi
+if [ "${pi_extensions_canary_rc:-0}" -ne 0 ]; then
+    exit "$pi_extensions_canary_rc"
 fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"

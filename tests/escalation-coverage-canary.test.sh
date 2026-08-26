@@ -896,3 +896,8 @@ bash "$here/fleet-resilience-drill.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-escalation-completion.test.sh"
 
+# fleet-ops#536: proven-only Pi extension allowlist. Invoked from this
+# CI-listed file so hosted runners run it without a workflow edit
+# (worker tokens cannot push .github/workflows/**).
+bash "$here/fleet-pi-extensions-canary.test.sh"
+

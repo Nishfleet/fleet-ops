@@ -83,11 +83,16 @@ try_devin() {
     fi
 
     # Capacity check: fewer than 4 active devin workers.
-    local active
-    active=$(systemctl --user --state=running --no-legend 2>/dev/null \
-        | awk '{print $1}' | grep -cE '^fable-p.*devin|^pi-issue.*devin' || true)
-    # That grep is approximate; safer: count by the running process tree.
-    active=$(pgrep -af 'pi .*--provider devin' 2>/dev/null | wc -l || echo 0)
+    # fleet-ops#533: match argv[0]/argv[1] identity then discrete --provider
+    # tokens. pgrep -f counted itself (the pattern is on its own cmdline).
+    local _wipe_here _wipe_lib active
+    _wipe_here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+    _wipe_lib="${FLEET_WIPE_LESSONS_LIB:-$_wipe_here/../lib/fleet-wipe-lessons.py}"
+    if [[ ! -f "$_wipe_lib" ]]; then
+        _wipe_lib="${_wipe_here}/../lib/pi-packet/fleet-wipe-lessons.py"
+    fi
+    active=$(python3 "$_wipe_lib" count-argv pi --has provider devin 2>/dev/null || echo 0)
+    [[ "$active" =~ ^[0-9]+$ ]] || active=0
     if [ "$active" -ge 4 ]; then
         log "seat[2/3] devin: $active workers already active (cap=4) — skipping"
         return 1
