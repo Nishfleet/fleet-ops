@@ -64,8 +64,8 @@ if grep -F 'run: ${{ inputs.' "$src"; then
 fi
 ok "inputs are not interpolated in run:"
 
-grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main' "$caller" \
-  || fail "template caller must point at Nishfleet/fleet-ops reusable-gate-integrity.yml@main"
+grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@v1' "$caller" \
+  || fail "template caller must point at Nishfleet/fleet-ops reusable-gate-integrity.yml@v1"
 grep -q 'pull_request_target:' "$caller" || fail "thin caller must trigger on pull_request_target"
 grep -q 'merge_group:' "$caller" || fail "thin caller must report on merge_group"
 if grep -q 'secrets: inherit' "$caller"; then
