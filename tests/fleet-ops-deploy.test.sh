@@ -25,6 +25,8 @@
 #      a newer mtime (git checkout refreshes mtime; fleet-ops#371).
 #  12d. origin/main blob matching the repo file is allowed to land a merged
 #      cap drop (fleet-ops-deploy path).
+#  12e. a green-exit install.sh from a checkout that does not ship
+#      intake-reconcile units must not fail enable (fleet-ops#559).
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
 #  14. The paper-over heartbeat drop-in fails DRIFT-PAPER-OVER and auto-files
@@ -115,6 +117,15 @@ grep -q -- '--file-off-main' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must auto-file off-main via the canary --file-off-main flag"
 grep -q 'fleet-ops#477' "$repo_root/prompts/worker.md" \
     || fail "worker.md must tell workers not to check out branches on the deploy-clone (fleet-ops#477)"
+# fleet-ops#559: the historical intake-reconcile enable safety net must not
+# run when the unit file is absent from this checkout. Match the 0509 timer
+# guard so a minimal MANIFEST cannot fail `systemctl enable` on hosted CI.
+grep -A3 'if \[ -f "$here/systemd/intake-reconcile.path" \]' "$repo_root/install.sh" \
+    | grep -q 'enable --now intake-reconcile.path' \
+    || fail "install.sh must enable intake-reconcile.path only when the unit file exists in the checkout (fleet-ops#559)"
+grep -A3 'if \[ -f "$here/systemd/intake-reconcile.timer" \]' "$repo_root/install.sh" \
+    | grep -q 'enable --now intake-reconcile.timer' \
+    || fail "install.sh must enable intake-reconcile.timer only when the unit file exists in the checkout (fleet-ops#559)"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -702,13 +713,12 @@ set -e
     || fail "scenario12d: dest did not pick up the merged cap"
 ok "scenario12d: origin/main seat-caps blob is allowed to land a merged cap drop"
 
-# --- scenario 12e: hermeticity guard for green-exit install.sh runs ---------
-# fleet-ops#404: scenario12d runs install.sh to rc=0, which reaches the
-# unconditional `enable --now intake-reconcile.path/.timer` safety net. Without
-# the fake systemctl on PATH, a CI runner (no user units) exits 1 under set -e
-# and a green seat-caps landing goes red. This guard proves the unstubbed path
-# fails in a CI-like environment, so a future scenario that forgets the PATH
-# override fails HERE with a clear message instead of silently breaking P14.
+# --- scenario 12e: missing intake-reconcile units must not fail install -----
+# fleet-ops#559: a minimal checkout (no unit files, MANIFEST has only
+# seat-caps) used to die at the unconditional `enable --now
+# intake-reconcile.path` safety net on hosted runners. The enable is now
+# gated on the unit file existing in the checkout. Prove a CI-like
+# systemctl that would fail enable still lets a green-exit install finish.
 ci_systemctl="$scratch/ci-systemctl"
 cat >"$ci_systemctl" <<'CI_SYS'
 #!/usr/bin/env bash
@@ -727,18 +737,16 @@ case "$cmd" in
 esac
 CI_SYS
 chmod +x "$ci_systemctl"
-# Reuse the canon371 tree (origin/main blob, merged cap drop). Run install.sh
-# with a CI-like systemctl and NO fake on PATH — this MUST fail, proving the
-# enable block is the break point when systemctl is not stubbed.
+# Reuse the canon371 tree (origin/main blob, merged cap drop, no unit files).
 set +e
 ci_out=$(SYSTEMCTL="$ci_systemctl" "$canon371/install.sh" 2>&1)
 ci_rc=$?
 set -e
-[[ "$ci_rc" -ne 0 ]] \
-    || fail "scenario12e: CI-like systemctl should fail the green install (enable block), got rc=0 out=$ci_out — a future scenario that forgets to stub systemctl would silently break P14"
-[[ "$ci_out" == *"intake-reconcile.path does not exist"* ]] \
-    || fail "scenario12e: expected the intake-reconcile.path enable failure, got: $ci_out"
-ok "scenario12e: unstubbed CI-like systemctl fails the green install at the enable block (hermeticity guard)"
+[[ "$ci_rc" -eq 0 ]] \
+    || fail "scenario12e: CI-like systemctl must not fail a green install when intake-reconcile units are absent, got rc=$ci_rc out=$ci_out"
+[[ "$ci_out" != *"does not exist"* ]] \
+    || fail "scenario12e: enable of a missing unit leaked through, got: $ci_out"
+ok "scenario12e: missing intake-reconcile units are skipped (fleet-ops#559)"
 
 # --- scenario 12f: newer live file that is byte-identical is not refused ---
 # The mtime guard must compare content, not just mtime; a newer regular

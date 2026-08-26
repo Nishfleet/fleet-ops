@@ -442,11 +442,18 @@ if [ "$do_user_install" = 1 ]; then
   # path unit (fired by intake-repos.json changes) and the 30-minute timer
   # can be safely re-enabled. The loop above already handles these two, but
   # the historical call is kept here as a no-op safety net.
-  if ! is_unit_enabled intake-reconcile.path; then
-    "$SYSTEMCTL" --user enable --now intake-reconcile.path
+  # fleet-ops#559: skip when the unit file is not in this checkout. A
+  # minimal install.sh run (MANIFEST without the unit) must not fail
+  # `systemctl enable` on hosted CI. Same guard as the 0509 timer below.
+  if [ -f "$here/systemd/intake-reconcile.path" ]; then
+    if ! is_unit_enabled intake-reconcile.path; then
+      "$SYSTEMCTL" --user enable --now intake-reconcile.path
+    fi
   fi
-  if ! is_unit_enabled intake-reconcile.timer; then
-    "$SYSTEMCTL" --user enable --now intake-reconcile.timer
+  if [ -f "$here/systemd/intake-reconcile.timer" ]; then
+    if ! is_unit_enabled intake-reconcile.timer; then
+      "$SYSTEMCTL" --user enable --now intake-reconcile.timer
+    fi
   fi
   # fleet-ops#183: the 0509 daily-market-signal timer ships in MANIFEST with
   # [Install], but was never enabled, so the cron never scheduled. Dedicated
