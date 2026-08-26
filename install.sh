@@ -63,6 +63,33 @@ dest_is_system() { case "$1" in /etc/*) return 0;; *) return 1;; esac; }
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
+#
+# Comment-junk check (fleet-ops#156 finding 11): the old MANIFEST parser
+# created symlinks named after the second token of a comment line (e.g.
+# `# P14: ...` became a symlink called `P14: ...`). This scans the MANIFEST
+# for any such line and proves no filesystem entry with that name exists.
+check_comment_junk() {
+  local src dest check_path
+  while read -r src dest; do
+    [ -z "$src" ] && continue
+    # Only whole-line comments (first token starts with '#').
+    case "$src" in
+      '#'*)
+        [ -n "$dest" ] || continue
+        if [[ "$dest" == /* ]]; then
+          check_path="$dest"
+        else
+          check_path="$PWD/$dest"
+        fi
+        if [ -e "$check_path" ] || [ -L "$check_path" ]; then
+          echo "DIFF: $check_path (MANIFEST comment line produced a filesystem entry)"
+          rc=1
+        fi
+        ;;
+    esac
+  done < "$manifest"
+}
+
 process_entry() {
   local src=$1 dest=$2 skip=$3
   local repo
@@ -123,6 +150,7 @@ while read -r src dest; do
 done < "$manifest"
 
 if [ "$mode" = "--" ]; then
+  check_comment_junk
   exit "$rc"
 fi
 
