@@ -10,4 +10,4 @@ gate_globs:
   - ".semgrep.yml"
   - ".semgrep.yaml"
   - ".fleet/**"
-ratchet_ceilings: []
+ratchet_paths: []

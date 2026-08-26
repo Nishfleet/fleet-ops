@@ -2,11 +2,11 @@
 # tests/gate-integrity-reusable.test.sh
 #
 # Shape-lock the reusable gate-integrity workflow (fleet-ops#303):
-#   1. workflow_call, timeout-minutes, no trigger-level paths, no job-level if.
+#   1. Parked reusable YAML is workflow_call, timeout, no trigger paths, no job if.
 #   2. Candidate checkout is forbidden (base-owned detector).
-#   3. Repo-specific globs come from `.fleet/gate-integrity.yml`, not hardcoded 0509.
+#   3. Repo-specific globs are inputs (and/or `.fleet/gate-integrity.yml`).
 #   4. Thin template caller points at fleet-ops; no copied decision steps.
-#   5. If the GitHub-callable path exists, it matches lib/workflows source.
+#   5. If the GitHub-callable path exists, it matches the parked source.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -14,14 +14,14 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-src="$repo_root/lib/workflows/reusable-gate-integrity.yml"
+src="$repo_root/docs/pending-gate-integrity/reusable-gate-integrity.yml"
 callable="$repo_root/.github/workflows/reusable-gate-integrity.yml"
 caller="$repo_root/template/.github/workflows/gate-integrity.yml"
 template_cfg="$repo_root/template/.fleet/gate-integrity.yml"
-decision="$repo_root/lib/gate-integrity.sh"
+decision="$repo_root/.github/scripts/gate-integrity.sh"
 loader="$repo_root/lib/gate-integrity-config.sh"
 
-[[ -f "$src" ]] || fail "missing $src"
+[[ -f "$src" ]] || fail "missing parked reusable $src"
 [[ -f "$caller" ]] || fail "missing thin caller $caller"
 [[ -f "$template_cfg" ]] || fail "missing template config $template_cfg"
 [[ -f "$decision" ]] || fail "missing $decision"
@@ -37,8 +37,6 @@ if grep -E '^[[:space:]]+paths:' "$src"; then
 fi
 ok "no trigger-level paths: filter"
 
-# Job-level `if:` is 4-space indent. Step-level `if:` is deeper and is the
-# authorizer (merge_group pass-through) — that is required, not a skip.
 if grep -E '^    if:' "$src"; then
   fail "must not skip the required job with a job-level if:"
 fi
@@ -49,20 +47,17 @@ if grep -E 'actions/checkout@' "$src"; then
 fi
 ok "no checkout of candidate code"
 
-grep -q 'config-path' "$src" || fail "must accept config-path input"
-grep -q '.fleet/gate-integrity.yml' "$src" || fail "default config path must be .fleet/gate-integrity.yml"
+grep -q 'gate-globs' "$src" || fail "must accept gate-globs input"
 if grep -q 'Nishfleet/0509' "$src"; then
   fail "reusable must not hardcode Nishfleet/0509"
 fi
 if grep -q 'scripts/design-system-ratchet.mjs' "$src"; then
-  fail "0509 ratchet path must live in config, not the reusable workflow"
+  fail "0509 ratchet path must live in config/inputs, not the reusable workflow"
 fi
-ok "repo-specific rules are config, not hardcoded"
+ok "repo-specific rules are inputs/config, not hardcoded"
 
-grep -q 'lib/gate-integrity.sh' "$src" || fail "must fetch lib/gate-integrity.sh from fleet-ops"
-grep -q 'gate-integrity-attest:' "$src" || fail "must parse admin attestation comments"
-grep -q 'gate-integrity-auto-revert:' "$src" || fail "must parse auto-revert attestation comments"
-ok "decision script + attestation markers"
+grep -q 'gate-integrity.sh' "$src" || fail "must fetch the decision script from fleet-ops"
+ok "decision script is fetched from fleet-ops"
 
 if grep -F 'run: ${{ inputs.' "$src"; then
   fail "inputs must go through env: (semgrep run-shell-injection)"
@@ -87,16 +82,16 @@ loader = sys.argv[3]
 got = []
 for path in sys.argv[1:3]:
     got.append(json.loads(subprocess.check_output(["bash", loader, path], text=True)))
-if got[0]["gate_globs"] != got[1]["gate_globs"] or got[0]["ratchet_ceilings"] != got[1]["ratchet_ceilings"]:
+if got[0]["gate_globs"] != got[1]["gate_globs"] or got[0]["ratchet_paths"] != got[1]["ratchet_paths"]:
     raise SystemExit("template .fleet config must match tests/fixtures/gate-integrity/default.yml")
 PY
 ok "template config matches the default fixture"
 
 if [[ -f "$callable" ]]; then
-  cmp -s "$callable" "$src" || fail "callable workflow drifted from lib/workflows source"
-  ok "callable workflow matches lib/workflows source"
+  cmp -s "$callable" "$src" || fail "callable workflow drifted from parked source"
+  ok "callable workflow matches parked source"
 else
-  echo "NOTE: $callable is absent — nishfleet-worker cannot push .github/workflows/**; source of truth is $src"
+  echo "NOTE: $callable is absent — nishfleet-worker cannot push .github/workflows/**; parked source is $src"
 fi
 
 echo "OK: reusable gate-integrity workflow is shape-locked"

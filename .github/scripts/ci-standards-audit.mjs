@@ -14,9 +14,17 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  classifyOrgRulesets,
+  emitGithubAnnotations as emitOrgRulesetAnnotations,
+  maybePostDecisionResolved,
+  probeOrgRulesets,
+  renderReport as renderOrgRulesetReport,
+} from "./org-ruleset-skip-detector.mjs";
 
 const DEFAULT_ACCOUNT = "Nishfleet";
 const DEFAULT_FLEET_OPS_REPO = "Nishfleet/fleet-ops";
+const ORG_RULESET_DECISION_ISSUE = 219;
 const AUTO_REVERT_FILENAME = ".github/workflows/auto-revert.yml";
 const AUTO_REVERT_BRANCH = "ci-standards-audit/auto-revert";
 const AUTO_REVERT_TARGET_WORKFLOW = "CI";
@@ -1020,15 +1028,56 @@ async function main() {
   }
 
   const summary = buildSummary(reports);
+  const generatedAt = new Date().toISOString();
+  const fromJsonPayload = args.fromJson
+    ? JSON.parse(readFileSync(resolve(args.fromJson), "utf8"))
+    : null;
+  const account = args.fromJson
+    ? (/** @type {any} */ (fromJsonPayload).account ?? DEFAULT_ACCOUNT)
+    : args.account;
+
+  // Org rulesets with repo-pattern `*` would bind every current and future
+  // repo. On the free plan that endpoint 403s. Probe it every live audit so
+  // the SKIP cannot silently become a pass, and so #219 observe-to-closes
+  // the moment Nish pays for Team (fleet-ops#218).
+  /** @type {ReturnType<typeof classifyOrgRulesets> | null} */
+  let orgRulesets = null;
+  if (args.fromJson && fromJsonPayload && (fromJsonPayload.org_plan || fromJsonPayload.org_rulesets)) {
+    orgRulesets = classifyOrgRulesets({
+      plan: fromJsonPayload.org_plan ?? null,
+      rulesets: fromJsonPayload.org_rulesets ?? null,
+    });
+  } else if (!args.fromJson) {
+    orgRulesets = classifyOrgRulesets(probeOrgRulesets(String(account)));
+  }
+
   const fullReport = {
-    generated_at: new Date().toISOString(),
-    account: args.fromJson ? (/** @type {any} */ (JSON.parse(readFileSync(resolve(args.fromJson), "utf8"))).account ?? DEFAULT_ACCOUNT) : args.account,
+    generated_at: generatedAt,
+    account,
     summary,
     repos: reports,
+    ...(orgRulesets ? { org_rulesets: orgRulesets } : {}),
   };
 
+  let markdown = renderMarkdown(reports, summary);
+  if (orgRulesets) {
+    const orgReport = {
+      generated_at: generatedAt,
+      org: String(account),
+      classification: orgRulesets,
+    };
+    markdown = `${markdown}\n\n## Org rulesets (inbuilt bind-all-repos gate)\n\n${renderOrgRulesetReport(orgReport)}\n`;
+    emitOrgRulesetAnnotations(orgReport, Boolean(process.env.GITHUB_ACTIONS));
+    if (!args.fromJson) {
+      maybePostDecisionResolved({
+        repo: DEFAULT_FLEET_OPS_REPO,
+        issueNumber: ORG_RULESET_DECISION_ISSUE,
+        report: orgReport,
+      });
+    }
+  }
+
   const json = JSON.stringify(fullReport, null, 2);
-  const markdown = renderMarkdown(reports, summary);
 
   if (args.outputJson) writeFileSync(resolve(args.outputJson), json);
   if (args.outputMarkdown) writeFileSync(resolve(args.outputMarkdown), markdown);

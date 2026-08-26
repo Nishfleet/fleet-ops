@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # gate-integrity-config.sh — load `.fleet/gate-integrity.yml` into the JSON
-# fields the decision script (`lib/gate-integrity.sh`) reads from the bundle.
+# fields the decision script (`.github/scripts/gate-integrity.sh`) reads from the bundle.
 #
 # Restricted YAML, Python stdlib only. No PyYAML. The schema is three keys:
 #   gate_globs:                 list of fnmatch globs (replaces the default set)
-#   ratchet_ceilings:           list of paths whose numeric ceilings must not rise
+#   ratchet_paths:              list of paths whose numeric ceilings must not rise
+#                               (`ratchet_ceilings` is accepted as an alias)
 #   auto_revert_body_opener:    verbatim PR-body prefix for the auto-revert waiver
 #
 # Usage:
@@ -32,13 +33,13 @@ DEFAULTS = {
         ".semgrep.yaml",
         ".fleet/**",
     ],
-    "ratchet_ceilings": [],
+    "ratchet_paths": [],
     "auto_revert_body_opener": (
         "Automatic revert opened because a push-to-main CI workflow went red."
     ),
 }
 
-ALLOWED = set(DEFAULTS)
+ALLOWED = {"gate_globs", "ratchet_paths", "ratchet_ceilings", "auto_revert_body_opener"}
 
 
 def parse_scalar(raw):
@@ -86,7 +87,7 @@ def parse_restricted_yaml(text):
 def merge(parsed):
     out = {
         "gate_globs": list(DEFAULTS["gate_globs"]),
-        "ratchet_ceilings": list(DEFAULTS["ratchet_ceilings"]),
+        "ratchet_paths": list(DEFAULTS["ratchet_paths"]),
         "auto_revert_body_opener": DEFAULTS["auto_revert_body_opener"],
     }
     if "gate_globs" in parsed:
@@ -96,15 +97,16 @@ def merge(parsed):
         if not all(isinstance(g, str) and g for g in globs):
             raise ValueError("gate_globs must be a list of non-empty strings")
         out["gate_globs"] = globs
-    if "ratchet_ceilings" in parsed:
-        ceilings = parsed["ratchet_ceilings"]
+    raw_ratchet = parsed.get("ratchet_paths", parsed.get("ratchet_ceilings"))
+    if "ratchet_paths" in parsed or "ratchet_ceilings" in parsed:
+        ceilings = raw_ratchet
         if isinstance(ceilings, str):
             ceilings = [ceilings] if ceilings else []
         if not isinstance(ceilings, list) or not all(
             isinstance(x, str) and x for x in ceilings
         ):
-            raise ValueError("ratchet_ceilings must be a list of non-empty strings")
-        out["ratchet_ceilings"] = ceilings
+            raise ValueError("ratchet_paths must be a list of non-empty strings")
+        out["ratchet_paths"] = ceilings
     if "auto_revert_body_opener" in parsed:
         opener = parsed["auto_revert_body_opener"]
         if not isinstance(opener, str) or not opener.strip():

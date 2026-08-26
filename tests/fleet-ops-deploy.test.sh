@@ -21,6 +21,8 @@
 #      DRIFT-VOLATILE.
 #  12. install.sh refuses to overwrite a live file newer than the repo copy,
 #      and removes the paper-over heartbeat drop-in.
+#  13. A leftover .service whose ExecStart binary is missing fails
+#      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -62,6 +64,10 @@ grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag live dests that point outside the canonical checkout"
 grep -q 'gh issue create' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file a canonical-checkout drift issue"
+grep -q 'DRIFT-MISSING-EXEC' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must flag user units whose ExecStart binary is missing"
+grep -q 'orphan-execstart: fleet-ops#285' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file missing-ExecStart leftovers with the #285 marker"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -567,6 +573,99 @@ printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/gc-able-worktree/fleet-ops-drift.py
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -e "$dropin" ]] || fail "scenario12: paper-over heartbeat drop-in was not removed"
 ok "scenario12b: install.sh removes the paper-over heartbeat drop-in"
+
+# --- scenario 13: leftover unit whose ExecStart binary is missing (fleet-ops#285)
+# The GitHub-hosted replacement left .service/.timer files on disk after the
+# VPS binary was renamed to .bak. Extra-symlink and extra-enabled checks miss
+# this class: the files are regular (not symlinks) and the timer is disabled.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+gh_log="$scratch/gh-orphan.log"
+gh_fake="$scratch/gh-orphan"
+: >"$gh_log"
+cat >"$gh_fake" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/2850"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_fake"
+: >"$scratch/open-orphan.json"
+echo '[]' >"$scratch/open-orphan.json"
+cat >"$HOME/.config/systemd/user/repo-standards-reconcile.service" <<UNIT
+[Unit]
+Description=Leftover reconcile
+
+[Service]
+Type=oneshot
+ExecStart=$HOME/.local/bin/repo-standards-reconcile
+UNIT
+cat >"$HOME/.config/systemd/user/repo-standards-reconcile.timer" <<'UNIT'
+[Unit]
+Description=Leftover reconcile timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+
+[Install]
+WantedBy=timers.target
+UNIT
+[[ ! -e "$HOME/.local/bin/repo-standards-reconcile" ]] \
+    || fail "scenario13: setup expected the ExecStart binary to be missing"
+run_orphan_canary() {
+  GH="$gh_fake" \
+  GH_LOG="$gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-orphan.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+}
+if out=$(run_orphan_canary); then
+    fail "scenario13: canary should fail on a leftover unit with a missing ExecStart, got: $out"
+fi
+[[ "$out" == *"DRIFT-MISSING-EXEC"* ]] \
+    || fail "scenario13: expected DRIFT-MISSING-EXEC (got: $out)"
+[[ "$out" == *"repo-standards-reconcile.service"* ]] \
+    || fail "scenario13: must name the leftover service (got: $out)"
+[[ "$out" == *"repo-standards-reconcile.timer"* ]] \
+    || fail "scenario13: must name the sibling leftover timer (got: $out)"
+grep -q 'issue create' "$gh_log" \
+    || fail "scenario13: must auto-file (log=$(cat "$gh_log"))"
+ok "scenario13: leftover unit with missing ExecStart fails DRIFT-MISSING-EXEC and auto-files"
+
+: >"$gh_log"
+jq -n --arg b $'body\norphan-execstart: fleet-ops#285\n' \
+  '[{number: 285, body: $b}]' >"$scratch/open-orphan.json"
+if out=$(
+  GH="$gh_fake" \
+  GH_LOG="$gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-orphan.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario13b: canary should still fail on leftover after dedup, got: $out"
+fi
+grep -q 'issue create' "$gh_log" \
+    && fail "scenario13b: must not file a duplicate (log=$(cat "$gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario13b: expected dedup log, got: $out"
+ok "scenario13b: open issue with the marker is not filed twice"
+
+rm -f "$HOME/.config/systemd/user/repo-standards-reconcile.service" \
+      "$HOME/.config/systemd/user/repo-standards-reconcile.timer"
+if ! out=$(run_canary); then
+    fail "scenario13c: canary should be clean after leftover units are removed, got: $out"
+fi
+ok "scenario13c: removing the leftover units clears DRIFT-MISSING-EXEC"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 

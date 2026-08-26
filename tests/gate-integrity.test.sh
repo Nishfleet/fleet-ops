@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # tests/gate-integrity.test.sh — deterministic fixture regression for the
-# portable gate-integrity decision logic (fleet-ops#303).
+# generalized gate-integrity decision logic (fleet-ops#247).
 #
-# Exercises the exact shipped bytes of lib/gate-integrity.sh against fixed
-# context bundles (no network, no mutation). Per-repo config fixtures prove
-# the 0509 gate set and the default/fleet-ops gate set are enforced when
-# the same script is invoked with each repo's `.fleet/gate-integrity.yml`.
+# Port of 0509's .github/scripts/test-gate-integrity.sh. Default fixtures
+# pass 0509's gate-globs / ratchet paths as INPUTS so a behavior change
+# against that config is a failed run. Extra fixtures prove the same
+# classes honor a different marker, glob, or ratchet path.
 #
-# Exit 0 only when every fixture behaves exactly as pinned.
+# Exercises the exact shipped bytes of .github/scripts/gate-integrity.sh
+# against fixed context bundles (no network, no mutation).
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$here/.." && pwd)"
-DECISION="$repo_root/lib/gate-integrity.sh"
-CONFIG_LOADER="$repo_root/lib/gate-integrity-config.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+DECISION="$repo_root/.github/scripts/gate-integrity.sh"
+[[ -f "$DECISION" ]] || { echo "FAIL: missing $DECISION" >&2; exit 1; }
 PASS_COUNT=0
 FAIL_COUNT=0
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gi-fixtures.XXXXXX")"
@@ -22,21 +23,19 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 HEAD="1111111111111111111111111111111111111111"
 OLD="2222222222222222222222222222222222222222"
 
-# 0509's original hardcoded glob set, used by the ported fixtures so a
-# regression in the shared decision bytes still fails the same way.
 GATE_GLOBS='[".github/workflows/**",".github/scripts/**",".github/CODEOWNERS",".gitleaksignore",".gitleaks.toml",".semgrepignore",".semgrep.yml",".semgrep.yaml","scripts/design-system-ratchet.mjs","docs/design-system-ratchet.json","scripts/ci-vitest-run.sh","scripts/ci-verify-*.sh"]'
-RATCHET_CEILINGS='["docs/design-system-ratchet.json"]'
+RATCHET_PATHS='["docs/design-system-ratchet.json"]'
 
 # build_bundle <name> — reads a python expression from $FIXTURE_SRC.
 build_bundle() {
   local name="$1"
-  FIXTURE_SRC="$FIXTURE_SRC" GATE_GLOBS="$GATE_GLOBS" RATCHET_CEILINGS="$RATCHET_CEILINGS" HEAD="$HEAD" OLD="$OLD" \
+  FIXTURE_SRC="$FIXTURE_SRC" GATE_GLOBS="$GATE_GLOBS" RATCHET_PATHS="$RATCHET_PATHS" HEAD="$HEAD" OLD="$OLD" \
     python3 - "$WORK_DIR/$name.json" <<'PY'
 import json, os, sys
 HEAD = os.environ["HEAD"]
 OLD = os.environ["OLD"]
 GATE_GLOBS = json.loads(os.environ["GATE_GLOBS"])
-RATCHET_CEILINGS = json.loads(os.environ["RATCHET_CEILINGS"])
+RATCHET_PATHS = json.loads(os.environ["RATCHET_PATHS"])
 # Shorthands the fixture expressions below refer to by name.
 ADMIN = {"nish3451": "admin"}
 ATTEST = [{"user": "nish3451", "sha": HEAD}]
@@ -44,11 +43,17 @@ ATTEST = [{"user": "nish3451", "sha": HEAD}]
 bundle = eval(os.environ["FIXTURE_SRC"])
 bundle.setdefault("head_sha", HEAD)
 bundle.setdefault("gate_globs", GATE_GLOBS)
-bundle.setdefault("ratchet_ceilings", RATCHET_CEILINGS)
+bundle.setdefault("ratchet_paths", RATCHET_PATHS)
 bundle.setdefault("commit_messages", [])
 bundle.setdefault("pr_body", "")
 bundle.setdefault("attestations", [])
+bundle.setdefault("auto_revert_attestations", [])
 bundle.setdefault("permissions", {})
+bundle.setdefault("admin_attestation_marker", "gate-integrity-attest")
+bundle.setdefault("auto_revert_attestation_marker", "gate-integrity-auto-revert")
+bundle.setdefault("auto_revert_body_opener", "Automatic revert opened because a push-to-main CI workflow went red.")
+bundle.setdefault("git_revert_subject_prefix", 'Revert "')
+bundle.setdefault("test_removal_trailer", "test-removal-justified")
 with open(sys.argv[1], "w") as fh:
     json.dump(bundle, fh)
 PY
@@ -476,116 +481,79 @@ fixture auto_revert_attest_not_array '{
   "files": [{"filename": "README.md", "status": "modified", "patch": "+x"}]}'
 run_fixture auto_revert_attest_not_array FAIL "auto_revert_attestations is not an array"
 
-# --- per-repo config: 0509 vs default vs fleet-ops --------------------------
-# The same decision bytes, invoked with each repo's gate set (the reusable
-# workflow's `.fleet/gate-integrity.yml` input). A glob that is 0509-only
-# must fail under 0509.yml and pass under default.yml.
 
-[[ -x "$CONFIG_LOADER" || -f "$CONFIG_LOADER" ]] || {
-  echo "FAIL: missing config loader $CONFIG_LOADER" >&2
-  exit 1
-}
+# --- configurable inputs (the generalization) -------------------------------
+fixture custom_admin_marker_missing '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "attestations": [],
+  "permissions": ADMIN,
+  "admin_attestation_marker": "custom-attest"}'
+run_fixture custom_admin_marker_missing FAIL "custom-attest"
 
-load_config_into() {
-  local dest="$1" yaml="$2"
-  bash "$CONFIG_LOADER" "$yaml" > "$dest"
-}
+fixture custom_admin_marker_pass '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "attestations": [{"user": "nish3451", "sha": HEAD}],
+  "permissions": ADMIN,
+  "admin_attestation_marker": "custom-attest"}'
+run_fixture custom_admin_marker_pass PASS "admin nish3451 attested"
 
-run_configured() {
-  local name="$1" config_json="$2" expected="$3" must_contain="${4:-}"
-  local files_json="$5"
-  python3 - "$WORK_DIR/$name.json" "$config_json" "$files_json" "$HEAD" <<'PY'
-import json, sys
-out, config_path, files_json, head = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-with open(config_path, encoding="utf-8") as fh:
-    config = json.load(fh)
-bundle = {
-    "head_sha": head,
-    "files": json.loads(files_json),
-    "commit_messages": [],
-    "pr_body": "",
-    "attestations": [],
-    "permissions": {},
-}
-bundle.update(config)
-with open(out, "w", encoding="utf-8") as fh:
-    json.dump(bundle, fh)
-PY
-  run_fixture "$name" "$expected" "$must_contain"
-}
+fixture custom_globs_ignore_workflow '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "gate_globs": ["docs/only-this/**"]}'
+run_fixture custom_globs_ignore_workflow PASS "" "gate-owned path changed"
 
-load_config_into "$WORK_DIR/0509.json" "$here/fixtures/gate-integrity/0509.yml"
-load_config_into "$WORK_DIR/default.json" "$here/fixtures/gate-integrity/default.yml"
-load_config_into "$WORK_DIR/fleet-ops.json" "$repo_root/.fleet/gate-integrity.yml"
+fixture custom_globs_catch_docs '{
+  "files": [{"filename": "docs/only-this/policy.md", "status": "modified", "patch": "+x"}],
+  "gate_globs": ["docs/only-this/**"]}'
+run_fixture custom_globs_catch_docs FAIL "gate-owned path changed"
 
-python3 - "$WORK_DIR/0509.json" "$WORK_DIR/default.json" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    a = json.load(fh)
-with open(sys.argv[2], encoding="utf-8") as fh:
-    b = json.load(fh)
-for extra in (
-    "scripts/ci-vitest-run.sh",
-    "scripts/ci-verify-*.sh",
-    "scripts/design-system-ratchet.mjs",
-    "docs/design-system-ratchet.json",
-):
-    if extra not in a["gate_globs"]:
-        raise SystemExit(f"0509 config missing {extra}")
-    if extra in b["gate_globs"]:
-        raise SystemExit(f"default config must not include {extra}")
-if a["ratchet_ceilings"] != ["docs/design-system-ratchet.json"]:
-    raise SystemExit("0509 ratchet_ceilings mismatch")
-if b["ratchet_ceilings"] != []:
-    raise SystemExit("default ratchet_ceilings must be empty")
-print("ok   config-0509-vs-default-shape")
-PY
-PASS_COUNT=$((PASS_COUNT + 1))
+fixture empty_ratchet_paths_no_ceiling_rule '{
+  "files": [{"filename": "docs/unrelated.json", "status": "modified",
+   "patch": "-  \"raw-hex-color\": 258,\n+  \"raw-hex-color\": 400,"}],
+  "ratchet_paths": [],
+  "gate_globs": [".github/workflows/**"]}'
+run_fixture empty_ratchet_paths_no_ceiling_rule PASS "" "raised"
 
-CI_VITEST_FILES='[{"filename": "scripts/ci-vitest-run.sh", "status": "modified", "patch": "+# tweak"}]'
-run_configured repo0509_ci_vitest "$WORK_DIR/0509.json" FAIL "gate-owned path changed" "$CI_VITEST_FILES"
-run_configured default_ci_vitest "$WORK_DIR/default.json" PASS "" "$CI_VITEST_FILES"
+fixture custom_ratchet_path '{
+  "files": [{"filename": "config/legacy-ceilings.json", "status": "modified",
+   "patch": "-  \"foo\": 1,\n+  \"foo\": 99,"}],
+  "ratchet_paths": ["config/legacy-ceilings.json"],
+  "gate_globs": [".github/workflows/**"]}'
+run_fixture custom_ratchet_path FAIL "raised 1 -> 99"
 
-RATCHET_RAISE_FILES='[{"filename": "docs/design-system-ratchet.json", "status": "modified", "patch": "-  \"raw-hex-color\": 258,\n+  \"raw-hex-color\": 400,"}]'
-run_configured repo0509_ratchet_raise "$WORK_DIR/0509.json" FAIL "raised 258 -> 400" "$RATCHET_RAISE_FILES"
-run_configured default_ratchet_raise "$WORK_DIR/default.json" PASS "" "$RATCHET_RAISE_FILES"
+fixture custom_test_trailer '{
+  "files": [{"filename": "tests/auth.test.ts", "status": "removed", "patch": "-it(\"a\", () => {});"}],
+  "commit_messages": ["tests-ok: folded into session suite"],
+  "test_removal_trailer": "tests-ok"}'
+run_fixture custom_test_trailer PASS "test-integrity waived"
 
-FLEET_DECISION_FILES='[{"filename": "lib/gate-integrity.sh", "status": "modified", "patch": "+# tweak"}]'
-run_configured fleetops_decision_script "$WORK_DIR/fleet-ops.json" FAIL "gate-owned path changed" "$FLEET_DECISION_FILES"
-run_configured default_decision_script "$WORK_DIR/default.json" PASS "" "$FLEET_DECISION_FILES"
-
-FLEET_CONFIG_FILES='[{"filename": ".fleet/gate-integrity.yml", "status": "modified", "patch": "+# widened"}]'
-run_configured fleetops_own_config "$WORK_DIR/fleet-ops.json" FAIL "gate-owned path changed" "$FLEET_CONFIG_FILES"
-run_configured default_own_config "$WORK_DIR/default.json" FAIL "gate-owned path changed" "$FLEET_CONFIG_FILES"
-run_configured repo0509_own_config "$WORK_DIR/0509.json" FAIL "gate-owned path changed" "$FLEET_CONFIG_FILES"
-
-# Empty file / missing file → default globs (the reusable's 404 path).
-bash "$CONFIG_LOADER" > "$WORK_DIR/no-file.json"
-bash "$CONFIG_LOADER" "$WORK_DIR/does-not-exist.yml" > "$WORK_DIR/missing-file.json"
-python3 - "$WORK_DIR/no-file.json" "$WORK_DIR/missing-file.json" "$WORK_DIR/default.json" <<'PY'
-import json, sys
-vals = []
-for path in sys.argv[1:]:
-    with open(path, encoding="utf-8") as fh:
-        vals.append(json.load(fh))
-if vals[0] != vals[1] or vals[0]["gate_globs"] != vals[2]["gate_globs"]:
-    raise SystemExit("missing config must equal the default fixture")
-print("ok   config-missing-equals-default")
-PY
-PASS_COUNT=$((PASS_COUNT + 1))
-
-printf 'unknown_key: 1\n' > "$WORK_DIR/bad-key.yml"
-if bash "$CONFIG_LOADER" "$WORK_DIR/bad-key.yml" >"$WORK_DIR/bad-key.out" 2>"$WORK_DIR/bad-key.err"; then
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-  printf 'FAIL unknown-config-key: loader accepted an unknown key\n'
-else
-  if grep -q "unknown key" "$WORK_DIR/bad-key.err"; then
-    PASS_COUNT=$((PASS_COUNT + 1))
-    printf 'ok   unknown-config-key\n'
-  else
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    printf 'FAIL unknown-config-key: missing "unknown key" in stderr\n'
+# Workflow shape — skipped when this test is fetched into a temp tree
+# containing only the decision script and this file.
+reusable="$repo_root/.github/workflows/reusable-gate-integrity.yml"
+caller="$repo_root/.github/workflows/gate-integrity.yml"
+template_gate="$repo_root/template/.github/workflows/gate-integrity.yml"
+ci="$repo_root/.github/workflows/ci.yml"
+if [[ -f "$reusable" && -f "$caller" && -f "$template_gate" ]]; then
+  grep -q 'workflow_call:' "$reusable" || { echo "FAIL: reusable-gate-integrity.yml must declare workflow_call" >&2; exit 1; }
+  grep -q 'timeout-minutes:' "$reusable" || { echo "FAIL: reusable-gate-integrity.yml must set timeout-minutes" >&2; exit 1; }
+  grep -q 'cancel-in-progress: true' "$reusable" || { echo "FAIL: reusable-gate-integrity.yml must cancel superseded PR runs" >&2; exit 1; }
+  if grep -E '^[[:space:]]+paths:' "$reusable"; then
+    echo "FAIL: reusable-gate-integrity.yml must not path-filter the trigger" >&2
+    exit 1
   fi
+  grep -q 'uses: ./.github/workflows/reusable-gate-integrity.yml' "$caller" \
+    || { echo "FAIL: fleet-ops gate-integrity.yml must call the reusable workflow in this repo" >&2; exit 1; }
+  grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main' "$template_gate" \
+    || { echo "FAIL: template must call Nishfleet/fleet-ops reusable-gate-integrity.yml@main" >&2; exit 1; }
+  if grep -q 'secrets: inherit' "$caller" "$template_gate"; then
+    echo "FAIL: gate-integrity callers must not use secrets: inherit" >&2
+    exit 1
+  fi
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf 'ok   workflow_shape\n'
+else
+  PASS_COUNT=$((PASS_COUNT + 1))
+  printf 'ok   workflow_shape (skipped; decision-only tree)\n'
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS_COUNT" "$FAIL_COUNT"

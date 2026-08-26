@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# ram-metric-compare — fleet-ops#202.
+#
+# Sample each LIVE pi-issue@ unit for BOTH:
+#   - cgroup memory.current (systemd MemoryCurrent) — honest cgroup cost
+#   - process VmRSS of MainPID (/proc/PID/status) — the ~35 MB figure
+#     that #193's comment cited
+#
+# Report p95 of each and a mismatch flag when memory.current p95 is at
+# least RAM_COMPARE_RATIO_MIN times VmRSS p95 (default 4). The 2026-08-26
+# live sample was 822.6 MB vs 35 MB (~23x); that class must stay visible.
+#
+# Pure observability. Never edits ram_gb_per_worker, never fails the
+# heartbeat tick, never escalates. A later ticket decides which metric
+# admission should use; this command only records both.
+#
+# State:
+#   $RAM_STATE_DIR/ram-metric-compare.json
+#
+# Environment seams (tests):
+#   SYSTEMCTL               default systemctl
+#   RAM_STATE_DIR           default ~/.local/state/ram-measurement
+#   RAM_COMPARE_GLOB        default 'pi-issue@*.service'
+#                           (oneshot workers are activating, not active)
+#   RAM_COMPARE_PROC_ROOT   default /proc
+#   RAM_COMPARE_STUB_FILE   if set, skip live walk; lines are
+#                           "current_bytes rss_bytes"
+#   RAM_COMPARE_RATIO_MIN   default 4 — mismatch when current/rss >= this
+#   RAM_HISTORY_LEN         default 10 — rolling history depth
+#
+# Exit: 0 always. Measurement is observability; a 0-count result is data.
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+RAM_STATE_DIR="${RAM_STATE_DIR:-$HOME/.local/state/ram-measurement}"
+RAM_COMPARE_GLOB="${RAM_COMPARE_GLOB:-pi-issue@*.service}"
+RAM_COMPARE_PROC_ROOT="${RAM_COMPARE_PROC_ROOT:-/proc}"
+RAM_COMPARE_RATIO_MIN="${RAM_COMPARE_RATIO_MIN:-4}"
+RAM_HISTORY_LEN="${RAM_HISTORY_LEN:-10}"
+
+mkdir -p "$RAM_STATE_DIR"
+STATE_FILE="$RAM_STATE_DIR/ram-metric-compare.json"
+TMP_FILE="$RAM_STATE_DIR/.ram-metric-compare.tmp.$$"
+
+log() { printf '[ram-metric-compare] %s\n' "$*" >&2; }
+
+_p95_bytes() {
+    sort -n | awk '
+        { a[NR]=$1 }
+        END {
+            n=NR
+            if (n<1) { print 0; exit }
+            idx=int((n-1)*0.95)+1
+            if (idx<1) idx=1
+            if (idx>n) idx=n
+            print a[idx]+0
+        }'
+}
+
+current_list=$(mktemp -t ram-compare-cur.XXXXXX)
+rss_list=$(mktemp -t ram-compare-rss.XXXXXX)
+pairs_json='[]'
+trap 'rm -f "$current_list" "$rss_list" "$TMP_FILE"' EXIT INT TERM
+
+collect_pair() {
+    local current_bytes="$1" rss_bytes="$2"
+    [[ "$current_bytes" =~ ^[0-9]+$ ]] || return 0
+    [[ "$rss_bytes" =~ ^[0-9]+$ ]] || return 0
+    (( current_bytes > 0 && rss_bytes > 0 )) || return 0
+    printf '%s\n' "$current_bytes" >>"$current_list"
+    printf '%s\n' "$rss_bytes" >>"$rss_list"
+    pairs_json=$(jq -c --argjson c "$current_bytes" --argjson r "$rss_bytes" --argjson p "$pairs_json" \
+        '$p + [{current_bytes:$c, rss_bytes:$r}]' <<<"$pairs_json")
+}
+
+if [[ -n "${RAM_COMPARE_STUB_FILE:-}" ]]; then
+    if [[ -f "$RAM_COMPARE_STUB_FILE" ]]; then
+        while read -r cur rss _; do
+            [[ -n "${cur:-}" ]] || continue
+            collect_pair "$cur" "$rss"
+        done <"$RAM_COMPARE_STUB_FILE"
+    fi
+else
+    units=()
+    while IFS= read -r u; do
+        [[ -n "$u" ]] || continue
+        units+=("$u")
+    done < <(
+        # shellcheck disable=SC2086
+        "$SYSTEMCTL" --user list-units $RAM_COMPARE_GLOB --state=active,activating --no-legend --plain 2>/dev/null \
+            | awk '{print $1}' | grep -E '^pi-issue@.*\.service$' || true
+    )
+    if ((${#units[@]} > 0)); then
+        for u in "${units[@]}"; do
+            # Named properties, not --value line order. systemd 255 prints
+            # MainPID before MemoryCurrent regardless of -p order, so sed -n
+            # 1p would take the PID as cgroup bytes.
+            show_out=$("$SYSTEMCTL" --user show -p MemoryCurrent -p MainPID "$u" 2>/dev/null || true)
+            current=$(printf '%s\n' "$show_out" | sed -n 's/^MemoryCurrent=//p' | head -n1)
+            pid=$(printf '%s\n' "$show_out" | sed -n 's/^MainPID=//p' | head -n1)
+            [[ "$current" =~ ^[0-9]+$ ]] || continue
+            [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+            rss_kb=$(awk '/^VmRSS:/ { print $2; exit }' "$RAM_COMPARE_PROC_ROOT/$pid/status" 2>/dev/null || echo "")
+            [[ "$rss_kb" =~ ^[0-9]+$ ]] || continue
+            collect_pair "$current" "$((rss_kb * 1024))"
+        done
+    fi
+fi
+
+n=$(awk 'END { print NR+0 }' "$current_list")
+if (( n == 0 )); then
+    log "no live pi-issue@ units with both memory.current and VmRSS"
+fi
+current_p95=0
+rss_p95=0
+if (( n > 0 )); then
+    current_p95=$(_p95_bytes <"$current_list")
+    rss_p95=$(_p95_bytes <"$rss_list")
+    [[ "$current_p95" =~ ^[0-9]+$ ]] || current_p95=0
+    [[ "$rss_p95" =~ ^[0-9]+$ ]] || rss_p95=0
+fi
+
+current_p95_mb=$(awk -v b="$current_p95" 'BEGIN { printf "%.1f", (b+0)/1024/1024 }')
+rss_p95_mb=$(awk -v b="$rss_p95" 'BEGIN { printf "%.1f", (b+0)/1024/1024 }')
+ratio=$(awk -v c="$current_p95" -v r="$rss_p95" 'BEGIN {
+    if (r+0 <= 0) { print "0"; exit }
+    printf "%.1f\n", c/r
+}')
+mismatch=0
+if awk -v ratio="$ratio" -v min="$RAM_COMPARE_RATIO_MIN" 'BEGIN { exit (ratio+0 >= min+0 ? 0 : 1) }'; then
+    mismatch=1
+fi
+
+note="memory.current vs VmRSS; formula unchanged"
+if (( mismatch == 1 )); then
+    note="cgroup memory.current p95 is ${ratio}x process VmRSS; #193 35MB figure was VmRSS, not cgroup. formula unchanged"
+fi
+
+now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+prev_history='[]'
+if [[ -f "$STATE_FILE" ]]; then
+    prev_history=$(jq -c '.history // []' "$STATE_FILE" 2>/dev/null || echo '[]')
+fi
+
+new_entry=$(jq -nc \
+    --arg ts "$now_utc" --argjson n "$n" \
+    --argjson current_p95 "$current_p95" --arg current_mb "$current_p95_mb" \
+    --argjson rss_p95 "$rss_p95" --arg rss_mb "$rss_p95_mb" \
+    --arg ratio "$ratio" --argjson mismatch "$mismatch" \
+    --argjson threshold "$RAM_COMPARE_RATIO_MIN" --arg note "$note" \
+    '{ts:$ts, n:$n, current_p95_bytes:$current_p95, current_p95_mb:($current_mb|tonumber),
+      rss_p95_bytes:$rss_p95, rss_p95_mb:($rss_mb|tonumber),
+      ratio:($ratio|tonumber), mismatch:$mismatch, threshold:$threshold, note:$note}')
+
+new_history=$(jq -nc --argjson hl "$RAM_HISTORY_LEN" --argjson prev "$prev_history" --argjson e "$new_entry" \
+    '([$e] + $prev) | .[0:$hl]')
+
+jq -nc \
+    --arg ts "$now_utc" --argjson n "$n" \
+    --argjson current_p95 "$current_p95" --arg current_mb "$current_p95_mb" \
+    --argjson rss_p95 "$rss_p95" --arg rss_mb "$rss_p95_mb" \
+    --arg ratio "$ratio" --argjson mismatch "$mismatch" \
+    --argjson threshold "$RAM_COMPARE_RATIO_MIN" --arg note "$note" \
+    --argjson pairs "$pairs_json" --argjson hist "$new_history" \
+    '{ts:$ts, n:$n, current_p95_bytes:$current_p95, current_p95_mb:($current_mb|tonumber),
+      rss_p95_bytes:$rss_p95, rss_p95_mb:($rss_mb|tonumber),
+      ratio:($ratio|tonumber), mismatch:$mismatch, threshold:$threshold, note:$note,
+      pairs:$pairs, history:$hist}' >"$TMP_FILE"
+
+mv "$TMP_FILE" "$STATE_FILE"
+chmod 0644 "$STATE_FILE" 2>/dev/null || true
+
+printf 'ram-compare: n=%d current_p95_mb=%s rss_p95_mb=%s ratio=%s mismatch=%d (%s)\n' \
+    "$n" "$current_p95_mb" "$rss_p95_mb" "$ratio" "$mismatch" "$note"
+
+exit 0

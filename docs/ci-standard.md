@@ -26,6 +26,25 @@ Callers keep the `pull_request` trigger and pass `AUTO_REVERT_PAT` explicitly.
 
 `template/.github/workflows/` is the starter caller set for a new repo.
 
+## Gate integrity
+
+`.github/scripts/gate-integrity.sh` is the CI-gaming decision script,
+generalized from 0509. It reads a JSON context bundle on stdin and
+prints PASS or FAIL. Repo-specific pieces are fields in that bundle:
+gate-owned path globs, ratchet ceiling files, and attestation marker
+strings. The core violation classes (test-integrity, gate-path,
+`|| true` / `continue-on-error`, ratchet weakening, the three-signal
+auto-revert waiver) live once here.
+
+`tests/gate-integrity.test.sh` is the fixture regression. It passes
+0509's globs as inputs so a behavior change against that config fails.
+
+The reusable workflow caller that fetches this script from fleet-ops
+on `pull_request_target` still needs a token with the `workflows`
+permission (the nishfleet-worker App does not have it). Until that
+YAML lands, call the script from a repo-local workflow the same way
+0509 does today.
+
 ## The audit
 
 `.github/scripts/ci-standards-audit.mjs` checks every non-archived repo
@@ -39,6 +58,16 @@ context.
 
 `.github/workflows/ci-standards-audit.yml` is the reusable caller. It is an
 alert/audit, not a required check.
+
+## Org rulesets (SKIP on the free plan)
+
+Organization repository rulesets with repo-pattern `*` would bind every
+current and future repo at creation. Nishfleet is on GitHub's free org plan,
+so `GET /orgs/Nishfleet/rulesets` returns 403 "Upgrade to GitHub Team".
+That is a SKIP, never a pass. `.github/scripts/org-ruleset-skip-detector.mjs`
+probes the plan on every live `ci-standards-audit` run, records the SKIP,
+and posts `decision-resolved:` on fleet-ops#219 the moment the plan is no
+longer free. Paid Team is Nish's call (fleet-ops#219).
 
 ## Required checks are pure
 

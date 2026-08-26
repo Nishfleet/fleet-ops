@@ -368,9 +368,15 @@ jq '.history[0]' ~/.local/state/ram-measurement/ram-measurement.json
 unit, pulls `MemoryPeak` (bytes) from `systemctl show`, and reports count,
 mean, median, p95, and max in GiB plus a per-unit breakdown. State lives at
 `~/.local/state/ram-measurement/ram-measurement.json` with a rolling
-10-run history. The fleet-heartbeat calls it once per tick (section 13 of
+10-run history. The fleet-heartbeat calls it once per tick (section 14 of
 `bin/fleet-heartbeat-tier1`) so a re-derive is a one-time `jq` over the
 history, not a re-read of a comment. Pure observability — never a gate, never
 an escalation, never an edit to the cap map.
+
+`bin/ram-metric-compare` (fleet-ops#202) samples live `pi-issue@` units for
+both cgroup `memory.current` and process VmRSS. The 35 MB figure in older
+comments is VmRSS, not cgroup cost. Live 2026-08-26: `memory.current` p95
+was 822.6 MB. The compare command records both every tick and does not
+change `ram_gb_per_worker`.
 
 

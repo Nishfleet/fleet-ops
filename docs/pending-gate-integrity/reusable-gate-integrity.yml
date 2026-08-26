@@ -1,0 +1,352 @@
+# Reusable gate-integrity check — deterministic, base-branch-owned detector
+# for the CI-gaming moves that required-verifier-integrity does not see:
+#   - deleted/renamed/skipped tests
+#   - edits to gate-owned paths
+#   - `|| true` / `continue-on-error: true` on CI steps
+#   - ratchet ceiling raises or deletions
+#
+# Repo-specific parts are inputs (gate globs, ratchet file paths, attestation
+# marker strings). The core violation classes live in
+# .github/scripts/gate-integrity.sh in Nishfleet/fleet-ops.
+#
+# Call from a consumer:
+#   name: Gate integrity
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened, labeled, unlabeled]
+#     merge_group:
+#   permissions:
+#     contents: read
+#     pull-requests: read
+#   concurrency:
+#     group: gate-integrity-${{ github.event.pull_request.number || github.ref }}
+#     cancel-in-progress: true
+#   jobs:
+#     gate-integrity:
+#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#       with:
+#         gate-globs: |
+#           [".github/workflows/**", ".github/scripts/**", ".github/CODEOWNERS",
+#            ".gitleaksignore", ".gitleaks.toml", ".semgrepignore",
+#            ".semgrep.yml", ".semgrep.yaml"]
+#
+# Same-repo callers use ./.github/workflows/reusable-gate-integrity.yml.
+#
+# The decision script is fetched from Nishfleet/fleet-ops at `script-ref`
+# (default main), never from the PR's candidate tree. Candidate code is never
+# checked out and never executed. Fork PRs are refused outright.
+#
+# merge_group is an authorizer-only pass-through: the pull_request_target run
+# is the authoritative one. A skipped required context counts as satisfied,
+# so this job has no job-level `if:`.
+#
+# Standing CI standard, by construction:
+#   1. timeout-minutes on the job.
+#   2. concurrency + cancel-in-progress, grouped by PR number (under
+#      pull_request_target, github.ref is the BASE branch and would collapse
+#      every open PR into one mutually-cancelling group).
+#   3. no CI that watches CI.
+
+name: Reusable gate integrity
+
+on:
+  workflow_call:
+    inputs:
+      timeout-minutes:
+        description: "Job timeout."
+        type: number
+        required: false
+        default: 15
+      script-repo:
+        description: "owner/name that hosts .github/scripts/gate-integrity.sh."
+        type: string
+        required: false
+        default: "Nishfleet/fleet-ops"
+      script-ref:
+        description: "Ref (branch, tag, or SHA) that hosts the decision script. Pin this to the same SHA as the workflow uses: line when not tracking main."
+        type: string
+        required: false
+        default: "main"
+      gate-globs:
+        description: "JSON array of glob patterns for gate-owned paths."
+        type: string
+        required: false
+        default: '[".github/workflows/**", ".github/scripts/**", ".github/CODEOWNERS", ".gitleaksignore", ".gitleaks.toml", ".semgrepignore", ".semgrep.yml", ".semgrep.yaml"]'
+      ratchet-paths:
+        description: "JSON array of paths to ratchet ceiling files. Empty array if the repo has no ratchet."
+        type: string
+        required: false
+        default: "[]"
+      admin-attestation-marker:
+        description: "Exact marker string admins post in a PR comment. Must be followed by `: <40-hex sha>`."
+        type: string
+        required: false
+        default: "gate-integrity-attest"
+      auto-revert-attestation-marker:
+        description: "Exact marker string the auto-revert workflow posts. Must be followed by `: <40-hex sha>`."
+        type: string
+        required: false
+        default: "gate-integrity-auto-revert"
+      auto-revert-body-opener:
+        description: "Verbatim first sentence of an auto-revert PR body."
+        type: string
+        required: false
+        default: "Automatic revert opened because a push-to-main CI workflow went red."
+      git-revert-subject-prefix:
+        description: "Prefix every git-revert commit subject carries."
+        type: string
+        required: false
+        default: 'Revert "'
+      test-removal-trailer:
+        description: "Trailer that justifies test-integrity changes."
+        type: string
+        required: false
+        default: "test-removal-justified"
+
+concurrency:
+  group: reusable-gate-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate-integrity:
+    name: gate-integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Authorize exact verification candidate
+        id: authorize
+        shell: bash
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad GITHUB_SHA: $GITHUB_SHA" >&2; exit 1; }
+          case "$GITHUB_EVENT_NAME" in
+            pull_request_target)
+              # Fork PRs are refused outright: this gate reads the PR's own
+              # diff, and a fork head is outside the base-branch trust boundary.
+              test "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+              case "$GITHUB_REF" in
+                refs/pull/[1-9]*[0-9]*/merge) ;;
+                refs/heads/*) ;;
+                *) echo "unexpected GITHUB_REF: $GITHUB_REF" >&2; exit 1 ;;
+              esac
+              [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "bad PR_NUMBER: $PR_NUMBER" >&2; exit 1; }
+              [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad HEAD_SHA: $HEAD_SHA" >&2; exit 1; }
+              test -n "$BASE_REF" || { echo "empty BASE_REF" >&2; exit 1; }
+              ;;
+            merge_group)
+              [[ "$GITHUB_REF" =~ ^refs/heads/gh-readonly-queue/ ]] || { echo "unexpected GITHUB_REF: $GITHUB_REF" >&2; exit 1; }
+              ;;
+            *)
+              echo "unexpected GITHUB_EVENT_NAME: $GITHUB_EVENT_NAME" >&2; exit 1
+              ;;
+          esac
+
+      - name: Resolve candidate context through the GitHub API
+        id: context
+        if: github.event_name == 'pull_request_target'
+        shell: python3 {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          ADMIN_ATTESTATION_MARKER: ${{ inputs.admin-attestation-marker }}
+          AUTO_REVERT_ATTESTATION_MARKER: ${{ inputs.auto-revert-attestation-marker }}
+          AUTO_REVERT_BODY_OPENER: ${{ inputs.auto-revert-body-opener }}
+          GIT_REVERT_SUBJECT_PREFIX: ${{ inputs.git-revert-subject-prefix }}
+          TEST_REMOVAL_TRAILER: ${{ inputs.test-removal-trailer }}
+          GATE_GLOBS: ${{ inputs.gate-globs }}
+          RATCHET_PATHS: ${{ inputs.ratchet-paths }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          repo = os.environ["REPO"]
+          pr = os.environ["PR"]
+          head_sha = os.environ["HEAD_SHA"]
+          pr_body = os.environ.get("PR_BODY", "")
+          admin_marker = os.environ["ADMIN_ATTESTATION_MARKER"]
+          auto_revert_marker = os.environ["AUTO_REVERT_ATTESTATION_MARKER"]
+          auto_revert_body_opener = os.environ["AUTO_REVERT_BODY_OPENER"]
+          git_revert_subject_prefix = os.environ["GIT_REVERT_SUBJECT_PREFIX"]
+          test_removal_trailer = os.environ["TEST_REMOVAL_TRAILER"]
+          gate_globs = json.loads(os.environ["GATE_GLOBS"])
+          ratchet_paths = json.loads(os.environ["RATCHET_PATHS"])
+
+          def gh_api(path):
+              page = 1
+              out = []
+              while True:
+                  result = subprocess.run(
+                      ["gh", "api", f"{path}?per_page=100&page={page}"],
+                      capture_output=True,
+                      text=True,
+                      check=False,
+                  )
+                  if result.returncode != 0:
+                      print(result.stderr, file=sys.stderr)
+                      result.check_returncode()
+                  if not result.stdout.strip():
+                      break
+                  page_items = json.loads(result.stdout)
+                  if not isinstance(page_items, list):
+                      print(f"unexpected API payload for {path}", file=sys.stderr)
+                      sys.exit(1)
+                  if not page_items:
+                      break
+                  out.extend(page_items)
+                  if len(page_items) < 100:
+                      break
+                  page += 1
+              return out
+
+          def strip_patch(raw):
+              if raw is None:
+                  return None
+              return "\n".join(
+                  ln
+                  for ln in raw.split("\n")
+                  if (ln.startswith("+") or ln.startswith("-"))
+                  and not (ln.startswith("+++") or ln.startswith("---"))
+              )
+
+          raw_files = gh_api(f"repos/{repo}/pulls/{pr}/files")
+          files = [
+              {
+                  "filename": item.get("filename"),
+                  "previous_filename": item.get("previous_filename"),
+                  "status": item.get("status"),
+                  "patch": strip_patch(item.get("patch")),
+              }
+              for item in raw_files
+          ]
+
+          # No --jq: a commit message is a string, and gh --jq prints strings
+          # raw so embedded newlines (where the trailer lives) would break.
+          raw_commits = gh_api(f"repos/{repo}/pulls/{pr}/commits")
+          commit_messages = [c["commit"]["message"] for c in raw_commits]
+
+          raw_comments = gh_api(f"repos/{repo}/issues/{pr}/comments")
+          comments = [
+              {"body": c.get("body") or "", "user": (c.get("user") or {}).get("login", "")}
+              for c in raw_comments
+          ]
+
+          # Exact body match after trim, same contract as 0509: the entire
+          # comment is `{marker}: {40-hex}`. Prose mentioning the phrase
+          # cannot attest. Colon is required; whitespace around it is not
+          # accepted.
+          attestations = []
+          auto_revert_attestations = []
+          for c in comments:
+              body = c["body"].replace("\r", "").strip()
+              for marker, target in (
+                  (admin_marker, attestations),
+                  (auto_revert_marker, auto_revert_attestations),
+              ):
+                  pat = re.compile(rf"^{re.escape(marker)}: ([0-9a-fA-F]{{40}})$")
+                  m = pat.match(body)
+                  if m:
+                      target.append({"user": c["user"], "sha": m.group(1).lower()})
+
+          perms = {}
+          for user in {a["user"] for a in attestations if a["user"]}:
+              result = subprocess.run(
+                  ["gh", "api", f"repos/{repo}/collaborators/{user}/permission"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              perm = "none"
+              if result.returncode == 0 and result.stdout.strip():
+                  try:
+                      perm = json.loads(result.stdout).get("permission", "none")
+                  except json.JSONDecodeError:
+                      perm = "none"
+              perms[user] = perm
+
+          bundle = {
+              "head_sha": head_sha,
+              "pr_body": pr_body,
+              "files": files,
+              "commit_messages": commit_messages,
+              "attestations": attestations,
+              "permissions": perms,
+              "auto_revert_attestations": auto_revert_attestations,
+              "gate_globs": gate_globs,
+              "ratchet_paths": ratchet_paths,
+              "admin_attestation_marker": admin_marker,
+              "auto_revert_attestation_marker": auto_revert_marker,
+              "auto_revert_body_opener": auto_revert_body_opener,
+              "git_revert_subject_prefix": git_revert_subject_prefix,
+              "test_removal_trailer": test_removal_trailer,
+          }
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "gate-bundle.json"), "w", encoding="utf-8") as fh:
+              json.dump(bundle, fh)
+
+      - name: Evaluate gate integrity
+        id: evaluate
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCRIPT_REPO: ${{ inputs.script-repo }}
+          SCRIPT_REF: ${{ inputs.script-ref }}
+        run: |
+          set -euo pipefail
+          # Decision logic is fetched from fleet-ops at script-ref, never from
+          # the candidate tree. A PR cannot edit the check that is judging it.
+          script="$RUNNER_TEMP/gate-integrity.sh"
+          gh api "repos/$SCRIPT_REPO/contents/.github/scripts/gate-integrity.sh?ref=$SCRIPT_REF" \
+            --jq '.content' | base64 -d > "$script"
+          test -s "$script"
+          bash "$script" < "$RUNNER_TEMP/gate-bundle.json"
+
+      - name: Run deterministic fixture regression
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCRIPT_REPO: ${{ inputs.script-repo }}
+          SCRIPT_REF: ${{ inputs.script-ref }}
+        run: |
+          set -euo pipefail
+          # Proves the exact shipped decision bytes still behave as pinned, on
+          # every run, so the rules cannot rot into a permanent PASS.
+          tree="$RUNNER_TEMP/gi-regression"
+          mkdir -p "$tree/.github/scripts" "$tree/tests"
+          gh api "repos/$SCRIPT_REPO/contents/.github/scripts/gate-integrity.sh?ref=$SCRIPT_REF" \
+            --jq '.content' | base64 -d > "$tree/.github/scripts/gate-integrity.sh"
+          gh api "repos/$SCRIPT_REPO/contents/tests/gate-integrity.test.sh?ref=$SCRIPT_REF" \
+            --jq '.content' | base64 -d > "$tree/tests/gate-integrity.test.sh"
+          test -s "$tree/.github/scripts/gate-integrity.sh"
+          test -s "$tree/tests/gate-integrity.test.sh"
+          chmod +x "$tree/.github/scripts/gate-integrity.sh" "$tree/tests/gate-integrity.test.sh"
+          bash "$tree/tests/gate-integrity.test.sh"
+
+      - name: Pass through merge group
+        if: github.event_name == 'merge_group'
+        run: |
+          set -euo pipefail
+          echo "PASS: merge_group pass-through; authoritative run is on pull_request_target"
