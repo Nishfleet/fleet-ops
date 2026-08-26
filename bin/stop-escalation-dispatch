@@ -8,10 +8,6 @@
 #   1. Pick a healthy, non-rate-limited seat from the ladder via pick_seat.
 #      A rate_limited / retryable=true / dead=false seat is a LANE FAULT,
 #      not an escalation.  Only a fully-walled ladder reaches NISH.
-#      fleet-ops#95: if the first pick is empty AND the ledger shows a
-#      transient wall (rate_limited / transient_fault / unknown, dead=false,
-#      not poison), re-pick once after a bounded delay and dispatch on
-#      recovery. dead=true or poison_ladder=true still fail loud immediately.
 #   2. Dispatch the SENIOR AUDITOR packet with a hard internal timeout shorter
 #      than the unit's TimeoutStartSec, so a timeout is recorded LOUD in
 #      AUDITOR-LOG.md before systemd can silently kill the service.
@@ -45,15 +41,6 @@ AUDITOR_TIMEOUT_SEC=${STOP_ESCALATION_AUDITOR_TIMEOUT:-1380}
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
-
-# Bounded delay (seconds) for the single transient-ladder re-pick. Honour an
-# integer ledger retry_after when present; clamp to [5,60] so a runaway
-# value can never eat the unit's 25min budget. An explicit operator/test
-# override via STOP_ESCALATION_TRANSIENT_DELAY is used as-is when 0-60.
-TRANSIENT_DELAY=${STOP_ESCALATION_TRANSIENT_DELAY:-30}
-
-# Tests stub seat-lib, so re-read the ledger dir from the env after source.
-LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-${LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}}"
 
 ts() { date -u +%FT%TZ; }
 
@@ -98,84 +85,10 @@ fi
 # / dead=false seat is a lane fault, not a Nish escalation.  Use the same
 # pick_seat ladder the workers use.  Only when every usable seat is walled does
 # the ladder return empty -- that is the real "fully walled ladder" signal.
-#
-# fleet-ops#95: an empty first pick that is only a transient wall gets one
-# bounded re-pick. Hard-down (dead / poison / quota / credentials, or no
-# transient evidence at all) fails immediately.
 # ---------------------------------------------------------------------------
-EMPTY_LADDER_RETRY_AFTER=""
-
-empty_ladder_is_transient() {
-  EMPTY_LADDER_RETRY_AFTER=""
-  local dir="${LEDGER_DIR:-}"
-  [ -n "$dir" ] && [ -d "$dir" ] || return 1
-  local f hc dead poison retry_after
-  shopt -s nullglob
-  local files=("$dir"/*.json)
-  shopt -u nullglob
-  [ "${#files[@]}" -gt 0 ] || return 1
-  for f in "${files[@]}"; do
-    [ -f "$f" ] || continue
-    hc=$(jq -r '.health_class // "unknown"' "$f" 2>/dev/null || echo unknown)
-    dead=$(jq -r 'if .seat_dead == true then "true" else "false" end' "$f" 2>/dev/null || echo false)
-    poison=$(jq -r 'if .poison_ladder == true then "true" else "false" end' "$f" 2>/dev/null || echo false)
-    if [ "$dead" = true ] || [ "$poison" = true ]; then
-      continue
-    fi
-    case "$hc" in
-      rate_limited|transient_fault|unknown)
-        retry_after=$(jq -r '.retry_after // empty' "$f" 2>/dev/null || true)
-        if [[ "$retry_after" =~ ^[0-9]+$ ]]; then
-          EMPTY_LADDER_RETRY_AFTER="$retry_after"
-        fi
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-_clamp_transient_delay() {
-  local delay="$1"
-  if ! [[ "$delay" =~ ^[0-9]+$ ]]; then
-    delay="$TRANSIENT_DELAY"
-  fi
-  if ! [[ "$delay" =~ ^[0-9]+$ ]]; then
-    delay=30
-  fi
-  if [ "$delay" -gt 60 ]; then
-    delay=60
-  fi
-  # Untrusted ledger retry_after never sleeps under 5s. An explicit
-  # STOP_ESCALATION_TRANSIENT_DELAY (including 0/1 in tests) is used as-is.
-  if [ -z "${STOP_ESCALATION_TRANSIENT_DELAY:-}" ]; then
-    if [ "$delay" -lt 5 ]; then
-      delay=5
-    fi
-  fi
-  printf '%s' "$delay"
-}
-
 pick_seat_with_retry() {
   local tried_file="$1"
-  local seat delay
-  seat=$(pick_seat "" "" 0 "$tried_file" 2>/dev/null || true)
-  if [ -n "$seat" ]; then
-    printf '%s' "$seat"
-    return 0
-  fi
-  if ! empty_ladder_is_transient; then
-    printf '%s' ""
-    return 0
-  fi
-  delay="$TRANSIENT_DELAY"
-  if [[ "${EMPTY_LADDER_RETRY_AFTER:-}" =~ ^[0-9]+$ ]]; then
-    delay="$EMPTY_LADDER_RETRY_AFTER"
-  fi
-  delay=$(_clamp_transient_delay "$delay")
-  if [ "$delay" -gt 0 ]; then
-    sleep "$delay"
-  fi
+  local seat
   seat=$(pick_seat "" "" 0 "$tried_file" 2>/dev/null || true)
   printf '%s' "$seat"
 }
