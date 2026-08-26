@@ -83,6 +83,13 @@
 #  15. Entitled-vs-wired canary (fleet-ops#387). Diffs entitled-seats.json
 #      against seat-caps.json: missing row, cap=0 without a dated reason,
 #      or a prepaid seat mislabeled free. LOUD + auto-files. No new timer.
+#  17. OpenCode MiniMax M3 catalog canary (fleet-ops#435). Fails the tick if
+#      billing MiniMax M3 is allowlisted on OpenCode; auto-files when a
+#      -free / *-pass/ slug appears.
+#  18. Paid-flash watcher canary (fleet-ops#436). Watches `pi --list-models`
+#      for the parked Qwen 3.8 / GLM 5.3 flash slugs; quiet while parked,
+#      auto-files a revisit+bench+wire ticket the moment one appears. Fails
+#      loud only when the watcher itself is broken (pi unavailable).
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -1345,9 +1352,36 @@ else
 fi
 
 # ============================================================================
+# 18. PAID-FLASH WATCHER CANARY (fleet-ops#436)
+# ============================================================================
+# #384 parked two paid-flash follow-ups (Qwen 3.8 flash missing; GLM 5.3
+# flash not in Pi's catalog) and #436 says revisit only after the slug
+# appears in Pi's catalog AND has a quality bench. The blind spot is a
+# human re-checking the catalog by hand. This watcher runs `pi --list-models`
+# every tick; while the parked slugs are absent it is quiet (exit 0 — the
+# parked state is expected, NOT a violation), and the moment one appears it
+# auto-files a "revisit + bench + wire" ticket so the scout runs the quality
+# bench mechanically. It fails loud ONLY when the watcher itself is broken
+# (pi missing / list-models failed) — that propagates like every other
+# fail-loud block. No new scheduler.
+PAID_FLASH_CANARY_BIN="${FLEET_PAID_FLASH_CANARY:-/home/nish/.local/bin/fleet-paid-flash-canary}"
+paid_flash_canary_rc=0
+if [ -x "$PAID_FLASH_CANARY_BIN" ]; then
+    log "18. paid-flash watcher canary starting"
+    if "$PAID_FLASH_CANARY_BIN"; then
+        log "18. paid-flash watcher canary complete"
+    else
+        paid_flash_canary_rc=$?
+        log "18. paid-flash watcher canary FAILED (rc=$paid_flash_canary_rc) — watcher broken (pi unavailable); unit will land in --state=failed"
+    fi
+else
+    log "18. paid-flash watcher canary missing at $PAID_FLASH_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1378,5 +1412,8 @@ if [ "${worker_app_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${opencode_m3_canary_rc:-0}" -ne 0 ]; then
     exit "$opencode_m3_canary_rc"
+fi
+if [ "${paid_flash_canary_rc:-0}" -ne 0 ]; then
+    exit "$paid_flash_canary_rc"
 fi
 exit 0

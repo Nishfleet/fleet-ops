@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# fleet-paid-flash-canary — parked-flash model watcher (fleet-ops#436).
+#
+# #384 wired OpenRouter deepseek-v4-flash-0731 as the paid flash lane and
+# parked two follow-ups: Qwen 3.8 flash (no slug on any provider) and
+# GLM 5.3 flash (z-ai/glm-5.3-flash exists on OpenRouter/Zenmux but is not
+# in Pi's catalog and has no quality bench). #436 says: revisit GLM 5.3
+# flash only after it appears in Pi's catalog AND has a quality bench.
+#
+# The blind spot: a human has to re-check Pi's catalog by hand to know when
+# to revisit. This canary watches Pi's catalog every heartbeat tick for the
+# parked flash slugs. While they are absent it is quiet (the parked state is
+# expected, not a violation). The moment one appears, it auto-files a
+# "revisit + bench + wire" ticket (deduped on a marker) so the scout/admission
+# quality bench runs mechanically — no human has to remember to re-check.
+#
+# The "has a quality bench" half is a scout/intake judgment (a real eval on
+# fleet packets, per #384); the canary only detects the catalog transition
+# and hands the bench+wire decision to a fresh ticket.
+#
+# Exit codes:
+#   0  watcher healthy (models still parked, OR a transition was filed).
+#   1  watcher broken (pi missing, list-models failed) — fail loud.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 17.
+#
+# Environment seams (tests):
+#   FLEET_PAID_FLASH_MODELS_JSON  list-models stdout fixture (overrides pi)
+#   FLEET_HEARTBEAT_TRIAGE        triage file
+#   FLEET_PAID_FLASH_REPO         default Nishfleet/fleet-ops
+#   FLEET_PAID_FLASH_FILE         1 (default) file issues; 0 skip gh
+#   GH                            gh binary (tests stub this)
+#   PI                            pi binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+PI="${PI:-pi}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_PAID_FLASH_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_PAID_FLASH_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-paid-flash-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Watched parked-flash models. Each row: id|regex|title|body
+#   id     stable marker key
+#   regex  matched (case-insensitive) against the model column of
+#          `pi --list-models` (so a provider prefix like `z-ai/` is fine)
+#   title  filed issue title
+#   body   filed issue body (the bench+wire instructions for the scout)
+# Add a row here when a new flash variant is parked; the canary does the rest.
+watched=(
+  'glm-5.3-flash|glm-?5\.3-?flash|Revisit: GLM 5.3 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a GLM 5.3 flash slug is now in Pi'"'"'s catalog (was parked: z-ai/glm-5.3-flash exists on OpenRouter/Zenmux but not in Pi, no league score). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux (pricing moves — query the provider model APIs, do not trust a cached number), and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek-v4-flash-0731 lane. Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport (devin/cursor precedent: not everything is a Pi provider). Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
+  'qwen-3.8-flash|qwen3\.8.*flash|Revisit: Qwen 3.8 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a Qwen 3.8 flash slug is now in Pi'"'"'s catalog (was parked: no Qwen 3.8 flash slug on any provider — only 27B / Max / 2.4T). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux, and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek-v4-flash-0731 lane. Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport. Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
+)
+
+# File one issue for a transition. Dedup: an open issue whose body contains
+# the exact marker. Best-effort — a gh failure is logged, not silent.
+file_revisit() {
+    local id="$1" title="$2" body="$3"
+    local marker="paid-flash-canary: ${id} available"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_PAID_FLASH_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+# Pull the model column from `pi --list-models`. Strip EXTLOAD-OK extension
+# boot lines and the header row; field 2 is the model name.
+catalog_models() {
+    local out
+    if [[ -n "${FLEET_PAID_FLASH_MODELS_JSON:-}" && -f "${FLEET_PAID_FLASH_MODELS_JSON:-}" ]]; then
+        out=$(cat "$FLEET_PAID_FLASH_MODELS_JSON")
+    else
+        if ! command -v "$PI" >/dev/null 2>&1; then
+            log "FAIL: pi binary not found ($PI)"
+            return 1
+        fi
+        if ! out=$("$PI" --list-models 2>/dev/null); then
+            log "FAIL: pi --list-models exited non-zero"
+            return 1
+        fi
+    fi
+    printf '%s\n' "$out" \
+        | grep -v '^EXTLOAD-OK' \
+        | grep -v '^provider ' \
+        | awk 'NF{ print $2 }'
+}
+
+if ! catalog_models > /tmp/.fleet-paid-flash-canary.$$ 2>/dev/null; then
+    rm -f /tmp/.fleet-paid-flash-canary.$$
+    loud "PAID-FLASH-WATCHER-BROKEN" "pi --list-models unavailable; cannot watch parked flash slugs"
+    exit 1
+fi
+catalog=/tmp/.fleet-paid-flash-canary.$$
+trap 'rm -f "$catalog"' EXIT INT TERM
+
+filed=0
+parked=0
+for row in "${watched[@]}"; do
+    IFS='|' read -r id regex title body <<<"$row"
+    [[ -n "$id" ]] || continue
+    if grep -iEq "$regex" "$catalog"; then
+        log "TRANSITION: $id matched /$regex/ in Pi catalog — filing revisit"
+        loud "PAID-FLASH-AVAILABLE" "$id now in Pi catalog; filing revisit ticket"
+        file_revisit "$id" "$title" "$body"
+        filed=$((filed + 1))
+    else
+        log "parked: $id still absent (no /$regex/ match in Pi catalog)"
+        parked=$((parked + 1))
+    fi
+done
+
+if (( filed > 0 )); then
+    loud "PAID-FLASH-FILED" "$filed revisit ticket(s) filed; $parked still parked"
+else
+    loud "PAID-FLASH-PARKED" "$parked parked flash slug(s) still absent from Pi catalog"
+fi
+exit 0
