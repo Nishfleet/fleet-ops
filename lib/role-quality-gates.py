@@ -21,7 +21,9 @@ from typing import Any
 # Prompts that are variants of a parent role, not a new role.
 REPAIR_PROMPT_SUFFIX = "-repair.md"
 
-# Units that are product-specific or escalation plumbing, not fleet roles.
+# Units that are product-specific, recovery drills, or escalation plumbing,
+# not judging/building roles. fleet-resilience / resilience-drill landed
+# with fleet-ops#575; they are recovery cycles, not a new work-producing role.
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",
@@ -30,6 +32,8 @@ NON_ROLE_UNIT_PREFIXES = (
     "escalation-daily",
     "intake-reconcile",
     "fleet-restore",
+    "fleet-resilience",
+    "resilience-drill",
     "fleet-console",
     "fleet-heartbeat-failed-notify",
     "agent-cron-",
