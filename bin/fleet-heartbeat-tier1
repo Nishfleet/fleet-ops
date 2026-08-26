@@ -1096,8 +1096,10 @@ fi
 #   GitHub plane — every repo's red checks are covered by auto-revert,
 #                #124 redispatch, or the red-check->senior-auditor bridge.
 # The canary exits 0 when the only findings are the documented pending holes
-# (#76 delivery, #124 guard, #152 bridge); it exits 1 on real coverage gaps
-# and the unit lands in --state=failed like every other fail-loud block.
+# (#76 delivery, #152 bridge). #124 is observed as wired (this file's block 11
+# invoking fleet-heartbeat-red-pr-repair) rather than pending. It exits 1 on
+# real coverage gaps and the unit lands in --state=failed like every other
+# fail-loud block.
 # Anti-recursion: the canary runs inside this unit (already escalation-covered)
 # and creates no unit/OnFailure of its own.
 CANARY_BIN="${FLEET_ESCALATION_CANARY:-/home/nish/.local/bin/fleet-escalation-canary}"
