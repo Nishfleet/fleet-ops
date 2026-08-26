@@ -6,17 +6,28 @@ matches the MANIFEST and that the MANIFEST matches origin/main. Any divergence
 is a LOUD finding that exits 1, so fleet-heartbeat.service lands in --state=failed
 and the standard escalation matrix fires.
 
+fleet-ops#176: also assert PATH identity. Live dests must resolve under the
+canonical deploy checkout, not a hotfix / issue worktree / worktree-parent.
+A DRIFT-SOURCE finding auto-files (deduped) so the class cannot sit silent.
+
 Environment seams (overridden by tests):
-  FLEET_OPS_CHECKOUT      path to the fleet-ops deploy checkout
-  FLEET_OPS_AUDIT_LOG     drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
-  FLEET_OPS_TRIAGE        heartbeat triage file for LOUD lines
-  FLEET_OPS_SKIP_FETCH    set to 1 to skip the git fetch (offline tests)
-  FLEET_OPS_SYSTEMCTL     path to systemctl (default: systemctl)
+  FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
+  FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
+  FLEET_OPS_TRIAGE                heartbeat triage file for LOUD lines
+  FLEET_OPS_SKIP_FETCH            set to 1 to skip the git fetch (offline tests)
+  FLEET_OPS_SYSTEMCTL             path to systemctl (default: systemctl)
+  FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
+  FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
+  FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE; 0 skip gh
+  FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
+  GH                              gh binary (tests stub this)
 """
 
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import re
 import subprocess
@@ -30,6 +41,18 @@ AUDIT_LOG = Path(os.environ.get("FLEET_OPS_AUDIT_LOG", HOME / ".local" / "state"
 TRIAGE = Path(os.environ.get("FLEET_OPS_TRIAGE", "/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md"))
 SKIP_FETCH = os.environ.get("FLEET_OPS_SKIP_FETCH", "") == "1"
 SYSTEMCTL = os.environ.get("FLEET_OPS_SYSTEMCTL", "systemctl")
+GH = os.environ.get("GH", "gh")
+DRIFT_REPO = os.environ.get("FLEET_OPS_DRIFT_REPO", "Nishfleet/fleet-ops")
+DRIFT_FILE = os.environ.get("FLEET_OPS_DRIFT_FILE", "1") == "1"
+ALLOW_NONCANONICAL = os.environ.get("FLEET_OPS_ALLOW_NONCANONICAL", "") == "1"
+WORKSPACES_ROOT = Path(os.environ.get("FLEET_OPS_WORKSPACES_ROOT", "/home/nish/workspaces"))
+CANONICAL_CHECKOUT = Path(
+    os.environ.get(
+        "FLEET_OPS_CANONICAL_CHECKOUT",
+        str(WORKSPACES_ROOT / "tooling" / "fleet-ops-deploy-clone"),
+    )
+)
+SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
 
 FLEET_PREFIXES = (
     "pi-",
@@ -81,6 +104,106 @@ def fail_loud(tag: str, msg: str) -> None:
     loud(tag, msg)
     audit("fleet-ops", "drift", msg)
     sys.exit(1)
+
+
+def resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def is_under(path: Path, root: Path) -> bool:
+    path_s = str(resolved(path))
+    root_s = str(resolved(root))
+    return path_s == root_s or path_s.startswith(root_s + os.sep)
+
+
+def auto_file_source_drift(msg: str) -> None:
+    """File one issue for canonical-checkout drift. Dedup on SOURCE_MARKER."""
+    if not DRIFT_FILE:
+        log(f"file skipped (FLEET_OPS_DRIFT_FILE!=1) marker={SOURCE_MARKER}")
+        return
+    try:
+        proc = subprocess.run(
+            [GH, "issue", "list", "-R", DRIFT_REPO, "--state", "open", "--limit", "50", "--json", "number,body"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            for item in json.loads(proc.stdout):
+                body = item.get("body") or ""
+                if SOURCE_MARKER in body:
+                    log(f"dedup: open {DRIFT_REPO}#{item.get('number')} already carries {SOURCE_MARKER}")
+                    return
+    except (OSError, json.JSONDecodeError) as e:
+        log(f"WARN: gh issue list failed for {SOURCE_MARKER}: {e}")
+
+    title = "Live fleet-ops installed from non-canonical checkout"
+    full = (
+        f"{msg}\n\n"
+        "Live dests must resolve under the canonical deploy checkout "
+        f"({resolved(CANONICAL_CHECKOUT)}), not a hotfix / issue worktree / "
+        "worktree-parent. install.sh and fleet-ops-deploy refuse that class; "
+        "this canary auto-files when it still appears.\n\n"
+        f"{SOURCE_MARKER}\n"
+    )
+    try:
+        proc = subprocess.run(
+            [GH, "issue", "create", "-R", DRIFT_REPO, "--title", title, "--body", full],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            log(f"filed: {title}")
+        else:
+            log(f"WARN: gh issue create failed for {SOURCE_MARKER}: {proc.stderr.strip()}")
+    except OSError as e:
+        log(f"WARN: gh issue create failed for {SOURCE_MARKER}: {e}")
+
+
+def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> None:
+    """Fail if the checkout or a live dest points at a non-canonical workspaces tree.
+
+    Content compare against origin/main cannot see this class: a hotfix
+    worktree at the same blob still leaves live symlinks pointing at a
+    tree that can diverge or be deleted (fleet-ops#176).
+    """
+    if ALLOW_NONCANONICAL:
+        log("canonical-source gate skipped (FLEET_OPS_ALLOW_NONCANONICAL=1)")
+        return
+
+    findings: list[str] = []
+    checkout_r = resolved(checkout)
+    canon_r = resolved(CANONICAL_CHECKOUT)
+    ws_r = resolved(WORKSPACES_ROOT)
+
+    if is_under(checkout_r, ws_r) and checkout_r != canon_r:
+        findings.append(f"checkout {checkout_r} is not the canonical checkout {canon_r}")
+
+    for dest in expected_dests:
+        dest_path = Path(dest)
+        if dest.startswith("/etc/"):
+            continue
+        if dest_path.is_symlink():
+            try:
+                target = dest_path.resolve()
+            except OSError:
+                continue
+            if is_under(target, ws_r) and not is_under(target, canon_r):
+                findings.append(f"WRONG-SYMLINK: {dest} -> {target} (want under {canon_r})")
+        elif dest_path.is_file() and is_under(checkout_r, ws_r):
+            findings.append(
+                f"DIFF-FILE: {dest} is a regular file, not a symlink into {canon_r}"
+            )
+
+    if findings:
+        msg = "live install source is not the canonical checkout:\n" + "\n".join(findings)
+        auto_file_source_drift(msg)
+        fail_loud("DRIFT-SOURCE", msg)
+    log(f"live dests resolve under canonical checkout {canon_r}")
 
 
 def run(cmd: list[str], cwd: Path | None = None, check: bool = True, capture: bool = True) -> tuple[int, str, str]:
@@ -215,7 +338,6 @@ def parse_intake_repos(checkout: Path) -> list[str]:
     intake_json = checkout / "config" / "intake-repos.json"
     if not intake_json.exists():
         return []
-    import json
 
     try:
         data = json.loads(intake_json.read_text(encoding="utf-8"))
@@ -495,6 +617,7 @@ def main() -> None:
     checkout = find_checkout()
     expected_dests, expected_enabled = parse_manifest(checkout)
 
+    check_canonical_source(checkout, expected_dests)
     check_checkout(checkout)
     check_manifest_install(checkout)
     check_live_matches_origin_main(checkout)

@@ -61,6 +61,36 @@ else
   do_user_install=1
 fi
 
+# fleet-ops#176: a hand-run of install.sh from a hotfix / issue worktree /
+# worktree-parent retargets every live symlink at a tree that can diverge
+# or be deleted. Refuse mutating installs from any path under
+# FLEET_OPS_WORKSPACES_ROOT that is not the canonical deploy checkout.
+# --check never refuses (auditors still need to see DIFF). Tests live under
+# /tmp, which is outside the workspaces root, so they stay allowed.
+# FLEET_OPS_ALLOW_NONCANONICAL=1 is the explicit operator override.
+refuse_noncanonical_install() {
+  [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" = 1 ] && return 0
+  local ws_root canon got want root
+  ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+  canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+  got=$(readlink -f "$here")
+  want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+  root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+  [ "$got" = "$want" ] && return 0
+  case "$got" in
+    "$root"|"$root"/*)
+      echo "install.sh: REFUSE: refusing to install from non-canonical checkout $got" >&2
+      echo "install.sh: canonical checkout is $want (fleet-ops#176)" >&2
+      echo "install.sh: set FLEET_OPS_ALLOW_NONCANONICAL=1 to override" >&2
+      exit 1
+      ;;
+  esac
+}
+
+if [ "$mode" != "--" ]; then
+  refuse_noncanonical_install
+fi
+
 # Returns 0 if the destination is under /etc/, 1 otherwise. Used to route
 # each MANIFEST line to the user/system handler.
 dest_is_system() { case "$1" in /etc/*) return 0;; *) return 1;; esac; }

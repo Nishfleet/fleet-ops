@@ -52,6 +52,27 @@ if ! git -C "$DEPLOY_CHECKOUT" rev-parse --git-dir >/dev/null 2>&1; then
     exit 1
 fi
 
+# fleet-ops#176: the heartbeat pin is not enough if FLEET_OPS_CHECKOUT is
+# overridden to a hotfix worktree. Refuse deploy from any workspaces path
+# that is not the canonical checkout. Tests use /tmp checkouts.
+if [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" != 1 ]; then
+    ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+    canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+    got=$(readlink -f "$DEPLOY_CHECKOUT")
+    want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+    root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+    if [ "$got" != "$want" ]; then
+        case "$got" in
+            "$root"|"$root"/*)
+                loud "DEPLOY-NONCANONICAL" \
+                    "refusing deploy from $got; canonical checkout is $want (fleet-ops#176)"
+                deploy_audit "fleet-ops" "deploy-noncanonical" "$got"
+                exit 1
+                ;;
+        esac
+    fi
+fi
+
 if ! git -C "$DEPLOY_CHECKOUT" fetch origin >/dev/null 2>&1; then
     loud "DEPLOY-FETCH" "git fetch origin failed at $DEPLOY_CHECKOUT"
     exit 1
