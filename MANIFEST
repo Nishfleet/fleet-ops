@@ -136,6 +136,11 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
 # and auto-files. No new scheduler.
 bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
+# fleet-ops#532: skills-symlink canary. Run by heartbeat-tier1 block 22.
+# Diffs ~/.claude/skills vs ~/.codex/skills every tick; a skill on one
+# harness missing from the other, a dangling skill symlink, or a house
+# skill missing from a live harness goes LOUD and auto-files.
+bin/fleet-skills-symlink-canary /home/nish/.local/bin/fleet-skills-symlink-canary
 # fleet-ops#435: OpenCode MiniMax M3 catalog canary. Run by heartbeat-tier1.
 # Billing slug in seat-caps fails the tick. A new -free slug auto-files and
 # leaves the tick green. No new scheduler.

@@ -237,10 +237,9 @@
     {
       "id": "sr-skills-native",
       "source": "global-standing-rules.md: Skills are native for every agent on every machine (Nish, 2026-08-20)",
-      "mechanism": "No canary that skills are linked on every harness after install",
-      "proof": "Nishfleet/fleet-ops#532",
-      "status": "queued(#532)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat canary diffs Claude vs Codex SKILL.md names, flags dangling skill symlinks, and requires house-method skills already on one harness to be on every live harness; auto-files and fail-loud",
+      "proof": "bin/fleet-skills-symlink-canary; tests/skills-symlink-canary.test.sh; fleet-heartbeat-tier1 block 22",
+      "status": "enforced"
     },
     {
       "id": "sr-one-fleet",

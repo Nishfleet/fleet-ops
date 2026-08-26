@@ -1545,9 +1545,30 @@ else
 fi
 
 # ============================================================================
+# 22. SKILLS-SYMLINK CANARY (fleet-ops#532)
+# ============================================================================
+# Every tick, prove Claude and Codex carry the same SKILL.md names, house
+# skills already on one harness are on every live harness, and skill
+# symlinks are not dangling. Violations auto-file and fail the tick.
+# No new scheduler.
+SKILLS_SYMLINK_CANARY_BIN="${FLEET_SKILLS_SYMLINK_CANARY:-/home/nish/.local/bin/fleet-skills-symlink-canary}"
+skills_symlink_canary_rc=0
+if [ -x "$SKILLS_SYMLINK_CANARY_BIN" ]; then
+    log "22. skills-symlink canary starting"
+    if "$SKILLS_SYMLINK_CANARY_BIN"; then
+        log "22. skills-symlink canary complete"
+    else
+        skills_symlink_canary_rc=$?
+        log "22. skills-symlink canary FAILED (rc=$skills_symlink_canary_rc) — a skill on one harness is missing on another; unit will land in --state=failed"
+    fi
+else
+    log "22. skills-symlink canary missing at $SKILLS_SYMLINK_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1602,5 +1623,8 @@ if [ "${unjustified_rc:-0}" -ne 0 ]; then
 fi
 if [ "${escalation_completion_rc:-0}" -ne 0 ]; then
     exit "${escalation_completion_rc}"
+fi
+if [ "${skills_symlink_canary_rc:-0}" -ne 0 ]; then
+    exit "$skills_symlink_canary_rc"
 fi
 exit 0

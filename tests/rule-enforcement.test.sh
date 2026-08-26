@@ -56,8 +56,11 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.id == "sr-skills-native" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report sr-skills-native as enforced (fleet-ops#532): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
+  ok "live join: sr-skills-native is enforced (observe-to-close for #532)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -528,4 +531,9 @@ ok "drill: canary-covered marker is not posted twice"
 bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"
 ok "rule-enforcement: no-agent-names gate drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, and no-agent-names drill"
+# fleet-ops#532: skills-symlink canary. Invoked from this CI-listed file so
+# hosted runners run it without a workflow edit.
+bash "$here/skills-symlink-canary.test.sh" || fail "skills-symlink canary drill failed"
+ok "rule-enforcement: skills-symlink canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, and skills-symlink drill"

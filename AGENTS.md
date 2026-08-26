@@ -8,6 +8,7 @@
 - Findings-queued session-close lint: `bash tests/fleet-findings-queued.test.sh`
 - Decisions-ledger session-close lint: `bash tests/fleet-decisions-ledger.test.sh`
 - Escalation canary tests: `bash tests/escalation-coverage-canary.test.sh`
+- Skills-symlink canary: `bash tests/skills-symlink-canary.test.sh`
 - Full P14 suite: `bash tests/manifest-shape.test.sh && bash tests/intake-repos-shape.test.sh && ...` (see `.github/workflows/ci.yml`)
 
 ## Useful env vars for canary
