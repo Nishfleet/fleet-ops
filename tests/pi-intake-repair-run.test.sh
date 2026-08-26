@@ -103,6 +103,12 @@ grep -Fxq 'bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run' 
   || fail "MANIFEST missing: bin/pi-intake-repair-run"
 ok "MANIFEST installs pi-intake-repair-run"
 
+# --- canary allowlist includes this wrapper (fleet-ops#351 omission) ------
+grep -qE '^[[:space:]]+pi-intake-repair-run$' \
+    "$repo_root/bin/fleet-escalation-canary" \
+  || fail "pi-intake-repair-run missing from SANCTIONED_PI_RUNNERS in fleet-escalation-canary"
+ok "escalation canary sanctions pi-intake-repair-run"
+
 # --- systemd-analyze verify on the unit file -------------------------------
 # The unit uses `/bin/bash -c exec ...` so verify does not need the wrapper
 # binary to exist (same shape as pi-scout-repair@.service).
