@@ -242,8 +242,10 @@ if [ "$do_user_install" = 1 ]; then
   # enable rather than a generic [Install] loop: templates (pi-intake@ /
   # pi-scout@) are instantiated by the reconciler, and siterep-deploy.timer
   # deliberately omits [Install] so it cannot be auto-started.
-  if ! systemctl --user is-enabled agent-cron-0509-daily-market-signal.timer >/dev/null 2>&1; then
-    systemctl --user enable --now agent-cron-0509-daily-market-signal.timer
+  if [ -f "$here/systemd/agent-cron-0509-daily-market-signal.timer" ]; then
+    if ! systemctl --user is-enabled agent-cron-0509-daily-market-signal.timer >/dev/null 2>&1; then
+      systemctl --user enable --now agent-cron-0509-daily-market-signal.timer
+    fi
   fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
