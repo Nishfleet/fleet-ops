@@ -543,8 +543,8 @@ if [[ -f "$reusable" && -f "$caller" && -f "$template_gate" ]]; then
   fi
   grep -q 'uses: ./.github/workflows/reusable-gate-integrity.yml' "$caller" \
     || { echo "FAIL: fleet-ops gate-integrity.yml must call the reusable workflow in this repo" >&2; exit 1; }
-  grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main' "$template_gate" \
-    || { echo "FAIL: template must call Nishfleet/fleet-ops reusable-gate-integrity.yml@main" >&2; exit 1; }
+  grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@v1' "$template_gate" \
+    || { echo "FAIL: template must call Nishfleet/fleet-ops reusable-gate-integrity.yml@v1" >&2; exit 1; }
   if grep -q 'secrets: inherit' "$caller" "$template_gate"; then
     echo "FAIL: gate-integrity callers must not use secrets: inherit" >&2
     exit 1

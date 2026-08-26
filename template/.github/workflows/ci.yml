@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   pr-checks:
-    uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@v1
     permissions:
       contents: read
       pull-requests: read

@@ -181,7 +181,7 @@ check names stay as local jobs because a `uses:` job reports as
 `caller / callee` and branch protection still lists `Gitleaks`, `Semgrep`,
 `Shellcheck`, and `systemd-analyze`.
 
-New repos copy `template/.github/workflows/` (wired to this repo at `@main`).
+New repos copy `template/.github/workflows/` (wired to this repo at `@v1`).
 
 A further reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
 the central CI failure telemetry set. Other repos call it with
