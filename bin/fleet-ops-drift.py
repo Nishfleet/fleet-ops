@@ -10,6 +10,12 @@ fleet-ops#176: also assert PATH identity. Live dests must resolve under the
 canonical deploy checkout, not a hotfix / issue worktree / worktree-parent.
 A DRIFT-SOURCE finding auto-files (deduped) so the class cannot sit silent.
 
+fleet-ops#285: also assert ExecStart binaries exist. A leftover .service
+whose ExecStart path is gone (binary renamed to .bak, unit files left
+behind) is invisible to extra-symlink and extra-enabled checks: the files
+are regular, not symlinks, and the timer is often disabled. DRIFT-MISSING-EXEC
+auto-files (deduped) so that class cannot sit silent.
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -19,7 +25,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE and DRIFT-MISSING-EXEC; 0 skip gh
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   GH                              gh binary (tests stub this)
 """
@@ -53,6 +59,8 @@ CANONICAL_CHECKOUT = Path(
     )
 )
 SOURCE_MARKER = "canonical-checkout-drift: fleet-ops#176"
+ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
+_EXECSTART_PREFIXES = frozenset("-@+!")
 
 FLEET_PREFIXES = (
     "pi-",
@@ -119,10 +127,10 @@ def is_under(path: Path, root: Path) -> bool:
     return path_s == root_s or path_s.startswith(root_s + os.sep)
 
 
-def auto_file_source_drift(msg: str) -> None:
-    """File one issue for canonical-checkout drift. Dedup on SOURCE_MARKER."""
+def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
+    """File one issue for a drift class. Dedup on marker in open issue bodies."""
     if not DRIFT_FILE:
-        log(f"file skipped (FLEET_OPS_DRIFT_FILE!=1) marker={SOURCE_MARKER}")
+        log(f"file skipped (FLEET_OPS_DRIFT_FILE!=1) marker={marker}")
         return
     try:
         proc = subprocess.run(
@@ -134,21 +142,13 @@ def auto_file_source_drift(msg: str) -> None:
         if proc.returncode == 0 and proc.stdout.strip():
             for item in json.loads(proc.stdout):
                 body = item.get("body") or ""
-                if SOURCE_MARKER in body:
-                    log(f"dedup: open {DRIFT_REPO}#{item.get('number')} already carries {SOURCE_MARKER}")
+                if marker in body:
+                    log(f"dedup: open {DRIFT_REPO}#{item.get('number')} already carries {marker}")
                     return
     except (OSError, json.JSONDecodeError) as e:
-        log(f"WARN: gh issue list failed for {SOURCE_MARKER}: {e}")
+        log(f"WARN: gh issue list failed for {marker}: {e}")
 
-    title = "Live fleet-ops installed from non-canonical checkout"
-    full = (
-        f"{msg}\n\n"
-        "Live dests must resolve under the canonical deploy checkout "
-        f"({resolved(CANONICAL_CHECKOUT)}), not a hotfix / issue worktree / "
-        "worktree-parent. install.sh and fleet-ops-deploy refuse that class; "
-        "this canary auto-files when it still appears.\n\n"
-        f"{SOURCE_MARKER}\n"
-    )
+    full = f"{msg}\n\n{extra}\n\n{marker}\n"
     try:
         proc = subprocess.run(
             [GH, "issue", "create", "-R", DRIFT_REPO, "--title", title, "--body", full],
@@ -159,9 +159,41 @@ def auto_file_source_drift(msg: str) -> None:
         if proc.returncode == 0:
             log(f"filed: {title}")
         else:
-            log(f"WARN: gh issue create failed for {SOURCE_MARKER}: {proc.stderr.strip()}")
+            log(f"WARN: gh issue create failed for {marker}: {proc.stderr.strip()}")
     except OSError as e:
-        log(f"WARN: gh issue create failed for {SOURCE_MARKER}: {e}")
+        log(f"WARN: gh issue create failed for {marker}: {e}")
+
+
+def auto_file_source_drift(msg: str) -> None:
+    """File one issue for canonical-checkout drift. Dedup on SOURCE_MARKER."""
+    extra = (
+        "Live dests must resolve under the canonical deploy checkout "
+        f"({resolved(CANONICAL_CHECKOUT)}), not a hotfix / issue worktree / "
+        "worktree-parent. install.sh and fleet-ops-deploy refuse that class; "
+        "this canary auto-files when it still appears."
+    )
+    auto_file_drift(
+        SOURCE_MARKER,
+        "Live fleet-ops installed from non-canonical checkout",
+        extra,
+        msg,
+    )
+
+
+def auto_file_orphan_exec(msg: str) -> None:
+    """File one issue for leftover units whose ExecStart binary is missing."""
+    extra = (
+        "A user .service file whose ExecStart binary is gone is leftover "
+        "after a decommission (binary renamed to .bak, GitHub-hosted "
+        "replacement running, unit files never removed). Remove the unit "
+        "files and run systemctl --user daemon-reload. Do not restart a slice."
+    )
+    auto_file_drift(
+        ORPHAN_EXEC_MARKER,
+        "Orphan systemd unit: ExecStart binary missing",
+        extra,
+        msg,
+    )
 
 
 def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> None:
@@ -613,6 +645,82 @@ def check_extra_symlinks(checkout: Path, expected_dests: set[str]) -> None:
     log("no extra fleet symlinks in managed directories")
 
 
+def parse_execstart_binary(line: str, home: Path) -> str | None:
+    """Return the ExecStart binary path, or None if the line is not checkable.
+
+    Strips systemd command prefixes (- @ + ! !!), takes the first token
+    (or a double-quoted path), expands %h to home. Lines that still contain
+    a specifier after that are skipped — they are not this leftover class.
+    """
+    if not line.startswith("ExecStart="):
+        return None
+    val = line.split("=", 1)[1].strip()
+    while val:
+        if val.startswith("!!"):
+            val = val[2:]
+            continue
+        if val[0] in _EXECSTART_PREFIXES:
+            val = val[1:]
+            continue
+        break
+    if val.startswith('"'):
+        end = val.find('"', 1)
+        path = val[1:end] if end > 0 else val[1:]
+    else:
+        parts = val.split()
+        path = parts[0] if parts else ""
+    if not path:
+        return None
+    path = path.replace("%h", str(home))
+    if "%" in path:
+        return None
+    return path
+
+
+def check_missing_execstarts() -> None:
+    """Fail if a user .service ExecStart binary does not exist.
+
+    Catches leftover units after a binary is decommissioned (fleet-ops#285).
+    Extra-symlink and extra-enabled checks miss this class: the files are
+    regular, not MANIFEST dests, and the timer is often disabled.
+    """
+    unit_dir = HOME / ".config" / "systemd" / "user"
+    if not unit_dir.is_dir():
+        return
+
+    findings: list[str] = []
+    for path in sorted(unit_dir.glob("*.service")):
+        if path.is_symlink():
+            try:
+                if str(path.resolve()) == "/dev/null":
+                    continue
+            except OSError:
+                continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            binary = parse_execstart_binary(line, HOME)
+            if binary is None:
+                continue
+            if not os.path.isabs(binary):
+                continue
+            if os.path.exists(binary):
+                continue
+            extra = ""
+            timer = path.with_suffix(".timer")
+            if timer.exists():
+                extra = f" (sibling timer {timer.name} also present)"
+            findings.append(f"{path.name}: ExecStart={binary} missing{extra}")
+
+    if findings:
+        msg = "user unit ExecStart binary is missing:\n" + "\n".join(findings)
+        auto_file_orphan_exec(msg)
+        fail_loud("DRIFT-MISSING-EXEC", msg)
+    log("no user unit ExecStart points at a missing binary")
+
+
 def main() -> None:
     checkout = find_checkout()
     expected_dests, expected_enabled = parse_manifest(checkout)
@@ -624,6 +732,7 @@ def main() -> None:
     check_enabled_units(checkout, expected_enabled)
     check_extra_symlinks(checkout, set(expected_dests.keys()))
     check_volatile_unit_paths(checkout)
+    check_missing_execstarts()
 
     log("drift canary: clean")
     audit("fleet-ops", "drift-ok", "checkout-and-installed-state-match-main")
