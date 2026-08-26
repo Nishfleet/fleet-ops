@@ -616,10 +616,9 @@
     {
       "id": "led-north-star-quality",
       "source": "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through",
-      "mechanism": "Quality SLOs measured mechanically on the gap-closure loop's primary scoreboard; speed/resilience wins that cost quality rejected at conference",
-      "proof": "fleet-ops #180 comment + #455 + #418; mechanism issue filed by canary",
-      "status": "queued(#459)",
-      "queued_since": "2026-08-26"
+      "mechanism": "CI drill + lib/north-star-quality.py verify: config/quality-routing.json must keep the three primary SLO cuts (revert_rate, defect_rate, overturn_rate) and no cut may exceed its NORTH STAR ceiling; config/role-quality-gates.json must keep reviewer/senior/researcher gates tied to the quality scoreboard. A PR that drops a SLO or weakens a cut is rejected at the gate.",
+      "proof": "lib/north-star-quality.py; tests/north-star-quality.test.sh; config/quality-routing.json; config/role-quality-gates.json",
+      "status": "enforced"
     },
     {
       "id": "led-quality-inescapable",

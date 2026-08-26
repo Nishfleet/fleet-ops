@@ -60,10 +60,13 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report vault sync conflicts as enforced covered_rows (fleet-ops#529): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report sr-find-proven-thing as enforced covered_rows (fleet-ops#534): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report led-north-star-quality as enforced covered_rows (fleet-ops#459): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
   ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
+  ok "live join: NORTH STAR quality source is enforced (observe-to-close for #459)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -547,4 +550,9 @@ ok "rule-enforcement: vault-conflict-resolver drill"
 bash "$here/fleet-wipe-lessons.test.sh" || fail "fleet-wipe-lessons gate drill failed"
 ok "rule-enforcement: fleet-wipe-lessons gate drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, and wipe-lessons drills"
+# fleet-ops#459: NORTH STAR quality guard. Nested host so the worker token
+# does not need to edit .github/workflows/**.
+bash "$here/north-star-quality.test.sh" || fail "north-star-quality gate drill failed"
+ok "rule-enforcement: north-star-quality gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, and north-star-quality drills"
