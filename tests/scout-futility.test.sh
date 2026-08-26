@@ -14,6 +14,9 @@
 #   7. Non-zero scout exit does not increment (OnFailure owns crashes).
 #   8. end without begin is a no-op.
 #   9. Tracker always exits 0 (must not fail the scout unit).
+#  10. Production ExecStopPost shape (no argv, SERVICE_RESULT=success)
+#      counts as a green dry run.
+#  11. SERVICE_RESULT failure does not increment (OnFailure owns crashes).
 #
 # The live pi-scout@ oneshot is the outermost edge (it would run a real
 # LLM). The detector decision is exercised through the real helper.
