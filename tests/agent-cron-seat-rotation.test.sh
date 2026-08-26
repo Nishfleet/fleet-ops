@@ -220,6 +220,35 @@ git -C "$repo_root" ls-files --error-unmatch prompts/0509-daily-market-signal.md
   || fail "prompt file not tracked in git: prompts/0509-daily-market-signal.md"
 ok "MANIFEST entries present for runner + service + timer + prompt"
 
+# --- fleet-ops#419: last30days query must not lead with product token 0509 ---
+# A query that starts with `0509` is not a last30days entity and demotes
+# on-topic sneaker-resale clusters (SneakerPing 59.5% below retail) to score 0.
+# The prompt must query the market and require those clusters under Strongest
+# changes even when D1 receipts are flat.
+prompt_file="$repo_root/prompts/0509-daily-market-signal.md"
+if grep -Fq '"0509 sneaker-resale market signal:' "$prompt_file"; then
+    fail "prompt last30days query still leads with product token 0509 (entity-miss demotion)"
+fi
+grep -q 'last30days.py' "$prompt_file" \
+  || fail "prompt must invoke last30days.py"
+grep -Eq 'sneaker resale' "$prompt_file" \
+  || fail "prompt last30days query must name sneaker resale"
+grep -Eq 'StockX' "$prompt_file" \
+  || fail "prompt last30days query must name StockX"
+grep -Eq 'GOAT' "$prompt_file" \
+  || fail "prompt last30days query must name GOAT"
+grep -Eq 'Nike' "$prompt_file" \
+  || fail "prompt last30days query must name Nike"
+grep -q 'entity-miss' "$prompt_file" \
+  || fail "prompt must name entity-miss so the 0509 query cannot return silently"
+grep -q 'Strongest changes' "$prompt_file" \
+  || fail "prompt must keep sneaker-resale clusters under Strongest changes"
+grep -Eq 'SneakerPing' "$prompt_file" \
+  || fail "prompt Strongest-changes rule must name SneakerPing"
+grep -Eq 'below retail' "$prompt_file" \
+  || fail "prompt Strongest-changes rule must name below retail"
+ok "prompt last30days query names the market, not 0509; Strongest-changes rule present"
+
 # --- install.sh enables the [Install] timer (fleet-ops#183) -----------------
 # The timer was in MANIFEST with [Install] and still not-found on the live
 # host because install.sh only enabled intake-reconcile. Lock both the
