@@ -113,6 +113,57 @@ def is_fleet_unit(name: str) -> bool:
     return name.startswith(FLEET_PREFIXES)
 
 
+def fleet_managed_units(checkout: Path) -> set[str]:
+    """Names of units fleet-ops actually ships a source file for.
+
+    A unit is fleet-managed (and thus "extra-enabled drift" if enabled but
+    not expected) only when this checkout's systemd/ dir contains a source
+    file for it. Exact names match directly; a template source ``base@.suffix``
+    matches any instance ``base@<anything>.suffix``. Units with a fleet-y name
+    prefix but NO source here (e.g. codex-remote-control.service, owned by the
+    codex setup; pi-transport-check.path/timer, owned by the pi setup) are
+    externally managed and not this canary's business — the old prefix-only
+    is_fleet_unit false-positived on them and turned every heartbeat tick red.
+    """
+    managed: set[str] = set()
+    systemd_dir = checkout / "systemd"
+    if not systemd_dir.is_dir():
+        return managed
+    for entry in systemd_dir.iterdir():
+        if not entry.is_file():
+            continue
+        name = entry.name
+        if "@" in name:
+            base, suffix = name.split("@", 1)
+            if not suffix.startswith("."):
+                continue
+            # Template: base@.suffix matches base@<instance>.suffix.
+            managed.add(name)
+            managed.add(f"{base}@{suffix}")  # canonical template form
+        else:
+            managed.add(name)
+    return managed
+
+
+def is_fleet_managed_unit(name: str, managed: set[str]) -> bool:
+    """True iff fleet-ops ships a source unit file matching ``name``.
+
+    Handles template instances: ``pi-intake@rogue.timer`` is fleet-managed
+    because ``pi-intake@.timer`` is shipped. Externally-owned units
+    (no source in this checkout) return False even if name-prefixed.
+    """
+    if name in managed:
+        return True
+    if "@" in name:
+        base, rest = name.split("@", 1)
+        # rest is "<instance>.<type>"; the template is "base@.<type>".
+        if "." in rest:
+            ext = rest.rsplit(".", 1)[1]
+            if f"{base}@.{ext}" in managed:
+                return True
+    return False
+
+
 def unit_has_install(path: Path) -> bool:
     try:
         with path.open("r", encoding="utf-8") as f:
@@ -220,6 +271,7 @@ def check_manifest_install(checkout: Path) -> None:
 
 def check_enabled_units(checkout: Path, expected_enabled: set[str]) -> None:
     expected_enabled = set(expected_enabled)
+    managed = fleet_managed_units(checkout)
 
     for repo in parse_intake_repos(checkout):
         expected_enabled.add(f"pi-intake@{repo}.timer")
@@ -245,7 +297,7 @@ def check_enabled_units(checkout: Path, expected_enabled: set[str]) -> None:
             continue
         if unit in expected_enabled:
             continue
-        if is_fleet_unit(unit):
+        if is_fleet_managed_unit(unit, managed):
             extra.append(unit)
 
     if missing or extra:
@@ -265,6 +317,7 @@ def is_fleet_path(path: Path) -> bool:
 
 def check_extra_symlinks(checkout: Path, expected_dests: set[str]) -> None:
     checkout_str = str(checkout.resolve())
+    managed = fleet_managed_units(checkout)
     findings: list[str] = []
 
     for d in MANAGED_DIRS:
@@ -281,6 +334,18 @@ def check_extra_symlinks(checkout: Path, expected_dests: set[str]) -> None:
                 findings.append(f"{item} -> <broken>")
                 continue
             target_str = str(target)
+
+            # Masked unit (intake-reconcile masks via symlink to /dev/null):
+            # legit disabled-state marker, not drift.
+            if target_str == "/dev/null":
+                continue
+
+            # Template instance (e.g. pi-intake@0509.timer) of a shipped
+            # template (pi-intake@.timer): legit enabled instance, not drift.
+            # The instance symlink may target a template in this checkout OR
+            # a prior checkout path; either way it is fleet-managed by name.
+            if is_fleet_managed_unit(item.name, managed):
+                continue
 
             if target_str.startswith(checkout_str + os.sep):
                 findings.append(f"{item} -> {target} (extra from current checkout)")
