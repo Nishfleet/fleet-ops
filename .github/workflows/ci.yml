@@ -194,6 +194,7 @@ jobs:
         bash tests/required-check-purity.test.sh
         bash tests/pi-packet-guard.test.sh
         bash tests/pi-systemd-run.test.sh
+        bash tests/worker-prompt-systemd-run.test.sh
         bash tests/pi-intake-run.test.sh
         bash tests/pi-issue-start.test.sh
         bash tests/pi-issue-failed-reap.test.sh

@@ -22,6 +22,15 @@ Hard rules:
 - Stay inside the issue's scope. Problems you discover along the way get filed as NEW issues in the same repo (plain, no labels) — not fixed in this PR.
 - Any unexpected failing command: say so in your output; if it blocks the work, exit nonzero.
 
+For work that must outlive this session, use `pi-systemd-run` — never `nohup` or a trailing `&` (those die with the launching shell and look like a dead seat):
+
+```
+pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- \
+  pi --print --provider minimax --model MiniMax-M3
+```
+
+`pi-systemd-run` is `systemd-run --user --collect --no-block`, not a dispatcher.
+
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=):
 The deliverable you just built gets run before you call the issue done. Repo
 unit tests around it are not the run. systemd Restart= on this unit is seat
