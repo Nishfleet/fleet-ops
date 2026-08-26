@@ -187,4 +187,32 @@ grep -qE "actively dispatching|closeout in flight" "$scratch/err.log" || fail "m
 echo "inactive" > "$sysctl_store/stop-escalation.service.active"
 ok "pipeline-active guard prevents false stall (exit 0)"
 
+# --- 9. wiring pins (fleet-ops#480) ----------------------------------------
+# The bin is only "enforced" if heartbeat actually runs it, MANIFEST
+# installs it once, the matrix says enforced, and the CI-listed canary
+# runner keeps invoking this suite (worker tokens cannot push workflows).
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+grep -F 'fleet-escalation-completion' "$tier1" >/dev/null \
+  || fail "tier1 must invoke fleet-escalation-completion"
+grep -F 'escalation_completion_rc' "$tier1" >/dev/null \
+  || fail "tier1 must capture escalation_completion_rc"
+grep -F -- 'exit "${escalation_completion_rc}"' "$tier1" >/dev/null \
+  || fail "tier1 must exit non-zero when the completion enforcer fails loud"
+n=$(grep -cF 'bin/fleet-escalation-completion ' "$repo_root/MANIFEST" || true)
+[[ "$n" == "1" ]] || fail "MANIFEST must list fleet-escalation-completion exactly once (got $n)"
+grep -F 'fleet-escalation-completion.test.sh' "$here/escalation-coverage-canary.test.sh" >/dev/null \
+  || fail "escalation-coverage-canary.test.sh must invoke this suite (fleet-ops#480)"
+
+matrix="$repo_root/config/rule-enforcement.json"
+row_n=$(jq '[.rules[] | select(.id=="led-escalation-matrix-fixes")] | length' "$matrix")
+[[ "$row_n" == "1" ]] || fail "matrix must have exactly one led-escalation-matrix-fixes row (got $row_n)"
+src=$(jq -r '.rules[] | select(.id=="led-escalation-matrix-fixes") | .source' "$matrix")
+[[ "$src" == "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes" ]] \
+  || fail "matrix source mismatch: $src"
+status=$(jq -r '.rules[] | select(.id=="led-escalation-matrix-fixes") | .status' "$matrix")
+[[ "$status" == "enforced" ]] || fail "led-escalation-matrix-fixes must stay enforced (got $status)"
+proof=$(jq -r '.rules[] | select(.id=="led-escalation-matrix-fixes") | .proof' "$matrix")
+[[ "$proof" == *fleet-escalation-completion* ]] || fail "proof must name fleet-escalation-completion"
+ok "wiring: heartbeat fail-loud, MANIFEST once, nested canary runner, matrix enforced"
+
 echo "OK: fleet-escalation-completion: chain tracking, stall ladder, stale-trip, wall, pipeline guard"
