@@ -264,3 +264,33 @@ PI_SEAT_LIB_CHECK_SYSTEMD=0
 listed=$(_seat_list_unit)
 [[ -z "$listed" ]] || fail "_seat_list_unit must emit nothing when PI_SEAT_LIB_CHECK_SYSTEMD=0, got: $listed"
 ok "_seat_list_unit is silent when PI_SEAT_LIB_CHECK_SYSTEMD=0"
+
+# --- 10: CI host lock (fleet-ops#500) -------------------------------------
+# P14 has listed this file since #36/#100. The hyphen glob still survived
+# #28 and #103 because nothing failed if a later workflow rewrite dropped
+# the invoke line. Require the bash invoke, not a filename mention
+# (fleet-ops#490). Put the same grep in seat-lib.test.sh so dropping this
+# file from P14 still fails a sibling that stays listed independently.
+ci_yml="$repo_root/.github/workflows/ci.yml"
+grep -Fq 'bash tests/seat-lib-degraded.test.sh' "$ci_yml" \
+  || fail "ci.yml verify-command must run tests/seat-lib-degraded.test.sh (fleet-ops#500)"
+ok "ci.yml still invokes this file"
+
+# Empty-host + comment-only drill (fleet-ops#366 / #490). A filename in a
+# comment must not satisfy the lock. Fixture lives under $scratch so the
+# existing EXIT trap cleans it up.
+empty="$scratch/empty-ci.yml"
+: >"$empty"
+empty_hit=0
+grep -Fq 'bash tests/seat-lib-degraded.test.sh' "$empty" && empty_hit=1
+[[ "$empty_hit" -eq 0 ]] || fail "empty-host drill must miss (hit=$empty_hit)"
+printf '# tests/seat-lib-degraded.test.sh\n' >"$empty"
+comment_hit=0
+grep -Fq 'bash tests/seat-lib-degraded.test.sh' "$empty" && comment_hit=1
+[[ "$comment_hit" -eq 0 ]] \
+  || fail "comment-only filename must not satisfy the #500 lock (hit=$comment_hit)"
+weak_hit=0
+grep -Fq 'tests/seat-lib-degraded.test.sh' "$empty" && weak_hit=1
+[[ "$weak_hit" -eq 1 ]] \
+  || fail "comment-only drill fixture is broken (weak grep should match filename)"
+ok "CI lock requires bash invoke line; comment-only filename is not enough"
