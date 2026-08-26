@@ -14,7 +14,10 @@
 #   3. Verify the dispatch actually wrote a diagnosis block.  A dispatch that
 #      produced no block (timeout, pi failure, or empty output) is recorded as
 #      a failed dispatch, does NOT consume the hash's 2-dispatch budget, and
-#      exits 1 so the next trip/sweep can try again.
+#      exits 1 so the next trip/sweep can try again.  SIGTERM (143) / SIGKILL
+#      (137) / GNU timeout (124) are KILL-RETRY, not DISPATCH-NO-BLOCK. After
+#      2 consecutive kills on the same hash, write KILL-ESCALATION and skip
+#      further dispatches on that hash (exit 0) so a 3rd seat is not burned.
 #
 # Layer: never-say-next SENIOR-AUDITOR (visual-quality-waves.md escalation scope).
 set -euo pipefail
@@ -25,6 +28,7 @@ export HOME="${HOME:-/home/nish}"
 AS=${STOP_ESCALATION_AS:-/home/nish/workspaces/agent-state}
 SR=${STOP_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
 SEEN=${STOP_ESCALATION_SEEN:-$AS/stop-escalation-seen.txt}
+KILLS=${STOP_ESCALATION_KILLS:-$AS/stop-escalation-kills.txt}
 NISH=${STOP_ESCALATION_NISH:-$AS/NISH-ESCALATIONS.md}
 LOG=${STOP_ESCALATION_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}
 CD=${STOP_ESCALATION_COOLDOWN:-300}
@@ -43,6 +47,64 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 source "$SEAT_LIB"
 
 ts() { date -u +%FT%TZ; }
+
+# Consecutive KILL-RETRY count per STOP-REASON hash (fleet-ops#444).
+# 124 = GNU timeout, 137 = SIGKILL, 143 = SIGTERM. After 2 consecutive kills
+# we escalate loud and stop burning seats on this hash.
+kill_signal_name() {
+  case "$1" in
+    124) printf 'TIMEOUT' ;;
+    137) printf 'SIGKILL' ;;
+    143) printf 'SIGTERM' ;;
+    *) printf 'UNKNOWN' ;;
+  esac
+}
+
+read_kill_count() {
+  local h="$1" e
+  [ -f "$KILLS" ] || { printf '0'; return; }
+  e=$(grep -F "$h " "$KILLS" | head -1 || true)
+  if [ -n "$e" ]; then
+    awk '{print $2}' <<<"$e"
+  else
+    printf '0'
+  fi
+}
+
+write_kill_count() {
+  local h="$1" c="$2"
+  grep -v -F "$h " "$KILLS" 2>/dev/null > "$KILLS.tmp" || true
+  printf '%s %s\n' "$h" "$c" >> "$KILLS.tmp"
+  mv "$KILLS.tmp" "$KILLS"
+}
+
+clear_kill_count() {
+  local h="$1"
+  [ -f "$KILLS" ] || return 0
+  grep -v -F "$h " "$KILLS" 2>/dev/null > "$KILLS.tmp" || true
+  mv "$KILLS.tmp" "$KILLS"
+}
+
+# Record a kill for this hash. First kill retries (exit 1). Second consecutive
+# kill writes KILL-ESCALATION to AUDITOR-LOG and NISH-ESCALATIONS and exits 0.
+finish_kill_retry() {
+  local rc="$1"
+  local sig kc
+  sig=$(kill_signal_name "$rc")
+  kc=$(read_kill_count "$hash")
+  kc=$((kc + 1))
+  write_kill_count "$hash" "$kc"
+  echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$rc, has_block=$has_block)" >&2
+  if [ "$kc" -ge 2 ]; then
+    printf '%s KILL-ESCALATION hash=%s provider=%s model=%s pi_rc=%s signal=%s consecutive=%s (not burning a 3rd seat)\n' \
+      "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$rc" "$sig" "$kc" >> "$LOG"
+    printf '%s KILL-ESCALATION hash=%s provider=%s model=%s pi_rc=%s signal=%s consecutive=%s\n' \
+      "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$rc" "$sig" "$kc" >> "$NISH"
+    echo "STOP-ESCALATION: KILL-ESCALATION hash=$hash consecutive=$kc" >&2
+    exit 0
+  fi
+  exit 1
+}
 
 [ -f "$SR" ] || exit 0
 
@@ -75,6 +137,14 @@ fi
 # attempts and could not clear the cause.  This is the genuine Nish escalation.
 if [ "$count" -ge 2 ]; then
   printf '%s CAP-REACHED hash=%s count=%s\n' "$(ts)" "$hash" "$count" >> "$NISH"
+  exit 0
+fi
+
+# Two consecutive SIGTERM/SIGKILL/timeout kills on this hash already
+# escalated. Do not pick another seat until a new STOP-REASON lands
+# (new hash) or the daily sweep writes a fresh entry.
+kill_count=$(read_kill_count "$hash")
+if [ "$kill_count" -ge 2 ]; then
   exit 0
 fi
 
@@ -210,6 +280,9 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
   # Defect #3 from fleet-ops#34: a dispatch that produced no diagnosis block
   # is a failed dispatch.  Record it in AUDITOR-LOG.md as a TIMEOUT / NO-BLOCK,
   # do NOT consume the 2-dispatch budget, and exit 1.
+  # fleet-ops#444: 124/137/143 are KILL-RETRY (timeout or signal-killed),
+  # not DISPATCH-NO-BLOCK. After 2 consecutive kills on this hash, escalate
+  # loud and stop burning seats.
   if [ "$pi_rc" -eq 124 ]; then
     printf '%s TIMEOUT-KILL hash=%s provider=%s model=%s timeout=%ss (auditor did not finish in time; log and retry)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$AUDITOR_TIMEOUT_SEC" >> "$LOG"
     # Also note the partial / empty output for debugging.
@@ -219,7 +292,19 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
         printf '%s\n' "$combined"
       } >> "$LOG"
     fi
+    finish_kill_retry 124
+  elif [ "$pi_rc" -eq 137 ] || [ "$pi_rc" -eq 143 ]; then
+    printf '%s KILL-RETRY hash=%s provider=%s model=%s pi_rc=%s signal=%s\n' \
+      "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" "$(kill_signal_name "$pi_rc")" >> "$LOG"
+    if [ -n "$combined" ]; then
+      {
+        printf '%s KILL-RETRY-OUTPUT hash=%s provider=%s model=%s pi_rc=%s\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc"
+        printf '%s\n' "$combined"
+      } >> "$LOG"
+    fi
+    finish_kill_retry "$pi_rc"
   else
+    clear_kill_count "$hash"
     printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" >> "$LOG"
     if [ -n "$combined" ]; then
       {
@@ -227,11 +312,11 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
         printf '%s\n' "$combined"
       } >> "$LOG"
     fi
+    echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block)" >&2
+    # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
+    # unchanged, so the next STOP-REASON change or daily sweep re-tries.
+    exit 1
   fi
-  echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block)" >&2
-  # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
-  # unchanged, so the next STOP-REASON change or daily sweep re-tries.
-  exit 1
 fi
 
 # Real dispatch produced a diagnosis block.  Append it and consume one dispatch.
@@ -239,6 +324,8 @@ fi
   printf '%s\n' "$combined"
   printf '%s dispatched auditor hash=%s count=%s provider=%s model=%s\n' "$(ts)" "$hash" "$((count+1))" "$PROVIDER" "$MODEL"
 } >> "$LOG"
+
+clear_kill_count "$hash"
 
 nc=$((count+1))
 grep -v -F "$hash " "$SEEN" 2>/dev/null > "$SEEN.tmp" || true
