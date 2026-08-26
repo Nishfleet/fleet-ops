@@ -73,13 +73,14 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           MONTHLY_CAP: ${{ inputs.monthly-cap }}
+          DEEP_LABEL: ${{ inputs.deep-label }}
         run: |
           gh api --paginate "repos/$REPO/pulls/$PR/files" \
             --jq '.[] | [.filename, .additions, .deletions] | @tsv' > files.tsv || true
 
           MONTH_START="$(date -u +%Y-%m-01)"
           SPENT="$(gh api -X GET search/issues \
-            -f "q=repo:$REPO is:pr label:${{ inputs.deep-label }} created:>=$MONTH_START" \
+            -f "q=repo:$REPO is:pr label:${DEEP_LABEL} created:>=$MONTH_START" \
             --jq '.total_count' 2>/dev/null || echo 0)"
           echo "spent=$SPENT" >> "$GITHUB_OUTPUT"
 
