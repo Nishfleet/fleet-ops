@@ -1,0 +1,124 @@
+# Reusable semgrep canonical gate — the no-hand-built-orchestration ruleset,
+# consumed by PINNED raw URL from one canonical source, plus p/default for
+# defense-in-depth. Fails only on ERROR/HIGH findings; lower-severity p/default
+# noise is reported but does not block.
+#
+# One canonical ruleset, every repo consumes it by pin. Per-repo copies of the
+# ruleset are forbidden (no-hand-built-orchestration standing rule). The
+# canonical source lives in Nishfleet/siterep-public at a pinned SHA; bump the
+# SHA deliberately, never float.
+#
+# Call from a consumer:
+#   jobs:
+#     semgrep:
+#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-semgrep.yml@main
+#       with:
+#         canonical-sha: 4738f06365012bc9f1f54c5981cedf9ddd3fa1eb
+#         semgrep-version: "1.172.0"
+#
+# Same-repo callers use ./.github/workflows/reusable-semgrep.yml (this commit).
+#
+# Standing CI standard (vault global-standing-rules.md), by construction:
+#   1. timeout-minutes on the job.
+#   2. concurrency + cancel-in-progress.
+#   3. pinned semgrep version (no `latest`, no floating range; >7 days old).
+#   4. canonical ruleset by exact SHA, never a moving ref.
+#   5. fails only on ERROR/HIGH; lower severity reported, not blocking.
+#   6. no CI that watches CI.
+
+name: Reusable semgrep gate
+
+on:
+  workflow_call:
+    inputs:
+      canonical-sha:
+        description: "Exact commit SHA of the canonical ruleset in Nishfleet/siterep-public/.semgrep/no-hand-built-orchestration.yml"
+        type: string
+        required: true
+      canonical-repo:
+        description: "repo/path holding the canonical ruleset. Default Nishfleet/siterep-public."
+        type: string
+        required: false
+        default: "Nishfleet/siterep-public"
+      canonical-path:
+        description: "Path to the canonical ruleset inside canonical-repo."
+        type: string
+        required: false
+        default: ".semgrep/no-hand-built-orchestration.yml"
+      semgrep-version:
+        description: "Pinned semgrep release. Bump deliberately; never `latest`."
+        type: string
+        required: false
+        default: "1.172.0"
+      fail-on:
+        description: "Comma-separated severities that block. Default 'error,high'."
+        type: string
+        required: false
+        default: "error,high"
+      timeout-minutes:
+        description: "Job timeout."
+        type: number
+        required: false
+        default: 10
+
+concurrency:
+  group: semgrep-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install semgrep (pinned)
+        env:
+          SEMGREP_VERSION: ${{ inputs.semgrep-version }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          pip install "semgrep==${SEMGREP_VERSION}"
+      - name: Semgrep scan (canonical orchestration gate + p/default)
+        env:
+          CANONICAL_SHA: ${{ inputs.canonical-sha }}
+          CANONICAL_REPO: ${{ inputs.canonical-repo }}
+          CANONICAL_PATH: ${{ inputs.canonical-path }}
+          FAIL_ON: ${{ inputs.fail-on }}
+        run: |
+          set -uo pipefail
+          test -n "$CANONICAL_SHA"
+          # The canonical ruleset is consumed by PINNED raw URL at the exact
+          # commit SHA. A moving ref would let a ruleset edit change what every
+          # consumer is judged by without a per-consumer bump — the same
+          # supply-chain property a SHA-pinned `uses:` gives.
+          CANONICAL_URL="https://raw.githubusercontent.com/${CANONICAL_REPO}/${CANONICAL_SHA}/${CANONICAL_PATH}"
+          semgrep --config "${CANONICAL_URL}" \
+                  --config p/default \
+                  --quiet --metrics=off --json > semgrep-results.json
+          jq -r '.results[] | "::" + (.extra.severity | ascii_downcase) + "::" + .path + ":" + (.start.line|tostring) + " [" + .check_id + "] " + (.extra.message | gsub("\n";" "))' semgrep-results.json 2>/dev/null || true
+          # Build the jq severity membership test from FAIL_ON so callers can
+          # widen/narrow the blocking tier without editing this workflow.
+          IFS=',' read -ra SEVS <<< "$FAIL_ON"
+          jq_filter='[.results[] | select(.extra.severity | ascii_downcase | IN('
+          first=1
+          for s in "${SEVS[@]}"; do
+            s="$(printf '%s' "$s" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+            [ -n "$s" ] || continue
+            if [ $first -eq 1 ]; then first=0; else jq_filter+=','; fi
+            jq_filter+="\"$s\""
+          done
+          jq_filter+='))] | length > 0'
+          if jq -e "$jq_filter" semgrep-results.json >/dev/null 2>&1; then
+            echo "::error::Semgrep found blocking-severity findings (listed above)."
+            exit 1
+          fi
+          echo "::notice::Semgrep clean (no blocking findings)."

@@ -7,5 +7,9 @@ Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
 ExecCondition=/bin/sh -c 'n=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number --jq length 2>&1) || { echo "gh failed: $$n" >&2; exit 255; }; [ "$$n" -lt 12 ]'
-ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/scout.md; echo; echo "TARGET REPO: Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider minimax --model MiniMax-M3'
+# Seat rotation is pi-scout-run's job (pick_seat). A pinned --provider
+# previously died with HTTP 429 while healthy seats sat unused (fleet-ops#130).
+# /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub
+# (same shape as stop-escalation.service / unit-escalation@.service).
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
 TimeoutStartSec=1800

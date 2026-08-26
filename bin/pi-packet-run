@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# pi-packet-run — seat-rotation wrapper for pi-packet retry units.
+#
+# This is the ExecStart of a systemd-managed retry unit. systemd handles the
+# retry ladder natively (Restart=/RestartSec=/RestartSteps=/StartLimitBurst=),
+# so this script does ONLY what systemd cannot:
+#
+#   1. Pick a DIFFERENT seat on each restart (systemd restarts the same
+#      ExecStart, so seat rotation is real added value — see seat-lib.sh).
+#   2. No-op detection: if pi exits 0 but produced no real output (< 256 bytes
+#      to stdout), exit non-zero so systemd's Restart= treats it as a failure
+#      and re-seats. This folds the old pi-packet-noop-detect script into the
+#      retry unit itself. WatchdogSec was evaluated and rejected: it only fires
+#      when the process is STILL RUNNING but hasn't sent WATCHDOG=1; a no-op
+#      exits 0 quickly, so WatchdogSec never fires. Converting a no-op to a
+#      non-zero exit is the honest fix.
+#
+# What this script does NOT do (systemd handles it):
+#   - Retry counting (StartLimitBurst=)
+#   - Cooldown/backoff (RestartSec=/RestartSteps=)
+#   - Hang detection (RuntimeMaxSec=)
+#   - Escalation on exhaustion (OnFailure= -> pi-packet-escalate@<pid>.service)
+#   - Preventing resurrection of a deliberately-stopped unit (systemd's
+#     Restart= does not fire when the stop was a systemd operation)
+#
+# Args (all required):
+#   $1 = packet file path (fed to pi on stdin)
+#   $2 = workdir
+#   $3 = original failed provider (for first-seat exclusion)
+#   $4 = original failed model
+#
+# Environment:
+#   PI_PACKET_RUN_OUT_MIN — minimum stdout bytes for "real work" (default 256).
+#   If pi exits 0 but stdout < this, the wrapper exits 1 (no-op).
+#
+# Exit codes:
+#   0 = pi ran and produced real output (success — systemd will not restart)
+#   1 = pi failed, OR pi exited 0 but produced no output (no-op)
+#        -> systemd Restart=on-failure re-runs this script, which picks a
+#           different seat. After StartLimitBurst, OnFailure= escalates.
+#
+# Never notifies Nish. No email, no chat. Only repairs or fails for escalation.
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+# Source shared seat logic.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+source "$SEAT_LIB"
+
+OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-256}"
+
+[[ $# -ge 4 ]] || { echo "pi-packet-run: need 4 args: packet workdir fail_prov fail_model" >&2; exit 1; }
+pkt="$1"
+wd="$2"
+fail_p="$3"
+fail_m="$4"
+
+[[ -f "$pkt" ]] || { echo "pi-packet-run: packet not found: $pkt" >&2; exit 1; }
+[[ -d "$wd" ]] || wd="$HOME"
+
+pid=$(packet_id_from_path "$pkt")
+tried_file="$ATTEMPTS_DIR/$pid.tried-seats"
+out_file="${pkt%/*}/${pid}.run.out"
+err_file="${pkt%/*}/${pid}.run.err"
+
+# --- pick a different seat than all previously tried ---------------------------
+weight=$(task_weight "$pkt")
+need_capable=0
+[[ "$weight" == "heavy" ]] && need_capable=1
+
+seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" || true)
+if [[ -z "$seat" ]]; then
+    seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
+    exit 1
+fi
+
+np=$(printf '%s' "$seat" | cut -f1)
+nm=$(printf '%s' "$seat" | cut -f2)
+
+# Record this seat as tried BEFORE running, so a concurrent restart cannot
+# pick the same one. Append "provider/model" per line.
+printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
+
+seat_log "pi-packet-run: $pid running on $np/$nm (weight=$weight, tried: $(wc -l < "$tried_file") seat(s))"
+
+# --- run pi, capture stdout/stderr --------------------------------------------
+# pi reads the packet from stdin. We capture stdout to measure output size
+# for no-op detection. stderr goes to the err file for the council packet.
+rc=0
+"$PI_BIN" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file" || rc=$?
+
+if (( rc != 0 )); then
+    seat_log "pi-packet-run: $pid pi exited $rc on $np/$nm — systemd will restart with a new seat"
+    exit 1
+fi
+
+# --- no-op detection: exit 0 with trivial output -> exit 1 --------------------
+out_bytes=0
+[[ -f "$out_file" ]] && out_bytes=$(wc -c < "$out_file" 2>/dev/null || echo 0)
+out_bytes=${out_bytes//[^0-9]/}; out_bytes=${out_bytes:-0}
+
+if (( out_bytes < OUT_MIN )); then
+    seat_log "pi-packet-run: $pid pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — no-op, exiting 1 so systemd re-seats"
+    exit 1
+fi
+
+# Success: this tick is complete. Clear the tried-seats file so the NEXT
+# tick (timer-fired or manual) starts with a fresh seat rotation. Without
+# this, stale entries from a past restart storm permanently block every
+# seat and the unit can never recover — every future tick hits "no
+# alternate seat" and exits 1. The tried-seats file is an intra-tick
+# rotation mechanism; it must not outlive a successful tick.
+rm -f "$tried_file" 2>/dev/null || true
+seat_log "pi-packet-run: $pid SUCCESS on $np/$nm (${out_bytes}B output)"
+exit 0

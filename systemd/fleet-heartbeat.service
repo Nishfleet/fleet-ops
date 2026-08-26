@@ -25,6 +25,7 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=-/home/nish/.config/fleet-heartbeat/hc.env
 WorkingDirectory=/home/nish
 ExecStart=/home/nish/.local/bin/fleet-heartbeat
 # tier 1 budget: 10 minutes (gh + jq only, fast).

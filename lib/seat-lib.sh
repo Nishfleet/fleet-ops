@@ -54,6 +54,7 @@ _seat_caps_loaded=0
 declare -A SEAT_PROVIDER_CAP=()
 declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_PROVIDER_CLASS=()
+declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
 SEAT_FREE_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
 
@@ -61,6 +62,7 @@ load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
     SEAT_PROVIDER_CLASS=()
+    SEAT_PROVIDER_BENCH_DEFAULT=()
     SEAT_FREE_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
 
@@ -74,16 +76,19 @@ load_seat_caps() {
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
 
-    while IFS=$'\t' read -r p cap class; do
+    while IFS=$'\t' read -r p cap class bench_def; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         SEAT_PROVIDER_CLASS["$p"]="$class"
+        [[ "$bench_def" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_BENCH_DEFAULT["$p"]="$bench_def"
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
     # which then makes total_seat_cap() return 0 and the intake ceiling fall
     # back to the (inflated) RAM governor. Normalise by type first.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # quota_bench_default_s (fleet-ops#90) is optional; absent -> empty ->
+    # provider_quota_bench_default returns 0 (no default, writer fails open).
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p m cap; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -128,6 +133,16 @@ class_of() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_CLASS[$p]:-free}"
+}
+
+# Default bench window (seconds) for a provider's quota/cap 429 when the
+# error text carries no explicit reset window (fleet-ops#90). 0 = no default
+# configured; the writer then fails open (no marker) and relies on the
+# reactive seat-health ledger's existing quota_exhausted block.
+provider_quota_bench_default() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
 }
 
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
@@ -293,23 +308,50 @@ _seat_in_future() {
 #     log a loud "no health data" line (do not brick the ladder).
 #   - seat_dead=true                              -> unusable (credentials_bad)
 #   - health_class in {credentials_bad, quota_exhausted} -> unusable
+#   - quota_bench (fleet-ops#90): a hard-capped seat benched for its advertised
+#     reset window. UNUSABLE while bench_until is in the future (one log line
+#     per skip: "benched until <ts>"); once bench_until passes the seat is
+#     RETRIED (fail-open) — a walled seat is a lane fault, never charged to the
+#     work item. Evaluated BEFORE the stale-observed_at fail-open: a weekly
+#     cap's bench_until is days in the future, but observed_at goes stale
+#     after STALE_SECS (6h). No bench_until -> unusable (defensive; the writer
+#     always sets one).
 #   - rate_limited: excluded while the marker is FRESH (observed_at <
 #     RATE_LIMIT_FRESH_SECS=30min) and usable_at is in the future; once the
 #     marker ages past 30min the seat is RETRIED (rate limit may have reset).
 #   - otherwise                                   -> usable.
 seat_usable() {
-    local p="$1" m="$2" f hc dead observed usable_at
+    local p="$1" m="$2" f hc dead observed usable_at bench_until
     f=$(seat_ledger_path "$p" "$m")
     if [[ ! -f "$f" ]]; then
         seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
         return 0
     fi
-    read -r hc dead observed usable_at < <(
-        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//"")] | @tsv' "$f" 2>/dev/null || true
+    # Unit-separator join (not TSV): bash `read` treats tab as IFS whitespace
+    # and collapses consecutive tabs, which would shift bench_until left when
+    # usable_at is empty (the 9d fixture and any ledger without usable_at).
+    # \x1f is not whitespace, so empty fields survive. Include newline in IFS
+    # so the trailing jq newline is not glued onto bench_until.
+    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until < <(
+        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
     )
     if [[ -z "$hc" ]]; then
         seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
         return 0
+    fi
+    # quota_bench BEFORE stale-observed_at: bench_until is the source of truth
+    # for the advertised reset window, which can outlive STALE_SECS.
+    if [[ "$hc" == "quota_bench" ]]; then
+        if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
+            seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
+            return 1
+        fi
+        if [[ -n "$bench_until" ]]; then
+            seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
+            return 0
+        fi
+        seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
+        return 1
     fi
     if ! _seat_observed_fresh "$observed"; then
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
@@ -340,6 +382,80 @@ seat_usable() {
         return 1
     fi
     return 0
+}
+
+# --- credential precheck (fleet-ops#36) ------------------------------------
+# A provider that PASSES the cap-map allowlist can still have NO usable
+# credential — its env file was deleted, it was added to the cap map by
+# mistake, or its apiKey command returns nothing. The reactive seat-health
+# ledger only records credentials_bad AFTER a real attempt has burned a
+# retry slot (~1s each). On 2026-08-25 the fleet burned every tick on
+# groq/openai/gpt-oss-20b ("No API key found for openrouter") because the
+# cap map was the only gate and the ledger had no failure recorded yet.
+#
+# This precheck resolves the provider's apiKey the SAME way pi does
+# (custom-provider.md: "!command" executes, "$VAR"/"${VAR}" interpolate,
+# anything else is a literal) and rejects the seat up-front when no key can
+# be obtained — defence in depth ON TOP of the cap map, not a replacement.
+#
+# A provider with NO apiKey field (OAuth-only providers, or test fixtures)
+# is NOT rejected here: credential status cannot be determined from
+# models.json alone, and bricking OAuth seats would be wrong. The reactive
+# ledger remains the backstop for those. Fail open, log loud.
+#
+# Security: the resolved key is captured into a variable and NEVER printed
+# or logged — only its non-emptiness is tested. The apiKey commands in
+# models.json are Nish's own trusted config (pi itself runs them).
+PI_SEAT_CREDENTIAL_PRECHECK="${PI_SEAT_CREDENTIAL_PRECHECK:-1}"
+# Per-pick_seat call cache: provider -> "1" (has key) | "0" (no key).
+# Declared in pick_seat so the cache lives exactly one selection pass and
+# a provider with several models is resolved once, not once per model.
+declare -A _cred_cache=()
+
+# Returns 0 if provider $1 has a resolvable credential, 1 if it positively
+# does not. See the block comment above for the resolution rules and the
+# fail-open policy for providers with no apiKey field.
+provider_has_credential() {
+    local p="$1" ak key vname
+    (( PI_SEAT_CREDENTIAL_PRECHECK )) || return 0
+    # Per-call cache (set up by pick_seat). A provider appears once per
+    # model in enumerate_seats; the credential is per-provider, so cache.
+    if [[ -n "${_cred_cache[$p]+x}" ]]; then
+        [[ "${_cred_cache[$p]}" == 1 ]] && return 0 || return 1
+    fi
+    ak=$(jq -r --arg p "$p" '.providers[$p].apiKey // ""' "$MODELS_JSON" 2>/dev/null || true)
+    if [[ -z "$ak" ]]; then
+        # No apiKey field: cannot precheck from models.json. Fail open so
+        # OAuth/subscription providers and test fixtures are not bricked;
+        # the reactive ledger catches a real credentials_bad. Not cached
+        # (a key could appear mid-pass in theory) — cheap jq only.
+        seat_log "credential precheck: $p has no apiKey field — skipping precheck (reactive ledger is backstop)"
+        return 0
+    fi
+    key=""
+    if [[ "$ak" == !* ]]; then
+        # Leading "!": execute the rest as a shell command, key = stdout.
+        # Capture stdout only; NEVER log it. Errors swallowed (|| true) so
+        # a missing env file resolves to empty -> rejected, not a crash.
+        key=$(bash -c "${ak#!}" 2>/dev/null || true)
+    elif [[ "$ak" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]] || [[ "$ak" =~ ^\$([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
+        # Pure "$VAR" / "${VAR}" reference: resolve the env var directly.
+        vname="${BASH_REMATCH[1]}"
+        key="${!vname:-}"
+    else
+        # Literal key, or a mixed "$VAR"-interpolated literal. pi would
+        # interpolate the env refs and use the result; a missing var yields
+        # a partial key that the live request rejects — not our call to
+        # pre-reject a non-empty literal here.
+        key="$ak"
+    fi
+    if [[ -n "$key" ]]; then
+        _cred_cache[$p]=1
+        return 0
+    fi
+    _cred_cache[$p]=0
+    seat_log "credential precheck: $p rejected (apiKey resolves to empty — no credential available)"
+    return 1
 }
 
 # --- active seat accounting (P4-A) -----------------------------------------
@@ -412,6 +528,15 @@ _seat_list_unit() {
 # disable it.
 PI_SEAT_LIB_CHECK_SYSTEMD="${PI_SEAT_LIB_CHECK_SYSTEMD:-1}"
 
+# P15: a unit in `activating` for longer than this is a wedge, not a
+# worker. Type=oneshot workers legitimately sit in `activating` for up to
+# TimeoutStartSec=45min (the unit's own hang bound); anything beyond that
+# bound + margin is a hung pi that the wrapper watchdog (PI_HANG_TIMEOUT_S,
+# default 42 min) should have killed but didn't (older wrapper, SIGKILL
+# path, unit timeout race). The unit table's ActiveEnterTimestamp is the
+# ground truth for how long it has been trying to start.
+PI_SEAT_ACTIVATING_MAX_S="${PI_SEAT_ACTIVATING_MAX_S:-3300}"  # 55 min > unit 45 min
+
 # True if the registry file's unit is still a live pi worker unit.
 # Non-zero (stale) when the unit is dead, missing, or not a pi unit name.
 #
@@ -429,12 +554,37 @@ _seat_registry_unit_live() {
         pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
         *) return 1 ;;
     esac
-    local state
+    local state active_since now age_s
     state=$(systemctl --user is-active "$sysunit" 2>/dev/null || true)
     # A running Type=oneshot worker reports "activating" while its process
     # runs; "active" also means live. Anything else (inactive/failed/
     # auto-restart with MainPID=0) is not consuming a seat.
-    [[ "$state" == "active" || "$state" == "activating" ]]
+    if [[ "$state" == "active" ]]; then
+        return 0
+    fi
+    if [[ "$state" != "activating" ]]; then
+        return 1
+    fi
+    # P15 wedge probe: `activating` is normally live (up to the unit's own
+    # TimeoutStartSec), but a unit stuck activating past the wrapper's hang
+    # bound + margin is a wedged pi whose seat registration must be reaped
+    # so caps free up. A SIGKILLed wedged worker leaves `activating`
+    # (systemd -9 leaves the unit start state) — age is the only honest
+    # signal. This is the fleet-ops#83 blind spot: the probe treated every
+    # `activating` as live, so a wedged unit held its seat for the full
+    # 45-minute TimeoutStartSec and starved pick_seat.
+    active_since=$(systemctl --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+    # ActiveEnterTimestampMonotonic is in MICROSECONDS since boot. /proc/uptime
+    # is in SECONDS. Compare in seconds to avoid ms/us mixing.
+    if [[ "$active_since" =~ ^[0-9]+$ ]]; then
+        now_s=$(awk '{print int($1)}' /proc/uptime)
+        age_s=$(( now_s - active_since / 1000000 ))
+        if (( age_s > PI_SEAT_ACTIVATING_MAX_S )); then
+            seat_log "seat registry: unit $sysunit stuck activating ${age_s}s (> ${PI_SEAT_ACTIVATING_MAX_S}s) — wedged pi, reaping seat"
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # True if a unit is in `activating/auto-restart` — the systemd sub-state
@@ -610,6 +760,12 @@ pick_seat() {
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
 
+    # Reset the per-call credential cache so a provider is resolved once
+    # per selection pass (fleet-ops#36). A provider with several models
+    # shares one credential; the cache stops us re-running its apiKey
+    # command per model.
+    _cred_cache=()
+
     # Build the set of tried seats for exclusion.
     declare -A tried=()
     tried["$fail_p/$fail_m"]=1
@@ -669,6 +825,13 @@ pick_seat() {
         if (( m_cap == 0 )); then
             # Model explicitly capped at 0 in the map (e.g. devin/glm-5-2:0).
             seat_log "seat $p/$m skipped (model cap=0)"
+            continue
+        fi
+        if ! provider_has_credential "$p"; then
+            # provider_has_credential already logged the rejection reason.
+            # Defence in depth on top of the cap map (fleet-ops#36): an
+            # allowlisted provider whose apiKey resolves to empty is never
+            # a candidate, so a tick is not burned on a guaranteed 401/403.
             continue
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
@@ -881,6 +1044,192 @@ mark_seat_spawn_fail() {
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- quota/cap bench (fleet-ops#90) ----------------------------------------
+# A provider that returns a hard cap/quota 429 with an advertised reset window
+# (ClinePass "weekly Clinepass limit ... resets in 1d 11h", devin 15-min 429,
+# HTTP retry-after) is a WALLED SEAT, not a transient retry. seat-health.ts
+# writes its ledger only on a live-session response hook, and even then may
+# record quota_exhausted with no bench window — so pick_seat keeps re-offering
+# the same walled seat to fresh workers, each of which burns a StartLimitBurst
+# attempt on a guaranteed failure. This is the deterministic complement to
+# mark_seat_spawn_fail: the worker wrapper (pi-issue-run) calls it on its way
+# out when pi exited non-zero AND the captured output looks like a quota/cap
+# error. It records a bench-until timestamp in the existing per-seat ledger;
+# seat_usable then skips the seat until that timestamp and fail-opens after.
+# Per the provider-wall standing rule: a walled seat is a lane fault, never
+# charged to the work item.
+
+# Parse a reset window out of an error text blob and echo the duration in
+# seconds. Returns 0 (echoing seconds) if a window is found, 1 (no echo) if not.
+# Handles the formats observed in the fleet:
+#   - "resets in 1d 11h" / "resets in 2h 30m" / "resets in 45m" / "resets in 3d"
+#   - "retry after 60" / "retry-after: 60" / "retry_after: 60" (delta-seconds)
+#   - "resets at 2026-08-27T12:00:00Z" / "retry after <ISO ts>" (absolute)
+# Greedy on the first match; case-insensitive. Whitespace-tolerant.
+# Every grep in a command substitution is `|| true` so a no-match cannot
+# kill the caller under `set -euo pipefail` (pi-issue-run sources this file).
+_parse_reset_window_s() {
+    local text="$1" s d h m
+    [[ -n "$text" ]] || return 1
+
+    # Absolute timestamp: "resets at <ISO>" or "retry after <ISO>". Parse the
+    # ts and compute the delta from now; only positive deltas count.
+    local abs_ts abs_ts_s abs_now_s
+    abs_ts=$(grep -oiE '(resets[[:space:]]+at|retry[[:space:]_-]?after)[^0-9]*([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9:]+))' <<<"$text" 2>/dev/null \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9:]+)' | head -n1 || true)
+    if [[ -n "$abs_ts" ]]; then
+        abs_now_s=$(date -u +%s)
+        abs_ts_s=$(date -u -d "$abs_ts" +%s 2>/dev/null || echo 0)
+        if [[ "$abs_ts_s" =~ ^[0-9]+$ ]] && (( abs_ts_s > abs_now_s )); then
+            echo $((abs_ts_s - abs_now_s))
+            return 0
+        fi
+        # ts in the past -> window already expired -> no window. Caller falls
+        # back to the provider default, which is the safe direction: bench
+        # for the default rather than immediately retry.
+        return 1
+    fi
+
+    # "resets in Nd Nh" / "Nh Nm" / "Nm" / "Ns" / "Nd" — sum all present units.
+    s=0; d=0; h=0; m=0
+    local in_block
+    in_block=$(grep -oiE 'resets[[:space:]]+in[[:space:]]+[0-9]+[dhms]([[:space:]]+[0-9]+[dhms])*' <<<"$text" 2>/dev/null || true)
+    if [[ -n "$in_block" ]]; then
+        local v u
+        while read -r v u; do
+            [[ "$v" =~ ^[0-9]+$ && -n "$u" ]] || continue
+            u="${u,,}"
+            case "$u" in
+                d) d=$v ;;
+                h) h=$v ;;
+                m) m=$v ;;
+                s) s=$v ;;
+            esac
+        done < <(grep -oiE '[0-9]+[dhms]' <<<"$in_block" | sed -E 's/^([0-9]+)([dhmsDHMS])$/\1 \2/' || true)
+        local total=$((d*86400 + h*3600 + m*60 + s))
+        if (( total > 0 )); then
+            echo "$total"
+            return 0
+        fi
+    fi
+
+    # "retry after N" / "retry-after: N" / "retry_after: N" — delta-seconds.
+    local delta
+    delta=$(grep -oiE 'retry[[:space:]_-]?after[^0-9]*[0-9]+' <<<"$text" 2>/dev/null \
+        | grep -oE '[0-9]+$' | head -n1 || true)
+    if [[ "$delta" =~ ^[0-9]+$ ]] && (( delta > 0 )); then
+        echo "$delta"
+        return 0
+    fi
+
+    return 1
+}
+
+# True if the captured output looks like a quota/cap wall (NOT a transient
+# rate-limit retry). Strict enough to require a quota/cap keyword AND a reset
+# signal, so a plain 429-with-retry-after (transient) does NOT trigger a long
+# bench — the rate_limited path already handles short windows. The trigger is a
+# hard cap: weekly/daily limit, quota exhausted, INFERENCE_CAP_ERROR, plan/usage
+# limit, out of credits, paired with either an explicit reset window OR a
+# provider default in seat-caps.json (the caller resolves the default).
+is_quota_cap_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    # Quota/cap signal words (hard wall, not a transient retry).
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|rate[[:space:]]+limit[[:space:]]+exceeded|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+        return 1
+    fi
+    # A reset signal: an explicit window OR a "resets" keyword. The provider
+    # default (seat-caps.json) is the caller's fallback when the keyword is
+    # present but no numeric window is; this guard just confirms it is a wall.
+    if grep -qiE 'resets?[[:space:]]+(in|at|after)|retry[[:space:]_-]?after|reset[[:space:]]+window' <<<"$combined"; then
+        return 0
+    fi
+    # Hard-cap keyword alone (e.g. "weekly Clinepass limit") with no window
+    # text still qualifies: the caller falls back to the provider default.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR' <<<"$combined"; then
+        return 0
+    fi
+    return 1
+}
+
+# Bench a seat for a quota/cap wall. Args: provider model [error_text]
+#   error_text defaults to "" — when empty, no window can be parsed and the
+#   provider default is used (or, with no default, the writer fails open and
+#   writes nothing).
+# Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json atomically with
+# health_class="quota_bench" and bench_until=<ISO>. Best-effort: any failure is
+# logged but does NOT fail the worker's own exit. Returns 0 if the marker was
+# written, 1 if it was not (no window AND no provider default -> fail open, or
+# jq/rename failure).
+mark_seat_quota_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    local window_s=0 parsed
+    parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
+    [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    if (( window_s <= 0 )); then
+        local def
+        def=$(provider_quota_bench_default "$p")
+        [[ "$def" =~ ^[0-9]+$ ]] && window_s="$def"
+    fi
+
+    if (( window_s <= 0 )); then
+        seat_log "quota-bench: $p/$m NOT benched — no reset window parsed and no provider default in seat-caps.json (fail-open; reactive ledger remains the backstop)"
+        return 1
+    fi
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"quota_bench",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "quota-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        return 0
+    fi
+    seat_log "quota-bench: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }

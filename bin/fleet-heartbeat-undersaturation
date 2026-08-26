@@ -123,10 +123,12 @@ count_running() {
 }
 
 # --- throughput line (always emitted, best-effort) ---------------------------
-# Merged fleet-worker PRs since the last tick. Fleet-worker head refs match
-# tier1 block 2's filter: claim/issue-*, p<N>/, lane<N>/, revert/*.
+# Merged fleet-worker PRs since the last tick, split into product work
+# (every enrolled repo except fleet-ops) and control-plane work (fleet-ops).
+# Fleet-worker head refs match tier1 block 2's filter: claim/issue-*, p<N>/,
+# lane<N>/, revert/*.
 emit_throughput() {
-    local last_ts="" repo prs n merged_total=0 details=""
+    local last_ts="" repo prs n merged_total=0 product_total=0 control_total=0 details=""
     if [ -f "$THROUGHPUT_STATE" ]; then
         last_ts=$(cat "$THROUGHPUT_STATE" 2>/dev/null || echo "")
     fi
@@ -145,10 +147,15 @@ emit_throughput() {
         [ "$n" -gt 0 ] 2>/dev/null && {
             details="$details ${repo##*/}:$n"
             merged_total=$((merged_total + n))
+            if [ "${repo##*/}" = "fleet-ops" ]; then
+                control_total=$((control_total + n))
+            else
+                product_total=$((product_total + n))
+            fi
         }
     done <<< "$enrolled_repos"
 
-    loud "THROUGHPUT" "merged_fleet_worker_PRs=$merged_total since=$last_ts${details:+ per-repo:$details}"
+    loud "THROUGHPUT" "merged_product_PRs=$product_total merged_control_plane_PRs=$control_total merged_fleet_worker_PRs=$merged_total since=$last_ts${details:+ per-repo:$details}"
     date -u +%Y-%m-%dT%H:%M:%SZ > "$THROUGHPUT_STATE"
 }
 
@@ -188,7 +195,23 @@ reap_stale_active_seats() {
         esac
         state=$("$SYSTEMCTL" --user is-active "$sysunit" 2>/dev/null || echo inactive)
         case "$state" in
-            active|activating) : ;;  # live, keep
+            active) : ;;  # live, keep
+            activating)
+                # P15 wedge-age probe: `activating` is normally live (up to
+                # the unit's TimeoutStartSec=45min), but past
+                # PI_SEAT_ACTIVATING_MAX_S it is a wedged pi, not a worker.
+                # Mirrors seat-lib's _seat_registry_unit_live. A SIGKILLed
+                # wedged worker leaves `activating`; age is the honest signal.
+                active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+                if [[ "$active_since" =~ ^[0-9]+$ ]]; then
+                    now_s=$(awk '{print int($1)}' /proc/uptime)
+                    age_s=$(( now_s - active_since / 1000000 ))
+                    if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
+                        rm -f "$f"; n=$((n+1))
+                        log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s)"
+                    fi
+                fi
+                ;;
             *) rm -f "$f"; n=$((n+1)); log "repair: reaped stale active-seat $f ($sysunit $state)" ;;
         esac
     done

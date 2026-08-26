@@ -9,6 +9,7 @@ Hard rules:
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
+- **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
 
 ## Capacity gate (already enforced by systemd, but respect it)
 
@@ -33,6 +34,8 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 ## Step 2 — Inspect sources (value order)
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
+
+For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, and recent merged PRs. Candidates for `0509` must be grounded in one of those items; if a candidate is purely code-shaped and not research-shaped, drop it.
 
 ### A. Live product signals (FIRST — spend most effort here)
 
@@ -114,6 +117,12 @@ Every one of those issues must additionally satisfy:
 - `termination:` runs that integration test, not just the unit suite.
 
 If you cannot decompose the candidate into phases, drop it.
+
+**Gate-integrity spec-quality gate:** if a candidate would make a worker remove or skip a test, or edit a gate-owned path (`.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, design-system ratchet/ceiling, CI runner scripts), the issue spec must require:
+- A `test-removal-justified: <true reason>` trailer in the commit that removes or skips the test, if any test is removed or skipped.
+- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited.
+- If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
+Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
 
 **Infra cap:** Count infra-tagged candidates (`product_surface: fleet/CI` or pure workflow). Keep at most 1 per run.
 

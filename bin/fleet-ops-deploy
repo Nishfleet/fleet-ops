@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# fleet-ops-deploy — merge-to-live install for fleet-ops (fleet-ops#149).
+#
+# Pulls origin/main into the deploy checkout, runs install.sh, converges
+# the declared per-repo set, then runs the drift canary. Dirty tracked
+# files or a non-fast-forward checkout block the update (no reset, no
+# stash). Any remaining divergence fails loud (exit 1).
+#
+# Environment:
+#   FLEET_OPS_CHECKOUT          deploy checkout (default: this script's repo)
+#   FLEET_OPS_DEPLOY_AUDIT_LOG  audit log (default: ~/.local/state/fleet-heartbeat/deploy-audit.log)
+#   FLEET_OPS_TRIAGE            heartbeat triage file for LOUD lines
+#   FLEET_OPS_DRIFT_BIN         drift canary (default: $HOME/.local/bin/fleet-ops-drift)
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+
+self=$(readlink -f "$0")
+DEPLOY_CHECKOUT="${FLEET_OPS_CHECKOUT:-$(cd "$(dirname "$self")/.." && pwd)}"
+DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$HOME/.local/state/fleet-heartbeat/deploy-audit.log}"
+TRIAGE="${FLEET_OPS_TRIAGE:-${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}}"
+CANARY="${FLEET_OPS_DRIFT_BIN:-$HOME/.local/bin/fleet-ops-drift}"
+
+mkdir -p "$(dirname "$DEPLOY_AUDIT_LOG")"
+
+log() {
+    printf '[%s] [fleet-ops-deploy] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+deploy_audit() {
+    local unit="$1" action="$2" why="$3"
+    printf '%s %s %s actor=heartbeat-deploy why=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$unit" "$action" "$why" >> "$DEPLOY_AUDIT_LOG"
+}
+
+log "starting: checkout=$DEPLOY_CHECKOUT"
+
+if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
+    loud "DEPLOY-CHECKOUT-MISSING" "no git checkout at $DEPLOY_CHECKOUT"
+    exit 1
+fi
+
+if ! git -C "$DEPLOY_CHECKOUT" fetch origin >/dev/null 2>&1; then
+    loud "DEPLOY-FETCH" "git fetch origin failed at $DEPLOY_CHECKOUT"
+    exit 1
+fi
+
+ahead=0
+ahead=$(git -C "$DEPLOY_CHECKOUT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+
+dirty=""
+if ! dirty=$(git -C "$DEPLOY_CHECKOUT" status --porcelain --untracked-files=no 2>/dev/null); then
+    loud "DEPLOY-STATUS" "git status failed at $DEPLOY_CHECKOUT"
+    exit 1
+fi
+
+nonff=0
+if ! git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then
+    nonff=1
+fi
+
+reasons=()
+[ -n "$dirty" ] && reasons+=("dirty tracked files")
+[ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
+if [ "${#reasons[@]}" -gt 0 ]; then
+    why=$(printf '%s; ' "${reasons[@]}")
+    why=${why%; }
+    loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why"
+    deploy_audit "fleet-ops" "deploy-blocked" "$why"
+    exit 1
+fi
+
+if [ "${ahead:-0}" -gt 0 ]; then
+    if ! git -C "$DEPLOY_CHECKOUT" merge --ff-only origin/main >/dev/null 2>&1; then
+        loud "DEPLOY-MERGE" "git merge --ff-only origin/main failed at $DEPLOY_CHECKOUT"
+        exit 1
+    fi
+    newhead=$(git -C "$DEPLOY_CHECKOUT" rev-parse --short HEAD)
+    log "checkout merged origin/main -> $newhead"
+    deploy_audit "fleet-ops" "merge" "origin/main to $newhead"
+else
+    log "checkout up to date"
+fi
+
+install_out=""
+install_rc=0
+if install_out=$("$DEPLOY_CHECKOUT/install.sh" 2>&1); then
+    install_rc=0
+else
+    install_rc=$?
+    loud "DEPLOY-INSTALL" "install.sh failed (rc=$install_rc): $install_out"
+    deploy_audit "fleet-ops" "install-failed" "rc=$install_rc"
+    exit 1
+fi
+if [ -n "$install_out" ]; then
+    log "install.sh output: $install_out"
+fi
+deploy_audit "fleet-ops" "install" "ok"
+
+recon="$DEPLOY_CHECKOUT/bin/intake-reconcile"
+if [ ! -x "$recon" ]; then
+    loud "DEPLOY-RECONCILE" "intake-reconcile missing at $recon"
+    deploy_audit "fleet-ops" "intake-reconcile-missing" "missing"
+    exit 1
+fi
+recon_out=""
+if recon_out=$(INTAKE_RECONCILE_INTAKE_JSON="$DEPLOY_CHECKOUT/config/intake-repos.json" "$recon" 2>&1); then
+    if [ -n "$recon_out" ]; then
+        log "intake-reconcile output: $recon_out"
+    fi
+    deploy_audit "fleet-ops" "intake-reconcile" "ok"
+else
+    recon_rc=$?
+    loud "DEPLOY-RECONCILE" "intake-reconcile failed (rc=$recon_rc): $recon_out"
+    deploy_audit "fleet-ops" "intake-reconcile-failed" "rc=$recon_rc"
+    # Canary below is the pass/fail on live unit state. A gh blip must not
+    # skip install, but it is never silent.
+fi
+
+if [ ! -x "$CANARY" ]; then
+    loud "DEPLOY-CANARY" "drift canary missing at $CANARY after install.sh"
+    deploy_audit "fleet-ops" "canary-missing" "$CANARY"
+    exit 1
+fi
+
+canary_out=""
+if canary_out=$(FLEET_OPS_CHECKOUT="$DEPLOY_CHECKOUT" FLEET_OPS_AUDIT_LOG="$DEPLOY_AUDIT_LOG" FLEET_OPS_TRIAGE="$TRIAGE" "$CANARY" 2>&1); then
+    if [ -n "$canary_out" ]; then
+        log "drift canary output: $canary_out"
+    fi
+else
+    if [ -n "$canary_out" ]; then
+        log "drift canary failed: $canary_out"
+    fi
+    exit 1
+fi
+
+log "complete"
+deploy_audit "fleet-ops" "drift-ok" "checkout-and-installed-state-match-main"
+exit 0

@@ -1,0 +1,31 @@
+{
+  "repository": "Nishfleet/0509",
+  "run": {
+    "id": 100003,
+    "name": "ratchet-auto-tighten",
+    "workflow_id": 123456,
+    "event": "push",
+    "conclusion": "failure",
+    "head_branch": "main",
+    "head_sha": "defabc1234567890abcdef1234567890abcdef12",
+    "created_at": "2026-08-25T17:56:02Z",
+    "html_url": "https://github.com/Nishfleet/0509/actions/runs/100003",
+    "pull_requests": [],
+    "pull_request_numbers": []
+  },
+  "previous_runs": [
+    {
+      "id": 100002,
+      "name": "ratchet-auto-tighten",
+      "workflow_id": 123456,
+      "event": "push",
+      "conclusion": "failure",
+      "head_branch": "main",
+      "head_sha": "defabc1234567890abcdef1234567890abcdef11",
+      "created_at": "2026-08-25T17:41:02Z",
+      "html_url": "https://github.com/Nishfleet/0509/actions/runs/100002",
+      "pull_requests": [],
+      "pull_request_numbers": []
+    }
+  ]
+}

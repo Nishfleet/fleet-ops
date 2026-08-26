@@ -5,13 +5,25 @@
 # LLM is dead. Idempotent — safe to run as often as the timer fires.
 #
 # Responsibilities (one per labelled block, in order):
+#   0. Merge-to-live deploy (fleet-ops#149). Fast-forward the deploy checkout
+#      to origin/main, run install.sh, enable MANIFEST units, run the drift
+#      canary. Dirty or non-ff checkouts block (no reset, no stash). Divergence
+#      fails the unit. Only runs when this process is the installed heartbeat
+#      (or FLEET_OPS_CHECKOUT is set); worktree/CI copies skip it.
 #   1. Update the last-heartbeat: line in the plan file (so interactive
 #      sessions see the durable timer is alive).
 #   2. Queue green fleet-authored PRs (auto-merge per repo, respecting
 #      the hands-off list).
 #   3. Release orphaned claims (agent-in-progress + no live worker +
-#      no open claim/issue-N PR).
-#   4. Reset+log failed pi-issue-* / fable-p-* units into the triage file.
+#      no open claim/issue-N PR). Direction A only.
+#   3b. Reconcile split-brain / garbage claim branches (fleet-ops#39).
+#      bin/claim-reconcile iterates BRANCHES so it sees what §3 cannot:
+#      B (branch without agent-in-progress), C (unnumbered), orphaned.
+#   4. Recover/log failed fleet worker/repair/cleanup units; attempt a plain
+#      reset+start for transient lane faults on supply/repair units, and
+#      escalate loudly after N attempts so a unit never ends failed quietly.
+#      Then page remaining failed units (triage + hermes --urgent, fleet-ops#76).
+#      Skip fleet-heartbeat itself.
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
 #      outside this repo, and the GitHub App has no webhooks. If every
@@ -26,6 +38,31 @@
 #      THROUGHPUT line per tick (merged fleet-worker PRs since last tick)
 #      into the triage log. The helper's non-zero exit propagates here so
 #      fleet-heartbeat.service lands in --state=failed -> page + Telegram.
+#   9. Low-water-mark scouting (fleet-ops#146). Delegates to
+#      bin/fleet-heartbeat-low-water-mark: for each enrolled repo, when
+#      ready < lane ceiling (seat_max_concurrent) and no scout is running
+#      and the per-repo threshold stamp is stale (>2h), start pi-scout@<repo>
+#      so replenishment overlaps consumption and lanes never hit empty. The
+#      4h timer stays as the floor; this only pulls a scout LOOK sooner.
+#      Best-effort nudge — a CONFIG error is logged + LOUD but NOT propagated
+#      (a broken refill must not stop queuing/reclaim/wedge alarm).
+#  11. Red-PR repair (fleet-ops#124). Delegates to
+#      bin/fleet-heartbeat-red-pr-repair: for each open claim/issue-* PR
+#      whose checks are red AND whose pi-issue unit has no live worker for
+#      >1 tick, dispatches one repair worker onto the existing claim branch
+#      (loop-to-green per #80), bounded 2 attempts per PR, then fails LOUD
+#      into the paging path (#76/#86). Same non-zero-exit -> page contract
+#      as block 8.
+#  12. Seat-health freshness (fleet-ops#76). observed_at must parse and be
+#      under 90 minutes; stale or unparseable triggers pi-transport-check
+#      then reports. Additive end block so it does not overlap 8–11.
+#  13. RAM measurement (fleet-ops#45). Delegates to bin/ram-measure: walks
+#      pi-issue@/pi-packet@ units, aggregates MemoryPeak, and writes a
+#      rolling 10-run history to ~/.local/state/ram-measurement/. Pure
+#      observability — no cap adjustment, no escalation, no tick failure
+#      on a measurement error. A re-derive of ram_gb_per_worker is a
+#      HUMAN action (jq over the state file + a PR); the heartbeat only
+#      makes the measurement automatic.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -67,6 +104,169 @@ loud() {
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
 
+WATCHMAN_LIB="${FLEET_HEARTBEAT_WATCHMAN:-$HOME/.local/lib/pi-packet/heartbeat-watchman.sh}"
+# shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+if [ -f "$WATCHMAN_LIB" ]; then
+    # shellcheck source=../lib/heartbeat-watchman.sh source-path=SCRIPTDIR
+    source "$WATCHMAN_LIB"
+else
+    log "WARN: watchman lib missing at $WATCHMAN_LIB — failed-unit page + seat-health skipped"
+    heartbeat_seat_health_check() { log "seat-health: skipped (watchman lib missing)"; }
+    heartbeat_list_failed_units() { return 0; }
+    heartbeat_page_units() { log "failed-units: page skipped (watchman lib missing)"; }
+fi
+
+# --- failed-unit recovery helpers -------------------------------------------
+FAILED_UNITS_STATE_DIR="${FLEET_HEARTBEAT_FAILED_STATE_DIR:-$LOG_DIR/failed-units}"
+FAILED_UNITS_MAX_ATTEMPTS="${FLEET_HEARTBEAT_FAILED_MAX_ATTEMPTS:-3}"
+mkdir -p "$FAILED_UNITS_STATE_DIR"
+
+# Safe on-disk filename for a systemd unit name.
+unit_state_file() {
+    local u="$1" safe
+    safe=$(printf '%s' "$u" | tr -c 'A-Za-z0-9._-' '_')
+    printf '%s/%s.json\n' "$FAILED_UNITS_STATE_DIR" "$safe"
+}
+
+# Read a single key from a unit's JSON state file.
+state_get() {
+    local f="$1" key="$2" default="${3:-}"
+    if [[ -f "$f" ]]; then
+        jq -r --arg k "$key" --arg d "$default" '(.[$k] // $d) | tostring' "$f" 2>/dev/null || printf '%s' "$default"
+    else
+        printf '%s' "$default"
+    fi
+}
+
+# Write a unit's JSON state file atomically. Empty attempts/escalated means
+# "leave the current value".
+state_update() {
+    local f="$1" unit="$2" class="$3" action="$4" still="$5" attempts="${6:-}" escalated="${7:-}"
+    python3 - "$f" "$unit" "$class" "$action" "$still" "$attempts" "$escalated" <<'PY'
+import sys, os, json, datetime
+f, unit, cls, action, still = sys.argv[1:6]
+attempts = sys.argv[6] if len(sys.argv) > 6 else ''
+escalated = sys.argv[7] if len(sys.argv) > 7 else ''
+state = {}
+if os.path.exists(f):
+    try:
+        with open(f, 'r', encoding='utf-8') as fh:
+            state = json.load(fh)
+    except Exception:
+        state = {}
+now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+state['unit'] = unit
+state['class'] = cls
+if 'first_seen' not in state:
+    state['first_seen'] = now
+state['last_seen'] = now
+state['last_action'] = action
+state['last_action_at'] = now
+state['still_failed'] = (still == 'true')
+if attempts != '':
+    try:
+        state['attempts'] = int(attempts)
+    except ValueError:
+        state['attempts'] = state.get('attempts', 0)
+if escalated != '':
+    state['escalated'] = (escalated == 'true')
+tmp = f + '.tmp.' + str(os.getpid())
+with open(tmp, 'w', encoding='utf-8') as fh:
+    json.dump(state, fh)
+os.rename(tmp, f)
+PY
+}
+
+# Remove state when a unit has recovered.
+state_remove() {
+    local f="$1"
+    rm -f "$f"
+}
+
+# Classify a failure from the lower-cased journal text.
+classify_failure() {
+    local journal="$1"
+    local low
+    low=$(printf '%s' "$journal" | tr '[:upper:]' '[:lower:]')
+    if printf '%s' "$low" | grep -qiE 'rate limit|reached.*message.*limit|429|too many requests|etimedout|connection timed out|connect etimedout|econn|handshake.*timeout|spawn.*timeout|timed out waiting|retryable.*true|transient_fault'; then
+        printf 'transient-lane'; return
+    fi
+    if printf '%s' "$low" | grep -qiE 'start.*limit|startlimitburst|start-limit|start-limit-hit'; then
+        printf 'start-limit'; return
+    fi
+    if printf '%s' "$low" | grep -qiE 'auth.*fail|credential.*bad|api key.*invalid|token.*invalid|model missing|llm.*dead|permission denied.*(invalid|bad|missing)|quota.*exhausted|out of quota|daily limit'; then
+        printf 'llm-dead'; return
+    fi
+    if printf '%s' "$low" | grep -qiE 'code=exited.*status=1|exit-code|syntax error|command not found|no such file|fatal|error'; then
+        printf 'code-fail'; return
+    fi
+    printf 'unknown'
+}
+
+# Extract provider/model from the unit's ExecStart line.
+unit_seat() {
+    local u="$1"
+    local ex p m
+    ex=$(systemctl --user show "$u" --property=ExecStart --value 2>/dev/null || true)
+    p=""; m=""
+    if [[ "$ex" =~ --provider[[:space:]]+([^[:space:]\'\"]+) ]]; then
+        p="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$ex" =~ --model[[:space:]]+([^[:space:]\'\"]+) ]]; then
+        m="${BASH_REMATCH[1]}"
+    fi
+    printf '%s\t%s\n' "${p:-unknown}" "${m:-unknown}"
+}
+
+# True if a tag+unit triage line already exists (so we do not repeat every tick).
+already_in_triage() {
+    local tag="$1" unit="$2"
+    [[ -s "$TRIAGE" ]] && grep -qF "[$tag] unit=$unit" "$TRIAGE" 2>/dev/null
+}
+
+# Remove stale trigger lines for a unit before writing a new one, so the
+# triage file does not hold a classification that is no longer current.
+triage_remove_unit() {
+    local unit="$1"
+    [[ -s "$TRIAGE" ]] || return 0
+    python3 - "$TRIAGE" "$unit" <<'PY'
+import sys, re, os
+path, unit = sys.argv[1], sys.argv[2]
+if not os.path.exists(path):
+    sys.exit(0)
+pattern = re.compile(
+    r'^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\] '
+    r'\[(LLM-DEAD|CODE-FAIL|UNIT-ESCALATE)\] unit=' + re.escape(unit) + ' '
+)
+with open(path, 'r', encoding='utf-8') as f:
+    kept = [ln for ln in f if not pattern.match(ln)]
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(kept)
+PY
+}
+
+# Whether tier 1 may reset+start this failed unit itself.
+#   recover — supply/repair units with NO OnFailure reap. A transient lane
+#             fault (provider 429, ETIMEDOUT, StartLimit from transient
+#             retries) leaves them failed with no other recovery path, so
+#             the heartbeat's reset+start floor is safe and is the fix the
+#             2026-08-25 incident (#28) was missing.
+#   observe — worker units (pi-issue@/pi-packet@/fable-p*) and reap cleanup
+#             units (*-failed@). Restarting these races the OnFailure reap
+#             (which releases the claim branch and flips the label) and the
+#             intake re-dispatch: two workers would land on the same issue.
+#             Their own retry/reap path is the correct recovery, so tier 1
+#             only observes and surfaces non-transient faults.
+unit_recovery_class() {
+    case "$1" in
+        pi-intake@*.service)        printf 'recover' ;;
+        pi-intake-repair@*.service) printf 'recover' ;;
+        pi-scout@*.service)         printf 'recover' ;;
+        pi-scout-repair@*.service)  printf 'recover' ;;
+        *)                          printf 'observe' ;;
+    esac
+}
+
 [ -f "$PLAN_FILE" ] || { log "FATAL: plan file missing: $PLAN_FILE"; exit 1; }
 [ -f "$REPOS_JSON" ] || {
     log "WARN: fleet-repos.json missing at $REPOS_JSON — writing default"
@@ -75,8 +275,7 @@ loud() {
 {
   "queue_repos": ["Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
   "claim_repos": ["Nishfleet/fleet-ops", "Nishfleet/0509", "Nishfleet/inish-site", "Nishfleet/seo-fix-kit", "Nishfleet/TinyStudio.io", "Nishfleet/tinystudio-in", "Nishfleet/siterep-public"],
-  "hands_off": [],
-  "verify_timers": ["pi-scout@0509.timer", "pi-intake@0509.timer", "pi-scout@siterep-public.timer", "pi-intake@siterep-public.timer"]
+  "hands_off": []
 }
 JSON
     log "wrote default $REPOS_JSON"
@@ -86,7 +285,15 @@ JSON
 queue_repos=$(jq -r '.queue_repos[]' "$REPOS_JSON")
 claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON")
 hands_off=$(jq -r '.hands_off[]' "$REPOS_JSON" 2>/dev/null || true)
-verify_timers=$(jq -r '.verify_timers[]' "$REPOS_JSON")
+
+# Derive the timer verification list from the declared intake repo set. The
+# reconciler (bin/intake-reconcile) uses config/intake-repos.json as the single
+# source of truth for enrolment; heartbeat §5 must use the same source or its
+# verify list drifts the moment a repo is added/removed (fleet-ops#156 finding 9).
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+[ -f "$INTAKE_REPOS_JSON" ] || { log "FATAL: $INTAKE_REPOS_JSON missing"; exit 2; }
+jq empty "$INTAKE_REPOS_JSON" >/dev/null 2>&1 || { log "FATAL: $INTAKE_REPOS_JSON invalid JSON"; exit 2; }
+verify_timers=$(jq -r '.repos[]? | "pi-scout@\(.name).timer", "pi-intake@\(.name).timer"' "$INTAKE_REPOS_JSON")
 
 # is_hands_off <repo>
 is_hands_off() {
@@ -97,6 +304,47 @@ is_hands_off() {
     done <<< "$hands_off"
     return 1
 }
+
+# ============================================================================
+# 0. MERGE-TO-LIVE DEPLOY + DRIFT CANARY (fleet-ops#149)
+# ============================================================================
+# Before any orchestration work, make sure the installed units are exactly
+# what origin/main declares. A dirty tracked file or non-ff branch blocks
+# the update with a LOUD line — no reset, no stash.
+#
+# Production: systemd starts /home/nish/.local/bin/fleet-heartbeat-tier1.
+# Tests invoke the repo copy by path, which must not fetch/merge a worktree
+# or run install.sh against the live box. Set FLEET_OPS_CHECKOUT to force.
+DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$LOG_DIR/deploy-audit.log}"
+deploy_rc=0
+should_run_deploy=0
+if [ -n "${FLEET_OPS_CHECKOUT:-}" ]; then
+    should_run_deploy=1
+    DEPLOY_CHECKOUT="$FLEET_OPS_CHECKOUT"
+else
+    _installed=$(readlink -f /home/nish/.local/bin/fleet-heartbeat-tier1 2>/dev/null || true)
+    _self=$(readlink -f "$0" 2>/dev/null || true)
+    if [ -n "$_installed" ] && [ -n "$_self" ] && [ "$_self" = "$_installed" ]; then
+        should_run_deploy=1
+        DEPLOY_CHECKOUT=$(cd "$(dirname "$_self")/.." && pwd)
+    fi
+fi
+
+if [ "$should_run_deploy" = 1 ]; then
+    log "0. deploy step starting: checkout=$DEPLOY_CHECKOUT"
+    deploy_bin="$DEPLOY_CHECKOUT/bin/fleet-ops-deploy"
+    if [ ! -x "$deploy_bin" ]; then
+        loud "DEPLOY-MISSING" "fleet-ops-deploy not in checkout at $deploy_bin"
+        deploy_rc=1
+    else
+        FLEET_OPS_CHECKOUT="$DEPLOY_CHECKOUT" \
+        FLEET_OPS_DEPLOY_AUDIT_LOG="$DEPLOY_AUDIT_LOG" \
+        FLEET_OPS_TRIAGE="$TRIAGE" \
+            "$deploy_bin" || deploy_rc=$?
+    fi
+else
+    log "0. deploy step skipped (invocation is not the installed heartbeat)"
+fi
 
 # ============================================================================
 # 1. UPDATE last-heartbeat: LINE IN PLAN FILE
@@ -247,6 +495,11 @@ log "2. queue pass complete: queued=$queued skipped=$skipped"
 #   - comment on the issue noting the heartbeat release
 #
 # Safety: if the issue is closed, skip the label flip (just clean up).
+#
+# Scope: this pass owns direction A ONLY. Directions B (branch without
+# label), C (unnumbered branch), and orphaned (branch for a missing/closed
+# issue) are branch-side faults this issue-iteration cannot see — §3b
+# (claim-reconcile) sweeps those by iterating branches.
 released=0
 log "3. orphan-pass starting"
 while IFS= read -r repo; do
@@ -328,32 +581,213 @@ done <<< "$claim_repos"
 log "3. orphan-pass complete: released=$released"
 
 # ============================================================================
-# 4. RESET+LOG FAILED pi-issue-* / fable-p-* UNITS
+# 3b. RECONCILE SPLIT-BRAIN / GARBAGE CLAIM BRANCHES (fleet-ops#39)
 # ============================================================================
-# For each failed unit, write a triage line so the next tier-2 tick sees it.
-# We do NOT auto-restart the unit (that would defeat the fail-loud signal).
-# pi-issue-* failures already trigger OnFailure=pi-issue-failed@ which
-# cleans up the claim branch; this loop is the OBSERVABILITY + audit step.
-#
-# Idempotency: we keep a marker per failed unit per tick in $TICK_LOG;
-# the triage entry is also timestamped so tier-2 sees it once and clears it.
-reset_logged=0
-log "4. failed-units pass starting"
-while IFS= read -r unit; do
-    [ -z "$unit" ] && continue
-    case "$unit" in
-        pi-issue-*|fable-p*) : ;;  # match
-        *) continue ;;
-    esac
+# §3 iterates issues labelled agent-in-progress, so it catches direction A
+# (label without branch/worker) but is blind to:
+#   B. claim/issue-<N> branch exists, issue <N> is open, label is NOT
+#      agent-in-progress (intake's pre-flight ls-remote finds the branch and
+#      skips the issue forever — invisible-but-present).
+#   C. claim/issue- with empty <N> — belongs to no issue, never released.
+#   Orphaned: claim/issue-<N> for a missing/closed issue.
+# claim-reconcile iterates BRANCHES (the thing §3 cannot see) and releases
+# them. It defers direction A to §3 (skips agent-in-progress issues) so the
+# two sweeps never double-process the same claim. Same safety contract as
+# §3: never release a claim with a live worker or an open PR.
+CLAIM_BIN="${FLEET_CLAIM_RECONCILE:-/home/nish/.local/bin/claim-reconcile}"
+if [ -x "$CLAIM_BIN" ]; then
+    log "3b. claim-reconcile starting"
+    if CLAIM_RECONCILE_REPOS="$(printf '%s\n' "$claim_repos")" \
+        CLAIM_RECONCILE_LOCKDIR="${XDG_RUNTIME_DIR}/claim-reconcile" \
+        "$CLAIM_BIN" 2>>"$TICK_LOG"; then
+        log "3b. claim-reconcile done"
+    else
+        log "3b. claim-reconcile FAILED — next tick retries"
+    fi
+else
+    log "3b. claim-reconcile missing at $CLAIM_BIN — skip (not installed)"
+fi
 
-    # Pull the last 5 lines of the journal for the audit breadcrumb.
-    excerpt=$(journalctl --user -u "$unit" -n 5 --no-pager -q 2>/dev/null | tr '\n' ' ' | head -c 400 || true)
-    loud "UNIT-FAILED" "$unit :: ${excerpt:-<no-journal>}"
-    reset_logged=$((reset_logged+1))
-done < <(systemctl --user --state=failed --no-legend 2>/dev/null \
-            | awk '{print $1}' \
-            | grep -E '^(pi-issue-|fable-p)' || true)
-log "4. failed-units pass complete: logged=$reset_logged"
+# ============================================================================
+# 4. RECOVER / LOG FAILED FLEET UNITS
+# ============================================================================
+# Tier 1 now owns the failed-unit pass. For every fleet-owned unit in
+# --state=failed we record it, classify it, and either:
+#   - recover: reset-failed + start (supply/repair units only — see
+#     unit_recovery_class), bounded by FAILED_UNITS_MAX_ATTEMPTS, or
+#   - observe: log + surface, no restart (workers + reaps; their OnFailure
+#     reap and intake re-dispatch are the retry path).
+# Non-transient faults (dead provider, code bug) and exhausted recovery
+# attempts are written to the triage file as LOUD lines so tier 2 / humans
+# see them — a unit never ends in a quiet failed state.
+#
+# The 2026-08-25 incident (#28): pi-intake-repair@0509.service failed with a
+# Devin rate limit at 23:16:54 IST. Heartbeat ran 57 seconds later but its
+# matcher only looked at pi-issue-* and fable-p* (hyphen), so it matched
+# neither the template instance pi-issue@* (at-sign) nor the repair unit
+# pi-intake-repair@*. The unit was invisible and was cleared by hand. The
+# matcher below now covers every fleet worker / repair / cleanup unit
+# instance, and the reset+start floor does not depend on any agent lane
+# being healthy.
+#
+# Idempotency: a per-unit JSON state file tracks attempts and escalation so
+# the N-attempt ceiling is real and the triage file is not spammed.
+seen=0
+repaired=0
+requeued=0
+still_failed=0
+exhausted=0
+escd=0
+current_failed_units=""
+log "4. failed-units pass starting"
+
+mapfile -t failed_units < <(systemctl --user --state=failed --no-legend 2>/dev/null \
+    | awk '{print $1}' \
+    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p)' \
+    || true)
+
+for unit in "${failed_units[@]}"; do
+    [ -z "$unit" ] && continue
+    current_failed_units="${current_failed_units}${unit}"$'\n'
+
+    # Read enough journal to classify and leave an audit breadcrumb.
+    journal=$(journalctl --user -u "$unit" -n 50 --no-pager -q 2>/dev/null || true)
+    excerpt=$(printf '%s' "$journal" | tr '\n' ' ' | head -c 400 || true)
+    cls=$(classify_failure "$journal")
+    log "4.  - $unit: seen class=$cls"
+
+    state_f=$(unit_state_file "$unit")
+    state_update "$state_f" "$unit" "$cls" "seen" true
+
+    seen=$((seen+1))
+    rclass=$(unit_recovery_class "$unit")
+
+    # Non-transient failures: hand to tier 2 via triage. Deduplicate so the
+    # same unit does not generate a new line every 30 minutes. Applies to
+    # both recover- and observe-class units — a dead provider or a code bug
+    # is not fixed by a restart.
+    if [ "$cls" = "llm-dead" ] || [ "$cls" = "code-fail" ] || [ "$cls" = "unknown" ]; then
+        tag="CODE-FAIL"
+        [ "$cls" = "llm-dead" ] && tag="LLM-DEAD"
+        if ! already_in_triage "$tag" "$unit"; then
+            triage_remove_unit "$unit"
+            read -r provider model < <(unit_seat "$unit")
+            loud "$tag" "unit=$unit provider=$provider model=$model class=$cls excerpt=${excerpt:-<none>}"
+            state_update "$state_f" "$unit" "$cls" "escalated" true "" true
+            escd=$((escd+1))
+        fi
+        still_failed=$((still_failed+1))
+        continue
+    fi
+
+    # Transient lane fault or start-limit from here on. observe-class units
+    # (workers + reaps) must NOT be reset+started here: their OnFailure reap
+    # releases the claim and intake re-dispatches, so a heartbeat restart
+    # would race a second worker onto the same issue. Surface and stop.
+    if [ "$rclass" = "observe" ]; then
+        log "4.  - $unit: observe-only class=$cls — no restart (reap/intake is the retry path)"
+        still_failed=$((still_failed+1))
+        continue
+    fi
+
+    # recover-class: try reset + start, bounded by FAILED_UNITS_MAX_ATTEMPTS.
+    attempts=$(state_get "$state_f" "attempts" "0")
+    if [ "$attempts" -ge "$FAILED_UNITS_MAX_ATTEMPTS" ]; then
+        if ! already_in_triage "UNIT-ESCALATE" "$unit"; then
+            triage_remove_unit "$unit"
+            loud "UNIT-ESCALATE" "unit=$unit class=$cls attempts=$attempts recovery exhausted (max=$FAILED_UNITS_MAX_ATTEMPTS) — needs manual seat or code fix"
+            state_update "$state_f" "$unit" "$cls" "exhausted" true "$attempts" true
+            exhausted=$((exhausted+1))
+        fi
+        still_failed=$((still_failed+1))
+        continue
+    fi
+
+    log "4.  - $unit: reset-failed + start --no-block (attempt=$((attempts+1))/$FAILED_UNITS_MAX_ATTEMPTS)"
+    if systemctl --user reset-failed "$unit" 2>/dev/null; then
+        if systemctl --user start --no-block "$unit" 2>/dev/null; then
+            # Give systemd a moment to start the job and either run or fail.
+            sleep 2
+            active_state=$(systemctl --user show "$unit" --property=ActiveState --value 2>/dev/null || true)
+            log "4.  - $unit: ActiveState=$active_state after start"
+            if [ "$active_state" = "failed" ]; then
+                new_attempts=$((attempts+1))
+                state_update "$state_f" "$unit" "$cls" "reset+start" true "$new_attempts" false
+                still_failed=$((still_failed+1))
+                if [ "$new_attempts" -ge "$FAILED_UNITS_MAX_ATTEMPTS" ]; then
+                    if ! already_in_triage "UNIT-ESCALATE" "$unit"; then
+                        triage_remove_unit "$unit"
+                        loud "UNIT-ESCALATE" "unit=$unit class=$cls attempts=$new_attempts recovery exhausted after reset+start — needs manual seat or code fix"
+                        state_update "$state_f" "$unit" "$cls" "exhausted" true "$new_attempts" true
+                        exhausted=$((exhausted+1))
+                    fi
+                fi
+            elif [ "$active_state" = "inactive" ]; then
+                triage_remove_unit "$unit"
+                log "4.  - $unit: RECOVERED"
+                loud "UNIT-RECOVERED" "unit=$unit recovered (class=$cls, failed_attempts=$attempts)"
+                state_remove "$state_f"
+                repaired=$((repaired+1))
+            else
+                # activating, active, or unknown: the job is queued/running.
+                triage_remove_unit "$unit"
+                log "4.  - $unit: start queued (ActiveState=$active_state, not failed)"
+                state_update "$state_f" "$unit" "$cls" "reset+start-queued" false "$((attempts+1))" false
+                requeued=$((requeued+1))
+            fi
+        else
+            log "4.  - $unit: start --no-block failed"
+            state_update "$state_f" "$unit" "$cls" "start-failed" true "$((attempts+1))" false
+            still_failed=$((still_failed+1))
+        fi
+    else
+        log "4.  - $unit: reset-failed failed"
+        state_update "$state_f" "$unit" "$cls" "reset-failed-failed" true "$((attempts+1))" false
+        still_failed=$((still_failed+1))
+    fi
+done
+
+# Clean up state files for units that are no longer failed or active.
+shopt -s nullglob
+for f in "$FAILED_UNITS_STATE_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    u=$(jq -r '.unit // empty' "$f" 2>/dev/null || true)
+    [ -n "$u" ] || continue
+    if printf '%s' "$current_failed_units" | grep -qxF "$u"; then
+        continue
+    fi
+    as=$(systemctl --user show "$u" --property=ActiveState --value 2>/dev/null || true)
+    if [ "$as" = "failed" ] || [ "$as" = "activating" ] || [ "$as" = "active" ]; then
+        continue
+    fi
+    # inactive, condition-skip, dead, or gone: recovery worked or unit stopped.
+    rm -f "$f"
+done
+shopt -u nullglob
+
+log "4. failed-units pass complete: seen=$seen repaired=$repaired requeued=$requeued still_failed=$still_failed exhausted=$exhausted escd=$escd"
+
+# fleet-ops#76: after the recover/observe pass, page what is still failed
+# so leftover units reach Telegram. Repair policy stays in block 4 (do not
+# restart observe-class workers here — that races OnFailure reap). Skip
+# fleet-heartbeat itself (watchman list already does).
+page_n=0
+page_list=""
+while IFS= read -r u; do
+    [ -z "$u" ] && continue
+    page_n=$((page_n + 1))
+    if [ -z "$page_list" ]; then
+        page_list="$u"
+    else
+        page_list="${page_list},${u}"
+    fi
+done < <(heartbeat_list_failed_units)
+if [ "$page_n" -gt 0 ]; then
+    heartbeat_page_units "$page_n" "$page_list" || true
+    log "4. failed-units page: n=$page_n"
+else
+    log "4. failed-units page: none remaining"
+fi
 
 # ============================================================================
 # 5. VERIFY SCOUT / INTAKE TIMERS ARMED
@@ -496,10 +930,207 @@ else
 fi
 
 # ============================================================================
+# 9. LOW-WATER-MARK SCOUTING (fleet-ops#146)
+# ============================================================================
+# Supply cadence is the constraint, not lanes. The 4h scout timer refills
+# AFTER lanes drain, scheduling a starvation gap every cycle (measured
+# 2026-08-26: feast ~40min, famine ~3h20m). This pass treats the ready
+# queue as a producer-consumer buffer with a low-water mark: when ready <
+# lane ceiling (seat_max_concurrent — fewer ready items than lanes means
+# starvation is already scheduled) and no scout is running for that repo
+# and the per-repo threshold stamp is stale (>2h), start pi-scout@<repo>
+# now so replenishment overlaps consumption. The 4h timer stays as the
+# floor; this only pulls a scout LOOK sooner. Quality bar unchanged — the
+# scout's own ExecCondition + spec gate decide what qualifies as work; an
+# empty pass is a valid logged outcome and never manufactures make-work.
+#
+# This is a best-effort supply nudge, NOT a fail-loud alarm (that is block
+# 8). The helper exits 2 only on a CONFIG error (missing intake-repos.json
+# / jq / seat-lib); we log its rc and let the helper write its own LOUD
+# triage line, but we do NOT propagate — a broken refill nudge must not
+# stop PR queuing, orphan reclaim, or the wedge alarm. undersaturation's
+# fail-loud still wins the unit's exit code.
+LOW_WATER_BIN="${FLEET_HEARTBEAT_LOW_WATER:-/home/nish/.local/bin/fleet-heartbeat-low-water-mark}"
+low_water_rc=0
+if [ -x "$LOW_WATER_BIN" ]; then
+    log "9. low-water-mark scouting pass starting"
+    if "$LOW_WATER_BIN"; then
+        log "9. low-water-mark pass complete"
+    else
+        low_water_rc=$?
+        log "9. low-water-mark: CONFIG error (rc=$low_water_rc) — logged + LOUD triage line written; not propagated (best-effort nudge)"
+    fi
+else
+    log "9. low-water-mark helper missing at $LOW_WATER_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 10. BLIND AUDIT TRIGGER (fleet-ops#157)
+# ============================================================================
+# When the gap-board is drained (zero open gap-audit issues in fleet-ops) and
+# no audit is already running, start fleet-blind-audit.service and stamp the
+# plan file. The audit itself is responsible for filing gap-audit issues and
+# writing the report to agent-state. One at a time via the audit's own flock.
+audit_started=0
+if [ "${FLEET_BLIND_AUDIT_DISABLE:-0}" != "1" ]; then
+    log "10. blind-audit trigger starting"
+    n_gaps=$(gh issue list -R Nishfleet/fleet-ops -l gap-audit --state open \
+        --json number --jq length 2>/dev/null || echo 999)
+    if [ "$n_gaps" -eq 0 ] 2>/dev/null; then
+        # Only start if the audit unit is not already active/activating.
+        audit_state=$(systemctl --user is-active fleet-blind-audit.service 2>/dev/null || echo "unknown")
+        case "$audit_state" in
+            active|activating)
+                log "10.  - fleet-blind-audit.service is $audit_state — no-op"
+                ;;
+            *)
+                log "10.  - gap-board empty, starting fleet-blind-audit.service"
+                if systemctl --user start fleet-blind-audit.service 2>/dev/null; then
+                    audit_started=1
+                    new_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                    python3 - "$PLAN_FILE" "$new_ts" <<'PY'
+import sys, re
+path, ts = sys.argv[1], sys.argv[2]
+with open(path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+new = []
+hit = False
+for ln in lines:
+    if not hit and re.match(r'^last-blind-audit-dispatch:', ln):
+        new.append(f'last-blind-audit-dispatch: {ts} (heartbeat)\n')
+        hit = True
+    else:
+        new.append(ln)
+if not hit:
+    if new and not new[-1].endswith('\n'):
+        new.append('\n')
+    new.append(f'\nlast-blind-audit-dispatch: {ts} (heartbeat)\n')
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(new)
+PY
+                    log "10.  - fleet-blind-audit.service started, stamp=$new_ts"
+                else
+                    loud "BLIND-AUDIT-START-FAIL" "systemctl start fleet-blind-audit.service failed"
+                fi
+                ;;
+        esac
+    else
+        log "10.  - gap-board has $n_gaps open gap-audit issue(s) — no trigger"
+    fi
+else
+    log "10. blind-audit disabled via FLEET_BLIND_AUDIT_DISABLE=1"
+fi
+
+# ============================================================================
+# 11. RED-PR REPAIR — re-dispatch onto orphaned red fleet-worker PRs (#124)
+# ============================================================================
+# The blind spot neither the queue pass (2) nor the orphan sweep (3) covers:
+# a worker opened a PR, exited, and CI came back red. The claim branch blocks
+# re-claiming (intake skips it), the agent-in-progress label blocks
+# re-queueing, and no machinery watched fleet PRs for red checks. This block
+# delegates to bin/fleet-heartbeat-red-pr-repair: for each open claim/issue-*
+# PR whose checks are red AND whose pi-issue unit has no live worker for >1
+# tick, it dispatches one repair worker onto the existing claim branch
+# (loop-to-green per #80), bounded RED_PR_MAX_ATTEMPTS (default 2), then
+# fails loud into the paging path (#76/#86). A non-zero exit propagates so
+# fleet-heartbeat.service lands in --state=failed -> page.
+REDPR_BIN="${FLEET_HEARTBEAT_REDPR:-/home/nish/.local/bin/fleet-heartbeat-red-pr-repair}"
+redpr_rc=0
+if [ -x "$REDPR_BIN" ]; then
+    log "11. red-pr-repair pass starting"
+    if "$REDPR_BIN"; then
+        log "11. red-pr-repair pass complete"
+    else
+        redpr_rc=$?
+        log "11. red-pr-repair: FAIL LOUD (rc=$redpr_rc) — a red PR exhausted its repair budget; unit will land in --state=failed"
+    fi
+else
+    log "11. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 12. SEAT-HEALTH FRESHNESS (fleet-ops#76)
+# ============================================================================
+# Standing rule: verify observed_at before trusting pi-seat-health.json.
+# Stale (>90 min) or unparseable -> trigger pi-transport-check, then report.
+log "12. seat-health freshness starting"
+heartbeat_seat_health_check
+log "12. seat-health freshness done"
+
+# ============================================================================
+# 13. RAM MEASUREMENT (fleet-ops#45)
+# ============================================================================
+# Mechanical re-measurement of peak RSS across fleet worker units. The
+# 0.75 in seat-caps.json's ram_gb_per_worker is the floor; a re-derive
+# is `ram-measure` + jq over $RAM_STATE_DIR/ram-measurement.json. The
+# single one-line stdout (mean/median/p95/max in GiB) is logged to the
+# tick log so a trend is visible from the journal alone. The script is
+# a pure observer — it never fails the tick, never escalates, never
+# touches the cap map. Drift between the live distribution and
+# ram_gb_per_worker is a HUMAN action (re-derive from a fresh
+# measurement, then a PR).
+#
+# Skipped silently if ram-measure is not installed; the .local/bin
+# symlink is a fleet-ops install step (MANIFEST + ./install.sh), so a
+# missing binary is a config drift, not a code bug.
+RAM_BIN="${FLEET_RAM_MEASURE_BIN:-/home/nish/.local/bin/ram-measure}"
+if [ -x "$RAM_BIN" ]; then
+    if ram_summary="$("$RAM_BIN" 2>/dev/null)"; then
+        log "13. ram-measure: $ram_summary"
+    else
+        # Measurement is observability; an unexpected non-zero here is
+        # logged but does NOT fail the tick.
+        log "13. ram-measure: non-zero exit (rc=$?) — state file may be stale"
+    fi
+else
+    log "13. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
+# 14. ESCALATION COVERAGE CANARY (fleet-ops#152)
+# ============================================================================
+# Every tick, prove the two-plane invariant "every failure path lands in the
+# escalation matrix" mechanically:
+#   VPS plane  — every loaded user service inherits the unit-escalation drop-in
+#                and no fleet pi execution path lives outside a systemd unit.
+#   GitHub plane — every repo's red checks are covered by auto-revert,
+#                #124 redispatch, or the red-check->senior-auditor bridge.
+# The canary exits 0 when the only findings are the documented pending holes
+# (#76 delivery, #124 guard, #152 bridge); it exits 1 on real coverage gaps
+# and the unit lands in --state=failed like every other fail-loud block.
+# Anti-recursion: the canary runs inside this unit (already escalation-covered)
+# and creates no unit/OnFailure of its own.
+CANARY_BIN="${FLEET_ESCALATION_CANARY:-/home/nish/.local/bin/fleet-escalation-canary}"
+canary_rc=0
+if [ -x "$CANARY_BIN" ]; then
+    log "14. escalation-coverage canary starting"
+    if "$CANARY_BIN"; then
+        log "14. escalation-coverage canary complete"
+    else
+        canary_rc=$?
+        log "14. escalation-coverage canary FAILED (rc=$canary_rc) — two-plane invariant violated; unit will land in --state=failed"
+    fi
+else
+    log "14. escalation-coverage canary missing at $CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_logged=$reset_logged timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc"
+# Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
+# red-pr-repair, or the escalation-coverage canary may fail loud; all route to
+# the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
+if [ "$deploy_rc" -ne 0 ]; then
+    exit "$deploy_rc"
+fi
 if [ "$undersat_rc" -ne 0 ]; then
     exit "$undersat_rc"
+fi
+if [ "$redpr_rc" -ne 0 ]; then
+    exit "$redpr_rc"
+fi
+if [ "$canary_rc" -ne 0 ]; then
+    exit "$canary_rc"
 fi
 exit 0

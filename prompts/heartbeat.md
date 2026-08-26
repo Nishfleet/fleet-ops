@@ -38,6 +38,13 @@ Tier 1 already re-examines `agent-blocked` issues (closed/merged dependencies
 flip back to `agent-ready`; Nish-decision blocks are published on the triage
 file with count and oldest age). Do not redo that sweep.
 
+Tier 1 §3b also runs `claim-reconcile` every tick, which self-heals the
+split-brain and garbage claim states nothing else re-examined (fleet-ops#39):
+direction B (a `claim/issue-<N>` branch whose issue is NOT `agent-in-progress`
+— invisible to intake), direction C (unnumbered `claim/issue-` branches), and
+orphaned branches (issue missing/closed, no open PR). It defers direction A
+(agent-in-progress + no worker + no PR) to §3. Do not redo that sweep either.
+
 ---
 
 ## Step 1 — verify claimed work against real state
@@ -63,18 +70,55 @@ For every `agent-in-progress` issue across the fleet repos:
 
 ## Step 2 — process finished / failed units
 
-For each `systemctl --user --state=failed --no-legend` unit matching
-`pi-issue-*` or `fable-p*`:
+Tier 1 already performs the failed-unit pass deterministically. It watches:
 
-- Read its journal: `journalctl --user -u <unit> -n 200 --no-pager`
-- If the failure is `StartLimitBurst` reached, check whether the reap already
-  ran (issue label `agent-ready` instead of `agent-in-progress`). If yes, log
-  the closed loop to the playbook's "Done (continued)" section and move on.
-- If the failure is an LLM error (auth dead, quota dead, model missing), add
-  a `[LLM-DEAD-<model>]` line to the triage file with the unit name and the
-  error excerpt.
-- If the failure is a code error, write `[CODE-FAIL-<unit>]` to the triage
-  file with the first 20 lines of the journal excerpt.
+- `pi-intake@*`, `pi-intake-repair@*`
+- `pi-scout@*`, `pi-scout-repair@*`
+- `pi-packet@*`, `pi-packet-failed@*`
+- `pi-issue@*`, `pi-issue-failed@*`
+- `fable-p*`
+
+For each failed unit it reads the journal, classifies the failure, and acts
+by class:
+
+- **recover** (`pi-intake@*`, `pi-intake-repair@*`, `pi-scout@*`,
+  `pi-scout-repair@*`) — supply/repair units with no OnFailure reap. A
+  transient lane fault (rate limit, 429, ETIMEDOUT, retryable spawn failure,
+  StartLimit from transient retries) gets a plain
+  `systemctl --user reset-failed` + `start`, bounded by
+  `FAILED_UNITS_MAX_ATTEMPTS` (default 3). This floor does not depend on any
+  agent lane being healthy.
+- **observe** (`pi-issue@*`, `pi-packet@*`, `pi-issue-failed@*`,
+  `pi-packet-failed@*`, `fable-p*`) — workers and reap cleanup. Tier 1 does
+  NOT restart these: their OnFailure reap releases the claim and intake
+  re-dispatches, so a heartbeat restart would race a second worker onto the
+  same issue. They are logged and surfaced only.
+
+It records the outcome in the per-tick log and a per-unit state file under
+`~/.local/state/fleet-heartbeat/failed-units/`.
+
+You will only run if it could not recover and wrote one of these lines:
+
+- `[LLM-DEAD]` — the failure is an LLM/auth/quota fault (auth dead, quota
+  exhausted, model missing, non-retryable permission denied). Do not keep
+  restarting. The provider/model are in the line. If another healthy seat is
+  available, dispatch a manual repair on that seat; otherwise leave the line
+  for Nish.
+- `[CODE-FAIL]` — the failure is a code, command, or config error. It needs a
+  repo or unit fix, not a restart. Leave the line unless you can fix the
+  underlying code and prove the unit passes.
+- `[UNIT-ESCALATE]` — Tier 1 exhausted `FAILED_UNITS_MAX_ATTEMPTS` (default 3)
+  reset+start attempts and the unit is still failing. This is the fail-loud
+  outcome. Read the journal, determine whether the root cause is a seat fault,
+  a code fault, or a blocked dependency, and either dispatch a manual repair
+  on a healthy seat or leave the line for Nish.
+
+Do not remove these lines until the unit is actually healthy again.
+
+A tick that found no failed units and a tick that did not run are different:
+the former leaves a per-tick log at
+`~/.local/state/fleet-heartbeat/tier1-<UTC>.log` with `failed_seen=0`; the
+latter leaves nothing and the unit is still failed.
 
 ---
 
@@ -97,6 +141,15 @@ Never use `--admin`. Never bypass a branch protection. Never force-merge.
 ---
 
 ## Step 4 — reconcile claims (BOTH directions)
+
+> Tier 1 now owns the deterministic reconciliation: §3 covers direction A
+> (agent-in-progress + no worker + no PR), and §3b runs `claim-reconcile`
+> for directions B, C, and orphaned branches (fleet-ops#39). You do NOT
+> need to re-walk the branch list yourself — if tier 1 reported a clean
+> claim-reconcile line, this step is already done. Only act here if tier 1
+> was unable to run (the bin is missing) AND you observe a stranded claim
+> by hand; in that case follow the repair order below and file an issue
+> so the bin gets reinstalled.
 
 A claim has three parts that must agree: the `claim/issue-<N>` **branch**, the
 `agent-in-progress` **label**, and a live `pi-issue@<repo>-<N>.service` **unit**.

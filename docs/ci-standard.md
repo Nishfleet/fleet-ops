@@ -7,6 +7,25 @@ so a new check is written correctly instead of caught later.
 Reusable workflows in this repo are the mechanism. Call them with `uses:`;
 pass `inputs`; do not copy or override critical steps.
 
+## PR checks (the batched standard)
+
+`.github/workflows/reusable-pr-checks.yml` is the one job every product repo
+should call. It is `workflow_call` only. Guarantees that are not optional:
+
+- `timeout-minutes` on the job (override with the `timeout-minutes` input).
+- `concurrency` + `cancel-in-progress: true` for PR/push.
+- npm cache when `install-command` is set.
+- docs-only PRs skip install/verify inside the job, so the check still reports.
+- gitleaks (pinned binary, no license) when `scan-secrets` is true.
+
+Same-repo caller: `uses: ./.github/workflows/reusable-pr-checks.yml`.
+Other repos: `uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main`.
+
+`.github/workflows/reusable-auto-merge-arm.yml` is the matching auto-merge job.
+Callers keep the `pull_request` trigger and pass `AUTO_REVERT_PAT` explicitly.
+
+`template/.github/workflows/` is the starter caller set for a new repo.
+
 ## Required checks are pure
 
 A required status check must be a function of the PR's own diff.
@@ -77,3 +96,18 @@ Replay a loop with `--from-json`; run it live with `--repo`.
 `.github/workflows/ci-failure-telemetry.yml` is the reusable caller — the
 same workflow that already runs the semantic-conflict detector, so every
 repo gets both alerts from one `uses:` call. It is an alert, not a gate.
+
+## Red on main
+
+Auto-revert may only watch a workflow that is already green on main.
+Watching a permanently-red workflow would revert every commit forever.
+
+Detecting red is a different job. `.github/scripts/red-on-main-detector.mjs`
+covers every workflow from its first run, including ones that have never
+been green. A first-ever main failure is called out as merged untested
+against main. The signal opens (or reuses) an issue. It does not revert.
+
+`.github/workflows/red-on-main-detector.yml` is the reusable caller.
+`.github/workflows/red-on-main-watch.yml` is the 15-minute sweep other
+Nishfleet repos get via repo-standards-sync. Do not make either a
+required check.

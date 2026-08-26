@@ -1,0 +1,80 @@
+name: Red on main detector
+
+# Reusable workflow. Watches every workflow on main, not just an allowlisted
+# set. A workflow whose first ever main run fails is a distinct, high-signal
+# case: it was likely merged untested against main. Alert, do not auto-revert,
+# until the workflow has a green baseline.
+#
+# Usage from another repo:
+#   jobs:
+#     detect:
+#       uses: Nishfleet/fleet-ops/.github/workflows/red-on-main-detector.yml@main
+#       permissions:
+#         actions: read
+#         contents: read
+#         issues: write
+#       with:
+#         target-repo: ${{ github.repository }}
+#         lookback-minutes: 20
+#
+# Do not make this a required check. It is an alert, not a gate.
+
+on:
+  workflow_call:
+    inputs:
+      target-repo:
+        description: "Repository to analyze (owner/name). Defaults to the calling repository."
+        required: false
+        type: string
+      lookback-minutes:
+        description: "Minutes of recent failed main runs to sample."
+        required: false
+        default: 60
+        type: number
+  workflow_dispatch:
+    inputs:
+      target-repo:
+        description: "Repository to analyze (owner/name)."
+        required: false
+        type: string
+      lookback-minutes:
+        description: "Minutes of recent failed main runs to sample."
+        required: false
+        default: "60"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: red-on-main-detector-${{ github.repository }}-${{ inputs.target-repo || github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect red-on-main workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout detector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Run detector
+        id: run
+        env:
+          RED_ON_MAIN_REPO: ${{ inputs.target-repo || github.repository }}
+          RED_ON_MAIN_LOOKBACK_MINUTES: ${{ inputs.lookback-minutes || 60 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/red-on-main-detector.mjs

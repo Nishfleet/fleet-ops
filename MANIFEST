@@ -29,23 +29,76 @@ prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
+lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
+lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
+lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
+bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
+bin/pi-scout-run /home/nish/.local/bin/pi-scout-run
+# fleet-ops#143: version-control the agent-cron runner + the daily market
+# signal unit. The runner rotates seats via pick_seat (replacing the
+# single-snapshot seat-health gate that a transient fleet 429 could trip),
+# and the service carries Restart=on-failure so a transient wall delays the
+# daily job instead of killing it for the day.
+bin/agent-cron-run /home/nish/.local/bin/agent-cron-run
+systemd/agent-cron-0509-daily-market-signal.service /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.service
+systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
+bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
+bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
+bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
+bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
+bin/fleet-claim /home/nish/.local/bin/fleet-claim
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
+bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
+bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair
+# fleet-ops#152: escalation coverage canary. Run by heartbeat-tier1 block 14;
+# proves the two-plane invariant (VPS unit-escalation coverage + GitHub
+# red-check coverage) every tick. Installed by the merge-to-live step (#149)
+# so the first install lands it with zero hands.
+bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
+# fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
+# timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a
+# local panel, and files gap-audit issues linked to a durable report.
+bin/fleet-blind-audit /home/nish/.local/bin/fleet-blind-audit
+bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
+prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
+systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
+systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
+# fleet-ops#32: declared-set reconciler. Closes the loop between the
+# declared repo set in config/intake-repos.json and the live pi-intake /
+# pi-scout systemd state — the four silent reversions on 2026-08-25/26
+# had no record; this path unit + 30-min timer trip the reconciler, and
+# every state change writes one audit line so drift is grep-able.
+bin/intake-reconcile /home/nish/.local/bin/intake-reconcile
+# fleet-ops#149: merge-to-live deploy step + drift canary. Heartbeat pulls
+# origin/main, runs install.sh, then this canary fails loud on any drift.
+bin/fleet-ops-deploy /home/nish/.local/bin/fleet-ops-deploy
+bin/fleet-ops-drift.py /home/nish/.local/bin/fleet-ops-drift
+systemd/intake-reconcile.path /home/nish/.config/systemd/user/intake-reconcile.path
+systemd/intake-reconcile.service /home/nish/.config/systemd/user/intake-reconcile.service
+systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.timer
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
+systemd/stop-escalation.path /home/nish/.config/systemd/user/stop-escalation.path
+systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.service
+systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
+systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
+systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
+systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
+systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
 # P14: GitHub App identity for workers (replaces fine-grained PAT)
 bin/worker-token /home/nish/.local/bin/worker-token
@@ -56,6 +109,16 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
+# fleet-ops#78: gated reap of the unmanaged Codex app-server during the
+# weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
+# (Sun 03:30 IST, after the 15-minute quiesce drain).
+bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap
+systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/10-codex-orphan-reap.conf
+# fleet-ops#45: peak-RSS measurement so ram_gb_per_worker can be re-derived
+# by command rather than re-read from a comment. Pure observability — no
+# timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
+# with a rolling 10-run history.
+bin/ram-measure /home/nish/.local/bin/ram-measure
 # P14 tests (not installed — only run from the repo)
 # fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
 # requires root for install). install.sh --system copies them and runs

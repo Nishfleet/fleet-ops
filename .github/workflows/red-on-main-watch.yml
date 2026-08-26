@@ -1,0 +1,36 @@
+name: Red on main watch
+
+# Schedule-driven watcher. GitHub Actions `workflow_run` does not support
+# wildcards, so a named list or a schedule is required. A list would require
+# updating every repo for each new workflow, which is the gap this detector
+# closes. A periodic sweep is the mechanical form. The named reason for the
+# 15-minute schedule: catch a brand-new workflow failing on its first main run
+# before a human has to discover it from run history.
+#
+# Do not make this a required check. It is an alert, not a gate.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: red-on-main-watch-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect red on main
+    uses: Nishfleet/fleet-ops/.github/workflows/red-on-main-detector.yml@main
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    with:
+      target-repo: ${{ github.repository }}
+      lookback-minutes: 20

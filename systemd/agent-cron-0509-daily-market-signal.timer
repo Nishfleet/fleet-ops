@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily 08:15 IST — 0509 daily market signal (agent-agnostic)
+
+[Timer]
+OnCalendar=*-*-* 08:15:00 Asia/Kolkata
+Persistent=true
+AccuracySec=2min
+
+[Install]
+WantedBy=timers.target

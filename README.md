@@ -75,6 +75,52 @@ Overlapping `systemctl start` of a live intake tick is a no-op
 (`pi-issue-start`). The failed-reaper will not release a claim while that
 worker still has a MainPID.
 
+## Claim shared files before editing (interactive sessions)
+
+Queued work has an atomic lock — the `claim/issue-N` branch. Interactive
+sessions used to bypass it, so two agents could fix the same control-plane
+file minutes apart without either knowing (fleet-ops#55: two sessions
+fixed the same `seat-lib.sh` bug in one hour). `bin/fleet-claim` gives
+interactive work a claim path that is one command, agent-agnostic (git +
+gh, not a Claude hook), and visible before any PR exists — a pushed branch
+is the fleet-visible occupied sign.
+
+Before touching anything shared (`seat-lib.sh`, `seat-caps.json`, a systemd
+unit, a hook, this repo), run:
+
+```
+fleet-claim conflicts fleet-ops lib/seat-lib.sh   # pre-flight: anyone on it?
+fleet-claim start    fleet-ops lib/seat-lib.sh    # reserve it (one command)
+# ...edit, commit, push, open PR...
+fleet-claim release  fleet-ops lib/seat-lib.sh    # free it when done
+```
+
+- `start` pushes `claim/adhoc-<scope>` from `main` with a create-only
+  `--force-with-lease`, so two agents starting the same scope collide
+  atomically — the second gets `claimed-by-other` and stops. Convention:
+  **use the shared file path as the scope** so two agents on the same file
+  pick the same branch name.
+- `conflicts` is the pre-flight the standing rule asks for, made
+  agent-agnostic. It scans every live `claim/adhoc-*` branch whose scope
+  token matches the file path **or basename**, plus every open PR whose
+  file set overlaps (via `gh`, when available). Exit 1 if anything is
+  found. Basename matching catches the realistic case where two agents
+  name the same file differently (`lib/seat-lib.sh` vs `seat-lib.sh`).
+- `check <scope>` reports free/claimed for one scope; `release <scope>`
+  deletes the branch.
+
+It is warn-shaped, not a hard block: a second agent on the same file is
+sometimes legitimate, and a false block during control-plane repair is
+worse than a duplicated diff. The Claude-only `guard_shared_file_collision`
+hook covers the open-PR window; `fleet-claim` covers the pre-PR window that
+the hook cannot see.
+
+Stale interactive **sessions** (idle for hours) are a separate, larger
+problem and are NOT reaped here — killing live agent processes is
+irreversible and out of scope for #55. The durable heartbeat still reaps
+orphaned `claim/issue-*` branches (queued work); `claim/adhoc-*` branches
+are released by the agent that claimed them.
+
 ## CI
 
 `.github/workflows/ci.yml` runs four jobs on every PR and push to main:
@@ -91,22 +137,46 @@ worker still has a MainPID.
 
 All actions are pinned to exact commit SHAs. Every job has a timeout.
 
-A fifth reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
+The tests job calls `.github/workflows/reusable-pr-checks.yml` (`workflow_call`).
+That file is the batched CI standard for every current and future repo: one
+job, `timeout-minutes`, PR concurrency, npm cache, job-level path gating, and
+gitleaks. Callers pass `inputs`; they do not copy the steps. The four required
+check names stay as local jobs because a `uses:` job reports as
+`caller / callee` and branch protection still lists `Gitleaks`, `Semgrep`,
+`Shellcheck`, and `systemd-analyze`.
+
+New repos copy `template/.github/workflows/` (wired to this repo at `@main`).
+
+A further reusable workflow, `.github/workflows/ci-failure-telemetry.yml`, is
 the central CI failure telemetry set. Other repos call it with
 `workflow_call`; it is an alert, not a required check. It runs two detectors:
 the merge-queue semantic-conflict detector (fires when the same check is
 green on `pull_request` and red on `merge_group`, names the check, and
 publishes the `pull_request` vs `merge_group` failure-rate split) and the
 repeat-deterministic detector (fires when the same
-`(workflow, job, step, assertion)` signature fails 3+ times within 6h — an
-assertion failure is not retryable, so the alert says stop, do not re-arm).
+`(workflow, job, step, assertion, event)` signature fails 3+ times within
+6h — an assertion failure is not retryable, so the alert says stop, do not
+re-arm). Both detectors also publish a headline decomposition: top failure
+signatures ranked by count (every distinct tuple, not just the ones that
+fired the alert) and the `pull_request` vs `merge_group` divergence in
+percentage points — the single most diagnostic number for whether failures
+are semantic merge conflicts (large divergence) or flaky tests (small
+divergence). A headline "21.8% CI failure rate" without this decomposition
+cannot drive any action (fleet-ops#21).
 
 A sixth, `.github/workflows/ci-required-check-purity.yml`, flags required
 checks that compare a computed value against a shared committed baseline
 with exact equality (or that fail unless the PR edits that baseline). It
 is advisory: warn, do not block. The rule itself is in `docs/ci-standard.md`.
 
-A seventh, `.github/workflows/ci-standards-audit.yml`, is the central
+A seventh pair, `.github/workflows/red-on-main-detector.yml` (reusable) and
+`.github/workflows/red-on-main-watch.yml` (15-minute sweep, synced to other
+Nishfleet repos), watches **every** workflow on main — including ones that
+have never been green. Auto-revert still only watches proven-green
+workflows; this detector alerts, it does not revert. A workflow whose
+first ever main run fails is called out as merged untested against main.
+
+An eighth, `.github/workflows/ci-standards-audit.yml`, is the central
 conformance audit. It reads every non-archived repo from the GitHub API,
 resolves each repo's real default branch, then publishes a per-repo,
 per-workflow gap matrix for the CI standard: `timeout-minutes` on every
@@ -124,6 +194,24 @@ from `~/.config/systemd/user/`, `~/.local/bin/`, or `~/.pi/agent/prompts/` is
 swept in. EnvironmentFile= targets (e.g. `hc.env`, `deploy.env`, `cf.env`) are
 never tracked — only the units that reference them.
 
+## Codex orphan app-server (fleet-ops#78)
+
+An unmanaged `codex app-server` on the control socket blocks
+`codex-remote-control.service` (`app server is running but is not managed
+by codex app-server daemon`). Killing it mid-week severs live peer
+connections.
+
+`bin/codex-orphan-reap` kills that orphan, starts the managed unit, and
+proves takeover with `codex remote-control pair --json`. It refuses unless
+the weekly window is open (`maintenance.json` status `paused` or
+`quiescing`) or there are zero peer connections. A listener already named
+by the daemon pid file is left alone — next week's window must not kill
+the healthy daemon.
+
+The weekly update runs it as `ExecStartPre=-` (Sun 03:30 IST, after the
+15-minute quiesce drain). The leading `-` means a failed reap cannot skip
+apt. Do not run it by hand while the flag is `clear` and peers are live.
+
 ## Fleet heartbeat (durable, session-independent)
 
 `fleet-heartbeat.timer` + `fleet-heartbeat.service` keep the fleet flowing
@@ -134,11 +222,16 @@ user systemd instance (Persistent=true), not by any agent or tmux session.
 Two-tier design (so the heartbeat still works if every LLM is dead):
 
 - **Tier 1 (deterministic, every tick, no LLM)**: queue green fleet PRs,
-  release orphaned claims, log failed units into the triage file, verify
-  scout/intake timers are armed, re-examine `agent-blocked` issues (re-queue
-  when a listed dependency has closed/merged; publish count and oldest age
-  for Nish-decision blocks), update the `last-heartbeat:` stamp in the
-  playbook. Plain bash + gh + jq. Zero quota.
+  release orphaned claims, recover failed fleet units then page what remains
+  (triage + `hermes send --urgent`), verify scout/intake timers are armed,
+  re-examine `agent-blocked` issues, check `pi-seat-health.json` is fresh
+  (`observed_at` < 90 min), update the `last-heartbeat:` stamp in the
+  playbook. Also re-dispatches repair workers onto orphaned red fleet-worker
+  PRs whose worker has exited (debounced one tick, bounded 2 attempts, then
+  fail-loud into the paging path). Plain bash + gh + jq. Zero quota.
+  A successful tick also pings healthchecks.io (`HC_URL` in
+  `~/.config/fleet-heartbeat/hc.env`, same dead-man pattern as siterep-uptime)
+  so a masked or dead timer is visible off-box.
 - **Tier 2 (judgment, only when the triage file is non-empty or the held
   queue has dispatchable items)**: walk a seat ladder
   `claude -p --model claude-opus-5` → `pi --print --provider devin
@@ -182,7 +275,13 @@ ever). `siterep` is excluded (archived). Both are recorded in the file's
 fail-closes if `fleet2` ever reappears in `repos`.
 
 The reconciler that converges systemd state to this file is fleet-ops#32;
-this file is the coverage decision (#25) it consumes.
+this file is the coverage decision (#25) it consumes. The reconciler is
+`bin/intake-reconcile`, triggered by `systemd/intake-reconcile.{path,
+service,timer}` (file-change trip + 30-minute sweep). Every enable, disable,
+mask-detect or precondition-fail writes one line to
+`$HOME/.local/state/intake-reconcile/audit.log` with
+`<iso8601> <unit> <action> actor=reconciler why=<reason>` so the four
+silent reversions that prompted this issue have no recurrence path.
 
 ## Excluded pending manual review
 
@@ -222,5 +321,27 @@ measurement (see the governor tree), not driven live, since doing so would
 throttle real workers. `systemd/systemd#33486` notes pressure limits can fail
 to fire — re-run `oomd-drill` after any upgrade to confirm the path still
 trips.
+
+## Worker RAM measurement — `ram-measure` (issue #45)
+
+`ram_gb_per_worker` in `config/seat-caps.json` is the governor budget the
+RAM governor divides `MemAvailable` by. It is sized on the TYPICAL worker
+(0.75 GiB) with the tail bounded three ways (per-worker `MemoryHigh=3G`
+throttle, `MemoryMax=6G` hard stop, and `TimeoutStartSec=45min` to kill a
+wedge). A re-derive is one command:
+
+```
+ram-measure                          # one-line summary
+jq '.history[0]' ~/.local/state/ram-measurement/ram-measurement.json
+```
+
+`bin/ram-measure` walks every `pi-issue@*.service` and `pi-packet@*.service`
+unit, pulls `MemoryPeak` (bytes) from `systemctl show`, and reports count,
+mean, median, p95, and max in GiB plus a per-unit breakdown. State lives at
+`~/.local/state/ram-measurement/ram-measurement.json` with a rolling
+10-run history. The fleet-heartbeat calls it once per tick (section 13 of
+`bin/fleet-heartbeat-tier1`) so a re-derive is a one-time `jq` over the
+history, not a re-read of a comment. Pure observability — never a gate, never
+an escalation, never an edit to the cap map.
 
 

@@ -28,20 +28,6 @@ concurrency:
 
 jobs:
   arm:
-    if: >-
-      github.event.pull_request.draft == false &&
-      !contains(github.event.pull_request.title, '[no-merge]') &&
-      !contains(join(github.event.pull_request.labels.*.name, ','), 'no-auto-merge')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Arm auto-merge
-        env:
-          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::AUTO_REVERT_PAT is not configured — auto-merge not armed; this PR waits for a human"
-            exit 1
-          fi
-          gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"
+    uses: ./.github/workflows/reusable-auto-merge-arm.yml
+    secrets:
+      AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}

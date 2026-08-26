@@ -1,12 +1,12 @@
 {
-  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake — the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly — every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for).",
+  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake \u2014 the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly \u2014 every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for).",
   "checkout_root": "/home/nish/workspaces/products",
   "required_labels": [
     "agent-ready",
     "agent-in-progress",
     "agent-blocked"
   ],
-  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> — intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo — the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
+  "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> \u2014 intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo \u2014 the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
   "repos": [
     {
       "name": "0509"
@@ -15,16 +15,13 @@
       "name": "fleet-ops",
       "enrolled_by": "Nish, 2026-08-26",
       "reason": "Explicit decision, overriding the 2026-08-25 campaign-scope deferral: \"The fleet, if it turns out to be transformed and 11 on 10, then it will work on making 0509 even better. So I want that trade off. I appreciate that trade off actually.\" Control-plane work is therefore IN scope, accepted as an investment that compounds into product throughput - not as the fleet2 self-maintenance failure mode. Revisit if control-plane merges keep outpacing product merges after the fleet is healthy; the deferral reason (9:0 on 2026-08-25, 15:5 on 2026-08-25 evening) stands as the tripwire to watch, not as a prohibition."
-    },
-    {
-      "name": "siterep-public"
     }
   ],
   "excluded": [
     {
       "name": "fleet2",
       "permanent": true,
-      "reason": "Forbidden second dispatcher. Standing rule 'One fleet — No second dispatcher, ever' (vault _system/shared-memory/global-standing-rules.md, 'One fleet'): a second fleet spends its effort on itself. fleet2 must NEVER be enrolled regardless of labels or checkout state."
+      "reason": "Forbidden second dispatcher. Standing rule 'One fleet \u2014 No second dispatcher, ever' (vault _system/shared-memory/global-standing-rules.md, 'One fleet'): a second fleet spends its effort on itself. fleet2 must NEVER be enrolled regardless of labels or checkout state."
     },
     {
       "name": "siterep",
@@ -34,36 +31,40 @@
   ],
   "deferred": [
     {
+      "name": "siterep-public",
+      "reason": "0509-exclusive campaign (decisions ledger 2026-08-26): new product supply targets 0509 ONLY for the next days/weeks \u2014 'big epic changes to make it undisputed segment best'. Existing PRs/issues drain normally; re-enrol via PR when Nish widens scope. fleet-ops stays enrolled solely to finish the mechanical stack + gap-closure loop, ratio line as tripwire."
+    },
+    {
       "name": "0509-telemetry",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "TinyStudio.io",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "TinyStudio.io-public",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "aiconverter-app",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "context-hub",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "egress-probe",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "inish-site",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
       "name": "tinystudio-in",
-      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo — enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges — the fleet2 self-maintenance pattern)."
+      "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     }
   ]
 }
