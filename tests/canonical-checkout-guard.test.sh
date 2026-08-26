@@ -224,5 +224,32 @@ grep -q 'issue create' "$gh_log" && fail "scenario9: must not file a duplicate (
 [[ "$canary_out" == *"dedup:"* ]] || fail "scenario9: expected dedup log, got: $canary_out"
 ok "scenario9: open issue with the marker is not filed twice"
 
+# --- scenario 10: fleet-ops-deploy refuses a non-canonical drift canary -------
+# A stale FLEET_OPS_DRIFT_BIN drop-in pointing at a hotfix worktree must not
+# run against the new deploy, or the rc can be misread (fleet-ops#463).
+cat > "$hotfix/bin/fleet-ops-drift.py" <<'PY'
+#!/usr/bin/env python3
+import sys
+print("noncanonical canary must not run")
+sys.exit(0)
+PY
+chmod +x "$hotfix/bin/fleet-ops-drift.py"
+set +e
+deploy_canary_out=$(
+  FLEET_OPS_CHECKOUT="$canon" \
+  FLEET_OPS_CANONICAL_CHECKOUT="$canon" \
+  FLEET_OPS_WORKSPACES_ROOT="$ws" \
+  FLEET_OPS_DRIFT_BIN="$hotfix/bin/fleet-ops-drift.py" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+    "$canon/bin/fleet-ops-deploy" 2>&1
+)
+deploy_canary_rc=$?
+set -e
+[[ "$deploy_canary_rc" -eq 1 ]] || fail "scenario10: deploy should rc=1 for noncanonical canary, got rc=$deploy_canary_rc out=$deploy_canary_out"
+[[ "$deploy_canary_out" == *"DEPLOY-DRIFT-BIN-NONCANONICAL"* ]] \
+    || fail "scenario10: expected DEPLOY-DRIFT-BIN-NONCANONICAL, got: $deploy_canary_out"
+ok "scenario10: fleet-ops-deploy refuses a drift canary from a non-canonical checkout"
+
 echo "OK: canonical checkout guard refuses hotfix/issue worktrees and auto-files DRIFT-SOURCE"
 exit 0

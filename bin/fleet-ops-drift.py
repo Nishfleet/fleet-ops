@@ -77,6 +77,7 @@ ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
 PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
+HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
 PAPER_OVER_DROPIN = (
     HOME / ".config" / "systemd" / "user" / "fleet-heartbeat.service.d" / "10-deploy-checkout.conf"
 )
@@ -265,6 +266,19 @@ def auto_file_off_main(msg: str) -> None:
         extra,
         msg,
     )
+
+
+def auto_file_install_refuse(dest: str, repo: str, diff: str) -> None:
+    """File one issue for a live file that is newer and differs from the repo copy."""
+    extra = (
+        "install.sh refused to overwrite a live file whose mtime is newer "
+        "than the repo copy because the content differs. A hot-patch is in "
+        "place. Resolve by merging the change through the normal PR path or "
+        "restore the live file to the repo copy, then re-run the heartbeat."
+    )
+    title = f"Live fleet-ops file hot-patched: {Path(dest).name}"
+    body = f"Live file `{dest}` is newer and differs from repo `{repo}`:\n\n```diff\n{diff}\n```"
+    auto_file_drift(HOTPATCH_MARKER, title, extra, body)
 
 
 def retarget_products_bin() -> Path:
@@ -900,6 +914,15 @@ def check_missing_execstarts() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["--file-install-refuse"]:
+        if len(args) < 4:
+            log("usage: fleet-ops-drift.py --file-install-refuse <dest> <repo> <diff-file>")
+            sys.exit(2)
+        dest, repo, diff_path = args[1], args[2], Path(args[3])
+        diff = diff_path.read_text(encoding="utf-8", errors="replace") if diff_path.is_file() else ""
+        auto_file_install_refuse(dest, repo, diff)
+        sys.exit(0)
+
     if args[:1] == ["--file-off-main"]:
         msg = (
             args[1]

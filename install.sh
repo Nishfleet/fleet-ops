@@ -151,9 +151,10 @@ live_target_file() {
 }
 
 # Returns 0 if dest exists and its live target is a different file whose
-# mtime is newer than the repo copy. install.sh must refuse that overwrite
-# (fleet-ops#372): running from a stale checkout would otherwise replace
-# live seat caps / units with older repo copies.
+# mtime is newer than the repo copy AND whose content differs from the repo
+# copy. A newer, byte-identical file is not a hot-patch; it is only newer
+# because it has already been installed (#463). Re-sync its mtime so the
+# guard does not re-check, then allow the normal install to proceed.
 live_newer_than_repo() {
     local dest=$1 repo=$2
     local live live_m repo_m
@@ -162,7 +163,38 @@ live_newer_than_repo() {
     [ "$live" = "$repo" ] && return 1
     live_m=$(stat -c %Y "$live" 2>/dev/null || echo 0)
     repo_m=$(stat -c %Y "$repo" 2>/dev/null || echo 0)
-    [ "$live_m" -gt "$repo_m" ]
+    [ "$live_m" -gt "$repo_m" ] || return 1
+    if cmp -s "$live" "$repo" 2>/dev/null; then
+        # Byte-identical: re-sync mtime to the repo copy and do not refuse.
+        # For a regular file at $dest this makes the guard cheap next time;
+        # for a symlink the install below will replace it with the repo link.
+        if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+            touch -r "$repo" "$dest" 2>/dev/null || true
+        fi
+        return 1
+    fi
+    return 0
+}
+
+# fleet-ops#463: auto-file a ticket when the install is refused because a live
+# file is newer AND different from the repo copy (a genuine hot-patch). The
+# diff is attached to the issue body. The helper lives in the deploy canary
+# so we reuse the same GH wiring, DRIFT_REPO, and dedup logic.
+file_install_refuse() {
+    local dest=$1 repo=$2
+    local live diff_file py
+    live=$(live_target_file "$dest")
+    diff_file=$(mktemp)
+    if [ -n "$live" ] && [ -e "$live" ]; then
+        diff -u "$repo" "$live" > "$diff_file" 2>/dev/null || true
+    fi
+    py="$here/bin/fleet-ops-drift.py"
+    if [ -f "$py" ]; then
+        GH="${GH:-gh}" \
+        FLEET_OPS_DRIFT_REPO="${FLEET_OPS_DRIFT_REPO:-Nishfleet/fleet-ops}" \
+          python3 "$py" --file-install-refuse "$dest" "$repo" "$diff_file" || true
+    fi
+    rm -f "$diff_file"
 }
 
 # True when $1 is byte-identical to origin/main:config/seat-caps.json.
@@ -332,12 +364,14 @@ process_entry() {
             rc=1
             return 0
         elif live_newer_than_repo "$dest" "$repo"; then
-            echo "REFUSE: $dest is newer than repo copy $repo (will not overwrite live config)"
+            echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
+            file_install_refuse "$dest" "$repo"
             rc=1
             return 0
         fi
     elif live_newer_than_repo "$dest" "$repo"; then
-        echo "REFUSE: $dest is newer than repo copy $repo (will not overwrite live config)"
+        echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
+        file_install_refuse "$dest" "$repo"
         rc=1
         return 0
     fi

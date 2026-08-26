@@ -82,6 +82,32 @@ if [ "$canary_is_worktree" = 1 ]; then
     exit 1
 fi
 
+# fleet-ops#463: also refuse a canary that resolves to a non-canonical
+# workspaces tree (e.g. the pre-rewrite products/fleet-ops worktree-parent,
+# or an auditor worktree that does not live under agent-worktrees). The
+# installed $HOME/.local/bin/fleet-ops-drift must resolve to the canonical
+# deploy-clone.
+if [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" != 1 ]; then
+    ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+    canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+    got=$(readlink -f "$canary_resolved" 2>/dev/null || printf '%s\n' "$canary_resolved")
+    want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+    root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+    canary_noncanonical=0
+    if [ "$got" != "$want" ]; then
+        case "$got" in
+            "$want"/*) : ;;
+            "$root"|"$root"/*) canary_noncanonical=1 ;;
+        esac
+    fi
+    if [ "$canary_noncanonical" = 1 ]; then
+        loud "DEPLOY-DRIFT-BIN-NONCANONICAL" \
+            "FLEET_OPS_DRIFT_BIN $CANARY (resolved $got) is not under the canonical checkout $want (fleet-ops#463)"
+        deploy_audit "fleet-ops" "drift-bin-noncanonical" "$CANARY -> $got"
+        exit 1
+    fi
+fi
+
 # Worktrees carry a .git FILE (gitdir pointer), not a directory. `[ ! -d .git ]`
 # false-negatives on a linked worktree and turns every heartbeat tick red
 # (fleet-ops#313, auto-reverted twice). rev-parse --git-dir accepts both shapes.
@@ -203,15 +229,22 @@ if [ ! -x "$CANARY" ]; then
 fi
 
 canary_out=""
-if canary_out=$(FLEET_OPS_CHECKOUT="$DEPLOY_CHECKOUT" FLEET_OPS_AUDIT_LOG="$DEPLOY_AUDIT_LOG" FLEET_OPS_TRIAGE="$TRIAGE" "$CANARY" 2>&1); then
+canary_rc=0
+set +e
+canary_out=$(FLEET_OPS_CHECKOUT="$DEPLOY_CHECKOUT" FLEET_OPS_AUDIT_LOG="$DEPLOY_AUDIT_LOG" FLEET_OPS_TRIAGE="$TRIAGE" "$CANARY" 2>&1)
+canary_rc=$?
+set -e
+if [ "$canary_rc" -ne 0 ]; then
     if [ -n "$canary_out" ]; then
-        log "drift canary output: $canary_out"
+        log "drift canary failed (rc=$canary_rc): $canary_out"
+    else
+        log "drift canary failed (rc=$canary_rc): <no output>"
     fi
-else
-    if [ -n "$canary_out" ]; then
-        log "drift canary failed: $canary_out"
-    fi
+    deploy_audit "fleet-ops" "drift-failed" "rc=$canary_rc"
     exit 1
+fi
+if [ -n "$canary_out" ]; then
+    log "drift canary output: $canary_out"
 fi
 
 log "complete"

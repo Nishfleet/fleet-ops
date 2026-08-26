@@ -740,6 +740,75 @@ set -e
     || fail "scenario12e: expected the intake-reconcile.path enable failure, got: $ci_out"
 ok "scenario12e: unstubbed CI-like systemctl fails the green install at the enable block (hermeticity guard)"
 
+# --- scenario 12f: newer live file that is byte-identical is not refused ---
+# The mtime guard must compare content, not just mtime; a newer regular
+# file that matches the repo copy should be replaced by the canonical
+# symlink and exit cleanly (fleet-ops#463).
+ident_repo="$scratch/ident-mtime-repo"
+mkdir -p "$ident_repo/bin" "$ident_repo/config"
+cp "$repo_root/install.sh" "$ident_repo/install.sh"
+cp "$repo_root/bin/fleet-ops-drift.py" "$ident_repo/bin/fleet-ops-drift.py"
+chmod +x "$ident_repo/install.sh"
+ident_dest="$scratch/ident-dest"
+printf 'same-content\n' > "$scratch/ident-live.conf"
+printf 'same-content\n' > "$ident_repo/config/demo.conf"
+touch -d '2020-01-01T00:00:00' "$ident_repo/config/demo.conf"
+touch -d '2026-08-26T00:00:00' "$scratch/ident-live.conf"
+cat > "$ident_repo/MANIFEST" <<MANIFEST
+config/demo.conf $ident_dest
+MANIFEST
+ln -sfn "$scratch/ident-live.conf" "$ident_dest"
+set +e
+ident_out=$(PATH="$scratch:$PATH" "$ident_repo/install.sh" 2>&1)
+ident_rc=$?
+set -e
+[[ "$ident_rc" -eq 0 ]] || fail "scenario12f: byte-identical newer live file should not refuse (rc=0), got rc=$ident_rc out=$ident_out"
+[[ "$ident_out" != *"REFUSE:"* ]] || fail "scenario12f: byte-identical file must not produce REFUSE (got: $ident_out)"
+[[ -L "$ident_dest" ]] || fail "scenario12f: dest is not a symlink after install"
+[[ "$(readlink -f "$ident_dest")" = "$(readlink -f "$ident_repo/config/demo.conf")" ]] \
+    || fail "scenario12f: dest points at $(readlink -f "$ident_dest"), want $(readlink -f "$ident_repo/config/demo.conf")"
+ok "scenario12f: byte-identical newer live file is not refused and is re-symlinked"
+
+# --- scenario 12g: newer live file with different content refuses and auto-files ---
+hot_repo="$scratch/hot-patch-repo"
+mkdir -p "$hot_repo/bin" "$hot_repo/config"
+cp "$repo_root/install.sh" "$hot_repo/install.sh"
+cp "$repo_root/bin/fleet-ops-drift.py" "$hot_repo/bin/fleet-ops-drift.py"
+chmod +x "$hot_repo/install.sh"
+hot_dest="$scratch/hot-dest"
+printf 'hot-patched-content\n' > "$scratch/hot-live.conf"
+printf 'repo-content\n' > "$hot_repo/config/demo.conf"
+touch -d '2020-01-01T00:00:00' "$hot_repo/config/demo.conf"
+touch -d '2026-08-26T00:00:00' "$scratch/hot-live.conf"
+cat > "$hot_repo/MANIFEST" <<MANIFEST
+config/demo.conf $hot_dest
+MANIFEST
+ln -sfn "$scratch/hot-live.conf" "$hot_dest"
+hot_gh_log="$scratch/gh-hot.log"
+hot_gh="$scratch/gh-hot"
+: >"$hot_gh_log"
+cat >"$hot_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*) echo '[]'; exit 0 ;;
+  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/4630"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$hot_gh"
+set +e
+hot_out=$(PATH="$scratch:$PATH" GH="$hot_gh" GH_LOG="$hot_gh_log" FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" "$hot_repo/install.sh" 2>&1)
+hot_rc=$?
+set -e
+[[ "$hot_rc" -eq 1 ]] || fail "scenario12g: hot-patched newer live file should refuse (rc=1), got rc=$hot_rc out=$hot_out"
+[[ "$hot_out" == *"REFUSE:"* ]] || fail "scenario12g: expected REFUSE, got: $hot_out"
+[[ "$(readlink -f "$hot_dest")" = "$(readlink -f "$scratch/hot-live.conf")" ]] \
+    || fail "scenario12g: live dest was overwritten by the repo"
+grep -q 'issue create' "$hot_gh_log" \
+    || fail "scenario12g: hot-patch must auto-file (log=$(cat "$hot_gh_log"))"
+ok "scenario12g: newer differing live file is refused and auto-files"
+
 # --- scenario 13: leftover unit whose ExecStart binary is missing (fleet-ops#285)
 # The GitHub-hosted replacement left .service/.timer files on disk after the
 # VPS binary was renamed to .bak. Extra-symlink and extra-enabled checks miss
