@@ -16,8 +16,31 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 node --check "$script" || fail "audit script failed node --check"
 node "$script" --help >/dev/null || fail "audit --help failed"
 
-grep -F 'tests/ci-standards-audit.test.sh' "$repo_root/.github/workflows/ci.yml" >/dev/null \
-  || fail "ci.yml verify-command must run tests/ci-standards-audit.test.sh"
+# fleet-ops#490: require the invoke line, not a filename mention. A
+# filename-only grep passed a comment-only ci.yml, so CI could drop this
+# step while the lock still looked green.
+ci_yml="$repo_root/.github/workflows/ci.yml"
+grep -Fq 'bash tests/ci-standards-audit.test.sh' "$ci_yml" \
+  || fail "ci.yml verify-command must run tests/ci-standards-audit.test.sh (fleet-ops#490)"
+
+# Empty-host + comment-only drill (fleet-ops#366 / #490): the lock is not a
+# tautology, and a filename-only comment must not satisfy it.
+empty=$(mktemp)
+trap 'rm -f "$empty"' EXIT
+: >"$empty"
+empty_hit=0
+grep -Fq 'bash tests/ci-standards-audit.test.sh' "$empty" && empty_hit=1
+[[ "$empty_hit" -eq 0 ]] || fail "empty-host drill must miss (hit=$empty_hit)"
+printf '# tests/ci-standards-audit.test.sh\n' >"$empty"
+comment_hit=0
+grep -Fq 'bash tests/ci-standards-audit.test.sh' "$empty" && comment_hit=1
+[[ "$comment_hit" -eq 0 ]] \
+  || fail "comment-only filename must not satisfy the #490 lock (hit=$comment_hit)"
+weak_hit=0
+grep -Fq 'tests/ci-standards-audit.test.sh' "$empty" && weak_hit=1
+[[ "$weak_hit" -eq 1 ]] \
+  || fail "comment-only drill fixture is broken (weak grep should match filename)"
+echo "OK: #490 lock requires bash invoke line; comment-only filename is not enough"
 
 python3 -c "import yaml" 2>/dev/null || fail "PyYAML is required for audit tests"
 
