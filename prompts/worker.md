@@ -21,6 +21,7 @@ Hard rules:
 - No agent attribution anywhere: no Co-Authored-By trailers, no "Generated with" footers, no agent names in commits, the PR, or issue comments. Use the repo's existing git identity as-is.
 - Stay inside the issue's scope. Problems you discover along the way get filed as NEW issues in the same repo (plain, no labels) — not fixed in this PR.
 - Any unexpected failing command: say so in your output; if it blocks the work, exit nonzero.
+- Mechanical-fix rule (fleet-ops#366): a failure is not fixed until its CLASS is mechanically prevented. If this issue is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), the PR MUST ship a prevention mechanism — a detector that auto-files the ticket, a gate that rejects the pattern, a regression test or drill that proves the guard fires, or observe-to-close wiring — or declare `mechanism-impossible: <reason>` in the PR body. The senior conference auto-rejects a failure-fix with neither. Author the mechanism in this PR; do not wait for the gate to retrofit it.
 
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=):
 The deliverable you just built gets run before you call the issue done. Repo

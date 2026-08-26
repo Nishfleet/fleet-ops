@@ -186,7 +186,10 @@ repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort
 systemctl_failed=$(systemctl --user --state=failed --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' | head -50 || true)
 systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' | head -50 || true)
 open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels -L 50 2>/dev/null || echo '[]')
+closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt -L 100 2>/dev/null || echo '[]')
 recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
+GATE_LIB="${AUDIT_MECHANISM_GATE:-$HOME/.local/lib/pi-packet/failure-mechanism-gate.py}"
+[ -f "$GATE_LIB" ] || GATE_LIB="$repo_fallback/lib/failure-mechanism-gate.py"
 
 # Parse deliberate-states into a JSON list for the packet.
 deliberate_json='[]'
@@ -333,6 +336,31 @@ if [ ! -f "$REPORT_MD" ]; then
             printf '```\n%s\n```\n\n' "$(head -c 50000 "$PI_STDERR" 2>/dev/null)"
         fi
     } > "$REPORT_MD"
+fi
+
+# --- mechanical recurrence hunt (fleet-ops#366) ----------------------------
+# Closed failure-fixes whose signal key is firing again are automatic
+# findings. Merged here so filing does not depend on the reviewer noticing.
+if [ -f "$GATE_LIB" ]; then
+    failed_json=$(printf '%s\n' "$systemctl_failed" | jq -R -s -c 'split("\n") | map(select(length>0))')
+    hunt_in=$(jq -n \
+        --argjson closed "${closed_issues:-[]}" \
+        --argjson failed "$failed_json" \
+        --argjson open "${open_issues:-[]}" \
+        '{closed_issues:$closed, failed_units:$failed, open_issues:$open}')
+    hunt_out=$(printf '%s' "$hunt_in" | python3 "$GATE_LIB" hunt)
+    if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
+            findings=$(printf '%s' "$findings" | jq '{findings: .}')
+        else
+            findings='{"findings":[]}'
+        fi
+    fi
+    findings=$(jq -s '{findings: (.[0].findings + .[1].findings)}' \
+        <(printf '%s' "$findings") <(printf '%s' "$hunt_out"))
+    log "recurrence hunt merged ($(printf '%s' "$hunt_out" | jq '.findings | length') hits)"
+else
+    log "WARN: mechanical-fix gate missing ($GATE_LIB); recurrence hunt skipped"
 fi
 
 # --- findings empty? -------------------------------------------------------

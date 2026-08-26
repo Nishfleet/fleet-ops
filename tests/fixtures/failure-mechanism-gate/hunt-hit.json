@@ -1,0 +1,18 @@
+{
+  "closed_issues": [
+    {
+      "number": 360,
+      "title": "fix(auto-revert): SKIP-issue dedup still spawns separate issues",
+      "labels": [{"name": "bug"}],
+      "closedAt": "2026-08-25T08:17:20Z"
+    }
+  ],
+  "failed_units": [],
+  "open_issues": [
+    {
+      "number": 361,
+      "title": "SKIP-issue dedup still spawns separate issues after the fix merged",
+      "labels": [{"name": "bug"}]
+    }
+  ]
+}

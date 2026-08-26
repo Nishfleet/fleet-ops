@@ -58,6 +58,11 @@ actionable gaps. Look especially for:
    that systemd/Pi already provides.
 7. **Lost work** — ownerless open PRs, dead claim branches, orphan issues, or
    units stuck in `failed`/`activating`.
+8. **Recurred failure classes** — a failure class that came back after a
+   closed 'fix' (same signal key firing again post-close). Every hit is an
+   automatic finding. The harness also hunts this mechanically and merges
+   those hits into findings before filing; copy any remaining hits you see
+   yourself. Re-litigate `mechanism-impossible:` claims that look false.
 
 ## Deliberate-states rule
 
