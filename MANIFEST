@@ -80,6 +80,12 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 bin/fleet-blind-audit /home/nish/.local/bin/fleet-blind-audit
 bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
 prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
+# fleet-ops#366: mechanical-fix gate. Conference auto-rejects a failure-fix
+# with no prevention mechanism and no mechanism-impossible: line. Pure
+# evaluator — no dispatcher. Blind audit merges recurrence hits before filing.
+bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-gate
+lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
+prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
 # fleet-ops#32: declared-set reconciler. Closes the loop between the

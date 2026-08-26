@@ -1,0 +1,18 @@
+{
+  "closed_issues": [
+    {
+      "number": 77,
+      "title": "stale agent-state file",
+      "labels": [],
+      "closedAt": "2026-08-20T00:00:00Z"
+    }
+  ],
+  "failed_units": ["pi-issue@fleet-ops-99.service"],
+  "open_issues": [
+    {
+      "number": 77,
+      "title": "stale agent-state file",
+      "labels": []
+    }
+  ]
+}

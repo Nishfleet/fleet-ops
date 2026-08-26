@@ -1,0 +1,6 @@
+{
+  "title": "feat(intake): mechanical priority for critical-path chains",
+  "body": "New ordering for intake. Not a failure-fix.",
+  "labels": [],
+  "files": ["bin/pi-intake-run"]
+}

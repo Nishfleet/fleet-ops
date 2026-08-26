@@ -1,0 +1,13 @@
+{
+  "title": "fix(heartbeat): swallow SKIP log lines",
+  "body": "Closes #360\n\nStop printing SKIP lines.\n\nmechanism-impossible: GitHub check-run API does not expose the SKIP signature as a required status, so a pattern-reject gate cannot see it.\n",
+  "labels": ["bug"],
+  "files": ["bin/fleet-heartbeat-tier1"],
+  "closing_issues": [
+    {
+      "number": 360,
+      "title": "AUTO-REVERT SKIP: only non-required checks failed",
+      "labels": ["bug", "canary"]
+    }
+  ]
+}
