@@ -210,9 +210,38 @@ else
     log_to_triage "CLAIM-REAP-UNKNOWN-STATE" "instance=$instance state=$issue_state"
 fi
 
-# --- reset per-issue seat-rotation state so the next claim starts fresh ---
+# --- preserve per-seat avoidance across the claim reset ----------------------
+# fleet-ops#516 (auditor 2026-08-27): the reap must NOT wipe the per-issue
+# tried-seats file when the last failure was a mid-session provider death on
+# a still-healthy seat. Without this, the intake re-claim starts from an
+# empty tried-seats list and pick_seat re-selects the SAME killing seat
+# (0509-974 cursor-grok-4.6-high 143 x3). The seat-health ledger is the
+# DURABLE avoidance authority (pi-issue-run now benches mid-session deaths
+# there), but a seat that was killed ONCE should still be excluded until the
+# next restart would anyway move on; an empty list also throws away the rest
+# of the burst's rotation history. Only clear when every seat in the list is
+# already benched in the ledger (seat_usable=no) — the next claim then picks
+# a healthy seat from the full pool, which is exactly the recover case the
+# reset exists for (fleet-ops-32).
+last_seat=""
+last_seat_file="$ATTEMPTS_DIR/pi-issue-${instance}.seat"
+if [[ -f "$last_seat_file" ]]; then
+    last_seat=$(cat "$last_seat_file" 2>/dev/null || true)
+fi
+mid_session_bench=0
+if [[ -n "$last_seat" ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/.local/lib/pi-packet/seat-lib.sh" 2>/dev/null || true
+    if ! seat_usable "${last_seat%%/*}" "${last_seat#*/}" 2>/dev/null; then
+        mid_session_bench=1
+    fi
+fi
+
 tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
-if [[ -f "$tried_file" ]]; then
+if [[ -f "$tried_file" && "$mid_session_bench" == "1" ]]; then
+    log "keeping tried-seats file for $instance (last seat $last_seat is benched in the seat ledger — the re-claim must pick a different seat)"
+    log_to_triage "TRIED-SEATS-KEPT" "instance=$instance last_seat=$last_seat"
+elif [[ -f "$tried_file" ]]; then
     : >"$tried_file"
     log "reset tried-seats file for $instance"
     log_to_triage "TRIED-SEATS-RESET" "instance=$instance file=$tried_file"

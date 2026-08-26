@@ -85,6 +85,24 @@ source "$SEAT_LIB"
 
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 
+# is_mid_session_death — true when the captured stderr shows the provider
+# process was killed mid-session by a signal (SIGTERM=143, SIGKILL=137,
+# OOM "Killed") rather than a quota wall or a spawn-phase ETIMEDOUT. The
+# vendor CLIs self-terminate without a useful error; the marker line is the
+# only signal. cursor-grok-4.6-high exits 143 on heavy ~14-minute packets
+# (0509-974: 3/3 attempts 2026-08-26; pi-issue-run then re-reports rc=1 with
+# "Cursor exited with code 143" in stderr). Not a quota wall (429) and not
+# the spawn path (elapsed > SPAWN_FAIL_MAX_S), so it previously fell through
+# UNBENCHED: the only protection against re-picking the killing seat was the
+# tried-seats exclusion, and the reaper wipes tried-seats on every reap — so
+# the intake re-claim started from an empty list and pick_seat re-selected
+# the same killing seat (the summoning trip).
+is_mid_session_death() {
+    local err="${1:-}"
+    [[ -f "$err" ]] || return 1
+    grep -qiE 'exited with code 143|code 143|SIGTERM|terminated|Killed' "$err" 2>/dev/null
+}
+
 [[ $# -ge 1 ]] || { echo "pi-issue-run: need 1 arg: <unit-instance>" >&2; exit 1; }
 inst="$1"
 # PI_ISSUES_DIR lets tests redirect the packet/out/err triplet into a
@@ -152,6 +170,13 @@ mkdir -p "$ATTEMPTS_DIR" 2>/dev/null || {
 # Record this seat as tried BEFORE running, so a concurrent restart cannot
 # pick the same one. Append "provider/model" per line.
 printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
+
+# Last-seat marker for the reaper (pi-issue-failed-reap): it needs to know
+# which seat the burst ended on so it can decide whether wiping tried-seats
+# is safe. If the last failure was a mid-session death on a now-benched
+# seat, the reap KEEPS the tried-seats list so the intake re-claim picks a
+# different seat (fleet-ops#516). Written on every run; the reap reads it.
+printf '%s/%s\n' "$np" "$nm" >"$ATTEMPTS_DIR/pi-issue-${inst}.seat" 2>/dev/null || true
 
 # Register the seat so cap accounting reflects this worker. Cleared on exit.
 register_active_seat "pi-issue-${inst}" "$np" "$nm"
@@ -287,6 +312,23 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
 fi
 
 if (( rc != 0 )); then
+    # Mid-session provider deaths that are NOT spawn-time and NOT a quota
+    # wall still deserve a short bench. Without it, the tried-seats exclusion
+    # is the ONLY thing keeping the next restart off the killing seat — and
+    # the reaper (pi-issue-failed-reap) wipes tried-seats on every reap, so
+    # the intake re-claim starts from an empty list and pick_seat re-selects
+    # the same killing seat (0509-974 cursor-grok-4.6-high 143 x3, 2026-08-26).
+    # Bench it exactly like the no-op path: mark_seat_spawn_fail writes a
+    # transient_fault ledger with usable_at = now + SPAWN_FAIL_BACKOFF_S, which
+    # survives the reap (the ledger is the DURABLE avoidance authority).
+    if (( ! spawn_fail_triggered )) && ! is_quota_cap_error "$out_file" "$err_file" && is_mid_session_death "$err_file"; then
+        seat_log "pi-issue-run: $inst mid-session provider death (rc=$rc) on $np/$nm after ${spawn_elapsed_s}s — benching seat ${SPAWN_FAIL_BACKOFF_S}s"
+        if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:mid-session-death:rc=$rc"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm marked; next restart or intake re-claim will skip it via pick_seat"
+        else
+            seat_log "pi-issue-run: $inst WARN: mid-session bench marker write FAILED for $np/$nm"
+        fi
+    fi
     seat_log "pi-issue-run: $inst pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
     exit 1
 fi
