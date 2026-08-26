@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/entitled-wired-canary.test.sh
 #
-# Proves the entitled-vs-wired canary (fleet-ops#387) offline:
+# Proves the entitled-vs-wired canary (fleet-ops#387, #437) offline:
 #   1. Matching inventory + seat-caps (dated cap=0) -> exit 0, OK line.
 #   2. Fixture entitlement with no seat-caps row -> exit 1, LOUD, auto-files.
 #   3. cap=0 without a dated reason -> exit 1, files cap0-no-reason.
@@ -9,6 +9,11 @@
 #   5. Dedup: an open issue already carrying the marker -> no second create.
 #   6. Production inventory + production seat-caps are currently clean.
 #   7. Heartbeat-tier1 wires the canary and propagates a non-zero exit.
+#   8. cap>0 free/prepaid with an empty models map -> exit 1, files empty-models
+#      (fleet-ops#437: hetzner was listed for routing but pick_seat skipped
+#      every live slug).
+#   9. cap>0 metered with an empty models map stays quiet (allowlist owned
+#      by fleet-ops#384).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,7 +90,7 @@ write_inventory <<'JSON'
 { "seats": [ { "id": "ollama", "class": "prepaid-quota" } ] }
 JSON
 write_caps <<'JSON'
-{ "providers": { "ollama": { "cap": 4, "class": "prepaid-quota" } } }
+{ "providers": { "ollama": { "cap": 4, "class": "prepaid-quota", "models": { "deepseek-v4-flash:0731": 4 } } } }
 JSON
 run_canary
 [[ "$env_rc" == "0" ]] || fail "scenario1: expected rc=0, got $env_rc ($env_out)"
@@ -132,7 +137,7 @@ write_inventory <<'JSON'
 { "seats": [ { "id": "ollama", "class": "prepaid-quota" } ] }
 JSON
 write_caps <<'JSON'
-{ "providers": { "ollama": { "cap": 4, "class": "free" } } }
+{ "providers": { "ollama": { "cap": 4, "class": "free", "models": { "deepseek-v4-flash:0731": 4 } } } }
 JSON
 run_canary
 [[ "$env_rc" == "1" ]] || fail "scenario4: expected rc=1, got $env_rc ($env_out)"
@@ -184,4 +189,39 @@ grep -F -- 'exit "$entitled_canary_rc"' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the entitled-vs-wired canary fails loud"
 ok "scenario7: heartbeat-tier1 wires the canary and propagates fail-loud"
 
-ok "entitled-wired-canary: missing row, undated cap=0, class mismatch, dedup, production clean"
+# --- 8. cap>0 free lane with empty models map (fleet-ops#437) --------------
+: >"$gh_log"
+: >"$triage"
+write_inventory <<'JSON'
+{ "seats": [ { "id": "hetzner", "class": "free" } ] }
+JSON
+write_caps <<'JSON'
+{ "providers": { "hetzner": { "cap": 2, "class": "free" } } }
+JSON
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario8: expected rc=1, got $env_rc ($env_out)"
+grep -q 'empty model allowlist' "$triage" || fail "scenario8: must name the empty allowlist"
+grep -q 'issue create' "$gh_log" || fail "scenario8: must auto-file"
+grep -q 'empty model allowlist' "$gh_log" || fail "scenario8: filed title must name the empty allowlist"
+ok "scenario8: cap>0 free lane with empty models map screams and auto-files"
+
+# --- 9. metered cap>0 empty models is #384, not this canary ----------------
+: >"$gh_log"
+: >"$triage"
+write_inventory <<'JSON'
+{ "seats": [ { "id": "zenmux", "class": "metered" } ] }
+JSON
+write_caps <<'JSON'
+{ "providers": { "zenmux": { "cap": 2, "class": "metered" } } }
+JSON
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario9: metered empty models must stay quiet, got rc=$env_rc ($env_out)"
+grep -q 'issue create' "$gh_log" && fail "scenario9: must not file on a metered empty map"
+ok "scenario9: metered cap>0 empty models stays quiet (fleet-ops#384)"
+
+# Production lock: the live Qwen slug is allowlisted so pick_seat can pick it.
+jq -e '.providers.hetzner.cap > 0 and .providers.hetzner.models["Qwen/Qwen3.6-35B-A3B-FP8"] != null' \
+  "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "production lock: hetzner must allowlist Qwen/Qwen3.6-35B-A3B-FP8"
+
+ok "entitled-wired-canary: missing row, undated cap=0, class mismatch, empty-models, dedup, production clean"
