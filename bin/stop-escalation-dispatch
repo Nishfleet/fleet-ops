@@ -49,13 +49,12 @@ ts() { date -u +%FT%TZ; }
 reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason",""))' < "$SR" 2>/dev/null || echo "")
 
 # Skip non-fault stops: boundary:* = legitimate human-only stop (money/creds/legal),
-# cooldown_active = circuit already tripped, cooldown holding, auditor_ack = the
-# senior auditor has handled the trip and re-queued the work. Neither is a fresh
+# cooldown_active = circuit already tripped, cooldown holding. Neither is a fresh
 # fault to escalate. Only circuit trips (max_auto_continues, same_error_circuit,
 # no_progress_circuit, continuation_inject_failed), unit-failure from the
 # escalation layer, and unknown reasons escalate.
 case "$reason" in
-  boundary:*|cooldown_active|auditor_ack) exit 0 ;;
+  boundary:*|cooldown_active) exit 0 ;;
 esac
 
 hash=$(sha256sum "$SR" | awk '{print $1}')
