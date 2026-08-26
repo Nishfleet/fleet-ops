@@ -245,6 +245,16 @@ jobs:
         run: bash tests/system-dropins-shape.test.sh
       - name: undersaturation alarm
         run: bash tests/fleet-heartbeat-undersaturation.test.sh
+      # fleet-ops#153: lock the product-vs-control-plane throughput split.
+      # Every tick must report merged product PRs separately from fleet-ops
+      # (control-plane) PRs so the tripwire is machine-readable.
+      - name: throughput split
+        run: bash tests/fleet-heartbeat-throughput-split.test.sh
+      # fleet-ops#153: lock the 0509 scout packet-assembly contract. The
+      # packet must contain market signal, category research, north-star, and
+      # recent PRs; it must fail loud when the market signal is stale.
+      - name: scout packet assembly
+        run: bash tests/pi-scout-packet-assembly.test.sh
       # fleet-ops#146: lock the low-water-mark scouting decision. Refill the
       # ready queue BEFORE lanes drain: when ready < lane ceiling
       # (seat_max_concurrent) and no scout is running and the per-repo
