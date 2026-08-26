@@ -929,6 +929,14 @@ grep -Fq 'bash tests/seat-lib.test.sh' "$repo_root/.github/workflows/ci.yml" \
   || fail "ci.yml verify-command must run tests/seat-lib.test.sh (fleet-ops#108)"
 ok "ci.yml still invokes this file"
 
+# fleet-ops#500: the degraded-units sibling must stay on P14. Dropping that
+# invoke is how a hyphen glob lands green while this file still runs.
+# Cross-file lock: this file stays listed independently (#108), so the
+# check still fires if seat-lib-degraded.test.sh is removed from verify-command.
+grep -Fq 'bash tests/seat-lib-degraded.test.sh' "$repo_root/.github/workflows/ci.yml" \
+  || fail "ci.yml verify-command must run tests/seat-lib-degraded.test.sh (fleet-ops#500)"
+ok "ci.yml still invokes seat-lib-degraded.test.sh"
+
 # fleet-ops#202: memory.current vs VmRSS mismatch recorder (CI lists this
 # file, not ram-metric-compare.test.sh, because workers cannot edit
 # .github/workflows).
