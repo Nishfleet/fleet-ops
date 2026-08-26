@@ -1545,9 +1545,34 @@ else
 fi
 
 # ============================================================================
+# 22. PREPAID MAX-UTILIZATION CANARY (fleet-ops#531)
+# ============================================================================
+# sr-prepaid-max-util (Nish 2026-08-20): prepaid subs run at max
+# utilization. Unused allowance at week/month rollover is money burned.
+# One fail-loud gate (every cap>0 prepaid-quota provider with models must
+# be in prepaid_providers_in_order) plus an observe-to-open expiry-waste
+# detector that auto-files when a wired prepaid seat has 0 picks this ISO
+# week in the last 24h of the week while ready work exists. Discovery
+# never fails the tick; a gate violation does. Emits one PREPAID-UTIL
+# heartbeat line per prepaid seat.
+PREPAID_UTIL_CANARY_BIN="${FLEET_PREPAID_UTIL_CANARY:-/home/nish/.local/bin/fleet-prepaid-util-canary}"
+prepaid_util_canary_rc=0
+if [ -x "$PREPAID_UTIL_CANARY_BIN" ]; then
+    log "22. prepaid max-utilization canary starting"
+    if "$PREPAID_UTIL_CANARY_BIN"; then
+        log "22. prepaid max-utilization canary complete"
+    else
+        prepaid_util_canary_rc=$?
+        log "22. prepaid max-utilization canary FAILED (rc=$prepaid_util_canary_rc) — gate violation; unit will land in --state=failed"
+    fi
+else
+    log "22. prepaid max-utilization canary missing at $PREPAID_UTIL_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1590,6 +1615,9 @@ if [ "${researcher_dispatch_rc:-0}" -ne 0 ]; then
 fi
 if [ "${free_roster_canary_rc:-0}" -ne 0 ]; then
     exit "$free_roster_canary_rc"
+fi
+if [ "${prepaid_util_canary_rc:-0}" -ne 0 ]; then
+    exit "$prepaid_util_canary_rc"
 fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"

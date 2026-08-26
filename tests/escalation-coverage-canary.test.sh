@@ -760,3 +760,8 @@ bash "$here/fleet-resilience-drill.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-escalation-completion.test.sh"
 
+# fleet-ops#531: prepaid max-utilization canary. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens cannot
+# push .github/workflows/**).
+bash "$here/fleet-prepaid-util-canary.test.sh"
+

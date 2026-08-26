@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# fleet-prepaid-util-canary — prepaid-seat max utilization (fleet-ops#531).
+#
+# Standing rule `sr-prepaid-max-util` (global-standing-rules.md, Nish
+# 2026-08-20): prepaid subs run at max utilization. Unused allowance at
+# week/month rollover is money burned. Idle sub lanes are a fault. The
+# named incident is SuperGrok expiry-waste: a prepaid seat sat unused
+# until the window rolled over, then a sibling prepaid (Cursor) burned.
+#
+# No new scheduler; run by fleet-heartbeat-tier1. Two layers, mirroring
+# fleet-free-roster-canary (fleet-ops#518) and entitled-wired-canary
+# (fleet-ops#387):
+#
+#   1. GATE (fail-loud, exit 1) — the class prevention:
+#      Ladder completeness: every prepaid-quota (subscription is an alias)
+#      provider with cap>0 and a non-empty .models map must appear in
+#      prepaid_providers_in_order. A prepaid seat missing from the order
+#      is withheld from pick_seat's expiry-first prepaid bucket — that is
+#      how a wired sub expires unused. LOUD + auto-file + exit 1.
+#
+#   2. DETECTOR (observe-to-open, tick stays green, exit 0):
+#      Expiry-waste: last HORIZON hours of the ISO week, cap>0 prepaid
+#      with 0 picks this week on the local prepaid-usage counter, ready
+#      work > 0, and the seat is not quota-benched. Auto-files (deduped,
+#      capped). A benched seat (quota wall) is not waste; a quiet week
+#      with no ready work is not withholding.
+#
+#   3. Always emit one PREPAID-UTIL heartbeat line per cap>0 prepaid
+#      provider (the seat-utilization line the rule asked for).
+#
+# Picks come from PI_PACKET_STATE/prepaid-usage/<provider>.json (the
+# ISO-week counter pick_seat already writes). That is an estimate, not
+# the provider's real meter — the same counter seat-lib uses to pace
+# weekly_budget. Live workers are counted from the active-seats registry.
+#
+# Existing options that lost (research-before-build, fleet-ops#517):
+#   - subusage / quota-mcp: poll provider quota APIs. New dependency, extra
+#     scheduler, no seat-caps / pick_seat / GitHub auto-file wiring.
+#   - fleet-heartbeat-undersaturation: whole-fleet idle. SuperGrok unused
+#     while Cursor workers ran still looks green.
+#   - entitled-wired-canary: inventory vs caps. Wiring is not utilization.
+#   - seat-lib _prepaid_paced: skips a seat at 80% weekly_budget. That
+#     withholds prepaid near expiry, the opposite of this rule.
+# Adopted: a heartbeat canary in the entitled-wired / free-roster shape.
+#
+# Exit codes:
+#   0  gate clean (detectors may have filed; filing never fails the tick)
+#   1  a gate violation, or seat-caps missing/unparseable
+#
+# Environment seams (tests):
+#   SEAT_CAPS_JSON                 cap map
+#   FLEET_ENTITLED_SEATS_JSON      inventory (presence guard only)
+#   FLEET_HEARTBEAT_TRIAGE         triage file
+#   PI_PACKET_STATE                prepaid-usage + active-seats root
+#   PI_SEAT_HEALTH_LEDGER_DIR      quota_bench ledgers
+#   FLEET_PREPAID_UTIL_NOW         ISO-8601 UTC now (default: live clock)
+#   FLEET_PREPAID_UTIL_WORK        override ready-work count
+#   FLEET_PREPAID_UTIL_HORIZON_H   hours-before-week-end (default 24)
+#   FLEET_PREPAID_UTIL_REPO        default Nishfleet/fleet-ops
+#   FLEET_PREPAID_UTIL_FILE        1 (default) file issues; 0 skip gh
+#   FLEET_PREPAID_UTIL_CAP         per-tick file cap (default 5)
+#   GH                             gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+ENTITLED_JSON="${FLEET_ENTITLED_SEATS_JSON:-$FLEET_OPS_REPO/config/entitled-seats.json}"
+if [[ ! -f "$ENTITLED_JSON" ]]; then
+    ENTITLED_JSON="${HOME}/.local/state/pi-packet/entitled-seats.json"
+fi
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_PREPAID_UTIL_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_PREPAID_UTIL_FILE:-1}"
+FILE_CAP="${FLEET_PREPAID_UTIL_CAP:-5}"
+HORIZON_H="${FLEET_PREPAID_UTIL_HORIZON_H:-24}"
+NOW="${FLEET_PREPAID_UTIL_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
+
+log() {
+    printf '[%s] [fleet-prepaid-util-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+norm_class() {
+    case "$1" in
+        subscription) printf '%s\n' prepaid-quota ;;
+        prepaid-quota|metered|free) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+file_finding() {
+    local id="$1" kind="$2" title="$3" body="$4"
+    local marker="prepaid-util-canary: ${id} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_PREPAID_UTIL_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+iso_week() {
+    date -u -d "$NOW" +%G-W%V
+}
+
+# Hours remaining until next Monday 00:00 UTC (ISO week boundary).
+hours_left_in_iso_week() {
+    local dow hour min sec sod remaining
+    dow=$(date -u -d "$NOW" +%u)
+    hour=$(date -u -d "$NOW" +%H)
+    min=$(date -u -d "$NOW" +%M)
+    sec=$(date -u -d "$NOW" +%S)
+    sod=$((10#$hour * 3600 + 10#$min * 60 + 10#$sec))
+    remaining=$(( (8 - 10#$dow) * 86400 - sod ))
+    if (( remaining < 0 )); then
+        remaining=0
+    fi
+    echo $(( remaining / 3600 ))
+}
+
+prepaid_picks() {
+    local p="$1" f week stored count
+    week=$(iso_week)
+    f="$STATE_DIR/prepaid-usage/${p}.json"
+    [[ -f "$f" ]] || { echo 0; return; }
+    stored=$(jq -r '.week // ""' "$f" 2>/dev/null || true)
+    [[ "$stored" == "$week" ]] || { echo 0; return; }
+    count=$(jq -r '.count // 0' "$f" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    echo "$count"
+}
+
+prepaid_live() {
+    local p="$1" n=0 f
+    [[ -d "$ACTIVE_SEATS_DIR" ]] || { echo 0; return; }
+    shopt -s nullglob
+    for f in "$ACTIVE_SEATS_DIR"/*.json; do
+        [[ -f "$f" ]] || continue
+        if [[ "$(jq -r '.provider // ""' "$f" 2>/dev/null || true)" == "$p" ]]; then
+            n=$((n + 1))
+        fi
+    done
+    shopt -u nullglob
+    echo "$n"
+}
+
+# True if any ledger row for this provider is quota_benched into the future.
+provider_benched() {
+    local p="$1" f hc bu now_s bu_s
+    local ps="${p//[^A-Za-z0-9._-]/_}"
+    [[ -d "$LEDGER_DIR" ]] || return 1
+    now_s=$(date -u -d "$NOW" +%s 2>/dev/null || echo 0)
+    shopt -s nullglob
+    for f in "$LEDGER_DIR/${ps}__"*.json; do
+        [[ -f "$f" ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" == "quota_bench" ]] || continue
+        bu=$(jq -r '.bench_until // ""' "$f" 2>/dev/null || true)
+        [[ -n "$bu" ]] || continue
+        bu_s=$(date -u -d "$bu" +%s 2>/dev/null || echo 0)
+        if [[ "$bu_s" =~ ^[0-9]+$ ]] && (( bu_s > now_s )); then
+            shopt -u nullglob
+            return 0
+        fi
+    done
+    shopt -u nullglob
+    return 1
+}
+
+ready_work() {
+    if [[ -n "${FLEET_PREPAID_UTIL_WORK:-}" ]]; then
+        echo "$FLEET_PREPAID_UTIL_WORK"
+        return
+    fi
+    echo 0
+}
+
+# ---- load config -----------------------------------------------------------
+if [[ ! -f "$ENTITLED_JSON" ]]; then
+    loud "PREPAID-UTIL-VIOLATION" "entitled inventory missing: $ENTITLED_JSON"
+    exit 1
+fi
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "PREPAID-UTIL-VIOLATION" "seat-caps missing: $SEAT_CAPS_JSON"
+    exit 1
+fi
+if ! jq -e . "$ENTITLED_JSON" >/dev/null 2>&1; then
+    loud "PREPAID-UTIL-VIOLATION" "entitled inventory unparseable: $ENTITLED_JSON"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "PREPAID-UTIL-VIOLATION" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+violations=0
+
+# ---- GATE: prepaid ladder completeness ------------------------------------
+# Every prepaid-quota provider with cap>0 and a non-empty .models map must
+# be in prepaid_providers_in_order. Mirror of the free-roster
+# penny-for-speed gate. pick_seat orders the prepaid bucket by that list
+# (expiry-first); a missing row is a withheld sub.
+prepaid_order_set=()
+while IFS= read -r p; do
+    [[ -n "$p" ]] && prepaid_order_set+=("$p")
+done < <(jq -r '.prepaid_providers_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+declare -A in_prepaid_order=()
+for p in "${prepaid_order_set[@]}"; do
+    in_prepaid_order["$p"]=1
+done
+
+while IFS=$'\t' read -r pid pclass pcap mcount; do
+    [[ -n "$pid" ]] || continue
+    pclass=$(norm_class "$pclass")
+    [[ "$pclass" == "prepaid-quota" ]] || continue
+    [[ "$pcap" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$mcount" =~ ^[1-9][0-9]*$ ]] || continue
+    if [[ -z "${in_prepaid_order[$pid]:-}" ]]; then
+        loud "PREPAID-UTIL-VIOLATION" \
+            "prepaid ladder: $pid (cap=$pcap, $mcount model(s)) missing from prepaid_providers_in_order"
+        file_finding "$pid" "missing-from-prepaid-order" \
+            "prepaid ladder: $pid missing from prepaid_providers_in_order" \
+            "config/seat-caps.json lists \`${pid}\` as prepaid-quota, cap=${pcap}, with ${mcount} allowlisted model(s), but it is not in \`prepaid_providers_in_order\`. Standing rule sr-prepaid-max-util (Nish 2026-08-20): prepaid subs run at max utilization; unused allowance at week/month rollover is money burned. pick_seat orders the prepaid bucket by prepaid_providers_in_order (expiry-first). A wired prepaid seat missing from that list is withheld from the ladder — the SuperGrok expiry-waste shape. Add \`${pid}\` to prepaid_providers_in_order."
+        violations=$((violations + 1))
+    fi
+done < <(jq -r '
+    .providers | to_entries[] | .key as $k | .value as $v
+    | [$k,
+       (if ($v|type)=="number" then "free" else ($v.class // "free") end),
+       (if ($v|type)=="number" then $v else ($v.cap // 0) end),
+       (if ($v|type)=="object" and ($v.models|type)=="object" then ($v.models|length) else 0 end)]
+    | @tsv
+' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+if (( violations > 0 )); then
+    log "FAIL: $violations prepaid-util gate violation(s)"
+    exit 1
+fi
+
+# ---- DETECTOR + heartbeat lines -------------------------------------------
+week=$(iso_week)
+left_h=$(hours_left_in_iso_week)
+work=$(ready_work)
+[[ "$work" =~ ^[0-9]+$ ]] || work=0
+[[ "$HORIZON_H" =~ ^[0-9]+$ ]] || HORIZON_H=24
+[[ "$FILE_CAP" =~ ^[0-9]+$ ]] || FILE_CAP=5
+
+filed=0
+while IFS=$'\t' read -r pid pclass pcap mcount; do
+    [[ -n "$pid" ]] || continue
+    pclass=$(norm_class "$pclass")
+    [[ "$pclass" == "prepaid-quota" ]] || continue
+    [[ "$pcap" =~ ^[1-9][0-9]*$ ]] || continue
+
+    picks=$(prepaid_picks "$pid")
+    live=$(prepaid_live "$pid")
+    benched=0
+    if provider_benched "$pid"; then
+        benched=1
+    fi
+
+    loud "PREPAID-UTIL" \
+        "provider=$pid cap=$pcap picks=$picks week=$week remaining_h=$left_h live=$live benched=$benched work=$work"
+
+    [[ "$mcount" =~ ^[1-9][0-9]*$ ]] || continue
+    (( left_h <= HORIZON_H )) || continue
+    (( picks == 0 )) || continue
+    (( work > 0 )) || continue
+    (( benched == 0 )) || continue
+
+    if (( filed >= FILE_CAP )); then
+        log "cap reached ($FILE_CAP): deferring expiry-waste $pid to a later tick"
+        continue
+    fi
+    loud "PREPAID-UTIL-EXPIRY-WASTE" \
+        "prepaid $pid has 0 picks this ISO week with ${left_h}h left and ready work=$work — filing"
+    file_finding "$pid" "expiry-waste" \
+        "prepaid expiry-waste: $pid unused with ${left_h}h left in ISO week $week" \
+        "fleet-prepaid-util-canary (fleet-ops#531) detected that prepaid-quota provider \`${pid}\` (cap=${pcap}) has 0 picks this ISO week (${week}) with ${left_h}h remaining, while ready work is ${work}. Standing rule sr-prepaid-max-util (Nish 2026-08-20): unused prepaid allowance at week/month rollover is money burned — this is the SuperGrok expiry-waste shape. The seat is not quota-benched. Route work onto \`${pid}\` before the window rolls over; do not withhold a live prepaid seat behind free lanes in the last ${HORIZON_H}h of the week."
+    filed=$((filed + 1))
+done < <(jq -r '
+    .providers | to_entries[] | .key as $k | .value as $v
+    | [$k,
+       (if ($v|type)=="number" then "free" else ($v.class // "free") end),
+       (if ($v|type)=="number" then $v else ($v.cap // 0) end),
+       (if ($v|type)=="object" and ($v.models|type)=="object" then ($v.models|length) else 0 end)]
+    | @tsv
+' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+if (( filed > 0 )); then
+    loud "PREPAID-UTIL-FILED" "$filed expiry-waste ticket(s) filed; gates clean; tick stays green"
+else
+    loud "PREPAID-UTIL-OK" "gates clean; prepaid ladder complete; no expiry-waste this tick"
+fi
+exit 0

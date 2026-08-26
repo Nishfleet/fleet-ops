@@ -208,10 +208,9 @@
     {
       "id": "sr-prepaid-max-util",
       "source": "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)",
-      "mechanism": "No utilization canary on prepaid seats (expiry-waste is how SuperGrok drained unused)",
-      "proof": "Nishfleet/fleet-ops#531",
-      "status": "queued(#531)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat prepaid-util canary: fail-loud ladder gate (every cap>0 prepaid-quota provider with models must be in prepaid_providers_in_order) plus an observe-to-open expiry-waste detector that auto-files when a wired prepaid seat has 0 picks this ISO week in the last 24h of the week while ready work exists and the seat is not quota-benched. One PREPAID-UTIL heartbeat line per prepaid seat per tick.",
+      "proof": "bin/fleet-prepaid-util-canary; tests/fleet-prepaid-util-canary.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#531",
+      "status": "enforced"
     },
     {
       "id": "sr-devin-4-wide",

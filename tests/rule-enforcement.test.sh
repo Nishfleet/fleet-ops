@@ -56,8 +56,11 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report sr-prepaid-max-util as enforced covered_rows (fleet-ops#531): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
+  ok "live join: prepaid max-util source is enforced (observe-to-close for #531)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi

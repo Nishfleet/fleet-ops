@@ -243,6 +243,13 @@ bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 # that auto-file audition+wire / bench tickets from `pi --list-models`.
 # Invoked by heartbeat-tier1 block 21.
 bin/fleet-free-roster-canary /home/nish/.local/bin/fleet-free-roster-canary
+# fleet-ops#531: prepaid max-utilization canary (sr-prepaid-max-util).
+# Fail-loud ladder gate (cap>0 prepaid-quota providers with models must be
+# in prepaid_providers_in_order) plus observe-to-open expiry-waste detector
+# (0 picks this ISO week in the last 24h while ready work exists). Emits
+# one PREPAID-UTIL heartbeat line per prepaid seat. Invoked by
+# heartbeat-tier1 block 22.
+bin/fleet-prepaid-util-canary /home/nish/.local/bin/fleet-prepaid-util-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
