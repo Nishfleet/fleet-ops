@@ -34,6 +34,10 @@
 #        (so auto-revert does not fire). Wired when the bridge workflow and
 #        detector script are present in the repo; the marker override is still
 #        honored so tests and manual suppression keep working.
+#     9. Rule-enforcement coverage (fleet-ops#383): every vault standing rule
+#        and ledger decision names a live enforcer in
+#        config/rule-enforcement.json. Missing or stale queued = VIOLATION;
+#        uncovered rules auto-file a mechanism issue.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -64,6 +68,13 @@
 #   FLEET_ESCALATION_CANARY_DELIVERY  marker file for #76 delivery
 #   FLEET_ESCALATION_CANARY_REDCI     marker file for #124 guard
 #   FLEET_ESCALATION_CANARY_BRIDGE    marker file for the #152 bridge
+#   FLEET_STANDING_RULES              vault global-standing-rules.md
+#   FLEET_DECISIONS_LEDGER            vault decisions-ledger.md
+#   FLEET_RULE_ENFORCEMENT_JSON       config/rule-enforcement.json
+#   FLEET_RULE_ENFORCEMENT_LIB        lib/rule-enforcement.py
+#   FLEET_RULE_ENFORCEMENT_FILE_ISSUES  1 (default) auto-file uncovered rules; 0 skips
+#   FLEET_RULE_ENFORCEMENT_ISSUE_REPO   Nishfleet/fleet-ops
+#   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
 
 set -Eeuo pipefail
 
@@ -87,6 +98,17 @@ BRIDGE_MARKER="${FLEET_ESCALATION_CANARY_BRIDGE:-$AGENT_STATE/.red-check-senior-
 
 INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json}"
 REDPR_REPOS_JSON="${FLEET_REDPR_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-repos.json}"
+
+STANDING_RULES="${FLEET_STANDING_RULES:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md}"
+DECISIONS_LEDGER="${FLEET_DECISIONS_LEDGER:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
+RULE_MATRIX="${FLEET_RULE_ENFORCEMENT_JSON:-$FLEET_OPS_REPO/config/rule-enforcement.json}"
+RULE_LIB="${FLEET_RULE_ENFORCEMENT_LIB:-$FLEET_OPS_REPO/lib/rule-enforcement.py}"
+if [[ ! -f "$RULE_LIB" && -f "${HOME}/.local/lib/pi-packet/rule-enforcement.py" ]]; then
+    RULE_LIB="${HOME}/.local/lib/pi-packet/rule-enforcement.py"
+fi
+FILE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_FILE_ISSUES:-1}"
+RULE_ISSUE_REPO="${FLEET_RULE_ENFORCEMENT_ISSUE_REPO:-Nishfleet/fleet-ops}"
+RULE_NOW="${FLEET_RULE_ENFORCEMENT_NOW:-}"
 
 log() {
     printf '[%s] [fleet-escalation-canary] %s\n' \
@@ -344,6 +366,129 @@ elif [[ -f "$bridge_wf" ]] && [[ -f "$bridge_script" ]]; then
 else
     loud "ESCALATION-CANARY-PENDING" "red-check -> senior-auditor bridge not wired (#152 scope addition) — a red check on a PR whose worker is still live (so #124 does not fire) and not on main (so auto-revert does not fire) has no automatic path to a senior auditor yet"
     pending=$((pending + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 9. Rule-enforcement coverage (fleet-ops#383)
+# ---------------------------------------------------------------------------
+# Parse vault `## ` headings + ledger dated decisions, join against
+# config/rule-enforcement.json. Any rule with no entry, an invalid row, or
+# queued(#N) older than queued_stale_days is a LOUD violation. Uncovered
+# rules auto-file a mechanism issue (deduped by signal key), cap per tick.
+log "9. checking rule-enforcement coverage against vault standing rules + ledger"
+if [[ ! -f "$RULE_MATRIX" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: matrix missing at $RULE_MATRIX — no standing rule can name its enforcer"
+    violations=$((violations + 1))
+elif [[ ! -f "$RULE_LIB" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: join helper missing at $RULE_LIB"
+    violations=$((violations + 1))
+elif [[ ! -f "$STANDING_RULES" ]] || [[ ! -f "$DECISIONS_LEDGER" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: vault files missing (rules=$STANDING_RULES ledger=$DECISIONS_LEDGER) — coverage cannot be proven"
+    violations=$((violations + 1))
+elif ! command -v python3 >/dev/null 2>&1; then
+    loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: python3 missing — cannot join vault rules against the matrix"
+    violations=$((violations + 1))
+else
+    join_args=(join --rules "$STANDING_RULES" --ledger "$DECISIONS_LEDGER" --matrix "$RULE_MATRIX")
+    if [[ -n "$RULE_NOW" ]]; then
+        join_args+=(--now "$RULE_NOW")
+    fi
+    set +e
+    rule_report=$(python3 "$RULE_LIB" "${join_args[@]}" 2>/tmp/rule-enforcement-join.err)
+    join_rc=$?
+    set -e
+    if [[ -z "$rule_report" ]] || ! jq -e . >/dev/null 2>&1 <<<"$rule_report"; then
+        loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: join helper produced no JSON (rc=$join_rc) $(tr '\n' ' ' </tmp/rule-enforcement-join.err 2>/dev/null)"
+        violations=$((violations + 1))
+    else
+        uncovered_n=$(jq '.uncovered | length' <<<"$rule_report")
+        stale_n=$(jq '.stale_queued | length' <<<"$rule_report")
+        malformed_n=$(jq '.malformed | length' <<<"$rule_report")
+        extra_n=$(jq '.extra_matrix | length' <<<"$rule_report")
+        covered_n=$(jq '.covered' <<<"$rule_report")
+        vault_n=$(jq '.vault_rule_count' <<<"$rule_report")
+
+        while IFS= read -r src; do
+            [[ -n "$src" ]] || continue
+            loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: uncovered rule has no matrix entry: $src"
+            violations=$((violations + 1))
+        done < <(jq -r '.uncovered[].source' <<<"$rule_report")
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: queued row older than stale window: $line"
+            violations=$((violations + 1))
+        done < <(jq -r '.stale_queued[] | "\(.id) issue=#\(.issue) queued_since=\(.queued_since) age_days=\(.age_days)"' <<<"$rule_report")
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: malformed matrix row: $line"
+            violations=$((violations + 1))
+        done < <(jq -r '.malformed[] | "\(.id // "unknown") \(.reason)"' <<<"$rule_report")
+
+        while IFS= read -r src; do
+            [[ -n "$src" ]] || continue
+            loud "ESCALATION-CANARY-PENDING" "rule-enforcement: matrix entry has no matching vault rule (rename or delete it): $src"
+            pending=$((pending + 1))
+        done < <(jq -r '.extra_matrix[].source' <<<"$rule_report")
+
+        # Auto-file uncovered rules. Deduped by `signal: rule-enforcement/<id>`
+        # in the issue body. Cap per tick so a vault dump cannot open 80 issues.
+        if [[ "$FILE_RULE_ISSUES" == "1" ]] && [[ "$uncovered_n" -gt 0 ]]; then
+            cap=$(jq '.auto_file_cap_per_tick' <<<"$rule_report")
+            filed=0
+            skipped_dup=0
+            skipped_cap=0
+            open_json="[]"
+            if command -v "$GH" >/dev/null 2>&1; then
+                set +e
+                open_json=$("$GH" issue list -R "$RULE_ISSUE_REPO" --state open --limit 200 --json number,body,title 2>/dev/null)
+                gh_list_rc=$?
+                set -e
+                if [[ "$gh_list_rc" -ne 0 ]] || [[ -z "$open_json" ]]; then
+                    open_json="[]"
+                    log "9.  WARN: could not list open issues for dedupe (gh rc=$gh_list_rc)"
+                fi
+            else
+                log "9.  WARN: gh missing — cannot auto-file uncovered rules"
+            fi
+            while IFS= read -r item; do
+                [[ -n "$item" ]] || continue
+                rid=$(jq -r '.id' <<<"$item")
+                signal="signal: rule-enforcement/${rid}"
+                if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$open_json" >/dev/null 2>&1; then
+                    skipped_dup=$((skipped_dup + 1))
+                    log "9.  - $rid: already has an open mechanism issue (deduped)"
+                    continue
+                fi
+                if [[ "$filed" -ge "$cap" ]]; then
+                    skipped_cap=$((skipped_cap + 1))
+                    continue
+                fi
+                title=$(python3 "$RULE_LIB" issue-title --json "$item")
+                body=$(python3 "$RULE_LIB" issue-body --json "$item")
+                if [[ "$FILE_RULE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+                    set +e
+                    created=$("$GH" issue create -R "$RULE_ISSUE_REPO" --title "$title" --body "$body" 2>/tmp/rule-enforcement-create.err)
+                    create_rc=$?
+                    set -e
+                    if [[ "$create_rc" -eq 0 ]]; then
+                        filed=$((filed + 1))
+                        log "9.  FILED $rid -> $created"
+                    else
+                        log "9.  WARN: failed to file $rid (rc=$create_rc) $(tr '\n' ' ' </tmp/rule-enforcement-create.err 2>/dev/null)"
+                    fi
+                fi
+            done < <(jq -c '.uncovered[]' <<<"$rule_report")
+            if [[ "$skipped_cap" -gt 0 ]]; then
+                loud "ESCALATION-CANARY-PENDING" "rule-enforcement: auto-file cap reached (filed=$filed cap=$cap remaining=$skipped_cap) — next tick continues"
+                pending=$((pending + 1))
+            fi
+            log "9.  auto-file: filed=$filed deduped=$skipped_dup cap-skipped=$skipped_cap"
+        fi
+
+        log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
