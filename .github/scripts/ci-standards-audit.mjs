@@ -11,17 +11,15 @@
 // delegated to the PyYAML installation that the caller must provide.
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_ACCOUNT = "Nishfleet";
 const DEFAULT_FLEET_OPS_REPO = "Nishfleet/fleet-ops";
 const AUTO_REVERT_FILENAME = ".github/workflows/auto-revert.yml";
 const AUTO_REVERT_BRANCH = "ci-standards-audit/auto-revert";
 const AUTO_REVERT_TARGET_WORKFLOW = "CI";
-const COMMENT_MARKER = "<!-- ci-standards-audit -->";
 
 /**
  * @typedef {object} WorkflowCheck
@@ -294,6 +292,33 @@ export function isPushToDefault(on, defaultBranch) {
 }
 
 /**
+ * Expand `${{ matrix.<dim> }}` in a job display name.
+ *
+ * GitHub allows a few whitespace spellings. split/join is used instead of
+ * `new RegExp(...)` so the dimension name never becomes a regular expression
+ * (semgrep javascript.lang.security.audit.detect-non-literal-regexp).
+ *
+ * @param {string} rawName
+ * @param {string} dimName
+ * @param {string} value
+ * @returns {string}
+ */
+function expandMatrixToken(rawName, dimName, value) {
+  const token = `matrix.${dimName}`;
+  const variants = [
+    `\${{ ${token} }}`,
+    `\${{${token}}}`,
+    `\${{ ${token}}}`,
+    `\${{${token} }}`,
+  ];
+  let out = rawName;
+  for (const variant of variants) {
+    out = out.split(variant).join(value);
+  }
+  return out;
+}
+
+/**
  * @param {string} key
  * @param {unknown} job
  * @returns {string[]}
@@ -321,25 +346,25 @@ export function jobDisplayNames(key, job) {
   if (!firstDim) return [rawName, key];
 
   const [dimName, values] = firstDim;
-  const placeholder = `\\$\\{\\{\\s*matrix\\.${dimName}\\s*\\}\\}`;
-  if (!Array.isArray(values) || values.length === 0) return [rawName.replace(new RegExp(placeholder, "g"), "*"), key];
+  if (!Array.isArray(values) || values.length === 0) {
+    return [expandMatrixToken(rawName, dimName, "*"), key];
+  }
 
   const secondDim = dims[1];
   if (secondDim) {
     const [dim2Name, values2] = secondDim;
-    const placeholder2 = `\\$\\{\\{\\s*matrix\\.${dim2Name}\\s*\\}\\}`;
     if (Array.isArray(values2) && values2.length > 0) {
       const out = [];
       for (const v of values) {
         for (const v2 of values2) {
-          out.push(rawName.replace(new RegExp(placeholder, "g"), String(v)).replace(new RegExp(placeholder2, "g"), String(v2)));
+          out.push(expandMatrixToken(expandMatrixToken(rawName, dimName, String(v)), dim2Name, String(v2)));
         }
       }
       return out;
     }
   }
 
-  return values.map((v) => rawName.replace(new RegExp(placeholder, "g"), String(v)));
+  return values.map((v) => expandMatrixToken(rawName, dimName, String(v)));
 }
 
 /**

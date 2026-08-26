@@ -27,6 +27,10 @@ on:
         description: "Open fix PRs for missing auto-revert.yml where eligible."
         default: false
         type: boolean
+    secrets:
+      FLEET_SYNC_PAT:
+        description: "PAT with contents+pull-requests write across Nishfleet (opens auto-revert fix PRs)."
+        required: true
     outputs:
       total-repos:
         description: "Number of repos audited."

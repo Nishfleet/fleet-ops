@@ -16,6 +16,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 node --check "$script" || fail "audit script failed node --check"
 node "$script" --help >/dev/null || fail "audit --help failed"
 
+grep -F 'tests/ci-standards-audit.test.sh' "$repo_root/.github/workflows/ci.yml" >/dev/null \
+  || fail "ci.yml verify-command must run tests/ci-standards-audit.test.sh"
+
 python3 -c "import yaml" 2>/dev/null || fail "PyYAML is required for audit tests"
 
 cd "$repo_root"
