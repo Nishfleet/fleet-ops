@@ -40,7 +40,13 @@ HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
 
 seat_log() {
-    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_FILE"
+    local line ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf -v line '[%s] %s\n' "$ts" "$*"
+    # Durable audit trail in watch.log. Also emit to stderr so systemd's
+    # journal / `systemctl status` shows the reason (fleet-ops#342).
+    printf '%s' "$line" >>"$LOG_FILE"
+    printf '%s' "$line" >&2
 }
 
 now_s() { date -u +%s; }
@@ -192,16 +198,17 @@ seat_max_concurrent() {
 # Emit lines: <provider>\t<model>\t<free:1|0>\t<capable:1|0>
 # A seat is "capable" (safe for a heavy code-editing packet) iff ANY of:
 #   - the model has reasoning=true
-#   - contextWindow >= 200000
+#   - contextWindow >= 200000 AND the provider is NOT cursor
 #   - the provider is one of the known flagship lanes (devin, opencode-anthropic)
 #     whose cheapest seat is already a real coder
 #
 # cursor is NOT in the capable whitelist (2026-08-25): cursor flakes on long
-# jobs (spawnSync ETIMEDOUT). It still works fine for short probes, so
-# heavy-task routing skips cursor — devin/cline carry the heavy load and
-# cursor only fills in when the task is light and the higher-priority seats
-# are full. cursor's only heavy-capable model (cursor-grok-4.6-high) remains
-# eligible through the contextWindow branch.
+# jobs (spawnSync ETIMEDOUT, and cursor-grok-4.6-high itself exits 143 on
+# heavy 14-minute packets — fleet-ops-239 2026-08-26). It still works fine
+# for short probes, so heavy-task routing skips cursor — devin/cline carry
+# the heavy load and cursor only fills in when the task is light and the
+# higher-priority seats are full. The contextWindow branch now explicitly
+# excludes cursor so cursor-grok-4.6-high is never picked for heavy code.
 #
 # Filtering rules:
 #   - zenmux is hard-skipped (free tier exhausted; standing constraint).
@@ -218,7 +225,7 @@ enumerate_seats() {
         [ $p, .id,
           (if ((.cost.input // 1) == 0) then "1" else "0" end),
           (if ( ((.reasoning // false) == true)
-                or ((.contextWindow // 0) >= 200000)
+                or (((.contextWindow // 0) >= 200000) and ($p != "cursor"))
                 or ($p | IN("devin","opencode-anthropic")) )
            then "1" else "0" end)
         ]
@@ -227,7 +234,7 @@ enumerate_seats() {
         (.value.modelOverrides // {}) | to_entries[] |
         [ $p, .key, "0",
           (if ( ((.value.reasoning // false) == true)
-                or ((.value.contextWindow // 0) >= 200000)
+                or (((.value.contextWindow // 0) >= 200000) and ($p != "cursor"))
                 or ($p | IN("devin","opencode-anthropic")) )
            then "1" else "0" end)
         ]
@@ -1126,6 +1133,26 @@ _parse_reset_window_s() {
         return 0
     fi
 
+    # Devin phrasing: "Your limit will reset in 35 minutes" (word units, singular).
+    local word_block n unit total=0
+    word_block=$(grep -oiE 'resets?[[:space:]]+in[[:space:]]+[0-9]+[[:space:]]+(seconds?|minutes?|hours?|days?)' <<<"$text" 2>/dev/null | head -n1 || true)
+    if [[ -n "$word_block" ]]; then
+        n=$(grep -oE '[0-9]+' <<<"$word_block" | head -n1 || true)
+        unit=$(grep -oiE '(seconds?|minutes?|hours?|days?)' <<<"$word_block" | tail -n1 | tr '[:upper:]' '[:lower:]' || true)
+        if [[ "$n" =~ ^[0-9]+$ && -n "$unit" ]]; then
+            case "$unit" in
+                second|seconds) total=$n ;;
+                minute|minutes) total=$((n * 60)) ;;
+                hour|hours) total=$((n * 3600)) ;;
+                day|days) total=$((n * 86400)) ;;
+            esac
+            if (( total > 0 )); then
+                echo "$total"
+                return 0
+            fi
+        fi
+    fi
+
     return 1
 }
 
@@ -1141,7 +1168,7 @@ is_quota_cap_error() {
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
     # Quota/cap signal words (hard wall, not a transient retry).
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|rate[[:space:]]+limit[[:space:]]+exceeded|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider

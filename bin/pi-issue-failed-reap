@@ -44,6 +44,8 @@ set -uo pipefail
 
 TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+ATTEMPTS_DIR="$STATE_DIR/attempts"
 
 dry_run=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -206,6 +208,14 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
 else
     log "unknown issue state '$issue_state' for $repo_slug#$issue; leaving labels"
     log_to_triage "CLAIM-REAP-UNKNOWN-STATE" "instance=$instance state=$issue_state"
+fi
+
+# --- reset per-issue seat-rotation state so the next claim starts fresh ---
+tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
+if [[ -f "$tried_file" ]]; then
+    : >"$tried_file"
+    log "reset tried-seats file for $instance"
+    log_to_triage "TRIED-SEATS-RESET" "instance=$instance file=$tried_file"
 fi
 
 exit 0
