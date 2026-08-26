@@ -449,6 +449,16 @@ rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_quota: empty input must NOT match"
 
+# 9b-devin: Devin "message rate limit" + "reset in 35 minutes" (fleet-ops#358/#381).
+devin_err='Reached overall message rate limit. Please try again later. Your limit will reset in 35 minutes.'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "$devin_err" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: Devin message rate limit text must match (rc=$rc)"
+parsed=$(bash -c 'source "$0"; _parse_reset_window_s "$1"' "$lib" "$devin_err" 2>/dev/null || true)
+[[ "$parsed" == "2100" ]] || fail "parse: Devin 'reset in 35 minutes' expected 2100, got '$parsed'"
+
 # 9c: mark_seat_quota_bench parses the window and writes bench_until in the
 # future; seat_usable then skips the seat.
 ledger="$scratch/ledger-bench"
