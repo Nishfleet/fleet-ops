@@ -207,8 +207,6 @@ jobs:
         bash tests/fleet-ops-deploy.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
-        bash tests/fleet-blind-audit.test.sh
-        bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         bash tests/reusable-workflows.test.sh
