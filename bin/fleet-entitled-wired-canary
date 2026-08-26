@@ -9,6 +9,10 @@
 #      prepaid-quota). A prepaid-quota entitlement labelled "free" is a
 #      violation — that is the Ollama Cloud mislabel that drained the weekly
 #      quota while cline was walled.
+#   4. cap>0 free/prepaid-quota rows carry a non-empty .models map.
+#      A provider cap alone is not an allowlist entry: pick_seat skips
+#      every live slug (fleet-ops#437, hetzner/Qwen). Metered empty maps
+#      are owned by fleet-ops#384 and stay quiet here.
 #
 # Violations go LOUD (triage + stderr) and auto-file one fleet-ops issue per
 # finding (deduped on an open issue whose body contains the marker). The
@@ -165,6 +169,23 @@ while IFS=$'\t' read -r id want_class; do
         file_finding "$id" "cap0-no-reason" \
             "entitled-vs-wired: $id cap=0 has no dated reason" \
             "\`${id}\` is entitled and capped at 0, but \`.reason\` does not contain a YYYY-MM-DD date. cap=0 requires a dated reason so idle entitlement cannot hide."
+        violations=$((violations + 1))
+    fi
+
+    model_count=$(jq -r --arg id "$id" '
+        .providers[$id] as $v
+        | if ($v|type)!="object" then 0
+          elif ($v.models|type)!="object" then 0
+          else ($v.models | length)
+          end
+    ' "$SEAT_CAPS_JSON")
+    if [[ "$cap" =~ ^[1-9][0-9]*$ ]] \
+        && [[ "$got_class" == "free" || "$got_class" == "prepaid-quota" ]] \
+        && [[ "$model_count" == "0" ]]; then
+        loud "ENTITLED-WIRED-VIOLATION" "seat $id cap=$cap class=$got_class has an empty model allowlist"
+        file_finding "$id" "empty-models" \
+            "entitled-vs-wired: $id cap=$cap has an empty model allowlist" \
+            "\`${id}\` is cap=${cap} class=${got_class} but \`.models\` is missing or empty. pick_seat treats a provider cap alone as not an allowlist entry and skips every live slug (fleet-ops#437 hetzner/Qwen). Add the live models.json slug with a dated reason, or set cap=0 with a dated reason."
         violations=$((violations + 1))
     fi
 done < <(jq -r '.seats[] | [.id, .class] | @tsv' "$ENTITLED_JSON")

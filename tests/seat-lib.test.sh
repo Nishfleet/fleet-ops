@@ -789,6 +789,77 @@ set -e
   || fail "weekly pace: alpha at 80% of budget must be skipped in favour of beta, got: $out"
 ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
 
+# --- fleet-ops#437: empty models map skips the live hetzner slug -----------
+# Isolated fixtures so later cap-map edits cannot silently drop this case.
+mkdir -p "$scratch/437"
+cat >"$scratch/437/models.json" <<'JSON'
+{
+  "providers": {
+    "hetzner": {
+      "models": [
+        { "id": "Qwen/Qwen3.6-35B-A3B-FP8", "cost": { "input": 0 } }
+      ]
+    },
+    "commandcode": {
+      "models": [
+        { "id": "deepseek/deepseek-v4-flash", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/437/caps-empty.json" <<'JSON'
+{
+  "ram_gb_per_worker": 0.75,
+  "free_providers_in_order": ["hetzner", "commandcode"],
+  "providers": {
+    "hetzner": { "cap": 2, "class": "free" },
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2 } }
+  }
+}
+JSON
+cat >"$scratch/437/caps-listed.json" <<'JSON'
+{
+  "ram_gb_per_worker": 0.75,
+  "free_providers_in_order": ["hetzner"],
+  "providers": {
+    "hetzner": { "cap": 2, "class": "free", "models": { "Qwen/Qwen3.6-35B-A3B-FP8": 2 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/437/models.json"
+export SEAT_CAPS_JSON="$scratch/437/caps-empty.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/437/ledger-empty"
+export PI_PACKET_STATE="$scratch/437/state-empty"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "437-empty: expected a fallback pick, got rc=$rc"
+if echo "$out" | grep -q '^hetzner'; then
+  fail "437-empty: hetzner must not be picked with an empty models map, got: $out"
+fi
+grep -q "not in cap-map allowlist for hetzner" "$PI_PACKET_STATE/watch.log" \
+  || fail "437-empty: must log the allowlist skip for the live Qwen slug"
+ok "437-empty: cap=2 hetzner with no models map skips Qwen/Qwen3.6-35B-A3B-FP8"
+
+export SEAT_CAPS_JSON="$scratch/437/caps-listed.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/437/ledger-listed"
+export PI_PACKET_STATE="$scratch/437/state-listed"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "437-listed: expected a pick, got rc=$rc"
+[[ "$out" == "hetzner	Qwen/Qwen3.6-35B-A3B-FP8" ]] \
+  || fail "437-listed: expected hetzner/Qwen slug, got: $out"
+ok "437-listed: allowlisted Qwen/Qwen3.6-35B-A3B-FP8 is pickable"
+
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 # fleet-ops#202: memory.current vs VmRSS mismatch recorder (CI lists this
 # file, not ram-metric-compare.test.sh, because workers cannot edit
 # .github/workflows).

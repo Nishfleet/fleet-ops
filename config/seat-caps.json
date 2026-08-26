@@ -64,7 +64,8 @@
       "class": "free",
       "models": {
         "Qwen/Qwen3.6-35B-A3B-FP8": 2
-      }
+      },
+      "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist."
     },
     "zenmux": {
       "cap": 2,

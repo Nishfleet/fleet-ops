@@ -47,7 +47,7 @@
     {
       "id": "hetzner",
       "class": "free",
-      "note": "Hetzner inference free experimental."
+      "note": "Hetzner inference free experimental. Allowlist is Qwen/Qwen3.6-35B-A3B-FP8 (fleet-ops#437)."
     },
     {
       "id": "commandcode",
