@@ -9,7 +9,8 @@ Hard rules:
 - NEVER push a claim branch when the issue number is empty. An unnumbered `claim/issue-` belongs to no issue, can never be released by the normal path, and accumulates as garbage (fleet-ops#39). Before step 3b, assert `N` is a non-empty integer (`[[ "$N" =~ ^[1-9][0-9]*$ ]]`); if it is not, print "intake: refusing claim push with empty/non-numeric issue number N='$N'", skip, and continue. The claim-reconciler sweeps any that slip through, but the push must refuse them at the source.
 
 Steps:
-1. List ready work: `gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number,title --limit 50`. If empty, print "no ready issues", exit 0.
+1. Precedence (fleet-ops#180). Run `fleet-gap-closure-yield <repo>`. If it prints `yield`, print "loop-precedence: yielding to fleet-ops gap-audit" and exit 0. While the intensive gap-closure loop is converging, product repos yield when fleet-ops has ready gap-audit work; after unanimous DONE the helper prints `proceed`.
+1b. List ready work: `gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number,title,labels --limit 50`. If empty, print "no ready issues", exit 0. Reorder with `printf '%s' "$json" | fleet-gap-closure-order` (gap-audit first while precedence=loop) and claim in that order at step 3.
 2. Capacity (P4-A — fleet-ops config/seat-caps.json, NOT a hardcoded "4 Devin"):
    a. Source the shared seat logic so the same accounting the run wrapper uses is what the intake tick sees:
       `. /home/nish/.local/lib/pi-packet/seat-lib.sh`

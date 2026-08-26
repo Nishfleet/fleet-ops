@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# pi-audit-run — ExecStart wrapper for pi-audit@.service (fleet-ops#180).
+# Reads $STATE_DIR/pi-audit-jobs/%i/job.json and runs pi with the packet
+# on stdin. Failures escalate via the unit's inherited OnFailure=.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+STATE_DIR="${GAP_LOOP_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-gap-closure-loop}"
+INSTANCE="${PI_AUDIT_INSTANCE:-${1:-}}"
+PI_BIN="${PI_AUDIT_PI_BIN:-/home/nish/.local/bin/pi}"
+DRY_RUN="${PI_AUDIT_DRY_RUN:-0}"
+
+[ -n "$INSTANCE" ] || { echo "pi-audit-run: missing instance" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "pi-audit-run: jq missing" >&2; exit 2; }
+
+job="$STATE_DIR/pi-audit-jobs/$INSTANCE/job.json"
+[ -f "$job" ] || { echo "pi-audit-run: job spec missing: $job" >&2; exit 2; }
+
+provider="$(jq -r '.provider' "$job")"
+model="$(jq -r '.model' "$job")"
+packet="$(jq -r '.packet' "$job")"
+stdout="$(jq -r '.stdout' "$job")"
+if [ -z "$provider" ] || [ -z "$model" ] || [ -z "$packet" ] || [ -z "$stdout" ]; then
+    echo "pi-audit-run: incomplete job spec" >&2
+    exit 2
+fi
+[ -f "$packet" ] || { echo "pi-audit-run: packet missing: $packet" >&2; exit 2; }
+
+mkdir -p "$(dirname "$stdout")"
+
+if [ "$DRY_RUN" = "1" ]; then
+    mode="$(jq -r '.mode // "termination"' "$job")"
+    if [ "$mode" = "research" ]; then
+        printf '{"vote":"NOT-DONE","reason":"dry-run","adopted":[],"rejected":[]}\n' >"$stdout"
+    else
+        printf '{"vote":"DONE","reason":"dry-run"}\n' >"$stdout"
+    fi
+    exit 0
+fi
+
+[ -x "$PI_BIN" ] || { echo "pi-audit-run: pi not executable: $PI_BIN" >&2; exit 2; }
+
+set +e
+"$PI_BIN" --print --provider "$provider" --model "$model" < "$packet" >"$stdout" 2>"$stdout.err"
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
+    jq -c -n --arg reason "pi exited rc=$rc" \
+        '{vote:"NOT-DONE", reason:$reason, _pi_failed:true}' >"$stdout"
+    exit "$rc"
+fi
+
+if ! jq -e . "$stdout" >/dev/null 2>&1; then
+    raw="$(head -c 2000 "$stdout")"
+    jq -c -n --arg raw "$raw" \
+        '{vote:"NOT-DONE", reason:"pi output was not valid JSON", raw:$raw}' >"$stdout"
+fi
+exit 0

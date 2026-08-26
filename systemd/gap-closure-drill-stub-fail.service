@@ -1,0 +1,10 @@
+[Unit]
+Description=Throwaway failing stub for gap-closure detector drills
+# Exits 1 so OnFailure= (global service.d/10-escalate.conf) fires
+# unit-escalation@%n.service. Isolated in the drill slice. No [Install].
+
+[Service]
+Type=oneshot
+Slice=gap-closure-drill.slice
+ExecStart=/bin/false
+Restart=no

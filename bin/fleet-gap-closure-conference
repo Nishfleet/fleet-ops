@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-conference — three-senior-auditor conference
+# (fleet-ops#180). Two modes: research | termination.
+#
+# Round 1: start all three pi-audit@ instances together; systemd waits.
+# Round 2: same, with round-1 verdicts in the packet. Then tally.
+# No sleep-wait. A failed auditor unit fails this oneshot (OnFailure=).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+STATE_DIR="${GAP_LOOP_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-gap-closure-loop}"
+REPO="${GAP_LOOP_REPO:-Nishfleet/fleet-ops}"
+SYSTEMCTL="${GAP_LOOP_SYSTEMCTL:-systemctl}"
+TALLY_BIN="${GAP_LOOP_TALLY_BIN:-}"
+PI_AUDIT_RUN="${GAP_LOOP_PI_AUDIT_RUN:-}"
+GH="${GAP_LOOP_GH:-gh}"
+DRY_RUN="${GAP_LOOP_DRY_RUN:-0}"
+DISABLE="${GAP_LOOP_DISABLE:-0}"
+JOBS_DIR="$STATE_DIR/pi-audit-jobs"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+[ -n "$TALLY_BIN" ] || TALLY_BIN="$here/fleet-gap-closure-tally"
+[ -n "$PI_AUDIT_RUN" ] || PI_AUDIT_RUN="$here/pi-audit-run"
+[ -x "$TALLY_BIN" ] || TALLY_BIN="${HOME}/.local/bin/fleet-gap-closure-tally"
+[ -x "$PI_AUDIT_RUN" ] || PI_AUDIT_RUN="${HOME}/.local/bin/pi-audit-run"
+
+DEFAULT_AUDITORS='[{"id":"glm-5-2","provider":"devin","model":"glm-5-2"},{"id":"glm-5-3","provider":"zenmux","model":"z-ai/glm-5.3-free"},{"id":"ds4-pro","provider":"straitly","model":"deepseek/deepseek-v4-pro"}]'
+AUDITORS="${GAP_LOOP_AUDITORS:-$DEFAULT_AUDITORS}"
+
+mkdir -p "$JOBS_DIR"
+
+now_iso() {
+    if [ -n "${GAP_LOOP_FAKE_NOW:-}" ]; then printf '%s' "$GAP_LOOP_FAKE_NOW"
+    else date -u +%Y-%m-%dT%H:%M:%SZ; fi
+}
+log() { printf '[%s] [fleet-gap-closure-conference] %s\n' "$(now_iso)" "$*" >&2; }
+fail_loud() { printf '[%s] [fleet-gap-closure-conference] FATAL: %s\n' "$(now_iso)" "$*" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || fail_loud "jq missing"
+
+if [ "$DISABLE" = "1" ]; then log "disabled"; exit 0; fi
+
+CONF_ID="${GAP_LOOP_CONF_ID:-}"
+if [ -z "$CONF_ID" ]; then
+    CONF_ID="$(jq -r '.dispatched.conf_id // empty' "$STATE_DIR/state.json" 2>/dev/null || true)"
+fi
+[ -n "$CONF_ID" ] || fail_loud "no conf-id (set GAP_LOOP_CONF_ID or have the loop dispatch one)"
+CONF_DIR="$STATE_DIR/conferences/$CONF_ID"
+[ -d "$CONF_DIR" ] || fail_loud "conf dir missing: $CONF_DIR"
+MODE="$(tr -d '[:space:]' <"$CONF_DIR/mode" 2>/dev/null || true)"
+case "$MODE" in
+    research|termination) ;;
+    *) fail_loud "unknown conference mode: '$MODE' (expected research|termination)";;
+esac
+log "conference $CONF_ID mode=$MODE starting"
+
+build_context() {
+    local ctx="$CONF_DIR/context.json"
+    [ -f "$ctx" ] && return 0
+    local loop_state open_issues
+    loop_state="$(jq -c . "$STATE_DIR/state.json" 2>/dev/null || echo '{}')"
+    open_issues='[]'
+    if command -v "$GH" >/dev/null 2>&1; then
+        open_issues="$("$GH" issue list -R "$REPO" --state open --json number,title,labels -L 100 2>/dev/null || echo '[]')"
+    fi
+    jq -n -c \
+        --argjson loop_state "$loop_state" \
+        --argjson open_issues "$open_issues" \
+        --arg mode "$MODE" --arg conf_id "$CONF_ID" --arg now "$(now_iso)" --arg repo "$REPO" \
+        '{mode:$mode, conf_id:$conf_id, now:$now, repo:$repo, loop_state:$loop_state, open_issues:$open_issues}' \
+        >"$ctx"
+}
+
+build_packet() {
+    local tpl="$1" out="$2" aid="$3" round="$4" round1="$5"
+    python3 - "$tpl" "$out" "$aid" "$round" "$round1" "$CONF_DIR/context.json" "$MODE" "$CONF_ID" <<'PY'
+import sys, json
+tpl, out, aid, round_n, round1, ctx_path, mode, conf_id = sys.argv[1:9]
+with open(tpl, encoding='utf-8') as f:
+    text = f.read()
+with open(ctx_path, encoding='utf-8') as f:
+    ctx = json.load(f)
+text = text.replace('{{AUDITOR}}', aid)
+text = text.replace('{{ROUND}}', round_n)
+text = text.replace('{{MODE}}', mode)
+text = text.replace('{{CONF_ID}}', conf_id)
+text = text.replace('{{CONTEXT_JSON}}', json.dumps(ctx, indent=2))
+text = text.replace('{{ROUND1_VERDICTS_JSON}}', round1)
+with open(out, 'w', encoding='utf-8') as f:
+    f.write(text)
+PY
+}
+
+write_job() {
+    local round="$1" aid="$2" provider="$3" model="$4" packet="$5" stdout="$6"
+    local token="$CONF_ID-r${round}-$aid"
+    local jdir="$JOBS_DIR/$token"
+    mkdir -p "$jdir" "$(dirname "$stdout")"
+    jq -n -c \
+        --arg token "$token" --arg provider "$provider" --arg model "$model" \
+        --arg packet "$packet" --arg stdout "$stdout" --arg mode "$MODE" \
+        --arg round "$round" --arg auditor "$aid" \
+        '{token:$token, provider:$provider, model:$model, packet:$packet, stdout:$stdout, mode:$mode, round:$round, auditor:$auditor}' \
+        >"$jdir/job.json"
+    printf '%s' "$token"
+}
+
+run_round() {
+    local round="$1" prompt_tpl="$2" round1="${3:-[]}"
+    local round_dir="$CONF_DIR/round$round"
+    mkdir -p "$round_dir"
+    local n i aid provider model packet stdout token
+    local -a units=()
+    local -a tokens=()
+    n="$(printf '%s' "$AUDITORS" | jq 'length')"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        aid="$(printf '%s' "$AUDITORS" | jq -r ".[$i].id")"
+        provider="$(printf '%s' "$AUDITORS" | jq -r ".[$i].provider")"
+        model="$(printf '%s' "$AUDITORS" | jq -r ".[$i].model")"
+        packet="$round_dir/$aid/packet.md"
+        stdout="$round_dir/$aid/verdict.json"
+        mkdir -p "$round_dir/$aid"
+        build_packet "$prompt_tpl" "$packet" "$aid" "$round" "$round1"
+        token="$(write_job "$round" "$aid" "$provider" "$model" "$packet" "$stdout")"
+        tokens+=("$token")
+        units+=("pi-audit@${token}.service")
+        i=$((i + 1))
+    done
+
+    if [ "$DRY_RUN" = "1" ]; then
+        i=0
+        while [ "$i" -lt "$n" ]; do
+            PI_AUDIT_DRY_RUN=1 PI_AUDIT_INSTANCE="${tokens[$i]}" \
+                GAP_LOOP_STATE_DIR="$STATE_DIR" "$PI_AUDIT_RUN" "${tokens[$i]}" \
+                || fail_loud "dry-run pi-audit-run failed for ${tokens[$i]}"
+            i=$((i + 1))
+        done
+    else
+        "$SYSTEMCTL" --user start "${units[@]}" || fail_loud "pi-audit@ round $round failed"
+    fi
+
+    local verdicts='[]'
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        aid="$(printf '%s' "$AUDITORS" | jq -r ".[$i].id")"
+        stdout="$round_dir/$aid/verdict.json"
+        local v
+        if [ -f "$stdout" ] && jq -e . "$stdout" >/dev/null 2>&1; then
+            v="$(jq -c --arg auditor "$aid" '. + {auditor:$auditor}' "$stdout")"
+        else
+            v="$(jq -n -c --arg auditor "$aid" '{auditor:$auditor, vote:"NOT-DONE", reason:"no valid verdict produced (unit failed or output unparseable)"}')"
+        fi
+        verdicts="$(printf '%s' "$verdicts" | jq -c --argjson v "$v" '. + [$v]')"
+        i=$((i + 1))
+    done
+    printf '%s' "$verdicts" >"$round_dir/verdicts.json"
+    log "round $round complete"
+    printf '%s' "$verdicts"
+}
+
+file_adopted_specs() {
+    local r2="$1"
+    local n i delta title body
+    n="$(printf '%s' "$r2" | jq '[.[].adopted // []] | add | length // 0')"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        delta="$(printf '%s' "$r2" | jq -c "[.[].adopted // []] | add | .[$i]")"
+        title="$(printf '%s' "$delta" | jq -r '.title // ""')"
+        body="$(printf '%s' "$delta" | jq -r '.body // ""')"
+        if [ -n "$title" ]; then
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY RUN: would file adopted spec: $title"
+            else
+                "$GH" issue create -R "$REPO" --title "$title" --body "$body" \
+                    || fail_loud "could not file adopted spec: $title"
+            fi
+        fi
+        i=$((i + 1))
+    done
+    local rej="$CONF_DIR/rejected.jsonl"
+    : >"$rej"
+    printf '%s' "$r2" | jq -c '[.[].rejected // []] | add | .[]?' 2>/dev/null >>"$rej" || true
+}
+
+build_context
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+if [ "$MODE" = "research" ]; then
+    prompt_r1="$repo_root/prompts/gap-closure-research.md"
+    prompt_r2="$repo_root/prompts/gap-closure-research-round2.md"
+else
+    prompt_r1="$repo_root/prompts/gap-closure-conference.md"
+    prompt_r2="$repo_root/prompts/gap-closure-conference-round2.md"
+fi
+[ -f "$prompt_r1" ] || prompt_r1="$HOME/.pi/agent/prompts/$(basename "$prompt_r1")"
+[ -f "$prompt_r2" ] || prompt_r2="$HOME/.pi/agent/prompts/$(basename "$prompt_r2")"
+[ -f "$prompt_r1" ] || fail_loud "round1 prompt missing"
+[ -f "$prompt_r2" ] || fail_loud "round2 prompt missing"
+
+r1="$(run_round 1 "$prompt_r1" '[]')"
+r2="$(run_round 2 "$prompt_r2" "$r1")"
+printf '%s' "$r2" >"$CONF_DIR/round2/verdicts.json"
+
+"$TALLY_BIN" "$CONF_ID" "$MODE" "$r1" "$r2" >"$CONF_DIR/verdict.json" \
+    || fail_loud "tally failed for $CONF_ID"
+log "tally written: $CONF_DIR/verdict.json"
+
+if [ "$MODE" = "research" ]; then
+    file_adopted_specs "$r2"
+fi
+
+log "conference $CONF_ID complete"
+exit 0

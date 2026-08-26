@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-order — reorder ready issues for intake (fleet-ops#180).
+#
+# stdin: JSON array of {number, labels:[{name}]}
+# stdout: issue numbers, one per line.
+#
+# precedence=loop (default): gap-audit first, then by number.
+# precedence=product: gap-audit last, then by number.
+
+set -euo pipefail
+
+PREC_FILE="${GAP_LOOP_PRECEDENCE_FILE:-/home/nish/workspaces/agent-state/fleet-gap-closure-loop/precedence}"
+prec="loop"
+if [ -f "$PREC_FILE" ]; then
+    prec="$(tr -d '[:space:]' <"$PREC_FILE")"
+fi
+[ -n "$prec" ] || prec="loop"
+
+json="$(cat)"
+[ -n "$json" ] || exit 0
+
+if [ "$prec" = "product" ]; then
+    printf '%s' "$json" | jq -r '
+      sort_by(
+        (([.labels[]?.name] | index("gap-audit")) != null),
+        .number
+      ) | .[].number'
+else
+    printf '%s' "$json" | jq -r '
+      sort_by(
+        (([.labels[]?.name] | index("gap-audit")) == null),
+        .number
+      ) | .[].number'
+fi

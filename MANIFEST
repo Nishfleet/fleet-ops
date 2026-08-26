@@ -82,6 +82,29 @@ bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
 prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
+# fleet-ops#180: gap-closure loop (audit→fix→drill→measure→conference).
+# Heartbeat starts the loop oneshot once per tick. Conference/drill/pi-audit@
+# are started by the loop. Stub units live in gap-closure-drill.slice only.
+bin/fleet-gap-closure-loop /home/nish/.local/bin/fleet-gap-closure-loop
+bin/fleet-gap-closure-conference /home/nish/.local/bin/fleet-gap-closure-conference
+bin/fleet-gap-closure-tally /home/nish/.local/bin/fleet-gap-closure-tally
+bin/fleet-gap-closure-drill /home/nish/.local/bin/fleet-gap-closure-drill
+bin/fleet-gap-closure-slo /home/nish/.local/bin/fleet-gap-closure-slo
+bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
+bin/fleet-gap-closure-yield /home/nish/.local/bin/fleet-gap-closure-yield
+bin/fleet-gap-closure-order /home/nish/.local/bin/fleet-gap-closure-order
+systemd/fleet-gap-closure-loop.service /home/nish/.config/systemd/user/fleet-gap-closure-loop.service
+systemd/fleet-gap-closure-conference.service /home/nish/.config/systemd/user/fleet-gap-closure-conference.service
+systemd/fleet-gap-closure-drill.service /home/nish/.config/systemd/user/fleet-gap-closure-drill.service
+systemd/pi-audit@.service /home/nish/.config/systemd/user/pi-audit@.service
+systemd/gap-closure-drill.slice /home/nish/.config/systemd/user/gap-closure-drill.slice
+systemd/gap-closure-drill-stub-fail.service /home/nish/.config/systemd/user/gap-closure-drill-stub-fail.service
+systemd/gap-closure-drill-stub-mask.service /home/nish/.config/systemd/user/gap-closure-drill-stub-mask.service
+systemd/gap-closure-drill-stub-mask.timer /home/nish/.config/systemd/user/gap-closure-drill-stub-mask.timer
+prompts/gap-closure-conference.md /home/nish/.pi/agent/prompts/gap-closure-conference.md
+prompts/gap-closure-conference-round2.md /home/nish/.pi/agent/prompts/gap-closure-conference-round2.md
+prompts/gap-closure-research.md /home/nish/.pi/agent/prompts/gap-closure-research.md
+prompts/gap-closure-research-round2.md /home/nish/.pi/agent/prompts/gap-closure-research-round2.md
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26

@@ -1,0 +1,8 @@
+# gap-closure-drill.slice — bounded throwaway slice for detector drills
+# (fleet-ops#180). Stub units only. Never live workers. No [Install].
+# Isolation is the point: the 2026-08-26 oomd drill's collateral kill is
+# why drills must not share a slice with the fleet.
+[Slice]
+MemoryHigh=64M
+MemoryMax=256M
+MemorySwapMax=0

@@ -1,0 +1,17 @@
+[Unit]
+Description=Fleet gap-closure loop (one phase transition per start)
+# Named reason: the intensive self-improvement loop (fleet-ops#180) is a
+# state machine. Heartbeat tier1 starts this oneshot once per tick; the
+# script does one transition and exits. systemd OnFailure= (global
+# service.d/10-escalate.conf) is the fail-loud path. No [Install]: the
+# heartbeat is the trigger, matching fleet-blind-audit.service.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-gap-closure-loop
+TimeoutStartSec=5min
+Restart=no

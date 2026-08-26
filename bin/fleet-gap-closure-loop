@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-loop — one phase transition of the fleet self-improvement
+# loop (fleet-ops#180). Layered on #157's blind audit; does not duplicate it.
+#
+# A STATE MACHINE, not a long-running script. Each invocation reads
+# state.json, does ONE transition, writes state.json, exits. Heartbeat
+# tier1 starts the oneshot once per tick. No sleep, no poller, no retry:
+# systemd OnFailure= is the escalation path.
+#
+# Cycle: audit -> [research on cycle 1 and every 4th] -> fix -> drill ->
+# measure. Clean + green SLOs + drills pass -> conference. Unanimous DONE
+# closes the intensive loop (weekly floor stays). Dissent is filed as
+# gap-audit findings and the loop continues. A later gap-audit finding
+# reopens it. DONE is a state, not a certificate.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+REPO="${GAP_LOOP_REPO:-Nishfleet/fleet-ops}"
+STATE_DIR="${GAP_LOOP_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-gap-closure-loop}"
+STATE_FILE="$STATE_DIR/state.json"
+PRECEDENCE_FILE="${GAP_LOOP_PRECEDENCE_FILE:-/home/nish/workspaces/agent-state/fleet-gap-closure-loop/precedence}"
+SYSTEMCTL="${GAP_LOOP_SYSTEMCTL:-systemctl}"
+GH="${GAP_LOOP_GH:-gh}"
+AUDIT_UNIT="${GAP_LOOP_AUDIT_UNIT:-fleet-blind-audit.service}"
+CONF_UNIT="${GAP_LOOP_CONF_UNIT:-fleet-gap-closure-conference.service}"
+DRILL_UNIT="${GAP_LOOP_DRILL_UNIT:-fleet-gap-closure-drill.service}"
+SLO_BIN="${GAP_LOOP_SLO_BIN:-}"
+DRY_RUN="${GAP_LOOP_DRY_RUN:-0}"
+DISABLE="${GAP_LOOP_DISABLE:-0}"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+[ -n "$SLO_BIN" ] || SLO_BIN="$here/fleet-gap-closure-slo"
+[ -x "$SLO_BIN" ] || SLO_BIN="${HOME}/.local/bin/fleet-gap-closure-slo"
+
+mkdir -p "$STATE_DIR"
+
+now_iso() {
+    if [ -n "${GAP_LOOP_FAKE_NOW:-}" ]; then printf '%s' "$GAP_LOOP_FAKE_NOW"
+    else date -u +%Y-%m-%dT%H:%M:%SZ; fi
+}
+log() { printf '[%s] [fleet-gap-closure-loop] %s\n' "$(now_iso)" "$*" >&2; }
+fail_loud() {
+    printf '[%s] [fleet-gap-closure-loop] FATAL: %s\n' "$(now_iso)" "$*" >&2
+    exit 1
+}
+
+state_read() { jq -r "$1 // empty" "$STATE_FILE" 2>/dev/null; }
+state_jq() {
+    local tmp
+    tmp="$(mktemp -p "$STATE_DIR")"
+    jq -c "$@" "$STATE_FILE" >"$tmp"
+    mv "$tmp" "$STATE_FILE"
+}
+
+gap_board_count() {
+    local n
+    n="$("$GH" issue list -R "$REPO" -l gap-audit --state open \
+        --json number --jq length)" || fail_loud "gh issue list gap-audit failed"
+    printf '%s' "$n"
+}
+
+unit_done() {
+    local st
+    st="$("$SYSTEMCTL" --user is-active "$1" 2>/dev/null || echo "unknown")"
+    case "$st" in
+        active|activating) return 1;;
+        *) return 0;;
+    esac
+}
+
+dispatch_unit() {
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY RUN: would dispatch $1"
+        return 0
+    fi
+    "$SYSTEMCTL" --user start --no-block "$1" || fail_loud "dispatch failed: $1"
+}
+
+write_precedence() {
+    mkdir -p "$(dirname "$PRECEDENCE_FILE")"
+    printf '%s\n' "$1" >"$PRECEDENCE_FILE"
+    log "precedence = $1"
+}
+
+research_due_for() {
+    # Cycle 1 and every 4th thereafter: 1, 5, 9, ...
+    local c="$1"
+    if [ $((c % 4)) -eq 1 ]; then echo true; else echo false; fi
+}
+
+init_state() {
+    local now
+    now="$(now_iso)"
+    cat >"$STATE_FILE" <<JSON
+{"cycle":1,"phase":"audit","cycle_findings":0,"consecutive_clean":0,"drills_pass":null,"drill_results":[],"slo_snapshot":{},"slos_green":null,"precedence":"loop","research_due":true,"dispatched":{},"verdict_history":[],"updated_at":"$now"}
+JSON
+    write_precedence loop
+    log "state initialised: cycle=1 phase=audit research_due=true"
+}
+
+phase_audit() {
+    if [ "$(state_read '.dispatched.audit')" != "true" ]; then
+        dispatch_unit "$AUDIT_UNIT"
+        state_jq --argjson v true '.dispatched.audit = $v'
+        log "cycle $(state_read '.cycle'): audit dispatched ($AUDIT_UNIT)"
+        return 0
+    fi
+    if ! unit_done "$AUDIT_UNIT"; then
+        log "cycle $(state_read '.cycle'): audit still running — wait"
+        return 0
+    fi
+    local findings cycle
+    findings="$(gap_board_count)"
+    cycle="$(state_read '.cycle')"
+    state_jq --argjson f "$findings" '.cycle_findings = $f | .dispatched = {}'
+    log "cycle $cycle: audit complete, findings=$findings"
+    if [ "$(state_read '.research_due')" = "true" ]; then
+        state_jq '.phase = "research"'
+    elif [ "$findings" -gt 0 ] 2>/dev/null; then
+        state_jq '.phase = "fix"'
+    else
+        state_jq '.phase = "drill"'
+    fi
+}
+
+phase_research() {
+    if [ "$(state_read '.dispatched.research')" != "true" ]; then
+        local conf_id
+        conf_id="research-cycle$(state_read '.cycle')-$(now_iso | tr ':.' '__')"
+        mkdir -p "$STATE_DIR/conferences/$conf_id"
+        printf 'research\n' >"$STATE_DIR/conferences/$conf_id/mode"
+        state_jq --argjson t true --arg id "$conf_id" \
+            '.dispatched.research = $t | .dispatched.conf_id = $id'
+        dispatch_unit "$CONF_UNIT"
+        log "cycle $(state_read '.cycle'): research conference dispatched ($conf_id)"
+        return 0
+    fi
+    if ! unit_done "$CONF_UNIT"; then
+        log "cycle $(state_read '.cycle'): research conference still running — wait"
+        return 0
+    fi
+    state_jq --argjson f false '.research_due = $f | .dispatched = {} | .phase = "fix"'
+    log "cycle $(state_read '.cycle'): research complete -> fix"
+}
+
+phase_fix() {
+    local n
+    n="$(gap_board_count)"
+    if [ "$n" -gt 0 ] 2>/dev/null; then
+        log "cycle $(state_read '.cycle'): fix — $n open gap-audit issue(s), wait for fleet to drain"
+        return 0
+    fi
+    state_jq '.dispatched = {} | .phase = "drill"'
+    log "cycle $(state_read '.cycle'): gap-board drained -> drill"
+}
+
+phase_drill() {
+    if [ "$(state_read '.dispatched.drill')" != "true" ]; then
+        dispatch_unit "$DRILL_UNIT"
+        state_jq --argjson v true '.dispatched.drill = $v'
+        log "cycle $(state_read '.cycle'): drill dispatched ($DRILL_UNIT)"
+        return 0
+    fi
+    if ! unit_done "$DRILL_UNIT"; then
+        log "cycle $(state_read '.cycle'): drill still running — wait"
+        return 0
+    fi
+    local results pass
+    results="$STATE_DIR/drill-results.json"
+    if [ -f "$results" ] && jq -e . "$results" >/dev/null 2>&1; then
+        pass="$(jq -r '.all_pass // false' "$results")"
+        state_jq --argjson p "$([ "$pass" = "true" ] && echo true || echo false)" \
+            --argjson r "$(jq -c '.results // []' "$results")" \
+            '.drills_pass = $p | .drill_results = $r | .dispatched = {} | .phase = "measure"'
+        log "cycle $(state_read '.cycle'): drill complete, all_pass=$pass"
+    else
+        fail_loud "drill produced no results file: $results"
+    fi
+}
+
+phase_measure() {
+    local snap green findings drills cycle cc next due
+    if [ -x "$SLO_BIN" ]; then
+        snap="$("$SLO_BIN")" || snap='{"green":false}'
+    else
+        snap='{"green":true}'
+    fi
+    green="$(printf '%s' "$snap" | jq -r '.green // false')"
+    state_jq --argjson s "$(printf '%s' "$snap" | jq -c .)" --argjson g "$([ "$green" = "true" ] && echo true || echo false)" \
+        '.slo_snapshot = $s | .slos_green = $g'
+
+    cycle="$(state_read '.cycle')"
+    findings="$(state_read '.cycle_findings')"
+    drills="$(state_read '.drills_pass')"
+    if [ "$findings" -eq 0 ] 2>/dev/null && [ "$drills" = "true" ] && [ "$green" = "true" ]; then
+        cc="$(state_read '.consecutive_clean')"
+        cc=$((cc + 1))
+        state_jq --argjson c "$cc" '.consecutive_clean = $c | .dispatched = {} | .phase = "conference"'
+        log "cycle $cycle: CLEAN -> conference (consecutive_clean=$cc)"
+    else
+        next=$((cycle + 1))
+        due="$(research_due_for "$next")"
+        state_jq --argjson n "$next" --argjson d "$due" \
+            '.consecutive_clean = 0 | .cycle = $n | .research_due = $d | .dispatched = {} | .phase = "audit"'
+        log "cycle $cycle: NOT clean (findings=$findings drills=$drills slos=$green) -> re-audit cycle $next"
+    fi
+}
+
+file_dissent() {
+    local verdict="$1" conf_id="$2"
+    local n i auditor vote reason
+    n="$(printf '%s' "$verdict" | jq -r '.round2 | length // 0')"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        vote="$(printf '%s' "$verdict" | jq -r ".round2[$i].vote // \"\"")"
+        if [ "$vote" != "DONE" ]; then
+            auditor="$(printf '%s' "$verdict" | jq -r ".round2[$i].auditor // \"unknown\"")"
+            reason="$(printf '%s' "$verdict" | jq -r ".round2[$i].reason // \"no reason given\"")"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY RUN: would file dissent for $auditor"
+                "$GH" issue create -R "$REPO" \
+                    --title "[gap-audit] conference dissent ($auditor, cycle $(state_read '.cycle'))" \
+                    --body "Senior auditor $auditor voted NOT-DONE in conference $conf_id.
+
+Reason: $reason" \
+                    --label gap-audit || fail_loud "could not file dissent for $auditor"
+            else
+                "$GH" issue create -R "$REPO" \
+                    --title "[gap-audit] conference dissent ($auditor, cycle $(state_read '.cycle'))" \
+                    --body "Senior auditor $auditor voted NOT-DONE in conference $conf_id.
+
+Reason: $reason" \
+                    --label gap-audit || fail_loud "could not file dissent for $auditor"
+            fi
+        fi
+        i=$((i + 1))
+    done
+}
+
+phase_conference() {
+    if [ "$(state_read '.dispatched.conference')" != "true" ]; then
+        local conf_id
+        conf_id="termination-cycle$(state_read '.cycle')-$(now_iso | tr ':.' '__')"
+        mkdir -p "$STATE_DIR/conferences/$conf_id"
+        printf 'termination\n' >"$STATE_DIR/conferences/$conf_id/mode"
+        state_jq --argjson t true --arg id "$conf_id" \
+            '.dispatched.conference = $t | .dispatched.conf_id = $id'
+        dispatch_unit "$CONF_UNIT"
+        log "cycle $(state_read '.cycle'): termination conference dispatched ($conf_id)"
+        return 0
+    fi
+    if ! unit_done "$CONF_UNIT"; then
+        log "cycle $(state_read '.cycle'): termination conference still running — wait"
+        return 0
+    fi
+    local conf_id verdict_file verdict unanimous next due
+    conf_id="$(state_read '.dispatched.conf_id')"
+    verdict_file="$STATE_DIR/conferences/$conf_id/verdict.json"
+    if [ ! -f "$verdict_file" ] || ! jq -e . "$verdict_file" >/dev/null 2>&1; then
+        fail_loud "conference produced no verdict: $verdict_file"
+    fi
+    verdict="$(jq -c . "$verdict_file")"
+    unanimous="$(printf '%s' "$verdict" | jq -r '.unanimous_done // false')"
+    state_jq --argjson v "$verdict" '.verdict_history += [$v] | .dispatched = {}'
+    if [ "$unanimous" = "true" ]; then
+        state_jq '.phase = "done" | .precedence = "product"'
+        write_precedence product
+        log "cycle $(state_read '.cycle'): UNANIMOUS DONE — intensive loop closed; weekly floor intact; precedence=product"
+    else
+        file_dissent "$verdict" "$conf_id"
+        next=$(( $(state_read '.cycle') + 1 ))
+        due="$(research_due_for "$next")"
+        state_jq --argjson n "$next" --argjson d "$due" \
+            '.consecutive_clean = 0 | .cycle = $n | .research_due = $d | .phase = "audit"'
+        log "conference NOT unanimous — dissent filed, re-audit cycle $next"
+    fi
+}
+
+phase_done() {
+    local n next due
+    n="$(gap_board_count)"
+    if [ "$n" -gt 0 ] 2>/dev/null; then
+        next=$(( $(state_read '.cycle') + 1 ))
+        due="$(research_due_for "$next")"
+        state_jq --argjson n "$next" --argjson d "$due" \
+            '.cycle = $n | .research_due = $d | .precedence = "loop" | .dispatched = {} | .phase = "audit"'
+        write_precedence loop
+        log "REGRESSION: $n open gap-audit issue(s) — reopen loop at cycle $next, precedence=loop"
+        return 0
+    fi
+    log "DONE steady-state: no regression, precedence=product (weekly floor intact)"
+}
+
+if [ "$DISABLE" = "1" ]; then
+    log "disabled via GAP_LOOP_DISABLE=1"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || fail_loud "jq missing"
+command -v "$GH" >/dev/null 2>&1 || fail_loud "gh missing"
+
+if [ ! -f "$STATE_FILE" ]; then
+    init_state
+fi
+
+phase="$(state_read '.phase')"
+case "$phase" in
+    audit)       phase_audit ;;
+    research)    phase_research ;;
+    fix)         phase_fix ;;
+    drill)       phase_drill ;;
+    measure)     phase_measure ;;
+    conference)  phase_conference ;;
+    done)        phase_done ;;
+    *)           fail_loud "unknown phase: $phase" ;;
+esac
+
+state_jq --arg t "$(now_iso)" '.updated_at = $t'
+exit 0

@@ -1022,6 +1022,30 @@ else
 fi
 
 # ============================================================================
+# 10b. GAP-CLOSURE LOOP (fleet-ops#180)
+# ============================================================================
+# One phase transition per tick. The loop is a state machine; this start is
+# the trigger, not a wait. The oneshot inherits OnFailure=. A real failure
+# also fails this heartbeat (same pager as the other fail-loud blocks).
+# Missing unit = not yet installed by merge-to-live; skip, do not fail.
+gap_loop_rc=0
+if [ "${FLEET_GAP_LOOP_DISABLE:-0}" != "1" ]; then
+    log "10b. gap-closure loop tick"
+    if systemctl --user cat fleet-gap-closure-loop.service >/dev/null 2>&1; then
+        if systemctl --user start fleet-gap-closure-loop.service; then
+            log "10b.  - fleet-gap-closure-loop.service complete"
+        else
+            gap_loop_rc=1
+            loud "GAP-LOOP-FAIL" "systemctl start fleet-gap-closure-loop.service failed"
+        fi
+    else
+        log "10b.  - fleet-gap-closure-loop.service not installed — skip"
+    fi
+else
+    log "10b. gap-closure loop disabled via FLEET_GAP_LOOP_DISABLE=1"
+fi
+
+# ============================================================================
 # 11. RED-PR REPAIR — re-dispatch onto orphaned red fleet-worker PRs (#124)
 # ============================================================================
 # The blind spot neither the queue pass (2) nor the orphan sweep (3) covers:
@@ -1117,10 +1141,11 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc gap_loop_rc=$gap_loop_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
-# red-pr-repair, or the escalation-coverage canary may fail loud; all route to
-# the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
+# red-pr-repair, the escalation-coverage canary, or the gap-closure loop
+# may fail loud; all route to the same pager (fleet-heartbeat.service ->
+# --state=failed -> page + Telegram).
 if [ "$deploy_rc" -ne 0 ]; then
     exit "$deploy_rc"
 fi
@@ -1132,5 +1157,8 @@ if [ "$redpr_rc" -ne 0 ]; then
 fi
 if [ "$canary_rc" -ne 0 ]; then
     exit "$canary_rc"
+fi
+if [ "${gap_loop_rc:-0}" -ne 0 ]; then
+    exit "$gap_loop_rc"
 fi
 exit 0

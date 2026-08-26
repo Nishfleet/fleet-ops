@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet gap-closure detector drills (stub units only)
+# Isolated to gap-closure-drill.slice. Never touches live workers.
+# Started by the loop. Inherits global OnFailure=. No [Install].
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=GAP_LOOP_STATE_DIR=/home/nish/workspaces/agent-state/fleet-gap-closure-loop
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-gap-closure-drill
+TimeoutStartSec=5min
+Restart=no

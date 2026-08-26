@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-tally — deterministic tally for the senior-auditor
+# conference (fleet-ops#180). Same inputs -> same output. Pure jq.
+#
+# Usage: fleet-gap-closure-tally <conf-id> <mode> <r1.json> <r2.json>
+#   r1/r2 are JSON arrays or paths to files containing them.
+#
+# Termination: unanimous_done iff round-2 has exactly 3 votes and every
+# vote is DONE. (Empty or short panels are NOT unanimous — 2-of-3 continues.)
+# Research: unions adopted/rejected; unanimous_done is always false.
+
+set -euo pipefail
+
+CONF_ID="${1:-}"
+MODE="${2:-}"
+R1="${3:-}"
+R2="${4:-}"
+
+[ -n "$CONF_ID" ] || { echo "tally: missing conf-id" >&2; exit 2; }
+[ -n "$MODE" ]   || { echo "tally: missing mode" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "tally: jq missing" >&2; exit 2; }
+
+load_json() {
+    local arg="$1"
+    if [ -f "$arg" ]; then jq -c . "$arg"; else printf '%s' "$arg" | jq -c .; fi
+}
+r1="$(load_json "$R1")"
+r2="$(load_json "$R2")"
+
+case "$MODE" in
+    termination)
+        unanimous="$(printf '%s' "$r2" | jq -c 'length == 3 and all(.[]; .vote == "DONE")')"
+        dissenters="$(printf '%s' "$r2" | jq -c '[.[] | select(.vote != "DONE") | {auditor: .auditor, reason: (.reason // "")}]')"
+        jq -n -c \
+            --arg conf_id "$CONF_ID" --arg mode "$MODE" \
+            --argjson unanimous_done "$unanimous" \
+            --argjson dissenters "$dissenters" \
+            --argjson round1 "$r1" --argjson round2 "$r2" \
+            '{conf_id:$conf_id, mode:$mode, unanimous_done:$unanimous_done, dissenters:$dissenters, round1:$round1, round2:$round2}'
+        ;;
+    research)
+        adopted="$(printf '%s' "$r2" | jq -c '[.[].adopted // []] | add // []')"
+        rejected="$(printf '%s' "$r2" | jq -c '[.[].rejected // []] | add // []')"
+        jq -n -c \
+            --arg conf_id "$CONF_ID" --arg mode "$MODE" \
+            --argjson adopted "$adopted" --argjson rejected "$rejected" \
+            --argjson round1 "$r1" --argjson round2 "$r2" \
+            '{conf_id:$conf_id, mode:$mode, unanimous_done:false, adopted:$adopted, rejected:$rejected, round1:$round1, round2:$round2}'
+        ;;
+    *)
+        echo "tally: unknown mode '$MODE'" >&2; exit 2 ;;
+esac

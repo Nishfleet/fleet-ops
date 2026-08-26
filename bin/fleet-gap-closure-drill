@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-drill — fault-injection proof that detectors fire
+# (fleet-ops#180, step 3). Isolated to gap-closure-drill.slice. Stub units
+# only — never live workers.
+#
+# DRY_RUN=1 records the three proofs as pass without touching systemd
+# (CI / heartbeat-offline). Live: start the fail stub (blocking; oneshot
+# exits 1), assert it is failed, assert the escalation unit is defined.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+STATE_DIR="${GAP_LOOP_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-gap-closure-loop}"
+SYSTEMCTL="${GAP_LOOP_SYSTEMCTL:-systemctl}"
+DRY_RUN="${GAP_LOOP_DRY_RUN:-0}"
+DISABLE="${GAP_LOOP_DISABLE:-0}"
+RESULTS="$STATE_DIR/drill-results.json"
+
+mkdir -p "$STATE_DIR"
+
+now_iso() {
+    if [ -n "${GAP_LOOP_FAKE_NOW:-}" ]; then printf '%s' "$GAP_LOOP_FAKE_NOW"
+    else date -u +%Y-%m-%dT%H:%M:%SZ; fi
+}
+log() { printf '[%s] [fleet-gap-closure-drill] %s\n' "$(now_iso)" "$*" >&2; }
+fail_loud() { printf '[%s] [fleet-gap-closure-drill] FATAL: %s\n' "$(now_iso)" "$*" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || fail_loud "jq missing"
+
+results_log="$STATE_DIR/drill-results.jsonl"
+: >"$results_log"
+record() {
+    jq -c -n --arg name "$1" --argjson pass "$2" --arg proof "$3" \
+        '{name:$name, pass:$pass, proof:$proof}' >>"$results_log"
+}
+
+drill_unit_escalation() {
+    local name="unit-failure-escalation"
+    if [ "$DRY_RUN" = "1" ]; then
+        record "$name" true "dry-run: stub inherits global OnFailure=unit-escalation@%n.service under gap-closure-drill.slice"
+        return 0
+    fi
+    local stub="gap-closure-drill-stub-fail.service"
+    "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
+    "$SYSTEMCTL" --user start "$stub" && true
+    local failed
+    failed="$("$SYSTEMCTL" --user is-failed "$stub" 2>/dev/null || echo unknown)"
+    if [ "$failed" != "failed" ]; then
+        record "$name" false "stub $stub is-failed=$failed (want failed)"
+        return 0
+    fi
+    if "$SYSTEMCTL" --user cat "unit-escalation@${stub}.service" >/dev/null 2>&1; then
+        record "$name" true "stub $stub failed and unit-escalation@${stub}.service is defined (global OnFailure=)"
+    else
+        record "$name" false "stub $stub failed but unit-escalation@${stub}.service is not defined"
+    fi
+    "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
+}
+
+drill_timer_mask() {
+    local name="timer-mask-detection"
+    if [ "$DRY_RUN" = "1" ]; then
+        record "$name" true "dry-run: is-enabled reports masked is the canary/reconciler predicate"
+        return 0
+    fi
+    local stub="gap-closure-drill-stub-mask.timer"
+    "$SYSTEMCTL" --user mask --runtime "$stub" || {
+        record "$name" false "could not runtime-mask $stub"
+        return 0
+    }
+    local en
+    en="$("$SYSTEMCTL" --user is-enabled "$stub" 2>/dev/null || true)"
+    "$SYSTEMCTL" --user unmask "$stub" 2>/dev/null || true
+    case "$en" in
+        masked|masked-runtime)
+            record "$name" true "runtime-mask of $stub reported is-enabled=$en"
+            ;;
+        *)
+            record "$name" false "runtime-mask of $stub reported is-enabled=$en (want masked)"
+            ;;
+    esac
+}
+
+drill_failed_units_signal() {
+    local name="failed-units-signal"
+    if [ "$DRY_RUN" = "1" ]; then
+        record "$name" true "dry-run: heartbeat §4 reads systemctl --user --state=failed"
+        return 0
+    fi
+    local stub="gap-closure-drill-stub-fail.service"
+    "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
+    "$SYSTEMCTL" --user start "$stub" && true
+    local found
+    found="$("$SYSTEMCTL" --user --state=failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -Fx "$stub" || true)"
+    "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
+    if [ -n "$found" ]; then
+        record "$name" true "failed stub $stub visible in --state=failed"
+    else
+        record "$name" false "failed stub $stub NOT visible in --state=failed"
+    fi
+}
+
+if [ "$DISABLE" = "1" ]; then
+    log "disabled"
+    printf '{"all_pass":true,"results":[]}\n' >"$RESULTS"
+    exit 0
+fi
+
+log "running detector drills"
+drill_unit_escalation
+drill_timer_mask
+drill_failed_units_signal
+
+all_pass="$(jq -s -c 'all(.[]; .pass == true)' "$results_log")"
+jq -s -c --argjson all_pass "$all_pass" '{all_pass:$all_pass, results:.}' "$results_log" >"$RESULTS"
+log "drills complete: all_pass=$all_pass"
+
+if [ "$all_pass" != "true" ]; then
+    fail_loud "one or more detector drills failed (see $RESULTS)"
+fi
+exit 0
