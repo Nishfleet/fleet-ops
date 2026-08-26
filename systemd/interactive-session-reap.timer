@@ -1,0 +1,17 @@
+[Unit]
+Description=Hourly stale-interactive-session reaper (fleet-ops#85)
+# Named reason: idle age is a clock fact, not an event. A session that
+# stopped writing its jsonl has nothing to subscribe to. Hourly is
+# proportionate to N=8h (measured 2026-08-27 from the idle tail of
+# session-33934 ccd-cli transcripts: live pile at 0h, stale cluster
+# starting at 6h, mass at 15h/26h/55h+). Minute :41 sits in the gap
+# between the :38/:39 cluster and fleet-heartbeat at :47.
+
+[Timer]
+OnCalendar=*:41
+RandomizedDelaySec=60
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

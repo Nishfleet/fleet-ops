@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+# interactive-session-reap — SIGTERM stale interactive agent sessions.
+#
+# BACKGROUND (Nishfleet/fleet-ops#85, split from #55 point 4)
+#   Interactive Claude Code remotes live in abandoned session-*.scope units,
+#   siblings of user@1000.service. They are out of reach of fleet RuntimeMaxSec
+#   and of the claim/issue-N lock. On 2026-08-27 the box still held 22 ccd-cli
+#   processes in session-33934 (abandoned since 2026-08-17); transcript mtimes
+#   clustered at 6h, 15h, 26h, 55h+ with a separate live pile at 0h (Cursor
+#   workers + this session). The idle tail of the stale cluster begins at 6h.
+#   N=8 hours sits 2h past that edge so a long API call (workers cap at 45 min)
+#   cannot look idle enough to die, and the 15h+ pile is reaped on the next
+#   hourly tick.
+#
+# ACTIVITY SIGNAL (probed live before picking one)
+#   Journal lines are the wrong signal: session-33934's newest line was a
+#   sudo pam close, several scopes have no journal at all, sshd disconnects
+#   look like activity. stdout is a pipe. /proc/PID/fd regular files were
+#   /dev/urandom and /proc/PID/statm (kernel procfs, not a tool call).
+#   The deterministic signal is the Claude jsonl transcript mtime for
+#   --resume=<uuid> (last tool-call / message write). When there is no
+#   resume uuid, IO counters (rchar+wchar) are snapshotted across ticks;
+#   first sighting is fail-closed (not reaped) until N hours of zero delta.
+#
+# SCOPE
+#   Only PIDs whose cgroup is session-<id>.scope and is NOT under
+#   user@1000.service (fleet heartbeat, intake timers, pi-issue@ workers).
+#   sshd and tailscaled live in system.slice and never match. Codex
+#   app-server and Cursor `worker start` daemons in a leftover session
+#   scope are skipped by cmdline.
+#
+# USAGE
+#   interactive-session-reap            # reap idle-past-N
+#   interactive-session-reap --dry-run  # log decisions; never kill
+#
+# EXIT
+#   0  pass completed (including zero reaps)
+#   2  usage / missing python3
+set -euo pipefail
+
+PROC_ROOT="${PROC_ROOT:-/proc}"
+IDLE_HOURS="${IDLE_HOURS:-8}"
+GRACE_SEC="${GRACE_SEC:-15}"
+TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="${INTERACTIVE_SESSION_REAP_STATE:-$HOME/.local/state/interactive-session-reap}"
+STATE_FILE="$STATE_DIR/io-state.json"
+CLAUDE_PROJECTS="${CLAUDE_PROJECTS:-$HOME/.claude/projects}"
+NOW="${NOW_EPOCH:-$(date +%s)}"
+GIT="${GIT:-git}"
+
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        -h|--help)
+            sed -n '2,40p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            printf 'interactive-session-reap: unknown arg: %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+command -v python3 >/dev/null || { echo "interactive-session-reap: python3 missing" >&2; exit 2; }
+
+mkdir -p "$STATE_DIR"
+[[ -f "$STATE_FILE" ]] || printf '%s\n' '{}' >"$STATE_FILE"
+
+log() {
+    printf '[%s] interactive-session-reap: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+log_to_triage() {
+    local tag="$1"; shift
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$*"
+    } >> "$TRIAGE_FILE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE_FILE"
+}
+
+# Prints one candidate per line:
+#   pid <tab> session_id <tab> last_activity_epoch <tab> signal <tab> idle_h <tab> cmd
+# Exits 0 even when the list is empty.
+list_candidates() {
+    IDLE_HOURS="$IDLE_HOURS" NOW="$NOW" PROC_ROOT="$PROC_ROOT" \
+    CLAUDE_PROJECTS="$CLAUDE_PROJECTS" STATE_FILE="$STATE_FILE" \
+    python3 - <<'PY'
+import json, os, re, sys
+
+proc_root = os.environ["PROC_ROOT"]
+projects = os.environ["CLAUDE_PROJECTS"]
+state_path = os.environ["STATE_FILE"]
+now = int(os.environ["NOW"])
+idle_hours = int(os.environ["IDLE_HOURS"])
+idle_sec = idle_hours * 3600
+
+try:
+    with open(state_path) as f:
+        state = json.load(f)
+    if not isinstance(state, dict):
+        state = {}
+except Exception:
+    state = {}
+
+session_re = re.compile(r"/session-(\d+)\.scope")
+resume_re = re.compile(r"--resume=([0-9a-fA-F-]{36})")
+new_state = {}
+
+def read_text(path):
+    try:
+        with open(path, "r", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+def cmdline_of(pid_dir):
+    try:
+        raw = open(os.path.join(pid_dir, "cmdline"), "rb").read()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+
+def comm_of(pid_dir):
+    return read_text(os.path.join(pid_dir, "comm")).strip()
+
+def starttime_of(pid_dir):
+    try:
+        s = open(os.path.join(pid_dir, "stat"), "r", errors="replace").read()
+    except OSError:
+        return "0"
+    rp = s.rfind(")")
+    if rp < 0:
+        return "0"
+    fields = s[rp + 2 :].split()
+    if len(fields) < 20:
+        return "0"
+    return fields[19]
+
+def io_total(pid_dir):
+    try:
+        total = 0
+        with open(os.path.join(pid_dir, "io")) as f:
+            for line in f:
+                if line.startswith("rchar:") or line.startswith("wchar:"):
+                    total += int(line.split(":", 1)[1])
+        return total
+    except Exception:
+        return None
+
+jsonl_mtime = {}
+if os.path.isdir(projects):
+    try:
+        for root, dirs, files in os.walk(projects):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules")]
+            for fn in files:
+                if not fn.endswith(".jsonl"):
+                    continue
+                uuid = fn[:-6]
+                p = os.path.join(root, fn)
+                try:
+                    m = int(os.stat(p).st_mtime)
+                except OSError:
+                    continue
+                prev = jsonl_mtime.get(uuid)
+                if prev is None or m > prev:
+                    jsonl_mtime[uuid] = m
+    except OSError:
+        pass
+
+def transcript_mtime(uuid):
+    if not uuid:
+        return None
+    return jsonl_mtime.get(uuid)
+
+protected_needles = (
+    "sshd",
+    "tailscaled",
+    "fleet-heartbeat",
+    "intake-reconcile",
+    "pi-intake",
+    "app-server",
+    "worker start",
+    "syncthing",
+)
+
+def is_protected(cmd):
+    return any(n in cmd for n in protected_needles)
+
+def is_agent(comm, cmd):
+    if comm == "claude":
+        return True
+    if "ccd-cli" in cmd:
+        return True
+    return False
+
+try:
+    names = os.listdir(proc_root)
+except OSError:
+    names = []
+
+for name in names:
+    if not name.isdigit():
+        continue
+    pid_dir = os.path.join(proc_root, name)
+    cg = read_text(os.path.join(pid_dir, "cgroup"))
+    if "user@1000.service" in cg:
+        continue
+    m = session_re.search(cg)
+    if not m:
+        continue
+    session_id = m.group(1)
+    cmd = cmdline_of(pid_dir)
+    comm = comm_of(pid_dir)
+    if is_protected(cmd):
+        continue
+    if not is_agent(comm, cmd):
+        continue
+
+    st = starttime_of(pid_dir)
+    key = f"{name}:{st}"
+    rm = resume_re.search(cmd)
+    uuid = rm.group(1) if rm else ""
+    tx = transcript_mtime(uuid) if uuid else None
+    io = io_total(pid_dir)
+    prev = state.get(key) if isinstance(state.get(key), dict) else None
+    last_change = None
+    if io is not None:
+        if prev is not None and prev.get("io") == io:
+            try:
+                last_change = int(prev.get("last_change", now))
+            except (TypeError, ValueError):
+                last_change = now
+        elif prev is None and tx is not None:
+            # First watch is not activity. Seed from the jsonl so an
+            # already-stale session is visible on the first tick.
+            last_change = tx
+        else:
+            last_change = now
+        new_state[key] = {"io": io, "last_change": last_change}
+    elif prev is not None:
+        new_state[key] = prev
+        try:
+            last_change = int(prev.get("last_change", now))
+        except (TypeError, ValueError):
+            last_change = now
+
+    parts = []
+    if tx is not None:
+        parts.append(("transcript", tx))
+    if last_change is not None:
+        parts.append(("io", last_change))
+    if not parts:
+        # Fail-closed: no transcript and no IO history.
+        continue
+
+    signal, last_activity = max(parts, key=lambda x: x[1])
+    idle = now - int(last_activity)
+    if idle < idle_sec:
+        continue
+    idle_h = f"{idle / 3600.0:.1f}"
+    # cmd truncated for the TSV; bash reads the first five fields strictly
+    safe_cmd = cmd.replace("\t", " ")[:180]
+    sys.stdout.write(
+        f"{name}\t{session_id}\t{int(last_activity)}\t{signal}\t{idle_h}\t{safe_cmd}\n"
+    )
+
+tmp = state_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(new_state, f, separators=(",", ":"))
+    f.write("\n")
+os.replace(tmp, state_path)
+PY
+}
+
+cwd_of() {
+    local pid="$1"
+    local link="$PROC_ROOT/$pid/cwd"
+    readlink "$link" 2>/dev/null || true
+}
+
+ppid_of() {
+    local pid="$1"
+    local status="$PROC_ROOT/$pid/status"
+    [[ -f "$status" ]] || { printf '0\n'; return; }
+    awk '/^PPid:/{print $2; exit}' "$status" 2>/dev/null || printf '0\n'
+}
+
+declare -A PROC_PPID=()
+
+load_proc_maps() {
+    PROC_PPID=()
+    local d pid
+    for d in "$PROC_ROOT"/*; do
+        pid="${d##*/}"
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        PROC_PPID["$pid"]="$(ppid_of "$pid")"
+    done
+}
+
+# Walk every PID under PROC_ROOT whose ancestor chain includes $root_pid.
+descendant_cwds() {
+    local root_pid="$1"
+    local pid cwd cur hops
+    for pid in "${!PROC_PPID[@]}"; do
+        cur="$pid"
+        hops=0
+        while [[ -n "$cur" && "$cur" != 0 && "$hops" -lt 32 ]]; do
+            if [[ "$cur" == "$root_pid" ]]; then
+                cwd="$(cwd_of "$pid")"
+                if [[ -n "$cwd" ]]; then
+                    printf '%s\n' "$cwd"
+                fi
+                break
+            fi
+            cur="${PROC_PPID[$cur]:-0}"
+            hops=$((hops + 1))
+        done
+    done
+}
+
+worktree_blocks() {
+    local pid="$1"
+    local cwd branch porcelain
+    local -A seen=()
+    while IFS= read -r cwd; do
+        [[ -n "$cwd" ]] || continue
+        [[ -z "${seen[$cwd]:-}" ]] || continue
+        seen["$cwd"]=1
+        if ! "$GIT" -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            continue
+        fi
+        porcelain="$("$GIT" -C "$cwd" status --porcelain 2>/dev/null || true)"
+        if [[ -n "$porcelain" ]]; then
+            printf 'dirty-worktree:%s\n' "$cwd"
+            return 0
+        fi
+        branch="$("$GIT" -C "$cwd" branch --show-current 2>/dev/null || true)"
+        case "$branch" in
+            claim/issue-*|claim/adhoc-*)
+                printf 'claim-ref:%s:%s\n' "$branch" "$cwd"
+                return 0
+                ;;
+        esac
+    done < <(descendant_cwds "$pid")
+    return 1
+}
+
+pid_alive() {
+    # Real process liveness only. Tests name the fake /proc dir after a
+    # live fixture pid; after SIGTERM the dir is still there but kill -0
+    # is the truth.
+    kill -0 "$1" 2>/dev/null
+}
+
+reap_pid() {
+    local pid="$1"
+    local session_id="$2"
+    local idle_h="$3"
+    local last_activity="$4"
+    local signal="$5"
+    local cmd="$6"
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "dry-run: would reap pid=$pid session=$session_id idle_h=$idle_h last_activity=$last_activity signal=$signal"
+        log_to_triage "SESSION-REAP-DRY" \
+            "pid=$pid session=$session_id idle_h=${idle_h}h last_activity=$last_activity signal=$signal cmd=$cmd"
+        return 0
+    fi
+
+    log "SIGTERM pid=$pid session=$session_id idle_h=$idle_h signal=$signal"
+    kill -TERM "$pid" 2>/dev/null || true
+    local waited=0
+    while [[ "$waited" -lt "$GRACE_SEC" ]]; do
+        pid_alive "$pid" || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if pid_alive "$pid"; then
+        log "pid=$pid still alive after ${GRACE_SEC}s; SIGKILL"
+        kill -KILL "$pid" 2>/dev/null || true
+        sleep 0.2
+    fi
+    if pid_alive "$pid"; then
+        log "WARN: pid=$pid survived SIGKILL"
+        log_to_triage "SESSION-REAP-SURVIVED" \
+            "pid=$pid session=$session_id idle_h=${idle_h}h last_activity=$last_activity signal=$signal"
+        return 0
+    fi
+    log_to_triage "SESSION-REAP" \
+        "pid=$pid session=$session_id idle_h=${idle_h}h last_activity=$last_activity signal=$signal cmd=$cmd"
+}
+
+candidates="$(list_candidates)"
+if [[ -z "$candidates" ]]; then
+    log "no idle interactive sessions past ${IDLE_HOURS}h"
+    exit 0
+fi
+
+load_proc_maps
+
+reaped=0
+skipped=0
+while IFS=$'\t' read -r pid session_id last_activity signal idle_h cmd; do
+    [[ -n "$pid" ]] || continue
+    block_reason=""
+    if block_reason="$(worktree_blocks "$pid")"; then
+        log "skip pid=$pid session=$session_id reason=$block_reason"
+        log_to_triage "SESSION-REAP-SKIP" \
+            "pid=$pid session=$session_id idle_h=${idle_h}h last_activity=$last_activity reason=$block_reason"
+        skipped=$((skipped + 1))
+        continue
+    fi
+    reap_pid "$pid" "$session_id" "$idle_h" "$last_activity" "$signal" "$cmd"
+    reaped=$((reaped + 1))
+done <<< "$candidates"
+
+log "done reaped=$reaped skipped=$skipped dry_run=$DRY_RUN idle_hours=$IDLE_HOURS"
+exit 0

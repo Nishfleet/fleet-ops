@@ -1,0 +1,29 @@
+[Unit]
+Description=Reap stale interactive agent sessions in session-*.scope (fleet-ops#85)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# abandoned Claude Code remotes in session-*.scope sit outside fleet
+# RuntimeMaxSec and outside the claim/issue-N lock. On 2026-08-26, 18 live
+# interactive sessions collided on the same control-plane file; most were
+# idle. A claim branch narrows the window; a reaper for sessions with no
+# tool-call in N hours shrinks the surface. Killing a live session is
+# irreversible, so the binary fail-closes on unknown activity and skips
+# dirty or claim-bearing worktrees. The timer is the retry; this unit
+# never Restart=s.
+#
+# Out of scope by cgroup: sshd, tailscaled, fleet-heartbeat, intake
+# timers, and pi-issue@ workers (they live under user@1000.service or
+# system.slice, never in a sibling session-*.scope). Same principle as
+# the systemd-oomd scope rule in docs/ram-governor-tree.md.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/interactive-session-reap'
+# Scan + SIGTERM + 15s grace per stale pid. 22 ccd-cli in session-33934
+# that die on TERM finish well under a minute; a stuck handful still
+# fits inside 15 min.
+TimeoutStartSec=15min
+Restart=no

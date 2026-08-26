@@ -151,11 +151,15 @@ worse than a duplicated diff. The Claude-only `guard_shared_file_collision`
 hook covers the open-PR window; `fleet-claim` covers the pre-PR window that
 the hook cannot see.
 
-Stale interactive **sessions** (idle for hours) are a separate, larger
-problem and are NOT reaped here — killing live agent processes is
-irreversible and out of scope for #55. The durable heartbeat still reaps
-orphaned `claim/issue-*` branches (queued work); `claim/adhoc-*` branches
-are released by the agent that claimed them.
+Stale interactive **sessions** (idle past 8 hours with no jsonl tool-call)
+are reaped by `interactive-session-reap.timer` (hourly at :41, fleet-ops#85).
+Activity is the Claude transcript mtime for `--resume=<uuid>`, not journal
+lines (those are sshd/sudo noise). Reap is SIGTERM, a 15s grace, then
+SIGKILL. A dirty worktree or a live `claim/issue-*` / `claim/adhoc-*`
+branch skips the session. sshd, tailscaled, fleet-heartbeat, and intake
+timers are out of scope: they do not live in `session-*.scope`. The durable
+heartbeat still reaps orphaned `claim/issue-*` branches (queued work);
+`claim/adhoc-*` branches are released by the agent that claimed them.
 
 ## CI
 
