@@ -77,6 +77,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report led-north-star-quality as enforced covered_rows (fleet-ops#459): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report GLM 5.3 flash ClinePass as enforced covered_rows (fleet-ops#462): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Debugging sessions end with a playbook note (Nish, 2026-08-19)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report sr-debug-playbook as enforced covered_rows (fleet-ops#522): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -84,6 +86,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
   ok "live join: NORTH STAR quality source is enforced (observe-to-close for #459)"
   ok "live join: GLM 5.3 flash ClinePass source is enforced (observe-to-close for #462)"
+  ok "live join: debug-playbook source is enforced (observe-to-close for #522)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
