@@ -233,6 +233,78 @@ restart_intake() {
     echo "$n"
 }
 
+# --- stale agent-in-progress label hygiene (auditor-finding-C) ---------------
+# A stale agent-in-progress label: the issue is open, labelled agent-in-progress,
+# but no pi-issue@<short>-<N> worker is live (active/activating). The worked
+# example that broke the fleet (2026-08-26): a worker finished cleanly, opened a
+# PR, and never cleared the label. tier1 §3 holds on open PRs (work in flight),
+# so the stale label survives; this watchdog then counted it as work=1/running=0
+# -> wedge -> repair (restart intake, which skips — no agent-ready issues) ->
+# next tick fail-loud. Permanent false wedge; page budget burned; auditor
+# summoned. A stale label is a LABEL-HYGIENE fault, never a fail-loud wedge.
+#
+# Mirrors tier1 §3's contract so the two never disagree:
+#   - open claim/issue-<N> PR -> the work is done (awaiting merge); remove
+#     agent-in-progress ONLY. Do NOT add agent-ready (that would re-queue
+#     finished work and conflict with the open PR).
+#   - no open PR -> the issue was abandoned mid-work; flip agent-in-progress
+#     -> agent-ready so intake re-queues it (defense in depth for the case §3
+#       failed to flip on its own tick).
+# Branch deletion is NOT this helper's job (§3 owns the no-PR branch release;
+# claim-reconcile §3b owns direction B). We touch labels only. Best-effort:
+# a failed gh call leaves the label for the next tick and falls through to the
+# existing wedge path.
+reap_stale_inprogress_labels() {
+    local repo short issues n unit has_pr cleared=0
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        short="${repo#*/}"
+        issues=$("$GH" issue list -R "$repo" -l agent-in-progress \
+            --state open --json number --limit 200 --jq '.[].number' 2>/dev/null || true)
+        while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+            unit="pi-issue@${short}-${n}.service"
+            # Live worker holds the lane — not stale, leave it (matches §3 / #63).
+            if "$SYSTEMCTL" --user list-units "$unit" --state=active,activating \
+                --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"; then
+                continue
+            fi
+            # Stale label. Open PR -> work done, drop the tag only.
+            # No open PR -> re-queue (mirror §3).
+            if "$GH" pr list -R "$repo" --head "claim/issue-${n}" --state open \
+                --json number 2>/dev/null | jq -e 'length > 0' >/dev/null 2>&1; then
+                has_pr=1
+            else
+                has_pr=0
+            fi
+            if [ "$has_pr" = "1" ]; then
+                if "$GH" issue edit "$n" -R "$repo" --remove-label agent-in-progress 2>/dev/null; then
+                    "$GH" issue comment "$n" -R "$repo" \
+                        --body "stale agent-in-progress label cleared by fleet-heartbeat-undersaturation at $(date -u +%FT%TZ) (no live worker; open PR — work done, awaiting merge)" \
+                        >/dev/null 2>&1 || true
+                    loud "UNDERSAT-LABEL-HYGIENE" "$repo#$n: removed stale agent-in-progress (no live worker, open PR)"
+                    cleared=$((cleared + 1))
+                else
+                    log "label-hygiene: $repo#$n remove-label FAILED (will retry next tick)"
+                fi
+            else
+                if "$GH" issue edit "$n" -R "$repo" \
+                    --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+                    "$GH" issue comment "$n" -R "$repo" \
+                        --body "stale agent-in-progress label flipped to agent-ready by fleet-heartbeat-undersaturation at $(date -u +%FT%TZ) (no live worker, no open PR — re-queued)" \
+                        >/dev/null 2>&1 || true
+                    loud "UNDERSAT-LABEL-HYGIENE" "$repo#$n: flipped stale agent-in-progress -> agent-ready (no live worker, no open PR)"
+                    cleared=$((cleared + 1))
+                else
+                    log "label-hygiene: $repo#$n label flip FAILED (will retry next tick)"
+                fi
+            fi
+        done <<< "$issues"
+    done <<< "$enrolled_repos"
+    echo "$cleared"
+}
+
 # ============================================================================
 # main
 # ============================================================================
@@ -246,6 +318,22 @@ prev_wedged=0
 work=$(count_work)
 running=$(count_running)
 log "undersaturation: work=$work running=$running prev_wedged=$prev_wedged"
+
+if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
+    # Label-hygiene pre-pass (auditor-finding-C): a stale agent-in-progress
+    # label with no live worker is NOT wedged work — it is a label artifact a
+    # finished worker left behind. Clear it BEFORE declaring a wedge so the
+    # watchdog cannot false-wedge (and burn the page budget) on a stale tag.
+    # If every unit of "work" was a stale label, work drops to 0 below and the
+    # tick exits healthy. If genuine ready work remains, the wedge path runs.
+    hygiene=$(reap_stale_inprogress_labels)
+    if [ "${hygiene:-0}" -gt 0 ] 2>/dev/null; then
+        log "label-hygiene: cleared $hygiene stale agent-in-progress label(s); re-evaluating wedge"
+        work=$(count_work)
+        running=$(count_running)
+        log "post-hygiene: work=$work running=$running"
+    fi
+fi
 
 if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
     if [ "$prev_wedged" -eq 1 ]; then
