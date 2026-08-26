@@ -81,10 +81,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install semgrep (pinned)
+        env:
+          SEMGREP_VERSION: ${{ inputs.semgrep-version }}
         run: |
           set -euo pipefail
           python3 -m pip install --upgrade pip
-          pip install semgrep==${{ inputs.semgrep-version }}
+          pip install "semgrep==${SEMGREP_VERSION}"
       - name: Semgrep scan (canonical orchestration gate + p/default)
         env:
           CANONICAL_SHA: ${{ inputs.canonical-sha }}

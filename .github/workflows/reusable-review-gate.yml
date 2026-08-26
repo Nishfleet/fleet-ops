@@ -153,13 +153,21 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           DEEP_LABEL: ${{ inputs.deep-label }}
+          LEVEL: ${{ steps.gate.outputs.level }}
+          WHY: ${{ steps.gate.outputs.why }}
+          BUDGET: ${{ steps.gate.outputs.budget }}
         run: |
           gh label create "$DEEP_LABEL" --repo "$REPO" --color B60205 \
             --description "High-risk diff: spend a rationed AI review here" --force >/dev/null 2>&1 || true
           gh pr edit "$PR" --repo "$REPO" --add-label "$DEEP_LABEL"
-          echo "::notice::Deep review requested (${{ steps.gate.outputs.level }}) — ${{ steps.gate.outputs.why }}. Budget ${{ steps.gate.outputs.budget }}."
+          echo "::notice::Deep review requested (${LEVEL}) — ${WHY}. Budget ${BUDGET}."
 
       - name: Explain the skip
         if: steps.gate.outputs.spend != 'yes'
+        env:
+          LEVEL: ${{ steps.gate.outputs.level }}
+          WHY: ${{ steps.gate.outputs.why }}
+          BUDGET: ${{ steps.gate.outputs.budget }}
+          DEEP_LABEL: ${{ inputs.deep-label }}
         run: |
-          echo "::notice::No deep review — ${{ steps.gate.outputs.level }}: ${{ steps.gate.outputs.why }}. Budget ${{ steps.gate.outputs.budget }}. Add the ${{ inputs.deep-label }} label by hand to override."
+          echo "::notice::No deep review — ${LEVEL}: ${WHY}. Budget ${BUDGET}. Add the ${DEEP_LABEL} label by hand to override."
