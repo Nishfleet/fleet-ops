@@ -7,5 +7,9 @@ StartLimitBurst=2
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-ExecStart=/bin/sh -c '{ cat /home/nish/.pi/agent/prompts/intake-repair.md; echo; echo "TARGET: intake unit pi-intake@%i.service, repo Nishfleet/%i"; } | /home/nish/.local/bin/pi --print --provider devin --model glm-5-2'
+# Seat rotation is pi-intake-repair-run's job (pick_seat). A pinned --provider
+# previously died with HTTP 429 while healthy seats sat unused (fleet-ops#138).
+# /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub
+# (same shape as pi-scout@.service / pi-scout-repair@.service).
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-intake-repair-run %i'
 TimeoutStartSec=1800
