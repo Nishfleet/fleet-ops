@@ -56,6 +56,12 @@ bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
 bin/pi-scout-run /home/nish/.local/bin/pi-scout-run
+# fleet-ops#454: green-and-empty scout detector. N consecutive scout
+# completions with no net ready-work increase while below the 12h
+# buffer LOUD + auto-file escalate-senior. Wired as ExecStartPre /
+# ExecStopPost on pi-scout@.service; leading '-' so a tracker fault
+# cannot skip the scout or trip OnFailure repair.
+bin/scout-futility-check /home/nish/.local/bin/scout-futility-check
 bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 # fleet-ops#143: version-control the agent-cron runner + the daily market
 # signal unit. The runner rotates seats via pick_seat (replacing the

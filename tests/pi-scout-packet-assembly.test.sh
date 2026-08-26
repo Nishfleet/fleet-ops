@@ -145,4 +145,8 @@ grep -q -- '--model MiniMax-M3' "$record_args" \
   || fail "fresh signal: pi must be called with --model MiniMax-M3"
 ok "pi-scout-run 0509 scout assembles research packet and runs pi when fresh"
 
+# fleet-ops#454: P14 runs this file. Invoke the full green-and-empty
+# drill here so CI covers the class without a workflow edit.
+bash "$repo_root/tests/scout-futility.test.sh"
+
 ok "0509 scout packet assembly: research-seeded, stale-fail-loud, pi-bound"
