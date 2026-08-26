@@ -122,7 +122,7 @@ If you cannot decompose the candidate into phases, drop it.
 
 **Gate-integrity spec-quality gate:** if a candidate would make a worker remove or skip a test, or edit a gate-owned path (`.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, design-system ratchet/ceiling, CI runner scripts), the issue spec must require:
 - A `test-removal-justified: <true reason>` trailer in the commit that removes or skips the test, if any test is removed or skipped.
-- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited.
+- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited. The attestor must be a different identity from the PR author (nishfleet-worker[bot] cannot attest).
 - If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
 Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
 

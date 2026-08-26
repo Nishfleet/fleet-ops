@@ -133,6 +133,12 @@ bin/worker-app-bootstrap /home/nish/.local/bin/worker-app-bootstrap
 bin/_worker-app-bootstrap-server.py /home/nish/.local/lib/fleet-worker/_worker-app-bootstrap-server.py
 credentials/app-manifest.json /home/nish/.config/fleet-worker/app-manifest.json
 credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
+# fleet-ops#413: identity-separation gate + App-identity freshness canary.
+# Canary is invoked by heartbeat-tier1 every tick; gate is a pure evaluator
+# for the implementer≠attestor drill (0509 wiring is a follow-up).
+bin/worker-app-canary /home/nish/.local/bin/worker-app-canary
+bin/attest-identity-gate /home/nish/.local/bin/attest-identity-gate
+lib/attest-identity-gate.py /home/nish/.local/lib/pi-packet/attest-identity-gate.py
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

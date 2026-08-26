@@ -1173,9 +1173,30 @@ else
 fi
 
 # ============================================================================
+# 16. WORKER APP IDENTITY CANARY (fleet-ops#413)
+# ============================================================================
+# Every tick, prove the nishfleet-worker App creds exist, parse, and mint.
+# A dead App must scream rather than silently fall through to the human
+# gh auth (the attestation-separation hole). Fail-loud pages via this
+# unit's existing OnFailure. No new unit.
+WORKER_APP_CANARY_BIN="${FLEET_WORKER_APP_CANARY:-/home/nish/.local/bin/worker-app-canary}"
+worker_app_canary_rc=0
+if [ -x "$WORKER_APP_CANARY_BIN" ]; then
+    log "16. worker-app identity canary starting"
+    if "$WORKER_APP_CANARY_BIN"; then
+        log "16. worker-app identity canary complete"
+    else
+        worker_app_canary_rc=$?
+        log "16. worker-app identity canary FAILED (rc=$worker_app_canary_rc) — DEAD APP IDENTITY; unit will land in --state=failed"
+    fi
+else
+    log "16. worker-app identity canary missing at $WORKER_APP_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
 # red-pr-repair, or a heartbeat canary may fail loud; all route to
 # the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
@@ -1193,5 +1214,8 @@ if [ "$canary_rc" -ne 0 ]; then
 fi
 if [ "$entitled_canary_rc" -ne 0 ]; then
     exit "$entitled_canary_rc"
+fi
+if [ "${worker_app_canary_rc:-0}" -ne 0 ]; then
+    exit "$worker_app_canary_rc"
 fi
 exit 0
