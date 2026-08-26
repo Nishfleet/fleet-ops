@@ -32,6 +32,7 @@ lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
+lib/manual-seam-lens.py /home/nish/.local/lib/pi-packet/manual-seam-lens.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service

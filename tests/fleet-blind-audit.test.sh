@@ -102,6 +102,7 @@ last-heartbeat: 2026-08-26T05:43:00Z (durable-timer)
 EOF
 
 mkdir -p "$scratch/state"
+printf '%s\n' '{"candidates":[]}' >"$scratch/empty-seams.json"
 
 PATH="$scratch/fakebin:$PATH" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
@@ -115,9 +116,9 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
-  "$bin" >"$scratch/run.log" 2>&1
-
-rc=$?
+  AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
+  "$bin" >"$scratch/run.log" 2>&1 || rc=$?
+rc=${rc:-0}
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
 
 # Find the one report directory.
@@ -150,5 +151,7 @@ grep -qE '^last-blind-audit-run:' "$plan" || fail "plan file missing last-blind-
 # Durable report and findings must exist.
 [[ -f "$report_dir/report.md" ]] || fail "report.md missing"
 [[ -f "$report_dir/findings.json" ]] || fail "findings.json missing"
+grep -q '## Manual-seam lens' "$report_dir/report.md" \
+  || fail "report.md must contain the Manual-seam lens table even with no seams"
 
 ok "fleet-blind-audit: panel, filing, dedupe, deliberate-state loud, and stamp"

@@ -26,6 +26,12 @@
 #   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 5)
 #   AUDIT_DRY_RUN           if 1, do not run pi or file issues
 #   AUDIT_FAKE_NOW          ISO-8601 UTC override for tests
+#   AUDIT_SEAM_EVIDENCE     JSON file of pre-enumerated seam candidates (tests)
+#   AUDIT_SEAM_SINCE        ISO timestamp; default last-blind-audit-run or 24h
+#   AUDIT_SEAM_LIB          manual-seam-lens.py path
+#   AUDIT_CYCLE_CRITERIA    gap-closure cycle-criteria markdown path
+#   AUDIT_MEMORYCTL_DIR AUDIT_ACTIONS_LOG AUDIT_GH_SEAM_EVENTS AUDIT_SYSTEMCTL_STARTS
+#                           optional live/fixture sources for the seam enumerator
 
 set -euo pipefail
 
@@ -44,12 +50,15 @@ PI_BIN="${AUDIT_PI_BIN:-$HOME/.local/bin/pi}"
 PANEL_BIN="${AUDIT_PANEL_BIN:-$HOME/.local/bin/fleet-blind-audit-panel}"
 MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-5}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
+SEAM_LIB="${AUDIT_SEAM_LIB:-$HOME/.local/lib/pi-packet/manual-seam-lens.py}"
 
 # Resolve this script's repo root for fallbacks when not installed yet.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 repo_fallback="$(cd "$here/.." && pwd)"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/blind-audit.md"
 [ -f "$DELIBERATE_STATES" ] || DELIBERATE_STATES="$repo_fallback/docs/deliberate-states.md"
+[ -f "$SEAM_LIB" ] || SEAM_LIB="$repo_fallback/lib/manual-seam-lens.py"
+CYCLE_CRITERIA="${AUDIT_CYCLE_CRITERIA:-$repo_fallback/config/gap-closure-cycle-criteria.md}"
 
 SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 [ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
@@ -113,6 +122,17 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# Read the previous run stamp BEFORE overwriting it — the seam window
+# starts there (or 24h back if this is the first run).
+prev_audit_run=""
+if [ -f "$PLAN_FILE" ]; then
+    prev_audit_run=$(grep -E '^last-blind-audit-run:' "$PLAN_FILE" | head -1 | sed 's/^last-blind-audit-run:[[:space:]]*//' || true)
+fi
+SEAM_SINCE="${AUDIT_SEAM_SINCE:-}"
+if [ -z "$SEAM_SINCE" ]; then
+    SEAM_SINCE=$(printf '%s' "$prev_audit_run" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' | head -1 || true)
+fi
+
 update_plan_stamp "last-blind-audit-run" "$NOW_ISO (started)"
 
 # --- preflight -------------------------------------------------------------
@@ -120,6 +140,7 @@ update_plan_stamp "last-blind-audit-run" "$NOW_ISO (started)"
 [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
 [ -f "$SEAT_LIB" ] || { log "FATAL: seat-lib missing: $SEAT_LIB"; exit 2; }
 [ -x "$PANEL_BIN" ] || { log "FATAL: panel missing: $PANEL_BIN"; exit 2; }
+[ -f "$SEAM_LIB" ] || { log "FATAL: seam lens missing: $SEAM_LIB"; exit 2; }
 [ -d "$REPO_ROOT" ] || { log "FATAL: repo root missing: $REPO_ROOT"; exit 2; }
 command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
 command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
@@ -190,10 +211,40 @@ PY
     )
 fi
 
+# --- manual-seam evidence (fleet-ops#377) ---------------------------------
+SEAM_CANDIDATES="$REPORT_DIR/seam-candidates.json"
+collect_args=(python3 "$SEAM_LIB" collect --since "$SEAM_SINCE" --now "$NOW_ISO")
+if [ -n "${AUDIT_SEAM_EVIDENCE:-}" ]; then
+    collect_args+=(--evidence-file "$AUDIT_SEAM_EVIDENCE")
+else
+    collect_args+=(--memoryctl-dir "${AUDIT_MEMORYCTL_DIR:-$HOME/workspaces/tooling/nish-vault/00 Inbox/agent-drop}")
+    collect_args+=(--actions-log "${AUDIT_ACTIONS_LOG:-$HOME/workspaces/agent-state/AUDITOR-LOG.md}")
+    if [ -n "${AUDIT_GH_SEAM_EVENTS:-}" ]; then
+        collect_args+=(--gh-events "$AUDIT_GH_SEAM_EVENTS")
+    else
+        gh_seam="$REPORT_DIR/gh-seam-events.json"
+        if gh issue list -R "$REPO" --state all --json number,title,body,createdAt -L 40 >"$REPORT_DIR/gh-seam-raw.json" 2>/dev/null; then
+            jq '[.[] | {kind:"issue", number, title, body, created_at:.createdAt}]' \
+                "$REPORT_DIR/gh-seam-raw.json" >"$gh_seam" 2>/dev/null \
+                || printf '%s\n' '[]' >"$gh_seam"
+        else
+            printf '%s\n' '[]' >"$gh_seam"
+        fi
+        collect_args+=(--gh-events "$gh_seam")
+    fi
+    if [ -n "${AUDIT_SYSTEMCTL_STARTS:-}" ]; then
+        collect_args+=(--systemctl-starts "$AUDIT_SYSTEMCTL_STARTS")
+    fi
+fi
+if ! "${collect_args[@]}" >"$SEAM_CANDIDATES"; then
+    log "WARN: seam collect failed; continuing with empty candidates"
+    printf '%s\n' '{"candidates":[]}' >"$SEAM_CANDIDATES"
+fi
+
 # --- build the packet ------------------------------------------------------
 # Substitute the template variables in prompts/blind-audit.md.
 pkt="$REPORT_DIR/packet.md"
-python3 - "$PROMPT" "$pkt" "$REPO" "$REPO_ROOT" "$DELIBERATE_STATES" "$FINDINGS_JSON" "$REPORT_MD" "$MAX_FINDINGS" "$NOW_ISO" "$deliberate_json" "$open_issues" "$recent_merges" "$repo_files" "$systemctl_failed" "$systemctl_timers" <<'PY'
+python3 - "$PROMPT" "$pkt" "$REPO" "$REPO_ROOT" "$DELIBERATE_STATES" "$FINDINGS_JSON" "$REPORT_MD" "$MAX_FINDINGS" "$NOW_ISO" "$deliberate_json" "$open_issues" "$recent_merges" "$repo_files" "$systemctl_failed" "$systemctl_timers" "$CYCLE_CRITERIA" "$SEAM_SINCE" "$SEAM_CANDIDATES" <<'PY'
 import sys
 prompt_path, out_path = sys.argv[1], sys.argv[2]
 repo = sys.argv[3]
@@ -209,9 +260,18 @@ recent_merges = sys.argv[12]
 repo_files = sys.argv[13]
 systemctl_failed = sys.argv[14]
 systemctl_timers = sys.argv[15]
+cycle_criteria = sys.argv[16]
+seam_since = sys.argv[17]
+seam_path = sys.argv[18]
 
 with open(prompt_path, 'r', encoding='utf-8') as f:
     tpl = f.read()
+
+try:
+    with open(seam_path, 'r', encoding='utf-8') as f:
+        seam_json = f.read()
+except OSError:
+    seam_json = '{"candidates":[]}'
 
 tpl = tpl.replace('{{REPO}}', repo)
 tpl = tpl.replace('{{REPO_ROOT}}', repo_root)
@@ -226,6 +286,9 @@ tpl = tpl.replace('{{RECENT_MERGES_JSON}}', recent_merges)
 tpl = tpl.replace('{{REPO_FILES}}', repo_files)
 tpl = tpl.replace('{{SYSTEMCTL_FAILED}}', systemctl_failed)
 tpl = tpl.replace('{{SYSTEMCTL_TIMERS}}', systemctl_timers)
+tpl = tpl.replace('{{CYCLE_CRITERIA_PATH}}', cycle_criteria)
+tpl = tpl.replace('{{SEAM_SINCE}}', seam_since)
+tpl = tpl.replace('{{SEAM_EVIDENCE_JSON}}', seam_json)
 
 with open(out_path, 'w', encoding='utf-8') as f:
     f.write(tpl)
@@ -302,12 +365,41 @@ if [ ! -f "$REPORT_MD" ]; then
     } > "$REPORT_MD"
 fi
 
+# --- manual-seam lens: match, file unmatched, write the report table ------
+if [ "$findings" = '[]' ]; then
+    printf '%s\n' '{"findings":[]}' >"$FINDINGS_JSON"
+else
+    printf '%s\n' "$findings" >"$FINDINGS_JSON"
+fi
+printf '%s\n' "${open_issues:-[]}" >"$REPORT_DIR/open-issues.json"
+set +e
+close_json=$(python3 "$SEAM_LIB" close \
+    --candidates "$SEAM_CANDIDATES" \
+    --findings "$FINDINGS_JSON" \
+    --open-issues "$REPORT_DIR/open-issues.json" \
+    --report "$REPORT_MD" \
+    --seams-out "$REPORT_DIR/seams.json" \
+    --since "$SEAM_SINCE" \
+    --now "$NOW_ISO" 2>"$REPORT_DIR/seam-close.err")
+close_rc=$?
+set -e
+if [ "$close_rc" -ne 0 ]; then
+    log "WARN: seam close failed (rc=$close_rc)"
+    if [ -s "$REPORT_DIR/seam-close.err" ]; then
+        log "WARN: $(head -c 500 "$REPORT_DIR/seam-close.err")"
+    fi
+else
+    log "seam lens: $close_json"
+    findings=$(jq -c . "$FINDINGS_JSON")
+fi
+
 # --- findings empty? -------------------------------------------------------
 findings_count=$(printf '%s' "$findings" | jq '(.findings // .) | length')
 if [ "$findings_count" -eq 0 ]; then
     log "no findings produced by reviewer"
     update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
-    # Still success: an empty sweep is a valid outcome.
+    # Still success: an empty sweep is a valid outcome. The seam table is
+    # already in the report.
     exit 0
 fi
 
