@@ -1,0 +1,628 @@
+{
+  "description": "Machine-readable enforcement matrix for every vault standing rule and ledger decision. The heartbeat escalation-coverage canary joins this file against the live vault on every tick (fleet-ops#383). status is enforced | queued(#issue) | advisory(reason). advisory requires a senior-judged reason and is never the default. queued_stale_days is the age after which a queued row goes LOUD.",
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "issue_repo": "Nishfleet/fleet-ops",
+  "rules": [
+    {
+      "id": "sr-decisions-ledger",
+      "source": "global-standing-rules.md: Decisions ledger — check before asking Nish (Nish's direct order, 2026-08-25)",
+      "mechanism": "Claude Code PreToolUse hook only; other agents can still re-ask",
+      "proof": "~/.claude/hooks/guard_decisions_ledger.py (Claude-only; needs a harness-agnostic gate)",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-quality-speed-efficiency",
+      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 — NON-NEGOTIABLE)",
+      "mechanism": "CI required checks + gate-integrity ratchet: weakening tests or gates is a blocker",
+      "proof": ".github/workflows/ci.yml; tests/required-check-purity.test.sh; 0509 gate-integrity",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-switched-on-proven",
+      "source": "global-standing-rules.md: Switched on and proven, or it is not done (Nish, 2026-08-18)",
+      "mechanism": "Senior conference criterion: new unit/timer/workflow PRs must link one real end-to-end run",
+      "proof": "fleet-ops#378",
+      "status": "queued(#378)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-findings-queued",
+      "source": "global-standing-rules.md: Every finding gets queued, automatically (Nish, 2026-08-22)",
+      "mechanism": "Nothing detects a finding named in chat and never filed",
+      "proof": "needs a session-close lint or detector→queue reconciler (fleet-ops#362)",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-get-it-moving",
+      "source": "global-standing-rules.md: Get it moving, always (Nish, 2026-08-18)",
+      "mechanism": "none — judgment of implied permission",
+      "proof": "n/a — un-mechanizable without wrapping every idle pause",
+      "status": "advisory(senior: whether permission was already implied is a judgment call, not a merge artifact)"
+    },
+    {
+      "id": "sr-max-speed",
+      "source": "global-standing-rules.md: Max speed is the default, forever (Nish, 2026-08-18)",
+      "mechanism": "RAM governor and seat caps exist as the three legal brakes; nothing hunts artificial limiters",
+      "proof": "systemd/system/user-1000.slice.d/50-ram-governor.conf; config/seat-caps.json",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-research-before-build",
+      "source": "global-standing-rules.md: Research before build — always (Nish, 2026-08-18)",
+      "mechanism": "No gate that a build skipped last30days / official docs",
+      "proof": "needs a conference/CI criterion or scout packet check",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-gha-overflow",
+      "source": "global-standing-rules.md: GitHub Actions overflow policy (Nish, 2026-08-18)",
+      "mechanism": "Self-hosted runners retired; org Actions spending limit stays $0 (Nish-only to raise)",
+      "proof": "no github-runner user units; GitHub org spending-limit setting",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-free-model-roster",
+      "source": "global-standing-rules.md: Free-model roster stays fresh — quality-gated (Nish, 2026-08-18)",
+      "mechanism": "fleet2 roster scout was deleted with the 08-23 wipe; no live audition ladder remains",
+      "proof": "needs a Pi-native roster canary",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-systemd-by-default",
+      "source": "global-standing-rules.md: systemd by default (Nish, 2026-08-18)",
+      "mechanism": "Escalation canary: every pi --print in bin/ must be a sanctioned unit wrapper; pi-systemd-run for session-outliving work",
+      "proof": "bin/fleet-escalation-canary block 2; bin/pi-systemd-run; tests/escalation-coverage-canary.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-no-agent-names",
+      "source": "global-standing-rules.md: No agent names on Nish's work (Nish, 2026-08-18)",
+      "mechanism": "Packet prompts forbid Co-Authored-By; no CI check rejects the trailers",
+      "proof": "prompts/worker.md; needs a commit/PR lint",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-free-tier-privacy",
+      "source": "global-standing-rules.md: Free-tier privacy line (2026-08-18)",
+      "mechanism": "No packet-product check routing private-repo work off free lanes",
+      "proof": "needs a pick_seat / packet-assembly private-repo guard",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-quality-outranks",
+      "source": "global-standing-rules.md: Quality outranks everything (Nish, 2026-08-18)",
+      "mechanism": "none — taste overlay on the quality>speed gate",
+      "proof": "n/a — mechanical core lives in sr-quality-speed-efficiency",
+      "status": "advisory(senior: delightfulness and overdelivery are taste; the mechanical quality bar is sr-quality-speed-efficiency)"
+    },
+    {
+      "id": "sr-unfixable-reaches-nish",
+      "source": "global-standing-rules.md: Only the un-fixable reaches Nish (Nish, 2026-08-18)",
+      "mechanism": "Watchdogs dispatch agents via unit-escalation OnFailure, not a Nish page; Telegram is the last-resort pager for the unit",
+      "proof": "systemd/unit-escalation@.service; systemd/stop-escalation.service; bin/stop-escalation-dispatch",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-nothing-waits-tomorrow",
+      "source": "global-standing-rules.md: Nothing waits for tomorrow (Nish, 2026-08-18, sharpens everything-happens-now)",
+      "mechanism": "No lint for a one-shot timer parked on a future date without a named physical gate",
+      "proof": "needs a unit-file canary on OnCalendar one-shots",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-verify-before-answering",
+      "source": "global-standing-rules.md: Verify before answering (Nish, 2026-08-19)",
+      "mechanism": "none — cannot wrap every claim without an oracle of 'answered from memory'",
+      "proof": "n/a",
+      "status": "advisory(senior: live-truth discipline is an answering rule; there is no merge artifact to gate)"
+    },
+    {
+      "id": "sr-debug-playbook",
+      "source": "global-standing-rules.md: Debugging sessions end with a playbook note (Nish, 2026-08-19)",
+      "mechanism": "Nothing detects a multi-attempt debug that skipped the vault playbook note",
+      "proof": "needs a session-close check against vault playbook shape",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-token-efficiency",
+      "source": "global-standing-rules.md: Token efficiency without quality loss (Nish, 2026-08-20)",
+      "mechanism": "No check on prompt layout / cache-marker discipline in custom assemblers",
+      "proof": "needs a prompt-assembly lint",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-verify-harness",
+      "source": "global-standing-rules.md: Per-repo verification harness (Nish, 2026-08-20, adopted from Cursor pstack)",
+      "mechanism": "Not every product repo has .claude/skills/verify-<app>/SKILL.md",
+      "proof": "needs a repo-standards-sync or CI existence check",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-pstack-review",
+      "source": "global-standing-rules.md: pstack full review + blind stress test (Nish, 2026-08-20)",
+      "mechanism": "Adopted skills are installed on the Pi harness: blast-radius, why, session-pickup, pause-safely, unslop, design-it-twice, review-adjudication",
+      "proof": "~/.pi/agent/skills/{blast-radius,why,session-pickup,pause-safely,unslop,design-it-twice,review-adjudication}/SKILL.md",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-vault-knowledge-format",
+      "source": "global-standing-rules.md: Vault knowledge format: atomic facts, hub notes, glossary (Nish, 2026-08-20)",
+      "mechanism": "No shape linter for 03 Knowledge notes",
+      "proof": "needs a vault note-shape check",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-interventions-eliminated",
+      "source": "global-standing-rules.md: Interventions get eliminated, not repeated (Nish, 2026-08-20)",
+      "mechanism": "Two-strikes: nothing detects a third identical attempt of the same correction",
+      "proof": "needs an intervention-repeat detector (named unenforced in fleet-ops#383)",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-gap-rules-audit",
+      "source": "global-standing-rules.md: Gap rules from the 2026-08-20 rulebook audit (Nish, 2026-08-20)",
+      "mechanism": "Monthly rulebook red-team cadence has no timer; rollback-backup is a convention",
+      "proof": "needs a systemd timer or GitHub scheduled audit",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-nothing-half-done",
+      "source": "global-standing-rules.md: Nothing sits half-done, and no question dies unanswered (Nish, 2026-08-20)",
+      "mechanism": "No detector for done-but-unlanded work or unanswered questions",
+      "proof": "needs a worktree/PR orphan canary",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-one-instruction-binds",
+      "source": "global-standing-rules.md: One instruction binds every agent, everywhere (Nish, 2026-08-20)",
+      "mechanism": "Vault global-standing-rules.md is canonical; AGENTS.md on Mac and VPS point here",
+      "proof": "nish-vault/_system/shared-memory/global-standing-rules.md; ~/AGENTS.md; ~/.pi/agent/AGENTS.md",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-vault-sync-conflicts",
+      "source": "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)",
+      "mechanism": "Freeze-on-conflict is prose; confirm the Syncthing conflict handler still fires",
+      "proof": "needs a conflict-file canary (*.sync-conflict-*)",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-claim-surface",
+      "source": "global-standing-rules.md: Claim your surface before operating (Nish, 2026-08-20)",
+      "mechanism": "Issue workers claim via claim/issue-N branches + fleet-claim",
+      "proof": "bin/fleet-claim; tests/fleet-claim.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-prepaid-max-util",
+      "source": "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)",
+      "mechanism": "No utilization canary on prepaid seats (expiry-waste is how SuperGrok drained unused)",
+      "proof": "needs a seat-utilization heartbeat line",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-devin-4-wide",
+      "source": "global-standing-rules.md: Devin Pro runs 4 workers wide, always (Nish, 2026-08-20)",
+      "mechanism": "seat-caps.json hard-caps devin at 4; pick_seat refuses to route outside the cap map; ledger forbids probing above",
+      "proof": "config/seat-caps.json; lib/seat-lib.sh pick_seat; tests/seat-lib.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-raw-api-through-pi",
+      "source": "global-standing-rules.md: Every raw-API token flows through pi (Nish, 2026-08-20)",
+      "mechanism": "Escalation canary flags unwrapped `pi --print` in bin/; sanctioned wrappers only",
+      "proof": "bin/fleet-escalation-canary block 2; tests/escalation-coverage-canary.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-box-75-80",
+      "source": "global-standing-rules.md: The box runs at 75-80% capacity minimum (Nish, 2026-08-20)",
+      "mechanism": "Heartbeat undersaturation watchdog + low-water-mark fail loud when ready work sits next to idle seats",
+      "proof": "bin/fleet-heartbeat-undersaturation; bin/fleet-heartbeat-low-water-mark; tests/fleet-heartbeat-undersaturation.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-skills-native",
+      "source": "global-standing-rules.md: Skills are native for every agent on every machine (Nish, 2026-08-20)",
+      "mechanism": "No canary that skills are linked on every harness after install",
+      "proof": "needs a skills-symlink canary",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-one-fleet",
+      "source": "global-standing-rules.md: One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)",
+      "mechanism": "intake-repos.json permanently excludes fleet2; shape test fails closed if it is enrolled",
+      "proof": "config/intake-repos.json excluded.fleet2; tests/intake-repos-shape.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-pi-directly",
+      "source": "global-standing-rules.md: Everything runs through Pi, directly. No launchers. (Nish, 2026-08-23)",
+      "mechanism": "pi-systemd-run is the session-outliving wrapper; canary bans unsanctioned pi binaries in bin/",
+      "proof": "bin/pi-systemd-run; bin/fleet-escalation-canary; tests/pi-systemd-run.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-fleet-wipe-lessons",
+      "source": "global-standing-rules.md: Lessons from the 2026-08-23 fleet wipe (all agents, both machines)",
+      "mechanism": "FLEET-PAUSED is code in AGENTS.md; argv[0] matching and push-before-delete are still prose",
+      "proof": "~/AGENTS.md FLEET-PAUSED check; remaining lessons need drills",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-find-proven-thing",
+      "source": "global-standing-rules.md: Find the proven thing before you build anything (Nish, 2026-08-23)",
+      "mechanism": "Overlaps research-before-build; no --help-first gate on new scripts",
+      "proof": "needs a conference criterion or new-file research receipt",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-doc-only-suite",
+      "source": "global-standing-rules.md: Doc-only changes never run the full suite (Nish, 2026-08-23, non-negotiable)",
+      "mechanism": "reusable-pr-checks docs-only fast path skips install/verify while the job still reports",
+      "proof": ".github/workflows/reusable-pr-checks.yml Detect code changes; tests/reusable-workflows.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-failed-command-flagged",
+      "source": "global-standing-rules.md: A failed command is ALWAYS flagged, never walked past (Nish, 2026-08-24 - forbidden to repeat)",
+      "mechanism": "Worker prompt requires it; no session linter flags a swallowed non-zero",
+      "proof": "prompts/worker.md; needs a journal/rc canary",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-watchdogs-dispatch",
+      "source": "global-standing-rules.md: Watchdogs dispatch agents, they never page Nish (Nish, 2026-08-24 - non-negotiable)",
+      "mechanism": "OnFailure=unit-escalation@%n.service drop-in + stop-escalation path unit; heartbeat-watchman, fleet-heartbeat.service and pi-transport-check drop-in do NOT page Nish for unit failures; canary proves coverage",
+      "proof": "systemd/service.d/10-escalate.conf; systemd/unit-escalation@.service; lib/heartbeat-watchman.sh; systemd/fleet-heartbeat.service; systemd/pi-transport-check.service.d/10-no-direct-notify.conf; bin/fleet-escalation-canary",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-pi-extensions-proven",
+      "source": "global-standing-rules.md: Pi extensions: prefer them, but install only the proven (Nish, 2026-08-24)",
+      "mechanism": "No install gate that a new extension is proven before it is wired",
+      "proof": "needs an extension-allowlist check",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-ambiguity-authoritative",
+      "source": "global-standing-rules.md: Ambiguity resolves to the authoritative recommendation, not to Nish (Nish, 2026-08-24)",
+      "mechanism": "none — research quality is not mechanically observable",
+      "proof": "n/a",
+      "status": "advisory(senior: choosing the authoritative source is a judgment; the council is the mechanism for high-stakes gray areas, not a CI check)"
+    },
+    {
+      "id": "sr-no-hand-built-orch",
+      "source": "global-standing-rules.md: No hand-built orchestration. Ever. (Nish, 2026-08-24 — FORBIDDEN, non-negotiable)",
+      "mechanism": "Semgrep on fleet-ops CI + senior conference auto-reject; org-wide reusable ruleset still rolling out",
+      "proof": ".github/workflows/ci.yml semgrep job; fleet-ops#223; remaining org rollout fleet-ops#302/#303",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-ci-standard",
+      "source": "global-standing-rules.md: CI standard: batched, minimal, near-zero failures — every repo, current and future (Nish, 2026-08-24, NON-NEGOTIABLE)",
+      "mechanism": "Central reusable-pr-checks + ci-standards-audit + template callers",
+      "proof": ".github/workflows/reusable-pr-checks.yml; tests/ci-standards-audit.test.sh; tests/reusable-workflows.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-reversibility",
+      "source": "global-standing-rules.md: Engineer reversibility, don't gate (Nish, 2026-08-24 — fleet default)",
+      "mechanism": "auto-revert on red main + siterep-deploy-rollback on failed verify",
+      "proof": ".github/workflows/auto-revert.yml; systemd/siterep-deploy-rollback.service; tests/auto-revert-required-check-gate.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-gates-lifted",
+      "source": "global-standing-rules.md: Merge and deploy gates LIFTED on the canonical fleet repo (Nish, 2026-08-24)",
+      "mechanism": "auto-merge-arm + deploy-production on siterep-public; auto-revert on red main",
+      "proof": ".github/workflows/auto-merge-arm.yml; siterep-public deploy-production.yml",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-prs-self-land",
+      "source": "global-standing-rules.md: Agent-authored PRs land themselves (Nish, 2026-08-25 — \"automatic / autonomous ... for all repos, current and future\")",
+      "mechanism": "auto-merge-arm.yml on every active repo; repo-standards-sync enables allow_auto_merge",
+      "proof": ".github/workflows/auto-merge-arm.yml; .github/workflows/repo-standards-sync.yml",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-all-functions-mechanical",
+      "source": "global-standing-rules.md: All functions mechanical (Nish, 2026-08-25)",
+      "mechanism": "Blind-audit manual-seam lens hunts hand-performed actions; remaining prose still unenforced",
+      "proof": "fleet-ops#377",
+      "status": "queued(#377)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-agent-agnostic",
+      "source": "global-standing-rules.md: Standing machinery is agent-agnostic — the boundary and its enforcement (Nish, 2026-08-25)",
+      "mechanism": "repo-standards-sync is GitHub-hosted; no named exceptions remain in the standing-rules list",
+      "proof": ".github/workflows/repo-standards-sync.yml",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-execution-is-review",
+      "source": "global-standing-rules.md: Execution IS the review — run it, log the bugs, fix, run again (Nish, 2026-08-25 — non-negotiable)",
+      "mechanism": "Worker prompt inner-loop; nothing detects a worker that skipped the run",
+      "proof": "prompts/worker.md; needs a journal/proof receipt check",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-never-vibes",
+      "source": "global-standing-rules.md: Never decide by vibes — always measure (Nish, 2026-08-26)",
+      "mechanism": "RAM and seat caps are measured; remaining hand-set constants still unmeasured",
+      "proof": "bin/ram-measure; config/seat-caps.json; remaining vibe-constants tracked on fleet-ops#416",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-check-other-agents",
+      "source": "global-standing-rules.md: Check for other agents before touching shared files (2026-08-26)",
+      "mechanism": "Worktrees isolate issue workers; no fleet-wide lock on shared non-git files",
+      "proof": "needs a claim/flock convention canary",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "sr-memory-oom",
+      "source": "global-standing-rules.md: Memory: prevent, throttle, then kill — in that order (Nish, 2026-08-26)",
+      "mechanism": "user-1000.slice MemoryHigh + ManagedOOMMemoryPressure; oomd-drill proves the kill path",
+      "proof": "systemd/system/user-1000.slice.d/50-ram-governor.conf; bin/oomd-drill; tests/system-dropins-shape.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-everything-mechanical",
+      "source": "global-standing-rules.md: Everything is mechanical — failures included (Nish, 2026-08-26 — NON-NEGOTIABLE)",
+      "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; detector→queue is #362",
+      "proof": "fleet-ops#366; fleet-ops#362",
+      "status": "queued(#366)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-plumbing-ban",
+      "source": "decisions-ledger.md: 2026-08-26 | hand-built plumbing BAN, enforced at the gate",
+      "mechanism": "Semgrep + senior conference auto-reject; blind audit hunts existing loops",
+      "proof": ".github/workflows/ci.yml semgrep job; fleet-ops#223; org rollout fleet-ops#302/#303",
+      "status": "enforced"
+    },
+    {
+      "id": "led-0509-exclusive",
+      "source": "decisions-ledger.md: 2026-08-26 | 0509 EXCLUSIVE supply",
+      "mechanism": "siterep-public deferred in intake-repos.json; only 0509 + fleet-ops enrolled",
+      "proof": "config/intake-repos.json repos + deferred; tests/intake-repos-shape.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-senior-conference",
+      "source": "decisions-ledger.md: 2026-08-26 | serious builds get the senior conference",
+      "mechanism": "Panel verdict as a required check; automerge waits",
+      "proof": "fleet-ops#223",
+      "status": "queued(#223)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-capacity-measured",
+      "source": "decisions-ledger.md: 2026-08-26 | capacity is measured, never declared",
+      "mechanism": "RAM governor from live RSS; seat caps in seat-caps.json; devin hard-capped at 4",
+      "proof": "bin/ram-measure; config/seat-caps.json; systemd/system/user-1000.slice.d/50-ram-governor.conf",
+      "status": "enforced"
+    },
+    {
+      "id": "led-loop-all-repos",
+      "source": "decisions-ledger.md: 2026-08-26 | loop for ALL repos",
+      "mechanism": "Central reusable PR-checks + repo-standards-sync so new repos inherit without opt-in",
+      "proof": ".github/workflows/reusable-pr-checks.yml; .github/workflows/repo-standards-sync.yml; fleet-ops#185",
+      "status": "enforced"
+    },
+    {
+      "id": "led-gap-closure-loop",
+      "source": "decisions-ledger.md: 2026-08-26 | gap-closure loop",
+      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE; observe-to-close still open",
+      "proof": "fleet-ops#180 (blocked); fleet-ops#362",
+      "status": "queued(#362)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-blind-audit",
+      "source": "decisions-ledger.md: 2026-08-26 | recurring blind audit",
+      "mechanism": "fleet-blind-audit unit+timer exist; cadence still depends on an empty board",
+      "proof": "bin/fleet-blind-audit; systemd/fleet-blind-audit.timer; fleet-ops#378",
+      "status": "queued(#378)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-escalation-coverage",
+      "source": "decisions-ledger.md: 2026-08-26 | escalation coverage",
+      "mechanism": "Heartbeat escalation-coverage canary on VPS + GitHub planes every tick",
+      "proof": "bin/fleet-escalation-canary; tests/escalation-coverage-canary.test.sh; bin/fleet-heartbeat-tier1 block 14",
+      "status": "enforced"
+    },
+    {
+      "id": "led-merge-to-live",
+      "source": "decisions-ledger.md: 2026-08-26 | merge-to-live",
+      "mechanism": "Heartbeat pull+install+verify; drift canary asserts installed == MANIFEST == origin/main",
+      "proof": "bin/fleet-ops-deploy; bin/fleet-ops-drift.py; tests/fleet-ops-deploy.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-work-supply-24h",
+      "source": "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)",
+      "mechanism": "Scout buffer + auditor panel are specified; 24h/12h drain trigger is not a live canary",
+      "proof": "prompts/scout.md; lib/packet-assembly.sh",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-fleet-ops-enrolment",
+      "source": "decisions-ledger.md: 2026-08-26 | fleet-ops enrolment",
+      "mechanism": "fleet-ops is in intake-repos.json repos[]; reconciler is the only enrolment path",
+      "proof": "config/intake-repos.json; bin/intake-reconcile; tests/intake-reconcile.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-0509-deploys",
+      "source": "decisions-ledger.md: 2026-08-25 | 0509 deploys",
+      "mechanism": "Auto-deploy on green, wired to auto-revert",
+      "proof": "0509 deploy-production.yml; .github/workflows/auto-revert.yml",
+      "status": "enforced"
+    },
+    {
+      "id": "led-continuous-research",
+      "source": "decisions-ledger.md: 2026-08-25 | continuous research",
+      "mechanism": "No recurring research sweep unit remains after the fleet wipe",
+      "proof": "needs a systemd timer or GitHub scheduled research tick",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-portable-standards",
+      "source": "decisions-ledger.md: 2026-08-25 | portable standards",
+      "mechanism": "repo-standards-sync pushes canonical workflows to every active Nishfleet repo daily",
+      "proof": ".github/workflows/repo-standards-sync.yml",
+      "status": "enforced"
+    },
+    {
+      "id": "led-optimization-order",
+      "source": "decisions-ledger.md: 2026-08-25 | optimization order",
+      "mechanism": "Same mechanical bar as quality>speed: CI/gate-integrity reject quality-losing shortcuts",
+      "proof": ".github/workflows/ci.yml; tests/required-check-purity.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-0509-focus",
+      "source": "decisions-ledger.md: 2026-08-25 | 0509 focus",
+      "mechanism": "Superseded for fleet-ops by enrolment; other product repos stay deferred in intake-repos.json",
+      "proof": "config/intake-repos.json deferred[]; tests/intake-repos-shape.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-transformation-bets",
+      "source": "decisions-ledger.md: 2026-08-25 | transformation bets",
+      "mechanism": "none — product ranking is Nish/orchestrator judgment",
+      "proof": "n/a",
+      "status": "advisory(senior: ranking bets is product direction; fleet capacity is the throttle, not a gate)"
+    },
+    {
+      "id": "led-seo-geo-aeo",
+      "source": "decisions-ledger.md: 2026-08-25 | SEO/GEO/AEO",
+      "mechanism": "none — enforced by 0509 product work, not a VPS canary",
+      "proof": "n/a",
+      "status": "advisory(senior: product-priority ranking, not a fleet control-plane rule)"
+    },
+    {
+      "id": "led-discovery-feature",
+      "source": "decisions-ledger.md: 2026-08-25 | discovery feature",
+      "mechanism": "none — 0509 product spike",
+      "proof": "n/a",
+      "status": "advisory(senior: gated product feature; the 12-domain spike is a product proof, not a standing-rule enforcer)"
+    },
+    {
+      "id": "led-lanes",
+      "source": "decisions-ledger.md: 2026-08-25 | lanes",
+      "mechanism": "pick_seat + seat-caps.json under the RAM governor; go-ham is the default, caps are the brake",
+      "proof": "config/seat-caps.json; lib/seat-lib.sh; tests/seat-lib.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-repo-visibility",
+      "source": "decisions-ledger.md: 2026-08-25 | repo visibility",
+      "mechanism": "Public-flip audits exist as docs; no canary that a new private product repo skipped the audit",
+      "proof": "needs a repo-visibility canary on gh repo list",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-work-supply-agent-ready",
+      "source": "decisions-ledger.md: 2026-08-25 | work supply",
+      "mechanism": "Orchestrators may apply agent-ready; no mechanical spec-gate on that label yet",
+      "proof": "needs an agent-ready spec-gate",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-gitleaks",
+      "source": "decisions-ledger.md: 2026-08-25 | Gitleaks",
+      "mechanism": "Pinned OSS gitleaks binary in fleet-ops CI; reusable-pr-checks carries it to callers",
+      "proof": ".github/workflows/ci.yml gitleaks job; .github/workflows/reusable-pr-checks.yml",
+      "status": "enforced"
+    },
+    {
+      "id": "led-coderabbit",
+      "source": "decisions-ledger.md: 2026-08-25 | CodeRabbit",
+      "mechanism": "none — waiting on a Nish-reserved auth action",
+      "proof": "n/a",
+      "status": "advisory(senior: Nish re-auths when convenient; fleet is ordered to run without the local gate until then)"
+    },
+    {
+      "id": "led-tailscale",
+      "source": "decisions-ledger.md: 2026-08-24 | Tailscale",
+      "mechanism": "ACL lockdown is date-gated on Nish pasting acl-draft.json; 48h watch closed 2026-08-26 23:50 IST",
+      "proof": "needs the ACL applied or a follow-up issue once Nish pastes it",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-attestation-breach",
+      "source": "decisions-ledger.md: 2026-08-26 | attestation breach evidence",
+      "mechanism": "Workers now use the nishfleet-worker GitHub App via worker-token; prompts forbid self-attestation",
+      "proof": "bin/worker-token; credentials/app-manifest.json; tests/worker-token-fail-closed.test.sh; prompts/worker.md",
+      "status": "enforced"
+    },
+    {
+      "id": "led-mechanical-fix",
+      "source": "decisions-ledger.md: 2026-08-26 | every failure gets a mechanical fix",
+      "mechanism": "Conference rejects failure-fixes with no prevention mechanism",
+      "proof": "fleet-ops#366",
+      "status": "queued(#366)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-everything-mechanical",
+      "source": "decisions-ledger.md: 2026-08-26 | EVERYTHING mechanical",
+      "mechanism": "Blind-audit manual-seam lens; second occurrence of a hand action requires a mechanism",
+      "proof": "fleet-ops#377",
+      "status": "queued(#377)",
+      "queued_since": "2026-08-26"
+    },
+    {
+      "id": "led-enforcement-mechanical",
+      "source": "decisions-ledger.md: 2026-08-26 | enforcement itself is mechanical",
+      "mechanism": "This matrix + heartbeat canary join; uncovered rules auto-file; stale queued screams",
+      "proof": "config/rule-enforcement.json; lib/rule-enforcement.py; bin/fleet-escalation-canary block 9; tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-worker-lane-refresh",
+      "source": "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)",
+      "mechanism": "Cheapest-and-best flash-model pick + free M3 on commandcode; not yet a live canary",
+      "proof": "needs a seat-caps.json PR plus a free-M3 fail-closed probe",
+      "status": "queued(#416)",
+      "queued_since": "2026-08-26"
+    }
+  ]
+}

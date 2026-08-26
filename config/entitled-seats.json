@@ -1,0 +1,68 @@
+{
+  "_comment": "Full entitled-seat inventory (capacity-is-measured ledger line, 2026-08-26). Every id MUST have a config/seat-caps.json row. cap=0 requires a dated reason field. Classes are free / prepaid-quota / metered — never label a prepaid seat free. New entitlements are added here by ledger line so the next heartbeat tick screams if they are not wired. opencode-go maps to provider id opencode; SuperGrok maps to grok; cline-pass maps to cline.",
+  "source": "decisions-ledger 2026-08-26 capacity-is-measured + Nish 2026-08-26 Ollama Cloud is prepaid weekly",
+  "seats": [
+    {
+      "id": "ollama",
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "note": "Ollama Cloud. Prepaid weekly quota, not free (Nish 2026-08-26)."
+    },
+    {
+      "id": "cline",
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "note": "ClinePass subscription (cline-pass/ prefix)."
+    },
+    {
+      "id": "devin",
+      "class": "prepaid-quota",
+      "note": "Prepaid Devin allowance. Hard-capped at 4 (Nish 2026-08-26)."
+    },
+    {
+      "id": "cursor",
+      "class": "prepaid-quota",
+      "note": "Cursor subscription."
+    },
+    {
+      "id": "grok",
+      "class": "prepaid-quota",
+      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter)."
+    },
+    {
+      "id": "minimax",
+      "class": "metered",
+      "note": "MiniMax-M3 direct, per-token."
+    },
+    {
+      "id": "zenmux",
+      "class": "metered",
+      "note": "Free lanes AND credits. class=metered so credits cannot be spent as free. Model allowlist owned by fleet-ops#384."
+    },
+    {
+      "id": "openrouter",
+      "class": "metered",
+      "note": "Free lanes AND credits. class=metered. Model allowlist owned by fleet-ops#384."
+    },
+    {
+      "id": "hetzner",
+      "class": "free",
+      "note": "Hetzner inference free experimental."
+    },
+    {
+      "id": "commandcode",
+      "class": "free",
+      "note": "Command Code free lane. MiniMax M3 via this pipe is fleet-ops#384."
+    },
+    {
+      "id": "opencode",
+      "class": "free",
+      "note": "OpenCode Zen (ledger name opencode-go). hy3-free is live; MiniMax M3 via this pipe is fleet-ops#384."
+    },
+    {
+      "id": "orcarouter",
+      "class": "free",
+      "note": "OrcaRouter rotating free."
+    }
+  ]
+}

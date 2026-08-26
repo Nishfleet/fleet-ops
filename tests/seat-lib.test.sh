@@ -12,8 +12,9 @@
 #      that let groq/openai/gpt-oss-20b through on 2026-08-25).
 #   3. A model capped at 0 in the map (devin/glm-5-2:0, devin/swe-1-7:0)
 #      is rejected even if its provider cap > 0.
-#   4. Healthy allowlisted seats are picked in expiry-first order:
-#      devin -> cursor -> cline -> free -> metered.
+#   4. Healthy allowlisted seats: free lanes first, then prepaid-quota
+#      (alternating), then metered. A prepaid seat mislabeled free is a
+#      config bug the entitled-vs-wired canary catches (fleet-ops#387).
 #   5. rate_limited: excluded while marker fresh (<30min) AND usable_at
 #      future; RETRIED once the marker ages past 30min or usable_at passes.
 #   6. seat_dead=true / credentials_bad / quota_exhausted -> unusable.
@@ -200,10 +201,9 @@ set -e
 grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
   || fail "all-dead: must log the loud NO USABLE SEAT line"
 
-# --- invariant 4: expiry-first order on an empty (usable) ledger ----------
-# Every allowlisted model has no health file -> usable. devin is cap 0, so
-# the first usable seat in order is cursor/composer-2.5 (cursor before cline,
-# free tier after cline).
+# --- invariant 4: free lanes before prepaid on an empty (usable) ledger ---
+# Every allowlisted model has no health file -> usable. commandcode is free;
+# cursor/cline are prepaid-quota (subscription alias). Free wins.
 ledger="$scratch/ledger-clean"
 mkdir -p "$ledger"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
@@ -213,8 +213,8 @@ out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/nul
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "clean ledger: expected a pick, got rc=$rc"
-[[ "$out" == "cursor	composer-2.5" ]] \
-  || fail "clean ledger: expiry-first expected cursor/composer-2.5, got: $out"
+[[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
+  || fail "clean ledger: free-first expected commandcode or ollama, got: $out"
 
 # --- invariant 5: rate_limited retry vs exclusion --------------------------
 now=$(date -u +%s)
@@ -579,7 +579,7 @@ export PI_MODELS_JSON="$scratch/models.json"
 
 ok "allowlist: no-entry provider and cap-0 models rejected"
 ok "loud stall: all-dead returns rc=1 with NO USABLE SEAT, empty stdout"
-ok "expiry-first: cursor/composer-2.5 picked on clean ledger"
+ok "free-first: free lane picked ahead of prepaid on a clean ledger"
 ok "rate_limited: stale marker retried, fresh marker excluded"
 ok "stale observed_at assumed usable (P4-A inversion fixed)"
 ok "credential precheck: empty !cmd / unset \$VAR rejected; set var / literal / no-apiKey fail-open accepted; per-call cache runs !cmd once"
@@ -656,3 +656,72 @@ echo "$live" | grep -q 'pi-issue-wedged.json' \
 grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
   || fail "wedge probe: must log the stuck-activating reap"
 ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
+
+# --- fleet-ops#387: prepaid lanes alternate instead of stacking ------------
+cat >"$scratch/models-rr.json" <<'JSON'
+{
+  "providers": {
+    "alpha": { "models": [ { "id": "a", "cost": { "input": 0 } } ] },
+    "beta":  { "models": [ { "id": "b", "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-rr.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "prepaid_providers_in_order": ["alpha", "beta"],
+  "providers": {
+    "alpha": { "cap": 4, "class": "prepaid-quota", "quota_window": "weekly", "weekly_budget": 10, "models": { "a": 4 } },
+    "beta":  { "cap": 4, "class": "prepaid-quota", "quota_window": "weekly", "weekly_budget": 10, "models": { "b": 4 } }
+  }
+}
+JSON
+ledger="$scratch/ledger-rr"
+mkdir -p "$ledger"
+export PI_MODELS_JSON="$scratch/models-rr.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps-rr.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export PI_PACKET_STATE="$scratch/state-rr"
+mkdir -p "$PI_PACKET_STATE"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+got=""
+for i in 1 2 3 4; do
+  set +e
+  one=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+  set -e
+  got="${got}${one}"$'\n'
+done
+alpha_n=$(printf '%s' "$got" | grep -c '^alpha' || true)
+beta_n=$(printf '%s' "$got" | grep -c '^beta' || true)
+[[ "$alpha_n" == "2" && "$beta_n" == "2" ]] \
+  || fail "prepaid RR: 4 picks across two live prepaid lanes must split 2/2, got alpha=$alpha_n beta=$beta_n picks=$got"
+# Consecutive picks must not be the same provider (never-stack).
+prev=""
+while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  p="${line%%	*}"
+  if [[ -n "$prev" && "$p" == "$prev" ]]; then
+    fail "prepaid RR: consecutive picks stacked on $p (got: $got)"
+  fi
+  prev="$p"
+done <<< "$got"
+ok "prepaid RR: two fixture prepaid lanes, 4 packets, distribution alternates 2/2"
+
+# --- fleet-ops#387: weekly pacing backs off before exhaustion --------------
+export PI_PACKET_STATE="$scratch/state-pace"
+mkdir -p "$PI_PACKET_STATE/prepaid-usage"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+week=$(date -u +%G-W%V)
+# alpha already at 80% of weekly_budget=10 (thresh=8) -> paced; beta under.
+jq -nc --arg w "$week" --argjson c 8 '{week:$w,count:$c}' \
+  > "$PI_PACKET_STATE/prepaid-usage/alpha.json"
+jq -nc --arg w "$week" --argjson c 0 '{week:$w,count:$c}' \
+  > "$PI_PACKET_STATE/prepaid-usage/beta.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+set -e
+[[ "$out" == "beta	b" ]] \
+  || fail "weekly pace: alpha at 80% of budget must be skipped in favour of beta, got: $out"
+ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
+

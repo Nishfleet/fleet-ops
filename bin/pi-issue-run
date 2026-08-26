@@ -11,9 +11,13 @@
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), exit non-zero so systemd's Restart= treats it as a
-#      failure and re-seats. 20 B is enough for a GitHub PR URL or a short
-#      status like 'blocked: proposal posted' (26 B).
+#      to stdout), bench the seat via mark_seat_spawn_fail (short backoff,
+#      same as spawn-fail) and exit non-zero so systemd's Restart= treats
+#      it as a failure and re-seats. Without the bench, pick_seat re-selects
+#      the same still-healthy seat on an intake re-spawn with an empty
+#      tried-seats file (fleet-ops#390 / fleet-ops-378). 20 B is enough
+#      for a GitHub PR URL or a short status like 'blocked: proposal posted'
+#      (26 B).
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
@@ -35,16 +39,14 @@
 #   5. P14 worker credential split: if $WORKER_APP_CREDS_FILE exists
 #      (default ~/.config/fleet-worker/nishfleet-worker.env), mint a fresh
 #      installation token via the nishfleet-worker GitHub App and export
-#      GH_TOKEN for the child pi process. The App's permissions are
+#      it for the child pi process. The App's permissions are
 #      Contents/Pull requests/Issues write + Metadata read — workers
 #      physically cannot push .github/workflows/** or touch protection.
-#      If the creds file is absent OR worker-token mints fails, the script
-#      FALLS THROUGH to the existing gh auth — failure of the new path
-#      cannot break the old one. This is the deterministic counterpart
-#      to the worker-credential-split.sh prerequisite: that script only
-#      captures a fine-grained PAT; this PR replaces it with a GitHub App
-#      identity that is repeatable and fully mechanical after Nish's first
-#      manifest click.
+#      If the creds file is absent, the script falls through to existing
+#      gh auth (pre-P14 behaviour; the human token stays on disk until a
+#      dedicated retirement PR). If the creds file EXISTS and mint fails,
+#      the script SCREAMS (exit 1, DEAD APP IDENTITY) — a dead App must
+#      not silently impersonate the human account (fleet-ops#413).
 #      The marker is byte-compatible with SeatLedgerEntry (seat-health.ts);
 #      pick_seat honours it via the existing usable_at check. This is the
 #      deterministic counterpart to seat-health.ts's response-time hooks:
@@ -159,12 +161,10 @@ trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
 
 seat_log "pi-issue-run: $inst running on $np/$nm (weight=$weight, tried: $(wc -l < "$tried_file") seat(s))"
 
-# --- P14: replace GH_TOKEN with a short-lived installation token ------------
-# Fail-closed by design: if the creds file is absent OR worker-token cannot
-# mint (network, key, app not installed), we leave the inherited GH_TOKEN
-# unset and the child sees the existing gh auth via ~/.config/gh. That is
-# exactly the pre-PR behaviour, so this code path can never make the fleet
-# worse than today.
+# --- P14: mint a short-lived nishfleet-worker installation token ------------
+# Creds absent → fall through to existing gh auth (human token stays until
+# its own retirement PR). Creds present and mint fails → scream, do not
+# impersonate the human account (fleet-ops#413).
 WORKER_CREDS_FILE="${WORKER_APP_CREDS_FILE:-$HOME/.config/fleet-worker/nishfleet-worker.env}"
 if [[ -f "$WORKER_CREDS_FILE" ]]; then
   WORKER_TOKEN_BIN="${WORKER_TOKEN_BIN:-$HOME/.local/bin/worker-token}"
@@ -172,14 +172,18 @@ if [[ -f "$WORKER_CREDS_FILE" ]]; then
     if worker_tok_out="$("$WORKER_TOKEN_BIN" --print 2>/tmp/pi-issue-run-worker-token.err)"; then
       # shellcheck disable=SC2162
       eval "$worker_tok_out"
-      seat_log "pi-issue-run: $inst GH_TOKEN rotated to nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
+      seat_log "pi-issue-run: $inst rotated to nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
       worker_tok_out=""
     else
-      seat_log "pi-issue-run: $inst worker-token mint failed (exit $?); falling through to existing gh auth"
+      mint_rc=$?
+      seat_log "pi-issue-run: $inst DEAD APP IDENTITY — worker-token mint failed (exit $mint_rc); refusing inherited gh auth"
       seat_log "pi-issue-run: $inst worker-token stderr: $(tr '\n' ' ' </tmp/pi-issue-run-worker-token.err 2>/dev/null)"
+      rm -f /tmp/pi-issue-run-worker-token.err
+      exit 1
     fi
   else
-    seat_log "pi-issue-run: $inst $WORKER_TOKEN_BIN not found; falling through to existing gh auth"
+    seat_log "pi-issue-run: $inst DEAD APP IDENTITY — $WORKER_TOKEN_BIN not found; refusing inherited gh auth"
+    exit 1
   fi
   rm -f /tmp/pi-issue-run-worker-token.err
 else
@@ -296,6 +300,17 @@ out_bytes=${out_bytes//[^0-9]/}; out_bytes=${out_bytes:-0}
 
 if (( out_bytes < OUT_MIN )); then
     seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — no-op, exiting 1 so systemd re-seats"
+    # fleet-ops#390: a no-op is a flake on this packet, not proof the seat
+    # is dead. Bench it briefly (SPAWN_FAIL_BACKOFF_S, default 5 min) so
+    # pick_seat skips it on the next Restart AND on an intake re-spawn
+    # that starts with an empty tried-seats file. Without this, the
+    # healthy ledger re-selects the same seat and the unit loops until
+    # StartLimitBurst exhausts (fleet-ops-378: 1 byte stdout, unit dead).
+    if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:no-op:stdout=${out_bytes}B"; then
+        seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via pick_seat (excluded by usable_at in the future)"
+    else
+        seat_log "pi-issue-run: $inst WARN: spawn-fail marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
+    fi
     exit 1
 fi
 

@@ -12,15 +12,21 @@ saying you wanted to. Don't try; open a new issue in 0509 or siterep-public
 for any CI/protection change so Nish's own scope lands it.
 
 If `GH_TOKEN` is empty, the existing gh auth in `~/.config/gh` is in effect —
-that is the pre-P14 behaviour and it still works. Don't get confused by the
-absence.
+that is only the path when the App creds file is absent. If the creds file
+exists and minting fails, the wrapper screams (DEAD APP IDENTITY) instead of
+impersonating the human account.
 
 Hard rules:
 - NEVER `gh issue close`, no exceptions for workers — the merged PR closes it. (An orchestrator-only, evidence-gated close exception exists — FABLE-VERDICT §16 — it is never yours.) Never push to main/master, never deploy.
+- NEVER post a `gate-integrity-attest:` or `verifier-attest:` comment. Those
+  must come from a different identity than the one that authored the PR
+  (nishfleet-worker[bot] implements; a repository admin attests). Posting
+  one yourself is the 2026-08-26 attestation breach. Do not do it.
 - NEVER merge a PR yourself — plain `gh pr merge` is forbidden. After `gh pr create` succeeds, ARM auto-merge instead: `gh pr merge --auto --squash -R Nishfleet/<repo> <pr-number>` — GitHub merges only when every required check is green. If arming errors (auto-merge or protection unavailable on that repo), do not merge manually; leave the PR open and say so in your output.
 - No agent attribution anywhere: no Co-Authored-By trailers, no "Generated with" footers, no agent names in commits, the PR, or issue comments. Use the repo's existing git identity as-is.
 - Stay inside the issue's scope. Problems you discover along the way get filed as NEW issues in the same repo (plain, no labels) — not fixed in this PR.
 - Any unexpected failing command: say so in your output; if it blocks the work, exit nonzero.
+- Mechanical-fix rule (fleet-ops#366): a failure is not fixed until its CLASS is mechanically prevented. If this issue is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), the PR MUST ship a prevention mechanism — a detector that auto-files the ticket, a gate that rejects the pattern, a regression test or drill that proves the guard fires, or observe-to-close wiring — or declare `mechanism-impossible: <reason>` in the PR body. The senior conference auto-rejects a failure-fix with neither. Author the mechanism in this PR; do not wait for the gate to retrofit it.
 
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=):
 The deliverable you just built gets run before you call the issue done. Repo
@@ -66,13 +72,13 @@ D1 schema rule (expand/contract) — applies whenever your diff touches `migrati
 
 Gate-integrity rule — applies on repos that run a `gate-integrity` check (e.g. Nishfleet/0509):
 - **Removing or skipping tests.** A deleted test file, a test renamed out of the suite, any new `it.skip`/`test.skip`/`describe.only`/`.only`/`xit`/`xtest`/`.skipIf`/`test.fails`, or a net drop in `it(`/`test(`/`expect(` assertions all require a `test-removal-justified: <reason>` trailer in the commit that removes the test, or in the PR body. The reason must be the TRUE reason you verified from the code — never a rubber stamp.
-- **Changing gate-owned paths.** Editing `.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, the design-system ratchet or its ceiling file, or the CI runner scripts is a gate-path change. It must be attested by a repository admin with a PR comment whose entire body is exactly:
+- **Changing gate-owned paths.** Editing `.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, the design-system ratchet or its ceiling file, or the CI runner scripts is a gate-path change. You must NEVER post the attestation comment. A repository admin (a different identity from this worker) posts a PR comment whose entire body is exactly:
 
   ```
   gate-integrity-attest: <40-hex current head sha>
   ```
 
-  The attestation is sha-bound: any new commit invalidates it.
+  The attestation is sha-bound: any new commit invalidates it. If you edited a gate-owned path, say so in the PR body and stop; do not attest your own work.
 - **When in doubt, keep the test and note the concern in the PR body instead.** Do not game the gate. If you find a way to bypass these checks, stop and report it.
 
 Steps:

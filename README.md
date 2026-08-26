@@ -32,6 +32,28 @@ explicit manifest; GNU stow was rejected because its directory-sweep semantics
 conflict with the allowlist requirement (only listed files install, nothing
 more).
 
+install.sh refuses to overwrite a live file whose mtime is newer than the
+repo copy. That stops a stale checkout from replacing live seat caps.
+
+### Canonical checkout (fleet-ops#372)
+
+Live install source, the only tree `install.sh` and the heartbeat deploy
+step may run from:
+
+`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
+
+`fleet-heartbeat.service` pins `FLEET_OPS_CHECKOUT` to that path.
+`products/fleet-ops` still points at the worktree parent
+(`/home/nish/workspaces/tooling/fleet-ops`). That parent holds linked
+worktrees and carries the pre-rewrite init history (16 commits with no
+merge-base against `origin/main`). Do not install from it. Do not delete
+it while worktrees are attached.
+
+The drift canary compares live-installed files to `origin/main` blobs, not
+to the checkout working tree, so it cannot self-compare. It also fails if
+any installed unit file or enable-link resolves into `/tmp`, `/run`, or
+`agent-worktrees`.
+
 ### System-scope entries (fleet-ops#71)
 
 The MANIFEST may list entries under `/etc/systemd/system/...` — those are
@@ -222,13 +244,13 @@ user systemd instance (Persistent=true), not by any agent or tmux session.
 Two-tier design (so the heartbeat still works if every LLM is dead):
 
 - **Tier 1 (deterministic, every tick, no LLM)**: queue green fleet PRs,
-  release orphaned claims, recover failed fleet units then page what remains
-  (triage + `hermes send --urgent`), verify scout/intake timers are armed,
+  release orphaned claims, recover failed fleet units then surface what remains
+  in triage (no direct Telegram page), verify scout/intake timers are armed,
   re-examine `agent-blocked` issues, check `pi-seat-health.json` is fresh
   (`observed_at` < 90 min), update the `last-heartbeat:` stamp in the
   playbook. Also re-dispatches repair workers onto orphaned red fleet-worker
   PRs whose worker has exited (debounced one tick, bounded 2 attempts, then
-  fail-loud into the paging path). Plain bash + gh + jq. Zero quota.
+  fail-loud into the unit-escalation path). Plain bash + gh + jq. Zero quota.
   A successful tick also pings healthchecks.io (`HC_URL` in
   `~/.config/fleet-heartbeat/hc.env`, same dead-man pattern as siterep-uptime)
   so a masked or dead timer is visible off-box.

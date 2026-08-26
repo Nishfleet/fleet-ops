@@ -148,9 +148,26 @@ while IFS= read -r u; do
     else
         hit_max=0
     fi
+    # MemoryHigh / MemoryMax are bytes when set, or "infinity" (unset
+    # cap) / "[not set]" (never run) otherwise. `--argjson` parses its
+    # argument as JSON, so a bare non-numeric string like "[not set]"
+    # makes jq exit non-zero — and under `set -euo pipefail` that kills
+    # the whole script instead of recording the unit. (Some jq builds
+    # also reject "infinity" as a literal.) Normalise any non-numeric
+    # high/max to JSON null before handing it to jq (fleet-ops#204).
+    if [[ "$high" =~ ^[0-9]+$ ]]; then
+        high_json="$high"
+    else
+        high_json="null"
+    fi
+    if [[ "$mx" =~ ^[0-9]+$ ]]; then
+        mx_json="$mx"
+    else
+        mx_json="null"
+    fi
     top_units_json=$(jq -c \
         --arg u "$u" --argjson peak "$peak" \
-        --argjson high "${high:-null}" --argjson mx "${mx:-null}" \
+        --argjson high "$high_json" --argjson mx "$mx_json" \
         --arg active "${active:-unknown}" \
         --argjson throttled "$throttled" --argjson hit_max "$hit_max" \
         --argjson top "$top_units_json" \

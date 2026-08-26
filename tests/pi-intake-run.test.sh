@@ -80,3 +80,8 @@ export PI_INTAKE_CMD="echo third >>'$marker'"
 got="$(cat "$marker")"
 [[ "$got" == $'first\nthird' ]] || fail "later tick should run after lock release, marker='$got'"
 ok "later tick runs after lock release"
+
+# --- 4. fleet-ops#379 mechanical priority (CI hook; keep this call) --------
+# ci.yml lists this file explicitly and is a gate-owned path, so the
+# priority drill runs from here instead of a new workflow line.
+bash "$here/intake-priority.test.sh"

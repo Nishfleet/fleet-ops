@@ -218,6 +218,7 @@ jobs:
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         bash tests/escalation-coverage-canary.test.sh
+        bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
         # behavior so a reverted merge can no longer leave its issues closed.

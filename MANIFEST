@@ -28,6 +28,7 @@ prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
+config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
@@ -36,12 +37,20 @@ bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
+# fleet-ops#383: join helper for the rule-enforcement canary step.
+lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
+# fleet-ops#379: mechanical intake priority. critical-path (and
+# escalate-senior, which implies it) claims before the agent-ready tail;
+# a 2/3 claim-ratio guard stops the tail starving. The prompt calls this
+# binary; do not re-introduce issue-number order.
+bin/pi-intake-priority /home/nish/.local/bin/pi-intake-priority
+lib/intake-priority.sh /home/nish/.local/lib/pi-packet/intake-priority.sh
 bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard
@@ -78,6 +87,11 @@ bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-r
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
 # so the first install lands it with zero hands.
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
+# fleet-ops#387: entitled-vs-wired canary. Run by heartbeat-tier1 block 15.
+# Diffs entitled-seats.json against seat-caps.json every tick; missing row,
+# cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
+# and auto-files. No new scheduler.
+bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
 # fleet-ops#157/#378: recurring mechanical blind audit. One oneshot unit +
 # daily timer (primary) + heartbeat drained-board bonus; cadence-overdue
 # screams through tier1 §11. Dispatches a pi reviewer, runs findings through
@@ -85,8 +99,22 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 bin/fleet-blind-audit /home/nish/.local/bin/fleet-blind-audit
 bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
 prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
+# fleet-ops#366: mechanical-fix gate. Conference auto-rejects a failure-fix
+# with no prevention mechanism and no mechanism-impossible: line. Pure
+# evaluator — no dispatcher. Blind audit merges recurrence hits before filing.
+bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-gate
+lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
+prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
+# fleet-ops#388: control-plane restore drill. Proves the rebuild story on a
+# 6h cycle — backup freshness (system restic units, no sudo needed), fleet
+# control-plane files present + parseable (seat-caps, claims index, MANIFEST
+# srcs), and the critical paths under a restic backup source. A failed drill
+# escalates via the global service.d drop-in.
+bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
+systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
+systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26
@@ -108,6 +136,10 @@ systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.
 systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
 systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
 systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
+# fleet-ops#428: pi-transport-check is owned by the pi package, but its
+# OnFailure= was wired to the old direct Telegram page. This drop-in removes
+# the page and keeps only the unit-escalation path.
+systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/10-no-direct-notify.conf
 systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
 systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
@@ -117,6 +149,12 @@ bin/worker-app-bootstrap /home/nish/.local/bin/worker-app-bootstrap
 bin/_worker-app-bootstrap-server.py /home/nish/.local/lib/fleet-worker/_worker-app-bootstrap-server.py
 credentials/app-manifest.json /home/nish/.config/fleet-worker/app-manifest.json
 credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
+# fleet-ops#413: identity-separation gate + App-identity freshness canary.
+# Canary is invoked by heartbeat-tier1 every tick; gate is a pure evaluator
+# for the implementer≠attestor drill (0509 wiring is a follow-up).
+bin/worker-app-canary /home/nish/.local/bin/worker-app-canary
+bin/attest-identity-gate /home/nish/.local/bin/attest-identity-gate
+lib/attest-identity-gate.py /home/nish/.local/lib/pi-packet/attest-identity-gate.py
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
@@ -130,6 +168,12 @@ systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config
 # timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
 # with a rolling 10-run history.
 bin/ram-measure /home/nish/.local/bin/ram-measure
+# fleet-ops#389: ledger-supersession pass on the memory curator. A new
+# decisions-ledger line makes the next curator tick mark conflicting
+# compiled / agent memories SUPERSEDED-BY:<date+title> (no delete, no
+# rewritten prose). Drop-in appends ExecStart on nish-memory-curator.
+bin/memory-ledger-supersede.py /home/nish/.local/bin/memory-ledger-supersede
+systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.config/systemd/user/nish-memory-curator.service.d/10-ledger-supersede.conf
 # P14 tests (not installed — only run from the repo)
 # fleet-ops#71: system-scope RAM governor drop-ins (live in /etc/systemd/system,
 # requires root for install). install.sh --system copies them and runs

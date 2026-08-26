@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# fleet-failure-mechanism-gate — conference criterion for fleet-ops#366.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes.
+# A failure-fix with no prevention mechanism and no mechanism-impossible:
+# declaration is REJECT (exit 1). Otherwise PASS (exit 0).
+#
+# Usage:
+#   fleet-failure-mechanism-gate [--input pr.json]          # evaluate
+#   fleet-failure-mechanism-gate hunt [--input hunt.json]
+#   fleet-failure-mechanism-gate --ledger-line
+#
+# The implementation lives in lib/failure-mechanism-gate.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FAILURE_MECHANISM_GATE_LIB:-$here/../lib/pi-packet/failure-mechanism-gate.py}"
+[ -f "$lib" ] || lib="$here/../lib/failure-mechanism-gate.py"
+[ -f "$lib" ] || { echo "fleet-failure-mechanism-gate: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

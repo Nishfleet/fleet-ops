@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# heartbeat-watchman — the watchman for the watchman (fleet-ops#76).
+# heartbeat-watchman — the watchman for the watchman (fleet-ops#76, #428).
 #
 # Sourced by fleet-heartbeat (dead-man ping on success) and
-# fleet-heartbeat-tier1 (failed-unit repair-then-page, seat-health
+# fleet-heartbeat-tier1 (failed-unit repair-then-triage, seat-health
 # freshness). Also runnable as:
 #   heartbeat-watchman.sh ping|process-failed|seat-health
 #
 # No new units. Reuses healthchecks.io (HC_URL, ping on success only,
-# same pattern as siterep-uptime), hermes send --urgent, and
-# pi-transport-check.service.
+# same pattern as siterep-uptime) and pi-transport-check.service.
+#
+# fleet-ops#428: unit failures do NOT page Nish directly. They are written
+# to the triage file so tier 2 / the unit-escalation drop-in can dispatch an
+# agent. Only Nish-reserved boundary items (money/legal/etc.) reach Telegram
+# via nish-boundary-notify.
 #
 # Test overrides: CURL SYSTEMCTL HERMES JOURNALCTL HC_URL HC_TIMEOUT
 #   FLEET_HEARTBEAT_TRIAGE FLEET_SEAT_HEALTH FLEET_SEAT_HEALTH_MAX_AGE_SEC
@@ -61,6 +65,9 @@ heartbeat_ping_deadman() {
 
 heartbeat_list_failed_units() {
     local unit
+    # fleet-ops#428: --plain suppresses the bullet glyph systemd may place in
+    # the first column of list-units output, which awk '{print $1}' would
+    # otherwise capture as the unit name.
     while IFS= read -r unit; do
         [ -z "$unit" ] && continue
         case "$unit" in
@@ -69,7 +76,7 @@ heartbeat_list_failed_units() {
                 ;;
         esac
         printf '%s\n' "$unit"
-    done < <("$SYSTEMCTL" --user --state=failed --no-legend 2>/dev/null \
+    done < <("$SYSTEMCTL" --user list-units --state=failed --no-legend --plain 2>/dev/null \
                 | awk '{print $1}' || true)
 }
 
@@ -82,18 +89,16 @@ heartbeat_repair_unit() {
 heartbeat_page_units() {
     local n="$1"; shift
     local list="$1"
-    local msg
+    # fleet-ops#428: unit failures are surfaced in triage only. They do NOT
+    # text Nish directly; the unit-escalation drop-in and tier 2 dispatch the
+    # repair. Nish is only reached for Nish-reserved boundary items via
+    # nish-boundary-notify.
     _watchman_loud "UNIT-FAILED" "still failed after repair n=$n :: $list"
-    msg="Fleet: ${n} unit(s) still failed after repair: ${list}. See FLEET-HEARTBEAT-TRIAGE.md"
-    if ! "$HERMES" send -t telegram --urgent "$msg" >/dev/null 2>&1; then
-        _watchman_log "WARN: hermes send failed (triage already written)"
-        return 1
-    fi
-    _watchman_log "failed-units: telegram page sent n=$n"
+    _watchman_log "failed-units: triaged n=$n (no telegram)"
     return 0
 }
 
-# Repair first, page second. Remaining failed units go to triage AND hermes.
+# Repair first, triage second. Remaining failed units are surfaced for tier 2.
 heartbeat_process_failed_units() {
     local unit excerpt list n
     local -a failed=()

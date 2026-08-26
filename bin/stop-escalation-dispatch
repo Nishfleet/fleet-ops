@@ -49,12 +49,15 @@ ts() { date -u +%FT%TZ; }
 reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason",""))' < "$SR" 2>/dev/null || echo "")
 
 # Skip non-fault stops: boundary:* = legitimate human-only stop (money/creds/legal),
-# cooldown_active = circuit already tripped, cooldown holding. Neither is a fresh
-# fault to escalate. Only circuit trips (max_auto_continues, same_error_circuit,
-# no_progress_circuit, continuation_inject_failed), unit-failure from the
-# escalation layer, and unknown reasons escalate.
+# cooldown_active = circuit already tripped, cooldown holding. auditor-resolved
+# is the auditor's closeout write — it changes the STOP-REASON sha256, so
+# PathChanged re-fires; treating it as a fresh fault re-summons the auditor
+# (loop proven 2026-08-26, hash 1fd0e98a). Neither is a fresh fault to escalate.
+# Only circuit trips (max_auto_continues, same_error_circuit, no_progress_circuit,
+# continuation_inject_failed), unit-failure from the escalation layer, and
+# unknown reasons escalate.
 case "$reason" in
-  boundary:*|cooldown_active) exit 0 ;;
+  boundary:*|cooldown_active|auditor-resolved) exit 0 ;;
 esac
 
 hash=$(sha256sum "$SR" | awk '{print $1}')
@@ -125,6 +128,7 @@ FIX it via worker-lane discipline (dispatch a sealed packet to a cheap lane; or 
 CLEAR the cooldown marker only when the cause is fixed (the stop-judge cooldown is internal state — clearing means the root cause is resolved, not disabling the extension).
 RE-QUEUE the halted item in /home/nish/workspaces/agent-state/READY-WORK.md (which auto-dispatches via ready-work.path).
 APPEND your diagnosis + action to /home/nish/workspaces/agent-state/AUDITOR-LOG.md.
+Your printed reply MUST include a diagnosis block the dispatcher can grep: a `## <ISO> — SENIOR AUDITOR` heading, or a line starting `**Summoning trip:**` or `**Root cause`. Without it the dispatcher records DISPATCH-NO-BLOCK and retries. Do not rewrite STOP-REASON.json to a new reason unless you must; auditor-resolved is a closeout skip, not a fresh trip.
 Worked example (fresh case study): restore-chain-0509 halted because it polled deploys by mergeCommit SHA, but 0509's merge queue rewrites SHAs — the fix was query-by-recency, and the wave was re-queued. Apply this pattern: find the wrong assumption, fix the query/method, re-queue.
 Do not wait for approval. Act now.
 

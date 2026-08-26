@@ -7,8 +7,14 @@
 #   3. Builds a sealed packet from prompts/blind-audit.md + live context.
 #   4. Dispatches a pi reviewer to produce findings.json and report.md.
 #   5. Runs each finding through the local panel (stub until #146).
-#   6. Files accepted findings as gap-audit issues linked to the report.
-#   7. Writes a verdict log and the full report to agent-state.
+#   6. Files accepted findings as gap-audit issues linked to the report,
+#      then appends the filed URLs back into report.md (the reviewer is
+#      forbidden from filing, so the report must not be the last word).
+#   7. Writes a verdict log (including issue URLs) to agent-state.
+#   8. Exits 1 if any PASS finding was not filed (cap skips do not count).
+#
+# AUDIT_DRILL=1 skips the reviewer and files a fixture finding, proving
+# step 6 without a seat. Used by tests/fleet-blind-audit.test.sh.
 #
 # The reviewer is the intelligence; this script is the mechanical harness.
 # No hand-built orchestration: one oneshot unit + one pi call + repo scripts.
@@ -25,6 +31,8 @@
 #   AUDIT_PANEL_BIN         panel binary (default: ~/.local/bin/fleet-blind-audit-panel)
 #   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 5)
 #   AUDIT_DRY_RUN           if 1, do not run pi or file issues
+#   AUDIT_DRILL             if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
+#   AUDIT_DRILL_FINDINGS    findings JSON for AUDIT_DRILL=1
 #   AUDIT_FAKE_NOW          ISO-8601 UTC override for tests
 
 set -euo pipefail
@@ -44,6 +52,7 @@ PI_BIN="${AUDIT_PI_BIN:-$HOME/.local/bin/pi}"
 PANEL_BIN="${AUDIT_PANEL_BIN:-$HOME/.local/bin/fleet-blind-audit-panel}"
 MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-5}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
+DRILL="${AUDIT_DRILL:-0}"
 
 # Resolve this script's repo root for fallbacks when not installed yet.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -116,17 +125,18 @@ fi
 update_plan_stamp "last-blind-audit-run" "$NOW_ISO (started)"
 
 # --- preflight -------------------------------------------------------------
-[ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
-[ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
-[ -f "$SEAT_LIB" ] || { log "FATAL: seat-lib missing: $SEAT_LIB"; exit 2; }
 [ -x "$PANEL_BIN" ] || { log "FATAL: panel missing: $PANEL_BIN"; exit 2; }
 [ -d "$REPO_ROOT" ] || { log "FATAL: repo root missing: $REPO_ROOT"; exit 2; }
 command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
 command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
-
-# Source the shared seat logic. This also sets XDG_RUNTIME_DIR, HOME, etc.
-# shellcheck source=/dev/null
-source "$SEAT_LIB"
+if [ "$DRILL" != "1" ]; then
+    [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
+    [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
+    [ -f "$SEAT_LIB" ] || { log "FATAL: seat-lib missing: $SEAT_LIB"; exit 2; }
+    # Source the shared seat logic. This also sets XDG_RUNTIME_DIR, HOME, etc.
+    # shellcheck source=/dev/null
+    source "$SEAT_LIB"
+fi
 
 # Ensure the gap-audit label exists in the target repo. Swallow "already exists".
 if [ "$DRY_RUN" != "1" ]; then
@@ -137,6 +147,29 @@ if [ "$DRY_RUN" != "1" ]; then
     fi
 fi
 
+# --- pick a capable seat, or load a drill fixture -------------------------
+if [ "$DRILL" = "1" ]; then
+    drill_src="${AUDIT_DRILL_FINDINGS:-}"
+    if [ -z "$drill_src" ] || [ ! -f "$drill_src" ]; then
+        log "FATAL: AUDIT_DRILL=1 requires AUDIT_DRILL_FINDINGS pointing at a findings JSON file"
+        exit 2
+    fi
+    cp "$drill_src" "$FINDINGS_JSON"
+    if [ ! -f "$REPORT_MD" ]; then
+        {
+            printf '# Fleet blind audit drill — %s\n\n' "$NOW_ISO"
+            printf 'Repo: `%s`\n\n' "$REPO"
+            printf 'Fixture: `%s`\n\n' "$drill_src"
+        } > "$REPORT_MD"
+    fi
+    if ! jq -e . "$FINDINGS_JSON" >/dev/null 2>&1; then
+        log "FATAL: drill findings are not valid JSON: $FINDINGS_JSON"
+        exit 2
+    fi
+    findings=$(jq -c . "$FINDINGS_JSON")
+    deliberate_json='[]'
+    log "DRILL: loaded findings from $drill_src"
+else
 # --- pick a capable seat ---------------------------------------------------
 seat=$(pick_seat "" "" 1 "" || true)
 if [ -z "$seat" ]; then
@@ -150,10 +183,13 @@ log "seat selected: $provider/$model"
 # --- build context ---------------------------------------------------------
 # Include a concise snapshot so the reviewer does not have to re-discover paths.
 repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort | head -200)
-systemctl_failed=$(systemctl --user --state=failed --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' | head -50 || true)
+systemctl_failed=$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' | head -50 || true)
 systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' | head -50 || true)
 open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels -L 50 2>/dev/null || echo '[]')
+closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt -L 100 2>/dev/null || echo '[]')
 recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
+GATE_LIB="${AUDIT_MECHANISM_GATE:-$HOME/.local/lib/pi-packet/failure-mechanism-gate.py}"
+[ -f "$GATE_LIB" ] || GATE_LIB="$repo_fallback/lib/failure-mechanism-gate.py"
 
 # Parse deliberate-states into a JSON list for the packet.
 deliberate_json='[]'
@@ -302,6 +338,31 @@ if [ ! -f "$REPORT_MD" ]; then
     } > "$REPORT_MD"
 fi
 
+# --- mechanical recurrence hunt (fleet-ops#366) ----------------------------
+# Closed failure-fixes whose signal key is firing again are automatic
+# findings. Merged here so filing does not depend on the reviewer noticing.
+if [ -f "$GATE_LIB" ]; then
+    failed_json=$(printf '%s\n' "$systemctl_failed" | jq -R -s -c 'split("\n") | map(select(length>0))')
+    hunt_in=$(jq -n \
+        --argjson closed "${closed_issues:-[]}" \
+        --argjson failed "$failed_json" \
+        --argjson open "${open_issues:-[]}" \
+        '{closed_issues:$closed, failed_units:$failed, open_issues:$open}')
+    hunt_out=$(printf '%s' "$hunt_in" | python3 "$GATE_LIB" hunt)
+    if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
+            findings=$(printf '%s' "$findings" | jq '{findings: .}')
+        else
+            findings='{"findings":[]}'
+        fi
+    fi
+    findings=$(jq -s '{findings: (.[0].findings + .[1].findings)}' \
+        <(printf '%s' "$findings") <(printf '%s' "$hunt_out"))
+    log "recurrence hunt merged ($(printf '%s' "$hunt_out" | jq '.findings | length') hits)"
+else
+    log "WARN: mechanical-fix gate missing ($GATE_LIB); recurrence hunt skipped"
+fi
+
 # --- findings empty? -------------------------------------------------------
 findings_count=$(printf '%s' "$findings" | jq '(.findings // .) | length')
 if [ "$findings_count" -eq 0 ]; then
@@ -312,11 +373,14 @@ if [ "$findings_count" -eq 0 ]; then
 fi
 
 log "findings count: $findings_count"
+fi # DRILL vs reviewer
 
 # --- run panel and file issues ---------------------------------------------
 filed=0
+unfiled_pass=0
 panel_input=$(mktemp)
-trap 'rm -f "$panel_input"' EXIT
+body_file=$(mktemp)
+trap 'rm -f "$panel_input" "$body_file"' EXIT
 
 # Pre-fetch open gap-audit issues and recent merges once for the panel.
 open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || echo '[]')
@@ -362,41 +426,70 @@ while IFS= read -r finding; do
     verdict=$(printf '%s' "$verdict_json" | jq -r '.verdict')
     reason=$(printf '%s' "$verdict_json" | jq -r '.reason // ""')
     loud=$(printf '%s' "$verdict_json" | jq -r '.loud // false')
+    issue_url=""
 
-    # Log verdict.
+    if [ "$verdict" != "PASS" ]; then
+        log "finding $rank: PANEL-FAIL ($reason)"
+    elif [ "$filed" -ge "$MAX_FINDINGS" ]; then
+        reason="skipped: max findings $MAX_FINDINGS reached"
+        log "finding $rank: SKIP ($reason)"
+    else
+        # --body-file avoids ARG_MAX on large findings and keeps % characters
+        # in the body from being interpreted by printf-as-format.
+        {
+            printf '%s\n\n' "$body"
+            printf '**Evidence:** %s\n\n' "$evidence"
+            printf '**Severity:** %s\n\n' "$severity"
+            printf '**Report:** %s\n\n' "$REPORT_MD"
+            printf '*Filed by fleet-blind-audit at %s.*\n' "$NOW_ISO"
+        } > "$body_file"
+
+        set +e
+        new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit 2>&1)
+        new_rc=$?
+        set -e
+        if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
+            issue_url=$(printf '%s\n' "$new_issue" | awk '/https?:\/\//{print; exit}')
+            [ -n "$issue_url" ] || issue_url="$new_issue"
+            log "finding $rank: FILED $issue_url"
+            filed=$((filed + 1))
+        else
+            reason="gh issue create failed: $new_issue"
+            log "finding $rank: FAILED to file issue ($new_issue)"
+            unfiled_pass=$((unfiled_pass + 1))
+        fi
+    fi
+
     jq -n \
         --arg rank "$rank" \
         --arg title "$title" \
         --arg verdict "$verdict" \
         --arg reason "$reason" \
+        --arg issue "$issue_url" \
         --argjson loud "$loud" \
-        -c '{timestamp: (now | todate), rank:$rank, title:$title, verdict:$verdict, reason:$reason, loud:$loud}' >> "$VERDICTS_LOG"
-
-    if [ "$verdict" != "PASS" ]; then
-        log "finding $rank: PANEL-FAIL ($reason)"
-        continue
-    fi
-
-    if [ "$filed" -ge "$MAX_FINDINGS" ]; then
-        log "finding $rank: SKIP (max findings $MAX_FINDINGS reached)"
-        continue
-    fi
-
-    issue_body=$(printf '%s\n\n**Evidence:** %s\n\n**Severity:** %s\n\n**Report:** %s\n\n*Filed by fleet-blind-audit at %s.*' \
-        "$body" "$evidence" "$severity" "$REPORT_MD" "$NOW_ISO")
-
-    set +e
-    new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body "$issue_body" --label gap-audit 2>&1)
-    new_rc=$?
-    set -e
-    if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
-        log "finding $rank: FILED $new_issue"
-        filed=$((filed + 1))
-    else
-        log "finding $rank: FAILED to file issue ($new_issue)"
-    fi
+        -c '{timestamp: (now | todate), rank:$rank, title:$title, verdict:$verdict, reason:$reason, issue:$issue, loud:$loud}' >> "$VERDICTS_LOG"
 done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
 
-log "audit complete: filed=$filed"
+# The reviewer is forbidden from filing, and writes "no GitHub issues filed"
+# into report.md. Step 6 is this harness: append the actual filing ledger so
+# a human reading the report cannot conclude the panel produced zero issues.
+{
+    printf '\n## Filing results\n\n'
+    printf 'The reviewer does not file GitHub issues. This harness does, after the panel.\n\n'
+    if [ -s "$VERDICTS_LOG" ]; then
+        printf '| Rank | Verdict | Issue or reason |\n'
+        printf '|---|---|---|\n'
+        jq -r '"| \(.rank) | \(.verdict) | \(if (.issue // "") != "" then .issue else (.reason // "—") end) |"' "$VERDICTS_LOG"
+        printf '\n'
+    fi
+    printf 'Filed: %s (cap %s). Unfiled PASS findings: %s.\n' "$filed" "$MAX_FINDINGS" "$unfiled_pass"
+} >> "$REPORT_MD"
+
+log "audit complete: filed=$filed unfiled_pass=$unfiled_pass"
+if [ "$unfiled_pass" -gt 0 ]; then
+    update_plan_stamp "last-blind-audit-run" "$NOW_ISO (failed, filed=$filed unfiled_pass=$unfiled_pass)"
+    log "FATAL: $unfiled_pass PASS finding(s) were not filed"
+    exit 1
+fi
 update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, filed=$filed)"
 exit 0

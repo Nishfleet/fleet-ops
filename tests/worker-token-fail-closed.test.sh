@@ -117,6 +117,8 @@ grep -q 'falling through to existing gh auth' "$issue_run" \
   || fail "pi-issue-run must log 'falling through to existing gh auth' when creds are absent"
 grep -q 'WORKER_APP_CREDS_FILE' "$issue_run" \
   || fail "pi-issue-run must source WORKER_APP_CREDS_FILE"
+grep -q 'DEAD APP IDENTITY' "$issue_run" \
+  || fail "pi-issue-run must scream DEAD APP IDENTITY when creds exist and mint fails"
 
 # --- invariant 5: source-of-truth cross-check ------------------------------
 # Match what the manifest claims (contents/pull_requests/issues write,
@@ -128,10 +130,17 @@ grep -q 'WORKER_APP_CREDS_FILE' "$issue_run" \
 # own repo list at GitHub's side.
 manifest="$repo_root/credentials/app-manifest.json"
 for k in contents pull_requests issues metadata; do
-  jq -e --arg k "$k" '.permissions[$k]' "$manifest" >/dev/null \
-    || fail "manifest missing permission key: $k"
+  jq -e --arg k "$k" '.default_permissions[$k]' "$manifest" >/dev/null \
+    || fail "manifest missing default_permissions key: $k"
 done
 
 ok "worker-token fails closed on missing/empty/invalid creds"
 ok "pi-issue-run fall-through path is present and indexed"
 ok "manifest permissions exactly match the audit cross-check"
+
+# fleet-ops#413: identity-separation drill, App-identity canary, and
+# pi-issue-run scream path. Chained here because the P14 CI job cannot
+# gain a new workflow step (nishfleet-worker has no Workflows permission).
+bash "$here/attest-identity-gate.test.sh"
+bash "$here/worker-app-canary.test.sh"
+bash "$here/pi-issue-run-app-identity.test.sh"

@@ -103,6 +103,8 @@ termination: <one exact verification command whose exit 0 means done; must be ru
 
 **Quality gate:** If you cannot write `termination:` as a concrete command (not prose), drop the candidate.
 
+**Mechanical-fix rule (fleet-ops#366):** if the candidate is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), `accept:` MUST require a prevention mechanism (detector that auto-files the ticket, gate that rejects the pattern, regression test/drill that proves the guard fires, observe-to-close) or an explicit `mechanism-impossible: <reason>` the conference will judge. Do not file a fix-shaped issue whose acceptance is "change the code and merge".
+
 **D1 schema gate (expand/contract):** if a candidate would make a worker touch `migrations/**`, do NOT file it as one issue. Rollback rolls back code, never data — D1, KV, R2 and Durable Objects sit outside the Worker version and D1 has no down-migrations — so a migration that breaks the previous code makes auto-revert silently impossible. File **one issue per phase**, in this order, each naming its phase in the title:
 
 1. add nullable column (or new table)
@@ -120,7 +122,7 @@ If you cannot decompose the candidate into phases, drop it.
 
 **Gate-integrity spec-quality gate:** if a candidate would make a worker remove or skip a test, or edit a gate-owned path (`.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, design-system ratchet/ceiling, CI runner scripts), the issue spec must require:
 - A `test-removal-justified: <true reason>` trailer in the commit that removes or skips the test, if any test is removed or skipped.
-- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited.
+- A `gate-integrity-attest: <40-hex current head sha>` comment from a repository admin on the resulting PR, if a gate-owned path is edited. The attestor must be a different identity from the PR author (nishfleet-worker[bot] cannot attest).
 - If the worker is not sure the test is truly superseded or false, the `accept:` must say to keep the test and note the concern in the PR body instead.
 Do not file candidates whose acceptance criteria ask a worker to bypass these gates.
 

@@ -27,6 +27,8 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; rc=0
 manifest="$here/MANIFEST"
+# Tests inject a stub via SYSTEMCTL= (fleet-ops#290). Live installs leave this unset.
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 mode=""
 check_system=0
@@ -93,6 +95,44 @@ unit_file_matches() {
         return 0
     fi
     return 1
+}
+
+# Returns 0 if dest exists and its live target is a different file whose
+# mtime is newer than the repo copy. install.sh must refuse that overwrite
+# (fleet-ops#372): running from a stale checkout would otherwise replace
+# live seat caps / units with older repo copies.
+live_newer_than_repo() {
+    local dest=$1 repo=$2
+    local live live_m repo_m
+    if [ -L "$dest" ]; then
+        live=$(readlink -f "$dest" 2>/dev/null || true)
+    elif [ -f "$dest" ]; then
+        live=$dest
+    else
+        return 1
+    fi
+    [ -n "$live" ] && [ -e "$live" ] || return 1
+    [ "$live" = "$repo" ] && return 1
+    live_m=$(stat -c %Y "$live" 2>/dev/null || echo 0)
+    repo_m=$(stat -c %Y "$repo" 2>/dev/null || echo 0)
+    [ "$live_m" -gt "$repo_m" ]
+}
+
+# fleet-ops#372: the hand-built heartbeat drop-in pointed FLEET_OPS_DRIFT_BIN
+# at a GC-able worktree and made the canary self-compare. Canonical checkout
+# is now pinned on fleet-heartbeat.service; remove the paper-over if present.
+# Only touch the drop-in when this MANIFEST actually installs into
+# $HOME/.config/systemd/user — scratch tests that use a fake dest tree
+# (and the real HOME) must not delete the live drop-in.
+remove_papered_heartbeat_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin="${user_systemd}/fleet-heartbeat.service.d/10-deploy-checkout.conf"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        echo "removed paper-over drop-in: $dropin"
+        user_unit_changed=1
+    fi
 }
 
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
@@ -165,6 +205,11 @@ process_entry() {
   else
     # User scope: symlink, idempotent. mkdir -p so nested drop-in dirs
     # (e.g. vps-weekly-update.service.d/) exist on first install.
+    if live_newer_than_repo "$dest" "$repo"; then
+        echo "REFUSE: $dest is newer than repo copy $repo (will not overwrite live config)"
+        rc=1
+        return 0
+    fi
     if is_unit_src "$src" && ! unit_file_matches "$dest" "$repo"; then
         user_unit_changed=1
     fi
@@ -199,11 +244,12 @@ if [ "$mode" = "--" ]; then
 fi
 
 if [ "$do_user_install" = 1 ]; then
+  remove_papered_heartbeat_dropin
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
   if [ "$user_unit_changed" = 1 ]; then
-    systemctl --user daemon-reload
+    "$SYSTEMCTL" --user daemon-reload
   fi
   # Enable every non-template, [Install]-carrying unit declared by MANIFEST.
   # .path and .timer are also started with --now; .service is enabled only
@@ -212,14 +258,14 @@ if [ "$do_user_install" = 1 ]; then
     for unit in "${to_enable[@]}"; do
       case "$unit" in
         *.path|*.timer)
-          if ! systemctl --user is-enabled "$unit" >/dev/null 2>&1; then
-            systemctl --user enable --now "$unit"
+          if ! "$SYSTEMCTL" --user is-enabled "$unit" >/dev/null 2>&1; then
+            "$SYSTEMCTL" --user enable --now "$unit"
             echo "enabled+started: $unit"
           fi
           ;;
         *.service)
-          if ! systemctl --user is-enabled "$unit" >/dev/null 2>&1; then
-            systemctl --user enable "$unit"
+          if ! "$SYSTEMCTL" --user is-enabled "$unit" >/dev/null 2>&1; then
+            "$SYSTEMCTL" --user enable "$unit"
             echo "enabled: $unit"
           fi
           ;;
@@ -231,11 +277,11 @@ if [ "$do_user_install" = 1 ]; then
   # path unit (fired by intake-repos.json changes) and the 30-minute timer
   # can be safely re-enabled. The loop above already handles these two, but
   # the historical call is kept here as a no-op safety net.
-  if ! systemctl --user is-enabled intake-reconcile.path >/dev/null 2>&1; then
-    systemctl --user enable --now intake-reconcile.path
+  if ! "$SYSTEMCTL" --user is-enabled intake-reconcile.path >/dev/null 2>&1; then
+    "$SYSTEMCTL" --user enable --now intake-reconcile.path
   fi
-  if ! systemctl --user is-enabled intake-reconcile.timer >/dev/null 2>&1; then
-    systemctl --user enable --now intake-reconcile.timer
+  if ! "$SYSTEMCTL" --user is-enabled intake-reconcile.timer >/dev/null 2>&1; then
+    "$SYSTEMCTL" --user enable --now intake-reconcile.timer
   fi
   # fleet-ops#183: the 0509 daily-market-signal timer ships in MANIFEST with
   # [Install], but was never enabled, so the cron never scheduled. Dedicated
@@ -243,8 +289,8 @@ if [ "$do_user_install" = 1 ]; then
   # pi-scout@) are instantiated by the reconciler, and siterep-deploy.timer
   # deliberately omits [Install] so it cannot be auto-started.
   if [ -f "$here/systemd/agent-cron-0509-daily-market-signal.timer" ]; then
-    if ! systemctl --user is-enabled agent-cron-0509-daily-market-signal.timer >/dev/null 2>&1; then
-      systemctl --user enable --now agent-cron-0509-daily-market-signal.timer
+    if ! "$SYSTEMCTL" --user is-enabled agent-cron-0509-daily-market-signal.timer >/dev/null 2>&1; then
+      "$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signal.timer
     fi
   fi
 elif [ "$do_system_install" = 1 ]; then

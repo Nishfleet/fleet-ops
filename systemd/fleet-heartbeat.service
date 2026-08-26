@@ -18,13 +18,21 @@ Description=Fleet orchestrator heartbeat (durable, session-independent)
 #     the page; no auto-retry, no fallback, no --collect).
 #
 # No polling loops inside the script; one pass per timer fire.
-OnFailure=fleet-heartbeat-failed-notify.service
+# fleet-ops#428: direct Telegram paging removed. A failed heartbeat falls
+# through to the global unit-escalation drop-in (STOP-REASON -> senior
+# auditor). Nish is only reached for Nish-reserved boundary items via
+# nish-boundary-notify.
 
 [Service]
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Canonical live-install checkout (fleet-ops#372). The products/fleet-ops
+# symlink still points at the worktree parent (pre-rewrite history, do not
+# install from it). Pinning here replaces the hand-built
+# fleet-heartbeat.service.d/10-deploy-checkout.conf drop-in.
+Environment=FLEET_OPS_CHECKOUT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 EnvironmentFile=-/home/nish/.config/fleet-heartbeat/hc.env
 WorkingDirectory=/home/nish
 ExecStart=/home/nish/.local/bin/fleet-heartbeat

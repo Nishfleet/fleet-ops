@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet control-plane restore drill — 6h cycle (fleet-ops#388)
+# Named reason: the rebuild story is a continuity invariant with no event
+# signal (a stale/corrupt backup is silent). 6h catches a stale daily backup
+# within one waking window without noising the triage file every heartbeat
+# tick. The drill itself is cheap (no restic I/O).
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+RandomizedDelaySec=15min
+Persistent=true
+AccuracySec=30min
+
+[Install]
+WantedBy=timers.target

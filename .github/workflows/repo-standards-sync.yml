@@ -24,6 +24,10 @@ name: Repo standards sync
 #     deploy.yml; adding the caller would double-deploy — excluded until a
 #     separate convergence lands). Per-repo deploy settings live in each
 #     repo's .github/deploy-config.json, read by the reusable workflow.
+#   - config/rule-enforcement.json -> Nishfleet repos except fleet-ops
+#     (fleet-ops#383 portable-standards: every standing rule names its
+#     enforcer). The live canary stays in fleet-heartbeat; this file is the
+#     inherited matrix.
 #
 # Blocked on: FLEET_SYNC_PAT secret (contents+workflows+pull-requests write
 # across Nishfleet + nish3451). Fails LOUD with an actionable message if absent.
@@ -212,6 +216,20 @@ jobs:
             echo "        dest: .github/workflows/red-on-main-watch.yml"
             echo "    repos: |"
             while IFS= read -r r; do echo "      $r"; done < repos-red-on-main.txt
+          } >> .github/sync.yml
+          # Group 5: rule-enforcement.json -> Nishfleet repos EXCEPT fleet-ops
+          # (source of truth). Portable-standards (08-25): future repos inherit
+          # the matrix so a standing rule without an enforcer is visible
+          # everywhere. The live canary stays in fleet-heartbeat on the VPS
+          # (no new scheduler). nish3451 personal repos are skipped the same
+          # way as red-on-main-watch — this file is Nishfleet control-plane.
+          grep -E '^Nishfleet/' repos-all.txt | grep -vxE 'Nishfleet/fleet-ops' > repos-rule-enforcement.txt || true
+          {
+            echo "  - files:"
+            echo "      - source: config/rule-enforcement.json"
+            echo "        dest: config/rule-enforcement.json"
+            echo "    repos: |"
+            while IFS= read -r r; do echo "      $r"; done < repos-rule-enforcement.txt
           } >> .github/sync.yml
           echo "--- generated .github/sync.yml ---"
           cat .github/sync.yml

@@ -67,10 +67,12 @@ onf_dir="$scratch/on_failure"
 mkdir -p "$onf_dir"
 
 # --- fake systemctl ---------------------------------------------------------
+# Handles both `--user show` (VPS-plane blocks 1-9) and bare `show`
+# (block 10 backup staleness, system-scope restic units — no --user).
 systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
 #!/usr/bin/env bash
-shift  # consume --user
+[[ "${1:-}" == "--user" ]] && shift
 cmd="$1"; shift
 case "$cmd" in
   list-units)
@@ -82,7 +84,13 @@ case "$cmd" in
     exit 0
     ;;
   show)
-    unit="$1"
+    unit="$1"; shift
+    prop="${1#--property=}"; prop="${prop#--value}"
+    # Block 10: system-scope restic units. State lives in BACKUP_STATE_DIR.
+    if [[ -n "${BACKUP_STATE_DIR:-}" ]] && [[ -f "${BACKUP_STATE_DIR}/${unit}.${prop}" ]]; then
+      cat "${BACKUP_STATE_DIR}/${unit}.${prop}"
+      exit 0
+    fi
     if [[ -f "${ON_FAILURE_DIR:-}/$unit" ]]; then
       cat "${ON_FAILURE_DIR:-}/$unit"
     else
@@ -109,11 +117,97 @@ export FLEET_ESCALATION_CANARY_BRIDGE="$state/.red-check-senior-auditor-bridge"
 export LOADED_UNITS="$loaded"
 export ON_FAILURE_DIR="$onf_dir"
 
+# Block 10 (fleet-ops#388): backup-staleness state for the fake systemctl.
+backup_state="$scratch/backup_state"
+mkdir -p "$backup_state"
+export BACKUP_STATE_DIR="$backup_state"
+export FLEET_RESTIC_BACKUP_TIMER="restic-r2-backup.timer"
+export FLEET_RESTIC_BACKUP_SERVICE="restic-r2-backup.service"
+export FLEET_RESTIC_STALENESS_HOURS=30
+
+# write_backup_fresh — green backup: timer active, fired 5h ago, service success.
+write_backup_fresh() {
+  local last
+  last="$(date -u -d '5 hours ago' '+%a %Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date -u '+%a %Y-%m-%d %H:%M:%S %Z')"
+  printf 'active\n' >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.ActiveState"
+  printf '%s\n' "$last" >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.LastTriggerUSec"
+  printf 'success\n' >"$backup_state/${FLEET_RESTIC_BACKUP_SERVICE}.Result"
+}
+
+# write_backup_stale — timer active but last fired 48h ago (> 30h threshold).
+write_backup_stale() {
+  local last
+  last="$(date -u -d '48 hours ago' '+%a %Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date -u '+%a %Y-%m-%d %H:%M:%S %Z')"
+  printf 'active\n' >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.ActiveState"
+  printf '%s\n' "$last" >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.LastTriggerUSec"
+  printf 'success\n' >"$backup_state/${FLEET_RESTIC_BACKUP_SERVICE}.Result"
+}
+
+# write_backup_failed — timer active + fresh, but last service Result=failed.
+write_backup_failed() {
+  write_backup_fresh
+  printf 'failed\n' >"$backup_state/${FLEET_RESTIC_BACKUP_SERVICE}.Result"
+}
+
+# write_backup_inactive — timer not active.
+write_backup_inactive() {
+  printf 'inactive\n' >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.ActiveState"
+  printf '\n' >"$backup_state/${FLEET_RESTIC_BACKUP_TIMER}.LastTriggerUSec"
+  printf 'success\n' >"$backup_state/${FLEET_RESTIC_BACKUP_SERVICE}.Result"
+}
+
 # intake-repos.json + fleet-repos.json defaults (overridden per scenario).
 intake_json="$repo/config/intake-repos.json"
 redpr_json="$state/fleet-repos.json"
 export FLEET_INTAKE_REPOS_JSON="$intake_json"
 export FLEET_REDPR_REPOS_JSON="$redpr_json"
+
+# fleet-ops#383: step 9 joins a fixture vault against a matching matrix so
+# existing two-plane scenarios stay green. Auto-file stays off unless a
+# drill turns it on with a fake gh.
+export FLEET_STANDING_RULES="$scratch/standing-rules.md"
+export FLEET_DECISIONS_LEDGER="$scratch/decisions-ledger.md"
+export FLEET_RULE_ENFORCEMENT_JSON="$repo/config/rule-enforcement.json"
+export FLEET_RULE_ENFORCEMENT_LIB="$repo_root/lib/rule-enforcement.py"
+export FLEET_RULE_ENFORCEMENT_FILE_ISSUES=0
+export FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z"
+
+write_covered_vault() {
+  cat >"$FLEET_STANDING_RULES" <<'EOF'
+# fixture standing rules
+## Covered fixture rule (Nish, 2026-08-26)
+A rule the matrix already covers.
+EOF
+  cat >"$FLEET_DECISIONS_LEDGER" <<'EOF'
+# fixture ledger
+## Ledger
+### Product / fleet
+- 2026-08-26 | covered ledger rule | a decision the matrix already covers
+EOF
+  mkdir -p "$repo/config"
+  cat >"$FLEET_RULE_ENFORCEMENT_JSON" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "sr-covered-fixture",
+      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
+      "mechanism": "test gate",
+      "proof": "tests/escalation-coverage-canary.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-covered-fixture",
+      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
+      "mechanism": "test gate",
+      "proof": "tests/escalation-coverage-canary.test.sh",
+      "status": "enforced"
+    }
+  ]
+}
+EOF
+}
 
 write_intake() {
   # $* = repo names (short, no owner prefix)
@@ -171,6 +265,9 @@ WF
   rm -f "$FLEET_ESCALATION_CANARY_DELIVERY" "$FLEET_ESCALATION_CANARY_REDCI" "$FLEET_ESCALATION_CANARY_BRIDGE"
   rm -f "$repo/.github/workflows/ci-failure-escalation.yml" "$repo/.github/scripts/ci-failure-escalation-detector.mjs"
   rm -rf "${repo:?}/lib" "${repo:?}/systemd"
+  write_covered_vault
+  # Block 10 default: green backup so existing two-plane scenarios stay green.
+  write_backup_fresh
 }
 
 # ============================================================================
@@ -465,4 +562,143 @@ grep -q 'terminal delivery not wired (#76)' "$triage" || fail "scenario11: triag
 ! grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario11: incomplete wiring must be PENDING not VIOLATION"
 ok "scenario11: #76 wiring incomplete -> PENDING naming the delivery gap"
 
+# ============================================================================
+# Scenario 12: live bin/ wrappers that invoke pi --print must be sanctioned
+# ============================================================================
+# Catches the #351 omission: pi-intake-repair-run was wired to a unit and
+# MANIFEST but never added to SANCTIONED_PI_RUNNERS, so every heartbeat tick
+# failed the canary (auditor summon 2026-08-26T16:18Z).
+canary_src="$repo_root/bin/fleet-escalation-canary"
+mapfile -t live_pi_runners < <(
+  grep -R -l --exclude='fleet-escalation-canary' \
+    -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
+    "$repo_root/bin" 2>/dev/null || true
+)
+[[ ${#live_pi_runners[@]} -gt 0 ]] || fail "scenario12: expected live pi wrappers under bin/"
+for f in "${live_pi_runners[@]}"; do
+  name=$(basename "$f")
+  grep -qE "^[[:space:]]+${name}$" "$canary_src" \
+    || fail "scenario12: bin/$name invokes pi --print but is missing from SANCTIONED_PI_RUNNERS"
+done
+ok "scenario12: every live bin/ pi --print wrapper is on SANCTIONED_PI_RUNNERS"
+
 ok "escalation-coverage-canary: covers VPS + GitHub planes, exclusions, and pending holes"
+
+# ============================================================================
+# Scenario 12 (fleet-ops#388): backup stale -> VIOLATION naming staleness
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_backup_stale
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario12: must exit 1 (stale backup), got $env_rc ($env_out)"
+grep -q 'backup staleness' "$triage" || fail "scenario12: triage must name backup staleness"
+grep -q 'older than 30h threshold' "$triage" || fail "scenario12: triage must name the 30h threshold"
+! grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario12: stale backup must not yield OK"
+ok "scenario12: stale backup -> VIOLATION naming staleness + threshold"
+
+# ============================================================================
+# Scenario 13 (fleet-ops#388): backup service failed -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_backup_failed
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario13: must exit 1 (failed backup), got $env_rc ($env_out)"
+grep -q 'last Result=failed' "$triage" || fail "scenario13: triage must name the failed backup result"
+ok "scenario13: failed backup service -> VIOLATION naming Result"
+
+# ============================================================================
+# Scenario 14 (fleet-ops#388): backup timer inactive -> VIOLATION
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_backup_inactive
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario14: must exit 1 (inactive timer), got $env_rc ($env_out)"
+grep -q 'not active' "$triage" || fail "scenario14: triage must name the inactive timer"
+ok "scenario14: inactive backup timer -> VIOLATION"
+
+# ============================================================================
+# Scenario 15 (fleet-ops#388): fresh backup -> no staleness violation
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_backup_fresh
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario15: must exit 0 (fresh backup), got $env_rc ($env_out)"
+grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario15: triage missing OK"
+! grep -q 'backup staleness' "$triage" || fail "scenario15: fresh backup must not raise staleness"
+ok "scenario15: fresh backup -> OK with no staleness violation"
+
+# ============================================================================
+# Scenario 16 (fleet-ops#388): skip flag suppresses block 10
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_REDCI"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_backup_stale
+export FLEET_ESCALATION_CANARY_SKIP_BACKUP=1
+
+run_canary
+
+unset FLEET_ESCALATION_CANARY_SKIP_BACKUP
+[[ "$env_rc" == 0 ]] || fail "scenario16: must exit 0 (skip flag), got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_BACKUP=1)' <<<"$env_out" || fail "scenario16: canary must log the SKIP"
+! grep -q 'backup staleness' "$triage" || fail "scenario16: skip flag must suppress staleness"
+ok "scenario16: skip flag suppresses block 10"
+
+ok "escalation-coverage-canary: block 10 backup staleness (fleet-ops#388) covered"
+
+# fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
+# this CI-listed file so hosted runners run it without a workflow edit
+# (worker tokens cannot push .github/workflows/**).
+bash "$here/entitled-wired-canary.test.sh"
+
+# fleet-ops#388: restore drill. Invoked from this CI-listed file so hosted
+# runners run it without a workflow edit (worker tokens cannot push
+# .github/workflows/**).
+bash "$here/fleet-restore-drill.test.sh"
+

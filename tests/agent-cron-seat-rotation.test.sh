@@ -220,6 +220,35 @@ git -C "$repo_root" ls-files --error-unmatch prompts/0509-daily-market-signal.md
   || fail "prompt file not tracked in git: prompts/0509-daily-market-signal.md"
 ok "MANIFEST entries present for runner + service + timer + prompt"
 
+# --- fleet-ops#419: last30days query must not lead with product token 0509 ---
+# A query that starts with `0509` is not a last30days entity and demotes
+# on-topic sneaker-resale clusters (SneakerPing 59.5% below retail) to score 0.
+# The prompt must query the market and require those clusters under Strongest
+# changes even when D1 receipts are flat.
+prompt_file="$repo_root/prompts/0509-daily-market-signal.md"
+if grep -Fq '"0509 sneaker-resale market signal:' "$prompt_file"; then
+    fail "prompt last30days query still leads with product token 0509 (entity-miss demotion)"
+fi
+grep -q 'last30days.py' "$prompt_file" \
+  || fail "prompt must invoke last30days.py"
+grep -Eq 'sneaker resale' "$prompt_file" \
+  || fail "prompt last30days query must name sneaker resale"
+grep -Eq 'StockX' "$prompt_file" \
+  || fail "prompt last30days query must name StockX"
+grep -Eq 'GOAT' "$prompt_file" \
+  || fail "prompt last30days query must name GOAT"
+grep -Eq 'Nike' "$prompt_file" \
+  || fail "prompt last30days query must name Nike"
+grep -q 'entity-miss' "$prompt_file" \
+  || fail "prompt must name entity-miss so the 0509 query cannot return silently"
+grep -q 'Strongest changes' "$prompt_file" \
+  || fail "prompt must keep sneaker-resale clusters under Strongest changes"
+grep -Eq 'SneakerPing' "$prompt_file" \
+  || fail "prompt Strongest-changes rule must name SneakerPing"
+grep -Eq 'below retail' "$prompt_file" \
+  || fail "prompt Strongest-changes rule must name below retail"
+ok "prompt last30days query names the market, not 0509; Strongest-changes rule present"
+
 # --- install.sh enables the [Install] timer (fleet-ops#183) -----------------
 # The timer was in MANIFEST with [Install] and still not-found on the live
 # host because install.sh only enabled intake-reconcile. Lock both the
@@ -231,13 +260,19 @@ grep -q '^\[Install\]$' "$timer" \
   || fail "timer must carry [Install] so systemctl enable can hook it"
 grep -q '^WantedBy=timers.target$' "$timer" \
   || fail "timer [Install] must WantedBy=timers.target"
-grep -Eq -- 'systemctl --user enable --now agent-cron-0509-daily-market-signal\.timer' "$install_sh" \
+grep -Fq -- '"$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signal.timer' "$install_sh" \
   || fail "install.sh must enable --now agent-cron-0509-daily-market-signal.timer"
 ok "timer has [Install] and install.sh enables it"
 
 # Behavioral: a scratch install with stub systemctl must actually invoke
 # enable --now. Destinations stay under $scratch so this cannot mutate the
 # live user bus. A comment-only enable line would fail this.
+#
+# fleet-ops#290: GitHub's runner has no user systemd bus. A stub that
+# always exits 0 makes is-enabled look already-enabled, so install.sh
+# skips enable --now and P14 goes red. Same shape as
+# tests/fleet-ops-deploy.test.sh: quoted fake, is-enabled -> 1, enable
+# recorded. SYSTEMCTL= is how the rest of fleet-ops injects the stub.
 install_scratch="$scratch/install-root"
 mkdir -p "$install_scratch/systemd" "$scratch/fake-bin" "$scratch/user-units"
 cp -a "$install_sh" "$install_scratch/install.sh"
@@ -249,18 +284,38 @@ systemd/agent-cron-0509-daily-market-signal.timer $scratch/user-units/agent-cron
 MANIFEST
 calls="$scratch/systemctl.calls"
 : >"$calls"
-cat >"$scratch/fake-bin/systemctl" <<FAKE
+cat >"$scratch/fake-bin/systemctl" <<'FAKE'
 #!/usr/bin/env bash
-printf '%s\n' "\$*" >>"$calls"
-# Simulate a fresh box: units are not yet enabled, so is-enabled returns non-zero.
-# Every other systemctl command (daemon-reload, enable --now, etc.) succeeds.
-case "\$*" in
-  *'is-enabled'*) exit 1 ;;
-  *) exit 0 ;;
+printf '%s\n' "$*" >>"${SYSTEMCTL_CALLS:?}"
+if [ "${1:-}" = "--user" ]; then
+  shift
+fi
+cmd="${1:-}"
+case "$cmd" in
+  is-enabled)
+    # Fresh box: nothing enabled. Always-0 here is the #290 regression.
+    exit 1
+    ;;
+  daemon-reload|enable|start)
+    exit 0
+    ;;
+  *)
+    printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
+    exit 1
+    ;;
 esac
 FAKE
 chmod +x "$scratch/fake-bin/systemctl"
-PATH="$scratch/fake-bin:$PATH" "$install_scratch/install.sh"
+export SYSTEMCTL_CALLS="$calls"
+set +e
+"$scratch/fake-bin/systemctl" --user is-enabled agent-cron-0509-daily-market-signal.timer
+stub_is_enabled_rc=$?
+set -e
+: >"$calls"
+[[ "$stub_is_enabled_rc" == "1" ]] \
+  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#290), got $stub_is_enabled_rc"
+SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
+  "$install_scratch/install.sh"
 [[ -L "$scratch/user-units/agent-cron-0509-daily-market-signal.timer" ]] \
   || fail "scratch install must symlink the timer"
 grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$calls" \

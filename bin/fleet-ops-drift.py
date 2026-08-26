@@ -225,9 +225,136 @@ def parse_intake_repos(checkout: Path) -> list[str]:
     return [r["name"] for r in data.get("repos", []) if isinstance(r, dict) and r.get("name")]
 
 
+def git_show_bytes(checkout: Path, spec: str) -> bytes | None:
+    """Return `git show <spec>` bytes, or None if the object is missing."""
+    proc = subprocess.run(
+        ["git", "-C", str(checkout), "show", spec],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def live_file_bytes(dest: Path) -> bytes | None:
+    try:
+        if dest.is_file() or dest.is_symlink():
+            return dest.read_bytes()
+    except OSError:
+        return None
+    return None
+
+
+def is_volatile_outside_checkout(resolved: Path, checkout: Path) -> bool:
+    """True if resolved lives under /tmp, /run, or agent-worktrees, and is not the checkout.
+
+    Test checkouts themselves often live under /tmp; those are not volatile.
+    The timer-symlink incident (fleet-ops#372) was an enable-link into
+    /tmp/fleet-ops-p13, outside the deploy checkout, one tmpfiles-clean
+    from dropping fleet-heartbeat.timer.
+    """
+    resolved_s = str(resolved)
+    checkout_s = str(checkout.resolve())
+    if resolved_s == checkout_s or resolved_s.startswith(checkout_s + os.sep):
+        return False
+    if resolved_s == "/tmp" or resolved_s.startswith("/tmp/"):
+        return True
+    if resolved_s == "/run" or resolved_s.startswith("/run/"):
+        return True
+    if "agent-worktrees" in resolved.parts:
+        return True
+    return False
+
+
+def check_live_matches_origin_main(checkout: Path) -> None:
+    """Compare live dest bytes to origin/main blobs, never the working tree.
+
+    install.sh --check compares dests to the checkout working tree. When dests
+    are symlinks into that checkout, that is a self-comparison and cannot see
+    origin/main drift. This check reads `git show origin/main:<src>` so the
+    expected bytes never come from the working tree.
+    """
+    rc, origin_main, _ = run(["git", "-C", str(checkout), "rev-parse", "origin/main"], check=False)
+    if rc != 0:
+        fail_loud("DRIFT-CHECKOUT", f"git rev-parse origin/main failed: {origin_main}")
+    origin_main = origin_main.strip()
+
+    manifest_bytes = git_show_bytes(checkout, f"{origin_main}:MANIFEST")
+    if manifest_bytes is None:
+        fail_loud("DRIFT-ORIGIN", f"origin/main ({origin_main[:12]}) has no MANIFEST")
+
+    findings: list[str] = []
+    for line in manifest_bytes.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        src, dest = parts[0], parts[1]
+        if dest.startswith("/etc/"):
+            continue
+        expected = git_show_bytes(checkout, f"{origin_main}:{src}")
+        if expected is None:
+            findings.append(f"{dest}: origin/main missing {src}")
+            continue
+        dest_path = Path(dest)
+        actual = live_file_bytes(dest_path)
+        if actual is None:
+            findings.append(f"{dest}: missing (want origin/main:{src})")
+            continue
+        if actual != expected:
+            findings.append(f"{dest} does not match origin/main:{src}")
+
+    if findings:
+        fail_loud(
+            "DRIFT-ORIGIN",
+            "live-installed state does not match origin/main:\n" + "\n".join(findings),
+        )
+    log(f"live dests match origin/main ({origin_main[:12]}) blobs")
+
+
+def check_volatile_unit_paths(checkout: Path) -> None:
+    """Fail if any installed unit file or enable-link resolves into a volatile path."""
+    user_systemd = HOME / ".config" / "systemd" / "user"
+    if not user_systemd.is_dir():
+        return
+
+    findings: list[str] = []
+    for item in user_systemd.rglob("*"):
+        if not item.is_symlink() and not item.is_file():
+            continue
+        name = item.name
+        is_unit_like = name.endswith((".service", ".timer", ".path", ".slice", ".socket", ".target"))
+        is_enable_link = any(part.endswith(".wants") or part.endswith(".requires") for part in item.parts)
+        if not is_unit_like and not is_enable_link:
+            continue
+        try:
+            if item.is_symlink():
+                target = item.resolve()
+            else:
+                continue
+        except OSError:
+            continue
+        if str(target) == "/dev/null":
+            continue
+        if is_volatile_outside_checkout(target, checkout):
+            findings.append(f"{item} -> {target}")
+
+    if findings:
+        fail_loud(
+            "DRIFT-VOLATILE",
+            "installed unit file or enable-link resolves into a volatile path "
+            "(/tmp, /run, agent-worktrees):\n" + "\n".join(findings),
+        )
+    log("no unit file or enable-link resolves into a volatile path")
+
+
 def check_checkout(checkout: Path) -> None:
-    if not (checkout / ".git").exists():
-        fail_loud("DRIFT-FATAL", f"{checkout} is not a git checkout")
+    rc, _, err = run(["git", "-C", str(checkout), "rev-parse", "--git-dir"], check=False)
+    if rc != 0:
+        fail_loud("DRIFT-FATAL", f"{checkout} is not a git checkout: {err.strip()}")
 
     if not SKIP_FETCH:
         rc, _, err = run(["git", "-C", str(checkout), "fetch", "origin"], check=False)
@@ -370,8 +497,10 @@ def main() -> None:
 
     check_checkout(checkout)
     check_manifest_install(checkout)
+    check_live_matches_origin_main(checkout)
     check_enabled_units(checkout, expected_enabled)
     check_extra_symlinks(checkout, set(expected_dests.keys()))
+    check_volatile_unit_paths(checkout)
 
     log("drift canary: clean")
     audit("fleet-ops", "drift-ok", "checkout-and-installed-state-match-main")
