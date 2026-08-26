@@ -128,8 +128,8 @@ grep -q 'WORKER_APP_CREDS_FILE' "$issue_run" \
 # own repo list at GitHub's side.
 manifest="$repo_root/credentials/app-manifest.json"
 for k in contents pull_requests issues metadata; do
-  jq -e --arg k "$k" '.permissions[$k]' "$manifest" >/dev/null \
-    || fail "manifest missing permission key: $k"
+  jq -e --arg k "$k" '.default_permissions[$k]' "$manifest" >/dev/null \
+    || fail "manifest missing default_permissions key: $k"
 done
 
 ok "worker-token fails closed on missing/empty/invalid creds"

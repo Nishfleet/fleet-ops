@@ -6,7 +6,7 @@
 #      bootstrap.html (the auto-submit form) plus credentials/app-manifest.json.
 #   2. Serves /callback once. When GitHub redirects to it after the user
 #      clicks "Create the GitHub App", the URL has ?code=<code>&state=<state>.
-#      The Python server here POSTs the code to
+#      The Python server here POSTs (empty body) to
 #      https://api.github.com/app-manifests/<code>/conversions,
 #      exchanges the response for app credentials, and writes them to
 #      $CREDS_FILE (default ~/.config/fleet-worker/nishfleet-worker.env)
@@ -15,6 +15,22 @@
 #
 #   --install-url <slug> [org] prints the installation URL for an already-
 #                          created app and exits. No listener, no write.
+#   --listen ADDR          bind address (default 127.0.0.1).
+#   --serve PUBLIC_URL     rewrite the served manifest so GitHub redirects
+#                          the one-time code to PUBLIC_URL/callback.
+#   --reset                wipe $CREDS_FILE and continue.
+#
+# LISTEN / serve (tailscale)
+#   GitHub redirects the BROWSER to redirect_url. If you run this on the VPS
+#   and click Create from a laptop, 127.0.0.1 is the laptop, not the VPS.
+#   Expose the listener over the tailnet:
+#
+#     tailscale serve --bg http://127.0.0.1:18099
+#     worker-app-bootstrap --serve https://<machine>.<tailnet>.ts.net
+#
+#   --serve rewrites redirect_url and callback_urls to $PUBLIC_URL/callback.
+#   Bind stays 127.0.0.1 (tailscale serve proxies to it). Use --listen
+#   0.0.0.0 only if you are not using tailscale.
 #
 # DEGRADATION
 #   Network errors during the exchange leave $CREDS_FILE empty (truncated);
@@ -33,19 +49,65 @@ PORT="${WORKER_APP_BOOTSTRAP_PORT:-18099}"
 CREDS_FILE="${WORKER_APP_CREDS_FILE:-$CREDS_FILE_DEFAULT}"
 LISTEN_ADDR="${WORKER_APP_LISTEN_ADDR:-127.0.0.1}"
 TIMEOUT_S="${WORKER_APP_BOOTSTRAP_TIMEOUT_S:-180}"
+PUBLIC_URL="${WORKER_APP_PUBLIC_URL:-}"
 
-case "${1:-}" in
-  --install-url)
-    shift
-    slug="${1:?--install-url requires the existing app slug}"
-    org="${2:-Nishfleet}"
-    printf 'Install the existing "nishfleet-worker" app under additional repos:\n'
-    printf '  https://github.com/apps/%s/installations/new\n' "$slug"
-    printf '(Choose "%s", then "Only select repositories" -> pick the repos.)\n' "$org"
-    exit 0
-    ;;
-  --reset) rm -f "$CREDS_FILE";;
-esac
+usage() {
+  cat <<'EOF' >&2
+usage: worker-app-bootstrap [--listen ADDR] [--serve PUBLIC_URL] [--reset]
+       worker-app-bootstrap --install-url <slug> [org]
+
+LISTEN / serve (tailscale):
+  GitHub redirects the browser to redirect_url. Running this on the VPS
+  while you click Create from a laptop means 127.0.0.1 is the laptop.
+  On the VPS:
+
+    tailscale serve --bg http://127.0.0.1:18099
+    worker-app-bootstrap --serve https://<machine>.<tailnet>.ts.net
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install-url)
+      shift
+      slug="${1:?--install-url requires the existing app slug}"
+      org="${2:-Nishfleet}"
+      printf 'Install the existing "nishfleet-worker" app under additional repos:\n'
+      printf '  https://github.com/apps/%s/installations/new\n' "$slug"
+      printf '(Choose "%s", then "Only select repositories" -> pick the repos.)\n' "$org"
+      exit 0
+      ;;
+    --reset)
+      rm -f "$CREDS_FILE"
+      shift
+      ;;
+    --listen)
+      LISTEN_ADDR="${2:?--listen requires an address}"
+      shift 2
+      ;;
+    --serve)
+      PUBLIC_URL="${2:?--serve requires the public URL (https://host.ts.net)}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "$PUBLIC_URL" ]]; then
+  case "$PUBLIC_URL" in
+    http://*|https://*) ;;
+    *) echo "--serve URL must start with http:// or https://" >&2; exit 1 ;;
+  esac
+  PUBLIC_URL="${PUBLIC_URL%/}"
+fi
 
 # --- preconditions ---------------------------------------------------------
 command -v python3 >/dev/null 2>&1 || { echo "missing python3" >&2; exit 1; }
@@ -70,12 +132,19 @@ trap on_exit EXIT INT TERM
 {
   echo
   echo "=== nishfleet-worker bootstrap ==="
-  echo "  open in a browser:"
-  echo "    http://${LISTEN_ADDR}:${PORT}/?org=Nishfleet"
+  if [[ -n "$PUBLIC_URL" ]]; then
+    echo "  open in a browser:"
+    echo "    ${PUBLIC_URL}/?org=Nishfleet"
+    echo "  tailscale (once, on this machine):"
+    echo "    tailscale serve --bg http://${LISTEN_ADDR}:${PORT}"
+  else
+    echo "  open in a browser:"
+    echo "    http://${LISTEN_ADDR}:${PORT}/?org=Nishfleet"
+  fi
   echo "  (waiting up to ${TIMEOUT_S}s for the GitHub redirect)"
   echo
 } >&2
 
 LISTEN_ADDR="$LISTEN_ADDR" PORT="$PORT" TIMEOUT_S="$TIMEOUT_S" \
   MANIFEST_PATH="$CRED_DIR/app-manifest.json" BOOTSTRAP_PATH="$CRED_DIR/bootstrap.html" \
-  CREDS_FILE="$CREDS_FILE" exec python3 "$SERVER_PY"
+  CREDS_FILE="$CREDS_FILE" PUBLIC_URL="$PUBLIC_URL" exec python3 "$SERVER_PY"
