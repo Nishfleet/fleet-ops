@@ -449,6 +449,68 @@ rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_quota: empty input must NOT match"
 
+# 9b-devin: Devin "message rate limit" + "reset in 35 minutes" (fleet-ops#381).
+# Live miss 2026-08-26: is_quota_cap_error required "rate limit exceeded" and
+# _parse_reset_window_s required "resets in 35m", so systemd Restart burned
+# StartLimitBurst on the same dead seat.
+devin_err='Reached overall message rate limit. Please try again later. Your limit will reset in 35 minutes.'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "$devin_err" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: Devin message rate limit text must match (rc=$rc)"
+set +e
+parsed=$(bash -c 'source "$0"; _parse_reset_window_s "$1"' "$lib" "$devin_err" 2>/dev/null || true)
+set -e
+[[ "$parsed" == "2100" ]] || fail "parse: Devin 'reset in 35 minutes' expected 2100, got '${parsed:-<none>}'"
+# Writer: the same live text must bench the seat for the advertised window.
+devin_ledger="$scratch/ledger-devin-bench"
+mkdir -p "$devin_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$devin_ledger"
+export PI_PACKET_STATE="$scratch/state-devin-bench"
+mkdir -p "$PI_PACKET_STATE"
+set +e
+bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "devin" "swe-1-7" "$devin_err" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "writer: Devin mark_seat_quota_bench expected rc=0, got $rc"
+devin_lf="$devin_ledger/devin__swe-1-7.json"
+[[ -f "$devin_lf" ]] || fail "writer: Devin ledger file not written at $devin_lf"
+devin_hc=$(jq -r '.health_class' "$devin_lf")
+devin_bw=$(jq -r '.bench_window_s' "$devin_lf")
+[[ "$devin_hc" == "quota_bench" ]] || fail "writer: Devin health_class expected quota_bench, got $devin_hc"
+[[ "$devin_bw" == "2100" ]] || fail "writer: Devin bench_window_s expected 2100, got $devin_bw"
+
+# 9b-cursor-heavy: cursor composer stays light-only even with a 200k window;
+# cursor-grok-4.6-high is the only cursor model admitted as heavy-capable
+# (live hot-patch + Nish 2026-08-27 overrule; fleet-ops#381).
+cat >"$scratch/models-cursor-heavy.json" <<'JSON'
+{
+  "providers": {
+    "cursor": {
+      "models": [
+        { "id": "composer-2.5", "cost": { "input": 0 }, "contextWindow": 200000 },
+        { "id": "cursor-grok-4.6-high", "cost": { "input": 0 }, "contextWindow": 200000 }
+      ]
+    },
+    "ollama": {
+      "models": [
+        { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 }, "contextWindow": 200000 }
+      ]
+    }
+  }
+}
+JSON
+set +e
+cursor_cap=$(PI_MODELS_JSON="$scratch/models-cursor-heavy.json" bash -c 'source "$0"; enumerate_seats' "$lib" 2>/dev/null || true)
+set -e
+printf '%s\n' "$cursor_cap" | awk -F '\t' '$1=="cursor" && $2=="composer-2.5" {exit ($4=="0"?0:1)}' \
+  || fail "cursor/composer-2.5 must not be heavy-capable via contextWindow (got: $cursor_cap)"
+printf '%s\n' "$cursor_cap" | awk -F '\t' '$1=="cursor" && $2=="cursor-grok-4.6-high" {exit ($4=="1"?0:1)}' \
+  || fail "cursor/cursor-grok-4.6-high must be heavy-capable (got: $cursor_cap)"
+printf '%s\n' "$cursor_cap" | awk -F '\t' '$1=="ollama" && $2=="deepseek-v4-flash:0731" {exit ($4=="1"?0:1)}' \
+  || fail "non-cursor 200k window must stay heavy-capable (got: $cursor_cap)"
+
 # 9c: mark_seat_quota_bench parses the window and writes bench_until in the
 # future; seat_usable then skips the seat.
 ledger="$scratch/ledger-bench"
@@ -584,6 +646,8 @@ ok "rate_limited: stale marker retried, fresh marker excluded"
 ok "stale observed_at assumed usable (P4-A inversion fixed)"
 ok "credential precheck: empty !cmd / unset \$VAR rejected; set var / literal / no-apiKey fail-open accepted; per-call cache runs !cmd once"
 ok "quota_bench: parser handles 'resets in Nd Nh' / 'retry after N' / no-window; is_quota_cap_error matches hard caps, rejects transient 429"
+ok "quota_bench: Devin 'message rate limit' / 'reset in 35 minutes' benches swe-1-7 for 2100s (fleet-ops#381)"
+ok "enumerate_seats: cursor composer excluded from heavy; cursor-grok-4.6-high re-admitted (fleet-ops#381)"
 ok "quota_bench: writer parses window -> bench_until future -> seat_usable skips with 'benched until' log"
 ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SEAT (no attempt consumed); expired bench_until -> fail-open pick"
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"
