@@ -21,7 +21,7 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WORKDIR=/home/nish/workspaces/products/0509
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
-Environment=PROMPTS_DIR=/home/nish/workspaces/agent-state/cron-prompts
+Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
 ExecStart=/home/nish/.local/bin/agent-cron-run 0509-daily-market-signal
 # Retry policy — a transient fleet 429 delays the job, not kills it for the
