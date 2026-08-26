@@ -246,13 +246,6 @@ calls="$scratch/systemctl.calls"
 cat >"$scratch/fake-bin/systemctl" <<FAKE
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$calls"
-# A scratch install starts with nothing enabled. install.sh skips
-# enable --now when is-enabled returns 0, so a stub that always
-# exits 0 never exercises the enable path (the #217 auto-revert:
-# P14 failed this assertion on every merge of the AIMD work).
-if [[ " \$* " == *" is-enabled "* ]]; then
-  exit 1
-fi
 exit 0
 FAKE
 chmod +x "$scratch/fake-bin/systemctl"
