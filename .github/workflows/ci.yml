@@ -245,6 +245,15 @@ jobs:
         run: bash tests/system-dropins-shape.test.sh
       - name: undersaturation alarm
         run: bash tests/fleet-heartbeat-undersaturation.test.sh
+      # fleet-ops#146: lock the low-water-mark scouting decision. Refill the
+      # ready queue BEFORE lanes drain: when ready < lane ceiling
+      # (seat_max_concurrent) and no scout is running and the per-repo
+      # threshold stamp is stale (>2h), start pi-scout@<repo> so
+      # replenishment overlaps consumption. The live scout start is the
+      # outermost edge (real LLM side effect) and is stubbed; the dispatch
+      # DECISION is exercised end-to-end through the real helper binary.
+      - name: low-water-mark scouting
+        run: bash tests/fleet-heartbeat-low-water-mark.test.sh
       # fleet-ops#77: lock the mass-close guard decision matrix. A not-planned
       # close of an agent-labeled issue with no merged linked PR reopens;
       # everything else stays closed. The live "close a dummy agent-ready
