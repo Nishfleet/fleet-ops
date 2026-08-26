@@ -39,6 +39,12 @@ bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
+# fleet-ops#379: mechanical intake priority. critical-path (and
+# escalate-senior, which implies it) claims before the agent-ready tail;
+# a 2/3 claim-ratio guard stops the tail starving. The prompt calls this
+# binary; do not re-introduce issue-number order.
+bin/pi-intake-priority /home/nish/.local/bin/pi-intake-priority
+lib/intake-priority.sh /home/nish/.local/lib/pi-packet/intake-priority.sh
 bin/pi-packet-run /home/nish/.local/bin/pi-packet-run
 bin/pi-issue-start /home/nish/.local/bin/pi-issue-start
 bin/pi-packet-guard /home/nish/.local/bin/pi-packet-guard

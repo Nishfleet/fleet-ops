@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# pi-intake-priority — mechanical intake claim order (fleet-ops#379).
+#
+# Subcommands:
+#   order    print claim order as TSV: <number>\t<kind>\tratio=<k>/<window>
+#   record   append a successful claim to the per-repo ratio ledger
+#   promote  copy escalate-senior → critical-path (label create + edit)
+#
+# Environment (tests):
+#   INTAKE_PRIORITY_LIB          lib/intake-priority.sh
+#   INTAKE_PRIORITY_RATIO_DIR    directory for <repo>.claim-ratio
+#   GH                           gh binary (promote)
+#   INTAKE_PRIORITY_MAX_CRITICAL default 2
+#   INTAKE_PRIORITY_WINDOW       default 3
+#
+# Exit: 0 on success (empty order is success). 2 = usage. Other = gh/jq failed.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+
+LIB="${INTAKE_PRIORITY_LIB:-$HOME/.local/lib/pi-packet/intake-priority.sh}"
+if [[ ! -f "$LIB" ]]; then
+    LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/intake-priority.sh"
+fi
+# shellcheck source=../lib/intake-priority.sh source-path=SCRIPTDIR
+source "$LIB"
+
+GH="${GH:-gh}"
+RATIO_DIR="${INTAKE_PRIORITY_RATIO_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pi-intake}"
+
+usage() {
+    cat <<'EOF' >&2
+usage: pi-intake-priority order [--repo NAME] [--issues-file F] [--ratio-file F] [--pick-one]
+       pi-intake-priority record [--repo NAME] [--ratio-file F] <number> <kind>
+       pi-intake-priority promote [--repo NAME]
+EOF
+    exit 2
+}
+
+default_ratio_file() {
+    local repo="$1"
+    [[ -n "$repo" ]] || { echo "pi-intake-priority: --repo required when --ratio-file is omitted" >&2; exit 2; }
+    printf '%s/%s.claim-ratio' "$RATIO_DIR" "$repo"
+}
+
+cmd="${1:-}"
+[[ -n "$cmd" ]] || usage
+shift
+
+repo=""
+issues_file=""
+ratio_file=""
+pick_one=0
+positionals=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo)        repo="${2:-}"; shift 2 ;;
+        --issues-file) issues_file="${2:-}"; shift 2 ;;
+        --ratio-file)  ratio_file="${2:-}"; shift 2 ;;
+        --pick-one)    pick_one=1; shift ;;
+        --)            shift; break ;;
+        -*)            echo "pi-intake-priority: unknown flag $1" >&2; usage ;;
+        *)             positionals+=("$1"); shift ;;
+    esac
+done
+while [[ $# -gt 0 ]]; do
+    positionals+=("$1"); shift
+done
+
+repo="${repo#Nishfleet/}"
+repo="${repo%/}"
+
+case "$cmd" in
+    order)
+        if [[ -z "$ratio_file" ]]; then
+            ratio_file="$(default_ratio_file "$repo")"
+        fi
+        local_json=""
+        if [[ -n "$issues_file" ]]; then
+            local_json="$(cat "$issues_file")"
+        elif [[ ! -t 0 ]]; then
+            local_json="$(cat)"
+        else
+            [[ -n "$repo" ]] || { echo "pi-intake-priority order: need --repo, --issues-file, or JSON on stdin" >&2; exit 2; }
+            local_json="$("$GH" issue list -R "Nishfleet/$repo" -l agent-ready --state open --json number,title,labels,createdAt --limit 50)"
+        fi
+        if [[ -z "$local_json" || "$local_json" == "[]" ]]; then
+            exit 0
+        fi
+        classified="$(printf '%s\n' "$local_json" | intake_priority_classify)"
+        intake_priority_walk "$classified" "$ratio_file" "$pick_one"
+        ;;
+    record)
+        if [[ ${#positionals[@]} -lt 2 ]]; then
+            echo "pi-intake-priority record: need <number> <kind>" >&2
+            exit 2
+        fi
+        number="${positionals[0]}"
+        kind="${positionals[1]}"
+        [[ "$number" =~ ^[1-9][0-9]*$ ]] || {
+            echo "pi-intake-priority record: refusing non-numeric issue number '$number'" >&2
+            exit 2
+        }
+        if [[ -z "$ratio_file" ]]; then
+            ratio_file="$(default_ratio_file "$repo")"
+        fi
+        intake_priority_record "$ratio_file" "$kind"
+        ;;
+    promote)
+        [[ -n "$repo" ]] || { echo "pi-intake-priority promote: --repo required" >&2; exit 2; }
+        "$GH" label create "$INTAKE_PRIORITY_LABEL" -R "Nishfleet/$repo" \
+            --color E11D48 \
+            --description "Intake claims this before the agent-ready tail (fleet-ops#379)" \
+            >/dev/null 2>&1 || true
+        issues="$("$GH" issue list -R "Nishfleet/$repo" -l "$INTAKE_PRIORITY_ESCALATE_LABEL" --state open --json number,labels --limit 50)"
+        if [[ -z "$issues" || "$issues" == "[]" ]]; then
+            exit 0
+        fi
+        while IFS= read -r num; do
+            [[ "$num" =~ ^[1-9][0-9]*$ ]] || continue
+            "$GH" issue edit "$num" -R "Nishfleet/$repo" --add-label "$INTAKE_PRIORITY_LABEL"
+        done < <(printf '%s\n' "$issues" | jq -r --arg label "$INTAKE_PRIORITY_LABEL" '
+            def names: (.labels // []) | map(if type == "string" then . else (.name // empty) end);
+            .[] | select(names | index($label) == null) | .number
+        ')
+        ;;
+    *)
+        echo "pi-intake-priority: unknown command '$cmd'" >&2
+        usage
+        ;;
+esac
