@@ -322,6 +322,51 @@ grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$
   || fail "scratch install did not enable --now the agent-cron timer: $(cat "$calls")"
 ok "scratch install.sh enable --now invoked for the [Install] timer"
 
+# --- class guard: every MANIFEST [Install] timer is enable --now'd ---------
+# fleet-ops#232: the original symptom was install.sh probing is-enabled for
+# the 0509 timer but never following through with enable --now. The fix is
+# the generic [Install] loop in install.sh (it collects every non-template
+# unit with [Install] and enable --now's each .timer/.path). The per-timer
+# lock above only proves the 0509 timer. This guard reads the REAL MANIFEST,
+# so any future timer added with [Install] is automatically required to be
+# enable --now'd by the generic loop -- the class cannot regress silently
+# the way #232 did (a comment-only / probe-only enable line passes the
+# per-timer shape check only for the one timer it names).
+class_scratch="$scratch/class-root"
+class_units="$scratch/class-units"
+mkdir -p "$class_scratch/systemd" "$class_units"
+cp -a "$install_sh" "$class_scratch/install.sh"
+class_manifest="$class_scratch/MANIFEST"
+: >"$class_manifest"
+declare -a class_timers=()
+while read -r src _dest; do
+  [ -z "$src" ] && continue
+  case "$src" in '#'*) continue ;; esac
+  case "$src" in
+    systemd/*.timer)
+      case "$src" in *@*) continue ;; esac   # templates instantiated by the reconciler
+      unit_file="$repo_root/$src"
+      [ -f "$unit_file" ] || fail "MANIFEST timer src missing in repo: $src"
+      grep -qE '^\[Install\]$' "$unit_file" 2>/dev/null || continue   # siterep-deploy deliberately omits [Install]
+      base="$(basename "$src")"
+      cp -a "$unit_file" "$class_scratch/$src"
+      printf '%s %s/%s\n' "$src" "$class_units" "$base" >>"$class_manifest"
+      class_timers+=("$base")
+      ;;
+  esac
+done < "$manifest"
+[[ "${#class_timers[@]}" -gt 1 ]] \
+  || fail "class guard needs multiple [Install] timers in MANIFEST; found ${#class_timers[@]} (guard would be vacuous)"
+class_calls="$scratch/class-systemctl.calls"
+: >"$class_calls"
+SYSTEMCTL_CALLS="$class_calls" SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
+  "$class_scratch/install.sh" >/dev/null
+for t in "${class_timers[@]}"; do
+  grep -Fxq -- "--user enable --now $t" "$class_calls" \
+    || fail "generic [Install] loop did not enable --now $t: $(cat "$class_calls")"
+done
+ok "class guard: every MANIFEST [Install] timer (${#class_timers[@]}) is enable --now'd by the generic loop"
+
 # --- systemd-analyze verify on the unit files -------------------------------
 # NOTE: unit-file verification is owned by the dedicated `systemd-analyze` CI
 # job (.github/workflows/ci.yml), which stubs the VPS ExecStart paths
