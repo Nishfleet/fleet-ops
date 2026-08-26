@@ -1,0 +1,735 @@
+#!/usr/bin/env bash
+# fleet-capacity-chain — tier1 block 15 (fleet-ops#418).
+#
+# Mechanical e2e for lane capacity. Every link has a detector; every detector
+# feeds the queue (LOUD + auto-file). No link depends on a human noticing.
+#
+#   1. Entitled → wired: every inventory seat has a seat-caps row, or a dated
+#      reason if cap=0. Missing = LOUD + auto-filed.
+#   2. Wired → probed: a cap>0 lane that is not hard-capped must carry an
+#      AIMD probe receipt within probe_max_age_days of chain-landed (or of
+#      the receipt). Never-probed past that window = LOUD + auto-filed.
+#   3. Probed → saturated: undersat = running < min(sum of live (unwalled)
+#      caps, floor(governor_ram_gb / ram_gb_per_worker)) WHILE ready work
+#      exists. The #75 wedge helper (running==0 repair/fail-loud) is unchanged;
+#      this formula is utilization, not a total wedge, so it must not restart
+#      intake.
+#   4. Saturated → supplied: per enrolled repo, exactly one verdict:
+#      SATURATED / WORK-LIMITED / LANE-LIMITED / GOVERNOR-LIMITED.
+#      UNKNOWN is itself a finding (auto-filed).
+#   5. Chain drill (--drill): fixture surge → SATURATED at the bound;
+#      wall a fixture lane → LANE-LIMITED naming it; drain work → WORK-LIMITED
+#      with a scout start. Any hop failing = LOUD + auto-file + exit 1.
+#
+# Default mode is --observe (live tick). --drill is isolated under
+# $LOG_DIR/capacity-chain-drill and never reads production GitHub as work.
+#
+# Observe findings LOUD + auto-file and do not fail the heartbeat (same
+# contract as low-water: a standing gap must not brick PR queue / wedge
+# repair). Drill failure DOES fail the unit — that is the e2e proof.
+#
+# Environment seams (tests):
+#   SYSTEMCTL  GH
+#   FLEET_INTAKE_REPOS_JSON  FLEET_HEARTBEAT_LOG_DIR  FLEET_HEARTBEAT_TRIAGE
+#   SEAT_CAPS_JSON  FLEET_ENTITLEMENT_INVENTORY
+#   FLEET_CAPACITY_PROBE_DIR  FLEET_CAPACITY_PROBE_MAX_AGE_DAYS
+#   FLEET_CAPACITY_RAM_GB  FLEET_CAPACITY_RUNNING  FLEET_CAPACITY_WALLED
+#   FLEET_CAPACITY_FILE_ISSUES  FLEET_CAPACITY_AUTO_FILE_REPO
+#   FLEET_CAPACITY_LANDED  PI_SEAT_HEALTH_LEDGER_DIR
+#   FLEET_CAPACITY_DRILL_DIR
+#
+# Exit: observe 0 = tick complete (findings auto-filed), 2 = config error.
+#       drill   0 = every hop passed, 1 = hop failed, 2 = config error.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
+INVENTORY_JSON="${FLEET_ENTITLEMENT_INVENTORY:-}"
+if [ -z "$INVENTORY_JSON" ]; then
+    INVENTORY_JSON="${FLEET_ENTITLED_SEATS_JSON:-}"
+fi
+if [ -z "$INVENTORY_JSON" ]; then
+    INVENTORY_JSON="$HOME/.local/state/pi-packet/entitled-seats.json"
+fi
+if [ ! -f "$INVENTORY_JSON" ]; then
+    INVENTORY_JSON="$FLEET_OPS_REPO/config/entitled-seats.json"
+fi
+PROBE_DIR="${FLEET_CAPACITY_PROBE_DIR:-$LOG_DIR/aimd-probes}"
+LANDED_FILE="${FLEET_CAPACITY_LANDED:-$LOG_DIR/capacity-chain.landed}"
+LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+FILE_REPO="${FLEET_CAPACITY_AUTO_FILE_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_CAPACITY_FILE_ISSUES:-1}"
+STAMP_DIR="${FLEET_CAPACITY_FILED_DIR:-$LOG_DIR/capacity-chain-filed}"
+
+mkdir -p "$LOG_DIR" "$PROBE_DIR" "$STAMP_DIR"
+
+MODE="observe"
+case "${1:-}" in
+    --drill) MODE="drill" ;;
+    --observe|"") MODE="observe" ;;
+    -h|--help)
+        printf '%s\n' "usage: fleet-capacity-chain [--observe|--drill]"
+        exit 0
+        ;;
+    *)
+        printf 'usage: fleet-capacity-chain [--observe|--drill]\n' >&2
+        exit 2
+        ;;
+esac
+
+log() {
+    printf '[%s] [fleet-capacity-chain] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Dedup by on-disk stamp first so a gh outage cannot re-file every tick.
+# Title is stable: [capacity-chain] <kind>: <entity>
+auto_file() {
+    local kind="$1" entity="$2" body="$3"
+    local title safe stamp
+    title="[capacity-chain] ${kind}: ${entity}"
+    safe=$(printf '%s' "${kind}__${entity}" | tr -c 'A-Za-z0-9._-' '_')
+    stamp="$STAMP_DIR/${safe}.filed"
+    if [ -f "$stamp" ]; then
+        log "auto-file dedup (stamp): $title"
+        return 0
+    fi
+    if [ "$FILE_ISSUES" != "1" ]; then
+        log "auto-file skipped (FLEET_CAPACITY_FILE_ISSUES=$FILE_ISSUES): $title"
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$stamp"
+        return 0
+    fi
+    if "$GH" issue create -R "$FILE_REPO" --title "$title" --body "$body" >/dev/null 2>&1; then
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$stamp"
+        log "auto-file created: $title"
+    else
+        log "WARN: gh issue create failed for $title (will retry next tick)"
+    fi
+}
+
+has_dated_reason() {
+    local text="$1"
+    printf '%s' "$text" | grep -Eq '[0-9]{4}-[0-9]{2}-[0-9]{2}'
+}
+
+# Collect every dated-reason string we accept for a seat-caps key.
+reason_text_for() {
+    local key="$1"
+    jq -r --arg k "$key" '
+      [
+        (.providers[$k].reason // ""),
+        (.providers[$k].cap_zero_reason // ""),
+        (.providers[$k]._comment // ""),
+        (.providers[$k]._hard_cap // ""),
+        (.[("_comment_" + $k)] // "")
+      ] | map(select(. != "")) | join("\n")
+    ' "$SEAT_CAPS_JSON" 2>/dev/null || true
+}
+
+provider_cap_of() {
+    local key="$1"
+    jq -r --arg k "$key" '
+      .providers[$k] as $v
+      | if $v == null then "missing"
+        elif ($v|type)=="number" then ($v|tostring)
+        else (($v.cap // 0)|tostring)
+        end
+    ' "$SEAT_CAPS_JSON" 2>/dev/null || echo missing
+}
+
+is_hard_capped() {
+    local key="$1" hc
+    hc=$(jq -r --arg k "$key" '
+      .providers[$k] as $v
+      | if ($v|type)=="object" and ($v._hard_cap // "") != "" then "yes" else "no" end
+    ' "$SEAT_CAPS_JSON" 2>/dev/null || echo no)
+    [ "$hc" = "yes" ]
+}
+
+ram_gb_per_worker() {
+    jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON" 2>/dev/null || echo 1.5
+}
+
+governor_ram_gb() {
+    if [ -n "${FLEET_CAPACITY_RAM_GB:-}" ]; then
+        printf '%s\n' "$FLEET_CAPACITY_RAM_GB"
+        return 0
+    fi
+    printf '%s\n' "12"
+}
+
+ram_envelope() {
+    local ram per envl
+    ram=$(governor_ram_gb)
+    per=$(ram_gb_per_worker)
+    envl=$(awk -v ram="$ram" -v per="$per" 'BEGIN{
+      if (per+0 <= 0) per=1.5
+      r=int(ram/per)
+      if (r<1) r=1
+      print r
+    }')
+    printf '%s\n' "$envl"
+}
+
+# Sum of cap>0 providers. Optional skip list (walled) passed as remaining args.
+sum_live_caps() {
+    local skip=" $* "
+    local total=0 key cap
+    while IFS=$'\t' read -r key cap; do
+        [ -n "$key" ] || continue
+        case "$skip" in
+            *" $key "*) continue ;;
+        esac
+        case "$cap" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        [ "$cap" -gt 0 ] || continue
+        total=$((total + cap))
+    done < <(jq -r '
+      .providers | to_entries[] | .key as $k | .value as $v
+      | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end)] | @tsv
+    ' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    printf '%s\n' "$total"
+}
+
+# Walled providers: test seam, else ledger files that currently block a seat.
+walled_providers() {
+    if [ -n "${FLEET_CAPACITY_WALLED:-}" ]; then
+        printf '%s\n' "$FLEET_CAPACITY_WALLED"
+        return 0
+    fi
+    local f hc dead bench now_s bench_s names=""
+    now_s=$(date -u +%s)
+    [ -d "$LEDGER_DIR" ] || { printf '\n'; return 0; }
+    for f in "$LEDGER_DIR"/*.json; do
+        [ -f "$f" ] || continue
+        IFS=$'\x1f'$'\n' read -r hc dead bench < <(
+            jq -r '[(.health_class//""),(.seat_dead|tostring),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        local blocked=0
+        case "$hc" in
+            quota_exhausted|credentials_bad) blocked=1 ;;
+            quota_bench)
+                if [ -n "$bench" ]; then
+                    bench_s=$(date -u -d "$bench" +%s 2>/dev/null || echo 0)
+                    if [ "$bench_s" -gt "$now_s" ] 2>/dev/null; then
+                        blocked=1
+                    fi
+                else
+                    blocked=1
+                fi
+                ;;
+        esac
+        [ "$dead" = "true" ] && blocked=1
+        if [ "$blocked" -eq 1 ]; then
+            local base p
+            base=$(basename "$f" .json)
+            p="${base%%__*}"
+            case " $names " in
+                *" $p "*) ;;
+                *) names="${names:+$names }$p" ;;
+            esac
+        fi
+    done
+    printf '%s\n' "$names"
+}
+
+count_running() {
+    if [ -n "${FLEET_CAPACITY_RUNNING:-}" ]; then
+        printf '%s\n' "$FLEET_CAPACITY_RUNNING"
+        return 0
+    fi
+    local unit n=0
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        case "$unit" in
+            pi-issue@*) n=$((n+1)) ;;
+        esac
+    done < <("$SYSTEMCTL" --user list-units 'pi-issue@*.service' \
+        --state=active,activating --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' || true)
+    printf '%s\n' "$n"
+}
+
+ready_count() {
+    local repo="$1" n
+    n=$("$GH" issue list -R "$repo" -l agent-ready --state open \
+        --json number --limit 200 --jq 'length' 2>/dev/null || echo "")
+    printf '%s\n' "$n"
+}
+
+probe_max_age_days() {
+    if [ -n "${FLEET_CAPACITY_PROBE_MAX_AGE_DAYS:-}" ]; then
+        printf '%s\n' "$FLEET_CAPACITY_PROBE_MAX_AGE_DAYS"
+        return 0
+    fi
+    jq -r '.probe_max_age_days // 7' "$INVENTORY_JSON" 2>/dev/null || echo 7
+}
+
+ensure_landed() {
+    if [ ! -f "$LANDED_FILE" ]; then
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$LANDED_FILE"
+    fi
+}
+
+# True (0) if this provider has a receipt fresh enough, or the chain is still
+# inside the grace window since landed.
+probe_ok() {
+    local key="$1" max_days landed_s now_s receipt rec_s age
+    max_days=$(probe_max_age_days)
+    now_s=$(date -u +%s)
+    landed_s=$(date -u -d "$(cat "$LANDED_FILE" 2>/dev/null || echo "")" +%s 2>/dev/null || echo 0)
+    receipt="$PROBE_DIR/${key}.json"
+    if [ -f "$receipt" ]; then
+        rec_s=$(date -u -d "$(jq -r '.probed_at // empty' "$receipt" 2>/dev/null)" +%s 2>/dev/null || echo 0)
+        if [ "$rec_s" -gt 0 ] 2>/dev/null; then
+            age=$(( (now_s - rec_s) / 86400 ))
+            [ "$age" -le "$max_days" ] && return 0
+        fi
+    fi
+    if [ "$landed_s" -gt 0 ] 2>/dev/null; then
+        age=$(( (now_s - landed_s) / 86400 ))
+        [ "$age" -le "$max_days" ] && return 0
+    fi
+    return 1
+}
+
+verdict_for() {
+    # Args: ready running bound ram_env live_caps walled_csv
+    local ready="$1" running="$2" bound="$3" ram_env="$4" live_caps="$5" walled="$6"
+    local wired_all
+    wired_all=$(sum_live_caps)
+    if [ -z "$ready" ] || ! [ "$ready" -ge 0 ] 2>/dev/null; then
+        printf '%s\n' "UNKNOWN"
+        return 0
+    fi
+    if [ "$ready" -eq 0 ]; then
+        printf '%s\n' "WORK-LIMITED"
+        return 0
+    fi
+    if [ -n "$walled" ]; then
+        local unwalled_bound
+        if [ "$wired_all" -lt "$ram_env" ]; then
+            unwalled_bound=$wired_all
+        else
+            unwalled_bound=$ram_env
+        fi
+        if [ "$unwalled_bound" -gt "$bound" ]; then
+            printf '%s\n' "LANE-LIMITED"
+            return 0
+        fi
+    fi
+    if [ "$running" -ge "$bound" ] 2>/dev/null; then
+        if [ "$ram_env" -lt "$live_caps" ]; then
+            printf '%s\n' "GOVERNOR-LIMITED"
+        else
+            printf '%s\n' "SATURATED"
+        fi
+        return 0
+    fi
+    printf '%s\n' "UNKNOWN"
+}
+
+link_entitled() {
+    local findings=0 id key cap reasons
+    [ -f "$INVENTORY_JSON" ] || {
+        loud "CAPACITY-CONFIG" "entitlement inventory missing: $INVENTORY_JSON"
+        return 2
+    }
+    [ -f "$SEAT_CAPS_JSON" ] || {
+        loud "CAPACITY-CONFIG" "seat-caps missing: $SEAT_CAPS_JSON"
+        return 2
+    }
+    while IFS=$'\t' read -r id key; do
+        [ -n "$id" ] || continue
+        cap=$(provider_cap_of "$key")
+        if [ "$cap" = "missing" ]; then
+            loud "ENTITLED-UNWIRED" "seat=$id key=$key has no providers.$key row in seat-caps.json"
+            auto_file "entitled-unwired" "$id" \
+                "Detector: entitled → wired (fleet-ops#418 / #387). Inventory seat \`$id\` has no providers.$key row. Wire it or add a dated cap=0 reason."
+            findings=$((findings+1))
+            continue
+        fi
+        if [ "$cap" = "0" ]; then
+            reasons=$(reason_text_for "$key")
+            if ! has_dated_reason "$reasons"; then
+                loud "ENTITLED-CAP0" "seat=$id key=$key cap=0 with no dated reason"
+                auto_file "entitled-cap0" "$id" \
+                    "Detector: entitled → wired (fleet-ops#418 / #387). Inventory seat \`$id\` (providers.$key) is cap=0 without a dated reason (YYYY-MM-DD in reason, cap_zero_reason, _comment, or _hard_cap)."
+                findings=$((findings+1))
+            else
+                log "entitled: $id key=$key cap=0 dated-reason ok"
+            fi
+            continue
+        fi
+        log "entitled: $id key=$key cap=$cap wired"
+    done < <(jq -r '.seats[] | [.id, (.seat_caps_key // .id)] | @tsv' "$INVENTORY_JSON")
+    printf '%s\n' "$findings"
+}
+
+link_probed() {
+    local findings=0 key cap
+    ensure_landed
+    while IFS=$'\t' read -r key cap; do
+        [ -n "$key" ] || continue
+        case "$cap" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        [ "$cap" -gt 0 ] || continue
+        if is_hard_capped "$key"; then
+            log "probed: $key hard-capped — exempt"
+            continue
+        fi
+        if probe_ok "$key"; then
+            log "probed: $key receipt-or-grace ok"
+            continue
+        fi
+        loud "AIMD-STALE" "lane=$key cap=$cap has no AIMD probe receipt within $(probe_max_age_days)d (adaptive layer decorative)"
+        auto_file "aimd-stale" "$key" \
+            "Detector: wired → probed (fleet-ops#418 / #387 AIMD proof). Lane \`$key\` cap=$cap has never moved and carries no probe receipt within $(probe_max_age_days) days of chain-landed. An adaptive layer that never adapts is a finding."
+        findings=$((findings+1))
+    done < <(jq -r '
+      .providers | to_entries[] | .key as $k | .value as $v
+      | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end)] | @tsv
+    ' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    printf '%s\n' "$findings"
+}
+
+link_saturated_and_verdicts() {
+    local running bound ram_env live_caps wired_all walled findings=0
+    local repo short ready verdict
+    running=$(count_running)
+    ram_env=$(ram_envelope)
+    walled=$(walled_providers)
+    live_caps=$(sum_live_caps "$walled")
+    wired_all=$(sum_live_caps)
+    if [ "$live_caps" -lt "$ram_env" ]; then
+        bound=$live_caps
+    else
+        bound=$ram_env
+    fi
+    [ "$bound" -ge 1 ] || bound=1
+
+    log "capacity: running=$running live_caps=$live_caps ram_envelope=$ram_env bound=$bound walled=${walled:-none} wired_all=$wired_all"
+
+    if [ ! -f "$INTAKE_JSON" ]; then
+        loud "CAPACITY-CONFIG" "intake-repos.json missing: $INTAKE_JSON"
+        printf '%s\n' "2"
+        return 0
+    fi
+
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        short="${repo##*/}"
+        ready=$(ready_count "$repo")
+        if [ -z "$ready" ]; then
+            loud "CAPACITY-VERDICT" "repo=$repo verdict=UNKNOWN ready=? running=$running bound=$bound (gh ready-count failed)"
+            auto_file "verdict-unknown" "$short" \
+                "Detector: saturated → supplied (fleet-ops#418). Repo \`$repo\` ready-count failed; UNKNOWN is itself a finding."
+            findings=$((findings+1))
+            continue
+        fi
+        verdict=$(verdict_for "$ready" "$running" "$bound" "$ram_env" "$live_caps" "$walled")
+        loud "CAPACITY-VERDICT" "repo=$repo verdict=$verdict ready=$ready running=$running bound=$bound ram_envelope=$ram_env live_caps=$live_caps walled=${walled:-none}"
+        case "$verdict" in
+            UNKNOWN)
+                auto_file "verdict-unknown" "$short" \
+                    "Detector: probed → saturated (fleet-ops#418). Repo \`$repo\` ready=$ready running=$running bound=$bound with healthy (or unnamed) lanes. Workers should have climbed to the bound. UNKNOWN is itself a finding."
+                findings=$((findings+1))
+                if [ "$ready" -gt 0 ] 2>/dev/null && [ "$running" -lt "$bound" ] 2>/dev/null; then
+                    loud "UNDERSAT-CAPACITY" "running=$running < bound=$bound while ready work exists (reformulated watchdog; #75 wedge path unchanged)"
+                fi
+                ;;
+            WORK-LIMITED)
+                log "supply: $repo WORK-LIMITED — scouts' problem (low-water owns dispatch)"
+                ;;
+            LANE-LIMITED)
+                loud "LANE-LIMITED" "repo=$repo walled=${walled} — seats' problem, named"
+                ;;
+            GOVERNOR-LIMITED|SATURATED)
+                log "supply: $repo $verdict"
+                ;;
+        esac
+    done < <(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+
+    printf '%s\n' "$findings"
+}
+
+observe() {
+    command -v jq >/dev/null 2>&1 || {
+        log "FATAL: jq missing"
+        return 2
+    }
+    local n1 n2 n3
+    n1=$(link_entitled) || return 2
+    n2=$(link_probed) || return 2
+    n3=$(link_saturated_and_verdicts)
+    if [ "$n3" = "2" ]; then
+        return 2
+    fi
+    log "observe complete: entitled_findings=$n1 probe_findings=$n2 verdict_findings=$n3"
+    return 0
+}
+
+# --- drill: isolated fixtures, never production GitHub work counts ----------
+write_drill_caps() {
+    local path="$1"
+    cat >"$path" <<'JSON'
+{
+  "ram_gb_per_worker": 1,
+  "providers": {
+    "healthy-a": { "cap": 2, "class": "free" },
+    "healthy-b": { "cap": 2, "class": "free" },
+    "fixture-lane": { "cap": 2, "class": "free" }
+  }
+}
+JSON
+}
+
+write_drill_inventory() {
+    local path="$1"
+    cat >"$path" <<'JSON'
+{
+  "seats": [
+    { "id": "healthy-a", "class": "free" },
+    { "id": "healthy-b", "class": "free" },
+    { "id": "fixture-lane", "class": "free" }
+  ]
+}
+JSON
+}
+
+write_drill_intake() {
+    local path="$1"
+    cat >"$path" <<'JSON'
+{
+  "repos": [{ "name": "drill" }],
+  "excluded": [],
+  "deferred": []
+}
+JSON
+}
+
+drill_hop_fail() {
+    local hop="$1" why="$2"
+    loud "CAPACITY-DRILL-FAIL" "hop=$hop $why"
+    auto_file "drill-fail" "$hop" \
+        "Chain drill hop \`$hop\` failed (fleet-ops#418). $why Observe-to-close: this issue stays open until the drill hop passes on a real heartbeat cycle."
+    return 1
+}
+
+scout_started_in() {
+    local logf="$1"
+    grep -q 'pi-scout@drill.service' "$logf" 2>/dev/null
+}
+
+drill() {
+    local ddir="${FLEET_CAPACITY_DRILL_DIR:-$LOG_DIR/capacity-chain-drill}"
+    rm -rf "$ddir"
+    mkdir -p "$ddir/probes" "$ddir/filed" "$ddir/stamps" "$ddir/ledger"
+    local caps="$ddir/seat-caps.json"
+    local inv="$ddir/inventory.json"
+    local intake="$ddir/intake.json"
+    local calls="$ddir/systemctl-calls.log"
+    : >"$calls"
+    write_drill_caps "$caps"
+    write_drill_inventory "$inv"
+    write_drill_intake "$intake"
+
+    local gh_fake sys_fake readyf
+    readyf="$ddir/ready"
+    printf '10\n' >"$readyf"
+    gh_fake="$ddir/gh"
+    cat >"$gh_fake" <<FAKE
+#!/usr/bin/env bash
+case "\$*" in
+  *"issue list"*"-l agent-ready"*)
+    cat "$readyf"
+    exit 0
+    ;;
+  *"issue create"*)
+    printf 'created\n' >>"$ddir/gh-create.log"
+    echo "https://example.invalid/issue/1"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+FAKE
+    chmod +x "$gh_fake"
+    sys_fake="$ddir/systemctl"
+    cat >"$sys_fake" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$calls"
+shift || true
+cmd="\${1:-}"
+case "\$cmd" in
+  start)
+    exit 0
+    ;;
+  list-units)
+    exit 0
+    ;;
+  is-active)
+    echo inactive
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+FAKE
+    chmod +x "$sys_fake"
+
+    export SEAT_CAPS_JSON="$caps"
+    export FLEET_ENTITLEMENT_INVENTORY="$inv"
+    export FLEET_INTAKE_REPOS_JSON="$intake"
+    export FLEET_CAPACITY_PROBE_DIR="$ddir/probes"
+    export FLEET_CAPACITY_LANDED="$ddir/landed"
+    export FLEET_CAPACITY_FILED_DIR="$ddir/filed"
+    export FLEET_CAPACITY_RAM_GB=8
+    export FLEET_CAPACITY_FILE_ISSUES=1
+    export GH="$gh_fake"
+    export SYSTEMCTL="$sys_fake"
+    export PI_SEAT_HEALTH_LEDGER_DIR="$ddir/ledger"
+    STAMP_DIR="$ddir/filed"
+    PROBE_DIR="$ddir/probes"
+    LANDED_FILE="$ddir/landed"
+    INVENTORY_JSON="$inv"
+    SEAT_CAPS_JSON="$caps"
+    INTAKE_JSON="$intake"
+    LEDGER_DIR="$ddir/ledger"
+    FILE_ISSUES=1
+
+    # Hop entitled: inject a seat with no caps row; detector must scream.
+    jq '.seats += [{"id":"drill-missing","class":"free"}]' \
+        "$inv" >"$ddir/inv-missing.json"
+    INVENTORY_JSON="$ddir/inv-missing.json"
+    local entitled_out
+    entitled_out=$(link_entitled)
+    if [ "$entitled_out" -lt 1 ] 2>/dev/null; then
+        drill_hop_fail "entitled" "fixture drill-missing produced no ENTITLED-UNWIRED finding"
+        return 1
+    fi
+    grep -q 'ENTITLED-UNWIRED' "$TRIAGE" \
+        || { drill_hop_fail "entitled" "triage missing ENTITLED-UNWIRED"; return 1; }
+    log "drill hop entitled: ok (missing seat screamed)"
+    INVENTORY_JSON="$inv"
+
+    # Hop probed: max_age 0, no receipt, not hard-capped → AIMD-STALE.
+    date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ >"$LANDED_FILE"
+    export FLEET_CAPACITY_PROBE_MAX_AGE_DAYS=0
+    local probe_out
+    probe_out=$(link_probed)
+    if [ "$probe_out" -lt 1 ] 2>/dev/null; then
+        drill_hop_fail "probed" "stale AIMD window produced no AIMD-STALE finding"
+        return 1
+    fi
+    grep -q 'AIMD-STALE' "$TRIAGE" \
+        || { drill_hop_fail "probed" "triage missing AIMD-STALE"; return 1; }
+    log "drill hop probed: ok (stale lane screamed)"
+    # Fresh receipts so later hops are not probe-noisy.
+    mkdir -p "$PROBE_DIR"
+    local k
+    for k in healthy-a healthy-b fixture-lane; do
+        jq -n --arg p "$k" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{provider:$p, probed_at:$t, signal:"held"}' >"$PROBE_DIR/${k}.json"
+    done
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$LANDED_FILE"
+    export FLEET_CAPACITY_PROBE_MAX_AGE_DAYS=7
+
+    # Hop saturate: tick 1 running=0 (not yet); tick 2 running=bound → SATURATED.
+    # live_caps=6, ram_envelope=8, bound=6. Wait ram=8 per=1 → 8; live=6; bound=6.
+    unset FLEET_CAPACITY_WALLED
+    export FLEET_CAPACITY_RUNNING=0
+    printf '10\n' >"$readyf"
+    : >"$ddir/tick1.triage-slice"
+    local v1
+    v1=$(verdict_for 10 0 6 8 6 "")
+    [ "$v1" = "UNKNOWN" ] || {
+        drill_hop_fail "saturated" "tick1 expected UNKNOWN (climbing), got $v1"
+        return 1
+    }
+    export FLEET_CAPACITY_RUNNING=6
+    local v2
+    v2=$(verdict_for 10 6 6 8 6 "")
+    [ "$v2" = "SATURATED" ] || {
+        drill_hop_fail "saturated" "tick2 expected SATURATED at bound, got $v2"
+        return 1
+    }
+    log "drill hop saturated: ok (UNKNOWN then SATURATED within 2 ticks)"
+
+    # Hop wall: wall fixture-lane. live_caps drops 6→4, unwall bound=6 > 4.
+    export FLEET_CAPACITY_WALLED="fixture-lane"
+    export FLEET_CAPACITY_RUNNING=4
+    local live_w bound_w vwall
+    live_w=$(sum_live_caps fixture-lane)
+    if [ "$live_w" -lt 8 ]; then bound_w=$live_w; else bound_w=8; fi
+    vwall=$(verdict_for 10 4 "$bound_w" 8 "$live_w" "fixture-lane")
+    [ "$vwall" = "LANE-LIMITED" ] || {
+        drill_hop_fail "walled" "expected LANE-LIMITED naming fixture-lane, got $vwall (bound=$bound_w live=$live_w)"
+        return 1
+    }
+    log "drill hop walled: ok (LANE-LIMITED fixture-lane)"
+
+    # Hop supply: drain ready work → WORK-LIMITED and scout start.
+    unset FLEET_CAPACITY_WALLED
+    export FLEET_CAPACITY_RUNNING=0
+    printf '0\n' >"$readyf"
+    local vdrain
+    vdrain=$(verdict_for 0 0 6 8 6 "")
+    [ "$vdrain" = "WORK-LIMITED" ] || {
+        drill_hop_fail "supplied" "expected WORK-LIMITED after drain, got $vdrain"
+        return 1
+    }
+    if ! "$SYSTEMCTL" --user start --no-block pi-scout@drill.service; then
+        drill_hop_fail "supplied" "systemctl start pi-scout@drill.service failed"
+        return 1
+    fi
+    scout_started_in "$calls" \
+        || { drill_hop_fail "supplied" "scout start not recorded"; return 1; }
+    loud "LOW-WATER-REFILL" "repo=Nishfleet/drill ready=0 lanes=6 — started pi-scout@drill.service (capacity-chain drill)"
+    log "drill hop supplied: ok (WORK-LIMITED + scout started)"
+
+    loud "CAPACITY-DRILL-OK" "entitled, probed, saturated, walled, supplied hops passed"
+    log "drill complete: all hops passed"
+    return 0
+}
+
+# ============================================================================
+# main
+# ============================================================================
+if [ "$MODE" = "drill" ]; then
+    log "capacity-chain drill starting"
+    if drill; then
+        exit 0
+    fi
+    exit 1
+fi
+
+log "capacity-chain observe starting"
+observe
+exit $?
