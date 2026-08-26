@@ -203,6 +203,7 @@ jobs:
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/stop-escalation-dispatch.test.sh
+        bash tests/escalation-units-shape.test.sh
         bash tests/system-dropins-shape.test.sh
         bash tests/fleet-ops-deploy.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
