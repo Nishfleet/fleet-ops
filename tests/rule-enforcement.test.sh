@@ -58,9 +58,12 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report vault sync conflicts as enforced covered_rows (fleet-ops#529): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Nothing sits half-done, and no question dies unanswered (Nish, 2026-08-20)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report sr-nothing-half-done as enforced covered_rows (fleet-ops#528)"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
+  ok "live join: nothing-half-done source is enforced (observe-to-close for #528)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -532,6 +535,9 @@ ok "drill: canary-covered marker is not posted twice"
 # rule-enforcement suite so it is exercised in CI without a workflow edit.
 bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"
 ok "rule-enforcement: no-agent-names gate drill"
+# fleet-ops#528: worktree/PR orphan canary drill, same CI constraint.
+bash "$here/fleet-nothing-half-done.test.sh" || fail "nothing-half-done canary drill failed"
+ok "rule-enforcement: nothing-half-done canary drill"
 
 # fleet-ops#529: conflict-file canary. Invoked from this CI-listed file so
 # hosted runners run it without a workflow edit (worker tokens cannot push
@@ -539,4 +545,4 @@ ok "rule-enforcement: no-agent-names gate drill"
 bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
 ok "rule-enforcement: vault-conflict-resolver drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, and vault-conflict drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, nothing-half-done, and vault-conflict drills"

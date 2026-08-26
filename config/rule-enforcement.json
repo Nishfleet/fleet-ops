@@ -178,10 +178,9 @@
     {
       "id": "sr-nothing-half-done",
       "source": "global-standing-rules.md: Nothing sits half-done, and no question dies unanswered (Nish, 2026-08-20)",
-      "mechanism": "No detector for done-but-unlanded work or unanswered questions",
-      "proof": "Nishfleet/fleet-ops#528",
-      "status": "queued(#528)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat canary: idle dirty/unpushed worktrees and green unmerged PRs without auto-merge are LOUD + auto-filed (complete or discard); QUESTIONS.md OPEN/expired HOLD rows are naged via Telegram every 24h with notify-email fallback",
+      "proof": "bin/fleet-nothing-half-done; lib/nothing-half-done.py; tests/fleet-nothing-half-done.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#528",
+      "status": "enforced"
     },
     {
       "id": "sr-one-instruction-binds",

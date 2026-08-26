@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# fleet-nothing-half-done — worktree/PR orphan canary + question nag
+# (fleet-ops#528).
+#
+# Standing rule: nothing sits half-done, and no question dies unanswered.
+# fleet2-loose-ends and fleet2-question-nag died with the 08-23 wipe.
+# This detector is the replacement, on the heartbeat tick (no new timer).
+#
+#   1. Idle dirty or unpushed worktrees with no live unit -> LOUD + auto-file
+#      a complete-or-discard ticket (cheap lanes land or discard them).
+#   2. Open MERGEABLE PRs older than 24h with auto-merge off -> same.
+#   3. QUESTIONS.md OPEN / expired HOLD rows -> Telegram nag every 24h,
+#      notify-email fallback. Silence is not a no.
+#
+# Dirty trees are never deleted here (gh-worktree-gc / stalewood / wtkill
+# all refuse that, and so do we). The ticket is the completion path.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 every tick.
+# Exit 0: clean, every finding already ticketed, or this tick filed
+#   up to CAP (inherited backlog drains without a pager storm).
+# Exit 1: nag delivery failed, filing broke, or the helper is broken.
+#
+# Environment seams (tests override all of these):
+#   FLEET_NOTHING_HALF_DONE_WORKTREES
+#   FLEET_NOTHING_HALF_DONE_LIB
+#   FLEET_NOTHING_HALF_DONE_QUESTIONS
+#   FLEET_NOTHING_HALF_DONE_NAG_STATE
+#   FLEET_NOTHING_HALF_DONE_LIVE_UNITS
+#   FLEET_NOTHING_HALF_DONE_PRS_FILE     skip live gh when set
+#   FLEET_NOTHING_HALF_DONE_REPOS        default Nishfleet/fleet-ops Nishfleet/0509
+#   FLEET_NOTHING_HALF_DONE_IDLE_HOURS   default 24
+#   FLEET_NOTHING_HALF_DONE_NAG_HOURS    default 24
+#   FLEET_NOTHING_HALF_DONE_NOW          ISO timestamp
+#   FLEET_NOTHING_HALF_DONE_FILE_ISSUES  1 (default) / 0
+#   FLEET_NOTHING_HALF_DONE_ISSUE_REPO   default Nishfleet/fleet-ops
+#   FLEET_NOTHING_HALF_DONE_CAP          default 5
+#   FLEET_NOTHING_HALF_DONE_SCAN_PRS     1 (default) / 0
+#   SYSTEMCTL / HERMES / NOTIFY_EMAIL / GH
+#   FLEET_HEARTBEAT_TRIAGE
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+GH="${GH:-gh}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+HERMES="${HERMES:-hermes}"
+NOTIFY_EMAIL="${NOTIFY_EMAIL:-notify-email}"
+WORKTREES="${FLEET_NOTHING_HALF_DONE_WORKTREES:-$HOME/workspaces/agent-worktrees}"
+LIB="${FLEET_NOTHING_HALF_DONE_LIB:-$_canon_repo/lib/nothing-half-done.py}"
+if [[ ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/nothing-half-done.py" ]]; then
+    LIB="${HOME}/.local/lib/pi-packet/nothing-half-done.py"
+fi
+QUESTIONS="${FLEET_NOTHING_HALF_DONE_QUESTIONS:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/QUESTIONS.md}"
+NAG_STATE="${FLEET_NOTHING_HALF_DONE_NAG_STATE:-$HOME/.local/state/fleet-ops/nothing-half-done-nag.json}"
+LIVE_UNITS_FILE="${FLEET_NOTHING_HALF_DONE_LIVE_UNITS:-}"
+PRS_FILE="${FLEET_NOTHING_HALF_DONE_PRS_FILE:-}"
+REPOS="${FLEET_NOTHING_HALF_DONE_REPOS:-Nishfleet/fleet-ops Nishfleet/0509}"
+IDLE_HOURS="${FLEET_NOTHING_HALF_DONE_IDLE_HOURS:-24}"
+NAG_HOURS="${FLEET_NOTHING_HALF_DONE_NAG_HOURS:-24}"
+NOW_ISO="${FLEET_NOTHING_HALF_DONE_NOW:-}"
+FILE_ISSUES="${FLEET_NOTHING_HALF_DONE_FILE_ISSUES:-1}"
+ISSUE_REPO="${FLEET_NOTHING_HALF_DONE_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_NOTHING_HALF_DONE_CAP:-5}"
+SCAN_PRS="${FLEET_NOTHING_HALF_DONE_SCAN_PRS:-1}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+log() {
+    printf '[%s] [fleet-nothing-half-done] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+now_iso() {
+    if [[ -n "$NOW_ISO" ]]; then
+        printf '%s' "$NOW_ISO"
+        return 0
+    fi
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "NOTHING-HALF-DONE-BROKEN" "python3 missing — cannot scan orphans"
+    exit 1
+fi
+if [[ ! -f "$LIB" ]]; then
+    loud "NOTHING-HALF-DONE-BROKEN" "helper missing at $LIB"
+    exit 1
+fi
+
+scratch=$(mktemp -d -t nothing-half-done.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+if [[ -z "$LIVE_UNITS_FILE" ]]; then
+    LIVE_UNITS_FILE="$scratch/live-units.txt"
+    set +e
+    "$SYSTEMCTL" --user list-units --type=service --state=active,activating \
+        --plain --no-legend >"$LIVE_UNITS_FILE" 2>/dev/null
+    set -e
+    : >>"$LIVE_UNITS_FILE"
+    # Keep the unit name (first column) only.
+    awk '{print $1}' "$LIVE_UNITS_FILE" >"$scratch/live-units.names" 2>/dev/null \
+        || cp "$LIVE_UNITS_FILE" "$scratch/live-units.names"
+    LIVE_UNITS_FILE="$scratch/live-units.names"
+fi
+
+if [[ -z "$PRS_FILE" && "$SCAN_PRS" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    PRS_FILE="$scratch/prs.json"
+    printf '[]' >"$PRS_FILE"
+    merged="$scratch/prs-all.json"
+    printf '[]' >"$merged"
+    for repo in $REPOS; do
+        set +e
+        chunk=$("$GH" pr list -R "$repo" --state open --limit 100 \
+            --json number,title,url,createdAt,isDraft,mergeable,autoMergeRequest 2>/dev/null)
+        set -e
+        [[ -n "$chunk" ]] || continue
+        jq -c --arg repo "$repo" '[.[] | . + {repository: $repo}]' <<<"$chunk" \
+            >"$scratch/chunk.json" 2>/dev/null || continue
+        jq -s 'add' "$merged" "$scratch/chunk.json" >"$scratch/merged.next" 2>/dev/null \
+            && mv "$scratch/merged.next" "$merged"
+    done
+    mv "$merged" "$PRS_FILE"
+fi
+
+scan_args=(
+    scan
+    --worktree-root "$WORKTREES"
+    --live-units-file "$LIVE_UNITS_FILE"
+    --idle-hours "$IDLE_HOURS"
+    --nag-after-hours "$NAG_HOURS"
+)
+[[ -n "$PRS_FILE" ]] && scan_args+=(--prs-file "$PRS_FILE")
+[[ -f "$QUESTIONS" ]] && scan_args+=(--questions-file "$QUESTIONS")
+[[ -n "$NAG_STATE" ]] && scan_args+=(--nag-state "$NAG_STATE")
+[[ -n "$NOW_ISO" ]] && scan_args+=(--now "$NOW_ISO")
+
+set +e
+report=$(python3 "$LIB" "${scan_args[@]}" 2>"$scratch/scan.err")
+scan_rc=$?
+set -e
+
+if [[ "$scan_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$report"; then
+    loud "NOTHING-HALF-DONE-BROKEN" "helper produced no JSON (rc=$scan_rc) $(tr '\n' ' ' <"$scratch/scan.err" 2>/dev/null)"
+    exit 1
+fi
+
+wt_n=$(jq '.worktrees | length' <<<"$report")
+pr_n=$(jq '.prs | length' <<<"$report")
+q_n=$(jq '.questions | length' <<<"$report")
+scanned=$(jq -r '.scanned_worktrees' <<<"$report")
+log "scanned_worktrees=$scanned worktrees=$wt_n prs=$pr_n questions=$q_n"
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    set -e
+    open_json="${open_json:-[]}"
+fi
+
+filed=0
+new_orphans=0
+file_fail=0
+file_one() {
+    local row="$1"
+    local slug snippet path kind
+    slug=$(jq -r '.slug' <<<"$row")
+    snippet=$(jq -r '.reason' <<<"$row")
+    path=$(jq -r '.path' <<<"$row")
+    kind=$(jq -r '.kind' <<<"$row")
+
+    # Scan-only (tests): every finding is LOUD and fails the run.
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        loud "HALF-DONE-$kind" "slug=$slug path=$path reason=$snippet"
+        new_orphans=$((new_orphans + 1))
+        return 0
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        loud "HALF-DONE-$kind" "slug=$slug path=$path reason=$snippet"
+        new_orphans=$((new_orphans + 1))
+        file_fail=$((file_fail + 1))
+        return 0
+    fi
+
+    local signal="signal: nothing-half-done/${slug}"
+    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        log "auto-file: $slug already open (deduped)"
+        return 0
+    fi
+
+    new_orphans=$((new_orphans + 1))
+    [[ "$filed" -lt "$CAP" ]] || return 0
+    loud "HALF-DONE-$kind" "slug=$slug path=$path reason=$snippet"
+
+    local title body created create_rc
+    title="fix(half-done): $slug — complete or discard"
+    body="The nothing-half-done canary (fleet-ops#528, standing rule: nothing sits half-done) found done-but-unlanded work.
+
+- kind: \`$kind\`
+- path: \`$path\`
+- reason: $snippet
+- detector: bin/fleet-nothing-half-done (heartbeat tier1)
+
+Complete it end-to-end (merge, open the PR, land it) if it is useful, or discard it with a one-line note. Parked is not a state.
+
+Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
+
+$signal"
+    set +e
+    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    create_rc=$?
+    set -e
+    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+        log "auto-file: FILED $slug -> $created"
+        filed=$((filed + 1))
+    else
+        log "auto-file: failed to file $slug (rc=$create_rc)"
+        file_fail=$((file_fail + 1))
+    fi
+}
+
+while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    file_one "$row"
+done < <(jq -c '.worktrees[], .prs[]' <<<"$report")
+
+nag_fail=0
+nagged=0
+while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    slug=$(jq -r '.slug' <<<"$row")
+    question=$(jq -r '.reason' <<<"$row")
+    asked=$(jq -r '.path' <<<"$row")
+    msg="Open question still unanswered (asked $asked): $question"
+    loud "QUESTION-NAG" "slug=$slug $msg"
+
+    sent=0
+    if command -v "$HERMES" >/dev/null 2>&1; then
+        set +e
+        "$HERMES" send -t telegram "$msg" >/dev/null 2>"$scratch/hermes.err"
+        h_rc=$?
+        set -e
+        if [[ "$h_rc" -eq 0 ]]; then
+            sent=1
+            log "nag: telegram ok $slug"
+        else
+            log "nag: telegram failed $slug (rc=$h_rc)"
+        fi
+    fi
+    if [[ "$sent" -eq 0 ]] && command -v "$NOTIFY_EMAIL" >/dev/null 2>&1; then
+        set +e
+        "$NOTIFY_EMAIL" "Open question still unanswered" "$msg" >/dev/null 2>"$scratch/email.err"
+        e_rc=$?
+        set -e
+        if [[ "$e_rc" -eq 0 ]]; then
+            sent=1
+            log "nag: email fallback ok $slug"
+        else
+            log "nag: email fallback failed $slug (rc=$e_rc)"
+        fi
+    fi
+    if [[ "$sent" -eq 1 ]]; then
+        python3 "$LIB" record-nag --nag-state "$NAG_STATE" --slug "$slug" --at "$(now_iso)" \
+            || log "nag: could not record state for $slug"
+        nagged=$((nagged + 1))
+    else
+        nag_fail=$((nag_fail + 1))
+        loud "QUESTION-NAG-FAIL" "could not deliver nag for $slug via telegram or email"
+    fi
+done < <(jq -c '.questions[]' <<<"$report")
+
+if [[ "$nag_fail" -gt 0 ]]; then
+    loud "NOTHING-HALF-DONE-FAIL" "question nag delivery failed n=$nag_fail"
+    exit 1
+fi
+
+# Scan-only (tests): findings fail the run so the drill has teeth.
+# Production: file up to CAP per tick and stay green so an inherited
+# backlog cannot storm unit-escalation. Fail only when filing itself
+# broke (unticketed findings and zero filed).
+if [[ "$FILE_ISSUES" != "1" && "$new_orphans" -gt 0 ]]; then
+    loud "NOTHING-HALF-DONE-FAIL" "new half-done artifacts=$new_orphans filed=$filed — complete or discard"
+    exit 1
+fi
+if [[ "$FILE_ISSUES" == "1" && "$new_orphans" -gt 0 && "$filed" -eq 0 && "$file_fail" -gt 0 ]]; then
+    loud "NOTHING-HALF-DONE-FAIL" "new half-done artifacts=$new_orphans but filing failed n=$file_fail"
+    exit 1
+fi
+if [[ "$new_orphans" -gt 0 ]]; then
+    loud "NOTHING-HALF-DONE-OK" "draining half-done artifacts=$new_orphans filed=$filed nagged=$nagged (cap=$CAP)"
+    exit 0
+fi
+
+loud "NOTHING-HALF-DONE-OK" "no new orphans (scanned=$scanned nagged=$nagged)"
+exit 0

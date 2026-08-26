@@ -55,6 +55,10 @@ bin/fleet-findings-queued /home/nish/.local/bin/fleet-findings-queued
 # AskUserQuestion choke; this covers Pi and other JSONL sessions.
 lib/decisions-ledger.py /home/nish/.local/lib/pi-packet/decisions-ledger.py
 bin/fleet-decisions-ledger /home/nish/.local/bin/fleet-decisions-ledger
+# fleet-ops#528: worktree/PR orphan canary + QUESTIONS.md 24h nag.
+# Heartbeat-tier1 block 22; fail-loud on new half-done artifacts.
+lib/nothing-half-done.py /home/nish/.local/lib/pi-packet/nothing-half-done.py
+bin/fleet-nothing-half-done /home/nish/.local/bin/fleet-nothing-half-done
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
