@@ -122,9 +122,14 @@ auto_file_audit_noncanonical() {
         printf 'Auditing the worktree parent files false MANIFEST DIFFs because live units resolve into the deploy-clone (fleet-ops#367 / #372). The harness retargeted this run.\n\n'
         printf '%s\n' "$AUDIT_NONCANON_MARKER"
     } >"$body_file"
+    # fleet-ops#503: stamp gap-audit + agent-ready at create time so intake
+    # (which lists agent-ready only) sees the detector issue immediately,
+    # without waiting for lifecycle-label-sweep. Same class as the #402
+    # panel-PASS create site.
     if gh issue create -R "$REPO" \
         --title "Blind audit targeted non-canonical fleet-ops checkout" \
-        --body-file "$body_file" >/dev/null 2>&1; then
+        --body-file "$body_file" \
+        --label gap-audit --label agent-ready >/dev/null 2>&1; then
         log "filed: Blind audit targeted non-canonical fleet-ops checkout"
     else
         log "WARN: gh issue create failed for $AUDIT_NONCANON_MARKER"
