@@ -656,3 +656,7 @@ echo "$live" | grep -q 'pi-issue-wedged.json' \
 grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
   || fail "wedge probe: must log the stuck-activating reap"
 ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
+
+# fleet-ops#193: ram governor self-calibrate. Invoked from this file so the
+# existing CI step runs it — workers cannot push .github/workflows/**.
+bash "$here/ram-governor-self-calibrate.test.sh" || fail "ram-governor self-calibrate"

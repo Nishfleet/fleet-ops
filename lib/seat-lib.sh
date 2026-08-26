@@ -147,6 +147,17 @@ provider_quota_bench_default() {
 
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
 # If /proc/meminfo can't be read, returns 9999 (effectively unbounded) and logs.
+#
+# per_worker is measured, not a vibe (fleet-ops#193). Heartbeat tier1 calls
+# ram_governor_recalibrate each tick: it reads each live pi-issue unit's
+# cgroup memory.current, keeps a trailing distribution, and sets
+# ram_gb_per_worker := p95(RSS) * 3 clamped to [128 MB, 1.5 GB]. Until 10
+# samples exist, ram_governor_effective_gb returns the seat-caps.json seed
+# (currently 0.75 G). The formula below is unchanged — this only replaces
+# the constant. MemoryHigh/Max and oomd stay the reactive layers.
+#
+# Test seams: SEAT_MEMINFO, SEAT_RAM_GOVERNOR_STATE,
+# SEAT_RAM_GOVERNOR_STUB_RSS_FILE, SEAT_RAM_GOVERNOR_CGROUP_ROOT.
 ram_governor_cap() {
     # Lazy-load the cap map FIRST. Without this, SEAT_RAM_GB_PER_WORKER keeps
     # its hardcoded 1.5 default and ram_gb_per_worker in seat-caps.json is
@@ -156,8 +167,9 @@ ram_governor_cap() {
     # 2026-08-26: reported 5 lanes on the 1.5 default where the configured
     # 0.75 gives 10. Half the fleet's capacity was invisible.
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    local mem_avail_kb ram_budget
-    mem_avail_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+    local mem_avail_kb ram_budget meminfo per
+    meminfo="${SEAT_MEMINFO:-/proc/meminfo}"
+    mem_avail_kb=$(awk '/^MemAvailable:/ { print $2 }' "$meminfo" 2>/dev/null || echo 0)
     if (( mem_avail_kb <= 0 )); then
         seat_log "ram_governor: /proc/meminfo unavailable — returning 9999 (unbounded)"
         echo 9999
@@ -171,9 +183,195 @@ ram_governor_cap() {
     # FIRST, then divide what is genuinely spare. Dividing raw MemAvailable
     # let the fleet plan to consume every last byte.
     local floor_mb=${SEAT_MIN_FREE_RAM_MB:-2500}
-    ram_budget=$(awk -v m="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" -v fl="$floor_mb" 'BEGIN{ if (per+0 <= 0) per=1.5; spare=(m/1024)-fl; if (spare<0) spare=0; r=int((spare/1024)/per); if (r<1) r=1; print r }')
+    per=$(ram_governor_effective_gb)
+    ram_budget=$(awk -v m="$mem_avail_kb" -v per="$per" -v fl="$floor_mb" 'BEGIN{ if (per+0 <= 0) per=1.5; spare=(m/1024)-fl; if (spare<0) spare=0; r=int((spare/1024)/per); if (r<1) r=1; print r }')
     (( ram_budget < 1 )) && ram_budget=1
     echo "$ram_budget"
+}
+
+# Effective per-worker reservation in GB. Measured p95*3 once >= MIN_SAMPLES
+# observations are persisted; otherwise the seat-caps.json seed (cold start).
+ram_governor_effective_gb() {
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local state n gb min_n
+    state="${SEAT_RAM_GOVERNOR_STATE:-$STATE_DIR/ram-governor.json}"
+    min_n="${SEAT_RAM_GOVERNOR_MIN_SAMPLES:-10}"
+    if [[ -f "$state" ]]; then
+        n=$(jq -r '.n // 0' "$state" 2>/dev/null || echo 0)
+        gb=$(jq -r '.per_worker_gb // empty' "$state" 2>/dev/null || true)
+        if [[ "$n" =~ ^[0-9]+$ ]] && (( n >= min_n )) \
+           && [[ "$gb" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "$gb"
+            return 0
+        fi
+    fi
+    echo "$SEAT_RAM_GB_PER_WORKER"
+}
+
+# Bytes currently charged to each live pi-issue@ unit (cgroup memory.current).
+# One integer per line. Empty if nothing is running or the cgroup tree is
+# missing — caller treats that as "no new samples this tick".
+_ram_governor_live_rss_bytes() {
+    if [[ -n "${SEAT_RAM_GOVERNOR_STUB_RSS_FILE:-}" ]]; then
+        [[ -f "$SEAT_RAM_GOVERNOR_STUB_RSS_FILE" ]] || return 0
+        awk '/^[0-9]+$/ { print }' "$SEAT_RAM_GOVERNOR_STUB_RSS_FILE"
+        return 0
+    fi
+    local root uid slice f b
+    root="${SEAT_RAM_GOVERNOR_CGROUP_ROOT:-/sys/fs/cgroup}"
+    uid=$(id -u)
+    slice="$root/user.slice/user-${uid}.slice/user@${uid}.service/app.slice"
+    [[ -d "$slice" ]] || return 0
+    while IFS= read -r f; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        case "$f" in
+            *'/pi-issue@'*.service/memory.current) ;;
+            *) continue ;;
+        esac
+        case "$f" in
+            *issue-failed*) continue ;;
+        esac
+        b=$(cat "$f" 2>/dev/null || echo "")
+        [[ "$b" =~ ^[0-9]+$ ]] && (( b > 0 )) && printf '%s\n' "$b"
+    done < <(find "$slice" -name memory.current 2>/dev/null || true)
+}
+
+# p95 of unsigned integers on stdin (nearest-rank, 1-based after sort -n).
+_ram_governor_p95_bytes() {
+    sort -n | awk '
+        { a[NR]=$1 }
+        END {
+            n=NR
+            if (n<1) { print 0; exit }
+            idx=int((n-1)*0.95)+1
+            if (idx<1) idx=1
+            if (idx>n) idx=n
+            print a[idx]+0
+        }'
+}
+
+# p95_bytes * safety, clamped to [floor_mb, ceiling_mb], returned in GB.
+_ram_governor_clamp_gb() {
+    local p95_bytes="$1"
+    awk -v p="$p95_bytes" \
+        -v safety="${SEAT_RAM_GOVERNOR_SAFETY:-3}" \
+        -v floor_mb="${SEAT_RAM_GOVERNOR_FLOOR_MB:-128}" \
+        -v ceil_mb="${SEAT_RAM_GOVERNOR_CEILING_MB:-1536}" \
+        'BEGIN {
+            mb = (p+0)/1024/1024 * (safety+0)
+            if (mb < floor_mb) mb = floor_mb
+            if (mb > ceil_mb) mb = ceil_mb
+            printf "%.4f\n", mb/1024
+        }'
+}
+
+# Heartbeat-tick entry: sample live RSS, append to the trailing distribution,
+# persist, and emit one summary line for the tick log. Best-effort: never
+# fails the caller — a broken sample must not brick intake or heartbeat.
+# Audit line (via seat_log + "audit=1" on stdout) when the effective
+# per-worker GB moves by more than 25% tick-over-tick.
+ram_governor_recalibrate() {
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local state max_n min_n tmp samples_file n p95 would_be prev_gb eff source audit
+    state="${SEAT_RAM_GOVERNOR_STATE:-$STATE_DIR/ram-governor.json}"
+    max_n="${SEAT_RAM_GOVERNOR_MAX_SAMPLES:-64}"
+    min_n="${SEAT_RAM_GOVERNOR_MIN_SAMPLES:-10}"
+    mkdir -p "$(dirname "$state")" 2>/dev/null || true
+    samples_file=$(mktemp "${TMPDIR:-/tmp}/ram-gov-samples.XXXXXX") || {
+        seat_log "ram_governor: mktemp failed — skipping recalibrate"
+        echo "source=cold_start samples=0 error=mktemp"
+        return 0
+    }
+
+    if [[ -f "$state" ]]; then
+        jq -r '.samples_bytes[]? // empty' "$state" 2>/dev/null \
+            | awk '/^[0-9]+$/ { print }' >>"$samples_file" || true
+        prev_gb=$(jq -r '.per_worker_gb // empty' "$state" 2>/dev/null || true)
+    else
+        prev_gb=""
+    fi
+    _ram_governor_live_rss_bytes >>"$samples_file" || true
+
+    # Trailing window: last MAX_SAMPLES observations.
+    if [[ -s "$samples_file" ]]; then
+        tmp=$(mktemp "${TMPDIR:-/tmp}/ram-gov-trim.XXXXXX") || tmp=""
+        if [[ -n "$tmp" ]]; then
+            tail -n "$max_n" "$samples_file" | awk '/^[0-9]+$/ { print }' >"$tmp" || true
+            mv "$tmp" "$samples_file" 2>/dev/null || true
+        fi
+    fi
+
+    n=$(awk '/^[0-9]+$/ { c++ } END { print c+0 }' "$samples_file")
+    p95=0
+    would_be="$SEAT_RAM_GB_PER_WORKER"
+    if (( n > 0 )); then
+        p95=$(_ram_governor_p95_bytes <"$samples_file")
+        [[ "$p95" =~ ^[0-9]+$ ]] || p95=0
+        if (( p95 > 0 )); then
+            would_be=$(_ram_governor_clamp_gb "$p95")
+        fi
+    fi
+
+    if (( n >= min_n )); then
+        source="measured"
+        eff="$would_be"
+    else
+        source="cold_start"
+        eff="$SEAT_RAM_GB_PER_WORKER"
+    fi
+
+    audit=0
+    if [[ "$prev_gb" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [[ "$eff" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        if awk -v a="$prev_gb" -v b="$eff" 'BEGIN {
+            if (a+0 <= 0) exit 1
+            d=b-a; if (d<0) d=-d
+            exit (d/a > 0.25 ? 0 : 1)
+        }'; then
+            audit=1
+            seat_log "ram_governor: AUDIT per_worker_gb $prev_gb -> $eff (>25% tick-over-tick) source=$source samples=$n"
+        fi
+    fi
+
+    local samples_json now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    samples_json=$(jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber)' <"$samples_file" 2>/dev/null || echo '[]')
+    rm -f "$samples_file" 2>/dev/null || true
+    tmp="$state.$$.$RANDOM.tmp"
+    if jq -nc \
+        --argjson samples "$samples_json" \
+        --argjson n "$n" \
+        --argjson p95 "$p95" \
+        --argjson audit "$audit" \
+        --arg per "$eff" \
+        --arg would "$would_be" \
+        --arg src "$source" \
+        --arg prev "${prev_gb:-}" \
+        --arg ts "$now_utc" \
+        '{
+          updated_at:$ts,
+          n:$n,
+          samples_bytes:$samples,
+          p95_bytes:$p95,
+          per_worker_gb:($per|tonumber),
+          would_be_gb:($would|tonumber),
+          source:$src,
+          prev_per_worker_gb:(if $prev=="" then null else ($prev|tonumber) end),
+          audit:$audit
+        }' >"$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$state" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    else
+        seat_log "ram_governor: jq compose failed — state not updated"
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+
+    local ram_cap seat_max p95_mb
+    ram_cap=$(ram_governor_cap)
+    seat_max=$(seat_max_concurrent)
+    p95_mb=$(awk -v p="$p95" 'BEGIN{ printf "%.1f", (p+0)/1024/1024 }')
+    printf 'source=%s samples=%s p95_bytes=%s p95_mb=%s per_worker_gb=%s would_be_gb=%s ram_cap=%s seat_max=%s audit=%s\n' \
+        "$source" "$n" "$p95" "$p95_mb" "$eff" "$would_be" "$ram_cap" "$seat_max" "$audit"
+    return 0
 }
 
 # Effective fleet ceiling = min(sum_of_provider_caps, ram_governor).
