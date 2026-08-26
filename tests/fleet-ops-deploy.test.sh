@@ -669,8 +669,15 @@ git -C "$canon371" config user.name "Test"
 git -C "$canon371" add config/seat-caps.json MANIFEST install.sh
 git -C "$canon371" commit -q -m "merged cap drop"
 git -C "$canon371" update-ref refs/remotes/origin/main HEAD
+# fleet-ops#404: this scenario runs install.sh to a green exit (rc=0), so it
+# reaches the unconditional `enable --now intake-reconcile.path/.timer` safety
+# net. On the VPS those units are already enabled (is_unit_enabled short-
+# circuits); on a CI runner the unit files do not exist and `systemctl enable`
+# exits 1 under `set -e`, turning a green seat-caps landing red. Put the fake
+# systemctl on PATH so the enable block is hermetic — same pattern as
+# scenario1. scenario12c survives without it only because it expects rc=1.
 set +e
-ff_out=$("$canon371/install.sh" 2>&1)
+ff_out=$(PATH="$scratch:$PATH" "$canon371/install.sh" 2>&1)
 ff_rc=$?
 set -e
 [[ "$ff_rc" -eq 0 ]] || fail "scenario12d: origin/main blob should be allowed to land, got rc=$ff_rc out=$ff_out"
@@ -679,6 +686,44 @@ set -e
 [[ "$(jq -r '.providers.devin.cap' "$caps_dest_ff")" = "3" ]] \
     || fail "scenario12d: dest did not pick up the merged cap"
 ok "scenario12d: origin/main seat-caps blob is allowed to land a merged cap drop"
+
+# --- scenario 12e: hermeticity guard for green-exit install.sh runs ---------
+# fleet-ops#404: scenario12d runs install.sh to rc=0, which reaches the
+# unconditional `enable --now intake-reconcile.path/.timer` safety net. Without
+# the fake systemctl on PATH, a CI runner (no user units) exits 1 under set -e
+# and a green seat-caps landing goes red. This guard proves the unstubbed path
+# fails in a CI-like environment, so a future scenario that forgets the PATH
+# override fails HERE with a clear message instead of silently breaking P14.
+ci_systemctl="$scratch/ci-systemctl"
+cat >"$ci_systemctl" <<'CI_SYS'
+#!/usr/bin/env bash
+# Mimic a GitHub Actions runner: no user units are installed.
+[ "${1:-}" = "--user" ] && shift
+cmd="${1:-}"; [ "$#" -gt 0 ] && shift
+case "$cmd" in
+  is-enabled) echo "not-found"; exit 1 ;;
+  daemon-reload) exit 0 ;;
+  enable)
+    for u in "$@"; do
+      case "$u" in --now) ;; *) echo "Failed to enable unit: Unit file $u does not exist." >&2; exit 1 ;; esac
+    done
+    ;;
+  *) exit 0 ;;
+esac
+CI_SYS
+chmod +x "$ci_systemctl"
+# Reuse the canon371 tree (origin/main blob, merged cap drop). Run install.sh
+# with a CI-like systemctl and NO fake on PATH — this MUST fail, proving the
+# enable block is the break point when systemctl is not stubbed.
+set +e
+ci_out=$(SYSTEMCTL="$ci_systemctl" "$canon371/install.sh" 2>&1)
+ci_rc=$?
+set -e
+[[ "$ci_rc" -ne 0 ]] \
+    || fail "scenario12e: CI-like systemctl should fail the green install (enable block), got rc=0 out=$ci_out — a future scenario that forgets to stub systemctl would silently break P14"
+[[ "$ci_out" == *"intake-reconcile.path does not exist"* ]] \
+    || fail "scenario12e: expected the intake-reconcile.path enable failure, got: $ci_out"
+ok "scenario12e: unstubbed CI-like systemctl fails the green install at the enable block (hermeticity guard)"
 
 # --- scenario 13: leftover unit whose ExecStart binary is missing (fleet-ops#285)
 # The GitHub-hosted replacement left .service/.timer files on disk after the
