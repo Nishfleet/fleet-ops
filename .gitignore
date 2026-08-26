@@ -1,7 +1,0 @@
-# Drift-report output from .github/scripts/repo-standards-apply.mjs +
-# .github/scripts/enqueue-green-prs.mjs. Always uploaded as a workflow
-# artifact; never committed.
-out/
-
-# Per-job operational caches that workers sometimes leave behind.
-.cache/
