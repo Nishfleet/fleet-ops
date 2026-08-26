@@ -6,7 +6,8 @@
 #   2. --stdin becomes StandardInput=file:<abs>
 #   3. nohup in the command is refused
 #   4. already-active unit is a no-op (does not call systemd-run)
-#   5. LIVE (skipped if no user systemd): a job started from a dying parent
+#   5. AGENTS.md names pi-systemd-run and does not claim the fleet is paused.
+#   6. LIVE (skipped if no user systemd): a job started from a dying parent
 #      is still active after that parent exits.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,7 +70,30 @@ out="$(SYSTEMCTL="$fake/systemctl" SYSTEMD_RUN="$fake/systemd-run" \
 printf '%s\n' "$out" | grep -q 'no-op' || fail "active unit must no-op, got: $out"
 ok "already-active unit is a no-op"
 
-# --- 5. live: survives a dying parent --------------------------------------
+# --- 5. AGENTS.md tells Pi workers to use pi-systemd-run (fleet-ops#256) -----
+# The ~/.pi/agent/AGENTS.md that Pi loads as always-on context was missed by
+# the #54 home/vault routing update. It must name the wrapper and must not
+# still claim the fleet is paused.
+agents_repo="$repo_root/AGENTS.md"
+[[ -f "$agents_repo" ]] || fail "AGENTS.md must be tracked in the repo (fleet-ops#256)"
+grep -q 'pi-systemd-run' "$agents_repo" \
+    || fail "AGENTS.md must name pi-systemd-run"
+grep -q '## READ THIS FIRST — fleet state is LIVE STATE, never this file' "$agents_repo" \
+    || fail "AGENTS.md must open with the live-state check"
+grep -q '^\*\*The fleet is PAUSED\. It is not running\. Do NOT restart it\.\*\*$' "$agents_repo" \
+    && fail "AGENTS.md must not repeat the stale paused-fleet claim"
+ok "in-repo AGENTS.md names pi-systemd-run and does not claim the fleet is paused"
+
+# Live copy on the VPS. CI runners do not have this file and skip.
+if [[ -f "$HOME/.pi/agent/AGENTS.md" ]]; then
+    grep -q 'pi-systemd-run' "$HOME/.pi/agent/AGENTS.md" \
+        || fail "$HOME/.pi/agent/AGENTS.md must name pi-systemd-run"
+    grep -q '^\*\*The fleet is PAUSED\. It is not running\. Do NOT restart it\.\*\*$' "$HOME/.pi/agent/AGENTS.md" \
+        && fail "$HOME/.pi/agent/AGENTS.md still claims the fleet is paused"
+    ok "live ~/.pi/agent/AGENTS.md names pi-systemd-run and does not claim the fleet is paused"
+fi
+
+# --- 6. live: survives a dying parent --------------------------------------
 if ! systemctl --user is-system-running >/dev/null 2>&1 \
     && ! systemctl --user show -p Version >/dev/null 2>&1; then
     echo "SKIP: no user systemd (CI runner) — live survive-parent not run here"

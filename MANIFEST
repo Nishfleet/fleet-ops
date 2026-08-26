@@ -27,6 +27,8 @@ prompts/intake-repair.md /home/nish/.pi/agent/prompts/intake-repair.md
 prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
+# fleet-ops#256: the always-on Pi context file (read by pi before prompts).
+AGENTS.md /home/nish/.pi/agent/AGENTS.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
