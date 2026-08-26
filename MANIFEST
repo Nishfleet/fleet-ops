@@ -334,6 +334,15 @@ prompts/gap-closure-conference.md /home/nish/.pi/agent/prompts/gap-closure-confe
 prompts/gap-closure-conference-round2.md /home/nish/.pi/agent/prompts/gap-closure-conference-round2.md
 prompts/gap-closure-research.md /home/nish/.pi/agent/prompts/gap-closure-research.md
 prompts/gap-closure-research-round2.md /home/nish/.pi/agent/prompts/gap-closure-research-round2.md
+# fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Timer is
+# the primary trigger (named reason in the unit). Heading-growth bonus and
+# cadence-overdue scream live in heartbeat-tier1 §22. Sibling backups are
+# required before any finding is filed.
+bin/fleet-rulebook-redteam /home/nish/.local/bin/fleet-rulebook-redteam
+lib/rulebook-redteam-cadence.sh /home/nish/.local/lib/pi-packet/rulebook-redteam-cadence.sh
+prompts/rulebook-redteam.md /home/nish/.pi/agent/prompts/rulebook-redteam.md
+systemd/fleet-rulebook-redteam.service /home/nish/.config/systemd/user/fleet-rulebook-redteam.service
+systemd/fleet-rulebook-redteam.timer /home/nish/.config/systemd/user/fleet-rulebook-redteam.timer
 # fleet-ops#458: standing researcher role. Event-driven dispatch on the
 # heartbeat; oneshot unit runs the cheap/free-lane researcher; deltas go
 # through the same scout-candidate admission panel. No researcher timer —

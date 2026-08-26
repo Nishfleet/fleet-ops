@@ -164,10 +164,9 @@
     {
       "id": "sr-gap-rules-audit",
       "source": "global-standing-rules.md: Gap rules from the 2026-08-20 rulebook audit (Nish, 2026-08-20)",
-      "mechanism": "Monthly rulebook red-team cadence has no timer; rollback-backup is a convention",
-      "proof": "Nishfleet/fleet-ops#527",
-      "status": "queued(#527)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Monthly systemd timer (Persistent=true) plus heading-growth bonus on heartbeat-tier1 §39; sibling .bak-rulebook-redteam-YYYYMMDD backups are a hard gate before filing",
+      "proof": "bin/fleet-rulebook-redteam; systemd/fleet-rulebook-redteam.timer; lib/rulebook-redteam-cadence.sh; tests/fleet-rulebook-redteam.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-nothing-half-done",

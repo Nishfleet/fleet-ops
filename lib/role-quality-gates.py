@@ -247,6 +247,20 @@ def check_quality_ratchet_contract(repo: Path, _role: dict[str, Any]) -> str | N
         return "lib/quality-ratchet.py missing (quality ratchet canary)"
     if not (repo / "config" / "quality-ratchet.json").exists():
         return "config/quality-ratchet.json missing (committed floors)"
+def check_rulebook_redteam_backups(repo: Path, _role: dict[str, Any]) -> str | None:
+    """Red-team must refuse to file without sibling backups (fleet-ops#527)."""
+    timer = repo / "systemd" / "fleet-rulebook-redteam.timer"
+    if not timer.exists():
+        return "systemd/fleet-rulebook-redteam.timer missing"
+    text = _read(timer)
+    if "OnCalendar=" not in text or "Persistent=true" not in text:
+        return "timer must be OnCalendar monthly floor + Persistent=true"
+    runner = repo / "bin" / "fleet-rulebook-redteam"
+    if not runner.exists():
+        return "bin/fleet-rulebook-redteam missing"
+    body = _read(runner)
+    if "_require_backups" not in body:
+        return "runner must refuse to file without sibling backups"
     return None
 
 
@@ -262,6 +276,7 @@ BYPASS_CHECKS = {
     "researcher_delta_contract": check_researcher_delta_contract,
     "weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract,
     "quality_ratchet_contract": check_quality_ratchet_contract,
+    "rulebook_redteam_backups": check_rulebook_redteam_backups,
 }
 
 
