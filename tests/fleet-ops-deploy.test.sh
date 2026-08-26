@@ -105,6 +105,30 @@ OnCalendar=*:00/30
 WantedBy=timers.target
 UNIT
 
+# Templates fleet-ops actually ships — the drift canary matches rogue
+# instances (pi-intake@rogue.timer) against these by template prefix, so
+# they must exist in the test checkout for scenario 5 to exercise that path.
+cat >"$checkout/systemd/pi-intake@.timer" <<'UNIT'
+[Unit]
+Description=Pi intake timer for %i
+
+[Timer]
+OnCalendar=*:00/30
+
+[Install]
+WantedBy=timers.target
+UNIT
+cat >"$checkout/systemd/pi-scout@.timer" <<'UNIT'
+[Unit]
+Description=Pi scout timer for %i
+
+[Timer]
+OnCalendar=*:00/30
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 cat >"$checkout/bin/demo-script" <<'BIN'
 #!/usr/bin/env bash
 echo demo
@@ -283,6 +307,41 @@ if out=$(run_canary); then
     fail "scenario5: canary should fail on extra enabled unit, got: $out"
 fi
 [[ "$out" == *"DRIFT-UNITS"* ]] || fail "scenario5: extra enabled unit did not produce DRIFT-UNITS (got: $out)"
+
+# --- scenario 5b: externally-managed unit (fleet-prefixed, no source) ignored
+# A unit with a fleet-y name prefix but NO source file in this checkout is
+# owned by another system (codex-remote-control.service, pi-transport-check.*)
+# and must NOT be flagged as drift — the old prefix-only check false-positived
+# on these and turned every heartbeat tick red.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+printf 'codex-remote-control.service\n' >> "$enabled_units"
+printf 'pi-transport-check.timer\n' >> "$enabled_units"
+if ! out=$(run_canary); then
+    fail "scenario5b: canary should pass (externally-managed units ignored), got: $out"
+fi
+[[ "$out" == *"DRIFT-UNITS"* ]] \
+    && fail "scenario5b: externally-managed units were flagged as DRIFT-UNITS (got: $out)"
+ok "scenario5b: externally-managed (no-source) units ignored, not flagged as drift"
+
+# --- scenario 5c: masked unit + template-instance symlinks ignored -----------
+# intake-reconcile masks disabled units via a /dev/null symlink, and enabled
+# template instances (pi-intake@<repo>.timer) symlink to the shipped template.
+# Both are legit fleet state, not drift — the old check_extra_symlinks flagged
+# them because it didn't understand template instances or the /dev/null mask.
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" > "$enabled_units"
+# masked (disabled) unit: symlink to /dev/null
+ln -sf /dev/null "$HOME/.config/systemd/user/pi-intake@rogue.timer"
+# enabled template instance: symlink to the shipped template in the checkout
+ln -sf "$checkout/systemd/pi-intake@.timer" "$HOME/.config/systemd/user/pi-intake@extra.timer"
+if ! out=$(run_canary); then
+    fail "scenario5c: canary should pass (masked + template-instance symlinks are legit), got: $out"
+fi
+[[ "$out" == *"DRIFT-EXTRAS"* ]] \
+    && fail "scenario5c: masked/template-instance symlinks were flagged as DRIFT-EXTRAS (got: $out)"
+ok "scenario5c: masked (/dev/null) and template-instance symlinks ignored, not flagged as drift"
+rm -f "$HOME/.config/systemd/user/pi-intake@rogue.timer" "$HOME/.config/systemd/user/pi-intake@extra.timer"
 
 # --- scenario 6: hand-installed extra symlink --------------------------------
 : >"$enabled_units"
