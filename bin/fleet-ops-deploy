@@ -4,7 +4,9 @@
 # Pulls origin/main into the deploy checkout, runs install.sh, converges
 # the declared per-repo set, then runs the drift canary. Dirty tracked
 # files or a non-fast-forward checkout block the update (no reset, no
-# stash). Any remaining divergence fails loud (exit 1).
+# stash). A named non-main branch also blocks (fleet-ops#477): merge
+# --ff-only would rewind that auditor/hotfix branch onto origin/main.
+# Any remaining divergence fails loud (exit 1).
 #
 # Environment:
 #   FLEET_OPS_CHECKOUT          deploy checkout (default: this script's repo)
@@ -40,6 +42,19 @@ deploy_audit() {
     local unit="$1" action="$2" why="$3"
     printf '%s %s %s actor=heartbeat-deploy why=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$unit" "$action" "$why" >> "$DEPLOY_AUDIT_LOG"
+}
+
+# fleet-ops#477: DEPLOY-BLOCKED exits before the drift canary, so file here
+# when the clone is on a named non-main branch. Dedup lives in the canary.
+auto_file_off_main() {
+    local why="$1"
+    local py="$DEPLOY_CHECKOUT/bin/fleet-ops-drift.py"
+    if [ ! -f "$py" ]; then
+        log "WARN: off-main auto-file skipped (missing $py)"
+        return 0
+    fi
+    python3 "$py" --file-off-main "$why" \
+        || log "WARN: off-main auto-file failed"
 }
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
@@ -118,9 +133,17 @@ fi
 reasons=()
 [ -n "$dirty" ] && reasons+=("dirty tracked files")
 [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
+branch=""
+branch=$(git -C "$DEPLOY_CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+    reasons+=("checkout on '$branch' not main (fleet-ops#477)")
+fi
 if [ "${#reasons[@]}" -gt 0 ]; then
     why=$(printf '%s; ' "${reasons[@]}")
     why=${why%; }
+    if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+        auto_file_off_main "$why"
+    fi
     loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why"
     deploy_audit "fleet-ops" "deploy-blocked" "$why"
     exit 1

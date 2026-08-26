@@ -68,6 +68,11 @@ with `FLEET_OPS_ALLOW_NONCANONICAL=1`. The drift canary tags
 `DRIFT-SOURCE` and auto-files when live dests point at a non-canonical
 workspaces tree (fleet-ops#176).
 
+The deploy-clone itself must stay on branch `main`. Feature and auditor
+work uses a linked worktree. Heartbeat merge-to-live blocks and the
+drift canary auto-files `deploy-clone-off-main: fleet-ops#477` if a
+named non-main branch is checked out there.
+
 ### System-scope entries (fleet-ops#71)
 
 The MANIFEST may list entries under `/etc/systemd/system/...` — those are
