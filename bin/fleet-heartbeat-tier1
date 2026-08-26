@@ -1231,14 +1231,14 @@ log "13. seat-health freshness done"
 # 14. RAM MEASUREMENT (fleet-ops#45) + metric compare (fleet-ops#202)
 # ============================================================================
 # Mechanical re-measurement of peak RSS across fleet worker units. The
-# 0.75 in seat-caps.json's ram_gb_per_worker is the floor; a re-derive
+# 1.5 in seat-caps.json's ram_gb_per_worker is the floor; a re-derive
 # is `ram-measure` + jq over $RAM_STATE_DIR/ram-measurement.json. The
 # single one-line stdout (mean/median/p95/max in GiB) is logged to the
 # tick log so a trend is visible from the journal alone. The script is
 # a pure observer — it never fails the tick, never escalates, never
-# touches the cap map. Drift between the live distribution and
+# touches the cap map. Drift between the live memory.current p95*3 and
 # ram_gb_per_worker is a HUMAN action (re-derive from a fresh
-# measurement, then a PR).
+# ram-metric-compare, then a PR). fleet-ops#489 keeps memory.current.
 #
 # ram-metric-compare (fleet-ops#202) then samples live pi-issue@ units
 # for BOTH cgroup memory.current and process VmRSS, so the 35 MB vs
