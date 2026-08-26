@@ -35,6 +35,8 @@ lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
 lib/blind-audit-cadence.sh /home/nish/.local/lib/pi-packet/blind-audit-cadence.sh
 bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
+# fleet-ops#517: new bin/ files need a research: line before the PR opens.
+bin/research-before-build-check /home/nish/.local/bin/research-before-build-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh

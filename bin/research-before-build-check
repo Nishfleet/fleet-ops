@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# research-before-build-check — reject a new bin/ tool with no research pass
+# (fleet-ops#517).
+#
+# Standing rule (Nish, 2026-08-18): "Research before build — always."
+# Before hand-building a new tool, run a last-30-days-scale pass
+# (last30days, official docs, or equivalent live search), name what was
+# compared, and say why it lost (or that one was adopted).
+#
+# Usage:
+#   research-before-build-check --body FILE --name-status FILE
+#   git diff --name-status origin/main...HEAD | research-before-build-check --body FILE --name-status -
+#
+# Exit 0: no new bin/ file, or a well-formed research: line is present.
+# Exit 1: new bin/ file and no research: proof (the drill reject).
+# Exit 2: usage error.
+#
+# Proof: a line matching ^research:\s+\S that names both:
+#   1. a live-search marker (last30days / official docs / live search /
+#      web search / websearch / context7)
+#   2. an alternatives marker (compared / checked / adopted / rejected)
+#
+# The GitHub required-check workflow is a follow-up (nishfleet-worker has
+# no Workflows permission). This binary is the gate; tests are the drill.
+# Market PR-template Actions (pr-template-enforcer, Danger) lost for the
+# same reason: they need a workflow this token cannot push.
+
+set -euo pipefail
+
+usage() {
+    printf 'usage: research-before-build-check --body FILE --name-status FILE|-\n' >&2
+    exit 2
+}
+
+body_file=""
+name_status_file=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --body)
+            [ $# -ge 2 ] || usage
+            body_file="$2"
+            shift 2
+            ;;
+        --name-status)
+            [ $# -ge 2 ] || usage
+            name_status_file="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+# shellcheck disable=SC2015  # A && B || C IS the guard pattern here, not "if-then-else" — both clauses are checks that should route to usage().
+if [ -z "$body_file" ] || [ -z "$name_status_file" ]; then
+    usage
+fi
+[ -f "$body_file" ] || { printf 'research-before-build-check: body file not found: %s\n' "$body_file" >&2; exit 2; }
+
+# --- new tool? -------------------------------------------------------------
+# git diff --name-status: A\tpath, M\tpath, R100\told\tnew, C100\told\tnew.
+# bash case `*` matches across `/`, so `bin/*` covers bin/foo and bin/a/b.
+is_new_tool_path() {
+    local path="$1"
+    case "$path" in
+        bin/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+new_tools=""
+while IFS=$'\t' read -r col1 col2 col3 || [ -n "${col1:-}" ]; do
+    [ -n "${col1:-}" ] || continue
+    local_status="${col1:0:1}"
+    path=""
+    case "$local_status" in
+        A) path="$col2" ;;
+        C) path="${col3:-$col2}" ;;
+        *) continue ;;
+    esac
+    [ -n "$path" ] || continue
+    if is_new_tool_path "$path"; then
+        new_tools="${new_tools:+$new_tools }$path"
+    fi
+done < <(if [ "$name_status_file" = "-" ]; then cat; else cat "$name_status_file"; fi)
+
+if [ -z "$new_tools" ]; then
+    printf 'SKIP: no new bin/ file in the diff\n'
+    exit 0
+fi
+
+# --- proof? ----------------------------------------------------------------
+body="$(cat "$body_file")"
+
+set +e
+research_lines="$(printf '%s\n' "$body" | grep -E '^[[:space:]]*research:[[:space:]]*\S')"
+set -e
+
+if [ -z "$research_lines" ]; then
+    printf 'REJECT: new bin/ file (%s) with no research: line. Add research: naming a last-30-days-scale pass (last30days, official docs, or equivalent live search), the options compared, and why they lost or were adopted. Hand-building what already exists is not done.\n' "$new_tools" >&2
+    exit 1
+fi
+
+if ! printf '%s\n' "$research_lines" | grep -qiE 'last30days|official[[:space:]]+docs|live[[:space:]]+search|web[[:space:]]+search|websearch|context7'; then
+    printf 'REJECT: research: line on new bin/ file (%s) is missing a live-search marker (last30days / official docs / live search / web search / websearch / context7).\n' "$new_tools" >&2
+    exit 1
+fi
+
+if ! printf '%s\n' "$research_lines" | grep -qiE 'compared|checked|adopted|rejected'; then
+    printf 'REJECT: research: line on new bin/ file (%s) is missing compared/checked/adopted/rejected options. Name what already exists and why it lost or was adopted.\n' "$new_tools" >&2
+    exit 1
+fi
+
+printf 'OK: research: line present (new bin/: %s)\n' "$new_tools"
+exit 0
