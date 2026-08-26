@@ -77,6 +77,16 @@ jobs:
           if [ "$APPLY" = "true" ]; then args="$args --apply"; fi
           node .github/scripts/repo-standards-apply.mjs $args
 
+      - name: Enqueue green fleet PRs (amendment 2 part c)
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          APPLY: ${{ inputs.apply || false }}
+        run: |
+          set -euo pipefail
+          args="--org Nishfleet --org nish3451 --format markdown --out-dir out"
+          if [ "$APPLY" = "true" ]; then args="$args --apply"; fi
+          node .github/scripts/enqueue-green-prs.mjs $args
+
       - name: Upload drift report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
