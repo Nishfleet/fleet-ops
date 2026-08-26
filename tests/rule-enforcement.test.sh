@@ -539,4 +539,9 @@ ok "rule-enforcement: no-agent-names gate drill"
 bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
 ok "rule-enforcement: vault-conflict-resolver drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, and vault-conflict drills"
+# fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Same
+# CI constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-rulebook-redteam.test.sh" || fail "rulebook red-team drill failed"
+ok "rule-enforcement: rulebook red-team drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, and rulebook-redteam drills"

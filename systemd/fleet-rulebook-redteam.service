@@ -1,0 +1,30 @@
+[Unit]
+Description=Fleet rulebook red-team (monthly floor + heading-growth bonus, fleet-ops#527)
+# Named reason for this schedule (vault: "a schedule needs a named reason",
+# fleet-ops#378): the standing rule "Gap rules from the 2026-08-20 rulebook
+# audit" requires a monthly red-team of every rule file, plus a run after
+# any major rule addition. Unknown-unknown drift in the rulebook has no
+# event except "a month passed" and "a new ## heading appeared", so a
+# calendar floor is the only correct primary trigger. The heading-growth
+# dispatch in heartbeat-tier1 §22 is a BONUS — it shortens the gap when
+# a heading is added, never lengthens it. Cadence-overdue escalates
+# through the same block so a stuck red-team must scream.
+#
+# One run at a time: the script takes a non-blocking flock and the
+# heading-growth bonus no-ops when this unit is already active.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in.
+#
+# ExecStart goes through /bin/bash -c so CI systemd-analyze verify (which
+# cannot gain a new stub path — workers have no Workflows permission)
+# only needs bash, matching fleet-researcher.service.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-rulebook-redteam'
+TimeoutStartSec=45min
+Restart=no

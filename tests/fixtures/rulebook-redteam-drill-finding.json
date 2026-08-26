@@ -1,0 +1,11 @@
+{
+  "findings": [
+    {
+      "rank": 1,
+      "title": "drill fixture: duplicated standing rule across AGENTS.md and the vault",
+      "body": "Synthetic finding used only to prove fleet-rulebook-redteam files accepted findings as gap-audit issues after writing sibling backups. Not a live fleet gap.",
+      "severity": "medium",
+      "evidence": "tests/fixtures/rulebook-redteam-drill-finding.json"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=Fleet rulebook red-team (monthly floor)
+# Named reason (fleet-ops#378): the standing rule names a monthly cadence
+# plus "after any major rule addition". The calendar floor is the month.
+# Heading growth is an event, so it rides the heartbeat bonus in §22
+# rather than a path unit (Syncthing would fire a path unit on every
+# vault sync). Persistent=true catches a month the box was down.
+# RandomizedDelaySec keeps the 1st-of-month 04:15 UTC slot from colliding
+# with fleet-blind-audit at 03:30.
+[Timer]
+OnCalendar=*-*-01 04:15:00
+RandomizedDelaySec=30min
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

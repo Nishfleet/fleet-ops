@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+# fleet-rulebook-redteam — monthly (+ heading-growth) rulebook audit
+# (fleet-ops#527).
+#
+# ExecStart of fleet-rulebook-redteam.service. This is the mechanical
+# rung for "Gap rules from the 2026-08-20 rulebook audit":
+#   1. Timestamped sibling backups of every rule file in scope
+#      (`<name>.bak-rulebook-redteam-<YYYYMMDD>`) BEFORE any other work.
+#      Filing without those backups is a hard failure — rollback is no
+#      longer a convention.
+#   2. Dispatch a pi reviewer (prompts/rulebook-redteam.md) for the
+#      semantic half (duplication, contradictions, dead rules,
+#      unenforced prose). RULEBOOK_DRILL=1 skips pi and files a fixture.
+#   3. File accepted findings as gap-audit + agent-ready issues
+#      (fleet-ops#402). The reviewer does not file.
+#   4. Stamp last-rulebook-redteam-run so the heartbeat cadence canary
+#      can scream if the monthly floor dies.
+#
+# The join of standing-rules vs config/rule-enforcement.json already
+# runs every heartbeat tick (fleet-ops#383). This unit does not re-file
+# those rows.
+#
+# Environment seams (tests override all of these):
+#   RULEBOOK_REPO RULEBOOK_STATE_DIR RULEBOOK_PROMPT RULEBOOK_PLAN_FILE
+#   RULEBOOK_RULE_FILES RULEBOOK_STANDING_RULES RULEBOOK_SEAT_LIB
+#   RULEBOOK_PI_BIN RULEBOOK_MAX_FINDINGS RULEBOOK_DRY_RUN
+#   RULEBOOK_DRILL RULEBOOK_DRILL_FINDINGS RULEBOOK_FAKE_NOW
+#   RULEBOOK_SKIP_BACKUP (test-only: force the backup gate to fire)
+#   GH SYSTEMCTL
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+REPO="${RULEBOOK_REPO:-Nishfleet/fleet-ops}"
+STATE_DIR="${RULEBOOK_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-rulebook-redteam}"
+PROMPT="${RULEBOOK_PROMPT:-$HOME/.pi/agent/prompts/rulebook-redteam.md}"
+PLAN_FILE="${RULEBOOK_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
+STANDING_RULES="${RULEBOOK_STANDING_RULES:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md}"
+PI_BIN="${RULEBOOK_PI_BIN:-$HOME/.local/bin/pi}"
+MAX_FINDINGS="${RULEBOOK_MAX_FINDINGS:-5}"
+DRY_RUN="${RULEBOOK_DRY_RUN:-0}"
+DRILL="${RULEBOOK_DRILL:-0}"
+SKIP_BACKUP="${RULEBOOK_SKIP_BACKUP:-0}"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_fallback="$(cd "$here/.." && pwd)"
+[ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/rulebook-redteam.md"
+
+SEAT_LIB="${RULEBOOK_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+
+log() {
+    printf '[%s] [fleet-rulebook-redteam] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/redteam.lock"
+if ! flock -n 9; then
+    log "already running (no-op)"
+    exit 0
+fi
+
+if [ -n "${RULEBOOK_FAKE_NOW:-}" ]; then
+    NOW_ISO="$RULEBOOK_FAKE_NOW"
+else
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+fi
+NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
+DATE_STAMP="$(printf '%s' "$NOW_ISO" | cut -c1-10 | tr -d '-')"
+REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
+mkdir -p "$REPORT_DIR"
+FINDINGS_JSON="$REPORT_DIR/findings.json"
+REPORT_MD="$REPORT_DIR/report.md"
+PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
+PI_STDERR="$REPORT_DIR/pi-stderr.txt"
+BACKUP_MANIFEST="$REPORT_DIR/backups.txt"
+: >"$BACKUP_MANIFEST"
+
+update_plan_stamp() {
+    local prefix="$1:" value="$2" path="$PLAN_FILE"
+    [ -n "$path" ] || return 0
+    if [ ! -f "$path" ]; then
+        printf '%s %s\n' "$prefix" "$value" >"$path"
+        return 0
+    fi
+    python3 - "$path" "$prefix" "$value" <<'PY'
+import sys
+path, prefix, value = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, encoding="utf-8") as f:
+    lines = f.readlines()
+new, hit = [], False
+for ln in lines:
+    if ln.startswith(prefix + " ") or ln.rstrip("\n") == prefix:
+        new.append(f"{prefix} {value}\n")
+        hit = True
+    else:
+        new.append(ln)
+if not hit:
+    if new and not new[-1].endswith("\n"):
+        new.append("\n")
+    new.append(f"\n{prefix} {value}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(new)
+PY
+}
+
+default_rule_files() {
+    printf '%s\n' \
+        "$STANDING_RULES" \
+        "/home/nish/AGENTS.md" \
+        "/home/nish/.pi/agent/AGENTS.md" \
+        "/home/nish/.claude/CLAUDE.md" \
+        "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/profile.md" \
+        "$repo_fallback/AGENTS.md"
+}
+
+list_rule_files() {
+    local raw="${RULEBOOK_RULE_FILES:-}"
+    if [ -n "$raw" ]; then
+        printf '%s\n' "$raw"
+        return 0
+    fi
+    default_rule_files
+}
+
+# --- backups: sibling .bak-rulebook-redteam-YYYYMMDD, then refuse to
+# continue if none were written. RULEBOOK_SKIP_BACKUP=1 is the drill
+# that proves the gate fires (fleet-ops#366).
+backup_rule_files() {
+    local src dest base count=0
+    : >"$BACKUP_MANIFEST"
+    if [ "$SKIP_BACKUP" = "1" ]; then
+        log "SKIP_BACKUP=1: leaving backup manifest empty so the gate fires"
+        return 0
+    fi
+    while IFS= read -r src; do
+        [ -n "$src" ] || continue
+        [ -f "$src" ] || { log "skip missing rule file: $src"; continue; }
+        base="$(basename "$src")"
+        dest="$(dirname "$src")/${base}.bak-rulebook-redteam-${DATE_STAMP}"
+        cp -a "$src" "$dest"
+        printf '%s\t%s\tundo: cp %s %s\n' "$src" "$dest" "$dest" "$src" \
+            >>"$BACKUP_MANIFEST"
+        log "backup $src -> $dest"
+        count=$((count + 1))
+    done < <(list_rule_files)
+    log "backups written=$count"
+}
+
+_require_backups() {
+    local n
+    n="$(grep -c . "$BACKUP_MANIFEST" 2>/dev/null || true)"
+    n="${n:-0}"
+    if [ "$n" -lt 1 ]; then
+        log "FATAL: no sibling backups written — refusing to file or stamp a successful run (rollback-backup is a gate, not a convention)"
+        update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (failed, no-backups)"
+        exit 2
+    fi
+}
+
+update_heading_count() {
+    local path="$STANDING_RULES" n=0
+    if [ -f "$path" ]; then
+        n="$(grep -cE '^## ' "$path" 2>/dev/null || true)"
+        n="${n:-0}"
+    fi
+    printf '%s\n' "$n" >"$STATE_DIR/last-heading-count"
+}
+
+update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (started)"
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { log "FATAL: python3 missing"; exit 2; }
+
+backup_rule_files
+_require_backups
+
+if [ "$DRILL" = "1" ]; then
+    drill_src="${RULEBOOK_DRILL_FINDINGS:-}"
+    if [ -z "$drill_src" ] || [ ! -f "$drill_src" ]; then
+        log "FATAL: RULEBOOK_DRILL=1 requires RULEBOOK_DRILL_FINDINGS"
+        exit 2
+    fi
+    cp "$drill_src" "$FINDINGS_JSON"
+    {
+        printf '# Rulebook red-team drill — %s\n\n' "$NOW_ISO"
+        printf 'Fixture: `%s`\n\n' "$drill_src"
+        printf 'Backups:\n\n'
+        sed 's/^/- /' "$BACKUP_MANIFEST"
+        printf '\n'
+    } >"$REPORT_MD"
+    log "DRILL: loaded findings from $drill_src"
+else
+    [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
+    [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
+    if [ -f "$SEAT_LIB" ]; then
+        # shellcheck source=/dev/null
+        source "$SEAT_LIB"
+    fi
+    seat=""
+    if command -v pick_seat >/dev/null 2>&1; then
+        seat=$(pick_seat "" "" 1 "" || true)
+    fi
+    if [ -z "${seat:-}" ]; then
+        log "FATAL: no capable seat available"
+        update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (failed, no-seat)"
+        exit 1
+    fi
+    provider=$(printf '%s' "$seat" | awk '{print $1}')
+    model=$(printf '%s' "$seat" | awk '{print $2}')
+    log "seat selected: $provider/$model"
+
+    rule_files_list="$(list_rule_files | while IFS= read -r p; do
+        [ -f "$p" ] && printf '%s\n' "$p"
+    done)"
+    pkt="$REPORT_DIR/packet.md"
+    python3 - "$PROMPT" "$pkt" "$NOW_ISO" "$REPO" "$FINDINGS_JSON" \
+        "$REPORT_MD" "$MAX_FINDINGS" "$rule_files_list" <<'PY'
+import sys
+prompt_path, out_path = sys.argv[1], sys.argv[2]
+now, repo, findings, report, max_n, rule_files = sys.argv[3:9]
+tpl = open(prompt_path, encoding="utf-8").read()
+tpl = tpl.replace("{{NOW_ISO}}", now)
+tpl = tpl.replace("{{REPO}}", repo)
+tpl = tpl.replace("{{FINDINGS_JSON}}", findings)
+tpl = tpl.replace("{{REPORT_MD}}", report)
+tpl = tpl.replace("{{MAX_FINDINGS}}", max_n)
+tpl = tpl.replace("{{RULE_FILES_LIST}}", rule_files or "(none readable)")
+tpl = tpl.replace("{{RULE_JOIN_JSON}}", "{}")
+tpl = tpl.replace("{{OPEN_ISSUES_JSON}}", "[]")
+tpl = tpl.replace("{{RECENT_MERGES_JSON}}", "[]")
+open(out_path, "w", encoding="utf-8").write(tpl)
+PY
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY RUN: would dispatch $provider/$model"
+        update_heading_count
+        update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (dry-run)"
+        exit 0
+    fi
+    set +e
+    "$PI_BIN" --print --provider "$provider" --model "$model" \
+        <"$pkt" >"$PI_STDOUT" 2>"$PI_STDERR"
+    rc=$?
+    set -e
+    log "pi red-team exited rc=$rc"
+    if [ ! -f "$FINDINGS_JSON" ] || [ ! -s "$FINDINGS_JSON" ]; then
+        python3 - "$PI_STDOUT" "$FINDINGS_JSON" <<'PY'
+import json, re, sys
+src, dest = sys.argv[1], sys.argv[2]
+try:
+    text = open(src, encoding="utf-8", errors="replace").read()
+except OSError:
+    text = ""
+payload = {"findings": []}
+for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.S):
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        continue
+    if isinstance(data, dict) and "findings" in data:
+        payload = data
+        break
+open(dest, "w", encoding="utf-8").write(json.dumps(payload, indent=2) + "\n")
+PY
+    fi
+fi
+
+[ -f "$FINDINGS_JSON" ] || echo '{"findings":[]}' >"$FINDINGS_JSON"
+if ! jq -e . "$FINDINGS_JSON" >/dev/null 2>&1; then
+    log "FATAL: findings are not valid JSON"
+    exit 2
+fi
+
+slug_of() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -c1-60
+}
+
+open_json="[]"
+if [ "$DRY_RUN" != "1" ]; then
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 100 --json number,body,title 2>/dev/null)
+    set -e
+    open_json="${open_json:-[]}"
+    if ! "$GH" label view gap-audit -R "$REPO" >/dev/null 2>&1; then
+        "$GH" label create gap-audit -R "$REPO" --color FBCA04 \
+            --description "Mechanical rulebook red-team finding" >/dev/null 2>&1 || true
+    fi
+    if ! "$GH" label view agent-ready -R "$REPO" >/dev/null 2>&1; then
+        "$GH" label create agent-ready -R "$REPO" --color 0E8A16 \
+            --description "Auto: ready for a worker to claim" >/dev/null 2>&1 || true
+    fi
+fi
+
+filed=0
+unfiled=0
+body_file=$(mktemp)
+trap 'rm -f "$body_file"' EXIT
+
+{
+    printf '\n## Filing results\n\n'
+} >>"$REPORT_MD"
+
+while IFS= read -r finding; do
+    [ -n "$finding" ] || continue
+    title=$(printf '%s' "$finding" | jq -r '.title // ""')
+    body=$(printf '%s' "$finding" | jq -r '.body // ""')
+    evidence=$(printf '%s' "$finding" | jq -r '.evidence // ""')
+    severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
+    rank=$(printf '%s' "$finding" | jq -r '.rank // "?"')
+    [ -n "$title" ] || continue
+    [ "$filed" -lt "$MAX_FINDINGS" ] || break
+    slug=$(slug_of "$title")
+    signal="signal: rulebook-redteam/${slug}"
+    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        log "finding $rank: deduped ($signal)"
+        continue
+    fi
+    {
+        printf '%s\n\n' "$body"
+        printf '**Evidence:** %s\n\n' "$evidence"
+        printf '**Severity:** %s\n\n' "$severity"
+        printf '**Backups (undo is a copy back):**\n\n' 
+        sed 's/^/- /' "$BACKUP_MANIFEST"
+        printf '\n**Report:** %s\n\n' "$REPORT_MD"
+        printf '%s\n' "$signal"
+    } >"$body_file"
+    if [ "$DRY_RUN" = "1" ]; then
+        log "finding $rank: DRY-RUN would file $title"
+        continue
+    fi
+    set +e
+    new_issue=$("$GH" issue create -R "$REPO" --title "[rulebook-redteam] $title" \
+        --body-file "$body_file" --label gap-audit --label agent-ready 2>&1)
+    new_rc=$?
+    set -e
+    if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
+        log "finding $rank: FILED $new_issue"
+        printf -- '- FILED %s\n' "$new_issue" >>"$REPORT_MD"
+        filed=$((filed + 1))
+    else
+        log "finding $rank: FAILED to file ($new_issue)"
+        unfiled=$((unfiled + 1))
+    fi
+done < <(jq -c '.findings[]' "$FINDINGS_JSON")
+
+update_heading_count
+if [ "$unfiled" -gt 0 ]; then
+    update_plan_stamp "last-rulebook-redteam-run" \
+        "$NOW_ISO (failed, filed=$filed unfiled=$unfiled)"
+    log "FAILED: unfiled=$unfiled filed=$filed"
+    exit 1
+fi
+update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (completed, filed=$filed)"
+log "completed filed=$filed"
+exit 0

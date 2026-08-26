@@ -1567,9 +1567,32 @@ else
 fi
 
 # ============================================================================
+# 22. RULEBOOK RED-TEAM CADENCE + HEADING-GROWTH BONUS (fleet-ops#527)
+# ============================================================================
+# Monthly timer is the primary trigger. This block (a) LOUDs if the last
+# run stamp is older than 35d or missing, and (b) starts the unit when
+# standing-rules gained ## headings since the last successful run. The
+# bonus never lengthens the cadence. Implementation lives in
+# lib/rulebook-redteam-cadence.sh so tests run the same functions the
+# tick runs.
+RULEBOOK_CADENCE_LIB="${FLEET_RULEBOOK_REDTEAM_CADENCE_LIB:-$HOME/.local/lib/pi-packet/rulebook-redteam-cadence.sh}"
+rulebook_canary_status="ok"
+if [ -f "$RULEBOOK_CADENCE_LIB" ]; then
+    # shellcheck source=../lib/rulebook-redteam-cadence.sh source-path=SCRIPTDIR
+    source "$RULEBOOK_CADENCE_LIB"
+    heartbeat_rulebook_redteam_cadence_canary
+    heartbeat_rulebook_redteam_heading_bonus
+else
+    rulebook_canary_status="missing-lib"
+    loud "RULEBOOK-REDTEAM-CADENCE-OVERDUE" \
+        "cadence lib missing at $RULEBOOK_CADENCE_LIB — install.sh did not land lib/rulebook-redteam-cadence.sh; monthly floor unverifiable"
+    log "22. rulebook red-team cadence canary: status=$rulebook_canary_status (lib missing)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} rulebook_canary=$rulebook_canary_status"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->

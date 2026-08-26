@@ -82,6 +82,20 @@
       "units": ["fleet-researcher.service"],
       "prompts": ["researcher.md"],
       "bypass_checks": ["researcher_delta_contract"]
+    },
+    {
+      "id": "rulebook-redteam",
+      "gate": "sibling .bak-rulebook-redteam-YYYYMMDD backups are required before filing; monthly timer + heading-growth bonus; cadence-overdue screams",
+      "proof": [
+        "prompts/rulebook-redteam.md",
+        "bin/fleet-rulebook-redteam",
+        "lib/rulebook-redteam-cadence.sh",
+        "systemd/fleet-rulebook-redteam.service",
+        "systemd/fleet-rulebook-redteam.timer"
+      ],
+      "units": ["fleet-rulebook-redteam.service"],
+      "prompts": ["rulebook-redteam.md"],
+      "bypass_checks": ["rulebook_redteam_backups"]
     }
   ]
 }
