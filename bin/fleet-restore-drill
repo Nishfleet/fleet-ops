@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+# fleet-restore-drill — periodically PROVE the fleet control plane can be
+# rebuilt, mechanically, on a cycle (fleet-ops#388).
+#
+# The deploy-clone is git (recoverable). The control plane also lives in
+# non-git state: agent-state/ (claims, triage, seat state, audit reports),
+# ~/.local/state/pi-packet/ (seat-caps, packet state), and the user-unit
+# install set (~/.config/systemd/user/ symlinks + the repo MANIFEST). Restic
+# backs all of it up (system unit restic-r2-backup sources /home/nish, /etc,
+# /root, /usr/local — verified; excludes empty). But per the never-run-audit
+# lesson (#378), an unproven backup is decorative. This drill is the proof.
+#
+# It does NOT run restic restore itself: the restic repo credentials live in
+# /etc/restic/hostinger-r2.env (root-only; nish has no sudo). Instead it proves
+# the rebuild story on three planes every run, LOUD on any doubt:
+#
+#   A. Backup mechanism is proven (system restic units, readable via
+#      `systemctl show` without sudo):
+#      - restic-r2-backup.timer is active and fired within STALENESS_HOURS
+#        (default 30h — daily timer + margin).
+#      - restic-r2-backup.service last Result=success (last backup succeeded).
+#      - restic-r2-restore-test.service last Result=success (a snapshot
+#        restore was proven end-to-end by the system drill).
+#      - restic-r2-verify.service last Result=success (repo integrity proven).
+#      A stale or failed backup/restore/verify is LOUD — the rebuild story is
+#      unproven, not silently degraded.
+#
+#   B. The fleet control-plane files that a restore would yield are present
+#      and parseable in the live tree (the backup captures exactly these):
+#      - seat-caps.json: valid JSON with the keys seat-lib.sh loads
+#        (.ram_gb_per_worker, .providers object, .free_providers_in_order
+#        array). A corrupt caps file means a restored fleet picks seats wrong.
+#      - claims index (ready-work-claims.log): exists and its last line parses
+#        as a claim record. A corrupt claims log means a restored fleet cannot
+#        tell which issues are claimed.
+#      - MANIFEST-installed set: every non-comment MANIFEST entry's <src>
+#        exists in the repo. A missing source means install.sh cannot rebuild
+#        the user-unit install set after a restore.
+#
+#   C. The critical fleet paths live under a configured restic backup source
+#      (/home/nish). This is the logical proof that a snapshot restore
+#      includes the control plane — the files proven in (B) are under a
+#      backed-up root, and the mechanism proven in (A) can return them.
+#
+# Result line goes to the heartbeat triage file (the same surface tier1/tier2
+# write LOUD lines to). On any failure: LOUD + exit 1. The global
+# service.d/10-escalate.conf drop-in turns that exit 1 into a
+# unit-escalation@fleet-restore-drill.service trip, so backup staleness joins
+# the escalation matrix mechanically.
+#
+# Usage: fleet-restore-drill              # run the drill
+#        fleet-restore-drill --check     # report whether the drill units +
+#                                        # script are installed (no system calls)
+#
+# Env overrides (test-only; production reads live paths):
+#   SYSTEMCTL, FLEET_OPS_REPO, AGENT_STATE, FLEET_HEARTBEAT_TRIAGE,
+#   SEAT_CAPS_JSON, CLAIMS_LOG, RESTIC_BACKUP_TIMER, RESTIC_BACKUP_SERVICE,
+#   RESTIC_RESTORE_TEST_SERVICE, RESTIC_VERIFY_SERVICE, STALENESS_HOURS,
+#   FLEET_RESTORE_DRILL_SKIP_SYSTEM (1 = skip plane A for offline tests)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+CLAIMS_LOG="${CLAIMS_LOG:-$AGENT_STATE/ready-work-claims.log}"
+MANIFEST="$FLEET_OPS_REPO/MANIFEST"
+
+RESTIC_BACKUP_TIMER="${RESTIC_BACKUP_TIMER:-restic-r2-backup.timer}"
+RESTIC_BACKUP_SERVICE="${RESTIC_BACKUP_SERVICE:-restic-r2-backup.service}"
+RESTIC_RESTORE_TEST_SERVICE="${RESTIC_RESTORE_TEST_SERVICE:-restic-r2-restore-test.service}"
+RESTIC_VERIFY_SERVICE="${RESTIC_VERIFY_SERVICE:-restic-r2-verify.service}"
+STALENESS_HOURS_DEFAULT=30
+STALENESS_HOURS="${STALENESS_HOURS:-$STALENESS_HOURS_DEFAULT}"
+if ! [[ "$STALENESS_HOURS" =~ ^[0-9]+$ ]]; then
+  STALENESS_HOURS="$STALENESS_HOURS_DEFAULT"
+fi
+readonly STALENESS_HOURS
+
+# The restic backup sources (from /usr/local/sbin/restic-r2-backup). The drill
+# asserts the critical fleet paths live under one of these — the logical proof
+# that a snapshot restore includes the control plane. /home/nish is the only
+# source the fleet paths can live under; the others are listed for completeness
+# and to make the coverage assertion legible. FLEET_RESTORE_DRILL_BACKUP_ROOTS
+# overrides the set (space-separated) for offline tests.
+if [[ -n "${FLEET_RESTORE_DRILL_BACKUP_ROOTS:-}" ]]; then
+  read -r -a RESTIC_BACKUP_ROOTS <<<"$FLEET_RESTORE_DRILL_BACKUP_ROOTS"
+else
+  RESTIC_BACKUP_ROOTS=(/home/nish /etc /root /usr/local)
+fi
+readonly -a RESTIC_BACKUP_ROOTS
+
+log() {
+  printf '[%s] [fleet-restore-drill] %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+  local tag="$1"; shift
+  local msg="$*"
+  log "LOUD [$tag] $msg"
+  {
+    printf '\n[%s] [%s] %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+  } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+fail() {
+  loud "RESTORE-DRILL-FAIL" "$*"
+  exit 1
+}
+
+# systemctl_show <unit> <property> — prints the property value, empty on error.
+# Works on both system and user scope; the restic units are system scope, and
+# `systemctl show` (no --user) is readable by any user without sudo.
+systemctl_show() {
+  local unit="$1" prop="$2"
+  "$SYSTEMCTL" show "$unit" --property="$prop" --value 2>/dev/null || true
+}
+
+# ----------------------------------------------------------------------------
+# plane A: backup mechanism proven (system restic units)
+# ----------------------------------------------------------------------------
+plane_a_backup_mechanism() {
+  log "A. checking system restic backup/restore/verify units"
+
+  if [[ "${FLEET_RESTORE_DRILL_SKIP_SYSTEM:-0}" == "1" ]]; then
+    log "A.  - SKIP (FLEET_RESTORE_DRILL_SKIP_SYSTEM=1)"
+    return 0
+  fi
+
+  local violations=0
+
+  # A.1 backup timer active + fresh
+  local timer_active timer_last
+  timer_active="$(systemctl_show "$RESTIC_BACKUP_TIMER" ActiveState)"
+  timer_last="$(systemctl_show "$RESTIC_BACKUP_TIMER" LastTriggerUSec)"
+  log "A.1 $RESTIC_BACKUP_TIMER ActiveState=$timer_active LastTriggerUSec=$timer_last"
+  if [[ "$timer_active" != "active" ]]; then
+    loud "RESTORE-DRILL-STALE" "$RESTIC_BACKUP_TIMER is not active (state=$timer_active) — the daily backup is not scheduled"
+    violations=$((violations + 1))
+  elif [[ -z "$timer_last" ]] || [[ "$timer_last" == "0" ]]; then
+    loud "RESTORE-DRILL-STALE" "$RESTIC_BACKUP_TIMER has never fired (LastTriggerUSec empty) — no backup has run"
+    violations=$((violations + 1))
+  else
+    # LastTriggerUSec realtime value is a wall-clock string like
+    # "Wed 2026-08-26 04:39:49 IST". Convert to epoch seconds.
+    local last_epoch now_epoch age_h
+    last_epoch="$(date -d "$timer_last" +%s 2>/dev/null || true)"
+    now_epoch="$(date +%s)"
+    if [[ -z "$last_epoch" ]]; then
+      loud "RESTORE-DRILL-STALE" "$RESTIC_BACKUP_TIMER LastTriggerUSec unparseable: '$timer_last'"
+      violations=$((violations + 1))
+    else
+      age_h=$(( (now_epoch - last_epoch) / 3600 ))
+      log "A.1  - last backup ${age_h}h ago (staleness threshold ${STALENESS_HOURS}h)"
+      if (( age_h > STALENESS_HOURS )); then
+        loud "RESTORE-DRILL-STALE" "$RESTIC_BACKUP_TIMER last fired ${age_h}h ago — older than ${STALENESS_HOURS}h threshold. The backup is stale; the rebuild story is unproven."
+        violations=$((violations + 1))
+      fi
+    fi
+  fi
+
+  # A.2 last backup succeeded
+  local backup_result
+  backup_result="$(systemctl_show "$RESTIC_BACKUP_SERVICE" Result)"
+  log "A.2 $RESTIC_BACKUP_SERVICE Result=$backup_result"
+  if [[ "$backup_result" != "success" ]]; then
+    loud "RESTORE-DRILL-FAIL" "$RESTIC_BACKUP_SERVICE last Result=$backup_result (not success) — the last backup run failed"
+    violations=$((violations + 1))
+  fi
+
+  # A.3 snapshot restore proven (system drill)
+  local restore_result
+  restore_result="$(systemctl_show "$RESTIC_RESTORE_TEST_SERVICE" Result)"
+  log "A.3 $RESTIC_RESTORE_TEST_SERVICE Result=$restore_result"
+  if [[ "$restore_result" != "success" ]]; then
+    loud "RESTORE-DRILL-FAIL" "$RESTIC_RESTORE_TEST_SERVICE last Result=$restore_result (not success) — the snapshot restore drill failed; restore is not proven"
+    violations=$((violations + 1))
+  fi
+
+  # A.4 repo integrity proven
+  local verify_result
+  verify_result="$(systemctl_show "$RESTIC_VERIFY_SERVICE" Result)"
+  log "A.4 $RESTIC_VERIFY_SERVICE Result=$verify_result"
+  if [[ "$verify_result" != "success" ]]; then
+    loud "RESTORE-DRILL-FAIL" "$RESTIC_VERIFY_SERVICE last Result=$verify_result (not success) — repo integrity verify failed"
+    violations=$((violations + 1))
+  fi
+
+  (( violations == 0 )) || return 1
+  log "A.  - OK: backup fresh, last run success, restore + verify proven"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# plane B: fleet control-plane files present + parseable
+# ----------------------------------------------------------------------------
+plane_b_fleet_files() {
+  log "B. checking fleet control-plane files are present + parseable"
+  local violations=0
+
+  # B.1 seat-caps.json — valid JSON with the keys seat-lib.sh loads.
+  if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "RESTORE-DRILL-FAIL" "seat-caps.json missing at $SEAT_CAPS_JSON — seat selection has no caps file"
+    violations=$((violations + 1))
+  elif ! command -v jq >/dev/null 2>&1; then
+    loud "RESTORE-DRILL-FAIL" "jq missing — cannot parse seat-caps.json"
+    violations=$((violations + 1))
+  else
+    if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+      loud "RESTORE-DRILL-FAIL" "seat-caps.json unparseable JSON at $SEAT_CAPS_JSON"
+      violations=$((violations + 1))
+    else
+      # Load-bearing keys per lib/seat-lib.sh: ram_gb_per_worker (number),
+      # providers (object, non-empty), free_providers_in_order (array).
+      local ram providers free_order
+      ram="$(jq -r '.ram_gb_per_worker // empty' "$SEAT_CAPS_JSON" 2>/dev/null)"
+      providers="$(jq -r '.providers | keys | length' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)"
+      free_order="$(jq -r '.free_providers_in_order | type' "$SEAT_CAPS_JSON" 2>/dev/null || echo "")"
+      log "B.1  - seat-caps ram_gb_per_worker=$ram providers=$providers free_providers_in_order=$free_order"
+      if [[ -z "$ram" ]] || ! [[ "$ram" =~ ^[0-9.]+$ ]]; then
+        loud "RESTORE-DRILL-FAIL" "seat-caps.json missing/invalid .ram_gb_per_worker (got '$ram') — seat-lib.sh RAM governor cannot compute"
+        violations=$((violations + 1))
+      fi
+      if ! [[ "$providers" =~ ^[0-9]+$ ]] || (( providers == 0 )); then
+        loud "RESTORE-DRILL-FAIL" "seat-caps.json .providers empty or missing — no seats are defined"
+        violations=$((violations + 1))
+      fi
+      if [[ "$free_order" != "array" ]]; then
+        loud "RESTORE-DRILL-FAIL" "seat-caps.json .free_providers_in_order is not an array (got '$free_order') — seat-lib.sh free-order selection breaks"
+        violations=$((violations + 1))
+      fi
+    fi
+  fi
+
+  # B.2 claims index — exists and last line parses as a claim record.
+  if [[ ! -f "$CLAIMS_LOG" ]]; then
+    loud "RESTORE-DRILL-FAIL" "claims index missing at $CLAIMS_LOG — the fleet cannot tell which issues are claimed"
+    violations=$((violations + 1))
+  else
+    local last_line
+    last_line="$(tail -n 1 "$CLAIMS_LOG" 2>/dev/null || true)"
+    log "B.2  - claims index last line: $last_line"
+    if [[ -z "$last_line" ]]; then
+      loud "RESTORE-DRILL-FAIL" "claims index at $CLAIMS_LOG is empty — no claim records to restore"
+      violations=$((violations + 1))
+    elif ! grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' <<<"$last_line"; then
+      loud "RESTORE-DRILL-FAIL" "claims index last line at $CLAIMS_LOG is not a timestamped claim record: '$last_line'"
+      violations=$((violations + 1))
+    fi
+  fi
+
+  # B.3 MANIFEST-installed set — every non-comment entry's <src> exists.
+  if [[ ! -f "$MANIFEST" ]]; then
+    loud "RESTORE-DRILL-FAIL" "MANIFEST missing at $MANIFEST — install.sh cannot rebuild the user-unit install set"
+    violations=$((violations + 1))
+  else
+    local missing=0 entry src
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      [[ "$entry" == \#* ]] && continue
+      src="${entry%% *}"
+      if [[ ! -e "$FLEET_OPS_REPO/$src" ]]; then
+        loud "RESTORE-DRILL-FAIL" "MANIFEST entry src '$src' missing in repo — install.sh cannot symlink it after a restore"
+        missing=$((missing + 1))
+      fi
+    done < "$MANIFEST"
+    log "B.3  - MANIFEST-installed set: all non-comment srcs present (missing=$missing)"
+    (( missing == 0 )) || violations=$((violations + 1))
+  fi
+
+  (( violations == 0 )) || return 1
+  log "B.  - OK: seat-caps parseable, claims index valid, MANIFEST srcs present"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# plane C: fleet paths under a configured restic backup source
+# ----------------------------------------------------------------------------
+plane_c_backup_coverage() {
+  log "C. checking fleet paths live under a restic backup source"
+  local violations=0
+
+  # The critical non-git control-plane paths the issue names.
+  local critical_paths=(
+    "$AGENT_STATE"
+    "$HOME/.local/state/pi-packet"
+    "$HOME/.config/systemd/user"
+    "$FLEET_OPS_REPO"
+  )
+
+  local path covered root
+  for path in "${critical_paths[@]}"; do
+    covered=0
+    for root in "${RESTIC_BACKUP_ROOTS[@]}"; do
+      if [[ "$path" == "$root" ]] || [[ "$path" == "$root"/* ]]; then
+        covered=1
+        break
+      fi
+    done
+    if (( covered == 0 )); then
+      loud "RESTORE-DRILL-FAIL" "critical fleet path '$path' is NOT under any restic backup source (${RESTIC_BACKUP_ROOTS[*]}) — a snapshot restore would miss it"
+      violations=$((violations + 1))
+    else
+      log "C.  - $path: covered (under a backup source)"
+    fi
+  done
+
+  (( violations == 0 )) || return 1
+  log "C.  - OK: all critical fleet paths under a restic backup source"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# --check: report whether the drill units + script are installed (no system
+# calls). Mirrors oomd-drill --check.
+# ----------------------------------------------------------------------------
+check_env() {
+  local rc=0
+  for u in fleet-restore-drill.service fleet-restore-drill.timer; do
+    if "$SYSTEMCTL" --user cat "$u" >/dev/null 2>&1; then
+      log "ready: $u installed"
+    else
+      log "MISSING: $u not installed; run ./install.sh from the fleet-ops repo"
+      rc=1
+    fi
+  done
+  if [[ -x "$FLEET_OPS_REPO/bin/fleet-restore-drill" ]]; then
+    log "ready: bin/fleet-restore-drill present"
+  else
+    log "MISSING: bin/fleet-restore-drill"
+    rc=1
+  fi
+  return "$rc"
+}
+
+# ----------------------------------------------------------------------------
+# main
+# ----------------------------------------------------------------------------
+run_drill() {
+  log "fleet restore drill starting (repo=$FLEET_OPS_REPO staleness=${STALENESS_HOURS}h)"
+  local rc=0
+  plane_a_backup_mechanism || rc=1
+  plane_b_fleet_files || rc=1
+  plane_c_backup_coverage || rc=1
+  if (( rc == 0 )); then
+    loud "RESTORE-DRILL-OK" "control plane rebuildable: backup fresh + success, restore + verify proven, fleet files parseable, paths covered by restic"
+    log "PASS: control plane rebuild story proven"
+    exit 0
+  fi
+  log "FAIL: one or more planes failed (see LOUD lines)"
+  exit 1
+}
+
+case "${1:-}" in
+  --check) check_env;;
+  "")      run_drill;;
+  *)       log "usage: fleet-restore-drill [--check]"; exit 2;;
+esac
