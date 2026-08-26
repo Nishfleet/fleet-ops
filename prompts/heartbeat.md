@@ -55,16 +55,15 @@ For every `agent-in-progress` issue across the fleet repos:
 - If a PR exists and is green and mergeable → leave it; tier 1 will queue it.
 - If a PR exists but is red → record the failing check name and PR number in
   the triage file with `[BLOCKED-GREEN]` prefix. Do not retry it yourself.
-- If no PR exists → check whether a pi-issue worker is still running
-  (`systemctl --user --state=active,activating --no-legend | grep pi-issue@<repo>-<N>`).
-  Both `active/running` (busy) and `activating/start` (worker just launched
-  pi) count as live — leave the claim alone. `activating/auto-restart`
-  (crash-looping between attempts) also counts as live — the lane is held,
-  StartLimitBurst / OnFailure are the right release path, not this sweep.
-  Tier 1 §7 already publishes auto-restart units as `[DEGRADED-LANES]`.
-  Treat anything not in `active,activating` (failed / inactive) as
-  orphaned and record it with `[ORPHAN]`; tier 1 will release on the
-  next tick.
+- If no PR exists → check whether a pi-issue worker still has a live
+  process (`worker_unit_is_live` in lib/worker-live.sh). `active` and
+  `activating/start` with MainPID>0 are live — leave the claim.
+  `activating/auto-restart` with MainPID=0 is NOT live (the process
+  exited; only RestartSec is pending). That is orphan shape (c) and
+  tier 1 §3 releases it this tick (fleet-ops#222). Failed/inactive
+  units are also orphans. Record them with `[ORPHAN]`. Tier 1 §7 still
+  publishes auto-restart units as `[DEGRADED-LANES]` so crash-loops
+  stay visible after the claim is released.
 
 ---
 
