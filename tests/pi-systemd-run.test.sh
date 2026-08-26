@@ -6,7 +6,10 @@
 #   2. --stdin becomes StandardInput=file:<abs>
 #   3. nohup in the command is refused
 #   4. already-active unit is a no-op (does not call systemd-run)
-#   5. LIVE (skipped if no user systemd): a job started from a dying parent
+#   5. routing docs name pi-systemd-run (fleet-ops#54) so nohup is not the
+#      path of least resistance. Hermetic fixtures prove the check; live
+#      AGENTS.md / CLAUDE.md / vault standing-rules are asserted on the VPS.
+#   6. LIVE (skipped if no user systemd): a job started from a dying parent
 #      is still active after that parent exits.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,7 +72,56 @@ out="$(SYSTEMCTL="$fake/systemctl" SYSTEMD_RUN="$fake/systemd-run" \
 printf '%s\n' "$out" | grep -q 'no-op' || fail "active unit must no-op, got: $out"
 ok "already-active unit is a no-op"
 
-# --- 5. live: survives a dying parent --------------------------------------
+# --- 5. routing docs name pi-systemd-run (fleet-ops#54) ---------------------
+# The old "call pi directly / there is no dispatch wrapper" sentence made
+# `nohup pi ... &` the obvious background path. README and heartbeat already
+# point here; the home/vault routing docs must too.
+names_pi_systemd_run() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -q 'pi-systemd-run' "$f"
+}
+
+before="$repo_root/tests/fixtures/routing-docs/before-no-wrapper.md"
+after="$repo_root/tests/fixtures/routing-docs/after-pi-systemd-run.md"
+[[ -f "$before" && -f "$after" ]] || fail "missing routing-doc fixtures"
+if names_pi_systemd_run "$before"; then
+    fail "old 'no dispatch wrapper' wording must fail the check (got a match in $before)"
+fi
+names_pi_systemd_run "$after" || fail "required pi-systemd-run sentence must pass ($after)"
+ok "fixture check rejects the old wording and accepts the required sentence"
+
+names_pi_systemd_run "$repo_root/README.md" \
+    || fail "README.md must name pi-systemd-run"
+names_pi_systemd_run "$repo_root/prompts/heartbeat.md" \
+    || fail "prompts/heartbeat.md must name pi-systemd-run"
+grep -q 'never `nohup`' "$repo_root/prompts/heartbeat.md" \
+    || fail "heartbeat.md must ban nohup in the spawn step"
+ok "in-repo README and heartbeat name pi-systemd-run"
+
+# Live copies agents actually read. GitHub runners do not have these files
+# (HOME is /home/runner). On the VPS all three exist and this is the run.
+live_docs=(
+    /home/nish/AGENTS.md
+    /home/nish/.claude/CLAUDE.md
+    /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md
+)
+live_checked=0
+for f in "${live_docs[@]}"; do
+    if [[ -f "$f" ]]; then
+        names_pi_systemd_run "$f" || fail "$f must name pi-systemd-run so nohup is not the path of least resistance"
+        live_checked=$((live_checked + 1))
+    fi
+done
+if [[ "$live_checked" -eq 3 ]]; then
+    ok "live AGENTS.md, CLAUDE.md, and global-standing-rules.md name pi-systemd-run"
+elif [[ "$live_checked" -eq 0 ]]; then
+    echo "SKIP: live routing docs not present (CI runner)"
+else
+    fail "expected 0 or 3 live routing docs, found $live_checked"
+fi
+
+# --- 6. live: survives a dying parent --------------------------------------
 if ! systemctl --user is-system-running >/dev/null 2>&1 \
     && ! systemctl --user show -p Version >/dev/null 2>&1; then
     echo "SKIP: no user systemd (CI runner) — live survive-parent not run here"
