@@ -32,20 +32,15 @@ floor inward.
 
 ## Layer-by-layer
 
-### 1. Launch floor — `lib/seat-lib.sh` `ram_governor_cap()` → `MIN_FREE_RAM_MB=2500`
+### 1. Launch floor — `bin/pi-issue-run` → `MIN_FREE_RAM_MB=2500`
 
-**What it does.** Intake reads `/proc/meminfo`'s `MemAvailable`, subtracts a
-2500 MB host floor, and divides by a per-worker reservation. That reservation
-is measured (fleet-ops#193): heartbeat tier1 samples each live `pi-issue@`
-unit's cgroup `memory.current`, keeps a trailing distribution, and uses
-`p95 * 3` clamped to [128 MB, 1.5 GB]. Until 10 samples exist, the
-`seat-caps.json` seed (0.75 G) is used. This is the brake that should do
-**almost all** the work — work never starts in the first place if the box is
-already under pressure.
+**What it does.** `pi-issue-run` reads `/proc/meminfo`'s `MemAvailable` and
+refuses to start a worker if less than ~13.1 GiB is free (1024 × `2500 MB`
+residual + working-set headroom). This is the brake that should do **almost
+all** the work — work never starts in the first place if the box is already
+under pressure.
 
-**Owner:** `lib/seat-lib.sh` (`ram_governor_recalibrate`, called from
-`bin/fleet-heartbeat-tier1`) and the spawn-time `ram_governor_cap` used by
-`bin/pi-issue-run` / intake.
+**Owner:** `bin/pi-issue-run` and `bin/pi-packet-run`.
 
 ### 2. Per-worker throttle — `systemd/pi-issue@.service`
 
@@ -134,7 +129,7 @@ is a side effect, not a design.
 
 | Layer | Repo path | Live path | Install |
 |---|---|---|---|
-| 1 — launch floor | `lib/seat-lib.sh` (`ram_governor_cap` / `ram_governor_recalibrate`) | `~/.local/lib/pi-packet/seat-lib.sh` | `./install.sh` (default) |
+| 1 — launch floor | `bin/pi-issue-run` | `~/.local/bin/pi-issue-run` | `./install.sh` (default) |
 | 2 — per-worker throttle | `systemd/pi-issue@.service` | `~/.config/systemd/user/pi-issue@.service` | `./install.sh` (default) |
 | 3 — stock neutralizer | `systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf` | `/etc/systemd/system/user@1000.service.d/...` | `./install.sh --system` (or manual) |
 | 4 — slice governor | `systemd/system/user-1000.slice.d/50-ram-governor.conf` | `/etc/systemd/system/user-1000.slice.d/...` | `./install.sh --system` (or manual) |
