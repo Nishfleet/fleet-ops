@@ -132,6 +132,10 @@ systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.
 systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
 systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
 systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
+# fleet-ops#428: pi-transport-check is owned by the pi package, but its
+# OnFailure= was wired to the old direct Telegram page. This drop-in removes
+# the page and keeps only the unit-escalation path.
+systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/10-no-direct-notify.conf
 systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
 systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md

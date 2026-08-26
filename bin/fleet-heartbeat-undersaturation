@@ -25,9 +25,9 @@
 #       for every enrolled repo. Log the trace. Set a one-tick marker.
 #     - If the previous tick WAS wedged (marker present): FAIL LOUD. exit
 #       non-zero -> fleet-heartbeat.service lands in --state=failed ->
-#       OnFailure=fleet-heartbeat-failed-notify.service pages + Telegram.
+#       OnFailure=unit-escalation@%n.service (STOP-REASON -> senior auditor).
 #       Never degrade silently. Clear the marker so the post-failure tick can
-#       attempt repair again (alternating repair / fail-loud keeps paging
+#       attempt repair again (alternating repair / fail-loud keeps escalation
 #       while still trying to recover).
 #   otherwise (work == 0 OR running > 0): clear any stale marker, no action.
 #
@@ -170,7 +170,7 @@ reset_failed_pi_issue() {
         else
             log "repair: reset-failed $unit FAILED (best-effort, continuing)"
         fi
-    done < <("$SYSTEMCTL" --user --state=failed --no-legend 2>/dev/null \
+    done < <("$SYSTEMCTL" --user --state=failed --no-legend --plain 2>/dev/null \
         | awk '{print $1}' | grep -E '^pi-issue@' || true)
     echo "$n"
 }

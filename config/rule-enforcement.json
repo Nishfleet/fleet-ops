@@ -295,8 +295,8 @@
     {
       "id": "sr-watchdogs-dispatch",
       "source": "global-standing-rules.md: Watchdogs dispatch agents, they never page Nish (Nish, 2026-08-24 - non-negotiable)",
-      "mechanism": "OnFailure=unit-escalation@%n.service drop-in + stop-escalation path unit; canary proves coverage",
-      "proof": "systemd/service.d/10-escalate.conf; systemd/unit-escalation@.service; bin/fleet-escalation-canary",
+      "mechanism": "OnFailure=unit-escalation@%n.service drop-in + stop-escalation path unit; heartbeat-watchman, fleet-heartbeat.service and pi-transport-check drop-in do NOT page Nish for unit failures; canary proves coverage",
+      "proof": "systemd/service.d/10-escalate.conf; systemd/unit-escalation@.service; lib/heartbeat-watchman.sh; systemd/fleet-heartbeat.service; systemd/pi-transport-check.service.d/10-no-direct-notify.conf; bin/fleet-escalation-canary",
       "status": "enforced"
     },
     {

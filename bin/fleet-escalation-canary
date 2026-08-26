@@ -11,8 +11,8 @@
 #        explicit anti-recursion exclusion list.
 #     2. No fleet execution path exists outside a systemd unit: only the
 #        sanctioned bin wrappers invoke `pi --print --provider` directly.
-#     3. Terminal delivery (#76): dead-man ping (healthchecks.io on a
-#        successful heartbeat tick), failed-unit pager (hermes --urgent after
+#     3. Terminal delivery (#76/#428): dead-man ping (healthchecks.io on a
+#        successful heartbeat tick), failed-unit triage (no hermes page after
 #        a failed repair), and seat-health freshness (observed_at < 90min,
 #        else trigger pi-transport-check). Wired when lib/heartbeat-watchman.sh
 #        defines the three functions AND bin/fleet-heartbeat + tier1 wire them
