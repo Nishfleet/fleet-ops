@@ -1,0 +1,22 @@
+[Unit]
+Description=Fleet researcher — frontier deltas through the admission pipeline (fleet-ops#458)
+# No calendar. Triggers ride the heartbeat (quality plateau/regression,
+# seat-map release, domain staleness, every Nth gap-closure cycle, failed
+# cycle). Domain staleness is checked on that same tick, so a timer would
+# poll. The heartbeat is the staleness backstop; a schedule beyond that
+# needs a named reason and this unit does not have one.
+#
+# One run at a time: the script takes a non-blocking flock and the
+# dispatcher no-ops when this unit is already active/activating.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-researcher-run'
+TimeoutStartSec=45min
+Restart=no

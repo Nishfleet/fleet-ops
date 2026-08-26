@@ -140,6 +140,15 @@ lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
+# fleet-ops#458: standing researcher role. Event-driven dispatch on the
+# heartbeat; oneshot unit runs the cheap/free-lane researcher; deltas go
+# through the same scout-candidate admission panel. No researcher timer —
+# domain staleness is the heartbeat backstop.
+bin/fleet-researcher-dispatch /home/nish/.local/bin/fleet-researcher-dispatch
+bin/fleet-researcher-run /home/nish/.local/bin/fleet-researcher-run
+lib/researcher-delta.py /home/nish/.local/lib/pi-packet/researcher-delta.py
+prompts/researcher.md /home/nish/.pi/agent/prompts/researcher.md
+systemd/fleet-researcher.service /home/nish/.config/systemd/user/fleet-researcher.service
 # fleet-ops#388: control-plane restore drill. Proves the rebuild story on a
 # 6h cycle — backup freshness (system restic units, no sudo needed), fleet
 # control-plane files present + parseable (seat-caps, claims index, MANIFEST

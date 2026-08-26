@@ -642,10 +642,9 @@
     {
       "id": "led-researchers-join",
       "source": "decisions-ledger.md: 2026-08-26 | researchers join the fleet",
-      "mechanism": "Researchers as standing role; output through same admission pipeline + quality gates; event-driven triggers, cheap/free lanes capped",
-      "proof": "fleet-ops #458; mechanism issue filed by canary",
-      "status": "queued(#461)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Event-driven researcher role: heartbeat dispatch, fleet-researcher.service, delta-contract gate, scout-candidate+research-delta admission, adopted-delta cadence cut",
+      "proof": "tests/fleet-researcher.test.sh; bin/fleet-researcher-dispatch; bin/fleet-researcher-run; systemd/fleet-researcher.service",
+      "status": "enforced"
     },
     {
       "id": "led-glm-5-3-free-clinepass",

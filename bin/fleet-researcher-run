@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+# fleet-researcher-run — one researcher pass (fleet-ops#458).
+#
+# ExecStart of fleet-researcher.service. Picks a cheap/free seat, runs the
+# researcher prompt, validates the delta contract, files survivors as
+# scout-candidate+research-delta (same admission pipeline as scouts),
+# logs rejects so they cannot be re-litigated, then nudges the existing
+# senior-auditor panel.
+#
+# RESEARCHER_DRILL=1 skips pi and loads RESEARCHER_DRILL_DELTAS (the
+# observe-to-close fixture). Outermost edges (sudo, live pi) stay stubbed
+# in tests; the contract/file/cadence path is real.
+#
+# Environment seams: RESEARCHER_*  PI_BIN  PI_PACKET_SEAT_LIB  GH
+#   RESEARCHER_AUDITOR_BIN  RESEARCHER_DRY_RUN  RESEARCHER_FAKE_NOW
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
+STATE_DIR="${RESEARCHER_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-researcher}"
+PROMPT="${RESEARCHER_PROMPT:-$HOME/.pi/agent/prompts/researcher.md}"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+AUDITOR_BIN="${RESEARCHER_AUDITOR_BIN:-$HOME/.local/bin/fleet-heartbeat-auditor}"
+DRY_RUN="${RESEARCHER_DRY_RUN:-0}"
+DRILL="${RESEARCHER_DRILL:-0}"
+MAX_DELTAS="${RESEARCHER_MAX_DELTAS:-5}"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_fallback="$(cd "$here/.." && pwd)"
+[ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/researcher.md"
+LIB="${RESEARCHER_LIB:-$HOME/.local/lib/pi-packet/researcher-delta.py}"
+[ -f "$LIB" ] || LIB="$repo_fallback/lib/researcher-delta.py"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+[ -x "$AUDITOR_BIN" ] || AUDITOR_BIN="$repo_fallback/bin/fleet-heartbeat-auditor"
+
+log() {
+    printf '[%s] [fleet-researcher-run] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/researcher.lock"
+if ! flock -n 9; then
+    log "researcher already running (no-op)"
+    exit 0
+fi
+
+if [ -n "${RESEARCHER_FAKE_NOW:-}" ]; then
+    NOW_ISO="$RESEARCHER_FAKE_NOW"
+    NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
+else
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
+mkdir -p "$REPORT_DIR"
+DELTAS_JSON="$REPORT_DIR/deltas.json"
+NOTES_MD="$REPORT_DIR/notes.md"
+PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
+PI_STDERR="$REPORT_DIR/pi-stderr.txt"
+state="$STATE_DIR/state.json"
+
+[ -f "$LIB" ] || { log "FATAL: researcher-delta.py missing: $LIB"; exit 2; }
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+python3 "$LIB" init --state "$state" >/dev/null
+
+# --- pick a cheap/free seat, or load a drill fixture -----------------------
+pick_researcher_seat() {
+    if [ -f "$SEAT_LIB" ]; then
+        # shellcheck source=/dev/null
+        source "$SEAT_LIB"
+    fi
+    if command -v enumerate_seats >/dev/null 2>&1 && command -v class_of >/dev/null 2>&1; then
+        local p m _free _capable
+        while IFS=$'\t' read -r p m _free _capable; do
+            [ -n "$p" ] || continue
+            [ "$(class_of "$p" 2>/dev/null || echo "")" = "free" ] || continue
+            if command -v seat_usable >/dev/null 2>&1; then
+                seat_usable "$p" "$m" 2>/dev/null || continue
+            fi
+            printf '%s\t%s\n' "$p" "$m"
+            return 0
+        done < <(enumerate_seats)
+    fi
+    if command -v pick_seat >/dev/null 2>&1; then
+        pick_seat "" "" 0 "" || true
+        return 0
+    fi
+    return 1
+}
+
+if [ "$DRILL" = "1" ]; then
+    drill_src="${RESEARCHER_DRILL_DELTAS:-}"
+    if [ -z "$drill_src" ] || [ ! -f "$drill_src" ]; then
+        log "FATAL: RESEARCHER_DRILL=1 requires RESEARCHER_DRILL_DELTAS"
+        exit 2
+    fi
+    cp "$drill_src" "$DELTAS_JSON"
+    printf '# Researcher drill — %s\n\nFixture: `%s`\n' "$NOW_ISO" "$drill_src" >"$NOTES_MD"
+    log "DRILL: loaded deltas from $drill_src"
+else
+    [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
+    [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
+    seat=$(pick_researcher_seat || true)
+    if [ -z "${seat:-}" ]; then
+        log "FATAL: no cheap/free seat available"
+        exit 1
+    fi
+    provider=$(printf '%s' "$seat" | cut -f1)
+    model=$(printf '%s' "$seat" | cut -f2)
+    log "seat selected: $provider/$model (cheap/free preference)"
+
+    rejected_json=$(jq -c '.rejected // []' "$state" 2>/dev/null || echo '[]')
+    scoreboard_json=$(python3 "$LIB" decide --state "$state" --now "$NOW_ISO" 2>/dev/null \
+        || echo '{"adoption_rate":1,"adopted":0,"judged":0}')
+    triggers=$(jq -c '.triggers // []' "$STATE_DIR/last-verdict.json" 2>/dev/null || echo '[]')
+    trigger_text=$(printf '%s' "$triggers" | jq -r 'if type=="array" then join(", ") else tostring end')
+
+    pkt="$REPORT_DIR/packet.md"
+    python3 - "$PROMPT" "$pkt" "$NOW_ISO" "$trigger_text" "$DELTAS_JSON" "$NOTES_MD" \
+        "$rejected_json" "$scoreboard_json" <<'PY'
+import sys
+prompt_path, out_path = sys.argv[1], sys.argv[2]
+now, triggers, deltas_json, notes_md, rejected, scoreboard = sys.argv[3:9]
+tpl = open(prompt_path, encoding="utf-8").read()
+tpl = tpl.replace("{{NOW_ISO}}", now)
+tpl = tpl.replace("{{TRIGGER_REASONS}}", triggers or "(unspecified)")
+tpl = tpl.replace("{{DELTAS_JSON}}", deltas_json)
+tpl = tpl.replace("{{NOTES_MD}}", notes_md)
+tpl = tpl.replace("{{REJECTED_JSON}}", rejected)
+tpl = tpl.replace("{{SCOREBOARD_JSON}}", scoreboard)
+open(out_path, "w", encoding="utf-8").write(tpl)
+PY
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY RUN: would dispatch $provider/$model with packet $pkt"
+        exit 0
+    fi
+
+    log "dispatching researcher $provider/$model"
+    set +e
+    "$PI_BIN" --print --provider "$provider" --model "$model" < "$pkt" >"$PI_STDOUT" 2>"$PI_STDERR"
+    rc=$?
+    set -e
+    log "pi researcher exited rc=$rc"
+    if [ ! -f "$DELTAS_JSON" ] || [ ! -s "$DELTAS_JSON" ]; then
+        # Last-ditch: fenced JSON in stdout.
+        python3 - "$PI_STDOUT" "$DELTAS_JSON" <<'PY'
+import json, re, sys
+src, dest = sys.argv[1], sys.argv[2]
+try:
+    text = open(src, encoding="utf-8", errors="replace").read()
+except OSError:
+    text = ""
+payload = None
+for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.S):
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        continue
+    if isinstance(data, dict) and "deltas" in data:
+        payload = data
+open(dest, "w", encoding="utf-8").write(json.dumps(payload or {"deltas": []}, indent=2) + "\n")
+PY
+    fi
+fi
+
+[ -f "$DELTAS_JSON" ] || echo '{"deltas":[]}' >"$DELTAS_JSON"
+
+validated=$(python3 "$LIB" validate --file "$DELTAS_JSON") \
+    || { log "FATAL: validate failed"; exit 1; }
+accepted=$(printf '%s' "$validated" | jq -c '.accepted')
+rejected=$(printf '%s' "$validated" | jq -c '.rejected')
+n_acc=$(printf '%s' "$accepted" | jq 'length')
+n_rej=$(printf '%s' "$rejected" | jq 'length')
+log "contract: accepted=$n_acc rejected=$n_rej"
+
+# Merge rejects + skip re-litigation.
+python3 - "$state" "$validated" "$NOW_ISO" "$MAX_DELTAS" "$DRY_RUN" <<'PY' >"$REPORT_DIR/to-file.json"
+import json, sys
+state_path, validated_raw, now, max_n, dry = sys.argv[1:6]
+state = json.load(open(state_path, encoding="utf-8"))
+validated = json.loads(validated_raw)
+rejected = list(state.get("rejected") or [])
+deltas = list(state.get("deltas") or [])
+seen = {row.get("fingerprint") for row in rejected + deltas}
+
+def already(fp):
+    for row in rejected:
+        if row.get("fingerprint") == fp:
+            return "previously rejected: " + str(row.get("reason") or "logged")
+    for row in deltas:
+        if row.get("fingerprint") == fp:
+            return "already " + str(row.get("status") or "logged")
+    return None
+
+to_file = []
+for item in validated.get("rejected") or []:
+    raw = item.get("raw") or {}
+    they = str(raw.get("they") or raw.get("they_do") or "")
+    we = str(raw.get("we") or raw.get("we_do") or "")
+    fp = __import__("hashlib").sha256(f"{they.strip().lower()}\n{we.strip().lower()}".encode()).hexdigest()[:16]
+    rejected.append({"fingerprint": fp, "reason": item.get("reason"), "at": now})
+    seen.add(fp)
+
+for item in validated.get("accepted") or []:
+    fp = item["fingerprint"]
+    why = already(fp)
+    if why:
+        rejected.append({"fingerprint": fp, "reason": why, "at": now})
+        continue
+    if len(to_file) >= int(max_n):
+        break
+    to_file.append(item)
+    seen.add(fp)
+
+state["rejected"] = rejected[-200:]
+state["last_run_at"] = now
+json.dump(state, open(state_path, "w"), indent=2, sort_keys=True)
+open(state_path, "a").write("\n")
+json.dump(to_file, sys.stdout)
+PY
+
+to_file=$(cat "$REPORT_DIR/to-file.json")
+n_file=$(printf '%s' "$to_file" | jq 'length')
+log "to-file=$n_file dry_run=$DRY_RUN"
+
+ensure_label() {
+    local repo="$1" name="$2" color="$3" desc="$4"
+    if ! "$GH" label view "$name" -R "Nishfleet/$repo" >/dev/null 2>&1; then
+        "$GH" label create "$name" -R "Nishfleet/$repo" --color "$color" --description "$desc" >/dev/null 2>&1 \
+            || log "WARN: could not create label $name on $repo"
+    fi
+}
+
+filed_any=0
+if [ "$DRY_RUN" != "1" ] && [ "$n_file" -gt 0 ]; then
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        repo=$(printf '%s' "$row" | jq -r '.repo')
+        title=$(printf '%s' "$row" | jq -r '.title')
+        they=$(printf '%s' "$row" | jq -r '.they')
+        we=$(printf '%s' "$row" | jq -r '.we')
+        adopting=$(printf '%s' "$row" | jq -r '.adopting')
+        plane=$(printf '%s' "$row" | jq -r '.plane')
+        fp=$(printf '%s' "$row" | jq -r '.fingerprint')
+        cites=$(printf '%s' "$row" | jq -r '.citations | map("- \(.source) \(.note // "")") | join("\n")')
+        body=$(printf '%s\n' \
+            "research-delta (fleet-ops#458). Plane: \`${plane}\`." \
+            "" \
+            "They do: ${they}" \
+            "" \
+            "We do: ${we}" \
+            "" \
+            "Adopting this here means: ${adopting}" \
+            "" \
+            "Citations:" \
+            "${cites}" \
+            "" \
+            "fingerprint: ${fp}")
+        ensure_label "$repo" scout-candidate "1D76DB" "Awaiting senior-auditor admission"
+        ensure_label "$repo" research-delta "5319E7" "Frontier delta from the researcher role"
+        set +e
+        url=$("$GH" issue create -R "Nishfleet/$repo" --title "research-delta: $title" --body "$body" \
+            --label scout-candidate --label research-delta 2>"$REPORT_DIR/gh-create.err")
+        create_rc=$?
+        set -e
+        if [ "$create_rc" -ne 0 ] || [ -z "$url" ]; then
+            log "WARN: gh issue create failed for $fp ($(tr '\n' ' ' <"$REPORT_DIR/gh-create.err" 2>/dev/null))"
+            continue
+        fi
+        issue_n=$(printf '%s' "$url" | grep -oE '[0-9]+$')
+        log "filed Nishfleet/$repo#$issue_n ($fp)"
+        python3 - "$state" "$row" "$issue_n" "$url" "$NOW_ISO" <<'PY'
+import json, sys
+path, row_raw, issue, url, now = sys.argv[1:6]
+state = json.load(open(path, encoding="utf-8"))
+row = json.loads(row_raw)
+row["status"] = "filed"
+row["issue"] = int(issue)
+row["url"] = url
+row["filed_at"] = now
+state.setdefault("deltas", []).append(row)
+domains = state.setdefault("domains", {})
+plane = row.get("plane") or "fleet-workflow"
+domains.setdefault(plane, {})["last_research_at"] = now
+json.dump(state, open(path, "w"), indent=2, sort_keys=True)
+open(path, "a").write("\n")
+PY
+        filed_any=1
+    done < <(printf '%s' "$to_file" | jq -c '.[]')
+fi
+
+# Empty accepted set still stamps the planes that triggered so staleness
+# does not immediately re-fire.
+python3 - "$state" "$NOW_ISO" "$STATE_DIR/last-verdict.json" <<'PY'
+import json, sys, os
+path, now, verdict_path = sys.argv[1:4]
+state = json.load(open(path, encoding="utf-8"))
+triggers = []
+if os.path.isfile(verdict_path):
+    try:
+        triggers = json.load(open(verdict_path, encoding="utf-8")).get("triggers") or []
+    except Exception:
+        triggers = []
+domains = state.setdefault("domains", {})
+for t in triggers:
+    if t.startswith("domain-stale:"):
+        name = t.split(":", 1)[1]
+        domains.setdefault(name, {})["last_research_at"] = now
+    elif t in ("quality-plateau", "quality-regression", "nth-gap-cycle", "failed-cycle", "seat-map-release"):
+        for name in ("fleet-workflow", "product-0509"):
+            if not domains.get(name, {}).get("last_research_at"):
+                domains.setdefault(name, {})["last_research_at"] = now
+state["last_run_at"] = now
+json.dump(state, open(path, "w"), indent=2, sort_keys=True)
+open(path, "a").write("\n")
+PY
+
+if [ "$filed_any" -eq 1 ] && [ "$DRY_RUN" != "1" ] && [ -x "$AUDITOR_BIN" ]; then
+    log "nudging admission panel $AUDITOR_BIN"
+    "$AUDITOR_BIN" || log "WARN: auditor nudge failed (heartbeat will retry)"
+fi
+
+log "run complete accepted=$n_acc rejected=$n_rej filed=$n_file"
+exit 0
