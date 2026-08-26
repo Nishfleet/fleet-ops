@@ -163,6 +163,7 @@ SANCTIONED_PI_RUNNERS=(
     agent-cron-run
     fleet-blind-audit
     fleet-heartbeat-tier2
+    pi-audit-run
     pi-intake-run
     pi-intake-repair-run
     pi-issue-run
