@@ -18,10 +18,33 @@ gh label create auto-revert-halt --repo "$REPO" --color B60205 \
 
 halt () {
   title="$1"; body="$2"
-  num="$(gh issue list --repo "$REPO" --state open --label auto-revert-halt \
-    --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+  # Dedup by exact title, not by label. Post-#336 SKIP runs had Issues: write
+  # and `gh issue create --label auto-revert-halt` exited 0 (run 32983348879
+  # printed https://github.com/Nishfleet/fleet-ops/issues/361), yet every
+  # created issue has zero labels and zero label events. Label lookup always
+  # missed, so every red event opened a new issue. Halt titles are constant
+  # strings; an exact-title list finds the rolling issue even when the label
+  # never sticks. --label on create stays best-effort tagging.
+  hits="$(gh issue list --repo "$REPO" --state open --limit 100 \
+    --search "\"$title\" in:title" \
+    --json number,title 2>/dev/null || true)"
+  num=""
+  if [ -n "$hits" ]; then
+    num="$(printf '%s' "$hits" | jq -r --arg t "$title" \
+      '[.[] | select(.title == $t)] | sort_by(.number) | .[0].number // empty' \
+      2>/dev/null || true)"
+  fi
   if [ -n "$num" ]; then
     gh issue comment "$num" --repo "$REPO" --body "$body"
+    extras="$(printf '%s' "$hits" | jq -r --arg t "$title" --arg n "$num" \
+      '.[] | select(.title == $t and (.number | tostring) != $n) | .number' \
+      2>/dev/null || true)"
+    while IFS= read -r extra; do
+      [ -z "$extra" ] && continue
+      gh issue close "$extra" --repo "$REPO" --duplicate-of "$num" \
+        --comment "Duplicate of #$num. Later SKIP events comment there instead of opening a new issue." \
+        || true
+    done <<< "$extras"
   else
     gh issue create --repo "$REPO" --title "$title" --body "$body" --label auto-revert-halt
   fi

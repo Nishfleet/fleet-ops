@@ -84,14 +84,30 @@ case "$cmd" in
     if [ "$sub" = "list" ]; then
       record "ISSUE_LIST $*"
       jq_filter=""
+      search_q=""
       while [ $# -gt 0 ]; do
         case "$1" in
           --jq) jq_filter="$2"; shift 2 ;;
+          --search) search_q="$2"; shift 2 ;;
           *) shift ;;
         esac
       done
-      if [ -n "${GH_HALT_ISSUE_NUMBER:-}" ]; then
-        json="[{\"number\": $GH_HALT_ISSUE_NUMBER}]"
+      json=""
+      # Simulate GitHub title search: return rolling issue(s) only when the
+      # search query's exact phrase matches the existing halt title. This
+      # mirrors production (title-based, label-independent) so the test
+      # proves consolidation works even when the label never sticks.
+      if [ -n "${GH_HALT_ISSUE_TITLE:-}" ] && [ -n "$search_q" ] \
+         && [[ "$search_q" == *"$GH_HALT_ISSUE_TITLE"* ]]; then
+        if [ -n "${GH_HALT_ISSUE_NUMBERS:-}" ]; then
+          json="$(jq -n --arg t "$GH_HALT_ISSUE_TITLE" --arg nums "$GH_HALT_ISSUE_NUMBERS" \
+            '($nums | split(" ")) | map(select(length > 0)) | map({number: (.|tonumber), title: $t})')"
+        elif [ -n "${GH_HALT_ISSUE_NUMBER:-}" ]; then
+          json="$(jq -n --arg t "$GH_HALT_ISSUE_TITLE" --argjson n "$GH_HALT_ISSUE_NUMBER" \
+            '[{number: $n, title: $t}]')"
+        fi
+      fi
+      if [ -n "$json" ]; then
         if [ -n "$jq_filter" ]; then
           printf '%s\n' "$json" | jq -r "$jq_filter"
         else
@@ -114,6 +130,9 @@ case "$cmd" in
       exit 0
     elif [ "$sub" = "comment" ]; then
       record "ISSUE_COMMENT $*"
+      exit 0
+    elif [ "$sub" = "close" ]; then
+      record "ISSUE_CLOSE $*"
       exit 0
     fi
     exit 0
@@ -226,8 +245,10 @@ if grep -q "PR_CREATE\|PR_MERGE" "$calls_a"; then
 fi
 ok "scenario A: only P14 tests / PR checks failed -> halt issue, no revert"
 
-# Scenario A2 (dedup): the open halt issue already exists (GH_HALT_ISSUE_NUMBER
-# set), so halt() must comment on it instead of creating a new one.
+# Scenario A2 (dedup, label-independent): an open halt issue already exists.
+# GH_HALT_ISSUE_TITLE simulates a rolling issue whose title matches but whose
+# auto-revert-halt label never stuck (the production bug). halt() must find it
+# by title and comment, not create a duplicate.
 calls_a2="$scratch/calls-a2"
 : > "$calls_a2"
 
@@ -245,6 +266,7 @@ set +e
     REQUIRED_CONTEXTS_JSON="$required_contexts" \
     CHECK_RUNS_JSON="$check_runs_a" \
     GH_HALT_ISSUE_NUMBER="42" \
+    GH_HALT_ISSUE_TITLE="AUTO-REVERT SKIP: only non-required checks failed" \
     bash "$script"
 ) >"$scratch/scenario-a2.out" 2>"$scratch/scenario-a2.err"
 rc=$?
@@ -253,15 +275,99 @@ set -e
 [[ "$rc" == "0" ]] || fail "scenario A2: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-a2.err"))"
 grep -q "ISSUE_LIST" "$calls_a2" \
   || fail "scenario A2: expected halt() to look up the existing open issue, got calls: $(cat "$calls_a2")"
-grep -q "ISSUE_COMMENT" "$calls_a2" \
-  || fail "scenario A2: expected a comment on the existing halt issue, got calls: $(cat "$calls_a2")"
+grep -q "ISSUE_LIST.*--search" "$calls_a2" \
+  || fail "scenario A2: expected halt() to look up the rolling issue by --search (title), got calls: $(cat "$calls_a2")"
+if grep -q "ISSUE_LIST.*--label" "$calls_a2"; then
+  fail "scenario A2: dedup must not depend on --label (the label never sticks in production), got calls: $(cat "$calls_a2")"
+fi
+grep -q "ISSUE_COMMENT 42 " "$calls_a2" \
+  || fail "scenario A2: expected a comment on the existing halt issue #42, got calls: $(cat "$calls_a2")"
 if grep -q "ISSUE_CREATE" "$calls_a2"; then
   fail "scenario A2: must not create a new halt issue when one is already open, got calls: $(cat "$calls_a2")"
+fi
+if grep -q "ISSUE_CLOSE" "$calls_a2"; then
+  fail "scenario A2: a single rolling issue must not be closed, got calls: $(cat "$calls_a2")"
 fi
 if grep -q "PR_CREATE\|PR_MERGE" "$calls_a2"; then
   fail "scenario A2: must not open or merge a revert PR, got calls: $(cat "$calls_a2")"
 fi
-ok "scenario A2: existing halt issue -> comment, no duplicate ISSUE_CREATE"
+ok "scenario A2: existing halt issue found by title (label never stuck) -> comment, no duplicate ISSUE_CREATE"
+
+# Scenario A2b: an open issue whose title only mentions SKIP must not count
+# as the rolling halt issue (live cousin: fleet-ops#360).
+calls_a2b="$scratch/calls-a2b"
+: > "$calls_a2b"
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$head_sha" \
+    RUN_NAME="CI" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/126" \
+    GH_CALLS_FILE="$calls_a2b" \
+    REQUIRED_CONTEXTS_JSON="$required_contexts" \
+    CHECK_RUNS_JSON="$check_runs_a" \
+    GH_HALT_ISSUE_NUMBER="360" \
+    GH_HALT_ISSUE_TITLE="fix(auto-revert): SKIP-issue dedup still spawns separate issues after #336" \
+    bash "$script"
+) >"$scratch/scenario-a2b.out" 2>"$scratch/scenario-a2b.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario A2b: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-a2b.err"))"
+grep -q "ISSUE_CREATE title=AUTO-REVERT SKIP" "$calls_a2b" \
+  || fail "scenario A2b: a non-matching title must not satisfy dedup, got calls: $(cat "$calls_a2b")"
+if grep -q "ISSUE_COMMENT" "$calls_a2b"; then
+  fail "scenario A2b: must not comment on an unrelated issue, got calls: $(cat "$calls_a2b")"
+fi
+ok "scenario A2b: unrelated SKIP-mentioning issue does not satisfy dedup"
+
+# Scenario A3 (consolidate): several unlabeled SKIP issues already exist
+# (GitHub returns newest first). halt() must comment on the oldest and close
+# the extras as duplicates of it.
+calls_a3="$scratch/calls-a3"
+: > "$calls_a3"
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$head_sha" \
+    RUN_NAME="CI" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/127" \
+    GH_CALLS_FILE="$calls_a3" \
+    REQUIRED_CONTEXTS_JSON="$required_contexts" \
+    CHECK_RUNS_JSON="$check_runs_a" \
+    GH_HALT_ISSUE_NUMBERS="108 42 99" \
+    GH_HALT_ISSUE_TITLE="AUTO-REVERT SKIP: only non-required checks failed" \
+    bash "$script"
+) >"$scratch/scenario-a3.out" 2>"$scratch/scenario-a3.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario A3: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-a3.err"))"
+grep -q "ISSUE_COMMENT 42 " "$calls_a3" \
+  || fail "scenario A3: expected a comment on the oldest issue #42, got calls: $(cat "$calls_a3")"
+grep -q "ISSUE_CLOSE 99 " "$calls_a3" \
+  || fail "scenario A3: expected extra #99 to be closed, got calls: $(cat "$calls_a3")"
+grep -q "ISSUE_CLOSE 108 " "$calls_a3" \
+  || fail "scenario A3: expected extra #108 to be closed, got calls: $(cat "$calls_a3")"
+grep -q "ISSUE_CLOSE 99 .*--duplicate-of 42" "$calls_a3" \
+  || fail "scenario A3: extras must close as duplicates of #42, got calls: $(cat "$calls_a3")"
+if grep -q "ISSUE_CLOSE 42 " "$calls_a3"; then
+  fail "scenario A3: the rolling (oldest) issue must stay open, got calls: $(cat "$calls_a3")"
+fi
+if grep -q "ISSUE_CREATE" "$calls_a3"; then
+  fail "scenario A3: must not create a new halt issue when rolling issues exist, got calls: $(cat "$calls_a3")"
+fi
+ok "scenario A3: multiple SKIP issues -> comment on oldest, close extras as duplicates"
 
 # Scenario B: the required Semgrep check failed. Should open a revert PR.
 check_runs_b="$scratch/check-runs-b.json"
