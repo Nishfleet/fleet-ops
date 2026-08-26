@@ -296,11 +296,6 @@ JSON
     log "wrote default $REPOS_JSON"
 }
 
-# Read the repos config with jq once.
-queue_repos=$(jq -r '.queue_repos[]' "$REPOS_JSON")
-claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON")
-hands_off=$(jq -r '.hands_off[]' "$REPOS_JSON" 2>/dev/null || true)
-
 # Derive the timer verification list from the declared intake repo set. The
 # reconciler (bin/intake-reconcile) uses config/intake-repos.json as the single
 # source of truth for enrolment; heartbeat §5 must use the same source or its
@@ -309,6 +304,93 @@ INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fle
 [ -f "$INTAKE_REPOS_JSON" ] || { log "FATAL: $INTAKE_REPOS_JSON missing"; exit 2; }
 jq empty "$INTAKE_REPOS_JSON" >/dev/null 2>&1 || { log "FATAL: $INTAKE_REPOS_JSON invalid JSON"; exit 2; }
 verify_timers=$(jq -r '.repos[]? | "pi-scout@\(.name).timer", "pi-intake@\(.name).timer"' "$INTAKE_REPOS_JSON")
+
+# fleet-ops#239: claim_repos / queue_repos must track intake enrolment the
+# same way verify_timers does. The live state file is only written on the
+# missing-file path, so a repo joining intake (fleet-ops, 2026-08-26) stayed
+# absent and #124 never scanned its claim PRs. Reconcile every tick:
+#   - add Nishfleet/<name> for every current intake repo
+#   - drop slugs that were previously intake-synced and have now left
+#   - keep extra product repos and hands_off untouched
+# intake_synced records last tick's intake set so extras and leavers
+# stay distinguishable. Consumers (#124, #152 canary) read the file, so
+# the write-back must happen before those blocks run.
+python3 - "$REPOS_JSON" "$INTAKE_REPOS_JSON" <<'PY'
+import copy, json, os, sys
+
+repos_path, intake_path = sys.argv[1], sys.argv[2]
+with open(intake_path, encoding="utf-8") as fh:
+    intake = json.load(fh)
+with open(repos_path, encoding="utf-8") as fh:
+    repos = json.load(fh)
+if not isinstance(repos, dict):
+    raise SystemExit("fleet-repos.json must be an object")
+original = copy.deepcopy(repos)
+
+intake_slugs = []
+seen_intake = set()
+for row in intake.get("repos") or []:
+    if not isinstance(row, dict):
+        continue
+    name = row.get("name")
+    if not isinstance(name, str) or not name or name in seen_intake:
+        continue
+    slug = "Nishfleet/" + name
+    intake_slugs.append(slug)
+    seen_intake.add(name)
+
+prev_synced = [s for s in (repos.get("intake_synced") or []) if isinstance(s, str) and s]
+prev_set = set(prev_synced)
+
+
+def merge(existing):
+    existing = [s for s in (existing or []) if isinstance(s, str) and s]
+    incoming_set = set(intake_slugs)
+    out = []
+    seen = set()
+    for slug in existing:
+        # Drop only last-tick intake slugs that have now left. Extra
+        # product repos and still-enrolled intake slugs keep their order.
+        if slug in prev_set and slug not in incoming_set:
+            continue
+        if slug not in seen:
+            out.append(slug)
+            seen.add(slug)
+    for slug in intake_slugs:
+        if slug not in seen:
+            out.append(slug)
+            seen.add(slug)
+    return out
+
+
+repos["claim_repos"] = merge(repos.get("claim_repos"))
+repos["queue_repos"] = merge(repos.get("queue_repos"))
+if "hands_off" not in repos or not isinstance(repos.get("hands_off"), list):
+    repos["hands_off"] = []
+repos["intake_synced"] = list(intake_slugs)
+if repos == original:
+    sys.exit(0)
+
+tmp = repos_path + ".tmp." + str(os.getpid())
+with open(tmp, "w", encoding="utf-8") as fh:
+    # ensure_ascii=False keeps the live file's raw UTF-8 (em-dashes in
+    # _paused_note etc.) byte-identical across ticks instead of escaping
+    # them to \uXXXX on the first rewrite.
+    json.dump(repos, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+os.rename(tmp, repos_path)
+PY
+
+if [ "${FLEET_REPOS_RECONCILE_ONLY:-0}" = "1" ]; then
+    log "repos-reconcile: FLEET_REPOS_RECONCILE_ONLY=1 — exiting after write-back"
+    exit 0
+fi
+
+# Read the (now reconciled) repos config with jq once.
+queue_repos=$(jq -r '.queue_repos[]' "$REPOS_JSON")
+claim_repos=$(jq -r '.claim_repos[]' "$REPOS_JSON")
+hands_off=$(jq -r '.hands_off[]' "$REPOS_JSON" 2>/dev/null || true)
+log "repos-reconcile: claim=$(jq -c '.claim_repos' "$REPOS_JSON") queue=$(jq -c '.queue_repos' "$REPOS_JSON")"
 
 # is_hands_off <repo>
 is_hands_off() {

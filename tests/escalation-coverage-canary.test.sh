@@ -702,3 +702,7 @@ bash "$here/entitled-wired-canary.test.sh"
 # .github/workflows/**).
 bash "$here/fleet-restore-drill.test.sh"
 
+# fleet-ops#239: heartbeat must reconcile claim_repos to intake enrolment.
+# Named ci.yml step is out of band for the worker App (Contents cannot push
+# workflow files). Run it here so a regression cannot merge green.
+bash "$here/fleet-heartbeat-claim-repos-reconcile.test.sh"
