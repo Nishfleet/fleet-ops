@@ -1,0 +1,28 @@
+name: Gate integrity
+
+# Same-repo caller for the central reusable gate-integrity workflow.
+# pull_request_target so GitHub evaluates the BASE branch copy, not the
+# candidate's. Fork PRs are refused in the reusable workflow.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gate-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-integrity:
+    uses: ./.github/workflows/reusable-gate-integrity.yml
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      gate-globs: '[".github/workflows/**", ".github/scripts/**", ".github/CODEOWNERS", ".gitleaksignore", ".gitleaks.toml", ".semgrepignore", ".semgrep.yml", ".semgrep.yaml"]'
+      ratchet-paths: "[]"

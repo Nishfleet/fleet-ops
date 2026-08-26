@@ -1,0 +1,24 @@
+name: Gate integrity
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gate-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-integrity:
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-gate-integrity.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      gate-globs: '[".github/workflows/**", ".github/scripts/**", ".github/CODEOWNERS", ".gitleaksignore", ".gitleaks.toml", ".semgrepignore", ".semgrep.yml", ".semgrep.yaml"]'
+      ratchet-paths: "[]"
