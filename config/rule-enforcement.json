@@ -30,10 +30,9 @@
     {
       "id": "sr-findings-queued",
       "source": "global-standing-rules.md: Every finding gets queued, automatically (Nish, 2026-08-22)",
-      "mechanism": "Nothing detects a finding named in chat and never filed",
-      "proof": "Nishfleet/fleet-ops#515",
-      "status": "queued(#515)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat session-close lint: Pi JSONL assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed",
+      "proof": "bin/fleet-findings-queued; lib/findings-queued.py; tests/fleet-findings-queued.test.sh; fleet-heartbeat-tier1 block 15",
+      "status": "enforced"
     },
     {
       "id": "sr-get-it-moving",
