@@ -1325,9 +1325,29 @@ else
 fi
 
 # ============================================================================
+# 17. OPENCODE MINIMAX M3 CATALOG CANARY (fleet-ops#435)
+# ============================================================================
+# Billing MiniMax M3 on OpenCode (minimax-m3) charges credits. Fail the tick
+# if seat-caps allowlists it. A newly published -free / *-pass/ slug auto-files
+# and keeps the tick green so the fleet is not red until someone wires it.
+OPENCODE_M3_CANARY_BIN="${FLEET_OPENCODE_M3_CANARY:-/home/nish/.local/bin/opencode-m3-catalog-canary}"
+opencode_m3_canary_rc=0
+if [ -x "$OPENCODE_M3_CANARY_BIN" ]; then
+    log "17. opencode MiniMax M3 catalog canary starting"
+    if "$OPENCODE_M3_CANARY_BIN"; then
+        log "17. opencode MiniMax M3 catalog canary complete"
+    else
+        opencode_m3_canary_rc=$?
+        log "17. opencode MiniMax M3 catalog canary FAILED (rc=$opencode_m3_canary_rc) — billing MiniMax M3 allowlisted on OpenCode; unit will land in --state=failed"
+    fi
+else
+    log "17. opencode MiniMax M3 catalog canary missing at $OPENCODE_M3_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1355,5 +1375,8 @@ if [ "$entitled_canary_rc" -ne 0 ]; then
 fi
 if [ "${worker_app_canary_rc:-0}" -ne 0 ]; then
     exit "$worker_app_canary_rc"
+fi
+if [ "${opencode_m3_canary_rc:-0}" -ne 0 ]; then
+    exit "$opencode_m3_canary_rc"
 fi
 exit 0

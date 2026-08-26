@@ -794,3 +794,7 @@ ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another p
 # .github/workflows).
 bash "$here/ram-metric-compare.test.sh" || fail "ram-metric-compare tests failed"
 
+# fleet-ops#435: same CI constraint. Lock the OpenCode MiniMax M3 billing
+# gate and free-slug detector through this listed file.
+bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3-catalog-canary tests failed"
+
