@@ -30,8 +30,6 @@ prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-rep
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
-lib/worker-live.sh /home/nish/.local/lib/pi-packet/worker-live.sh
-lib/orphan-release.sh /home/nish/.local/lib/pi-packet/orphan-release.sh
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
@@ -111,10 +109,6 @@ credentials/bootstrap.html /home/nish/.config/fleet-worker/bootstrap.html
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
-# fleet-ops#222: orphan-release detector drill — manufactures the 3 orphan
-# shapes with stub units + fake gh, proves the production release path
-# (lib/orphan-release.sh) releases all 3 in one tick. Gap-closure loop (#180).
-bin/orphan-release-drill /home/nish/.local/bin/orphan-release-drill
 # fleet-ops#78: gated reap of the unmanaged Codex app-server during the
 # weekly window. Drop-in fires as ExecStartPre of vps-weekly-update
 # (Sun 03:30 IST, after the 15-minute quiesce drain).
