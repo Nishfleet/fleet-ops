@@ -63,17 +63,74 @@ cat >"$gh_fake" <<'FAKE'
 case "$*" in
   *"issue list"*)
     if [[ "$*" == *"-l agent-ready"* ]]; then
-      n=$(cat "${WORK_READY:-/dev/null}" 2>/dev/null || echo 0)
+      if [[ "$*" == *".[].number"* ]]; then
+        [[ -f "${WORK_READY_NUMBERS:-/dev/null}" ]] && cat "${WORK_READY_NUMBERS}"
+        exit 0
+      fi
+      # Prefer the mutable numbers file (label edits update it) so a recompute
+      # after a flip reflects the new ready count; fall back to the static
+      # count file for the count-only scenarios that never mutate labels.
+      if [[ -s "${WORK_READY_NUMBERS:-/dev/null}" ]]; then
+        wc -l < "${WORK_READY_NUMBERS}" | tr -d ' '
+      else
+        cat "${WORK_READY:-/dev/null}" 2>/dev/null || echo 0
+      fi
+      exit 0
     elif [[ "$*" == *"-l agent-in-progress"* ]]; then
-      n=$(cat "${WORK_INPROGRESS:-/dev/null}" 2>/dev/null || echo 0)
+      # count_work asks for length; the stale-label reap asks for the actual
+      # numbers via --jq '.[].number'. Distinguish on the jq filter so both
+      # the existing count scenarios and the new reap scenarios stay honest.
+      if [[ "$*" == *".[].number"* ]]; then
+        [[ -f "${WORK_INPROGRESS_NUMBERS:-/dev/null}" ]] \
+          && cat "${WORK_INPROGRESS_NUMBERS}"
+        exit 0
+      fi
+      if [[ -s "${WORK_INPROGRESS_NUMBERS:-/dev/null}" ]]; then
+        wc -l < "${WORK_INPROGRESS_NUMBERS}" | tr -d ' '
+      else
+        cat "${WORK_INPROGRESS:-/dev/null}" 2>/dev/null || echo 0
+      fi
+      exit 0
     else
-      n=0
+      printf '0\n'
+      exit 0
     fi
-    # gh --jq 'length' over --json number: emit the count directly.
-    printf '%s\n' "$n"
+    ;;
+  *"issue edit"*)
+    # $1=issue $2=edit $3=<N>. Record the mutation AND mirror it into the
+    # numbers files so a recompute (count_work) sees the label change — the
+    # real gh would return the updated list on the next call.
+    num="$3"
+    printf 'issue edit %s\n' "$*" >>"${CALLS:-/dev/null}"
+    if [[ "$*" == *"--remove-label agent-in-progress"* ]] \
+       && [[ -f "${WORK_INPROGRESS_NUMBERS:-/dev/null}" ]]; then
+      grep -vxF "$num" "${WORK_INPROGRESS_NUMBERS}" >"${WORK_INPROGRESS_NUMBERS}.tmp" 2>/dev/null || true
+      mv "${WORK_INPROGRESS_NUMBERS}.tmp" "${WORK_INPROGRESS_NUMBERS}"
+    fi
+    if [[ "$*" == *"--add-label agent-ready"* ]] \
+       && [[ -n "${WORK_READY_NUMBERS:-}" ]]; then
+      printf '%s\n' "$num" >>"${WORK_READY_NUMBERS}"
+    fi
+    exit 0
+    ;;
+  *"issue comment"*)
+    printf 'issue comment %s\n' "$*" >>"${CALLS:-/dev/null}"
     exit 0
     ;;
   *"pr list"*)
+    # The reap's PR-existence probe: --head claim/issue-<N>. Return a
+    # non-empty array iff <N> is in $OPEN_PR_ISSUES (one per line). The
+    # throughput call has no --head claim/issue- and falls through to [].
+    if [[ "$*" == *"--head claim/issue-"* ]]; then
+      nn=$(printf '%s' "$*" | sed -n 's/.*--head claim\/issue-\([0-9][0-9]*\).*/\1/p')
+      if [[ -f "${OPEN_PR_ISSUES:-/dev/null}" ]] \
+         && grep -qxF "$nn" "${OPEN_PR_ISSUES}" 2>/dev/null; then
+        printf '[{"number":1}]\n'
+      else
+        printf '[]\n'
+      fi
+      exit 0
+    fi
     printf '[]\n'
     exit 0
     ;;
@@ -200,6 +257,14 @@ export PI_PACKET_STATE="$seat_state"
 export CALLS="$calls"
 export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
+# Stale-label reap scenarios: the actual issue numbers labelled agent-in-progress
+# (one per line), and the subset of those that have an open claim/issue-<N> PR.
+# WORK_READY_NUMBERS mirrors the ready set so a flip (agent-in-progress ->
+# agent-ready) is reflected on recompute. The static WORK_READY / WORK_INPROGRESS
+# count files remain for the count-only scenarios that never mutate labels.
+export WORK_INPROGRESS_NUMBERS="$scratch/work_inprogress_numbers"
+export WORK_READY_NUMBERS="$scratch/work_ready_numbers"
+export OPEN_PR_ISSUES="$scratch/open_pr_issues"
 # Pointers the fake systemctl reads to decide what to return per scenario.
 RUNNING_UNITS="$scratch/running_units"
 FAILED_UNITS="$scratch/failed_units"
@@ -221,6 +286,7 @@ reset_state() {
   : >"$calls"
   : >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
   : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"
+  : >"$WORK_INPROGRESS_NUMBERS"; : >"$WORK_READY_NUMBERS"; : >"$OPEN_PR_ISSUES"
 }
 
 # ============================================================================
@@ -365,3 +431,92 @@ fi
 grep -q 'wedged active-seat' <<<"$env_out" \
     || fail "scenario4: stderr missing wedged-reap log line: $env_out"
 ok "scenario4: wedged-activating phantom reaped, fresh-activating kept (P15)"
+
+# ============================================================================
+# Scenario 5 (auditor-finding-C): a finished worker opened a PR but left the
+# agent-in-progress label on. tier1 §3 holds on open PRs (work in flight), so
+# the stale label survives and the watchdog counts it as work=1/running=0.
+# OLD behaviour: repair (restart intake, which skips — no agent-ready issues),
+# set marker; next tick fail-loud -> permanent false wedge. NEW behaviour: the
+# stale label is a LABEL-HYGIENE fault, not a wedge -> clear it (remove
+# agent-in-progress only; the open PR is the deliverable, do NOT re-queue) and
+# exit 0. No repair, no marker, no fail-loud.
+# ============================================================================
+reset_state
+printf '0\n' >"$scratch/work_ready"        # zero agent-ready
+printf '0\n' >"$scratch/work_inprogress"   # static count fallback (post-clear = 0)
+printf '61\n' >"$WORK_INPROGRESS_NUMBERS"  #   issue #61 (stale agent-in-progress)
+printf '61\n' >"$OPEN_PR_ISSUES"           #   #61 has an open claim PR
+: >"$scratch/running_units"                # zero live workers (worker long gone)
+: >"$scratch/failed_units"
+# Pre-seed the wedge marker so we PROVE the stale-label path does NOT fail loud
+# even when the previous tick was wedged (the regression's exact second tick).
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$log_dir/undersaturation.flag"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario5: stale-label tick must exit 0 (label hygiene), got $env_rc ($env_out)"
+
+# The stale agent-in-progress label was removed (remove-only — no add-label,
+# because the open PR is the deliverable and must not be re-queued).
+grep -q 'issue edit' "$calls" \
+    || fail "scenario5: no gh issue edit call recorded ($(cat "$calls"))"
+grep -q -- '--remove-label agent-in-progress' "$calls" \
+    || fail "scenario5: --remove-label agent-in-progress not issued"
+if grep -q -- '--add-label agent-ready' "$calls"; then
+    fail "scenario5: must NOT add agent-ready (open PR = work done, not re-queue): $(cat "$calls")"
+fi
+# No repair actions (the only "work" was a stale label, now cleared).
+if grep -qE '^(reset-failed|start) ' "$calls"; then
+    fail "scenario5: stale-label tick must not repair, but calls=($(cat "$calls"))"
+fi
+# No fail-loud; the label-hygiene loud line IS emitted so the action is visible.
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" \
+    || fail "scenario5: triage must NOT have UNDERSAT-FAIL-LOUD (stale label is not a wedge)"
+! grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario5: triage must NOT have UNDERSAT-REPAIR"
+grep -q 'UNDERSAT-LABEL-HYGIENE' "$triage" \
+    || fail "scenario5: triage missing UNDERSAT-LABEL-HYGIENE line"
+# Marker cleared (healthy outcome), so the post-hygiene tick starts clean.
+[[ ! -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario5: stale wedge marker must be cleared after label hygiene"
+ok "scenario5: stale agent-in-progress + open PR + no live worker -> label cleared, exit 0 (not fail loud)"
+
+# ============================================================================
+# Scenario 6 (auditor-finding-C, no-PR complement): a stale agent-in-progress
+# label with NO live worker and NO open PR. tier1 §3 owns this (flip to
+# agent-ready + delete branch) but if it failed, the label survives. The reap
+# mirrors §3: flip agent-in-progress -> agent-ready (re-queue). After the flip
+# there is genuine ready work with no worker, so the wedge repair (restart
+# intake) fires and the marker is set — exit 0 on the first tick. This proves
+# the reap does not strand no-PR stale labels by silently dropping them.
+# ============================================================================
+reset_state
+printf '0\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf '42\n' >"$WORK_INPROGRESS_NUMBERS"
+: >"$OPEN_PR_ISSUES"                       # no open PR for #42
+: >"$scratch/running_units"
+: >"$scratch/failed_units"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario6: no-PR stale-label first tick must exit 0, got $env_rc ($env_out)"
+
+# Label flipped to agent-ready (remove + add), not dropped.
+grep -q -- '--remove-label agent-in-progress' "$calls" \
+    || fail "scenario6: --remove-label agent-in-progress not issued"
+grep -q -- '--add-label agent-ready' "$calls" \
+    || fail "scenario6: --add-label agent-ready not issued (no-PR stale label must be re-queued)"
+# The flip produced genuine ready work with no worker -> intake restarted.
+grep -qx 'start pi-intake@demo.service' "$calls" \
+    || fail "scenario6: intake restart not attempted after flip ($(cat "$calls"))"
+# Label hygiene + repair both visible; no fail-loud on the first tick.
+grep -q 'UNDERSAT-LABEL-HYGIENE' "$triage" || fail "scenario6: missing UNDERSAT-LABEL-HYGIENE"
+grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario6: missing UNDERSAT-REPAIR (post-flip ready work)"
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" || fail "scenario6: must not fail-loud on first tick"
+[[ -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario6: marker must be set (genuine wedge remains after flip)"
+ok "scenario6: stale agent-in-progress + no PR + no live worker -> flipped to agent-ready, intake restarted, exit 0"
+
+ok "undersaturation: stale agent-in-progress label is hygiene, not a wedge (auditor-finding-C)"
