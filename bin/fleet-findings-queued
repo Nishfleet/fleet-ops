@@ -35,7 +35,7 @@ _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
 GH="${GH:-gh}"
 SESSIONS="${FLEET_FINDINGS_QUEUED_SESSIONS:-$HOME/.pi/agent/sessions}"
 LIB="${FLEET_FINDINGS_QUEUED_LIB:-$_canon_repo/lib/findings-queued.py}"
-if [[ ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/findings-queued.py" ]]; then
+if [[ -z "${FLEET_FINDINGS_QUEUED_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/findings-queued.py" ]]; then
     LIB="${HOME}/.local/lib/pi-packet/findings-queued.py"
 fi
 WINDOW_HOURS="${FLEET_FINDINGS_QUEUED_WINDOW_HOURS:-24}"

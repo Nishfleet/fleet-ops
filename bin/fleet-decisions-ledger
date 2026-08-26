@@ -38,7 +38,7 @@ GH="${GH:-gh}"
 SESSIONS="${FLEET_DECISIONS_LEDGER_SESSIONS:-$HOME/.pi/agent/sessions}"
 LEDGER="${FLEET_DECISIONS_LEDGER:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
 LIB="${FLEET_DECISIONS_LEDGER_LIB:-$_canon_repo/lib/decisions-ledger.py}"
-if [[ ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/decisions-ledger.py" ]]; then
+if [[ -z "${FLEET_DECISIONS_LEDGER_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/decisions-ledger.py" ]]; then
     LIB="${HOME}/.local/lib/pi-packet/decisions-ledger.py"
 fi
 WINDOW_HOURS="${FLEET_DECISIONS_LEDGER_WINDOW_HOURS:-24}"

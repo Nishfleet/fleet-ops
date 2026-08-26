@@ -36,7 +36,7 @@ FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
 
 CATALOG="${FLEET_ROLE_GATES_JSON:-$FLEET_OPS_REPO/config/role-quality-gates.json}"
 LIB="${FLEET_ROLE_GATES_LIB:-$FLEET_OPS_REPO/lib/role-quality-gates.py}"
-if [[ ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/role-quality-gates.py" ]]; then
+if [[ -z "${FLEET_ROLE_GATES_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/role-quality-gates.py" ]]; then
     LIB="${HOME}/.local/lib/pi-packet/role-quality-gates.py"
 fi
 
