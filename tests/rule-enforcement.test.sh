@@ -262,6 +262,39 @@ jq -e '.stale_queued | length == 1' "$scratch/stale.json" >/dev/null \
   || fail "stale queued not reported: $(cat "$scratch/stale.json")"
 ok "join: queued older than 7 days is a violation"
 
+# --- duplicate source fails validate ----------------------------------------
+cat >"$scratch/bad-duplicate.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "led-2026-08-27-top-gear-everywhere-non-negotiable",
+      "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
+      "mechanism": "Mechanism issue auto-filed by fleet-escalation-canary; implement the enforcer and flip to enforced",
+      "proof": "Nishfleet/fleet-ops#479",
+      "status": "queued(#479)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-top-gear-everywhere",
+      "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
+      "mechanism": "TOP GEAR invariant: deferral requires a named clock; merge-to-live <=5min event-driven; seat-recovery fires intake instantly",
+      "proof": "fleet-ops #468",
+      "status": "enforced"
+    }
+  ]
+}
+EOF
+set +e
+python3 "$lib" validate-matrix --matrix "$scratch/bad-duplicate.json" >/dev/null 2>"$scratch/bad-dup.err"
+dup_rc=$?
+set -e
+[[ "$dup_rc" == "1" ]] || fail "duplicate source must fail validate, got rc=$dup_rc"
+grep -q 'duplicate source' "$scratch/bad-dup.err" \
+  || fail "duplicate source error must name the source: $(cat "$scratch/bad-dup.err")"
+ok "validate-matrix: duplicate source is rejected"
+
 # --- advisory without reason fails validate ---------------------------------
 cat >"$scratch/bad-advisory.json" <<'EOF'
 {
