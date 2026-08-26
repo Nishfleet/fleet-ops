@@ -45,6 +45,12 @@ direction B (a `claim/issue-<N>` branch whose issue is NOT `agent-in-progress`
 orphaned branches (issue missing/closed, no open PR). It defers direction A
 (agent-in-progress + no worker + no PR) to §3. Do not redo that sweep either.
 
+Tier 1 §15 runs `signal-reconcile` every tick (fleet-ops#362): every LOUD
+canary PENDING/VIOLATION and every failed fleet unit becomes an
+`agent-ready` issue keyed `signal: <key>`, and those issues close only when
+this tick's detector is green. Do not close them with `Closes #<N>`. Do not
+redo that sweep.
+
 ---
 
 ## Step 1 — verify claimed work against real state
@@ -266,6 +272,13 @@ For the picked item:
   one-line bullet to the corresponding ledger section.
 - If you wrote anything to the triage file, leave it — tier 1 also
   writes there, and the next heartbeat will see and act on it.
+
+> **Do NOT re-implement signal-reconcile (fleet-ops#362).** Tier 1 §15
+> already runs `bin/signal-reconcile` against the current tick log and
+> files/closes any signal-keyed issues. Manually opening issues here
+> duplicates work; manually closing them bypasses the observe-to-close
+> gate. If you see a LOUD line that has no matching issue, leave it —
+> the reconciler files within the next tick.
 
 Exit 0 if everything is clean. Exit non-zero only if:
 

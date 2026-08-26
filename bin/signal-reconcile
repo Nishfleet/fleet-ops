@@ -1,0 +1,475 @@
+#!/usr/bin/env bash
+# signal-reconcile — detector→queue reconciler + observe-to-close (fleet-ops#362).
+#
+# The class bug behind today's dropped balls (#358 #359 #360, siterep-public#80):
+# every one had a detector already screaming (escalation-canary LOUD PENDING
+# lines, failed unit), but nothing converted the scream into a queued work
+# item. This script is that converter, plus its mirror: it closes issues
+# when the detector goes green on a real tick.
+#
+# Two mechanisms, one pure-logic sweep (heartbeat's existing 30-min timer is
+# the observer; no new schedulers, no hand-rolled loops):
+#
+#   1. Detector→queue. After the escalation-coverage canary runs, walk THIS
+#      tick's log + the live --state=failed set, extract every stable signal
+#      key, and reconcile against open issues. Match on `signal: <key>` in
+#      the issue body.
+#        - Missing issue -> file one (label agent-ready). Capped per tick.
+#        - Present issue -> touch a `signal-checked:` comment at most daily.
+#
+#   2. Observe-to-close. Issues carrying a signal key are NEVER closed by
+#      PR merge alone. The reconciler closes them only when THIS tick's
+#      detector is green (canary line gone, unit no longer failed), with a
+#      closing comment linking the observing tick.
+#
+# Signal-key contract — workers MUST honour it:
+#   - PR body for a signal-keyed issue must NOT contain `Closes #<N>` /
+#     `Fixes #<N>` / `Resolves #<N>` (those keywords auto-close on merge).
+#     Use `Refs #<N>` instead. The reconciler closes the issue.
+#   - The worker prompt (prompts/worker.md) carries this rule.
+#
+# Signal key grammar (parseable as `signal: <key>` in the issue body):
+#   escalation-canary/step<N>/<slug>    canary-detected alarm (fleet-ops)
+#   unit-failed/<unit>                  systemd unit in failed state
+#
+# Dedupe: one rolling issue per signal key. A flapping detector updates one
+# issue, not a spam of new ones (the #360 lesson).
+#
+# Cap: SIGNAL_RECONCILE_MAX_PER_TICK (default 5) auto-filed issues per tick.
+# Past the cap, write a LOUD line to the triage file and stop filing — never
+# silently drop the rest (they roll into the next tick).
+#
+# Fail-closed on observe-to-close:
+#   - canary-keyed issues close only if this tick log contains an
+#     ESCALATION-CANARY-* line (proves the detector ran).
+#   - unit-failed issues close only if systemctl --state=failed was queried
+#     successfully this sweep (empty result = units are green).
+#
+# Environment seams (tests):
+#   SIGNAL_RECONCILE_TICK_LOG        most recent tier1 tick log (read source)
+#   SIGNAL_RECONCILE_TICK_LOG_DIR    dir of tier1-* tick logs (fallback picker)
+#   SIGNAL_RECONCILE_STATE           snapshot file
+#   SIGNAL_RECONCILE_TRIAGE          heartbeat triage file (LOUD writes)
+#   SIGNAL_RECONCILE_LOCKDIR         flock directory
+#   SIGNAL_RECONCILE_NOW             ISO-8601 UTC clock
+#   SIGNAL_RECONCILE_MAX_PER_TICK    cap on auto-filed issues per tick (default 5)
+#   SIGNAL_RECONCILE_DRY_RUN         1 = print + mutate nothing
+#   SIGNAL_RECONCILE_REPOS           newline-separated owner/name list
+#   SIGNAL_RECONCILE_INTAKE_JSON     default repo list (intake-repos.json)
+#   SIGNAL_RECONCILE_GH              gh binary (test seam)
+#   SYSTEMCTL                        systemctl binary (test seam)
+#   GH                               gh binary (override)
+#
+# Exit 0 on a clean sweep or overlapping no-op. Non-zero only on unexpected
+# failure (missing jq/python, unreadable intake file).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+TICK_LOG="${SIGNAL_RECONCILE_TICK_LOG:-}"
+TICK_LOG_DIR="${SIGNAL_RECONCILE_TICK_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+STATE="${SIGNAL_RECONCILE_STATE:-$XDG_RUNTIME_DIR/signal-reconcile/state.json}"
+TRIAGE="${SIGNAL_RECONCILE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOCKDIR="${SIGNAL_RECONCILE_LOCKDIR:-$XDG_RUNTIME_DIR/signal-reconcile}"
+INTAKE_JSON="${SIGNAL_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+MAX_PER_TICK="${SIGNAL_RECONCILE_MAX_PER_TICK:-5}"
+DRY="${SIGNAL_RECONCILE_DRY_RUN:-0}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH_BIN="${SIGNAL_RECONCILE_GH:-${GH:-gh}}"
+
+log() {
+    printf '[%s] [signal-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $*"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$*"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+now_iso() {
+    if [ -n "${SIGNAL_RECONCILE_NOW:-}" ]; then
+        printf '%s' "$SIGNAL_RECONCILE_NOW"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+now_date() {
+    date -u -d "$(now_iso)" +%Y-%m-%d 2>/dev/null || printf '%s' "$(now_iso)" | cut -c1-10
+}
+
+mkdir -p "$LOCKDIR" "$(dirname "$STATE")"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { log "FATAL: python3 missing"; exit 2; }
+command -v "$GH_BIN" >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
+
+NOW_ISO=$(now_iso)
+NOW_DATE=$(now_date)
+
+# ----------------------------------------------------------------------------
+# 1. Pick the most recent tier1 tick log (the canary's loud lines live here
+#    because tier1 §14 tees canary stderr into this tick's fd 3).
+# ----------------------------------------------------------------------------
+if [ -z "$TICK_LOG" ]; then
+    # Latest tier1-* log (UTC stamp in the filename sorts lexicographically).
+    TICK_LOG=""
+    for f in "$TICK_LOG_DIR"/tier1-*.log; do
+        [ -f "$f" ] || continue
+        TICK_LOG="$f"
+    done
+fi
+if [ -z "$TICK_LOG" ] || [ ! -f "$TICK_LOG" ]; then
+    log "no tier1 tick log found (looked in $TICK_LOG_DIR) — nothing to reconcile"
+    echo "signal-reconcile: no tick log"
+    exit 0
+fi
+log "tick log: $TICK_LOG"
+
+# ----------------------------------------------------------------------------
+# 2. Extract active signal set from THIS tick.
+# ----------------------------------------------------------------------------
+declare -A ACTIVE_SIGNALS=()
+declare -A SIGNAL_EVIDENCE=()
+
+remember_signal() {
+    local key="$1" evidence="$2"
+    [ -n "$key" ] || return 0
+    ACTIVE_SIGNALS["$key"]=1
+    if [ -z "${SIGNAL_EVIDENCE[$key]:-}" ]; then
+        SIGNAL_EVIDENCE["$key"]="$evidence"
+    fi
+}
+
+# Canary PENDING/VIOLATION lines. Format after tier1 capture:
+#   [ts] [fleet-escalation-canary] LOUD [ESCALATION-CANARY-PENDING] signal=<key> ...
+CANARY_RAN=0
+if grep -qE '\[ESCALATION-CANARY-' "$TICK_LOG" 2>/dev/null; then
+    CANARY_RAN=1
+fi
+while IFS= read -r line; do
+    key=$(printf '%s' "$line" | sed -nE 's/^.*\[ESCALATION-CANARY-(PENDING|VIOLATION)\] signal=([^ ]+).*$/\2/p' | head -n 1)
+    remember_signal "$key" "$line"
+done < <(grep -E '\[ESCALATION-CANARY-(PENDING|VIOLATION)\]' "$TICK_LOG" 2>/dev/null || true)
+
+# Tick-log unit-failed loud lines (LLM-DEAD / CODE-FAIL / UNIT-ESCALATE).
+# §4 may skip re-louding a unit already in triage, so this is not sufficient
+# on its own — the live --state=failed query below is the load-bearing source.
+while IFS= read -r line; do
+    unit=$(printf '%s' "$line" | sed -nE 's/^.*\[(LLM-DEAD|CODE-FAIL|UNIT-ESCALATE)\] unit=([^ ]+).*$/\2/p' | head -n 1)
+    [ -n "$unit" ] || continue
+    remember_signal "unit-failed/${unit}" "$line"
+done < <(grep -E '\[(LLM-DEAD|CODE-FAIL|UNIT-ESCALATE)\]' "$TICK_LOG" 2>/dev/null || true)
+
+# Live failed units. Load-bearing: §4 stops re-louding after the first tick,
+# so a still-failed unit would otherwise look "green" and get closed.
+UNITS_OBSERVED=0
+if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
+    UNITS_OBSERVED=1
+    while IFS= read -r unit; do
+        [ -z "$unit" ] && continue
+        case "$unit" in
+            fleet-heartbeat.service|fleet-heartbeat.timer|fleet-heartbeat-failed-notify.service)
+                continue
+                ;;
+            *.service|*.timer|*.path)
+                remember_signal "unit-failed/${unit}" "systemctl --user --state=failed: ${unit}"
+                ;;
+        esac
+    done < <("$SYSTEMCTL" --user --state=failed --no-legend --type=service --plain 2>/dev/null \
+                | awk '{print $1}' || true)
+fi
+
+active_count=${#ACTIVE_SIGNALS[@]}
+log "active signals: $active_count canary_ran=$CANARY_RAN units_observed=$UNITS_OBSERVED"
+
+# ----------------------------------------------------------------------------
+# 3. Target repo for a signal key.
+# ----------------------------------------------------------------------------
+# escalation-canary/*                         -> Nishfleet/fleet-ops
+# unit-failed/<wrapper>@<short>-<n>.service   -> Nishfleet/<short>
+# unit-failed/fable-p<short>-<n>.service      -> Nishfleet/<short>
+# anything else                               -> Nishfleet/fleet-ops
+target_repo_for() {
+    local key="$1"
+    case "$key" in
+        escalation-canary/*)
+            printf '%s' "Nishfleet/fleet-ops"
+            ;;
+        unit-failed/*@*.service)
+            local unit="${key#unit-failed/}"
+            unit="${unit%.service}"
+            local inst="${unit#*@}"
+            local short="${inst%-*}"
+            local num="${inst##*-}"
+            if [[ "$num" =~ ^[0-9]+$ && -n "$short" ]]; then
+                printf 'Nishfleet/%s' "$short"
+            else
+                printf '%s' "Nishfleet/fleet-ops"
+            fi
+            ;;
+        unit-failed/fable-p*.service)
+            local rest="${key#unit-failed/fable-p}"
+            rest="${rest%.service}"
+            local short="${rest%-*}"
+            local num="${rest##*-}"
+            if [[ "$num" =~ ^[0-9]+$ && -n "$short" ]]; then
+                printf 'Nishfleet/%s' "$short"
+            else
+                printf '%s' "Nishfleet/fleet-ops"
+            fi
+            ;;
+        *)
+            printf '%s' "Nishfleet/fleet-ops"
+            ;;
+    esac
+}
+
+# ----------------------------------------------------------------------------
+# 4. Repo list for observe-to-close (always scan, even with zero active
+#    signals — otherwise a green tick would never close anything).
+# ----------------------------------------------------------------------------
+repos=""
+if [ -n "${SIGNAL_RECONCILE_REPOS:-}" ]; then
+    repos="$SIGNAL_RECONCILE_REPOS"
+else
+    if [ ! -f "$INTAKE_JSON" ]; then
+        log "FATAL: intake file missing: $INTAKE_JSON"
+        exit 2
+    fi
+    repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+    case "$repos" in
+        *Nishfleet/fleet-ops*) ;;
+        *) repos=$(printf '%s\nNishfleet/fleet-ops\n' "$repos") ;;
+    esac
+fi
+
+EXTRACT_OPEN_PY='
+import json, re, sys
+SIG = re.compile(r"(?m)^signal:\s*(\S+)")
+raw = sys.stdin.read()
+try:
+    issues = json.loads(raw) if raw.strip() else []
+except json.JSONDecodeError:
+    issues = []
+if not isinstance(issues, list):
+    issues = []
+for issue in issues:
+    body = issue.get("body") or ""
+    m = SIG.search(body)
+    if m:
+        print("%s\t%s" % (issue.get("number"), m.group(1)))
+'
+
+declare -A OPEN_ISSUE_FOR_SIGNAL=()  # key -> repo#num
+declare -A ALL_OPEN_SIGNAL_ISSUES=() # repo#num -> key
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    issues_json=$("$GH_BIN" issue list -R "$repo" --state open \
+        --json number,body --limit 100 2>/dev/null || echo '[]')
+    while IFS=$'\t' read -r num sig; do
+        [ -z "$num" ] || [ -z "$sig" ] && continue
+        OPEN_ISSUE_FOR_SIGNAL["$sig"]="${repo}#${num}"
+        ALL_OPEN_SIGNAL_ISSUES["${repo}#${num}"]="$sig"
+    done < <(printf '%s' "$issues_json" | python3 -c "$EXTRACT_OPEN_PY")
+done <<< "$repos"
+
+# ----------------------------------------------------------------------------
+# 5. Detector→queue: file missing issues, touch daily heartbeat comments.
+# ----------------------------------------------------------------------------
+filed=0
+touched=0
+cap_hit=0
+
+file_issue_for_signal() {
+    local key="$1" repo="$2" evidence="$3"
+    if [ "$filed" -ge "$MAX_PER_TICK" ]; then
+        cap_hit=1
+        log "  $repo/$key: CAP HIT — auto-file suppressed (filed=$filed max=$MAX_PER_TICK)"
+        return 1
+    fi
+    local title
+    case "$key" in
+        escalation-canary/*)
+            title="auto: canary PENDING/VIOLATION — ${key#escalation-canary/}"
+            ;;
+        unit-failed/*)
+            title="auto: failed unit — ${key#unit-failed/}"
+            ;;
+        *)
+            title="auto: signal — ${key}"
+            ;;
+    esac
+    local body
+    body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+        "signal: ${key}" \
+        "Detector evidence from ${TICK_LOG##*/}:" \
+        "${evidence}" \
+        "Auto-filed by signal-reconcile (fleet-ops#362). This issue closes only when the detector goes green on a real tick. PRs for this issue MUST NOT use \`Closes #<N>\` — use \`Refs #<N>\` instead. The reconciler closes it.")
+    if [ "$DRY" = "1" ]; then
+        log "DRY file $repo: $title"
+        filed=$((filed + 1))
+        OPEN_ISSUE_FOR_SIGNAL["$key"]="${repo}#dry"
+        return 0
+    fi
+    local out
+    if ! out=$("$GH_BIN" issue create -R "$repo" --title "$title" --body "$body" --label agent-ready 2>&1); then
+        log "  $repo/$key: gh issue create FAILED: $out"
+        return 1
+    fi
+    local new_n
+    new_n=$(printf '%s\n' "$out" | sed -nE 's@^https://github.com/[^/]+/[^/]+/issues/([0-9]+).*@\1@p' | head -n 1)
+    if [ -z "$new_n" ]; then
+        new_n=$(printf '%s\n' "$out" | grep -E '^[0-9]+$' | head -n 1)
+    fi
+    if [ -n "$new_n" ]; then
+        log "  $repo: FILED #$new_n (signal=$key)"
+        OPEN_ISSUE_FOR_SIGNAL["$key"]="${repo}#${new_n}"
+        ALL_OPEN_SIGNAL_ISSUES["${repo}#${new_n}"]="$key"
+        filed=$((filed + 1))
+    else
+        log "  $repo/$key: filed but could not parse issue number from gh output: $out"
+        filed=$((filed + 1))
+    fi
+}
+
+touch_heartbeat_comment() {
+    local key="$1" repo_issue="$2"
+    local repo="${repo_issue%%#*}"
+    local num="${repo_issue##*#}"
+    if [ "$num" = "dry" ]; then
+        return 0
+    fi
+    local comments_json
+    comments_json=$("$GH_BIN" api "repos/${repo}/issues/${num}/comments?per_page=100" 2>/dev/null || echo '[]')
+    local today_marker="signal-checked: ${NOW_DATE}"
+    if printf '%s' "$comments_json" | jq -e --arg d "$today_marker" \
+        '[.[] | select(.body | startswith($d))] | length > 0' >/dev/null 2>&1; then
+        log "  $repo_issue: signal-checked for $NOW_DATE already posted — skip"
+        return 0
+    fi
+    local body
+    body="signal-checked: ${NOW_DATE} still-active key=${key} tick_log=${TICK_LOG##*/}"
+    if [ "$DRY" = "1" ]; then
+        log "DRY comment $repo_issue: $body"
+        touched=$((touched + 1))
+        return 0
+    fi
+    if ! "$GH_BIN" issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1; then
+        log "  $repo_issue: comment FAILED"
+        return 1
+    fi
+    log "  $repo_issue: signal-checked posted for $NOW_DATE"
+    touched=$((touched + 1))
+}
+
+if [ "$active_count" -gt 0 ]; then
+    while IFS= read -r key; do
+        [ -z "$key" ] && continue
+        repo=$(target_repo_for "$key")
+        evidence="${SIGNAL_EVIDENCE[$key]:-}"
+        existing="${OPEN_ISSUE_FOR_SIGNAL[$key]:-}"
+        if [ -n "$existing" ]; then
+            touch_heartbeat_comment "$key" "$existing"
+        else
+            file_issue_for_signal "$key" "$repo" "$evidence" || true
+        fi
+    done < <(printf '%s\n' "${!ACTIVE_SIGNALS[@]}" | sort)
+fi
+
+if [ "$cap_hit" -eq 1 ]; then
+    loud "SIGNAL-RECONCILE-CAP" "filed=$filed max=$MAX_PER_TICK — auto-file cap hit this tick; remaining signals will roll into next tick (one issue per signal key is still guaranteed)"
+fi
+
+# ----------------------------------------------------------------------------
+# 6. Observe-to-close. Fail-closed: only close a family whose detector ran.
+# ----------------------------------------------------------------------------
+closed=0
+
+for repo_issue in "${!ALL_OPEN_SIGNAL_ISSUES[@]}"; do
+    sig="${ALL_OPEN_SIGNAL_ISSUES[$repo_issue]}"
+    [ -n "$sig" ] || continue
+    if [ "${ACTIVE_SIGNALS[$sig]:-0}" = "1" ]; then
+        continue
+    fi
+    case "$sig" in
+        escalation-canary/*)
+            if [ "$CANARY_RAN" != "1" ]; then
+                log "  $repo_issue: skip close (canary did not run this tick)"
+                continue
+            fi
+            ;;
+        unit-failed/*)
+            if [ "$UNITS_OBSERVED" != "1" ]; then
+                log "  $repo_issue: skip close (failed-unit set not observed this tick)"
+                continue
+            fi
+            ;;
+        *)
+            # Unknown family: only close if we saw the canary run, as a
+            # conservative default (don't close mystery keys on a blank log).
+            if [ "$CANARY_RAN" != "1" ]; then
+                log "  $repo_issue: skip close (unknown signal family, detector not proven)"
+                continue
+            fi
+            ;;
+    esac
+    repo="${repo_issue%%#*}"
+    num="${repo_issue##*#}"
+    local_body="signal-cleared: ${NOW_ISO} key=${sig} detector green on this tick (absent from ${TICK_LOG##*/}); closing observationally. This close was issued by signal-reconcile (fleet-ops#362), NOT by a worker PR."
+    if [ "$DRY" = "1" ]; then
+        log "DRY close $repo_issue: $local_body"
+        closed=$((closed + 1))
+        continue
+    fi
+    if "$GH_BIN" issue comment "$num" -R "$repo" --body "$local_body" >/dev/null 2>&1; then
+        if "$GH_BIN" issue close "$num" -R "$repo" >/dev/null 2>&1; then
+            log "  $repo_issue: CLOSED (signal=$sig)"
+            closed=$((closed + 1))
+        else
+            log "  $repo_issue: close FAILED (comment posted, but close API failed)"
+        fi
+    else
+        log "  $repo_issue: closing comment FAILED"
+    fi
+done
+
+# ----------------------------------------------------------------------------
+# 7. Snapshot + done
+# ----------------------------------------------------------------------------
+if [ "$DRY" != "1" ]; then
+    jq -nc --arg updated "$NOW_ISO" --arg tick "${TICK_LOG##*/}" \
+        --argjson active_count "$active_count" \
+        --argjson filed "$filed" --argjson touched "$touched" \
+        --argjson closed "$closed" --argjson cap_hit "$cap_hit" \
+        --argjson canary_ran "$CANARY_RAN" --argjson units_observed "$UNITS_OBSERVED" \
+        '{
+          updated:$updated,
+          tick_log:$tick,
+          active_count:$active_count,
+          filed:$filed,
+          touched:$touched,
+          closed:$closed,
+          cap_hit:$cap_hit,
+          canary_ran:$canary_ran,
+          units_observed:$units_observed
+        }' >"$STATE"
+fi
+
+log "sweep done: active=$active_count filed=$filed touched=$touched closed=$closed cap_hit=$cap_hit"
+printf 'signal-reconcile active=%s filed=%s touched=%s closed=%s cap_hit=%s\n' \
+    "$active_count" "$filed" "$touched" "$closed" "$cap_hit"
+exit 0

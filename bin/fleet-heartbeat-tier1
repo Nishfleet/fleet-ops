@@ -63,6 +63,12 @@
 #      on a measurement error. A re-derive of ram_gb_per_worker is a
 #      HUMAN action (jq over the state file + a PR); the heartbeat only
 #      makes the measurement automatic.
+#  14. Escalation-coverage canary (fleet-ops#152). Two-plane invariant.
+#  15. Detector→queue reconciler + observe-to-close (fleet-ops#362).
+#      bin/signal-reconcile turns every LOUD canary PENDING/VIOLATION and
+#      every failed unit into an agent-ready issue keyed `signal: <key>`,
+#      and closes those issues only when THIS tick's detector is green.
+#      No new timer. Failures here do not fail the tick.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -1104,10 +1110,22 @@ CANARY_BIN="${FLEET_ESCALATION_CANARY:-/home/nish/.local/bin/fleet-escalation-ca
 canary_rc=0
 if [ -x "$CANARY_BIN" ]; then
     log "14. escalation-coverage canary starting"
-    if "$CANARY_BIN"; then
+    # Capture canary stdout+stderr into THIS tick log (fd 3). The canary
+    # otherwise only writes stderr + the append-only triage file; without
+    # this tee, signal-reconcile cannot tell this tick's PENDING lines from
+    # last week's, and observe-to-close would either never fire or close
+    # everything on a green-looking empty log.
+    set +e
+    canary_out=$("$CANARY_BIN" 2>&1)
+    canary_rc=$?
+    set -e
+    if [ -n "$canary_out" ]; then
+        printf '%s\n' "$canary_out" >&2
+        printf '%s\n' "$canary_out" >&3
+    fi
+    if [ "$canary_rc" -eq 0 ]; then
         log "14. escalation-coverage canary complete"
     else
-        canary_rc=$?
         log "14. escalation-coverage canary FAILED (rc=$canary_rc) — two-plane invariant violated; unit will land in --state=failed"
     fi
 else
@@ -1115,9 +1133,38 @@ else
 fi
 
 # ============================================================================
+# 15. DETECTOR→QUEUE RECONCILER + OBSERVE-TO-CLOSE (fleet-ops#362)
+# ============================================================================
+# Convert every LOUD PENDING/VIOLATION line + every failed-unit STOP-REASON
+# into a queued work item (signal: <key> in the issue body), and close any
+# existing signal-keyed issue whose detector has gone green on this tick.
+#
+# This is the meta-fix for the class behind today's four dropped balls
+# (#358 #359 #360, siterep-public#80): every one had a detector already
+# screaming, but nothing converted the scream into a queued work item.
+#
+# Pure logic. Reads the most recent tier1 tick log (this very one) for
+# canary loud lines; queries the live unit-failed set directly via
+# systemctl. Failures here do NOT fail the tick — the reconciler is
+# observability plumbing, and the next tick retries.
+SIGNAL_RECONCILE_BIN="${SIGNAL_RECONCILE:-/home/nish/.local/bin/signal-reconcile}"
+signal_rc=0
+if [ -x "$SIGNAL_RECONCILE_BIN" ]; then
+    log "15. signal-reconcile starting"
+    if SIGNAL_RECONCILE_TICK_LOG="$TICK_LOG" "$SIGNAL_RECONCILE_BIN"; then
+        log "15. signal-reconcile complete"
+    else
+        signal_rc=$?
+        log "15. signal-reconcile non-zero exit (rc=$signal_rc) — observability gap; next tick retries"
+    fi
+else
+    log "15. signal-reconcile missing at $SIGNAL_RECONCILE_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc signal_rc=$signal_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
 # red-pr-repair, or the escalation-coverage canary may fail loud; all route to
 # the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).

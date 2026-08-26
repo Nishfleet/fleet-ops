@@ -117,3 +117,8 @@ bash "$here/intake-reconcile.test.sh"
 # 2026-08-26 split-brain: intake-reconcile must read deploy-clone
 # intake-repos.json. Named ci.yml step is out of band for the worker App.
 bash "$here/intake-reconcile-deploy-checkout.test.sh"
+# fleet-ops#362: detector→queue reconciler + observe-to-close. A named
+# tests/signal-reconcile.test.sh step in ci.yml is out of band for the
+# worker App (Contents cannot push workflow files). Run it here so a
+# regression cannot merge green.
+bash "$here/signal-reconcile.test.sh"

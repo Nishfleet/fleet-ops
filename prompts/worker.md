@@ -93,4 +93,8 @@ Steps:
 6. Commit with a clear message. Push early and again when done: `git push origin claim/issue-<N>`.
 7. Open the PR:
    `gh pr create -R Nishfleet/<repo> --head claim/issue-<N> --title "<concise title>" --body "<what changed and why>. Verification: <exact commands run and their results>. Closes #<N>"`
+   **If the issue body contains a `signal:` line (signal-reconcile / fleet-ops#362):** the issue is
+   observe-to-close — do NOT use `Closes #<N>` / `Fixes #<N>` / `Resolves #<N>` in the PR body (those
+   keywords auto-close on merge and bypass the reconciler's detector-green gate). Use `Refs #<N>`
+   instead. The reconciler closes the issue when the detector goes green on a real tick.
 8. Print exactly one final line: the PR URL. Exit 0.

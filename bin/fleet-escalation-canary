@@ -209,7 +209,9 @@ for unit in "${loaded_services[@]}"; do
     if [[ -n "$onf" ]] && grep -qF "$expected" <<< "$onf"; then
         log "1.  - $unit: covered ($onf)"
     else
-        loud "ESCALATION-CANARY-VIOLATION" "unit=$unit missing escalation drop-in (OnFailure='$onf', expected='$expected')"
+        # Signal key is per-unit: a unit that loses its escalation drop-in
+        # is a stable, dedupable alarm (one rolling issue per unit).
+        loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step1/${unit} unit=${unit} missing escalation drop-in (OnFailure='${onf}', expected='${expected}')"
         violations=$((violations + 1))
     fi
 done
@@ -233,7 +235,7 @@ for f in "${pi_matching[@]}"; do
     if is_sanctioned_pi_runner "$name"; then
         log "2.  - $name: sanctioned pi wrapper"
     else
-        loud "ESCALATION-CANARY-VIOLATION" "bin/$name invokes the pi binary directly but is not a sanctioned unit wrapper"
+        loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step2/${name} bin/${name} invokes the pi binary directly but is not a sanctioned unit wrapper"
         violations=$((violations + 1))
     fi
 done
@@ -245,7 +247,7 @@ log "3. checking terminal delivery path"
 if [[ -f "$DELIVERY_MARKER" ]]; then
     log "3.  - delivery marker present: $DELIVERY_MARKER"
 else
-    loud "ESCALATION-CANARY-PENDING" "terminal delivery not wired (#76) — NISH-ESCALATIONS.md and failed-units state have no live pager/dead-man ping yet"
+    loud "ESCALATION-CANARY-PENDING" "signal=escalation-canary/step3/terminal-delivery terminal delivery not wired (#76) — NISH-ESCALATIONS.md and failed-units state have no live pager/dead-man ping yet"
     pending=$((pending + 1))
 fi
 
@@ -256,7 +258,7 @@ log "4. checking red-CI ownerless-PR coverage"
 if [[ -f "$REDCI_MARKER" ]]; then
     log "4.  - red-CI ownerless guard present: $REDCI_MARKER"
 else
-    loud "ESCALATION-CANARY-PENDING" "red-CI-on-ownerless-PR coverage pending (#124) — failing fleet PRs with no live worker are not yet re-dispatched"
+    loud "ESCALATION-CANARY-PENDING" "signal=escalation-canary/step4/red-ci-ownerless-pr red-CI-on-ownerless-PR coverage pending (#124) — failing fleet PRs with no live worker are not yet re-dispatched"
     pending=$((pending + 1))
 fi
 
@@ -275,13 +277,13 @@ red_main_wf="$FLEET_OPS_REPO/.github/workflows/red-on-main-detector.yml"
 if [[ -f "$auto_revert_wf" ]] && grep -q 'workflow_run:' "$auto_revert_wf" 2>/dev/null; then
     log "6.  - auto-revert.yml present and wired to workflow_run (fleet-ops self-coverage for main-push red)"
 else
-    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: auto-revert.yml missing or not wired to workflow_run — main-push red on fleet-ops has no automatic revert"
+    loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step6/auto-revert GitHub plane: auto-revert.yml missing or not wired to workflow_run — main-push red on fleet-ops has no automatic revert"
     violations=$((violations + 1))
 fi
 if [[ -f "$red_main_wf" ]] && grep -q 'workflow_call:' "$red_main_wf" 2>/dev/null; then
     log "6.  - red-on-main-detector.yml present as a reusable workflow (other repos wire it for first-run-red alerts)"
 else
-    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: red-on-main-detector.yml missing or not a reusable workflow — other repos cannot wire first-run-red alerts"
+    loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step6/red-on-main-detector GitHub plane: red-on-main-detector.yml missing or not a reusable workflow — other repos cannot wire first-run-red alerts"
     violations=$((violations + 1))
 fi
 
@@ -290,11 +292,11 @@ fi
 # ---------------------------------------------------------------------------
 log "7. checking GitHub plane: #124 redispatch covers every intake repo"
 if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
-    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot verify #124 coverage of enrolled repos"
+    loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step7/intake-repos-missing GitHub plane: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot verify #124 coverage of enrolled repos"
     violations=$((violations + 1))
 else
     if ! command -v jq >/dev/null 2>&1; then
-        loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: jq missing — cannot parse intake-repos.json / fleet-repos.json"
+        loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step7/jq-missing GitHub plane: jq missing — cannot parse intake-repos.json / fleet-repos.json"
         violations=$((violations + 1))
     else
         # intake-enrolled repo slugs (Nishfleet/<name>).
@@ -306,7 +308,7 @@ else
         # check rather than flagging every repo as uncovered (a missing state
         # file is a heartbeat-not-yet-run condition, not a coverage gap).
         if [[ ! -f "$REDPR_REPOS_JSON" ]]; then
-            loud "ESCALATION-CANARY-PENDING" "GitHub plane: fleet-repos.json missing at $REDPR_REPOS_JSON — #124 coverage set unreadable (heartbeat has not written it yet)"
+            loud "ESCALATION-CANARY-PENDING" "signal=escalation-canary/step7/state-unreadable GitHub plane: fleet-repos.json missing at $REDPR_REPOS_JSON — #124 coverage set unreadable (heartbeat has not written it yet)"
             pending=$((pending + 1))
         else
             declare -A claim_set=()
@@ -323,7 +325,10 @@ else
                 if [[ "${claim_set[$repo]:-0}" == "1" ]]; then
                     log "7.  - $repo: covered by #124 redispatch (in claim_repos)"
                 else
-                    loud "ESCALATION-CANARY-VIOLATION" "GitHub plane: $repo is intake-enrolled (can produce claim PRs) but NOT in fleet-repos.json claim_repos — its orphaned red PRs escape #124 redispatch"
+                    # Per-repo signal: each uncovered intake repo is its own
+                    # rolling alarm (dedup is one issue per repo).
+                    repo_key=$(printf '%s' "$repo" | tr '/' '-')
+                    loud "ESCALATION-CANARY-VIOLATION" "signal=escalation-canary/step7/${repo_key} GitHub plane: ${repo} is intake-enrolled (can produce claim PRs) but NOT in fleet-repos.json claim_repos — its orphaned red PRs escape #124 redispatch"
                     violations=$((violations + 1))
                 fi
             done
@@ -342,7 +347,7 @@ if [[ -f "$BRIDGE_MARKER" ]]; then
 elif [[ -f "$bridge_wf" ]] && [[ -f "$bridge_script" ]]; then
     log "8.  - bridge wired: $bridge_wf + $bridge_script"
 else
-    loud "ESCALATION-CANARY-PENDING" "red-check -> senior-auditor bridge not wired (#152 scope addition) — a red check on a PR whose worker is still live (so #124 does not fire) and not on main (so auto-revert does not fire) has no automatic path to a senior auditor yet"
+    loud "ESCALATION-CANARY-PENDING" "signal=escalation-canary/step8/red-check-senior-auditor red-check -> senior-auditor bridge not wired (#152 scope addition) — a red check on a PR whose worker is still live (so #124 does not fire) and not on main (so auto-revert does not fire) has no automatic path to a senior auditor yet"
     pending=$((pending + 1))
 fi
 
