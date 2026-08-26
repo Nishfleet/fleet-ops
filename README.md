@@ -75,6 +75,52 @@ Overlapping `systemctl start` of a live intake tick is a no-op
 (`pi-issue-start`). The failed-reaper will not release a claim while that
 worker still has a MainPID.
 
+## Claim shared files before editing (interactive sessions)
+
+Queued work has an atomic lock — the `claim/issue-N` branch. Interactive
+sessions used to bypass it, so two agents could fix the same control-plane
+file minutes apart without either knowing (fleet-ops#55: two sessions
+fixed the same `seat-lib.sh` bug in one hour). `bin/fleet-claim` gives
+interactive work a claim path that is one command, agent-agnostic (git +
+gh, not a Claude hook), and visible before any PR exists — a pushed branch
+is the fleet-visible occupied sign.
+
+Before touching anything shared (`seat-lib.sh`, `seat-caps.json`, a systemd
+unit, a hook, this repo), run:
+
+```
+fleet-claim conflicts fleet-ops lib/seat-lib.sh   # pre-flight: anyone on it?
+fleet-claim start    fleet-ops lib/seat-lib.sh    # reserve it (one command)
+# ...edit, commit, push, open PR...
+fleet-claim release  fleet-ops lib/seat-lib.sh    # free it when done
+```
+
+- `start` pushes `claim/adhoc-<scope>` from `main` with a create-only
+  `--force-with-lease`, so two agents starting the same scope collide
+  atomically — the second gets `claimed-by-other` and stops. Convention:
+  **use the shared file path as the scope** so two agents on the same file
+  pick the same branch name.
+- `conflicts` is the pre-flight the standing rule asks for, made
+  agent-agnostic. It scans every live `claim/adhoc-*` branch whose scope
+  token matches the file path **or basename**, plus every open PR whose
+  file set overlaps (via `gh`, when available). Exit 1 if anything is
+  found. Basename matching catches the realistic case where two agents
+  name the same file differently (`lib/seat-lib.sh` vs `seat-lib.sh`).
+- `check <scope>` reports free/claimed for one scope; `release <scope>`
+  deletes the branch.
+
+It is warn-shaped, not a hard block: a second agent on the same file is
+sometimes legitimate, and a false block during control-plane repair is
+worse than a duplicated diff. The Claude-only `guard_shared_file_collision`
+hook covers the open-PR window; `fleet-claim` covers the pre-PR window that
+the hook cannot see.
+
+Stale interactive **sessions** (idle for hours) are a separate, larger
+problem and are NOT reaped here — killing live agent processes is
+irreversible and out of scope for #55. The durable heartbeat still reaps
+orphaned `claim/issue-*` branches (queued work); `claim/adhoc-*` branches
+are released by the agent that claimed them.
+
 ## CI
 
 `.github/workflows/ci.yml` runs four jobs on every PR and push to main:

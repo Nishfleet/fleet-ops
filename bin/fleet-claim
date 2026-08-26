@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# fleet-claim — one-command ad-hoc claim branch for shared files.
+#
+# Interactive sessions bypass the claim/issue-N worker protocol. This pushes a
+# fleet-visible "occupied sign" branch before any local edits, so a second agent
+# starting the same control-plane fix can see the claim and stop before it
+# writes a line.
+#
+# Usage:
+#   fleet-claim start <repo> <scope>           # e.g. fleet-ops lib/seat-lib.sh
+#   fleet-claim check <repo> <scope>           # exit 0 if free, 1 if claimed
+#   fleet-claim release <repo> <scope>         # delete the claim branch
+#   fleet-claim conflicts <repo> <file> [file...]  # pre-flight: anyone on these files?
+#
+# <repo> is the short repo name (fleet-ops) or full Nishfleet/fleet-ops.
+# <scope> is any short string, usually a file path or topic. It is sanitised
+# to [A-Za-z0-9._-] with other characters replaced by '_'. Convention: use the
+# shared file path as the scope so two agents on the same file collide atomically
+# on the branch name.
+#
+# `conflicts` is the agent-agnostic pre-flight check the standing rule asks for:
+# before touching a shared file, run it. It scans (1) every live claim/adhoc-*
+# branch whose scope token matches the file path or basename, and (2) every open
+# PR whose file set overlaps (via gh, when available). Exit 1 if anything is
+# found, 0 if clear. It does not write — run it before `start` or before editing.
+#
+# Environment overrides (tests):
+#   FLEET_CLAIM_CHECKOUT_ROOT  default /home/nish/workspaces/products
+#   FLEET_CLAIM_REMOTE         default origin
+#   FLEET_CLAIM_MAIN_BRANCH    default main
+#
+# Exit:
+#   0  start succeeded / check is free / release not needed / no conflicts
+#   1  start would collide / check is claimed / release failed / conflicts found
+#   2  usage / bad arguments
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+CHECKOUT_ROOT="${FLEET_CLAIM_CHECKOUT_ROOT:-/home/nish/workspaces/products}"
+REMOTE="${FLEET_CLAIM_REMOTE:-origin}"
+MAIN_BRANCH="${FLEET_CLAIM_MAIN_BRANCH:-main}"
+LOCKDIR="${XDG_RUNTIME_DIR}/fleet-claim"
+
+usage() {
+    cat <<'EOF' >&2
+usage: fleet-claim start <repo> <scope>
+       fleet-claim check <repo> <scope>
+       fleet-claim release <repo> <scope>
+       fleet-claim conflicts <repo> <file> [file...]
+
+<repo>  short name (fleet-ops) or Nishfleet/fleet-ops
+<scope> file path, topic, or any short token (e.g. lib/seat-lib.sh)
+<file>  path to check for an existing claim or open PR (e.g. lib/seat-lib.sh)
+EOF
+    exit 2
+}
+
+log() {
+    printf '[%s] fleet-claim: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+[[ $# -ge 1 ]] || usage
+cmd="${1:-}"
+shift
+
+[[ $# -ge 2 ]] || usage
+repo_raw="$1"; shift
+scope_raw="$1"; shift
+
+repo="${repo_raw#Nishfleet/}"
+repo="${repo%/}"
+
+# --- sanitise scope into a branch-name safe token ----------------------------
+safe_scope() {
+    local s="$1"
+    # Allow alphanumerics, '.', '_', '-'. Replace everything else with '_'.
+    s="${s//[^A-Za-z0-9._-]/_}"
+    # Collapse multiple underscores, trim leading/trailing underscores.
+    s=$(printf '%s\n' "$s" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')
+    printf '%s' "$s"
+}
+
+scope_safe=$(safe_scope "$scope_raw")
+[[ -n "$scope_safe" ]] || { log "scope sanitised to nothing: '$scope_raw'"; exit 2; }
+
+branch="claim/adhoc-${scope_safe}"
+repo_path="${CHECKOUT_ROOT}/${repo}"
+
+# --- validate repo checkout --------------------------------------------------
+[[ -d "$repo_path" ]] || { log "checkout not found: $repo_path"; exit 1; }
+if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+    log "not a git repo: $repo_path"
+    exit 1
+fi
+if ! git -C "$repo_path" config "remote.${REMOTE}.url" >/dev/null 2>&1; then
+    log "remote '$REMOTE' not found in $repo_path"
+    exit 1
+fi
+
+# --- helpers -----------------------------------------------------------------
+branch_tip() {
+    git -C "$repo_path" ls-remote "$REMOTE" "refs/heads/$branch" 2>/dev/null | awk '{print $1}'
+}
+
+main_ref() {
+    printf 'refs/remotes/%s/%s' "$REMOTE" "$MAIN_BRANCH"
+}
+
+fetch_main() {
+    if ! git -C "$repo_path" fetch -q "$REMOTE" "$MAIN_BRANCH"; then
+        log "fetch $REMOTE/$MAIN_BRANCH failed for $repo"
+        return 1
+    fi
+    if ! git -C "$repo_path" rev-parse "$(main_ref)" >/dev/null 2>&1; then
+        log "remote-tracking ref $(main_ref) missing after fetch"
+        return 1
+    fi
+    return 0
+}
+
+acquire_lock() {
+    mkdir -p "$LOCKDIR"
+    local lock="$LOCKDIR/${repo}-${scope_safe}.lock"
+    exec 9>"$lock"
+    if ! flock -w 30 9; then
+        log "could not acquire claim lock for $repo/$scope_safe"
+        return 1
+    fi
+    return 0
+}
+
+# --- start: create-only push of the claim branch -----------------------------
+cmd_start() {
+    acquire_lock || exit 1
+
+    local tip
+    tip=$(branch_tip)
+    if [[ -n "$tip" ]]; then
+        log "branch $branch already exists on Nishfleet/$repo (tip=$tip)"
+        printf 'claimed-by-other: Nishfleet/%s %s\n' "$repo" "$branch"
+        return 1
+    fi
+
+    fetch_main || exit 1
+
+    local src
+    src=$(main_ref)
+
+    if ! git -C "$repo_path" push \
+        --force-with-lease="refs/heads/$branch:" \
+        "$REMOTE" "${src}:refs/heads/$branch"; then
+        # Race: another agent may have created it between ls-remote and push.
+        tip=$(branch_tip)
+        if [[ -n "$tip" ]]; then
+            log "lost claim race: $branch now exists on Nishfleet/$repo"
+            printf 'claimed-by-other: Nishfleet/%s %s\n' "$repo" "$branch"
+        else
+            log "push failed for Nishfleet/$repo $branch"
+        fi
+        return 1
+    fi
+
+    # Confirm the branch is visible.
+    tip=$(branch_tip)
+    if [[ -z "$tip" ]]; then
+        log "push reported success but branch $branch is not on origin"
+        return 1
+    fi
+
+    printf 'claimed: Nishfleet/%s %s\n' "$repo" "$branch"
+    printf 'worktree: git -C %s worktree add %s/adhoc-%s-%s %s\n' \
+        "$repo_path" "$CHECKOUT_ROOT" "$repo" "$scope_safe" "$branch"
+    return 0
+}
+
+# --- check: read-only, exit 0 if free, 1 if claimed --------------------------
+cmd_check() {
+    local tip
+    tip=$(branch_tip)
+    if [[ -n "$tip" ]]; then
+        printf 'claimed: Nishfleet/%s %s (tip=%s)\n' "$repo" "$branch" "$tip"
+        return 1
+    fi
+    printf 'free: Nishfleet/%s %s\n' "$repo" "$branch"
+    return 0
+}
+
+# --- release: delete the claim branch ----------------------------------------
+cmd_release() {
+    acquire_lock || exit 1
+
+    local tip
+    tip=$(branch_tip)
+    if [[ -z "$tip" ]]; then
+        printf 'already-released: Nishfleet/%s %s\n' "$repo" "$branch"
+        return 0
+    fi
+
+    # Fetch the remote branch so local remote-tracking is up to date and a
+    # delete can target the exact current tip.
+    if ! git -C "$repo_path" fetch -q "$REMOTE" "$branch"; then
+        log "fetch of $branch failed before release"
+        return 1
+    fi
+
+    if ! git -C "$repo_path" push "$REMOTE" --delete "$branch"; then
+        log "delete of $branch failed"
+        return 1
+    fi
+
+    printf 'released: Nishfleet/%s %s\n' "$repo" "$branch"
+    return 0
+}
+
+# --- conflicts: pre-flight file-overlap scan (read-only) ---------------------
+# Scans live claim/adhoc-* branches + open PRs for any work on the given files.
+# Match policy mirrors the guard_shared_file_collision hook: a claim/PR matches
+# if its scope token or file set overlaps the input file's PATH token or BASENAME
+# token. Basename matching is deliberate — two agents rarely use identical scope
+# strings, but the shared control-plane files have distinctive basenames
+# (seat-lib.sh, seat-caps.json). Exit 1 if any conflict, 0 if clear.
+cmd_conflicts() {
+    # Files to check: the first file is already in scope_raw; the rest in $@.
+    local -a files=("$scope_raw")
+    [[ $# -ge 1 ]] && files+=("$@")
+
+    # Precompute match tokens per file: full-path token + basename token.
+    declare -A want=()
+    local f base ptok btok
+    for f in "${files[@]}"; do
+        ptok=$(safe_scope "$f")
+        base=$(basename "$f")
+        btok=$(safe_scope "$base")
+        [[ -n "$ptok" ]] && want["$ptok"]=1
+        [[ -n "$btok" ]] && want["$btok"]=1
+    done
+
+    local found=0
+
+    # 1. Live claim/adhoc-* branches whose scope token is wanted.
+    local ref tok
+    while IFS=$'\t' read -r _ ref; do
+        [[ "$ref" == refs/heads/claim/adhoc-* ]] || continue
+        tok="${ref#refs/heads/claim/adhoc-}"
+        [[ -n "$tok" ]] || continue
+        if [[ -n "${want[$tok]:-}" ]]; then
+            printf 'claim-conflict: Nishfleet/%s %s (matches a requested file)\n' "$repo" "$ref"
+            found=1
+        fi
+    done < <(git -C "$repo_path" ls-remote "$REMOTE" 'refs/heads/claim/adhoc-*' 2>/dev/null)
+
+    # 2. Open PRs whose file set overlaps (via gh + jq, when both available).
+    if command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        local prs_json
+        prs_json=$(gh pr list -R "Nishfleet/$repo" --state open \
+            --json number,title,author,files 2>/dev/null) || prs_json='[]'
+        # Walk each PR; for each, test whether any of its file paths or basenames
+        # is in the want set. jq emits one tab-delimited row per PR:
+        #   number \t title \t author \t path1,path2,...
+        while IFS=$'\t' read -r num title author paths; do
+            [[ -n "$num" ]] || continue
+            local hit=0 p pbase pt btk
+            IFS=',' read -ra arr <<<"$paths"
+            for p in "${arr[@]}"; do
+                [[ -n "$p" ]] || continue
+                pt=$(safe_scope "$p")
+                pbase=$(basename "$p")
+                btk=$(safe_scope "$pbase")
+                if [[ -n "${want[$pt]:-}" || -n "${want[$btk]:-}" ]]; then
+                    hit=1
+                    break
+                fi
+            done
+            if (( hit )); then
+                printf 'pr-conflict: Nishfleet/%s #%s "%s" by %s (touches a requested file)\n' \
+                    "$repo" "$num" "$title" "$author"
+                found=1
+            fi
+        done < <(printf '%s' "$prs_json" | jq -r '.[] | [.number, .title, .author, (.files | map(.path) | join(","))] | @tsv' 2>/dev/null)
+    else
+        log "gh or jq not available — skipping open-PR conflict scan for Nishfleet/$repo"
+    fi
+
+    if (( found )); then
+        printf 'conflicts-found: Nishfleet/%s %s\n' "$repo" "${files[*]}"
+        return 1
+    fi
+    printf 'no-conflicts: Nishfleet/%s %s\n' "$repo" "${files[*]}"
+    return 0
+}
+
+# --- dispatch ----------------------------------------------------------------
+case "$cmd" in
+    start)  cmd_start "$@" ;;
+    check)  cmd_check "$@" ;;
+    release) cmd_release "$@" ;;
+    conflicts) cmd_conflicts "$@" ;;
+    *)      usage ;;
+esac
