@@ -860,7 +860,7 @@ fi
 # ============================================================================
 # 7. DEGRADED-LANE REPORT (fleet-ops#63)
 # ============================================================================
-# For every pi-issue-* unit in activating/auto-restart state, publish a
+# For every pi-issue@* / pi-packet@* unit in activating/auto-restart state, publish a
 # LOUD triage line. These workers hold their claim branch and their
 # agent-in-progress label (the orphan sweep must NOT reap them — the
 # worker is between crashes, the StartLimitBurst path is the right
@@ -882,7 +882,7 @@ while IFS= read -r u; do
     [ -z "$u" ] && continue
     # Limit scope to fleet worker units (template-instances and transients).
     case "$u" in
-        pi-issue-*|fable-p*) : ;;  # match
+        pi-issue@*|pi-packet@*|fable-p*) : ;;  # match
         *) continue ;;
     esac
     sub=$(systemctl --user show "$u" --property=SubState --value 2>/dev/null || echo unknown)
@@ -898,9 +898,9 @@ while IFS= read -r u; do
         fi
         log "7.  - $u :: auto-restart (held, no work — wait for StartLimitBurst / OnFailure)"
     fi
-done < <(systemctl --user list-units 'pi-issue-*.service' 'pi-packet-*.service' 'fable-p*.service' --state=activating --no-legend 2>/dev/null \
+done < <(systemctl --user list-units 'pi-issue@*.service' 'pi-packet@*.service' 'fable-p*.service' --state=activating --no-legend 2>/dev/null \
             | awk '{print $1}' \
-            | grep -E '^(pi-issue-|pi-packet-|fable-p)' || true)
+            | grep -E '^(pi-issue@|pi-packet@|fable-p)' || true)
 log "7. degraded-lane pass complete: degraded=$degraded"
 if [ "$degraded" -gt 0 ]; then
     loud "DEGRADED-LANES" "degraded=$degraded :: ${degraded_units}"
