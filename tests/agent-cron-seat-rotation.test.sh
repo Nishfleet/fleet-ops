@@ -14,13 +14,20 @@
 #
 # Also locks the Restart= policy on the cron service unit so a transient wall
 # delays the daily job (systemd re-seats) instead of killing it for the day.
+#
+# fleet-ops#264: unit-file and scratch-install assertions must not require a
+# live systemd --user bus. They talk only through $SYSTEMCTL (a stub). A
+# checkout that does not yet contain the 0509 unit files SKIPs those
+# assertions so a local `bash ci.yml verify-command` stays clean. Seat
+# rotation (scenarios 1-3) still runs.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/agent-cron-run"
-svc="$repo_root/systemd/agent-cron-0509-daily-market-signal.service"
-timer="$repo_root/systemd/agent-cron-0509-daily-market-signal.timer"
+# AGENT_CRON_TEST_{SVC,TIMER} let the missing-unit drill point at absent paths.
+svc="${AGENT_CRON_TEST_SVC:-$repo_root/systemd/agent-cron-0509-daily-market-signal.service}"
+timer="${AGENT_CRON_TEST_TIMER:-$repo_root/systemd/agent-cron-0509-daily-market-signal.timer}"
 install_sh="$repo_root/install.sh"
 manifest="$repo_root/MANIFEST"
 
@@ -186,6 +193,15 @@ set -e
 [[ "$rc" == "1" ]] || fail "scenario 3: pi failure must exit 1 so systemd re-seats, got $rc"
 ok "scenario 3: pi failure -> exit 1 (systemd Restart= re-seats on next try)"
 
+# --- fleet-ops#264: missing 0509 units must SKIP, not FAIL the P14 list -----
+# Seat rotation above only needs bin/agent-cron-run. A fresh worktree that
+# does not yet carry the service/timer files used to die here with
+# "service unit not found" and abort the rest of ci.yml verify-command.
+if [[ ! -f "$svc" || ! -f "$timer" ]]; then
+    echo "SKIP: agent-cron-0509 unit files not in this checkout (fleet-ops#264)"
+    exit 0
+fi
+
 # --- service unit: Restart policy + ExecStart contract ----------------------
 [[ -f "$svc" ]] || fail "service unit not found: $svc"
 grep -q '^ExecStart=/home/nish/.local/bin/agent-cron-run 0509-daily-market-signal$' "$svc" \
@@ -264,16 +280,28 @@ grep -Fq -- '"$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signa
   || fail "install.sh must enable --now agent-cron-0509-daily-market-signal.timer"
 ok "timer has [Install] and install.sh enables it"
 
-# Behavioral: a scratch install with stub systemctl must actually invoke
-# enable --now. Destinations stay under $scratch so this cannot mutate the
-# live user bus. A comment-only enable line would fail this.
+# --- live install invariants (fleet-ops#261) ---------------------------------
+# The scratch install below runs a stub systemctl to prove install.sh
+# actually invokes enable --now. It checks is-enabled state, which can fail
+# in a bare worktree / CI runner with no user systemd bus. Gate the live
+# invariants behind NISHFLEET_LIVE_INSTALL_TEST like
+# tests/worker-token-live.test.sh.
+if [[ "${NISHFLEET_LIVE_INSTALL_TEST:-}" != "1" ]]; then
+  ok "SKIP: live install invariants (set NISHFLEET_LIVE_INSTALL_TEST=1)"
+else
+  # Behavioral: a scratch install with stub systemctl must actually invoke
+  # enable --now. Destinations stay under $scratch so this cannot mutate the
+  # live user bus. A comment-only enable line would fail this.
 #
-# fleet-ops#228 / #290: GitHub's runner has no user systemd bus. A stub
-# that always exits 0 makes is-enabled look already-enabled, so install.sh
+# fleet-ops#228 / #254 / #290 / #264: GitHub's runner and a generic laptop have
+# no user systemd bus. This block must still pass there. A stub that
+# always exits 0 makes is-enabled look already-enabled, so install.sh
 # skips enable --now and P14 goes red. Track the fake enabled state in a
 # file so is-enabled returns non-zero until enable is recorded, exactly as
 # tests/fleet-ops-deploy.test.sh does. SYSTEMCTL= is how the rest of
-# fleet-ops injects the stub.
+# fleet-ops injects the stub. HOME / XDG_RUNTIME_DIR / the session bus
+# are pointed at $scratch so a leaked bare `systemctl --user` cannot
+# talk to the live instance.
 install_scratch="$scratch/install-root"
 mkdir -p "$install_scratch/systemd" "$scratch/fake-bin" "$scratch/user-units"
 cp -a "$install_sh" "$install_scratch/install.sh"
@@ -334,8 +362,11 @@ stub_is_enabled_rc=$?
 set -e
 : >"$calls"
 [[ "$stub_is_enabled_rc" == "1" ]] \
-  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#290), got $stub_is_enabled_rc"
+  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#254, fleet-ops#290), got $stub_is_enabled_rc"
+mkdir -p "$scratch/home" "$scratch/xdg"
 SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
+  HOME="$scratch/home" XDG_RUNTIME_DIR="$scratch/xdg" \
+  env -u DBUS_SESSION_BUS_ADDRESS \
   "$install_scratch/install.sh"
 [[ -L "$scratch/user-units/agent-cron-0509-daily-market-signal.timer" ]] \
   || fail "scratch install must symlink the timer"
@@ -349,7 +380,7 @@ post_is_enabled_rc=$?
 set -e
 [[ "$post_is_enabled_rc" == "0" ]] \
   || fail "stub is-enabled must return 0 after enable --now (fleet-ops#228), got $post_is_enabled_rc"
-ok "scratch install.sh enable --now invoked for the [Install] timer"
+ok "scratch install.sh enable --now invoked for the [Install] timer (fleet-ops#254)"
 
 # --- fleet-ops#236: a stub that exits 0 but prints nothing must not skip enable --now ----
 # The is-enabled exit code alone is not enough: a broken stub (or a missing
@@ -382,11 +413,37 @@ FAKE
 chmod +x "$scratch/fake-bin-zero/systemctl"
 export SYSTEMCTL_CALLS="$calls2"
 SYSTEMCTL="$scratch/fake-bin-zero/systemctl" PATH="$scratch/fake-bin-zero:$PATH" \
+  HOME="$scratch/home" XDG_RUNTIME_DIR="$scratch/xdg" \
+  env -u DBUS_SESSION_BUS_ADDRESS \
   "$install_scratch/install.sh" >/dev/null 2>&1 || true
 # Remove the is-enabled call, then assert enable --now was still attempted.
 grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$calls2" \
   || fail "install.sh skipped enable --now for a zero-output is-enabled stub: $(cat "$calls2")"
 ok "install.sh enables --now even when is-enabled exits 0 without printing enabled"
+fi
+
+# --- fleet-ops#264: missing-unit skip must fire, not FAIL -------------------
+# Nested run points svc/timer at absent paths. Seat rotation still runs,
+# then the gate above prints SKIP and exits 0. AGENT_CRON_SKIP_DRILL
+# stops the child from nesting again.
+if [[ -z "${AGENT_CRON_SKIP_DRILL:-}" ]]; then
+    set +e
+    skip_out=$(
+        AGENT_CRON_SKIP_DRILL=1 \
+        AGENT_CRON_TEST_SVC="$scratch/missing.service" \
+        AGENT_CRON_TEST_TIMER="$scratch/missing.timer" \
+        bash "$here/$(basename "${BASH_SOURCE[0]}")" 2>&1
+    )
+    skip_rc=$?
+    set -e
+    [[ "$skip_rc" == "0" ]] || fail "missing-unit skip must exit 0, got $skip_rc: $skip_out"
+    printf '%s\n' "$skip_out" | grep -q '^SKIP: agent-cron-0509 unit files not in this checkout' \
+      || fail "missing-unit skip must print SKIP, got: $skip_out"
+    if printf '%s\n' "$skip_out" | grep -q 'service unit not found'; then
+      fail "missing-unit skip must not FAIL with service unit not found, got: $skip_out"
+    fi
+    ok "missing-unit checkout SKIPs instead of failing (fleet-ops#264)"
+fi
 
 # --- systemd-analyze verify on the unit files -------------------------------
 # NOTE: unit-file verification is owned by the dedicated `systemd-analyze` CI

@@ -121,10 +121,10 @@ EOF
 mkdir -p "$scratch/state"
 : > "$scratch/gh-create.log"
 
-# set +e around the bin so a non-zero exit is captured into $rc and the fail
-# block below actually prints. Under set -e a failing bin would exit the test
-# script silently before rc=$? runs (the fleet-ops#304 "no FAIL line" symptom).
-set +e
+# Capture the binary's exit code without tripping set -e so the fail block
+# below actually prints. Under set -e a failing bin would exit the test
+# script silently before rc=$? runs (the fleet-ops#280 "no FAIL line" symptom).
+rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$scratch/gh-create.log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
@@ -138,9 +138,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
-  "$bin" >"$scratch/run.log" 2>&1
-rc=$?
-set -e
+  "$bin" >"$scratch/run.log" 2>&1 || rc=$?
 
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
 
@@ -203,6 +201,8 @@ mkdir -p "$drill_state"
 : > "$drill_log"
 printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$drill_plan"
 
+# Capture the drill's exit code without tripping set -e.
+drill_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$drill_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
@@ -215,8 +215,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_DRILL=1 \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
-  "$bin" >"$scratch/drill.log" 2>&1
-drill_rc=$?
+  "$bin" >"$scratch/drill.log" 2>&1 || drill_rc=$?
 [[ $drill_rc == 0 ]] || { cat "$scratch/drill.log"; fail "drill exited $drill_rc"; }
 
 drill_dir=$(find "$drill_state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -260,7 +259,8 @@ fail_plan="$scratch/fail-plan.md"
 mkdir -p "$fail_state"
 printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$fail_plan"
 
-set +e
+# Capture the fail-loud run's exit code without tripping set -e.
+fail_rc=0
 PATH="$fail_gh:$scratch/fakebin:$PATH" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
@@ -272,9 +272,7 @@ PATH="$fail_gh:$scratch/fakebin:$PATH" \
   AUDIT_DRILL=1 \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
-  "$bin" >"$scratch/fail.log" 2>&1
-fail_rc=$?
-set -e
+  "$bin" >"$scratch/fail.log" 2>&1 || fail_rc=$?
 [[ $fail_rc == 1 ]] || { cat "$scratch/fail.log"; fail "expected exit 1 when gh create fails, got $fail_rc"; }
 grep -F 'FATAL:' "$scratch/fail.log" >/dev/null \
   || fail "fail-loud run did not log FATAL"
