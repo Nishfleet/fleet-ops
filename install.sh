@@ -85,6 +85,19 @@ is_installable_unit() {
 
 unit_has_install() { grep -qE '^\[Install\]$' "$1" 2>/dev/null; }
 
+# Returns 0 if systemd reports the unit as enabled. Do not trust the exit
+# code alone: a stub that exits 0 without printing "enabled" would make
+# install.sh skip enable --now and leave [Install] units unstarted
+# (fleet-ops#236, fleet-ops#290).
+is_unit_enabled() {
+    local unit=$1 state
+    state=$("$SYSTEMCTL" --user is-enabled "$unit" 2>/dev/null) || true
+    case "$state" in
+        enabled|enabled-runtime) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Returns 0 if the installed destination already matches the repo file.
 # Treats a symlink to the repo file OR a byte-identical regular file as OK.
 unit_file_matches() {
@@ -258,13 +271,13 @@ if [ "$do_user_install" = 1 ]; then
     for unit in "${to_enable[@]}"; do
       case "$unit" in
         *.path|*.timer)
-          if ! "$SYSTEMCTL" --user is-enabled "$unit" >/dev/null 2>&1; then
+          if ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable --now "$unit"
             echo "enabled+started: $unit"
           fi
           ;;
         *.service)
-          if ! "$SYSTEMCTL" --user is-enabled "$unit" >/dev/null 2>&1; then
+          if ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable "$unit"
             echo "enabled: $unit"
           fi
@@ -277,10 +290,10 @@ if [ "$do_user_install" = 1 ]; then
   # path unit (fired by intake-repos.json changes) and the 30-minute timer
   # can be safely re-enabled. The loop above already handles these two, but
   # the historical call is kept here as a no-op safety net.
-  if ! "$SYSTEMCTL" --user is-enabled intake-reconcile.path >/dev/null 2>&1; then
+  if ! is_unit_enabled intake-reconcile.path; then
     "$SYSTEMCTL" --user enable --now intake-reconcile.path
   fi
-  if ! "$SYSTEMCTL" --user is-enabled intake-reconcile.timer >/dev/null 2>&1; then
+  if ! is_unit_enabled intake-reconcile.timer; then
     "$SYSTEMCTL" --user enable --now intake-reconcile.timer
   fi
   # fleet-ops#183: the 0509 daily-market-signal timer ships in MANIFEST with
@@ -289,7 +302,7 @@ if [ "$do_user_install" = 1 ]; then
   # pi-scout@) are instantiated by the reconciler, and siterep-deploy.timer
   # deliberately omits [Install] so it cannot be auto-started.
   if [ -f "$here/systemd/agent-cron-0509-daily-market-signal.timer" ]; then
-    if ! "$SYSTEMCTL" --user is-enabled agent-cron-0509-daily-market-signal.timer >/dev/null 2>&1; then
+    if ! is_unit_enabled agent-cron-0509-daily-market-signal.timer; then
       "$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signal.timer
     fi
   fi
