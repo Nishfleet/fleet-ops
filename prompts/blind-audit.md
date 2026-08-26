@@ -102,3 +102,8 @@ has passed IS a loud gap — file it as a finding.
 - Do NOT edit, move, or delete any file except the two output files above.
 - Prefer read-only inspection. If you run a command that could change state,
   explain why it is safe.
+- For Nishfleet/fleet-ops, the live install source is
+  `/home/nish/workspaces/tooling/fleet-ops-deploy-clone` (fleet-ops#372).
+  `products/fleet-ops` is the worktree parent. `./install.sh --check` from
+  the parent is expected to DIFF and is NOT a gap. Do not file "live fleet
+  runs from deploy-clone" as a finding (that is fleet-ops#367).

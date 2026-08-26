@@ -16,6 +16,10 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Canonical live checkout (fleet-ops#367). products/fleet-ops is the
+# worktree parent; auditing it files false MANIFEST DIFFs. Pinning here
+# matches fleet-heartbeat.service's FLEET_OPS_CHECKOUT.
+Environment=AUDIT_REPO_ROOT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 WorkingDirectory=/home/nish
 ExecStart=/home/nish/.local/bin/fleet-blind-audit
 # The reviewer (pi) can take the full seat timeout; this unit blocks until it

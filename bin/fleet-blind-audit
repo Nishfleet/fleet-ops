@@ -22,6 +22,7 @@
 # Environment (all have sane defaults; tests may override):
 #   AUDIT_REPO              repo to audit (default: Nishfleet/fleet-ops)
 #   AUDIT_REPO_ROOT         absolute path of the checked-out repo
+#                           (default: canonical deploy-clone, fleet-ops#367)
 #   AUDIT_STATE_DIR         agent-state sink (default: .../agent-state/fleet-blind-audit)
 #   AUDIT_PROMPT            prompt template (default: ~/.pi/agent/prompts/blind-audit.md)
 #   AUDIT_DELIBERATE_STATES docs/deliberate-states.md path
@@ -34,6 +35,10 @@
 #   AUDIT_DRILL             if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
 #   AUDIT_DRILL_FINDINGS    findings JSON for AUDIT_DRILL=1
 #   AUDIT_FAKE_NOW          ISO-8601 UTC override for tests
+#   AUDIT_ALLOW_NONCANONICAL  if 1, do not retarget products/fleet-ops
+#   AUDIT_FILE_NONCANONICAL   if 0, skip auto-file of the #367 detector
+#   FLEET_OPS_WORKSPACES_ROOT overlay for tests (default /home/nish/workspaces)
+#   FLEET_OPS_CANONICAL_CHECKOUT overlay for tests (default <workspaces>/tooling/fleet-ops-deploy-clone)
 
 set -euo pipefail
 
@@ -43,22 +48,25 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 # --- locations -------------------------------------------------------------
 REPO="${AUDIT_REPO:-Nishfleet/fleet-ops}"
-REPO_ROOT="${AUDIT_REPO_ROOT:-/home/nish/workspaces/products/fleet-ops}"
+WS_ROOT="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+CANON="${FLEET_OPS_CANONICAL_CHECKOUT:-$WS_ROOT/tooling/fleet-ops-deploy-clone}"
+# Default is the live install checkout, not products/fleet-ops (worktree
+# parent). Auditing the parent is the class that filed #367 (48 false DIFFs).
+REPO_ROOT="${AUDIT_REPO_ROOT:-$CANON}"
 STATE_DIR="${AUDIT_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-blind-audit}"
 PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/blind-audit.md}"
-DELIBERATE_STATES="${AUDIT_DELIBERATE_STATES:-$REPO_ROOT/docs/deliberate-states.md}"
 PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
 PI_BIN="${AUDIT_PI_BIN:-$HOME/.local/bin/pi}"
 PANEL_BIN="${AUDIT_PANEL_BIN:-$HOME/.local/bin/fleet-blind-audit-panel}"
 MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-5}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 DRILL="${AUDIT_DRILL:-0}"
+AUDIT_NONCANON_MARKER="audit-target-noncanonical: fleet-ops#367"
 
 # Resolve this script's repo root for fallbacks when not installed yet.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 repo_fallback="$(cd "$here/.." && pwd)"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/blind-audit.md"
-[ -f "$DELIBERATE_STATES" ] || DELIBERATE_STATES="$repo_fallback/docs/deliberate-states.md"
 
 SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 [ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
@@ -86,6 +94,78 @@ VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
 log() {
     printf '[%s] [fleet-blind-audit] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
+
+resolve_path() {
+    readlink -f "$1" 2>/dev/null || printf '%s' "$1"
+}
+
+auto_file_audit_noncanonical() {
+    local got="$1" want="$2"
+    if [ "${AUDIT_FILE_NONCANONICAL:-1}" != "1" ]; then
+        log "file skipped (AUDIT_FILE_NONCANONICAL!=1) marker=$AUDIT_NONCANON_MARKER"
+        return 0
+    fi
+    local listed num body_file
+    listed=$(gh issue list -R "$REPO" --state open --limit 50 --json number,body 2>/dev/null || echo '[]')
+    if printf '%s' "$listed" | jq -e --arg m "$AUDIT_NONCANON_MARKER" \
+        '.[] | select((.body // "") | contains($m))' >/dev/null 2>&1; then
+        num=$(printf '%s' "$listed" | jq -r --arg m "$AUDIT_NONCANON_MARKER" \
+            '[.[] | select((.body // "") | contains($m)) | .number] | first // empty')
+        log "dedup: open ${REPO}#${num} already carries $AUDIT_NONCANON_MARKER"
+        return 0
+    fi
+    body_file=$(mktemp)
+    {
+        printf 'Blind audit AUDIT_REPO_ROOT was %s (resolved %s).\n' "$REPO_ROOT" "$got"
+        printf 'Canonical live checkout is %s.\n\n' "$want"
+        printf 'Auditing the worktree parent files false MANIFEST DIFFs because live units resolve into the deploy-clone (fleet-ops#367 / #372). The harness retargeted this run.\n\n'
+        printf '%s\n' "$AUDIT_NONCANON_MARKER"
+    } >"$body_file"
+    if gh issue create -R "$REPO" \
+        --title "Blind audit targeted non-canonical fleet-ops checkout" \
+        --body-file "$body_file" >/dev/null 2>&1; then
+        log "filed: Blind audit targeted non-canonical fleet-ops checkout"
+    else
+        log "WARN: gh issue create failed for $AUDIT_NONCANON_MARKER"
+    fi
+    rm -f "$body_file"
+}
+
+# fleet-ops#367: if the auditor is pointed at products/fleet-ops or the
+# worktree parent, retarget to the canonical deploy-clone and auto-file.
+# CI worktrees and explicit AUDIT_REPO_ROOT overlays are left alone.
+retarget_stale_fleet_ops_audit_root() {
+    case "$REPO" in
+        Nishfleet/fleet-ops) ;;
+        *) return 0 ;;
+    esac
+    [ "${AUDIT_ALLOW_NONCANONICAL:-0}" = "1" ] && return 0
+
+    local got want stale_products stale_parent hit
+    got="$(resolve_path "$REPO_ROOT")"
+    want="$(resolve_path "$CANON")"
+    stale_products="$(resolve_path "$WS_ROOT/products/fleet-ops")"
+    stale_parent="$(resolve_path "$WS_ROOT/tooling/fleet-ops")"
+    [ "$got" = "$want" ] && return 0
+
+    hit=0
+    if [ "$got" = "$stale_products" ] || [ "$got" = "$stale_parent" ]; then
+        hit=1
+    fi
+    case "$REPO_ROOT" in
+        "$WS_ROOT/products/fleet-ops"|"$WS_ROOT/tooling/fleet-ops") hit=1 ;;
+    esac
+    [ "$hit" = "1" ] || return 0
+
+    log "AUDIT-NONCANONICAL: $REPO_ROOT resolved to $got; retargeting to $want (fleet-ops#367)"
+    auto_file_audit_noncanonical "$got" "$want"
+    REPO_ROOT="$want"
+}
+
+retarget_stale_fleet_ops_audit_root
+
+DELIBERATE_STATES="${AUDIT_DELIBERATE_STATES:-$REPO_ROOT/docs/deliberate-states.md}"
+[ -f "$DELIBERATE_STATES" ] || DELIBERATE_STATES="$repo_fallback/docs/deliberate-states.md"
 
 # --- stamp in plan file (in-place, only the matching line) -----------------
 update_plan_stamp() {
