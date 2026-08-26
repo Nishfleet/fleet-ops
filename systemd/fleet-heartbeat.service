@@ -18,7 +18,10 @@ Description=Fleet orchestrator heartbeat (durable, session-independent)
 #     the page; no auto-retry, no fallback, no --collect).
 #
 # No polling loops inside the script; one pass per timer fire.
-OnFailure=fleet-heartbeat-failed-notify.service
+# fleet-ops#428: direct Telegram paging removed. A failed heartbeat falls
+# through to the global unit-escalation drop-in (STOP-REASON -> senior
+# auditor). Nish is only reached for Nish-reserved boundary items via
+# nish-boundary-notify.
 
 [Service]
 Type=oneshot

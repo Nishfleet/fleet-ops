@@ -183,7 +183,7 @@ log "seat selected: $provider/$model"
 # --- build context ---------------------------------------------------------
 # Include a concise snapshot so the reviewer does not have to re-discover paths.
 repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort | head -200)
-systemctl_failed=$(systemctl --user --state=failed --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' | head -50 || true)
+systemctl_failed=$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' | head -50 || true)
 systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' | head -50 || true)
 open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels -L 50 2>/dev/null || echo '[]')
 closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt -L 100 2>/dev/null || echo '[]')

@@ -25,7 +25,6 @@ triage="$scratch/triage.md"
 : >"$triage"
 
 # --- fake curl: records URL, optional fail --------------------------------
-curl_rc=0
 cat >"$fake/curl" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CURL_LOG"
@@ -59,6 +58,11 @@ cat >"$fake/systemctl" <<'FAKE'
 #!/usr/bin/env bash
 shift  # --user
 cmd="$1"; shift || true
+# The real command may be 'list-units --state=failed --no-legend --plain' or
+# the shorthand '--state=failed --no-legend --plain'.
+if [ "$cmd" = "list-units" ]; then
+  cmd="$1"; shift || true
+fi
 case "$cmd" in
   --state=failed)
     if [[ -s "$FAILED_FILE" ]]; then
@@ -132,8 +136,10 @@ ok "dead-man: ping failure does not fail the tick"
 export CURL_RC=0
 
 # ============================================================================
-# 2. Failed units: repair first, page only if still failed
+# 2. Failed units: repair first, triage if still failed, never telegram
 # ============================================================================
+# fleet-ops#428: unit failures are surfaced in triage and picked up by tier 2 /
+# the unit-escalation drop-in. They never send a Telegram page directly.
 : >"$HERMES_LOG"; : >"$SYSTEMCTL_LOG"; : >"$triage"
 : >"$FAILED_FILE"
 export REPAIR_OK=0
@@ -159,16 +165,33 @@ printf 'dummy-fail.service\n' >"$FAILED_FILE"
 export REPAIR_OK=0
 run_wm process-failed
 grep -q 'reset-failed dummy-fail.service' "$SYSTEMCTL_LOG" \
-  || fail "must attempt repair before paging: $(cat "$SYSTEMCTL_LOG")"
+  || fail "must attempt repair before surfacing: $(cat "$SYSTEMCTL_LOG")"
 grep -q 'start dummy-fail.service' "$SYSTEMCTL_LOG" \
   || fail "must start as the repair attempt: $(cat "$SYSTEMCTL_LOG")"
-grep -q "send -t telegram --urgent" "$HERMES_LOG" \
-  || fail "must hermes send --urgent after failed repair: $(cat "$HERMES_LOG")"
-grep -q "dummy-fail.service" "$HERMES_LOG" \
-  || fail "telegram must name the unit: $(cat "$HERMES_LOG")"
+[[ ! -s "$HERMES_LOG" ]] || fail "no telegram after failed repair: $(cat "$HERMES_LOG")"
 grep -q "UNIT-FAILED" "$triage" || fail "triage missing UNIT-FAILED: $(cat "$triage")"
 grep -q "dummy-fail.service" "$triage" || fail "triage must name the unit"
-ok "failed-units: still failed after repair -> triage + telegram --urgent"
+ok "failed-units: still failed after repair -> triage only, no telegram"
+
+# fleet-ops#428: systemd may prefix failed units with a bullet glyph in
+# list-units output. The watchman must pass --plain so awk '{print $1}' does
+# not capture the bullet as the unit name.
+: >"$HERMES_LOG"; : >"$triage"
+cat >"$fake/systemctl-bullet" <<'FAKE'
+#!/usr/bin/env bash
+# If --plain is present, emit the unit name; otherwise emit the bullet glyph.
+if printf '%s\n' "$*" | grep -q -- '--plain'; then
+  printf 'dummy-bullet.service loaded failed failed\tfake\n'
+else
+  printf '● dummy-bullet.service loaded failed failed\tfake\n'
+fi
+FAKE
+chmod +x "$fake/systemctl-bullet"
+out=$(SYSTEMCTL="$fake/systemctl-bullet" bash -c "source '$lib'; heartbeat_list_failed_units")
+[[ -n "$out" ]] || fail "heartbeat_list_failed_units must return output"
+! printf '%s' "$out" | grep -q '^●' || fail "bullet glyph must not be treated as a unit name"
+printf '%s' "$out" | grep -q 'dummy-bullet.service' || fail "must still surface the real unit"
+ok "failed-units: --plain suppresses bullet glyph"
 
 # Heartbeat's own unit is skipped (would recurse / double-page).
 : >"$HERMES_LOG"; : >"$SYSTEMCTL_LOG"; : >"$triage"

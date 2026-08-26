@@ -22,7 +22,7 @@
 #   4. Recover/log failed fleet worker/repair/cleanup units; attempt a plain
 #      reset+start for transient lane faults on supply/repair units, and
 #      escalate loudly after N attempts so a unit never ends failed quietly.
-#      Then page remaining failed units (triage + hermes --urgent, fleet-ops#76).
+#      Then surface remaining failed units in triage (no Telegram, #428).
 #      Skip fleet-heartbeat itself.
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
@@ -42,7 +42,7 @@
 #      tick and fails LOUD on the second consecutive one. Also emits one
 #      THROUGHPUT line per tick (merged fleet-worker PRs since last tick)
 #      into the triage log. The helper's non-zero exit propagates here so
-#      fleet-heartbeat.service lands in --state=failed -> page + Telegram.
+#      fleet-heartbeat.service lands in --state=failed -> unit-escalation.
 #   9. Low-water-mark scouting (fleet-ops#146). Delegates to
 #      bin/fleet-heartbeat-low-water-mark: for each enrolled repo, when
 #      ready < lane ceiling (seat_max_concurrent) and no scout is running
@@ -650,7 +650,7 @@ escd=0
 current_failed_units=""
 log "4. failed-units pass starting"
 
-mapfile -t failed_units < <(systemctl --user --state=failed --no-legend 2>/dev/null \
+mapfile -t failed_units < <(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null \
     | awk '{print $1}' \
     | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p)' \
     || true)
@@ -776,10 +776,12 @@ shopt -u nullglob
 
 log "4. failed-units pass complete: seen=$seen repaired=$repaired requeued=$requeued still_failed=$still_failed exhausted=$exhausted escd=$escd"
 
-# fleet-ops#76: after the recover/observe pass, page what is still failed
-# so leftover units reach Telegram. Repair policy stays in block 4 (do not
-# restart observe-class workers here — that races OnFailure reap). Skip
-# fleet-heartbeat itself (watchman list already does).
+# fleet-ops#76/#428: after the recover/observe pass, surface remaining
+# failed units in triage. They do NOT reach Telegram directly; the global
+# unit-escalation drop-in and tier 2 dispatch repair. Nish is only paged
+# for Nish-reserved boundary items via nish-boundary-notify. Repair policy
+# stays in block 4 (do not restart observe-class workers here — that races
+# OnFailure reap). Skip fleet-heartbeat itself (watchman list already does).
 page_n=0
 page_list=""
 while IFS= read -r u; do
@@ -793,9 +795,9 @@ while IFS= read -r u; do
 done < <(heartbeat_list_failed_units)
 if [ "$page_n" -gt 0 ]; then
     heartbeat_page_units "$page_n" "$page_list" || true
-    log "4. failed-units page: n=$page_n"
+    log "4. failed-units triage: n=$page_n"
 else
-    log "4. failed-units page: none remaining"
+    log "4. failed-units triage: none remaining"
 fi
 
 # ============================================================================
@@ -951,7 +953,7 @@ fi
 # claimed work vs live pi-issue workers; on a wedge (work>0, running==0) it
 # repairs on the first tick and fails LOUD on the second consecutive one. It
 # also emits a per-tick THROUGHPUT line. A non-zero exit here propagates so
-# fleet-heartbeat.service lands in --state=failed (page + Telegram) — that is
+# fleet-heartbeat.service lands in --state=failed -> unit-escalation; that is
 # the deliberate fail-loud signal, not an error to swallow.
 UNDERSAT_BIN="${FLEET_HEARTBEAT_UNDERSAT:-/home/nish/.local/bin/fleet-heartbeat-undersaturation}"
 undersat_rc=0
@@ -1070,8 +1072,8 @@ fi
 # PR whose checks are red AND whose pi-issue unit has no live worker for >1
 # tick, it dispatches one repair worker onto the existing claim branch
 # (loop-to-green per #80), bounded RED_PR_MAX_ATTEMPTS (default 2), then
-# fails loud into the paging path (#76/#86). A non-zero exit propagates so
-# fleet-heartbeat.service lands in --state=failed -> page.
+# fails loud into the unit-escalation path (#76/#86/#428). A non-zero exit
+# propagates so fleet-heartbeat.service lands in --state=failed.
 REDPR_BIN="${FLEET_HEARTBEAT_REDPR:-/home/nish/.local/bin/fleet-heartbeat-red-pr-repair}"
 redpr_rc=0
 if [ -x "$REDPR_BIN" ]; then
@@ -1177,8 +1179,8 @@ fi
 # ============================================================================
 log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
-# red-pr-repair, or a heartbeat canary may fail loud; all route to
-# the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
+# red-pr-repair, or a heartbeat canary may fail loud; all route to the same
+# escalation (fleet-heartbeat.service -> --state=failed -> unit-escalation).
 if [ "$deploy_rc" -ne 0 ]; then
     exit "$deploy_rc"
 fi
