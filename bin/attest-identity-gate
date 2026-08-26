@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# attest-identity-gate — identity-separation check for fleet-ops#413.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes.
+# Same identity implementing and attesting is REJECT (exit 1).
+# A worker bot attestor is always REJECT. Disjoint identities PASS.
+#
+# Usage:
+#   attest-identity-gate [--input bundle.json]
+#   attest-identity-gate < bundle.json
+#
+# The implementation lives in lib/attest-identity-gate.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${ATTEST_IDENTITY_GATE_LIB:-$here/../lib/pi-packet/attest-identity-gate.py}"
+[ -f "$lib" ] || lib="$here/../lib/attest-identity-gate.py"
+[ -f "$lib" ] || { echo "attest-identity-gate: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

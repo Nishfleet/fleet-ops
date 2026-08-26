@@ -39,16 +39,14 @@
 #   5. P14 worker credential split: if $WORKER_APP_CREDS_FILE exists
 #      (default ~/.config/fleet-worker/nishfleet-worker.env), mint a fresh
 #      installation token via the nishfleet-worker GitHub App and export
-#      GH_TOKEN for the child pi process. The App's permissions are
+#      it for the child pi process. The App's permissions are
 #      Contents/Pull requests/Issues write + Metadata read — workers
 #      physically cannot push .github/workflows/** or touch protection.
-#      If the creds file is absent OR worker-token mints fails, the script
-#      FALLS THROUGH to the existing gh auth — failure of the new path
-#      cannot break the old one. This is the deterministic counterpart
-#      to the worker-credential-split.sh prerequisite: that script only
-#      captures a fine-grained PAT; this PR replaces it with a GitHub App
-#      identity that is repeatable and fully mechanical after Nish's first
-#      manifest click.
+#      If the creds file is absent, the script falls through to existing
+#      gh auth (pre-P14 behaviour; the human token stays on disk until a
+#      dedicated retirement PR). If the creds file EXISTS and mint fails,
+#      the script SCREAMS (exit 1, DEAD APP IDENTITY) — a dead App must
+#      not silently impersonate the human account (fleet-ops#413).
 #      The marker is byte-compatible with SeatLedgerEntry (seat-health.ts);
 #      pick_seat honours it via the existing usable_at check. This is the
 #      deterministic counterpart to seat-health.ts's response-time hooks:
@@ -163,12 +161,10 @@ trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
 
 seat_log "pi-issue-run: $inst running on $np/$nm (weight=$weight, tried: $(wc -l < "$tried_file") seat(s))"
 
-# --- P14: replace GH_TOKEN with a short-lived installation token ------------
-# Fail-closed by design: if the creds file is absent OR worker-token cannot
-# mint (network, key, app not installed), we leave the inherited GH_TOKEN
-# unset and the child sees the existing gh auth via ~/.config/gh. That is
-# exactly the pre-PR behaviour, so this code path can never make the fleet
-# worse than today.
+# --- P14: mint a short-lived nishfleet-worker installation token ------------
+# Creds absent → fall through to existing gh auth (human token stays until
+# its own retirement PR). Creds present and mint fails → scream, do not
+# impersonate the human account (fleet-ops#413).
 WORKER_CREDS_FILE="${WORKER_APP_CREDS_FILE:-$HOME/.config/fleet-worker/nishfleet-worker.env}"
 if [[ -f "$WORKER_CREDS_FILE" ]]; then
   WORKER_TOKEN_BIN="${WORKER_TOKEN_BIN:-$HOME/.local/bin/worker-token}"
@@ -176,14 +172,18 @@ if [[ -f "$WORKER_CREDS_FILE" ]]; then
     if worker_tok_out="$("$WORKER_TOKEN_BIN" --print 2>/tmp/pi-issue-run-worker-token.err)"; then
       # shellcheck disable=SC2162
       eval "$worker_tok_out"
-      seat_log "pi-issue-run: $inst GH_TOKEN rotated to nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
+      seat_log "pi-issue-run: $inst rotated to nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
       worker_tok_out=""
     else
-      seat_log "pi-issue-run: $inst worker-token mint failed (exit $?); falling through to existing gh auth"
+      mint_rc=$?
+      seat_log "pi-issue-run: $inst DEAD APP IDENTITY — worker-token mint failed (exit $mint_rc); refusing inherited gh auth"
       seat_log "pi-issue-run: $inst worker-token stderr: $(tr '\n' ' ' </tmp/pi-issue-run-worker-token.err 2>/dev/null)"
+      rm -f /tmp/pi-issue-run-worker-token.err
+      exit 1
     fi
   else
-    seat_log "pi-issue-run: $inst $WORKER_TOKEN_BIN not found; falling through to existing gh auth"
+    seat_log "pi-issue-run: $inst DEAD APP IDENTITY — $WORKER_TOKEN_BIN not found; refusing inherited gh auth"
+    exit 1
   fi
   rm -f /tmp/pi-issue-run-worker-token.err
 else

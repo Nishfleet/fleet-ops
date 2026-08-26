@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# worker-app-canary — freshness check for the nishfleet-worker App identity
+# (fleet-ops#413).
+#
+# Wraps bin/worker-token --print. That binary already mints; this wrapper
+# is the heartbeat-facing scream: a dead App must not silently fall through
+# to the human gh auth. --degrade-probe on worker-token only checks the
+# file parses — the issue requires a mint. Cannot add --canary to
+# worker-token in this PR (the file is secrets-guarded). No new systemd
+# unit: heartbeat tier1 calls this every tick.
+#
+# What it proves:
+#   1. The creds file exists.
+#   2. The file sources and carries APP_ID + private key.
+#   3. worker-token --print mints (stdout is an export line with a long value).
+#
+# The minted value is NEVER logged. Success prints only a redacted length.
+#
+# Environment seams (tests):
+#   WORKER_APP_CREDS_FILE
+#   WORKER_TOKEN_BIN
+#   WORKER_APP_CANARY_SKIP_MINT=1  parse-only (offline)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+
+creds="${WORKER_APP_CREDS_FILE:-$HOME/.config/fleet-worker/nishfleet-worker.env}"
+token_bin="${WORKER_TOKEN_BIN:-$HOME/.local/bin/worker-token}"
+
+scream() {
+  echo "worker-app-canary: DEAD APP IDENTITY — $*" >&2
+  exit 1
+}
+
+if [[ ! -f "$creds" ]]; then
+  scream "creds file missing at $creds (refusing inherited gh auth)"
+fi
+
+set +e
+parse_out="$(
+  set -euo pipefail
+  # shellcheck disable=SC1090
+  . "$creds"
+  [[ -n "${NISHFLEET_WORKER_APP_ID:-}" ]] || exit 11
+  [[ -n "${NISHFLEET_WORKER_PRIVATE_KEY:-}" ]] || exit 12
+  printf 'ok\n'
+)"
+parse_rc=$?
+set -e
+case "$parse_rc" in
+  11) scream "APP_ID missing in $creds" ;;
+  12) scream "private key missing in $creds" ;;
+esac
+if [[ "$parse_rc" -ne 0 || "$parse_out" != "ok" ]]; then
+  scream "creds file at $creds failed to parse (rc=$parse_rc)"
+fi
+
+echo "worker-app-canary: creds exist and parse at $creds" >&2
+
+if [[ "${WORKER_APP_CANARY_SKIP_MINT:-}" == "1" ]]; then
+  echo "worker-app-canary: SKIP mint (WORKER_APP_CANARY_SKIP_MINT=1)" >&2
+  exit 0
+fi
+
+if [[ ! -x "$token_bin" ]]; then
+  scream "worker-token missing or not executable at $token_bin"
+fi
+
+mint_err="$(mktemp -t worker-app-canary.err.XXXXXX)"
+trap 'rm -f "$mint_err"' EXIT INT TERM
+set +e
+mint_out="$("$token_bin" --print 2>"$mint_err")"
+mint_rc=$?
+set -e
+if [[ "$mint_rc" -ne 0 ]]; then
+  err_one_line="$(tr '\n' ' ' <"$mint_err" | tr -d '\r' | tail -c 200)"
+  scream "worker-token mint failed (rc=$mint_rc): $err_one_line"
+fi
+# worker-token --print emits one `export NAME=value` line. Match the shape
+# without repeating the name in this file.
+if [[ "$mint_out" != export\ *=* ]]; then
+  scream "worker-token stdout was not an export assignment line"
+fi
+minted="${mint_out#*=}"
+minted="${minted//$'\n'/}"
+if [[ ${#minted} -lt 20 ]]; then
+  scream "minted value too short (${#minted} chars)"
+fi
+echo "worker-app-canary: minted (redacted, ${#minted}-char, ttl<=1h)" >&2
+unset mint_out minted
+exit 0
