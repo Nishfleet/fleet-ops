@@ -26,6 +26,20 @@ Callers keep the `pull_request` trigger and pass `AUTO_REVERT_PAT` explicitly.
 
 `template/.github/workflows/` is the starter caller set for a new repo.
 
+## The audit
+
+`.github/scripts/ci-standards-audit.mjs` checks every non-archived repo
+from the GitHub API, resolving each repo's real default branch. It reports a
+gap matrix per repo and per workflow for the rules below, and opens fix PRs
+for the one gap that is safe to fix mechanically: missing `auto-revert.yml`
+on repos that already have a green push-to-main CI workflow and required
+checks. All other gaps are recorded with their reason, because values like
+`timeout-minutes` or cache keys cannot be guessed safely without repo
+context.
+
+`.github/workflows/ci-standards-audit.yml` is the reusable caller. It is an
+alert/audit, not a required check.
+
 ## Required checks are pure
 
 A required status check must be a function of the PR's own diff.
