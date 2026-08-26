@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# fleet-stale-auto-revert-sweep — close auto-revert PRs whose reverted
+# commit is no longer main HEAD (fleet-ops#349).
+#
+# Heartbeat's queue pass arms auto-merge on green revert/ heads. Auto-revert
+# opens those PRs only when main still IS the red commit (freshness guard).
+# If main then moves, the PR stays OPEN and MERGEABLE. Merging it restores
+# the wrong state — live case: #246 would have stripped blind-audit CI
+# after #244/#324/#346 had already landed on main.
+#
+# Named reason this is a sweep, not an event: the GitHub App has no
+# webhooks, and auto-revert.yml only runs on the next red CI. Heartbeat's
+# existing 30-minute timer is the observer; this is not a new schedule.
+# It MUST run before the queue pass so a stale revert cannot be armed.
+#
+# Environment (tests override all of these):
+#   FLEET_STALE_REVERT_REPOS       newline-separated owner/name list
+#   FLEET_STALE_REVERT_HANDS_OFF   newline-separated owner/name list
+#   FLEET_STALE_REVERT_INTAKE_JSON default repo list (intake-repos.json)
+#   FLEET_STALE_REVERT_LOCKDIR     flock directory
+#   FLEET_STALE_REVERT_DRY_RUN     if 1, print actions and mutate nothing
+#
+# Modes:
+#   --decide HEAD_REF TITLE MAIN_SHA   print stale|fresh|ignore (no network)
+#   (default)                          sweep listed repos
+#
+# Exit 0 on a clean sweep, overlapping no-op, or dry-run. Non-zero only
+# on missing jq/gh or a fatal usage error.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+decide() {
+    local head="$1" title="$2" main_sha="$3"
+    local short main_lc short_lc
+    case "$head" in
+        revert/*) ;;
+        *) printf '%s\n' "ignore"; return 0 ;;
+    esac
+    case "$title" in
+        "revert: auto-restore green main"*) ;;
+        *) printf '%s\n' "ignore"; return 0 ;;
+    esac
+    short="${head#revert/}"
+    if [ -z "$short" ] || [ -z "$main_sha" ]; then
+        printf '%s\n' "ignore"
+        return 0
+    fi
+    main_lc=$(printf '%s' "$main_sha" | tr 'A-F' 'a-f')
+    short_lc=$(printf '%s' "$short" | tr 'A-F' 'a-f')
+    case "$main_lc" in
+        "$short_lc"*) printf '%s\n' "fresh" ;;
+        *)            printf '%s\n' "stale" ;;
+    esac
+}
+
+if [ "${1:-}" = "--decide" ]; then
+    shift
+    if [ "$#" -ne 3 ]; then
+        echo "fleet-stale-auto-revert-sweep --decide needs HEAD_REF TITLE MAIN_SHA" >&2
+        exit 2
+    fi
+    decide "$1" "$2" "$3"
+    exit 0
+fi
+
+INTAKE_JSON="${FLEET_STALE_REVERT_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+LOCKDIR="${FLEET_STALE_REVERT_LOCKDIR:-${XDG_RUNTIME_DIR}/stale-auto-revert-sweep}"
+DRY="${FLEET_STALE_REVERT_DRY_RUN:-0}"
+
+log() {
+    printf '[%s] [fleet-stale-auto-revert-sweep] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+is_hands_off() {
+    local r="$1" ho
+    while IFS= read -r ho; do
+        [ -z "$ho" ] && continue
+        [ "$ho" = "$r" ] && return 0
+    done <<< "${FLEET_STALE_REVERT_HANDS_OFF:-}"
+    return 1
+}
+
+mkdir -p "$LOCKDIR"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
+
+repos=""
+if [ -n "${FLEET_STALE_REVERT_REPOS:-}" ]; then
+    repos="$FLEET_STALE_REVERT_REPOS"
+else
+    [ -f "$INTAKE_JSON" ] || { log "FATAL: intake file missing: $INTAKE_JSON"; exit 2; }
+    repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+    case "$repos" in
+        *Nishfleet/fleet-ops*) ;;
+        *) repos=$(printf '%s\nNishfleet/fleet-ops\n' "$repos") ;;
+    esac
+fi
+
+closed=0
+skipped=0
+failed=0
+
+close_stale() {
+    local repo="$1" num="$2" head="$3" main_sha="$4"
+    local body
+    body="Superseded: main has moved past the reverted commit (\`${head#revert/}\`; main HEAD \`${main_sha:0:12}\`). Auto-revert's freshness guard would halt rather than restore the wrong state. Do not merge. (fleet-ops#349)"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: draft + close ($head)"
+        return 0
+    fi
+    gh pr ready "$num" -R "$repo" --undo >/dev/null 2>&1 || true
+    if ! gh pr close "$num" -R "$repo" --comment "$body" >/dev/null; then
+        log "  $repo#$num: close FAILED — retry next tick"
+        return 1
+    fi
+    return 0
+}
+
+log "sweep starting"
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    if is_hands_off "$repo"; then
+        log "repo $repo: HANDS-OFF, skip"
+        continue
+    fi
+    log "repo $repo"
+
+    if ! list_json=$(gh pr list -R "$repo" --state open \
+        --json number,title,headRefName,isDraft --limit 100 2>/dev/null); then
+        log "  $repo: gh pr list FAILED — skip"
+        continue
+    fi
+
+    if ! main_sha=$(gh api "repos/${repo}/commits/main" --jq .sha 2>/dev/null); then
+        log "  $repo: gh api main SHA FAILED — skip"
+        continue
+    fi
+    main_sha=$(printf '%s' "$main_sha" | tr -d '[:space:]')
+
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        head=$(printf '%s' "$row" | jq -r '.headRefName // ""')
+        verdict=$(decide "$head" "$title" "$main_sha")
+        case "$verdict" in
+            stale)
+                log "  $repo#$num: STALE $head (main ${main_sha:0:12}) — draft + close"
+                if close_stale "$repo" "$num" "$head" "$main_sha"; then
+                    closed=$((closed + 1))
+                else
+                    failed=$((failed + 1))
+                fi
+                ;;
+            *)
+                skipped=$((skipped + 1))
+                ;;
+        esac
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+done <<< "$repos"
+
+log "sweep done: closed=$closed skipped=$skipped failed=$failed"
+printf 'stale-auto-revert-sweep closed=%s skipped=%s failed=%s\n' \
+    "$closed" "$skipped" "$failed"
+exit 0
