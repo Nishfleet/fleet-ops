@@ -215,8 +215,13 @@ ok "MANIFEST entries present for runner + service + timer"
 
 # --- systemd-analyze verify on the unit files -------------------------------
 if command -v systemd-analyze >/dev/null 2>&1; then
-  systemd-analyze verify --man=no "$svc" "$tmr" >/dev/null 2>&1 \
-    || fail "systemd-analyze verify failed for agent-cron units"
+  # Capture stderr (where systemd-analyze writes diagnostics) so a CI-only
+  # verify failure is diagnosable instead of a bare "failed" with stderr
+  # discarded. stdout is empty for verify; redirect both into the capture.
+  if ! verify_out=$(systemd-analyze verify --man=no "$svc" "$tmr" 2>&1); then
+    fail "systemd-analyze verify failed for agent-cron units:
+$verify_out"
+  fi
   ok "systemd-analyze verify accepts agent-cron units"
 else
   echo "SKIP: systemd-analyze not on PATH"
