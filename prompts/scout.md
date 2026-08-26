@@ -9,6 +9,7 @@ Hard rules:
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
+- **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
 
 ## Capacity gate (already enforced by systemd, but respect it)
 
@@ -33,6 +34,8 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 ## Step 2 — Inspect sources (value order)
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
+
+For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, and recent merged PRs. Candidates for `0509` must be grounded in one of those items; if a candidate is purely code-shaped and not research-shaped, drop it.
 
 ### A. Live product signals (FIRST — spend most effort here)
 
