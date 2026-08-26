@@ -12,8 +12,10 @@ a failed run.
 one is needed, write a one-line `[REQUEST]` entry to the triage file and exit.
 Do not run `systemctl --user enable` on anything new.
 
-**Never merge or push on a held/hands-off repo.** The hands-off list lives in
-`bin/fleet-heartbeat-tier1` (config/fleet-repos.json). Respect it.
+**Never merge or push on a held/hands-off repo.** Enrolment is
+`config/intake-repos.json` `repos[]`. The hands-off list is the `hands_off`
+key in the heartbeat state file (an operator hatch, not an enrolment list).
+Respect it.
 
 ---
 
@@ -191,11 +193,10 @@ failed branch delete prevent it:**
 Do NOT release a claim whose worker unit is genuinely live, and do NOT release
 one whose `claim/issue-<N>` PR is open — that is work in flight.
 
-Fleet repos (always check, in order): `Nishfleet/fleet-ops`, `Nishfleet/0509`,
-`Nishfleet/siterep-public`, `Nishfleet/inish-site`, `Nishfleet/seo-fix-kit`,
-`Nishfleet/TinyStudio.io`, `Nishfleet/tinystudio-in`. If a repo is on the
-hands-off list (`config/fleet-repos.json`), skip queue/claim mutations but
-still log if anything looks wrong.
+Fleet repos: every `repos[].name` in `config/intake-repos.json`, written as
+`Nishfleet/<name>`. Do not use a remembered list. Deferred and excluded
+repos are out. If a repo is in `hands_off` on the heartbeat state file,
+skip queue/claim mutations but still log if anything looks wrong.
 
 > `Nishfleet/fleet-ops` was MISSING from this list until 2026-08-26, so the
 > control repo — where the fleet's own repair work is queued — was never
