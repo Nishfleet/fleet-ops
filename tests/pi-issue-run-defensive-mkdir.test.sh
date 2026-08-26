@@ -7,10 +7,10 @@
 # tried-seats append. This test proves the inline mkdir is wired up and
 # that a mid-run wipe does not strand the worker in crash-loop.
 #
-# We don't run the full pi-issue-run script (it depends on `pi` and
-# systemd state). Instead we extract and execute the relevant block in a
-# scratch HOME and stub `pi` so the script exits cleanly while we test
-# the mkdir behavior.
+# Runs fully offline (fleet-ops#142): scratch PI_PACKET_STATE / PI_ISSUES_DIR,
+# PI_SEAT_LIB_CHECK_SYSTEMD=0, and a poisoned systemctl stub that would fill
+# the test seat if listing were still consulted. Stub `pi` so the script
+# exits cleanly while we test the mkdir behavior.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +40,9 @@ export PI_PACKET_STATE="$STATE_DIR"
 export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
 export PI_ISSUES_DIR="$ISSUES_DIR"
 export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
+export XDG_RUNTIME_DIR="$scratch/xdg"
+mkdir -p "$XDG_RUNTIME_DIR"
 
 stub_bin="$scratch/stub-bin"
 mkdir -p "$stub_bin"
@@ -74,11 +77,20 @@ exit 1
 STUB
 chmod +x "$stub_bin/worker-token"
 
-# Stub `systemctl` so this test does not depend on real active units or a
-# real seat-health ledger. Empty responses make the active-seat counting
-# functions return 0, giving `pick_seat` a clean cap count.
+# Poisoned systemctl: if pick_seat still lists live units, this reports the
+# test seat as fully occupied (cap=1 below) and the run fails with an empty
+# pick. That is the fleet-ops#142 class, caught here instead of on a busy host.
 cat >"$stub_bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
+args=" $* "
+if [[ "$args" == *" list-units "* ]]; then
+  printf 'pi-issue@live-bleed.service loaded activating start poison\n'
+  exit 0
+fi
+if [[ "$args" == *" show "* ]] && [[ "$args" == *"ExecStart"* ]]; then
+  printf '/bin/sh -c --provider devin --model swe-1-7\n'
+  exit 0
+fi
 exit 0
 STUB
 chmod +x "$stub_bin/systemctl"
@@ -95,9 +107,9 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
   "free_providers_in_order": [],
   "providers": {
     "devin": {
-      "cap": 4,
+      "cap": 1,
       "class": "subscription",
-      "models": { "swe-1-7": 4 }
+      "models": { "swe-1-7": 1 }
     }
   }
 }
@@ -119,6 +131,20 @@ JSON
 echo 'noop' > "$ISSUES_DIR/pi-issue-mkdir-test.in"
 
 ATTEMPTS_PATH="$STATE_DIR/attempts"
+
+# --- Lock: the poison stub must actually fill the cap when listing is on ---
+# Without this, a broken stub would make the #142 isolation look green
+# while still depending on the host's live unit table.
+bleed=$(
+  exec 2>"$scratch/lock.err"
+  export PI_SEAT_LIB_CHECK_SYSTEMD=1
+  # shellcheck disable=SC1091
+  source "$repo_root/lib/seat-lib.sh"
+  pick_seat "" "" 0 "" || true
+)
+[[ -z "$bleed" ]] \
+  || fail "poison stub did not fill the cap under PI_SEAT_LIB_CHECK_SYSTEMD=1 (got '$bleed'); the #142 lock is inert"
+ok "poison stub fills cap when systemd listing is on (fleet-ops#142 lock is live)"
 
 # --- Case 1: normal run — tries file is written, attempts dir survives -----
 set +e

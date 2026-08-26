@@ -531,7 +531,11 @@ _parse_exec_provider_model() {
 _seat_list_unit() {
     # Echo the unit names (first whitespace-delimited token per line) of
     # active or activating pi-* worker units. Skips lines that don't look
-    # like a unit.
+    # like a unit. Offline tests set PI_SEAT_LIB_CHECK_SYSTEMD=0 so pick_seat
+    # cannot bleed live unit counts into a scratch cap map (fleet-ops#142).
+    if (( ! ${PI_SEAT_LIB_CHECK_SYSTEMD:-1} )); then
+        return 0
+    fi
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         # First whitespace-delimited token.
@@ -554,10 +558,10 @@ _seat_list_unit() {
 # the unit table is the source of truth for what is running right now.
 #
 # Gate: env-guarded so unit tests that stub a scratch HOME (no real user
-# session) keep working without a systemctl call. The installed wrapper
-# (pi-issue-run / pi-packet-run) exports PI_SEAT_LIB_CHECK_SYSTEMD=1 by
-# default; tests and callers that pre-seed the registry explicitly may
-# disable it.
+# session) keep working without a systemctl call. When 0, cap accounting
+# uses only the scratch registry: no list-units and no is-active, so a
+# host with a full live cap cannot starve pick_seat (fleet-ops#142). The
+# installed wrapper defaults to 1.
 PI_SEAT_LIB_CHECK_SYSTEMD="${PI_SEAT_LIB_CHECK_SYSTEMD:-1}"
 
 # P15: a unit in `activating` for longer than this is a wedge, not a

@@ -256,3 +256,11 @@ hyphen_hits=$(grep -R -n -E "list-units[^[:cntrl:]]*'pi-issue-\*\.service'|list-
   "$repo_root/lib" "$repo_root/bin" || true)
 [[ -z "$hyphen_hits" ]] || fail "hyphen list-units glob still in production code: $hyphen_hits"
 ok "lib/ and bin/ have no hyphen pi-issue/pi-packet list-units globs"
+
+# --- 9: PI_SEAT_LIB_CHECK_SYSTEMD=0 skips live unit listing (fleet-ops#142) ---
+# Offline tests must not bleed live caps. When the gate is off, _seat_list_unit
+# emits nothing even if the fake systemctl would report occupying units.
+PI_SEAT_LIB_CHECK_SYSTEMD=0
+listed=$(_seat_list_unit)
+[[ -z "$listed" ]] || fail "_seat_list_unit must emit nothing when PI_SEAT_LIB_CHECK_SYSTEMD=0, got: $listed"
+ok "_seat_list_unit is silent when PI_SEAT_LIB_CHECK_SYSTEMD=0"
