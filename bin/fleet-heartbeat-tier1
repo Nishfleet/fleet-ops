@@ -68,6 +68,10 @@
 #      on a measurement error. A re-derive of ram_gb_per_worker is a
 #      HUMAN action (jq over the state file + a PR); the heartbeat only
 #      makes the measurement automatic.
+#  14. Escalation coverage canary (fleet-ops#152). Two-plane invariant.
+#  15. Entitled-vs-wired canary (fleet-ops#387). Diffs entitled-seats.json
+#      against seat-caps.json: missing row, cap=0 without a dated reason,
+#      or a prepaid seat mislabeled free. LOUD + auto-files. No new timer.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -1149,11 +1153,31 @@ else
 fi
 
 # ============================================================================
+# 15. ENTITLED-VS-WIRED CANARY (fleet-ops#387)
+# ============================================================================
+# Every tick, prove every entitled seat has a seat-caps row, cap=0 rows
+# carry a dated reason, and prepaid seats are not labelled free.
+# Violations auto-file and fail the tick (same pager as block 14).
+ENTITLED_CANARY_BIN="${FLEET_ENTITLED_WIRED_CANARY:-/home/nish/.local/bin/fleet-entitled-wired-canary}"
+entitled_canary_rc=0
+if [ -x "$ENTITLED_CANARY_BIN" ]; then
+    log "15. entitled-vs-wired canary starting"
+    if "$ENTITLED_CANARY_BIN"; then
+        log "15. entitled-vs-wired canary complete"
+    else
+        entitled_canary_rc=$?
+        log "15. entitled-vs-wired canary FAILED (rc=$entitled_canary_rc) — idle entitlement is invisible capacity; unit will land in --state=failed"
+    fi
+else
+    log "15. entitled-vs-wired canary missing at $ENTITLED_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
-# red-pr-repair, or the escalation-coverage canary may fail loud; all route to
+# red-pr-repair, or a heartbeat canary may fail loud; all route to
 # the same pager (fleet-heartbeat.service -> --state=failed -> page + Telegram).
 if [ "$deploy_rc" -ne 0 ]; then
     exit "$deploy_rc"
@@ -1166,5 +1190,8 @@ if [ "$redpr_rc" -ne 0 ]; then
 fi
 if [ "$canary_rc" -ne 0 ]; then
     exit "$canary_rc"
+fi
+if [ "$entitled_canary_rc" -ne 0 ]; then
+    exit "$entitled_canary_rc"
 fi
 exit 0
