@@ -948,4 +948,7 @@ bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
 # fails validate-matrix on a pre-existing duplicate-source pair, so this
 # file is the listed CI host.
 bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed"
+# fleet-ops#515: session-close lint. Same CI constraint (worker token
+# cannot add a P14 line in .github/workflows/ci.yml).
+bash "$here/fleet-findings-queued.test.sh" || fail "fleet-findings-queued tests failed"
 

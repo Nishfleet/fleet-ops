@@ -42,6 +42,10 @@ lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 # fleet-ops#383: join helper for the rule-enforcement canary step.
 lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
+# fleet-ops#515: session-close lint for "every finding gets queued".
+# Heartbeat-tier1 block 15; fail-loud + auto-file on unqueued offers.
+lib/findings-queued.py /home/nish/.local/lib/pi-packet/findings-queued.py
+bin/fleet-findings-queued /home/nish/.local/bin/fleet-findings-queued
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
