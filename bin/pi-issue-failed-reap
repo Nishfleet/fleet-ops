@@ -86,37 +86,29 @@ branch_name="claim/issue-$issue"
 # (two overlapping `systemctl start`s of a Type=oneshot). Releasing then
 # is the split-brain in Nishfleet/fleet-ops#26: an unsanctioned worker
 # with no claim, and the next tick free to duplicate the work.
-#
-# The live-check is the shared lib/worker-live.sh helper (fleet-ops#222):
-# the reaper and the heartbeat §3 orphan sweep used to carry separate copies
-# that drifted — the reaper's got the #109 MainPID-aware fix, tier1's did
-# not, so four orphans sat frozen. Source the single helper; fall back to an
-# inline equivalent only if the lib is missing (the reaper runs on OnFailure
-# and must never hard-fail on a missing lib).
-WORKER_LIVE_LIB="${WORKER_LIVE_LIB:-/home/nish/.local/lib/pi-packet/worker-live.sh}"
-if [ -f "$WORKER_LIVE_LIB" ]; then
-    # shellcheck source=../lib/worker-live.sh source-path=SCRIPTDIR
-    source "$WORKER_LIVE_LIB"
-else
-    worker_unit_is_live() {
-        local unit="$1"
-        local active main
-        active="$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || echo "")"
-        main="$("$SYSTEMCTL" --user show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
-        case "$active" in
-            active) return 0 ;;
-            activating)
-                [[ "$main" =~ ^[1-9][0-9]*$ ]] && return 0
-                return 1
-                ;;
-        esac
-        [[ "$main" =~ ^[1-9][0-9]*$ ]] && return 0
-        return 1
-    }
-fi
-
 worker_is_live() {
-    worker_unit_is_live "pi-issue@${instance}.service"
+    local unit="pi-issue@${instance}.service"
+    local active main
+    active="$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || echo "")"
+    main="$("$SYSTEMCTL" --user show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
+    case "$active" in
+        active) return 0 ;;
+        activating)
+            # auto-restart has MainPID=0 (worker process exited, only the
+            # restart timer is pending) — NOT live. Only activating/start
+            # (MainPID>0) is a real running worker. Treating auto-restart as
+            # live was the never-say-next stuck-loop root cause
+            # (fleet-ops#109, 2026-08-26): a worker that exits non-zero
+            # thrashed forever because the reaper refused to release its
+            # claim while StartLimitIntervalSec reset hourly.
+            [[ "$main" =~ ^[1-9][0-9]*$ ]] && return 0
+            return 1
+            ;;
+    esac
+    if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
+        return 0
+    fi
+    return 1
 }
 
 if worker_is_live; then

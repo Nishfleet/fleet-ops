@@ -116,59 +116,6 @@ else
     heartbeat_page_units() { log "failed-units: page skipped (watchman lib missing)"; }
 fi
 
-# Shared worker live-check (fleet-ops#222). The §3 orphan sweep and the
-# OnFailure reaper MUST agree on what "live" means, or claims freeze: the
-# reaper's copy was fixed in #109/#125 (auto-restart + MainPID=0 is NOT
-# live) but tier1's inline copy never got the fix, so four textbook orphans
-# sat held ~1h on 2026-08-26. One helper, pinned by tests/worker-live.test.sh.
-# Try the install path first, then the repo-relative path (worktree/CI runs).
-WORKER_LIVE_LIB="${FLEET_HEARTBEAT_WORKER_LIVE:-$HOME/.local/lib/pi-packet/worker-live.sh}"
-if [ ! -f "$WORKER_LIVE_LIB" ]; then
-    _repo_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/lib/worker-live.sh"
-    [ -f "$_repo_lib" ] && WORKER_LIVE_LIB="$_repo_lib"
-fi
-if [ -f "$WORKER_LIVE_LIB" ]; then
-    # shellcheck source=../lib/worker-live.sh source-path=SCRIPTDIR
-    source "$WORKER_LIVE_LIB"
-else
-    log "WARN: worker-live lib missing — falling back to inline MainPID-aware check"
-    # shellcheck disable=SC2317
-    worker_unit_is_live() {
-        local unit="$1" active main
-        active="$(systemctl --user show -p ActiveState --value "$unit" 2>/dev/null || echo "")"
-        main="$(systemctl --user show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
-        case "$active" in
-            active) return 0 ;;
-            activating)
-                [[ "$main" =~ ^[1-9][0-9]*$ ]] && return 0
-                return 1
-                ;;
-        esac
-        [[ "$main" =~ ^[1-9][0-9]*$ ]] && return 0
-        return 1
-    }
-fi
-
-# Shared per-issue orphan release (fleet-ops#222). The §3 release action is
-# extracted into lib/orphan-release.sh so the detector drill
-# (bin/orphan-release-drill, fleet-ops#180) proves the EXACT production code
-# path instead of a re-implementation. It needs worker_unit_is_live (sourced
-# above) and the `log` helper (defined at the top of this script). If the lib
-# is missing, §3 logs a loud WARN and skips release this tick (never crashes).
-ORPHAN_RELEASE_LIB="${FLEET_HEARTBEAT_ORPHAN_RELEASE:-$HOME/.local/lib/pi-packet/orphan-release.sh}"
-if [ ! -f "$ORPHAN_RELEASE_LIB" ]; then
-    _repo_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/lib/orphan-release.sh"
-    [ -f "$_repo_lib" ] && ORPHAN_RELEASE_LIB="$_repo_lib"
-fi
-if [ -f "$ORPHAN_RELEASE_LIB" ]; then
-    # shellcheck source=../lib/orphan-release.sh source-path=SCRIPTDIR
-    source "$ORPHAN_RELEASE_LIB"
-else
-    log "WARN: orphan-release lib missing — §3 release disabled this tick (install lib/orphan-release.sh)"
-    # shellcheck disable=SC2317
-    orphan_release_for_issue() { log "3.  - orphan-release lib missing — skip"; return 1; }
-fi
-
 # --- failed-unit recovery helpers -------------------------------------------
 FAILED_UNITS_STATE_DIR="${FLEET_HEARTBEAT_FAILED_STATE_DIR:-$LOG_DIR/failed-units}"
 FAILED_UNITS_MAX_ATTEMPTS="${FLEET_HEARTBEAT_FAILED_MAX_ATTEMPTS:-3}"
@@ -537,29 +484,13 @@ log "2. queue pass complete: queued=$queued skipped=$skipped"
 # ============================================================================
 # 3. RELEASE ORPHANED CLAIMS
 # ============================================================================
-# Definition of orphaned claim (fleet-ops#222 — ALL THREE shapes release):
+# Definition of orphaned claim:
 #   - issue has label agent-in-progress
-#   - no pi-issue@<repo>-<issue> worker unit has a live process
+#   - no pi-issue@<repo>-<issue> unit is currently running
 #   - no open claim/issue-<issue> PR exists on the repo
-# The three orphan shapes this pass must release:
-#   (a) unit dead (inactive/failed) + claim branch exists + no PR
-#   (b) unit dead + branch already reaped + no PR  (today's frozen-four shape)
-#   (c) unit in auto-restart with MainPID=0 (crash-loop, process exited,
-#       only the RestartSec timer pending) + no PR
-# Shape (c) is the fleet-ops#222 root cause: tier1's probe used to treat EVERY
-# auto-restart unit as "DEGRADED, held — not orphan", so a crash-looping worker
-# with no live process held its claim forever. The shared worker_unit_is_live
-# helper (lib/worker-live.sh, the same one the OnFailure reaper uses) treats
-# auto-restart+MainPID=0 as NOT live, so §3 now releases it too.
 #
 # Action:
-#   - if the unit is still activating (auto-restart, MainPID=0): STOP it first,
-#     so the pending restart is cancelled. Without this, intake's pi-issue-start
-#     no-ops on the activating unit and CANNOT re-dispatch — the release would
-#     flip the label to agent-ready but leave the issue un-dispatchable, which
-#     is a worse strand than the one we fixed. systemd's Restart= does not fire
-#     after a deliberate `systemctl stop`, so the dead worker stays dead.
-#   - delete the claim branch (if it still exists — shape (b) already has none)
+#   - delete the claim branch
 #   - flip label: agent-in-progress -> agent-ready
 #   - comment on the issue noting the heartbeat release
 #
@@ -585,13 +516,65 @@ while IFS= read -r repo; do
         [ -z "$issue_row" ] && continue
         issue_n=$(printf '%s' "$issue_row" | jq -r '.number')
 
-        # The whole per-issue decision + release lives in
-        # orphan_release_for_issue (lib/orphan-release.sh), shared with the
-        # detector drill so the two cannot drift (fleet-ops#222). It uses the
-        # shared worker_unit_is_live (MainPID-aware) and returns 0 only when
-        # the claim was actually released (label flipped to agent-ready).
-        if orphan_release_for_issue "$repo" "$issue_n" "$short"; then
+        # Is a pi-issue worker for this claim currently doing work?
+        # fleet-ops#63: --state=running misses both activating/start
+        # (a worker that is just now launching pi — held, busy) AND
+        # activating/auto-restart (a crash-loop waiting for its next
+        # RestartSec window — held, degraded). The old check would
+        # release the claim of BOTH cases and strand the issue with no
+        # worker and no label-flip path (the worker would just come back,
+        # or the reap would fire and skip a live claim). Hold the lane in
+        # both cases; the heartbeat tier 1 §7 surfaces auto-restart units
+        # as DEGRADED so the operator and tier 2 can see the real state
+        # without mistaking it for an orphan.
+        unit="pi-issue@${short}-${issue_n}.service"
+        if systemctl --user list-units "$unit" --state=active,activating --no-legend 2>/dev/null \
+            | awk '{print $1}' | grep -qx "$unit"; then
+            sub=$(systemctl --user show "$unit" --property=SubState --value 2>/dev/null || echo unknown)
+            case "$sub" in
+                auto-restart)
+                    log "3.  - $repo#$issue_n: worker $unit DEGRADED (sub=$sub) — not orphan, lane held (heartbeat §7 will publish)"
+                    ;;
+                *)
+                    log "3.  - $repo#$issue_n: worker $unit LIVE (sub=$sub) — not orphan"
+                    ;;
+            esac
+            continue
+        fi
+        # Also check transient fable-p* that may be working on it.
+        if systemctl --user list-units --no-legend --type=service --state=running 2>/dev/null \
+            | awk '{print $1}' | grep -E "(fable-p|pi-issue)" | grep -q "${short}-${issue_n}"; then
+            log "3.  - $repo#$issue_n: transient worker active — not orphan"
+            continue
+        fi
+
+        # Open PR from claim/issue-<N>?
+        if gh pr list -R "$repo" --head "claim/issue-${issue_n}" --state open --json number 2>/dev/null \
+            | jq -e 'length > 0' >/dev/null 2>&1; then
+            log "3.  - $repo#$issue_n: open claim PR exists — not orphan (leave to queue pass)"
+            continue
+        fi
+
+        # Orphan. Release it.
+        branch="claim/issue-${issue_n}"
+        if gh api "repos/${repo}/git/refs/heads/${branch}" >/dev/null 2>&1; then
+            if gh api "repos/${repo}/git/refs/heads/${branch}" -X DELETE >/dev/null 2>&1; then
+                log "3.  - $repo#$issue_n: deleted branch $branch"
+            else
+                log "3.  - $repo#$issue_n: branch delete FAILED ($branch) — will retry next tick"
+                continue
+            fi
+        fi
+
+        if gh issue edit "$issue_n" -R "$repo" \
+            --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+            gh issue comment "$issue_n" -R "$repo" \
+                --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (no live worker, no open PR)" \
+                >/dev/null 2>&1 || true
+            log "3.  - $repo#$issue_n: RELEASED -> agent-ready"
             released=$((released+1))
+        else
+            log "3.  - $repo#$issue_n: label flip FAILED — will retry next tick"
         fi
     done <<< "$issues_json"
 done <<< "$claim_repos"
@@ -878,22 +861,20 @@ fi
 # 7. DEGRADED-LANE REPORT (fleet-ops#63)
 # ============================================================================
 # For every pi-issue-* unit in activating/auto-restart state, publish a
-# LOUD triage line. These workers do no work (the process has exited; only
-# the RestartSec timer is pending). fleet-ops#222 changed §3 so the orphan
-# sweep now RELEASES an auto-restart+MainPID=0 claim (and stops the unit)
-# instead of holding it — a crash-looping worker with no live process no
-# longer strands its issue. This pass still publishes the unit as DEGRADED
-# for operator visibility: the count shows how many workers are crash-
-# looping, which is a separate signal from "is the claim held". Without
-# this pass, every angle the fleet exposes — queue count, list-units, the
-# heartbeat's own logs — reported crash-looping units as indistinguishable
-# from a genuinely running worker. "5 issues agent-in-progress, 4 doing
-# nothing" was the live symptom.
+# LOUD triage line. These workers hold their claim branch and their
+# agent-in-progress label (the orphan sweep must NOT reap them — the
+# worker is between crashes, the StartLimitBurst path is the right
+# release trigger, not the heartbeat), but they do no work. Without this
+# pass, every angle the fleet exposes — queue count, list-units, the
+# heartbeat's own logs — reported them as indistinguishable from a
+# genuinely running worker. "5 issues agent-in-progress, 4 doing nothing"
+# was the live symptom.
 #
-# This is OBSERVABILITY, not a fix path: §3 releases the claim (and stops
-# the unit) so intake can re-dispatch; this pass surfaces the crash-loop
-# count so the operator can see the unit is sick even after its claim is
-# released. tier 2 may escalate via [LOUD] if the number crosses a threshold.
+# This is OBSERVABILITY, not a fix path: StartLimitBurst=3 / RestartSec=
+# are the source of truth on whether the unit will give up, and
+# pi-issue-failed@ (OnFailure) is the right release path. The heartbeat
+# surfaces the degraded count; tier 2 may escalate via [LOUD] if the
+# number crosses a threshold.
 degraded=0
 degraded_units=""
 log "7. degraded-lane pass starting"
