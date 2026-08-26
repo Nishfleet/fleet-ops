@@ -51,17 +51,23 @@
 #      4h timer stays as the floor; this only pulls a scout LOOK sooner.
 #      Best-effort nudge — a CONFIG error is logged + LOUD but NOT propagated
 #      (a broken refill must not stop queuing/reclaim/wedge alarm).
-#  11. Red-PR repair (fleet-ops#124). Delegates to
+#  10. Blind-audit trigger (fleet-ops#157). BONUS as of #378: start the
+#      audit when the gap-board drains. The daily timer is the primary
+#      trigger; this only fires sooner when the board is genuinely empty.
+#  11. Blind-audit cadence canary (fleet-ops#378). Reads last-blind-audit-run
+#      and LOUDs BLIND-AUDIT-CADENCE-OVERDUE when the stamp is older than
+#      30h (or missing). Pure observer — never starts the audit.
+#  12. Red-PR repair (fleet-ops#124). Delegates to
 #      bin/fleet-heartbeat-red-pr-repair: for each open claim/issue-* PR
 #      whose checks are red AND whose pi-issue unit has no live worker for
 #      >1 tick, dispatches one repair worker onto the existing claim branch
 #      (loop-to-green per #80), bounded 2 attempts per PR, then fails LOUD
 #      into the paging path (#76/#86). Same non-zero-exit -> page contract
 #      as block 8.
-#  12. Seat-health freshness (fleet-ops#76). observed_at must parse and be
+#  13. Seat-health freshness (fleet-ops#76). observed_at must parse and be
 #      under 90 minutes; stale or unparseable triggers pi-transport-check
-#      then reports. Additive end block so it does not overlap 8–11.
-#  13. RAM measurement (fleet-ops#45). Delegates to bin/ram-measure: walks
+#      then reports. Additive end block so it does not overlap 8–12.
+#  14. RAM measurement (fleet-ops#45). Delegates to bin/ram-measure: walks
 #      pi-issue@/pi-packet@ units, aggregates MemoryPeak, and writes a
 #      rolling 10-run history to ~/.local/state/ram-measurement/. Pure
 #      observability — no cap adjustment, no escalation, no tick failure
@@ -1005,12 +1011,15 @@ else
 fi
 
 # ============================================================================
-# 10. BLIND AUDIT TRIGGER (fleet-ops#157)
+# 10. BLIND AUDIT TRIGGER (fleet-ops#157, bonus as of #378)
 # ============================================================================
-# When the gap-board is drained (zero open gap-audit issues in fleet-ops) and
-# no audit is already running, start fleet-blind-audit.service and stamp the
-# plan file. The audit itself is responsible for filing gap-audit issues and
-# writing the report to agent-state. One at a time via the audit's own flock.
+# BONUS dispatch: when the gap-board is drained (zero open gap-audit issues
+# in fleet-ops) and no audit is already running, start fleet-blind-audit.service
+# and stamp the plan file. The daily calendar in fleet-blind-audit.timer is
+# the primary trigger — this only fires sooner when the board genuinely
+# drains; it never lengthens the cadence. The audit itself files gap-audit
+# issues and writes the report to agent-state. One at a time via the audit's
+# own flock.
 audit_started=0
 if [ "${FLEET_BLIND_AUDIT_DISABLE:-0}" != "1" ]; then
     log "10. blind-audit trigger starting"
@@ -1062,7 +1071,28 @@ else
 fi
 
 # ============================================================================
-# 11. RED-PR REPAIR — re-dispatch onto orphaned red fleet-worker PRs (#124)
+# 11. BLIND-AUDIT CADENCE-OVERDUE CANARY (fleet-ops#378)
+# ============================================================================
+# An audit that stops running must scream. The daily timer is the primary
+# trigger; §10 is a bonus when the gap-board drains. This block reads the
+# last-blind-audit-run stamp and LOUDs if it is older than 30h (or missing).
+# Implementation lives in lib/blind-audit-cadence.sh so tests run the same
+# function the tick runs — not a copy of the predicate.
+CADENCE_LIB="${FLEET_BLIND_AUDIT_CADENCE_LIB:-$HOME/.local/lib/pi-packet/blind-audit-cadence.sh}"
+audit_canary_status="ok"
+if [ -f "$CADENCE_LIB" ]; then
+    # shellcheck source=../lib/blind-audit-cadence.sh source-path=SCRIPTDIR
+    source "$CADENCE_LIB"
+    heartbeat_blind_audit_cadence_canary
+else
+    audit_canary_status="missing-lib"
+    loud "BLIND-AUDIT-CADENCE-OVERDUE" \
+        "cadence lib missing at $CADENCE_LIB — install.sh did not land lib/blind-audit-cadence.sh; cadence floor unverifiable"
+    log "11. blind-audit cadence canary: status=$audit_canary_status (lib missing)"
+fi
+
+# ============================================================================
+# 12. RED-PR REPAIR — re-dispatch onto orphaned red fleet-worker PRs (#124)
 # ============================================================================
 # The blind spot neither the queue pass (2) nor the orphan sweep (3) covers:
 # a worker opened a PR, exited, and CI came back red. The claim branch blocks
@@ -1077,28 +1107,28 @@ fi
 REDPR_BIN="${FLEET_HEARTBEAT_REDPR:-/home/nish/.local/bin/fleet-heartbeat-red-pr-repair}"
 redpr_rc=0
 if [ -x "$REDPR_BIN" ]; then
-    log "11. red-pr-repair pass starting"
+    log "12. red-pr-repair pass starting"
     if "$REDPR_BIN"; then
-        log "11. red-pr-repair pass complete"
+        log "12. red-pr-repair pass complete"
     else
         redpr_rc=$?
-        log "11. red-pr-repair: FAIL LOUD (rc=$redpr_rc) — a red PR exhausted its repair budget; unit will land in --state=failed"
+        log "12. red-pr-repair: FAIL LOUD (rc=$redpr_rc) — a red PR exhausted its repair budget; unit will land in --state=failed"
     fi
 else
-    log "11. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
+    log "12. red-pr-repair helper missing at $REDPR_BIN — skip (not installed)"
 fi
 
 # ============================================================================
-# 12. SEAT-HEALTH FRESHNESS (fleet-ops#76)
+# 13. SEAT-HEALTH FRESHNESS (fleet-ops#76)
 # ============================================================================
 # Standing rule: verify observed_at before trusting pi-seat-health.json.
 # Stale (>90 min) or unparseable -> trigger pi-transport-check, then report.
-log "12. seat-health freshness starting"
+log "13. seat-health freshness starting"
 heartbeat_seat_health_check
-log "12. seat-health freshness done"
+log "13. seat-health freshness done"
 
 # ============================================================================
-# 13. RAM MEASUREMENT (fleet-ops#45)
+# 14. RAM MEASUREMENT (fleet-ops#45)
 # ============================================================================
 # Mechanical re-measurement of peak RSS across fleet worker units. The
 # 0.75 in seat-caps.json's ram_gb_per_worker is the floor; a re-derive
@@ -1116,18 +1146,18 @@ log "12. seat-health freshness done"
 RAM_BIN="${FLEET_RAM_MEASURE_BIN:-/home/nish/.local/bin/ram-measure}"
 if [ -x "$RAM_BIN" ]; then
     if ram_summary="$("$RAM_BIN" 2>/dev/null)"; then
-        log "13. ram-measure: $ram_summary"
+        log "14. ram-measure: $ram_summary"
     else
         # Measurement is observability; an unexpected non-zero here is
         # logged but does NOT fail the tick.
-        log "13. ram-measure: non-zero exit (rc=$?) — state file may be stale"
+        log "14. ram-measure: non-zero exit (rc=$?) — state file may be stale"
     fi
 else
-    log "13. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
+    log "14. ram-measure helper missing at $RAM_BIN — skip (not installed; re-run ./install.sh)"
 fi
 
 # ============================================================================
-# 14. ESCALATION COVERAGE CANARY (fleet-ops#152)
+# 15. ESCALATION COVERAGE CANARY (fleet-ops#152)
 # ============================================================================
 # Every tick, prove the two-plane invariant "every failure path lands in the
 # escalation matrix" mechanically:
@@ -1143,15 +1173,15 @@ fi
 CANARY_BIN="${FLEET_ESCALATION_CANARY:-/home/nish/.local/bin/fleet-escalation-canary}"
 canary_rc=0
 if [ -x "$CANARY_BIN" ]; then
-    log "14. escalation-coverage canary starting"
+    log "15. escalation-coverage canary starting"
     if "$CANARY_BIN"; then
-        log "14. escalation-coverage canary complete"
+        log "15. escalation-coverage canary complete"
     else
         canary_rc=$?
-        log "14. escalation-coverage canary FAILED (rc=$canary_rc) — two-plane invariant violated; unit will land in --state=failed"
+        log "15. escalation-coverage canary FAILED (rc=$canary_rc) — two-plane invariant violated; unit will land in --state=failed"
     fi
 else
-    log "14. escalation-coverage canary missing at $CANARY_BIN — skip (not installed)"
+    log "15. escalation-coverage canary missing at $CANARY_BIN — skip (not installed)"
 fi
 
 # ============================================================================
@@ -1198,7 +1228,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc canary_rc=$canary_rc relabeled=$relabeled entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation,
 # red-pr-repair, or a heartbeat canary may fail loud; all route to the same
 # escalation (fleet-heartbeat.service -> --state=failed -> unit-escalation).
