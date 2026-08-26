@@ -34,7 +34,7 @@ scream() {
 }
 
 if [[ ! -f "$creds" ]]; then
-  scream "creds file missing at $creds (refusing inherited gh auth)"
+  scream "creds file missing at $creds (refusing human-gh-auth fallback)"
 fi
 
 set +e

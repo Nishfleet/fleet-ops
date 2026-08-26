@@ -149,7 +149,7 @@ systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config
 systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
 systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
-# P14: GitHub App identity for workers (replaces fine-grained PAT)
+# P14: nishfleet-worker GitHub App identity for workers
 bin/worker-token /home/nish/.local/bin/worker-token
 bin/worker-app-bootstrap /home/nish/.local/bin/worker-app-bootstrap
 bin/_worker-app-bootstrap-server.py /home/nish/.local/lib/fleet-worker/_worker-app-bootstrap-server.py

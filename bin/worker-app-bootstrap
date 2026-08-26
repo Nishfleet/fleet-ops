@@ -122,7 +122,7 @@ on_exit() {
   rc=$?
   if (( rc != 0 )); then
     # Truncate any partial write on failure so the worker-token path sees
-    # "missing creds" and falls back to existing gh auth.
+    # an incomplete creds file and screams (DEAD APP IDENTITY) on next use.
     : > "$CREDS_FILE" 2>/dev/null || true
   fi
   return "$rc"

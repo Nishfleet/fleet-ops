@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/pi-issue-run-app-identity.test.sh
 #
-# fleet-ops#413: when the App creds file exists, a mint failure must scream
-# (exit 1, no child pi). When the file is absent, fall through and run pi.
-# When mint succeeds, pi runs under the minted identity.
+# fleet-ops#413/#440: the App creds file must exist and mint. A missing file
+# or a mint failure must scream (exit 1, no child pi). When mint succeeds, pi
+# runs under the minted identity. There is no fallback to the human gh auth.
 #
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -112,7 +112,7 @@ grep -q 'DEAD APP IDENTITY' "$scratch/err1" \
 [[ ! -f "$pi_marker" ]] || fail "pi must not run after a dead App identity"
 ok "creds + mint fail screams and does not run pi"
 
-# --- 2. creds absent → fall through, pi runs --------------------------------
+# --- 2. creds absent → scream, pi must not run -----------------------------
 rm -f "$HOME/.config/fleet-worker/nishfleet-worker.env"
 rm -f "$pi_marker"
 # Fresh instance so tried-seats from case 1 does not exhaust the only seat.
@@ -121,11 +121,11 @@ set +e
 "$bin" app-id-absent >"$scratch/out2" 2>"$scratch/err2"
 rc=$?
 set -e
-[[ "$rc" -eq 0 ]] || fail "absent creds should run pi, got $rc: $(cat "$scratch/err2")"
-grep -q 'falling through to existing gh auth' "$scratch/err2" \
-  || fail "absent creds must log fall-through: $(cat "$scratch/err2")"
-[[ -f "$pi_marker" ]] || fail "pi must run when creds are absent"
-ok "absent creds falls through and runs pi"
+[[ "$rc" -ne 0 ]] || fail "absent creds must be non-zero, got 0: $(cat "$scratch/err2")"
+grep -q 'DEAD APP IDENTITY' "$scratch/err2" \
+  || fail "absent creds must scream: $(cat "$scratch/err2")"
+[[ ! -f "$pi_marker" ]] || fail "pi must not run when creds are absent"
+ok "absent creds scream and do not run pi"
 
 # --- 3. creds present + mint success → pi runs ------------------------------
 : >"$HOME/.config/fleet-worker/nishfleet-worker.env"

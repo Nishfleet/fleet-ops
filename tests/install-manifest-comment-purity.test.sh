@@ -34,7 +34,7 @@ cp -a "$install_src" "$install"
 chmod +x "$install"
 
 cat >"$scratch/MANIFEST" <<MANIFEST
-# P14: GitHub App identity for workers (replaces fine-grained PAT)
+# P14: nishfleet-worker GitHub App identity for workers
 foo $scratch/home/nish/.local/bin/foo
 MANIFEST
 
@@ -51,9 +51,9 @@ fi
 ok "install.sh --check passes without comment-junk"
 
 # --- 4. Simulate the old bug: a filesystem entry named after the comment -----
-# The comment's second token is "P14: GitHub App identity for workers (replaces
-# fine-grained PAT)". A buggy parser would create a symlink/file with that name.
-junk="P14: GitHub App identity for workers (replaces fine-grained PAT)"
+# The comment's second token is "P14: nishfleet-worker GitHub App identity for
+# workers". A buggy parser would create a symlink/file with that name.
+junk="P14: nishfleet-worker GitHub App identity for workers"
 ln -s "$scratch/foo" "$scratch/$junk"
 
 # --- 5. --check must now fail and name the junk -----------------------------

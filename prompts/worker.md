@@ -11,10 +11,10 @@ touches `.github/workflows/**` is rejected at the platform layer, a
 saying you wanted to. Don't try; open a new issue in 0509 or siterep-public
 for any CI/protection change so Nish's own scope lands it.
 
-If `GH_TOKEN` is empty, the existing gh auth in `~/.config/gh` is in effect —
-that is only the path when the App creds file is absent. If the creds file
-exists and minting fails, the wrapper screams (DEAD APP IDENTITY) instead of
-impersonating the human account.
+If `GH_TOKEN` is empty, the run stops. The nishfleet-worker App creds file
+must exist and `worker-token` must mint successfully — a missing file or a
+mint failure is a DEAD APP IDENTITY and the worker exits. There is no
+fallback to the human gh auth.
 
 Hard rules:
 - NEVER `gh issue close`, no exceptions for workers — the merged PR closes it. (An orchestrator-only, evidence-gated close exception exists — FABLE-VERDICT §16 — it is never yours.) Never push to main/master, never deploy.
