@@ -146,11 +146,19 @@ ok "ledger line cites #482 and names BetaHuhn"
 # --- 10. lock: the probe is the canonical verifier bin + lib pair -----------
 [[ -x "$probe" ]] || fail "bin/verify-fleet-sync-pat must be executable"
 [[ -f "$lib" ]] || fail "lib/verify-fleet-sync-pat.py must exist"
+# urllib.request.urlopen with a built URL trips Semgrep
+# python.lang.security.audit.dynamic-urllib-use-detected (CI --error). The
+# suppression must name the full rule id, matching
+# bin/_worker-app-bootstrap-server.py (the CI-proven pattern).
+grep -q 'nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected' "$lib" \
+  || fail "urlopen must carry the audited nosemgrep suppression (Semgrep lock)"
+grep -q 'https://api.github.com' "$lib" \
+  || fail "lib must pin the GitHub API host as a literal"
 # The probe is the intended wiring for repo-standards-sync.yml's Verify step.
 # The workflow file edit itself is gated on Nish's own scope (the worker App
 # cannot push .github/workflows/** — see the 0509 follow-up); this lock
 # certifies the probe that wiring will call, not that the wiring has landed.
-ok "canonical probe bin + lib pair present"
+ok "canonical probe bin + lib pair present (urllib host pinned + nosemgrep)"
 
 # --- 11. lock: --repo validation rejects path-escape attempts ---------------
 set +e

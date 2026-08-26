@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Host is the literal api.github.com; path is /user or /repos/<regex-validated
+# owner/repo>. Semgrep sees the Request object and flags dynamic urllib;
+# audit-confirmed safe (same suppression as bin/_worker-app-bootstrap-server.py).
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
 """FLEET_SYNC_PAT probe (fleet-ops#482).
 
 The repo-standards-sync workflow used to only check the secret was non-empty.
@@ -48,15 +52,16 @@ import argparse
 import json
 import os
 import re
+import ssl
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REPO = "Nishfleet/fleet-ops"
-API = "https://api.github.com"
 # owner/repo — reject anything that could escape the API host (scheme, host,
-# query, fragment, path traversal). Keeps the dynamic urlopen call bounded.
+# query, fragment, path traversal). Host is the literal api.github.com;
+# this regex only bounds the path suffix.
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 LEDGER = (
     "fleet-ops #482: FLEET_SYNC_PAT probe — a dead/under-scoped PAT cannot "
@@ -124,13 +129,19 @@ def fetch_online(token: str, repo: str = REPO) -> dict[str, Any]:
         return state
 
     def _get(path: str) -> tuple[int, dict[str, str], str]:
-        req = Request(f"{API}{path}", headers={
-            "Authorization": f"token {token}",
+        # Two-step concat, host literal. Path is "/user" or "/repos/" + a
+        # regex-validated owner/repo. Same shape as
+        # bin/_worker-app-bootstrap-server.py (CI-proven nosemgrep).
+        url = "https://api.github.com" + path
+        req = Request(url, headers={
+            "Authorization": "token " + token,
             "Accept": "application/vnd.github+json",
             "User-Agent": "fleet-ops-verify-fleet-sync-pat",
         })
+        kwargs = {"timeout": 20, "context": ssl.create_default_context()}
         try:
-            with urlopen(req, timeout=20) as resp:
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            with urlopen(req, **kwargs) as resp:
                 status = resp.status
                 headers = {k.lower(): v for k, v in resp.headers.items()}
                 body = resp.read().decode("utf-8", "replace")
@@ -147,7 +158,11 @@ def fetch_online(token: str, repo: str = REPO) -> dict[str, Any]:
         "x-accepted-github-permissions", ""
     )
 
-    r_status, r_headers, r_body = _get(f"/repos/{repo}")
+    if not _REPO_RE.match(repo):
+        state["repo_push"] = None
+        return state
+
+    r_status, r_headers, r_body = _get("/repos/" + repo)
     state["repo_status"] = r_status
     state["repo_accepted_perms"] = r_headers.get(
         "x-accepted-github-permissions", ""
