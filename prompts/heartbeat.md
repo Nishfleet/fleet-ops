@@ -185,7 +185,7 @@ Do NOT release a claim whose worker unit is genuinely live, and do NOT release
 one whose `claim/issue-<N>` PR is open — that is work in flight.
 
 Fleet repos (always check, in order): `Nishfleet/fleet-ops`, `Nishfleet/0509`,
-`Nishfleet/siterep-public`, `Nishfleet/inish-site`, `Nishfleet/seo-fix-kit`,
+`Nishfleet/siterep-public`, `Nishfleet/inish-site`, `nish3451/seo-fix-kit`,
 `Nishfleet/TinyStudio.io`, `Nishfleet/tinystudio-in`. If a repo is on the
 hands-off list (`config/fleet-repos.json`), skip queue/claim mutations but
 still log if anything looks wrong.
