@@ -280,11 +280,20 @@ grep -Fq -- '"$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signa
   || fail "install.sh must enable --now agent-cron-0509-daily-market-signal.timer"
 ok "timer has [Install] and install.sh enables it"
 
-# Behavioral: a scratch install with stub systemctl must actually invoke
-# enable --now. Destinations stay under $scratch so this cannot mutate the
-# live user bus. A comment-only enable line would fail this.
+# --- live install invariants (fleet-ops#261) ---------------------------------
+# The scratch install below runs a stub systemctl to prove install.sh
+# actually invokes enable --now. It checks is-enabled state, which can fail
+# in a bare worktree / CI runner with no user systemd bus. Gate the live
+# invariants behind NISHFLEET_LIVE_INSTALL_TEST like
+# tests/worker-token-live.test.sh.
+if [[ "${NISHFLEET_LIVE_INSTALL_TEST:-}" != "1" ]]; then
+  ok "SKIP: live install invariants (set NISHFLEET_LIVE_INSTALL_TEST=1)"
+else
+  # Behavioral: a scratch install with stub systemctl must actually invoke
+  # enable --now. Destinations stay under $scratch so this cannot mutate the
+  # live user bus. A comment-only enable line would fail this.
 #
-# fleet-ops#228 / #290 / #264: GitHub's runner and a generic laptop have
+# fleet-ops#228 / #254 / #290 / #264: GitHub's runner and a generic laptop have
 # no user systemd bus. This block must still pass there. A stub that
 # always exits 0 makes is-enabled look already-enabled, so install.sh
 # skips enable --now and P14 goes red. Track the fake enabled state in a
@@ -353,7 +362,7 @@ stub_is_enabled_rc=$?
 set -e
 : >"$calls"
 [[ "$stub_is_enabled_rc" == "1" ]] \
-  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#290), got $stub_is_enabled_rc"
+  || fail "stub is-enabled must exit 1 on a fresh box (always-0 stubs skip enable --now: fleet-ops#254, fleet-ops#290), got $stub_is_enabled_rc"
 mkdir -p "$scratch/home" "$scratch/xdg"
 SYSTEMCTL="$scratch/fake-bin/systemctl" PATH="$scratch/fake-bin:$PATH" \
   HOME="$scratch/home" XDG_RUNTIME_DIR="$scratch/xdg" \
@@ -371,7 +380,7 @@ post_is_enabled_rc=$?
 set -e
 [[ "$post_is_enabled_rc" == "0" ]] \
   || fail "stub is-enabled must return 0 after enable --now (fleet-ops#228), got $post_is_enabled_rc"
-ok "scratch install.sh enable --now invoked for the [Install] timer"
+ok "scratch install.sh enable --now invoked for the [Install] timer (fleet-ops#254)"
 
 # --- fleet-ops#236: a stub that exits 0 but prints nothing must not skip enable --now ----
 # The is-enabled exit code alone is not enough: a broken stub (or a missing
@@ -411,6 +420,7 @@ SYSTEMCTL="$scratch/fake-bin-zero/systemctl" PATH="$scratch/fake-bin-zero:$PATH"
 grep -Eqx -- '--user enable --now agent-cron-0509-daily-market-signal\.timer' "$calls2" \
   || fail "install.sh skipped enable --now for a zero-output is-enabled stub: $(cat "$calls2")"
 ok "install.sh enables --now even when is-enabled exits 0 without printing enabled"
+fi
 
 # --- fleet-ops#264: missing-unit skip must fire, not FAIL -------------------
 # Nested run points svc/timer at absent paths. Seat rotation still runs,
