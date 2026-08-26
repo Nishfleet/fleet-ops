@@ -1,16 +1,12 @@
 [Unit]
-Description=Pi fleet product scout for Nishfleet/%i (buffer-gated work supply; creates scout-candidates for senior-auditor panel)
+Description=Pi fleet product scout for Nishfleet/%i (work supply for autonomous lanes; event-driven intake exists for claiming, but generation needs periodic product inspection)
 OnFailure=pi-scout-repair@%i.service
 
 [Service]
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-# Gate: run only when the drain-rate work buffer is below target.
-# Exit 0 from fleet-heartbeat-buffer --gate %i means "scouts may run".
-# The 4h timer is the fallback floor; heartbeat tier1 also dispatches this
-# unit when the buffer is low.
-ExecCondition=/bin/sh -c 'exec /home/nish/.local/bin/fleet-heartbeat-buffer --gate %i'
+ExecCondition=/bin/sh -c 'n=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number --jq length 2>&1) || { echo "gh failed: $$n" >&2; exit 255; }; [ "$$n" -lt 12 ]'
 # Seat rotation is pi-scout-run's job (pick_seat). A pinned --provider
 # previously died with HTTP 429 while healthy seats sat unused (fleet-ops#130).
 # /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub

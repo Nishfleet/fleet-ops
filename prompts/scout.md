@@ -10,13 +10,14 @@ Hard rules:
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
 
-## Capacity gate
+## Capacity gate (already enforced by systemd, but respect it)
 
-This scout creates **scout-candidate** issues; a separate senior-auditor panel decides which ones become `agent-ready`.
+```bash
+gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number
+```
 
-- Max **8 new scout-candidate issues** per run.
-- Stop adding candidates once you have 8 strong ones; you will trim in step 4.
-- If there are already 24 or more open `scout-candidate` issues for this repo, print "scout-candidate backlog full (>= 24)", exit 0.
+Let `ready_count` = length of that list. If `ready_count >= 12`, print "supply full (agent-ready >= 12)", exit 0.
+Let `label_budget = 12 - ready_count`. You may apply `agent-ready` to at most `label_budget` issues this run (new or relabeled).
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 
@@ -30,6 +31,8 @@ gh pr list -R Nishfleet/<repo> --state open --json number,title,body,mergeable -
 Before filing anything, check every candidate against ALL open issue titles/bodies and ALL open PR titles/bodies. If the same product defect, same stale PR, or same acceptance criteria already exists, skip it. Near-duplicates count as dupes.
 
 ## Step 2 — Inspect sources (value order)
+
+Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
 
 ### A. Live product signals (FIRST — spend most effort here)
 
@@ -126,18 +129,18 @@ EOF
 
 Record each new issue number.
 
-Apply the `scout-candidate` label to every chosen candidate:
+Apply `agent-ready` only within `label_budget`:
 ```bash
-gh issue edit <N> -R Nishfleet/<repo> --add-label scout-candidate
+gh issue edit <N> -R Nishfleet/<repo> --add-label agent-ready
 ```
 
-Do NOT apply `agent-ready`. That label is reserved for the senior-auditor panel after 2-of-3 PASS.
+Prefer labeling the highest product-impact issues first. Do not label more than `label_budget` total.
 
 ## Step 5 — Summary (stdout)
 
 Print one line per action:
-- `filed #N: <title> [scout-candidate]`
+- `filed #N: <title> [agent-ready|unlabeled]`
 - `skipped: <reason>` for rejected dupes or missing termination
-- `supply: scout-candidate=<c> filed=<k>`
+- `supply: ready_count=<before> filed=<k> labeled=<m>`
 
 Exit 0.

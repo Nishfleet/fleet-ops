@@ -38,27 +38,14 @@
 #      THROUGHPUT line per tick (merged fleet-worker PRs since last tick)
 #      into the triage log. The helper's non-zero exit propagates here so
 #      fleet-heartbeat.service lands in --state=failed -> page + Telegram.
-#   9. 12-hour drain-rate work buffer (fleet-ops#146). Delegates to
-#      bin/fleet-heartbeat-buffer: for each enrolled repo, computes
-#      buffer_hours = ready_count / drain_rate (drain = merged claim/issue-*
-#      PRs over the trailing 6h) and starts pi-scout@<repo> when the buffer
-#      is below 12h, with a 14h hysteresis so an active refill cycle runs to
-#      completion. drain_rate=0 means the buffer is infinite (no dispatch).
-#      The 4h timer stays as the fallback floor. Best-effort nudge — a CONFIG
-#      error is logged + LOUD but NOT propagated (a broken refill must not
-#      stop queuing/reclaim/wedge alarm). The same helper backs the
-#      pi-scout@.service ExecCondition via `--gate <repo>`.
-#  9b. Senior-auditor admission panel (fleet-ops#146). Delegates to
-#      bin/fleet-heartbeat-auditor: for each open scout-candidate issue, makes
-#      sure the three pi-audit@<repo>--<candidate>--<role>.service template
-#      units (devin/glm-5-2, a free glm-5.3 seat, straitly/deepseek-v4-pro)
-#      are running and tallies completed panels — 2-of-3 PASS admits (adds
-#      agent-ready), 2-of-3 FAIL discards (adds discarded + comments the
-#      reasons), otherwise the candidate stays PENDING (fails closed). A
-#      pending backlog older than one heartbeat tick raises a LOUD finding.
-#      Auditor calls inherit the global OnFailure escalation ladder via the
-#      template unit; no hand-rolled retry. Best-effort — a CONFIG error is
-#      logged but NOT propagated.
+#   9. Low-water-mark scouting (fleet-ops#146). Delegates to
+#      bin/fleet-heartbeat-low-water-mark: for each enrolled repo, when
+#      ready < lane ceiling (seat_max_concurrent) and no scout is running
+#      and the per-repo threshold stamp is stale (>2h), start pi-scout@<repo>
+#      so replenishment overlaps consumption and lanes never hit empty. The
+#      4h timer stays as the floor; this only pulls a scout LOOK sooner.
+#      Best-effort nudge — a CONFIG error is logged + LOUD but NOT propagated
+#      (a broken refill must not stop queuing/reclaim/wedge alarm).
 #  11. Red-PR repair (fleet-ops#124). Delegates to
 #      bin/fleet-heartbeat-red-pr-repair: for each open claim/issue-* PR
 #      whose checks are red AND whose pi-issue unit has no live worker for
@@ -943,53 +930,38 @@ else
 fi
 
 # ============================================================================
-# 9. 12-HOUR DRAIN-RATE BUFFER (fleet-ops#146)
+# 9. LOW-WATER-MARK SCOUTING (fleet-ops#146)
 # ============================================================================
-# Supply is measured in hours of work, not raw issue counts. The helper
-# computes a trailing drain rate per repo (merged claim/issue-* PRs over
-# the last 6h) and dispatches pi-scout@<repo> when ready/drain_rate drops
-# below 12 hours. A 14-hour hysteresis keeps scouts running during an
-# active refill cycle; the existing 4h timer is the fallback floor. The
-# helper respects the lane ceiling from seat-lib (seat_max_concurrent) and
-# will not dispatch when the fleet has no free lanes.
+# Supply cadence is the constraint, not lanes. The 4h scout timer refills
+# AFTER lanes drain, scheduling a starvation gap every cycle (measured
+# 2026-08-26: feast ~40min, famine ~3h20m). This pass treats the ready
+# queue as a producer-consumer buffer with a low-water mark: when ready <
+# lane ceiling (seat_max_concurrent — fewer ready items than lanes means
+# starvation is already scheduled) and no scout is running for that repo
+# and the per-repo threshold stamp is stale (>2h), start pi-scout@<repo>
+# now so replenishment overlaps consumption. The 4h timer stays as the
+# floor; this only pulls a scout LOOK sooner. Quality bar unchanged — the
+# scout's own ExecCondition + spec gate decide what qualifies as work; an
+# empty pass is a valid logged outcome and never manufactures make-work.
 #
-# Like the old low-water pass, this is a best-effort supply nudge, NOT a
-# fail-loud alarm (that is block 8). The helper exits 2 only on CONFIG
-# error; we log its rc but do not propagate.
-BUFFER_BIN="${FLEET_HEARTBEAT_BUFFER:-/home/nish/.local/bin/fleet-heartbeat-buffer}"
-buffer_rc=0
-if [ -x "$BUFFER_BIN" ]; then
-    log "9. 12h buffer+scout pass starting"
-    if "$BUFFER_BIN"; then
-        log "9. 12h buffer+scout pass complete"
+# This is a best-effort supply nudge, NOT a fail-loud alarm (that is block
+# 8). The helper exits 2 only on a CONFIG error (missing intake-repos.json
+# / jq / seat-lib); we log its rc and let the helper write its own LOUD
+# triage line, but we do NOT propagate — a broken refill nudge must not
+# stop PR queuing, orphan reclaim, or the wedge alarm. undersaturation's
+# fail-loud still wins the unit's exit code.
+LOW_WATER_BIN="${FLEET_HEARTBEAT_LOW_WATER:-/home/nish/.local/bin/fleet-heartbeat-low-water-mark}"
+low_water_rc=0
+if [ -x "$LOW_WATER_BIN" ]; then
+    log "9. low-water-mark scouting pass starting"
+    if "$LOW_WATER_BIN"; then
+        log "9. low-water-mark pass complete"
     else
-        buffer_rc=$?
-        log "9. 12h buffer: CONFIG error (rc=$buffer_rc) — logged + LOUD triage line written; not propagated (best-effort nudge)"
+        low_water_rc=$?
+        log "9. low-water-mark: CONFIG error (rc=$low_water_rc) — logged + LOUD triage line written; not propagated (best-effort nudge)"
     fi
 else
-    log "9. 12h buffer helper missing at $BUFFER_BIN — skip (not installed)"
-fi
-
-# ============================================================================
-# 9b. SENIOR AUDITOR ADMISSION PANEL (fleet-ops#146)
-# ============================================================================
-# Every scout-candidate issue is reviewed by three independent senior
-# auditors. This pass makes sure each candidate has its three pi-audit units
-# scheduled and tallies completed panels. A candidate stays PENDING (fails
-# closed) when votes are missing or the audit unit is in a lane fault; the
-# loud finding is raised when it is older than one heartbeat tick.
-AUDITOR_BIN="${FLEET_HEARTBEAT_AUDITOR:-/home/nish/.local/bin/fleet-heartbeat-auditor}"
-auditor_rc=0
-if [ -x "$AUDITOR_BIN" ]; then
-    log "9b. senior-auditor admission pass starting"
-    if "$AUDITOR_BIN"; then
-        log "9b. senior-auditor admission pass complete"
-    else
-        auditor_rc=$?
-        log "9b. senior-auditor: CONFIG error (rc=$auditor_rc) — logged; not propagated"
-    fi
-else
-    log "9b. senior-auditor helper missing at $AUDITOR_BIN — skip (not installed)"
+    log "9. low-water-mark helper missing at $LOW_WATER_BIN — skip (not installed)"
 fi
 
 # ============================================================================
@@ -1117,7 +1089,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc buffer_rc=$buffer_rc auditor_rc=$auditor_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc low_water_rc=$low_water_rc audit_started=$audit_started redpr_rc=$redpr_rc deploy_rc=$deploy_rc"
 # Propagate the first non-zero fail-loud exit. Deploy, undersaturation, or
 # red-pr-repair may fail loud; all route to the same pager
 # (fleet-heartbeat.service -> --state=failed -> page + Telegram).

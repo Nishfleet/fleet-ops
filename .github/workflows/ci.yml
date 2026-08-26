@@ -113,10 +113,6 @@ jobs:
             /home/nish/.local/bin/fleet-heartbeat-tier2 \
             /home/nish/.local/bin/fleet-blind-audit \
             /home/nish/.local/bin/fleet-blind-audit-panel \
-            /home/nish/.local/bin/fleet-heartbeat-buffer \
-            /home/nish/.local/bin/fleet-heartbeat-auditor \
-            /home/nish/.local/bin/pi-audit-run \
-            /home/nish/.local/bin/pi-audit-tally \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -210,15 +206,7 @@ jobs:
         bash tests/system-dropins-shape.test.sh
         bash tests/fleet-ops-deploy.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
-        # fleet-ops#146: lock the 12h drain-rate buffer + senior-auditor
-        # admission panel. Refill the ready queue while it is below 12h of
-        # work (buffer = ready_count / drain_rate) and respect the lane
-        # ceiling. Every scout-candidate issue is judged by a 3-seat panel
-        # before it may be labeled agent-ready. The live scout/audit starts
-        # are the outermost edges (real LLM side effects) and are stubbed;
-        # the dispatch DECISION and the admission TALLY are exercised.
-        bash tests/fleet-heartbeat-buffer.test.sh
-        bash tests/fleet-heartbeat-auditor.test.sh
+        bash tests/fleet-heartbeat-low-water-mark.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         bash tests/reusable-workflows.test.sh
