@@ -230,6 +230,10 @@ seat_max_concurrent() {
 # the heavy load and cursor only fills in when the task is light and the
 # higher-priority seats are full. The contextWindow branch now explicitly
 # excludes cursor so cursor-grok-4.6-high is never picked for heavy code.
+# OVERRULED for grok-4.6-high only (Nish, 2026-08-27: "grok 4.6 on cursor is
+# solid tbh"): cursor-grok-4.6-high is re-admitted to the heavy-capable class;
+# composer and every other cursor model stay light-only. Flake mitigation for
+# the ETIMEDOUT/143 class stays with the reap/retry machinery, not exclusion.
 #
 # Filtering rules:
 #   - zenmux is hard-skipped (free tier exhausted; standing constraint).
@@ -246,7 +250,7 @@ enumerate_seats() {
         [ $p, .id,
           (if ((.cost.input // 1) == 0) then "1" else "0" end),
           (if ( ((.reasoning // false) == true)
-                or (((.contextWindow // 0) >= 200000) and ($p != "cursor"))
+                or (((.contextWindow // 0) >= 200000) and (($p != "cursor") or (.id == "cursor-grok-4.6-high")))
                 or ($p | IN("devin","opencode-anthropic")) )
            then "1" else "0" end)
         ]
@@ -255,7 +259,7 @@ enumerate_seats() {
         (.value.modelOverrides // {}) | to_entries[] |
         [ $p, .key, "0",
           (if ( ((.value.reasoning // false) == true)
-                or (((.value.contextWindow // 0) >= 200000) and ($p != "cursor"))
+                or (((.value.contextWindow // 0) >= 200000) and (($p != "cursor") or (.key == "cursor-grok-4.6-high")))
                 or ($p | IN("devin","opencode-anthropic")) )
            then "1" else "0" end)
         ]
