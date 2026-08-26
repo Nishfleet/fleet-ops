@@ -210,3 +210,7 @@ jobs:
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
         bash tests/reusable-workflows.test.sh
+        bash tests/fleet-heartbeat-orphan-distinguish.test.sh
+        bash tests/oomd-drill.test.sh
+        bash tests/worker-live.test.sh
+        bash tests/orphan-release-drill.test.sh
