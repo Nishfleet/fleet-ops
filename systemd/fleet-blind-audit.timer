@@ -1,14 +1,21 @@
 [Unit]
-Description=Fleet mechanical blind audit (weekly floor)
-# Named reason: blind-spot discovery is periodic. Unknown unknowns have no
-# event to subscribe to, so a weekly floor is the minimum backstop.  The
-# primary trigger is the heartbeat detecting a drained gap-board.
-
+Description=Fleet mechanical blind audit (daily floor)
+# Named reason (fleet-ops#378): unknown unknowns have no event to subscribe
+# to, so a calendar floor is the only correct primary trigger. The previous
+# weekly cadence paired with a "drained gap-board" gate was structurally
+# defeated: the gap-board holds 70+ open issues and rarely drains, so the
+# audit would have sat unexecuted for weeks if a flagship hadn't hand-started
+# its first run. A daily floor is the smallest cadence that catches drift
+# while it is still small; one audit per 24h keeps the run budget (~45 min)
+# trivially under the day. The drained-gap-board dispatch in tier1 §10
+# remains as a BONUS — it shortens the gap between audits when the board
+# genuinely drains, never lengthens it. Cadence-overdue escalates through
+# tier1 §11 so a stuck audit must scream.
 [Timer]
-OnCalendar=weekly
-RandomizedDelaySec=1h
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
 Persistent=true
-AccuracySec=1h
+AccuracySec=5min
 
 [Install]
 WantedBy=timers.target

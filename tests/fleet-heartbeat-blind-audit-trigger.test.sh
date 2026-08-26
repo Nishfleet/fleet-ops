@@ -2,7 +2,7 @@
 # tests/fleet-heartbeat-blind-audit-trigger.test.sh
 #
 # fleet-ops#157 acceptance: "gap-board empty -> unit started + stamp;
-# board non-empty -> no start; weekly timer fires regardless; findings file
+# board non-empty -> no start; daily timer fires regardless; findings file
 # -> N issues created ...". The audit unit itself (bin/fleet-blind-audit)
 # is proven by tests/fleet-blind-audit.test.sh. This test pins the OTHER
 # half of the trigger contract: the heartbeat tier1 §10 block that decides
@@ -18,9 +18,10 @@
 #              - audit active / activating        -> no-op (no start)
 #              - FLEET_BLIND_AUDIT_DISABLE=1      -> no start
 #              - start failure                    -> loud BLIND-AUDIT-START-FAIL
-#   Phase C: the weekly floor timer is independent of the heartbeat
-#            (OnCalendar=weekly, Persistent=true) so the floor fires
+#   Phase C: the daily floor timer is independent of the heartbeat
+#            (OnCalendar=*-*-*, Persistent=true) so the floor fires
 #            regardless of gap-board state.
+#   Then: fleet-ops#378 cadence + prove-one-run tests (same CI step).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -232,11 +233,16 @@ has_loud || fail "B5: start failure must emit BLIND-AUDIT-START-FAIL to triage"
 ok "B5: start failure -> loud BLIND-AUDIT-START-FAIL"
 
 # ============================================================================
-# Phase C: the weekly floor timer is independent of the heartbeat
+# Phase C: the daily floor timer is independent of the heartbeat (#378)
 # ============================================================================
-[[ -f "$timer" ]] || fail "missing weekly floor timer: $timer"
-grep -F -- 'OnCalendar=weekly' "$timer" >/dev/null \
-    || fail "fleet-blind-audit.timer must have OnCalendar=weekly (the floor)"
+# fleet-ops#378: weekly was structurally defeated because the gap-board held
+# 70+ open issues and rarely drained, so the only practical trigger was the
+# weekly timer. That meant a broken audit could sit unnoticed for up to a
+# week. The floor is now daily; the drainage dispatch in tier1 §10 stays as
+# a bonus. The cadence-overdue canary in tier1 §11 makes a stuck audit scream.
+[[ -f "$timer" ]] || fail "missing daily floor timer: $timer"
+grep -F -- 'OnCalendar=*-*-*' "$timer" >/dev/null \
+    || fail "fleet-blind-audit.timer must have OnCalendar=*-*-* (daily floor, not weekly)"
 grep -F -- 'Persistent=true' "$timer" >/dev/null \
     || fail "fleet-blind-audit.timer must be Persistent=true (survives downtime)"
 # The timer must NOT gate on live state — it is the unconditional floor. A
@@ -246,6 +252,12 @@ grep -F -- 'Persistent=true' "$timer" >/dev/null \
 if grep -qE '^[[:space:]]*(Condition|ExecCondition)' "$timer"; then
     fail "fleet-blind-audit.timer must not carry a Condition*/ExecCondition* directive (the floor is unconditional)"
 fi
-ok "C: weekly floor timer fires regardless of gap-board state (OnCalendar=weekly, Persistent=true, no state gate)"
+ok "C: daily floor timer fires regardless of gap-board state (OnCalendar=*-*-*, Persistent=true, no state gate)"
+
+# fleet-ops#378: cadence canary + prove-one-run live in this CI step
+# (ci.yml already runs this file; nishfleet-worker cannot add a new
+# verify-command line because that is a workflow edit).
+bash "$here/fleet-heartbeat-blind-audit-cadence.test.sh"
+bash "$here/prove-one-run-check.test.sh"
 
 echo "all phases passed"

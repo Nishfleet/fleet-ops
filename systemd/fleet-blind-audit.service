@@ -1,10 +1,12 @@
 [Unit]
 Description=Fleet mechanical blind audit (oneshot, dispatches a pi reviewer)
-# Named reason for this schedule (vault: "a schedule needs a named reason"):
-# blind-spot discovery is inherently periodic; its events are unknown
-# unknowns, so nothing concrete exists to be event-driven ON. The heartbeat
-# also triggers it when the gap-board is drained, but the weekly timer is the
-# floor.
+# Named reason for this schedule (vault: "a schedule needs a named reason",
+# fleet-ops#378): blind-spot discovery is inherently periodic; its events are
+# unknown unknowns, so nothing concrete exists to be event-driven ON. A daily
+# calendar floor (see fleet-blind-audit.timer) is the primary trigger. The
+# drained-gap-board dispatch in tier1 §10 is a bonus that fires sooner when
+# the gap-board genuinely drains — it never lengthens the cadence. Cadence-
+# overdue escalates through tier1 §11 so a stuck audit must scream.
 #
 # One audit at a time: the script takes a non-blocking flock and the heartbeat
 # skips a start when the unit is already activating.
@@ -19,5 +21,7 @@ ExecStart=/home/nish/.local/bin/fleet-blind-audit
 # The reviewer (pi) can take the full seat timeout; this unit blocks until it
 # returns and the findings are filed.
 TimeoutStartSec=45min
-# Never restart: the heartbeat or the weekly timer is the retry.
+# Never restart: the daily timer (or the drained-gap-board bonus dispatch) is
+# the retry. A crashed audit lands in --state=failed so the tier1 §11 canary
+# notices the gap and escalates.
 Restart=no

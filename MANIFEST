@@ -30,6 +30,9 @@ prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-rep
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
+# fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
+lib/blind-audit-cadence.sh /home/nish/.local/lib/pi-packet/blind-audit-cadence.sh
+bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
@@ -69,14 +72,15 @@ bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
 bin/fleet-heartbeat-undersaturation /home/nish/.local/bin/fleet-heartbeat-undersaturation
 bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark
 bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair
-# fleet-ops#152: escalation coverage canary. Run by heartbeat-tier1 block 14;
+# fleet-ops#152: escalation coverage canary. Run by heartbeat-tier1 block 15;
 # proves the two-plane invariant (VPS unit-escalation coverage + GitHub
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
 # so the first install lands it with zero hands.
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
-# fleet-ops#157: recurring mechanical blind audit. One oneshot unit + weekly
-# timer + heartbeat trigger; dispatches a pi reviewer, runs findings through a
-# local panel, and files gap-audit issues linked to a durable report.
+# fleet-ops#157/#378: recurring mechanical blind audit. One oneshot unit +
+# daily timer (primary) + heartbeat drained-board bonus; cadence-overdue
+# screams through tier1 §11. Dispatches a pi reviewer, runs findings through
+# a local panel, and files gap-audit issues linked to a durable report.
 bin/fleet-blind-audit /home/nish/.local/bin/fleet-blind-audit
 bin/fleet-blind-audit-panel /home/nish/.local/bin/fleet-blind-audit-panel
 prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
