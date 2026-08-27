@@ -283,10 +283,20 @@ ok "scenario10: pi missing fails loud"
 
 # --- 11. production seat-caps: ollama deepseek-v4-flash only; free order --
 : >"$gh_log"; : >"$triage"
+# Catalog fixture derived from the PRODUCTION seat-caps free allowlists
+# (commandcode/hetzner/opencode/orcarouter). The canary's roster watch calls
+# `pi --list-models`, which does not exist on hosted CI — so this scenario
+# feeds the same `FLEET_FREE_ROSTER_CATALOG_JSON` stub the dev scenarios use.
+# The fixture must mirror production exactly: any free slug that is wired
+# (in the allowlist) must appear, and nothing else may be wired.
+prod_catalog="$scratch/catalog-prod.tsv"
+jq -r '.providers | to_entries[] | select((.value|type)=="object") | select(.value.class=="free") | .key as $k | (.value.models // {}) | keys[] | "\($k)\t\(.)"' \
+  "$repo_root/config/seat-caps.json" > "$prod_catalog"
 set +e
 prod_out=$(
   FLEET_ENTITLED_SEATS_JSON="$repo_root/config/entitled-seats.json" \
   SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" \
+  FLEET_FREE_ROSTER_CATALOG_JSON="$prod_catalog" \
   FLEET_OPS_REPO="$repo_root" \
   FLEET_FREE_ROSTER_FILE=0 \
   "$bin" 2>&1
