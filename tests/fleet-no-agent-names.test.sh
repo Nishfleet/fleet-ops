@@ -101,7 +101,12 @@ ok "B11: agent names in a list without attribution word pass"
 git_repo="$scratch/repo"
 mkdir -p "$git_repo"
 cd "$git_repo"
-git init -q
+# Pin the initial branch name to `main` so the `--commit-range main...feature`
+# check below finds a `main` ref. `git init` without `-b` follows the
+# runner's `init.defaultBranch`, which is `master` on hosted GitHub Actions
+# runners (Ubuntu 24.04 image) and `main` on the VPS. Pinning makes the
+# test deterministic across both.
+git init -q -b main
 git config user.email "agent@example.com"
 git config user.name "Test Agent"
 
@@ -132,7 +137,7 @@ rm -rf .git
 ok "C2: temp repo cleaned up"
 
 # Build a clean repo and branch for the combined test.
-git init -q
+git init -q -b main
 git config user.email "agent@example.com"
 git config user.name "Test Agent"
 printf 'initial\n' >file
@@ -162,7 +167,7 @@ cd "$here"
 git_repo2="$scratch/repo2"
 mkdir -p "$git_repo2"
 cd "$git_repo2"
-git init -q
+git init -q -b main
 git config user.email "agent@example.com"
 git config user.name "Test Agent"
 printf 'initial\n' >file2
