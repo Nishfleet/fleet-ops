@@ -20,6 +20,10 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
 mkdir -p "$HOME" "$scratch/xdg"
+# Parent P14 hosts (worker-token-fail-closed) export WORKER_APP_CREDS_FILE
+# into their own scratch. Unset so this test's HOME creds file is the one
+# pi-issue-run actually reads.
+unset WORKER_APP_CREDS_FILE || true
 
 # P14 (fleet-ops#549): the worker App creds file must exist and mint before
 # pi runs. This test is about the failure-reason log, not identity — stub a
@@ -88,9 +92,39 @@ rc=$?
 set -e
 
 [[ "$rc" == "1" ]] || fail "pi-issue-run must exit 1 when pi fails, got $rc"
+if grep -q 'DEAD APP IDENTITY' "$scratch/run.err"; then
+  fail "must reach the pi failure path, not the App-identity gate: $(cat "$scratch/run.err")"
+fi
 grep -q 'pi exited 1' "$scratch/run.err" \
   || fail "stderr must contain the pi failure reason, got: $(cat "$scratch/run.err")"
 grep -q 'pi exited 1' "$PI_PACKET_STATE/watch.log" \
   || fail "watch.log must retain the durable audit line, got: $(cat "$PI_PACKET_STATE/watch.log" 2>/dev/null)"
 
 ok "pi-issue-run pi failure is printed to stderr and watch.log"
+
+# fleet-ops#568 class lock: a pi-issue-run test that forgets the App-identity
+# stub dies at DEAD APP IDENTITY before the path it owns. Scan the suite and
+# prove a fixture without the stub is rejected. Worker tokens cannot add a
+# P14 verify-command line, so worker-token-fail-closed.test.sh (already listed)
+# must invoke this file.
+has_identity_stub() {
+  local f="$1"
+  grep -q 'WORKER_TOKEN_BIN' "$f" && grep -q 'nishfleet-worker.env' "$f"
+}
+
+for f in "$here"/pi-issue-run-*.test.sh; do
+  has_identity_stub "$f" \
+    || fail "$(basename "$f") must stub WORKER_TOKEN_BIN and nishfleet-worker.env (fleet-ops#568)"
+done
+ok "every pi-issue-run-*.test.sh stubs the App-identity mint"
+
+forgot="$scratch/pi-issue-run-forgot-stub.test.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo no identity stub' >"$forgot"
+if has_identity_stub "$forgot"; then
+  fail "fixture without WORKER_TOKEN_BIN / nishfleet-worker.env must fail the lock"
+fi
+ok "class lock rejects a pi-issue-run test that forgot the App-identity stub"
+
+grep -Fq 'pi-issue-run-failure-reason.test.sh' "$here/worker-token-fail-closed.test.sh" \
+  || fail "tests/worker-token-fail-closed.test.sh must invoke this file (P14 host, fleet-ops#568)"
+ok "failure-reason lock is wired through tests/worker-token-fail-closed.test.sh"
