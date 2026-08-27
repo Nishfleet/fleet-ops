@@ -10,7 +10,7 @@
 #   6. Fake Prometheus HTTP API path writes the same report shape.
 #   7. Prometheus down fails loud and does not write the heartbeat.
 #   8. MANIFEST + install.sh enable --now (fleet-ops#183).
-#   9. Timer is Sunday 05:10 IST, Persistent, [Install], named reason.
+#   9. Timer is Sunday 04:10 IST (20 min before WFR 04:30), Persistent, [Install], named reason.
 #  10. Rule fragment has absent()+stale and no anomaly-value page.
 # Nested from tests/rule-enforcement.test.sh so CI cannot skip it without
 # a workflow edit this token cannot push.
@@ -300,8 +300,8 @@ ok "8. MANIFEST + install.sh enable --now"
 # --- 9. timer / service shape ----------------------------------------------
 grep -q '^# Named reason' "$timer" \
   || fail "timer must carry a Named reason"
-grep -q '^OnCalendar=Sun \*\-\*\-\* 05:10:00 Asia/Kolkata$' "$timer" \
-  || fail "timer must fire Sunday 05:10 IST"
+grep -q '^OnCalendar=Sun \*\-\*\-\* 04:10:00 Asia/Kolkata$' "$timer" \
+  || fail "timer must fire Sunday 04:10 IST (20 min before WFR 04:30)"
 grep -q '^Persistent=true$' "$timer" || fail "timer must be Persistent"
 grep -q '^\[Install\]$' "$timer" || fail "timer must carry [Install]"
 grep -q '^WantedBy=timers.target$' "$timer" || fail "timer [Install] must WantedBy=timers.target"
@@ -309,7 +309,14 @@ grep -q '^Type=oneshot$' "$svc" || fail "service must be oneshot"
 grep -q '^Restart=no$' "$svc" || fail "service must Restart=no"
 grep -q '^ExecStart=/usr/bin/python3 /home/nish/.local/bin/fleet-baseline-delta$' "$svc" \
   || fail "ExecStart must be /usr/bin/python3 fleet-baseline-delta (CI systemd-analyze stubs python3, not a new dest)"
-ok "9. timer is Sunday 05:10 IST; service is oneshot Restart=no"
+ok "9. timer is Sunday 04:10 IST; service is oneshot Restart=no"
+wfr_timer="$repo_root/systemd/fleet-weekly-fleet-review.timer"
+grep -q '^OnCalendar=Sun \*\-\*\-\* 04:30:00 Asia/Kolkata$' "$wfr_timer" \
+  || fail "WFR timer must still be 04:30 IST so 04:10 remains a pre-pass"
+grep -q 'workspaces/agent-state/WFR' "$bin" \
+  || fail "default out-dir must be agent-state/WFR (the live review input dir)"
+grep -q 'baseline-delta.md' "$repo_root/prompts/weekly-fleet-review.md" \
+  || fail "WFR prompt must read baseline-delta.md so the pre-pass feeds the conference"
 
 # --- 9b. CI class locks (shellcheck SC1071, systemd-analyze missing dest, semgrep urllib) ---
 [[ "$bin" == *.py ]] || fail "source must be .py so CI shellcheck glob bin/!(*.py|*.ts) skips it"

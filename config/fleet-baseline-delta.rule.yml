@@ -4,7 +4,7 @@
 # carries the assembled copy. Standing pattern: every new organ ships its
 # heartbeat metric + absent() rule in the same PR.
 #
-# The metric is written by bin/fleet-baseline-delta to
+# The metric is written by bin/fleet-baseline-delta.py to
 # /var/lib/prometheus/node-exporter/fleet-baseline-delta.prom on every
 # completed run (same per-organ-.prom pattern as fleet-completion-canary).
 #
@@ -21,7 +21,7 @@
     service: fleet
   annotations:
     summary: "baseline-delta metrics absent — the week-over-week strangeness pre-pass is missing or dead"
-    description: "Repair worker: bin/fleet-baseline-delta must emit fleet_baseline_delta_last_run_seconds. Check unit fleet-baseline-delta.timer / fleet-baseline-delta.service first. The organ heartbeat must export within 3h of its first scheduled run (Sun 05:10 IST)."
+    description: "Repair worker: bin/fleet-baseline-delta.py must emit fleet_baseline_delta_last_run_seconds. Check unit fleet-baseline-delta.timer / fleet-baseline-delta.service first. The organ heartbeat must export within 3h of its first scheduled run (Sun 04:10 IST)."
 - alert: FleetBaselineDeltaStale
   expr: (time() - fleet_baseline_delta_last_run_seconds) > (9 * 24 * 3600)
   for: 2h

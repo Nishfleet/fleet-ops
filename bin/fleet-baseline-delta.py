@@ -19,7 +19,7 @@ Stdlib + Prometheus HTTP API only. No new dependencies.
 
 Environment (tests may override):
   BASELINE_DELTA_PROM_URL   default http://127.0.0.1:9090
-  BASELINE_DELTA_OUT_DIR    default .../agent-state/fleet-weekly-review/input
+  BASELINE_DELTA_OUT_DIR    default .../agent-state/WFR
   BASELINE_DELTA_PROM       textfile path
   BASELINE_DELTA_TOP        ranked cap (default 20)
   BASELINE_DELTA_Z          |z| threshold (default 3)
@@ -515,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         "--out-dir",
         default=os.environ.get(
             "BASELINE_DELTA_OUT_DIR",
-            str(Path(home) / "workspaces/agent-state/fleet-weekly-review/input"),
+            str(Path(home) / "workspaces/agent-state/WFR"),
         ),
     )
     parser.add_argument(

@@ -1,11 +1,10 @@
 [Unit]
 Description=Weekly baseline-delta strangeness report (fleet-ops#1151)
 # Named reason (fleet-ops#378): unknown-unknown metric strangeness has no
-# event to subscribe to. The Weekly Fleet Review conference (#1146, Sun
-# 05:30 IST) needs a ranked pre-pass of fleet_* and key node_* series
-# before it sits. A Sunday calendar fire after the maintenance window
-# (dead-man clears 05:00) and before the review is the only correct
-# trigger. Output is a report, never a page.
+# event to subscribe to. The Weekly Fleet Review (#1146, Sun 04:30 IST)
+# needs a ranked pre-pass of fleet_* and key node_* series before it sits.
+# A Sunday calendar fire after vps-weekly-update (03:30 IST) and before
+# the review is the only correct trigger. Output is a report, never a page.
 
 [Service]
 Type=oneshot
