@@ -148,23 +148,37 @@ fi
 log_to_triage "CLAIM-REAP-STARTED" "instance=$instance repo=$repo_slug issue=$issue dry_run=$dry_run"
 
 # --- load issue state --------------------------------------------------------
-state_json=$(gh issue view "$issue" -R "$repo_slug" --json state,labels 2>&1) || {
-    log "gh issue view $repo_slug#$issue failed: $state_json"
-    log_to_triage "CLAIM-REAP-GH-FAIL" "step=issue_view instance=$instance"
-    exit 1
+# Auditor 2026-08-27T19:00Z (fleet-ops#1001 reaper trip): `gh issue view --json`
+# and `gh pr list --json` route through GitHub's GraphQL API which has its own
+# rate-limit bucket (independent of the REST bucket the reaper's other `gh api`
+# calls use). Hitting the GraphQL rate limit made the reaper exit 1, which
+# fired OnFailure -> unit-escalation -> auditor summon. The fix is to load
+# state via `gh api` (REST) and to treat transient failures (rate limit, network
+# blip) as a soft skip rather than a hard fail — the 30-min orphan sweep
+# (P13 tier-1) is the durable backstop for any claim the reaper couldn't reap.
+state_json=$(gh api "repos/$repo_slug/issues/$issue" 2>&1) || {
+    log "gh api repos/$repo_slug/issues/$issue failed: $(printf '%s' "$state_json" | head -c 200)"
+    log_to_triage "CLAIM-REAP-TRANSIENT-SKIP" "step=issue_view instance=$instance reason=gh_api_failed"
+    log "transient gh failure on issue state load — exiting 0 and letting the 30-min orphan sweep pick this up"
+    exit 0
 }
 
-issue_state=$(printf '%s' "$state_json" | jq -r '.state // "UNKNOWN"')
+# REST `state` is lowercase; normalize for downstream comparisons.
+issue_state=$(printf '%s' "$state_json" | jq -r '.state // "UNKNOWN"' | tr '[:lower:]' '[:upper:]')
 in_progress=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-in-progress")' >/dev/null 2>&1 && echo yes || echo no)
 
 log "state=$issue_state in_progress=$in_progress for $repo_slug#$issue"
 
 # --- branch cleanup: only if no open PR from this branch --------------------
-open_pr_count=$(gh pr list -R "$repo_slug" --head "$branch_name" --state open --json number --jq 'length' 2>&1) || {
-    log "gh pr list $repo_slug head=$branch_name failed: $open_pr_count"
-    log_to_triage "CLAIM-REAP-GH-FAIL" "step=pr_list instance=$instance branch=$branch_name"
-    exit 1
+# Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
+# with a head=<branch> filter and count the result.
+open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug#*/}:${branch_name}&per_page=1" 2>&1) || {
+    log "gh api repos/$repo_slug/pulls failed: $(printf '%s' "$open_pr_json" | head -c 200)"
+    log_to_triage "CLAIM-REAP-TRANSIENT-SKIP" "step=pr_list instance=$instance branch=$branch_name reason=gh_api_failed"
+    log "transient gh failure on PR list — exiting 0 and letting the 30-min orphan sweep pick this up"
+    exit 0
 }
+open_pr_count=$(printf '%s' "$open_pr_json" | jq 'length // 0' 2>/dev/null || echo 0)
 
 if [[ "$open_pr_count" -gt 0 ]]; then
     log "open PR exists from $branch_name; leaving branch and labels intact"
