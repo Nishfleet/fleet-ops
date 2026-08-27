@@ -2046,6 +2046,15 @@ bash "$here/fleet-failed-command-fresh-debug-script.test.sh" || fail "fleet-fail
 # repository` and exit 128. The next assistant turn is a recovery
 # toolCall with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-command-cd-non-git-repo tests failed"
+# fleet-ops#1217: a same-turn sibling of a `git clone` into
+# `/tmp/<fresh-clone>` that races with
+# `cd /tmp/<fresh-clone> 2>/dev/null && ls ...` and returns
+# `(no output)  Command exited with code 1`. The next assistant turn
+# is a silent `cd && ls` recovery with no user-facing flag. Distinct
+# from #793 (same empty snippet, written debug script) and #765
+# (cd + git status, exit 128, fatal: not a git repository). Same CI
+# constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-clone-race-cd.test.sh" || fail "fleet-failed-command-clone-race-cd tests failed"
 # fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main`
 # (or `git push --force-with-lease`) on the very branch the worktree
 # has checked out is refused with `fatal: cannot force update the
