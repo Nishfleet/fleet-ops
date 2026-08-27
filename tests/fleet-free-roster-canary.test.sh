@@ -283,10 +283,20 @@ ok "scenario10: pi missing fails loud"
 
 # --- 11. production seat-caps: ollama deepseek-v4-flash only; free order --
 : >"$gh_log"; : >"$triage"
+# Catalog fixture derived from the PRODUCTION seat-caps free allowlists
+# (commandcode/hetzner/opencode/orcarouter). The canary's roster watch calls
+# `pi --list-models`, which does not exist on hosted CI — so this scenario
+# feeds the same `FLEET_FREE_ROSTER_CATALOG_JSON` stub the dev scenarios use.
+# The fixture must mirror production exactly: any free slug that is wired
+# (in the allowlist) must appear, and nothing else may be wired.
+prod_catalog="$scratch/catalog-prod.tsv"
+jq -r '.providers | to_entries[] | select((.value|type)=="object") | select(.value.class=="free") | .key as $k | (.value.models // {}) | keys[] | "\($k)\t\(.)"' \
+  "$repo_root/config/seat-caps.json" > "$prod_catalog"
 set +e
 prod_out=$(
   FLEET_ENTITLED_SEATS_JSON="$repo_root/config/entitled-seats.json" \
   SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" \
+  FLEET_FREE_ROSTER_CATALOG_JSON="$prod_catalog" \
   FLEET_OPS_REPO="$repo_root" \
   FLEET_FREE_ROSTER_FILE=0 \
   "$bin" 2>&1
@@ -327,5 +337,21 @@ grep -F -- 'exit "$free_roster_canary_rc"' "$tier1" >/dev/null \
 grep -q 'bin/fleet-free-roster-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-free-roster-canary"
 ok "scenario12: heartbeat-tier1 wires the canary, fail-loud on gate, MANIFEST installs it"
+
+# --- 13. production lock: mimo-v2.5-free stay-wired (fleet-ops#640) ---------
+# The class prevention for "auditioned free slug silently dropped": a later
+# PR that removes mimo-v2.5-free from the allowlist without a dated bench
+# reason fails this lock. Billing slugs (mimo-v2.5, xiaomi/mimo-v2.5) must
+# not ride in on the free row.
+jq -e '.providers.opencode.models["mimo-v2.5-free"] > 0' \
+    "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "scenario13: production seat-caps must allowlist opencode/mimo-v2.5-free (fleet-ops#640)"
+while IFS= read -r k; do
+  lk="${k,,}"
+  if [[ "$lk" == *mimo* ]] && [[ "$lk" != "mimo-v2.5-free" ]]; then
+    fail "scenario13: production opencode allowlists a non-free mimo slug: $k"
+  fi
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slug"
 
 ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"

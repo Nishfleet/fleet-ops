@@ -40,14 +40,25 @@ FENCE_RE = re.compile(r"```[\s\S]*?```")
 INLINE_RE = re.compile(r"`[^`]*`")
 DQUOTE_RE = re.compile(r'"[^"\n]{0,240}"')
 
+# After a catch-all offer, the next few words must name the filing/queueing
+# action (file/queue it, open an issue, dig in). Otherwise "say the word and
+# I'll wire it" is an implementation offer, not an unqueued finding.
+# "dig in" is the standing-rule named phrase (fleet-ops#721).
+ACTION_RE = re.compile(
+    r"\b(?:file|queue)\s+(?:it|one|this|that|an?\s+(?:new\s+)?(?:issue|finding|ticket))\b"
+    r"|\bopen\s+(?:an?|the)\s+(?:new\s+)?(?:issue|ticket|finding)\b"
+    r"|\bdig in\b",
+    re.I,
+)
+
 # Unquoted asks. Tight on purpose: the standing rule names these.
 OFFER_RE = re.compile(
-    r"(want me to (file|open|queue)"
+    r"\b(?:want me to (file|open|queue)"
     r"|should i (file|open|queue)"
     r"|shall i (file|open|queue)"
     r"|say the word"
     r"|let me know if you want me to"
-    r"|would you like me to (file|open|queue))",
+    r"|would you like me to (file|open|queue))\b",
     re.I,
 )
 
@@ -172,8 +183,20 @@ def session_blobs(path: str) -> tuple[str, str]:
     return "\n".join(texts), "\n".join(tools)
 
 
+CATCH_ALL_PHRASES = ("say the word", "let me know if you want me to")
+
+
 def has_offer(assistant_text: str) -> re.Match[str] | None:
-    return OFFER_RE.search(strip_quoted(assistant_text))
+    text = strip_quoted(assistant_text)
+    for match in OFFER_RE.finditer(text):
+        # Catch-all phrases only count if a filing/queueing action follows
+        # within a short window; otherwise they are generic "go ahead" offers.
+        if match.group(0).lower().startswith(CATCH_ALL_PHRASES):
+            window = text[match.end() : match.end() + 120]
+            if not ACTION_RE.search(window):
+                continue
+        return match
+    return None
 
 
 def has_queue(assistant_text: str, tools: str) -> bool:

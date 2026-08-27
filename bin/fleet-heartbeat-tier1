@@ -1704,12 +1704,13 @@ else
 fi
 
 # ============================================================================
-# 22. PI EXTENSIONS PROVEN-ALLOWLIST CANARY (fleet-ops#536)
+# 22. PI EXTENSIONS PROVEN-ALLOWLIST CANARY (fleet-ops#536, #635)
 # ============================================================================
 # sr-pi-extensions-proven (Nish 2026-08-24): reach for Pi extensions, but
 # install only ones proven on a real task. Pi auto-discovers
-# ~/.pi/agent/extensions and settings.json packages/extensions with no
-# proven-install gate. This canary diffs the live wired set against
+# ~/.pi/agent/extensions and settings.json packages/extensions AND each
+# project's .pi/extensions/ and .pi/settings.json (after project trust).
+# This canary diffs the live wired set against
 # config/pi-extensions-allowlist.json. Unproven or re-enabled banned ids
 # fail loud and auto-file.
 PI_EXT_CANARY_BIN="${FLEET_PI_EXTENSIONS_CANARY:-/home/nish/.local/bin/fleet-pi-extensions-canary}"

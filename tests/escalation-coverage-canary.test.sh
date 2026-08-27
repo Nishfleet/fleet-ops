@@ -1009,3 +1009,10 @@ bash "$here/fleet-escalation-completion.test.sh"
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/fleet-pi-extensions-canary.test.sh"
 
+# fleet-ops#634: free-model roster canary. Invoked from this CI-listed file
+# so hosted runners run it without a workflow edit (worker tokens cannot
+# push .github/workflows/**). PR #624 (fleet-ops#518) shipped the canary and
+# the offline test but did not wire it into the CI list; this source line
+# is the same shape as the sibling canaries above.
+bash "$here/fleet-free-roster-canary.test.sh"
+

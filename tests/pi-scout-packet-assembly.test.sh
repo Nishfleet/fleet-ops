@@ -149,4 +149,8 @@ ok "pi-scout-run 0509 scout assembles research packet and runs pi when fresh"
 # drill here so CI covers the class without a workflow edit.
 bash "$repo_root/tests/scout-futility.test.sh"
 
+# fleet-ops#670: P14 runs this file. Host the token-efficiency debt drill
+# so the three shipped assembler hits cannot return without a CI fail.
+bash "$repo_root/tests/sr-token-efficiency-debt.test.sh"
+
 ok "0509 scout packet assembly: research-seeded, stale-fail-loud, pi-bound"

@@ -79,7 +79,6 @@ live_skip[worker-token-live.test.sh]=1
 known_orphans=(
   agent-cron-failure-reason.test.sh
   failure-mechanism-gate.test.sh
-  fleet-free-roster-canary.test.sh
   fleet-heartbeat-degraded-lane-glob.test.sh
   fleet-heartbeat-failed-units-recover.test.sh
   fleet-heartbeat-orphan-distinguish.test.sh
@@ -89,7 +88,6 @@ known_orphans=(
   install-manifest-comment-purity.test.sh
   memory-ledger-supersede.test.sh
   org-ruleset-skip-detector.test.sh
-  paid-flash-canary.test.sh
   pi-issue-run-defensive-mkdir.test.sh
   pi-issue-run-mid-session-bench.test.sh
   pi-issue-run-noop-bench.test.sh

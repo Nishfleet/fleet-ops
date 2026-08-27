@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "sr-pi-extensions-proven (fleet-ops#536). Only these ids may be wired under ~/.pi/agent/extensions or in settings.json packages/extensions. Add a row after a real-task run log exists. .bak and .disabled files are not live. A banned id that reappears as a live .ts or package is a gate fail.",
+  "_comment": "sr-pi-extensions-proven (fleet-ops#536, #635). Only these ids may be wired under ~/.pi/agent/extensions, in settings.json packages/extensions, or in any project-local .pi/extensions/ and .pi/settings.json under FLEET_PI_PROJECT_ROOTS. Add a row after a real-task run log exists. .bak and .disabled files are not live. A banned id that reappears as a live .ts or package is a gate fail.",
   "proven": [
     {
       "id": "bash-spawn-hook",
@@ -91,6 +91,11 @@
       "id": "git:github.com/stnly/pi-grok",
       "kind": "package",
       "proof": "settings.json packages; grok CLI provider package, live 2026-08-26"
+    },
+    {
+      "id": "compound-engineering",
+      "kind": "project-file",
+      "proof": "live VPS 2026-08-21; 3rd-party pi plugin at /home/nish/workspaces/tooling/compound-engineering-plugin/.pi/extensions/, scoped to its own project tree (only loaded when pi is launched from that cwd, not auto-loaded for other projects). package.json declares it as a pi extension entry."
     }
   ],
   "banned": [

@@ -29,7 +29,7 @@
     {
       "id": "sr-findings-queued",
       "source": "global-standing-rules.md: Every finding gets queued, automatically (Nish, 2026-08-22)",
-      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates — Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602)",
+      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates — Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602). Observe-to-close: a clean heartbeat tick closes the auto-filed issue when that session slug is no longer a finding (fleet-ops#724)",
       "proof": "bin/fleet-findings-queued; lib/findings-queued.py; tests/fleet-findings-queued.test.sh; fleet-heartbeat-tier1 block 15",
       "status": "enforced"
     },
@@ -276,7 +276,7 @@
     {
       "id": "sr-failed-command-flagged",
       "source": "global-standing-rules.md: A failed command is ALWAYS flagged, never walked past (Nish, 2026-08-24 - forbidden to repeat)",
-      "mechanism": "Heartbeat session-close lint: Pi JSONL toolResult isError / non-zero exit / timeout without later assistant text naming the failure is LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped. SPAWN_BLOCKED / harness confirmation blocks are skipped (command never ran).",
+      "mechanism": "Heartbeat session-close lint: Pi JSONL toolResult isError / non-zero exit / timeout without later assistant text naming the failure is LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped. SPAWN_BLOCKED / harness confirmation blocks are skipped (command never ran). Observe-to-close comments resolved-at when the slug ages out, then closes on a later tick (fleet-ops#650).",
       "proof": "bin/fleet-failed-command-flagged; lib/failed-command-flagged.py; tests/fleet-failed-command-flagged.test.sh; fleet-heartbeat-tier1 block 17",
       "status": "enforced"
     },
@@ -290,8 +290,8 @@
     {
       "id": "sr-pi-extensions-proven",
       "source": "global-standing-rules.md: Pi extensions: prefer them, but install only the proven (Nish, 2026-08-24)",
-      "mechanism": "Heartbeat allowlist canary: live ~/.pi/agent/extensions (*.ts and */index.ts) plus settings.json packages[] and extensions[] must be in config/pi-extensions-allowlist.json proven[]. A banned id that is live again, or any id not on proven, is LOUD + auto-filed + exit 1. Missing or malformed allowlist fails loud (watcher broken). .bak and .disabled files are ignored.",
-      "proof": "bin/fleet-pi-extensions-canary; config/pi-extensions-allowlist.json; tests/fleet-pi-extensions-canary.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#536",
+      "mechanism": "Heartbeat allowlist canary: live ~/.pi/agent/extensions (*.ts and */index.ts) plus settings.json packages[] and extensions[], AND every project .pi/extensions/ and .pi/settings.json under FLEET_PI_PROJECT_ROOTS (default: intake checkout_root + agent-worktrees + tooling, max-depth 6), must be in config/pi-extensions-allowlist.json proven[]. A banned id that is live again, or any id not on proven, is LOUD + auto-filed + exit 1. Missing or malformed allowlist fails loud (watcher broken). .bak and .disabled files are ignored.",
+      "proof": "bin/fleet-pi-extensions-canary; config/pi-extensions-allowlist.json; tests/fleet-pi-extensions-canary.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#536; fleet-ops#635",
       "status": "enforced"
     },
     {
