@@ -129,6 +129,12 @@ Steps:
    `git -C "$CHECKOUT" fetch origin`
    `git -C "$CHECKOUT" worktree add /home/nish/workspaces/agent-worktrees/issue-<repo>-<N> claim/issue-<N>`
    (git will create the local branch tracking origin/claim/issue-<N>; if the worktree dir already exists from your own prior attempt, reuse it.) Work ONLY inside that worktree. Never check out a feature or auditor branch on the fleet-ops deploy-clone itself (fleet-ops#477); that checkout must stay on main.
+   Clone convention (fleet-ops#1213): if you clone instead of worktree-add,
+   use `git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`.
+   Never `--dissociate` (throwaway worktrees). Never push to a mirror
+   (read-only fetch target). A missing or corrupt mirror degrades to a
+   plain clone (`--reference-if-able`); `git-mirror-update` quarantines
+   corrupt mirrors so that path is absent.
 4. If the issue is under-specified or the approach genuinely ambiguous: do NOT guess. Comment your concrete proposal and open questions on the issue, then
    `gh issue edit <N> -R Nishfleet/<repo> --add-label agent-blocked --remove-label agent-in-progress`,
    and end that comment with one or more machine-readable blocker lines so
