@@ -298,6 +298,99 @@ printf '%s\n' "$proof" | grep -q 'tests/fleet-precedence-band.test.sh' \
   || fail "proof must name this test (got: $proof)"
 printf '%s\n' "$proof" | grep -q 'lib/precedence-band.sh' \
   || fail "proof must name the bash library (got: $proof)"
+printf '%s\n' "$proof" | grep -q 'lib/pi-intake-tick.sh' \
+  || fail "proof must name the intake-tick hookup (got: $proof)"
+printf '%s\n' "$mech" | grep -q 'pi-intake-tick' \
+  || fail "mechanism must name pi-intake-tick (got: $mech)"
 ok "scenario15: matrix row is enforced with mechanism+proof"
 
-ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix"
+# --- 16. intake-tick sources the band and skips BEFORE the claim push -------
+tick="$repo_root/lib/pi-intake-tick.sh"
+[[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
+grep -F '. "$PRECEDENCE_BAND_LIB"' "$tick" >/dev/null \
+  || fail "intake-tick must source PRECEDENCE_BAND_LIB"
+grep -F 'precedence_band_allow_claim' "$tick" >/dev/null \
+  || fail "intake-tick must call precedence_band_allow_claim"
+grep -F 'skipped-precedence-band' "$tick" >/dev/null \
+  || fail "intake-tick must log skipped-precedence-band"
+allow_line=$(grep -n 'precedence_band_allow_claim' "$tick" | head -1 | cut -d: -f1)
+push_line=$(grep -n 'push --force-with-lease' "$tick" | head -1 | cut -d: -f1)
+[[ -n "$allow_line" && -n "$push_line" ]] || fail "intake-tick must contain allow_claim and claim push"
+[[ "$allow_line" -lt "$push_line" ]] \
+  || fail "allow_claim (line $allow_line) must run before claim push (line $push_line)"
+ok "scenario16: intake-tick sources the band and skips before the claim push"
+
+# --- 17. allow_claim: surge / product / band / multiplier -------------------
+# shellcheck source=/dev/null
+. "$shlib"
+base_policy_json | clean_policy
+export PRECEDENCE_BAND_JSON="$scratch/policy.json"
+export PRECEDENCE_BAND_NOW="2026-08-27T12:00:00Z"
+: >"$scratch/units.txt"
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units.txt"
+
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 9999 "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-surge-leverage" ]] \
+  || fail "scenario17a: expected skip-surge-leverage, got $reason"
+ok "scenario17a: surge skips a non-leverage fleet-ops claim"
+
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1223 "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17b: surge leverage must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-surge-leverage" ]] \
+  || fail "scenario17b: expected allow-surge-leverage, got $reason"
+ok "scenario17b: surge allows a leverage fleet-ops claim"
+
+set +e
+reason=$(precedence_band_allow_claim 0509 1299 "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17c: product must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-product" ]] \
+  || fail "scenario17c: expected allow-product, got $reason"
+ok "scenario17c: product claims are never gated"
+
+# Missing policy must not stall a product tick.
+export PRECEDENCE_BAND_JSON="$scratch/missing.json"
+set +e
+reason=$(precedence_band_allow_claim 0509 1299 "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17d: product with missing policy must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-product" ]] \
+  || fail "scenario17d: expected allow-product on missing policy, got $reason"
+ok "scenario17d: missing policy does not stall product intake"
+
+export PRECEDENCE_BAND_JSON="$scratch/policy.json"
+export PRECEDENCE_BAND_NOW="2026-08-28T03:30:00Z"
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+UNITS
+# 3 machinery / 3 total; a fourth machinery claim is 4/4 = 100% > 30%.
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 104 "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17e: band over-cap must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario17e: expected skip-band, got $reason"
+ok "scenario17e: band skips a machinery claim that would breach the cap"
+
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 104 $'band-multiplier: 2\n')
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17f: multiplier must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-multiplier" ]] \
+  || fail "scenario17f: expected allow-multiplier, got $reason"
+ok "scenario17f: band-multiplier lets machinery jump the cap"
+
+ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick"

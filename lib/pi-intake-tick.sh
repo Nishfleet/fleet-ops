@@ -57,9 +57,22 @@ WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
+# PRECEDENCE_BAND_LIB may be overridden by tests. Checkout fallback so a
+# worktree run still loads the sibling lib before install.sh copies it.
+PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
+_tick_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$PRECEDENCE_BAND_LIB" && -f "$_tick_dir/precedence-band.sh" ]]; then
+    PRECEDENCE_BAND_LIB="$_tick_dir/precedence-band.sh"
+fi
+[[ -f "$PRECEDENCE_BAND_LIB" ]] || {
+    echo "pi-intake-tick: precedence-band lib missing: $PRECEDENCE_BAND_LIB" >&2
+    exit 1
+}
 
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
 . "$SEAT_LIB"
+# shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
+. "$PRECEDENCE_BAND_LIB"
 
 # Step 1: list ready work
 issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 50 2>&1) || {
@@ -76,9 +89,7 @@ issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number
 # (not just label) also covers the stale-label window where an issue is still
 # agent-ready but carries a blocker.
 blocked_filter() {
-    local n="$1"
-    local body
-    body=$(gh issue view "$n" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || return 1
+    local body="$1"
     if printf '%s' "$body" | grep -qE '^blocked-on:'; then
         return 0
     fi
@@ -169,13 +180,32 @@ for i in "${!numbers[@]}"; do
         continue
     fi
 
+    # One body fetch serves both the blocker filter and the rent-paying band
+    # (band-multiplier lives on the body). A failed view is fail-closed: skip
+    # this issue this tick rather than claim a possibly-blocked or
+    # out-of-band issue. The next tick retries.
+    body=$(gh issue view "$N" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || {
+        echo "issue $N ($title): skipped-body-unreadable"
+        continue
+    }
+
     # Blocker filter: never claim an issue whose body carries a blocked-on:
     # line (machine dep or nish-decision). The claim is a no-op spawn churn
     # otherwise. Audit finding 2026-08-26: fleet-ops#87 looped exactly this way.
-    if blocked_filter "$N"; then
+    if blocked_filter "$body"; then
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
+
+    # Rent-paying band (fleet-ops#1223): until cutoff_utc, fleet-ops intake
+    # claims only surge_leverage_issues; after cutoff, a new machinery claim
+    # that would push live share over machinery_max_pct is skipped unless the
+    # body carries `band-multiplier: N`. Skip, do not fail the tick — product
+    # ticks still run, and the next fleet-ops tick retries when a slot opens.
+    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body") || {
+        echo "issue $N ($title): skipped-precedence-band ($band_reason)"
+        continue
+    }
 
     # Atomic create-only claim push (claim branch IS the work branch)
     status=0

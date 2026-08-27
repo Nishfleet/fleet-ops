@@ -143,14 +143,16 @@ precedence_band_over_cap() {
 precedence_band_allow_claim() {
     local repo="$1" n="$2" body="${3:-}"
     local phase pct
-    phase="$(precedence_band_phase)" || {
-        printf 'deny-config\n'
-        return 1
-    }
+    # Product repos are never gated by the machinery band. Check this
+    # before reading the policy so a missing config cannot stall 0509.
     if [[ "$repo" != "fleet-ops" ]]; then
         printf 'allow-product\n'
         return 0
     fi
+    phase="$(precedence_band_phase)" || {
+        printf 'deny-config\n'
+        return 1
+    }
     if [[ "$phase" == "surge" ]]; then
         if precedence_band_is_leverage_issue "$n"; then
             printf 'allow-surge-leverage\n'
