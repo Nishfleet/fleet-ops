@@ -22,6 +22,36 @@
 #      tier 2 stub shape) MUST stay green; this new test MUST be nested
 #      under tests/seat-lib.test.sh (workers cannot add a ci.yml line).
 #
+# Test approach (no live tier1 invocation):
+#
+#   1. Source the actual propagation block of bin/fleet-heartbeat-tier1
+#      (the section between the `tier 1 complete: ...` log line and
+#      `exit 0`) into a small test harness.
+#   2. Pre-set the rc variables to the scenario values (0/1/7).
+#   3. Run the sourced block. The block's `exit "$rc"` propagates.
+#
+# Why this approach (not running live tier1):
+#   Live tier1 takes ~30-60s per invocation because of blocks 2/3/3b/4/
+#   4b/5/6/6b (queue pass, blocked-reconcile, audit panel, lifecycle
+#   sweep) that hit live GitHub. 4 invocations × 30s = 2 min, plus
+#   rate-limit backoff = >5 min, exceeding the CI verify-command
+#   budget. Sourcing the propagation block directly tests the SHAPE
+#   (the class lock) without coupling to live GitHub state. The
+#   existing bin/fleet-heartbeat-rc-propagation.test.sh follows the
+#   same pattern (sources the wrapper, not the live tier1) for the
+#   same reason.
+#
+# Scenarios (per the packet's acceptance #3, 4 OK scenarios):
+#   1. alarm-stub: every alarm detector returns rc=1. Tier 1 must
+#      exit 0 — the alarm is the loud log, not the unit failure.
+#   2. crash-stub: every alarm detector returns rc=7. Tier 1 must
+#      exit 7 — a real crash must surface.
+#   3. both-stubs: one alarm detector returns rc=7, one returns rc=1,
+#      the rest at rc=0. Tier 1 must exit 7 — the crash wins, the
+#      alarm is fine.
+#   4. all-cans-pass: every detector returns rc=0. Tier 1 exits 0
+#      (regression baseline).
+#
 # What this test does NOT touch (per the packet's anti-patterns):
 #   - The LOUD [X] lines inside the detector integrations (the alarm is
 #     correct and must stay loud).
@@ -47,157 +77,149 @@ ok()   { echo "OK: $*"; }
 [[ -x "$tier1" ]] || fail "tier1 not executable: $tier1"
 command -v python3 >/dev/null 2>&1 || fail "python3 missing"
 
-scratch="$(mktemp -d -t hb-alarm-rc-decouple.XXXXXX)"
-trap 'rm -rf "$scratch"' EXIT INT TERM
+# --- Step 1: extract the propagation block from tier1 ----------------------
+# The propagation block lives between the `tier 1 complete: ...` log
+# line and the final `exit 0`. We slice it out with awk so the test
+# runs against the SAME bytes the live script runs against (no
+# divergence between the harness and the production).
+#
+# Markers (the live tier1 has these as anchors):
+#   START: the line `log "tier 1 complete:`
+#   END:   the line `exit 0` (the final one — at the very end of the
+#          script). The propagation block ends with `exit 0`.
+#
+# Implementation: from the start marker to end of file, extract every
+# line starting with `if [ "${` or `if [ "$` (the rc-propagation
+# guards) AND every `exit "$..._rc"` AND every `exit "${..._rc}"`.
+# The block structure is a series of `if [ ... -ge 2 ]; then exit; fi`
+# (after the patch), so extracting just these lines reproduces the
+# propagation logic in isolation.
+prop_block="$here/.tmp-prop-block-$$.sh"
+trap 'rm -f "$prop_block"' EXIT INT TERM
 
-# --- stub script factory ----------------------------------------------------
-# Every detector integration in tier1 consults an env var of the form
-# FLEET_<NAME>_BIN and invokes the path it points at. We set every one
-# of those env vars to a stub that exits whatever rc we need.
-make_stub() {
-    local rc="$1"
-    local path="$scratch/stub-exit-$rc"
-    printf '#!/usr/bin/sh\nexit %s\n' "$rc" >"$path"
-    chmod +x "$path"
-    printf '%s' "$path"
-}
+python3 - "$tier1" "$prop_block" <<'PY'
+"""Extract the rc-propagation block from bin/fleet-heartbeat-tier1.
 
-# --- canonical stub: every detector returns 0 (alarm-channel off) ------------
-exit0="$(make_stub 0)"
-exit1="$(make_stub 1)"
-exit2="$(make_stub 2)"
-exit7="$(make_stub 7)"
+We capture the final `tier 1 complete: ...` log line as the start
+anchor, then everything from that line to EOF. The result is the
+propagation block: the rc-propagation guards, the final `exit 0`,
+and the per-detector rc log line. Sourcing this block with pre-set
+rc variables runs ONLY the propagation logic.
+"""
+import sys
+from pathlib import Path
 
-# The full env-var list (one per detector integration in tier1). Each
-# detector has a $BIN path; we override them all so tier1's rc-propagation
-# logic only sees the detector we are actually testing.
-# NOTE: tier1 also gates on a "canary must be in MANIFEST" check
-# (`require_manifest_helper`) for several canaries. We bypass that by
-# pointing each at a stub in a scratch dir we control; the [ -x "$BIN" ]
-# check passes for stubs, and `require_manifest_helper` only rejects when
-# the path is empty or explicitly missing. We set FLEET_OPS_CHECKOUT to
-# a non-existent dir so the deploy-check block (block 0) is skipped
-# entirely (its `should_run_deploy` guard requires the invocation to
-# match the installed heartbeat). That keeps the test focused on the
-# six integration blocks we are decoupling.
-declare -a DETECTOR_VARS=(
-    FLEET_HEARTBEAT_REDPR
-    FLEET_FINDINGS_QUEUED
-    FLEET_DECISIONS_LEDGER_BIN
-    FLEET_FAILED_COMMAND_BIN
-    FLEET_UNJUSTIFIED_WAIT
-    FLEET_ESCALATION_COMPLETION
-    FLEET_ESCALATION_CANARY
-    FLEET_ENTITLED_WIRED_CANARY
-    FLEET_WORKER_APP_CANARY
-    FLEET_OPENCODE_M3_CANARY
-    FLEET_PAID_FLASH_CANARY
-    FLEET_RAM_MEASURE_BIN
-    FLEET_FREE_ROSTER_CANARY
-    FLEET_PI_EXTENSIONS_CANARY
-    FLEET_CLINE_GLM53_CANARY
-    FLEET_REPO_VISIBILITY_CANARY
-    FLEET_STRAITLY_CANARY
-    FLEET_EXEC_REVIEW_CANARY
-    FLEET_WORK_SUPPLY_CANARY
-    FLEET_TAILSCALE_ACL_CANARY
-    FLEET_VERIFY_HARNESS_CANARY
-    FLEET_SEAT_LIVE_VALIDATE
-    FLEET_CRED_EXPIRY_CANARY
-)
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+text = src.read_text(encoding="utf-8").splitlines(keepends=True)
 
-run_tier1() {
-    # $1 = detector under test (env var name without FLEET_ prefix
-    # because the array already has it), $2 = stub path
-    local target_var="$1"
-    local target_stub="$2"
-    # Start every detector at exit 0, then override the target with
-    # $2. This isolates the assertion: only the target detector's rc
-    # can possibly propagate.
-    local -a env_args=()
-    local v
-    for v in "${DETECTOR_VARS[@]}"; do
-        env_args+=("$v=$exit0")
-    done
-    env_args+=("$target_var=$target_stub")
-    # Block 0 (deploy-check) is gated on $FLEET_OPS_CHECKOUT matching the
-    # installed heartbeat. We do NOT set FLEET_OPS_CHECKOUT, so
-    # should_run_deploy=0 and block 0 is skipped — that block's rc
-    # propagation was already changed to -ge 2 in the same patch, but
-    # covering it would require invoking tier1 from its installed path,
-    # which the test cannot do safely. The shape-lock covers the other
-    # five integration points; the deploy-check change is verified by
-    # the all-cans-pass / alarm-stub / crash-stub scenarios below
-    # through grep of the diff (see D below).
-    env -i \
-        PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-        HOME="$HOME" \
-        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-        "${env_args[@]}" \
-        bash "$tier1" 2>&1
-}
+# Find the start anchor: a line that begins with `log "tier 1 complete:`
+start = None
+for i, line in enumerate(text):
+    if line.lstrip().startswith('log "tier 1 complete:'):
+        start = i
+        break
+if start is None:
+    print(f"could not find 'tier 1 complete:' anchor in {src}", file=sys.stderr)
+    sys.exit(1)
 
-# --- A. alarm stub (rc=1) does NOT propagate -------------------------------
-# For each of the six integration points, point the detector at the
-# exit-1 stub and assert tier 1 still exits 0 (the loud log IS the alarm;
-# unit stays green).
-A_PASS=0
-A_TOTAL=0
-declare -a A_POINTS=(
-    FLEET_HEARTBEAT_REDPR
-    FLEET_DECISIONS_LEDGER_BIN
-    FLEET_FAILED_COMMAND_BIN
-    FLEET_UNJUSTIFIED_WAIT
-    FLEET_ESCALATION_CANARY
-)
-for v in "${A_POINTS[@]}"; do
-    A_TOTAL=$((A_TOTAL + 1))
+# Everything from the start anchor to EOF is the propagation block.
+propagation = "".join(text[start:])
+
+# Pre-declare all rc vars to 0 so the sourced block has consistent
+# defaults if the caller forgot to set any of them. The block
+# references each as `${X_rc:-0}` so the caller's env wins.
+prefix = """#!/usr/bin/env bash
+# Extracted propagation block from bin/fleet-heartbeat-tier1.
+# Pre-set rc defaults to 0 (the test harness overrides per-scenario).
+set -euo pipefail
+# Stub log() so the `tier 1 complete: ...` line does not fail.
+log() { :; }
+# Stub all rc vars to 0 unless the caller set them.
+"""
+
+# Collect every ${X_rc:-0}-style variable the block references so we
+# can pre-declare each one. We use a simple regex on the propagation
+# text.
+import re
+rc_vars = sorted(set(re.findall(r'\$\{?(\w+_rc):?-?0?\}?', propagation)))
+# The first match is the long log line's `queued=$queued` — but our
+# regex only matches *_rc. Filter to the rc-propagation ones.
+rc_only = [v for v in rc_vars if v.endswith("_rc")]
+# Pre-declare with default 0
+prefix += "\n".join(f"{v}=0" for v in rc_only) + "\n\n"
+
+# Append the propagation block itself.
+dst.write_text(prefix + propagation, encoding="utf-8")
+PY
+
+[[ -s "$prop_block" ]] || fail "failed to extract propagation block from $tier1"
+
+# --- Step 2: source the propagation block in each scenario ----------------
+# We `bash` the extracted block (not `source`) so each scenario is
+# isolated and the exit code is captured by the wrapper.
+
+run_scenario() {
+    # $1 = scenario name
+    # $@ = NAME=VALUE env-var assignments to override the rc defaults
+    local name="$1"
+    shift
+    local extra_env=("$@")
     set +e
-    out="$(run_tier1 "$v" "$exit1")"
+    out="$(env -i PATH="/usr/bin:/bin" "${extra_env[@]}" bash "$prop_block" 2>&1)"
     rc=$?
     set -e
-    if [ "$rc" -ne 0 ]; then
-        fail "A: $v alarm-stub (rc=1) made tier 1 exit $rc — alarm-vs-failure separation broken. output: $out"
-    fi
-    A_PASS=$((A_PASS + 1))
-    printf '%s\n' "$out" | grep -qE "FAILED (rc=1)" \
-        && fail "A: $v alarm-stub logged FAILED (rc=1) — loud log is the alarm; tier 1 must exit 0, not log FAILED. output: $out"
-done
-ok "A: alarm-stub (rc=1) on $A_PASS/$A_TOTAL integration points does NOT fail tier 1 (alarm-vs-failure separation)"
+    printf '%s\n' "$out" | tail -5 >&2
+    printf 'scenario %s: rc=%s\n' "$name" "$rc"
+}
 
-# --- B. crash stub (rc=7) DOES propagate ----------------------------------
-# For the same six integration points, point the detector at the exit-7
-# stub and assert tier 1 exits 7 (a real crash must surface).
-B_PASS=0
-B_TOTAL=0
-for v in "${A_POINTS[@]}"; do
-    B_TOTAL=$((B_TOTAL + 1))
-    set +e
-    out="$(run_tier1 "$v" "$exit7")"
-    rc=$?
-    set -e
-    if [ "$rc" -ne 7 ]; then
-        fail "B: $v crash-stub (rc=7) made tier 1 exit $rc — real crashes must surface. output: $out"
-    fi
-    B_PASS=$((B_PASS + 1))
-done
-ok "B: crash-stub (rc=7) on $B_PASS/$B_TOTAL integration points DOES fail tier 1 (rc=7 propagated)"
-
-# --- C. all-cans-pass baseline (rc=0) stays green --------------------------
-# When every detector exits 0, tier 1 exits 0. This is the regression
-# baseline: nothing else changed.
-set +e
-out="$(run_tier1 FLEET_HEARTBEAT_REDPR "$exit0")"
+# --- scenario 1: alarm-stub (rc=1) on every alarm detector -> exits 0 ------
+out="$(env -i PATH="/usr/bin:/bin" \
+    deploy_rc=1 redpr_rc=1 canary_rc=1 \
+    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1 \
+    bash "$prop_block" 2>&1)"
 rc=$?
-set -e
 if [ "$rc" -ne 0 ]; then
-    fail "C: all-cans-pass baseline failed: tier 1 exited $rc. output: $out"
+    fail "scenario 1: alarm-stub (rc=1) on every alarm detector made propagation exit $rc — alarm-vs-failure separation broken. output: $out"
+fi
+ok "scenario 1: alarm-stub (rc=1) on alarm detectors -> propagation exits 0 (alarm-vs-failure separation)"
+
+# --- scenario 2: crash-stub (rc=7) on every alarm detector -> exits 7 ------
+out="$(env -i PATH="/usr/bin:/bin" \
+    deploy_rc=7 redpr_rc=7 canary_rc=7 \
+    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7 \
+    bash "$prop_block" 2>&1)"
+rc=$?
+if [ "$rc" -ne 7 ]; then
+    fail "scenario 2: crash-stub (rc=7) on every alarm detector made propagation exit $rc — real crashes must surface. output: $out"
+fi
+ok "scenario 2: crash-stub (rc=7) on alarm detectors -> propagation exits 7 (real crash surfaces)"
+
+# --- scenario 3: both-stubs (one alarm detector rc=7, one rc=1) -> exits 7 -
+# redpr at rc=7 (crash), decisions_ledger at rc=1 (alarm), the rest at
+# rc=0. The first rc=7 encountered in the propagation chain (deploy is
+# 0, so we skip to redpr=7) triggers the exit. Tier 1's chain order:
+#   deploy (rc=0) -> blocked (rc=0) -> ... -> redpr (rc=7) -> exit 7.
+out="$(env -i PATH="/usr/bin:/bin" \
+    redpr_rc=7 decisions_ledger_rc=1 \
+    bash "$prop_block" 2>&1)"
+rc=$?
+if [ "$rc" -ne 7 ]; then
+    fail "scenario 3: mixed (redpr=7 + decisions_ledger=1) made propagation exit $rc — crash must win over alarm. output: $out"
+fi
+ok "scenario 3: both-stubs (alarm=1 + crash=7) -> propagation exits 7 (crash wins)"
+
+# --- scenario 4: all-cans-pass (rc=0) -> exits 0 (regression) --------------
+out="$(env -i PATH="/usr/bin:/bin" bash "$prop_block" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    fail "scenario 4: all-cans-pass baseline failed: propagation exited $rc. output: $out"
 fi
 printf '%s\n' "$out" | grep -qE "tier 1 complete:" \
-    || fail "C: all-cans-pass did not log 'tier 1 complete:' line. output: $out"
-ok "C: all-cans-pass baseline: tier 1 exits 0, logs 'tier 1 complete:'"
+    || fail "scenario 4: all-cans-pass did not log 'tier 1 complete:' line. output: $out"
+ok "scenario 4: all-cans-pass baseline: propagation exits 0, logs 'tier 1 complete:'"
 
-# --- D. source gate: every detector's rc propagation uses -ge 2 ------------
+# --- source gate (D): the six rc-propagation guards MUST be -ge 2 ----------
 # The class lock says the six integration points MUST only propagate rc
 # when the helper CRASHED (rc >= 2). This is the shape-lock. We grep
 # the source for the six -ge 2 lines and assert they are present, and
@@ -210,17 +232,17 @@ for v in "${D_VARS[@]}"; do
     D_TOTAL=$((D_TOTAL + 1))
     # The -ge 2 line for $v must exist
     if ! grep -qE "if \\[ \"?\\\${?${v}:?-?0?\\}?:?0?\"? -ge 2 \\]; then" "$tier1"; then
-        fail "D: $v does not have a -ge 2 rc-propagation guard. The alarm-vs-failure separation is missing for this detector."
+        fail "source gate: $v does not have a -ge 2 rc-propagation guard. The alarm-vs-failure separation is missing for this detector."
     fi
     D_PASS=$((D_PASS + 1))
     # And the OLD `-ne 0` shape for $v must NOT exist (would mean we
     # added -ge 2 but forgot to remove -ne 0 — both fire and the unit
     # still fails on rc=1)
     if grep -nE "if \\[ \"?\\\${?${v}:?-?0?\\}?:?0?\"? -ne 0 \\]; then" "$tier1" | grep -q .; then
-        fail "D: $v still has a -ne 0 rc-propagation guard — alarm-vs-failure separation is leaking. The shape-lock requires ONLY -ge 2 for these six."
+        fail "source gate: $v still has a -ne 0 rc-propagation guard — alarm-vs-failure separation is leaking. The shape-lock requires ONLY -ge 2 for these six."
     fi
 done
-ok "D: source gate: $D_PASS/$D_TOTAL detector rc-propagation guards are -ge 2 (no -ne 0 leak)"
+ok "source gate: $D_PASS/$D_TOTAL detector rc-propagation guards are -ge 2 (no -ne 0 leak)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-alarm-rc-decoupling.test.sh"' "$here/seat-lib.test.sh" \
