@@ -101,7 +101,21 @@ mask the failing `git checkout` tail. The same session can carry BOTH
 shapes (a &&-chain with a `git fetch origin` prefix AND a follow-up
 bare `cd <worktree> && git checkout main` recovery attempt); each is
 its own finding and must be emitted with the worktree-conflict
-fingerprint, not mixed with the other toolResult's snippet. A spawn-guard or harness block (SPAWN_BLOCKED
+fingerprint, not mixed with the other toolResult's snippet. A `git
+branch -f <branch> <ref>` (or `git push --force` / `git push --force-
+with-lease`) run inside the worktree that has `<branch>` checked out is
+the same worktree-ownership class (fleet-ops#849, #985): git refuses
+with `fatal: cannot force update the branch '<branch>' used by worktree
+at '<path>'` and exits 128, the next turn is a recovery toolCall
+(`git checkout -b tmp-clean origin/main ...`) with only a thinking-block
+reason and no user-facing text naming the failure, and `git branch -f`
+is NOT in the git-ref probe family (GIT_BENIGN_RE covers only
+log|rev-parse|show|diff|cat-file|shortlog), so the failure must be
+flagged. #985 is the leftover open duplicate of #849 for the 01a04105
+git-branch-force session (same signal slug); the leftover-duplicate
+observe-to-close drain for that pile is locked under
+tests/fleet-failed-command-observe-duplicate-git-branch-force.test.sh.
+A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
 
