@@ -104,9 +104,12 @@ PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=
 out=$(mktemp); err=$(mktemp)
 spawn_start_s=$(date -u +%s)
 rc=0
+# fleet-ops#786: the static prompt body must be the prefix so prompt-cache
+# hits survive across ticks. Volatile seat/slug/timestamp stamps live AFTER
+# the cat, not before.
 if {
-        printf 'AGENT_CRON_SLUG=%s\nWORKDIR=%s\nPROVIDER=%s\nMODEL=%s\nRUN_TS=%s\n' "$slug" "$WORKDIR" "$np" "$nm" "$TS"
         cat "$PROMPT"
+        printf '\n---\nAGENT_CRON_SLUG=%s\nWORKDIR=%s\nPROVIDER=%s\nMODEL=%s\nRUN_TS=%s\n' "$slug" "$WORKDIR" "$np" "$nm" "$TS"
     } | (cd "$WORKDIR" && timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm") >"$out" 2>"$err"; then
     rc=0
 else

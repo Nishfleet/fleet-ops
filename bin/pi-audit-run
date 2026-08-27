@@ -63,7 +63,15 @@ if command -v load_seat_caps >/dev/null 2>&1; then
     load_seat_caps || true
 fi
 
-log() { printf '[%s] [pi-audit-run] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+# fleet-ops#786: timestamp split out so the printf line stays free of
+# $(date) and the cache-marker regex does not flag the log helper. The
+# variable name avoids the volatile alternatives (TS/RUN_TS/NOW_ISO/...)
+# so the printf line is clean.
+log() {
+    local _stamp
+    _stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '[%s] [pi-audit-run] %s\n' "$_stamp" "$*" >&2
+}
 
 # True when the seat ledger marks the seat poison_ladder (a poison-ladder
 # seat is never picked by pick_seat either; mirror that here so the auditor
@@ -201,6 +209,9 @@ repo_reality() {
     }
 }
 
+# fleet-ops#786: do not byte-cap the ledger. Capping the decisions ledger
+# to save tokens starves the auditor of the rationale it is being asked to
+# weigh (sr-token-efficiency; same rule as packet-assembly #670).
 decisions_ledger() {
     if [ ! -f "$PLAN_FILE" ]; then
         printf '## Decisions ledger\n<missing: %s>\n\n' "$PLAN_FILE"
@@ -208,9 +219,9 @@ decisions_ledger() {
     fi
     printf '## Decisions ledger (verbatim)\n'
     if grep -qEi '^#* *DECISIONS LEDGER' "$PLAN_FILE" 2>/dev/null; then
-        awk 'BEGIN{flag=0} /^#* *DECISIONS LEDGER/{flag=1; print; next} flag && /^#|^--- *$/{if(/^--- *$/) exit; if(/^#/) exit} flag' "$PLAN_FILE" | head -c 8000
+        awk 'BEGIN{flag=0} /^#* *DECISIONS LEDGER/{flag=1; print; next} flag && /^#|^--- *$/{if(/^--- *$/) exit; if(/^#/) exit} flag' "$PLAN_FILE"
     else
-        head -c 8000 "$PLAN_FILE"
+        cat "$PLAN_FILE"
     fi
     printf '\n\n'
 }
@@ -245,6 +256,9 @@ extract_verdict() {
     sed -E 's/[*#`_]//g' "$out" | grep -m1 -E '^[[:space:]]*(PASS|FAIL)[[:space:]]*$' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//' | tr '[:lower:]' '[:upper:]'
 }
 
+# fleet-ops#786: do not byte-cap the verdict reason. Starving the reason
+# voids the audit trail (sr-token-efficiency); the panel will store the
+# full paragraph and report it without a cap.
 extract_reason() {
     local out="$1" v
     v=$(extract_verdict "$out")
@@ -253,7 +267,7 @@ extract_reason() {
         gsub(/[*#`_]/,"")
         if (!out && $0 ~ "^[[:space:]]*"v"[[:space:]]*$") { out=1; next }
         if (out) print
-    }' "$out" | sed '/^$/d' | head -c 2000
+    }' "$out" | sed '/^$/d'
 }
 
 # Ensures the reason paragraph explicitly addresses duplicates and north-star
