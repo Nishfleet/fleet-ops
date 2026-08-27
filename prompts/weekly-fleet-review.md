@@ -132,7 +132,7 @@ Hard caps (NEVER exceed):
 In a single sweep, with no further research:
 
 1. File the up-to-5 adopted actions as `agent-ready` issues in
-   `Nishfleet/fleet-ops`. Use `gh issue create -R Nishfleet/fleet-ops
+   `Nishfleet/fleet-ops`. Use `fleet-issue-file file -R Nishfleet/fleet-ops
    --label agent-ready --title "..." --body "..."`. Each body must end
    with the `signal: wfr-action/<filename>` so the self-score next week
    can attribute the action.

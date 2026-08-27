@@ -60,7 +60,11 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ISSUE_FILE_PY = process.env.FLEET_ISSUE_FILE_LIB
+  || resolve(dirname(fileURLToPath(import.meta.url)), "../../lib/issue-file.py");
 
 const DEFAULT_LOOKBACK_HOURS = 6;
 const DEFAULT_WINDOW_HOURS = 6;
@@ -695,13 +699,14 @@ export function fileEscalation(escalationRepo, e, opts = {}) {
   const title = renderIssueTitle(e);
   const body = renderIssueBody(e);
   try {
-    const num = execGh("gh", [
-      "issue", "create",
+    const num = execFileSync("python3", [
+      ISSUE_FILE_PY,
+      "file",
       "--repo", escalationRepo,
       "--title", title,
       "--body", body,
       "--label", label,
-    ], { timeoutMs: 60_000 });
+    ], { encoding: "utf8", timeout: 60_000, env: process.env });
     const n = Number((num || "").trim().split("/").pop());
     return Number.isFinite(n) && n > 0 ? n : null;
   } catch (error) {

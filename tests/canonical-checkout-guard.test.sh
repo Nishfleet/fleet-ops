@@ -31,7 +31,7 @@ grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must emit DEPLOY-NONCANONICAL"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must emit DRIFT-SOURCE"
-grep -q 'gh issue create' "$repo_root/bin/fleet-ops-drift.py" \
+grep -q 'issue-file.py' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file"
 
 scratch="$(mktemp -d -t canonical-checkout-guard.XXXXXX)"

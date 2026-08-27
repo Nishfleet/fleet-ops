@@ -63,6 +63,20 @@ SKIP_FETCH = os.environ.get("FLEET_OPS_SKIP_FETCH", "") == "1"
 SYSTEMCTL = os.environ.get("FLEET_OPS_SYSTEMCTL", "systemctl")
 GH = os.environ.get("GH", "gh")
 DRIFT_REPO = os.environ.get("FLEET_OPS_DRIFT_REPO", "Nishfleet/fleet-ops")
+
+
+def issue_file_py() -> str:
+    env = os.environ.get("FLEET_ISSUE_FILE_LIB")
+    if env:
+        return env
+    here = Path(__file__).resolve().parent
+    cand = here.parent / "lib" / "issue-file.py"
+    installed = HOME / ".local" / "lib" / "pi-packet" / "issue-file.py"
+    if cand.is_file():
+        return str(cand)
+    if installed.is_file():
+        return str(installed)
+    return str(cand)
 DRIFT_FILE = os.environ.get("FLEET_OPS_DRIFT_FILE", "1") == "1"
 ALLOW_NONCANONICAL = os.environ.get("FLEET_OPS_ALLOW_NONCANONICAL", "") == "1"
 WORKSPACES_ROOT = Path(os.environ.get("FLEET_OPS_WORKSPACES_ROOT", "/home/nish/workspaces"))
@@ -181,11 +195,14 @@ def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
 
     full = f"{msg}\n\n{extra}\n\n{marker}\n"
     try:
+        env = os.environ.copy()
+        env["GH"] = GH
         proc = subprocess.run(
-            [GH, "issue", "create", "-R", DRIFT_REPO, "--title", title, "--body", full],
+            [sys.executable, issue_file_py(), "file", "-R", DRIFT_REPO, "--title", title, "--body", full],
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
         if proc.returncode == 0:
             log(f"filed: {title}")

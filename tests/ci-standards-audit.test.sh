@@ -168,6 +168,11 @@ bash "$here/p14-unstubbed-unit-verify.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#1212: filing-time same-problem dedupe helper. Hosted here so
+# P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/issue-file.test.sh"
+
 # fleet-ops#695: same-repo `Closes <repo>#N` rejection gate. Pure
 # evaluator hosted by this listed test so the drill runs in P14
 # without a workflow-file edit (the worker App cannot push

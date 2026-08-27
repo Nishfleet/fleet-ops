@@ -32,6 +32,7 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
 _canon_script=$(readlink -f "$0")
 _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
@@ -169,7 +170,7 @@ while IFS= read -r row; do
         "$detail" \
         "Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close)." \
         "$signal")
-    if created=$("$GH" issue create -R "$REPO" --title "$title" --body "$body" 2>/tmp/role-gate-create.err); then
+    if created=$("$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$body" 2>/tmp/role-gate-create.err); then
         log "FILED $fid -> $created"
         filed=$((filed + 1))
     else

@@ -109,6 +109,7 @@ export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
 # Resolve the repo root from this script's canonical path. When installed as a
 # symlink (the normal case) this follows the link to the active checkout.
@@ -577,7 +578,7 @@ else
                 body=$(python3 "$RULE_LIB" issue-body --json "$item")
                 if command -v "$GH" >/dev/null 2>&1; then
                     set +e
-                    created=$("$GH" issue create -R "$RULE_ISSUE_REPO" --title "$title" --body "$body" 2>/tmp/rule-enforcement-create.err)
+                    created=$("$ISSUE_FILE" file -R "$RULE_ISSUE_REPO" --title "$title" --body "$body" 2>/tmp/rule-enforcement-create.err)
                     create_rc=$?
                     set -e
                     if [[ "$create_rc" -eq 0 ]]; then

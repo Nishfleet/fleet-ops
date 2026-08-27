@@ -61,6 +61,7 @@ READY_WORK="${FLEET_READY_WORK:-$AS/READY-WORK.md}"
 NOW_ISO="${FLEET_UNJUSTIFIED_WAIT_NOW:-}"
 CLAIM_STALE_HOURS="${FLEET_CLAIM_STALE_HOURS:-24}"
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 ISSUE_REPO="${FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES:-1}"
 
@@ -330,7 +331,7 @@ Do not close until the detector reports this clean on a real heartbeat tick (obs
 $signal"
     set +e
     local created
-    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
     local rc=$?
     set -e
     if [[ "$rc" -eq 0 ]] && [[ -n "$created" ]]; then
