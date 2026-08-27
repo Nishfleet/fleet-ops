@@ -36,7 +36,7 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059) is a
+`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059, #1172) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
@@ -81,7 +81,28 @@ of the archived copy as discharging the read-ENOENT of the original
 path. The dedicated regression test
 tests/fleet-failed-command-read-enoent-archived-packet.test.sh pins
 that. The auto-filed issue closes via observe-to-close when the session
-mtime ages out of the 24h window. An `edit`
+mtime ages out of the 24h window. #1172 is
+the same stale-checkout read-ENOENT shape as #1001 but on a DIFFERENT
+session slug (the 01a0435d session, where a worker implementing #1001
+tried to read "the rest of" the canary script from the same stale,
+non-canonical checkout
+`/home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary`
+with `offset=1000`, BUNDLED in the SAME assistant turn with a
+successful `find ... -name '*.sh'` and a successful
+`ls .../fleet-ops-deploy-clone/bin/` that DID list
+`fleet-escalation-canary` at the canonical path, got the live
+`ENOENT: no such file or directory, access '<path>'` shape, and walked
+past it with thinking + "Now let me read the detector and the relevant
+test files." prose that moved on to a different file); it is a singleton
+read-ENOENT filed by the same detector as the 01a03e61 pile, so the
+citation chain must carry it. A future detector refactor must not
+treat a successful canonical-path `find` + `ls` bundled in the SAME
+turn as a stale-path read-ENOENT as discharging the read-ENOENT, must
+not treat a high `offset` as turning a read-ENOENT into a probe, and
+must not treat "Now let me read the detector" prose moving on to a
+different file as a flag. The dedicated regression drill is pinned in
+tests/fleet-failed-command-read-enoent-thinking.test.sh (scenario 5).
+An `edit`
 tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) — or the variant
