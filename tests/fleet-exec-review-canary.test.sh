@@ -15,6 +15,10 @@
 #  10. Broken watch (missing helper / bad fixture) fails loud.
 #  11. Contracts: worker.md, heartbeat wiring, MANIFEST, nested CI host,
 #      matrix enforced, no bin/exec-review dispatcher.
+#  12. Observe-to-close: a green tick comments resolved-at on a previously
+#      filed slug that now has a receipt; a later tick with that marker
+#      closes; a still-dirty slug is neither commented nor closed
+#      (fleet-ops#729).
 #
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,18 +78,57 @@ case "$cmd" in
         printf '%s\n' "$body" >> "$f"
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
+      comment)
+        num=""; body=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --body) body="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            *)
+              if [ -z "$num" ]; then num="$1"; fi
+              shift
+              ;;
+          esac
+        done
+        printf '%s\n' "$body" >"$store/issue-${num}.comments"
+        printf '%s\n' "$num" >>"$store/commented"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#issuecomment-1"
+        ;;
       list)
         printf '[\n'
         first=1
-        n=0
-        for f in "$store"/*.body; do
+        for f in "$store"/issue-*.body; do
           [ -f "$f" ] || continue
-          n=$((n+1))
+          num=$(basename "$f" .body)
+          num=${num#issue-}
+          [ -f "$store/issue-${num}.closed" ] && continue
           body=$(tail -n +2 "$f")
+          comments_file="$store/issue-${num}.comments"
+          if [ -f "$comments_file" ]; then
+            comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
+          else
+            comments_json='[]'
+          fi
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+          printf '{"number":%s,"title":"","body":%s,"comments":%s}' "$num" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
         done
         printf '\n]\n'
+        ;;
+      close)
+        num=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --reason|--comment|--repo|-R) shift 2 ;;
+            *)
+              if [ -z "$num" ]; then num="$1"; fi
+              shift
+              ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        : > "$store/issue-${num}.closed"
+        printf '%s\n' "$num" >>"$store/closed"
+        echo "Closed issue #$num"
         ;;
       *) exit 1 ;;
     esac
@@ -314,6 +357,96 @@ jq -e '.rules[] | select(.id == "sr-execution-is-review" and .status == "enforce
   || fail "sr-execution-is-review must be status=enforced in the matrix"
 [[ ! -e "$repo_root/bin/exec-review" ]] \
   || fail "bin/exec-review must not exist (inner loop stays agentic)"
+grep -q 'observe-to-close' "$bin" \
+  || fail "fleet-exec-review-canary must observe-to-close auto-filed receipts (fleet-ops#729)"
 ok "11: contracts: worker.md, heartbeat, MANIFEST, nested CI, matrix enforced, no dispatcher"
 
-echo "OK: fleet-exec-review-canary: receipt gate, skip drill, observe-to-open, dedupe, broken watch"
+# --- 12. observe-to-close (fleet-ops#729) -----------------------------------
+rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+: >"$triage"
+printf '%s\n' "fix(exec-review): Nishfleet/fleet-ops#668" >"$gh_store/issue-729.body"
+printf '%s\n' "Do not close until the detector reports this clean.
+
+signal: exec-review-receipt/Nishfleet/fleet-ops#668" >>"$gh_store/issue-729.body"
+
+# Green tick: PR 668 now has a receipt. Comment resolved-at; do not close yet.
+cat >"$scratch/prs-668-receipt.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/fleet-ops",
+    "number": 668,
+    "title": "feat: token efficiency",
+    "body": "## Summary\nchanged\n\n## Verification:\n- exit 0\n",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/fleet-ops/pull/668",
+    "headRefName": "claim/issue-523",
+    "author": {"login": "app/nishfleet-worker", "is_bot": true}
+  }
+]
+JSON
+FLEET_EXEC_REVIEW_FILE=1 FLEET_EXEC_REVIEW_CLOSE=1 \
+  run_scan "$scratch/prs-668-receipt.json" \
+  || fail "12a: receipt PR must exit 0 ($(cat "$scratch/scan.err"))"
+grep -q "OBSERVED-RESOLVED" "$scratch/scan.err" \
+  || fail "12a: green tick must log OBSERVED-RESOLVED ($(cat "$scratch/scan.err"))"
+grep -q '^729$' "$gh_store/commented" \
+  || fail "12a: green tick must comment on #729 (commented=$(cat "$gh_store/commented"))"
+grep -q "resolved-at: signal: exec-review-receipt/Nishfleet/fleet-ops#668" \
+  "$gh_store/issue-729.comments" \
+  || fail "12a: comment missing resolved-at marker"
+if [ -s "$gh_store/closed" ]; then
+  fail "12a: same-tick must not close (closed=$(cat "$gh_store/closed"))"
+fi
+ok "12a: observe-to-close: green tick comments resolved-at, does not close same tick"
+
+# Later tick: marker already present, slug still absent from findings -> close
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 FLEET_EXEC_REVIEW_CLOSE=1 \
+  run_scan "$scratch/prs-668-receipt.json" \
+  || fail "12b: close tick must exit 0 ($(cat "$scratch/scan.err"))"
+grep -q "OBSERVE-CLOSED" "$scratch/scan.err" \
+  || fail "12b: later tick must log OBSERVE-CLOSED ($(cat "$scratch/scan.err"))"
+grep -q '^729$' "$gh_store/closed" \
+  || fail "12b: later tick must close #729 (closed=$(cat "$gh_store/closed"))"
+if [ -s "$gh_store/commented" ]; then
+  fail "12b: later tick must not comment again (commented=$(cat "$gh_store/commented"))"
+fi
+ok "12b: observe-to-close: later tick with resolved-at marker closes"
+
+# Still-dirty: PR 668 still has no receipt, even with a resolved-at marker
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+rm -f "$gh_store/issue-729.closed"
+: >"$triage"
+cat >"$scratch/prs-668-skip.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/fleet-ops",
+    "number": 668,
+    "title": "feat: token efficiency",
+    "body": "## Summary\nchanged\n\nCloses #523\n",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/fleet-ops/pull/668",
+    "headRefName": "claim/issue-523",
+    "author": {"login": "app/nishfleet-worker", "is_bot": true}
+  }
+]
+JSON
+FLEET_EXEC_REVIEW_FILE=1 FLEET_EXEC_REVIEW_CLOSE=1 \
+  run_scan "$scratch/prs-668-skip.json" \
+  || fail "12c: still-dirty must stay exit 0 (observe-to-open) ($(cat "$scratch/scan.err"))"
+if [ -s "$gh_store/closed" ]; then
+  fail "12c: still-dirty slug must not close (closed=$(cat "$gh_store/closed"))"
+fi
+if [ -s "$gh_store/commented" ]; then
+  fail "12c: still-dirty slug must not comment resolved-at (commented=$(cat "$gh_store/commented"))"
+fi
+grep -q "still a finding" "$scratch/scan.err" \
+  || fail "12c: expected still-a-finding skip ($(cat "$scratch/scan.err"))"
+ok "12c: observe-to-close: still-dirty slug is neither commented nor closed"
+
+echo "OK: fleet-exec-review-canary: receipt gate, skip drill, observe-to-open, observe-to-close, dedupe, broken watch"
