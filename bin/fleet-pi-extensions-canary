@@ -3,13 +3,15 @@
 #
 # Standing rule sr-pi-extensions-proven (Nish 2026-08-24): reach for Pi
 # extensions before writing anything, but install only ones proven on a
-# real task in this environment. Pi auto-discovers ~/.pi/agent/extensions
-# and also loads settings.json packages[] / extensions[]. Official docs
-# have no proven-install allowlist (settings.extensions is additive extra
+# real task in this environment. Pi auto-discovers ~/.pi/agent/extensions,
+# .pi/extensions/ (project-local, loaded after project trust), and
+# settings.json packages[] / extensions[]. Official docs have no
+# proven-install allowlist (settings.extensions is additive extra
 # paths; pi config only toggles already-installed package resources).
 #
 # This canary is the class prevention: every heartbeat tick, the live
-# wired set is diffed against config/pi-extensions-allowlist.json.
+# wired set (global + each known project checkout's .pi/) is diffed
+# against config/pi-extensions-allowlist.json.
 #   1. An id not in proven -> LOUD + auto-file + exit 1 (unproven-wired).
 #   2. A banned id that is live again -> LOUD + auto-file + exit 1
 #      (banned-wired). The disabled-*.ts leftovers stay quiet.
@@ -20,12 +22,23 @@
 # Absence of a proven id is not a fail: the rule is install-only-proven,
 # not must-install-all-proven.
 #
+# Project-local coverage (fleet-ops#635): a project .pi/ is loaded after
+# pi decides trust (defaultProjectTrust=always on this box trusts every
+# project). FLEET_PI_PROJECT_ROOTS is the colon-separated list of roots
+# whose subdirs are walked for .pi/extensions/ and .pi/settings.json.
+# Default: intake-repos.json checkout_root + agent-worktrees + tooling.
+#
 # No new scheduler. Run by fleet-heartbeat-tier1 block 22.
 #
 # Environment seams (tests):
 #   FLEET_PI_EXTENSIONS_DIR         default $HOME/.pi/agent/extensions
 #   FLEET_PI_SETTINGS_JSON          default $HOME/.pi/agent/settings.json
 #   FLEET_PI_EXTENSIONS_ALLOWLIST   default $FLEET_OPS_REPO/config/pi-extensions-allowlist.json
+#   FLEET_PI_PROJECT_ROOTS          colon-separated project roots
+#                                   (default: intake checkout_root +
+#                                   agent-worktrees + tooling)
+#   FLEET_PI_PROJECT_MAX_DEPTH      walk depth under each project root
+#                                   (default 6 — catches nested worktrees)
 #   FLEET_HEARTBEAT_TRIAGE          triage file
 #   FLEET_PI_EXTENSIONS_REPO        default Nishfleet/fleet-ops
 #   FLEET_PI_EXTENSIONS_FILE        1 (default) file issues; 0 skip gh
@@ -173,6 +186,75 @@ signal: rule-enforcement/sr-pi-extensions-proven"
         "$SETTINGS_JSON" >>"$scratch/live.txt"
     jq -r '.extensions // [] | .[] | select(type=="string" and length>0)' \
         "$SETTINGS_JSON" >>"$scratch/live.txt"
+fi
+
+# Project-local .pi/extensions/ and .pi/settings.json (fleet-ops#635).
+# Pi auto-discovers .pi/ at cwd (and walks up for trust). A project that
+# commits a .pi/extensions/<name>.ts or .pi/extensions/<name>/index.ts,
+# or a .pi/settings.json with packages[] / extensions[], will be loaded
+# after the project is trusted. On this box defaultProjectTrust=always
+# so every project's .pi/ is live. The set of "known checkouts" is the
+# FLEET_PI_PROJECT_ROOTS list; each root is walked for .pi/extensions/
+# and .pi/settings.json under it (up to FLEET_PI_PROJECT_MAX_DEPTH).
+PI_PROJECT_ROOTS="${FLEET_PI_PROJECT_ROOTS-}"
+# Only build defaults when the env var is UNSET. An explicit empty
+# value (FLEET_PI_PROJECT_ROOTS="") disables the project scan, which
+# the tests rely on to keep the global-only scenarios deterministic.
+if [[ -z "${FLEET_PI_PROJECT_ROOTS+x}" ]]; then
+    PI_PROJECT_ROOTS=""
+    intake="$FLEET_OPS_REPO/config/intake-repos.json"
+    if [[ -f "$intake" ]] && jq -e . "$intake" >/dev/null 2>&1; then
+        cr=$(jq -r '.checkout_root // empty' "$intake" 2>/dev/null || true)
+        [[ -n "$cr" && "$cr" != "null" ]] && PI_PROJECT_ROOTS="$cr"
+    fi
+    for fallback in /home/nish/workspaces/agent-worktrees /home/nish/workspaces/tooling; do
+        case ":$PI_PROJECT_ROOTS:" in
+            *":$fallback:"*) ;;
+            *) PI_PROJECT_ROOTS="${PI_PROJECT_ROOTS:+$PI_PROJECT_ROOTS:}$fallback" ;;
+        esac
+    done
+fi
+PI_PROJECT_MAX_DEPTH="${FLEET_PI_PROJECT_MAX_DEPTH:-6}"
+
+if [[ -n "$PI_PROJECT_ROOTS" ]]; then
+    IFS=':' read -r -a _proj_roots_arr <<<"$PI_PROJECT_ROOTS"
+    for proot in "${_proj_roots_arr[@]}"; do
+        [[ -d "$proot" ]] || continue
+        log "project root: $proot (max_depth=$PI_PROJECT_MAX_DEPTH)"
+        # Project .pi/extensions/*.ts (skip .bak and .disabled)
+        while IFS= read -r f; do
+            base="${f##*/}"
+            case "$base" in
+                *'.bak'*|*.disabled*) continue ;;
+            esac
+            printf '%s\n' "${base%.ts}" >>"$scratch/live.txt"
+        done < <(find "$proot" -maxdepth "$PI_PROJECT_MAX_DEPTH" \
+            -path '*/.pi/extensions/*.ts' -type f 2>/dev/null)
+        # Project .pi/extensions/*/index.ts (subdir form)
+        while IFS= read -r idx; do
+            d="${idx%/index.ts}"
+            name="${d##*/}"
+            printf '%s\n' "$name" >>"$scratch/live.txt"
+        done < <(find "$proot" -maxdepth "$PI_PROJECT_MAX_DEPTH" \
+            -path '*/.pi/extensions/*/index.ts' -type f 2>/dev/null)
+        # Project .pi/settings.json with packages[] and extensions[]
+        while IFS= read -r pj; do
+            if ! jq -e . "$pj" >/dev/null 2>&1; then
+                loud "PI-EXTENSIONS-WATCHER-BROKEN" "project settings.json unreadable: $pj"
+                file_finding "project-settings" "watcher-broken" \
+                    "pi project settings.json unreadable (sr-pi-extensions-proven)" \
+                    "The proven-extension canary cannot parse project \`$pj\`. packages[] and extensions[] are install vectors.
+
+signal: rule-enforcement/sr-pi-extensions-proven"
+                exit 1
+            fi
+            jq -r '.packages // [] | .[] | select(type=="string" and length>0)' \
+                "$pj" >>"$scratch/live.txt"
+            jq -r '.extensions // [] | .[] | select(type=="string" and length>0)' \
+                "$pj" >>"$scratch/live.txt"
+        done < <(find "$proot" -maxdepth "$PI_PROJECT_MAX_DEPTH" \
+            -path '*/.pi/settings.json' -type f 2>/dev/null)
+    done
 fi
 
 sort -u "$scratch/live.txt" -o "$scratch/live.txt"

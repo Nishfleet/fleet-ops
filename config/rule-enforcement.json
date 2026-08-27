@@ -290,8 +290,8 @@
     {
       "id": "sr-pi-extensions-proven",
       "source": "global-standing-rules.md: Pi extensions: prefer them, but install only the proven (Nish, 2026-08-24)",
-      "mechanism": "Heartbeat allowlist canary: live ~/.pi/agent/extensions (*.ts and */index.ts) plus settings.json packages[] and extensions[] must be in config/pi-extensions-allowlist.json proven[]. A banned id that is live again, or any id not on proven, is LOUD + auto-filed + exit 1. Missing or malformed allowlist fails loud (watcher broken). .bak and .disabled files are ignored.",
-      "proof": "bin/fleet-pi-extensions-canary; config/pi-extensions-allowlist.json; tests/fleet-pi-extensions-canary.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#536",
+      "mechanism": "Heartbeat allowlist canary: live ~/.pi/agent/extensions (*.ts and */index.ts) plus settings.json packages[] and extensions[], AND every project .pi/extensions/ and .pi/settings.json under FLEET_PI_PROJECT_ROOTS (default: intake checkout_root + agent-worktrees + tooling, max-depth 6), must be in config/pi-extensions-allowlist.json proven[]. A banned id that is live again, or any id not on proven, is LOUD + auto-filed + exit 1. Missing or malformed allowlist fails loud (watcher broken). .bak and .disabled files are ignored.",
+      "proof": "bin/fleet-pi-extensions-canary; config/pi-extensions-allowlist.json; tests/fleet-pi-extensions-canary.test.sh; fleet-heartbeat-tier1 block 22; fleet-ops#536; fleet-ops#635",
       "status": "enforced"
     },
     {
