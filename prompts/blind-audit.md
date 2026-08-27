@@ -111,3 +111,9 @@ has passed IS a loud gap — file it as a finding.
   fleet-ops#410 retargets it. `./install.sh --check` from the parent is
   expected to DIFF and is NOT a gap. Do not file "live fleet runs from
   deploy-clone" as a finding (that is fleet-ops#367).
+- For Nishfleet/fleet-ops, P14 is an explicit `verify-command` list in
+  `.github/workflows/ci.yml` plus tests hosted by a listed test (workers
+  cannot push workflow files). A test invoked from a listed test IS in
+  CI. Do not file "test is not in the CI P14 list" from a `grep` of
+  `.github/workflows/` alone. Confirm with
+  `bash tests/p14-test-listing-gate.test.sh` first (fleet-ops#619).

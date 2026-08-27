@@ -421,5 +421,12 @@ ok "scenario10: tier1 block 4b invokes fleet-heartbeat-auditor and fails the tic
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \
     || fail "fleet-heartbeat-low-water-mark.test.sh must host this file (CI cannot gain a new workflow line)"
 ok "hosted by fleet-heartbeat-low-water-mark.test.sh"
+# fleet-ops#619: listing gate must refuse to park this file as a known
+# orphan. Without that, dropping the host and adding an orphan entry
+# would leave the panel untested in CI.
+grep -Fq 'fleet-heartbeat-auditor.test.sh must be listed in ci.yml or hosted' \
+    "$here/p14-test-listing-gate.test.sh" \
+    || fail "p14-test-listing-gate.test.sh must lock this file as P14-reachable (fleet-ops#619)"
+ok "listing gate refuses to orphan this file (fleet-ops#619)"
 
 ok "fleet-heartbeat-auditor: starts missing pi-audit units, recovers failed ones, tallies 2-of-3, fails closed, raises stale-pending alarm"

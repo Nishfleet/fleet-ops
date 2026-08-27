@@ -351,6 +351,6 @@ ok "scenario8: hours>=12 and ready>=lanes -> no dispatch"
 
 ok "low-water-mark: dispatch on ready<lanes or hours<12; skip otherwise"
 
-# fleet-ops#616: workers cannot add a ci.yml line. The auditor panel
-# recovery drill rides on this listed #146 test.
+# fleet-ops#616 / #619: workers cannot add a ci.yml line. The auditor
+# panel drill rides on this listed #146 test so it stays in P14.
 bash "$here/fleet-heartbeat-auditor.test.sh"
