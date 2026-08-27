@@ -65,10 +65,12 @@ fi
 if [[ "$kind" == "pr" ]]; then
     case "$repo" in
         Nishfleet/0509)
-            printf '[{"number":1,"headRefName":"claim/issue-100"},{"number":2,"headRefName":"p1/feature"}]\n'
+            # One product PR: 0509 remains the only product receiving supply.
+            printf '[{"number":1,"headRefName":"claim/issue-100"}]\n'
             ;;
         Nishfleet/fleet-ops)
-            printf '[{"number":3,"headRefName":"claim/issue-50"}]\n'
+            # Two control-plane PRs: fleet-ops precedence is deliberate.
+            printf '[{"number":2,"headRefName":"claim/issue-50"},{"number":3,"headRefName":"p1/ops"}]\n'
             ;;
         *)
             printf '[]\n'
@@ -116,10 +118,14 @@ env_rc=$?
 set -e
 [[ "$env_rc" == 0 ]] || fail "healthy tick must exit 0, got $env_rc ($env_out)"
 
-# The throughput line must show product=2, control-plane=1.
-grep -q 'merged_product_PRs=2' "$triage" || fail "triage missing product PR split (got: $(cat "$triage"))"
-grep -q 'merged_control_plane_PRs=1' "$triage" || fail "triage missing control-plane PR split (got: $(cat "$triage"))"
+# The throughput line must show product=1, control-plane=2.
+grep -q 'merged_product_PRs=1' "$triage" || fail "triage missing product PR split (got: $(cat "$triage"))"
+grep -q 'merged_control_plane_PRs=2' "$triage" || fail "triage missing control-plane PR split (got: $(cat "$triage"))"
 grep -q 'merged_fleet_worker_PRs=3' "$triage" || fail "triage missing total split (got: $(cat "$triage"))"
-ok "throughput line splits product (2) vs control-plane (1)"
 
-ok "fleet-heartbeat throughput: product-vs-control-plane split correct"
+# When control-plane merges exceed product merges, the canary must NOT treat
+# the ratio as a fault. It must emit a deliberate-precedence line instead.
+grep -q 'THROUGHPUT-PRECEDENCE-OK' "$triage" || fail "triage missing THROUGHPUT-PRECEDENCE-OK line for infra-heavy ratio (got: $(cat "$triage"))"
+ok "throughput line splits product (1) vs control-plane (2) and logs precedence-ok"
+
+ok "fleet-heartbeat throughput: product-vs-control-plane split and precedence logging correct"

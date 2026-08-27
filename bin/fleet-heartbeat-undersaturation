@@ -156,6 +156,9 @@ emit_throughput() {
     done <<< "$enrolled_repos"
 
     loud "THROUGHPUT" "merged_product_PRs=$product_total merged_control_plane_PRs=$control_total merged_fleet_worker_PRs=$merged_total since=$last_ts${details:+ per-repo:$details}"
+    if [ "$control_total" -gt "$product_total" ] 2>/dev/null; then
+        loud "THROUGHPUT-PRECEDENCE-OK" "fleet-ops:$control_total > product:$product_total — infra-heavy merge ratio is deliberate per 2026-08-27 ledger decision (fleet-ops precedence over 0509, for now); 0509 remains the only product in supply"
+    fi
     date -u +%Y-%m-%dT%H:%M:%SZ > "$THROUGHPUT_STATE"
 }
 
