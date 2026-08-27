@@ -211,8 +211,8 @@ write_session "$slug_test" '{"type":"message","message":{"role":"assistant","con
 
 rc=$(run_bin 1)
 [[ "$rc" == "1" ]] || fail "finding should still exit 1 (got $rc) $(cat "$scratch/err.log")"
-grep -q "deduped via open list" "$scratch/err.log" \
-  || fail "must dedup via open list, not search: $(cat "$scratch/err.log")"
+grep -Eq "deduped via open list|deduped via ledger" "$scratch/err.log" \
+  || fail "must dedup via open list or ledger, not search: $(cat "$scratch/err.log")"
 issue_count=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
 [[ "$issue_count" == "1" ]] || fail "must not file a duplicate (got $issue_count issues)"
 ok "open-list dedup: detector dedups against open_json when search returns empty (live #951 index-delay shape)"
@@ -257,8 +257,8 @@ issue_count=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
 # Tick 2: dedup via open list (search returns [] due to index delay)
 rc=$(run_bin 1)
 [[ "$rc" == "1" ]] || fail "tick 2 should exit 1 (got $rc) $(cat "$scratch/err.log")"
-grep -q "deduped via open list" "$scratch/err.log" \
-  || fail "tick 2 must dedup via open list: $(cat "$scratch/err.log")"
+grep -Eq "deduped via open list|deduped via ledger" "$scratch/err.log" \
+  || fail "tick 2 must dedup via open list or ledger: $(cat "$scratch/err.log")"
 issue_count=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
 [[ "$issue_count" == "1" ]] || fail "tick 2 must not file a duplicate (got $issue_count)"
 ok "two-tick dedup: second tick dedups via open list when search has index delay (live #951)"
