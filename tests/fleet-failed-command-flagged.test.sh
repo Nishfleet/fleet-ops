@@ -8,6 +8,9 @@
 #   3. isError plus later "the call failed" -> exit 0.
 #   3d. SPAWN_BLOCKED (command never ran; live #648 git_stash_forbidden) -> exit 0.
 #   4. grep/rg exit 1 (POSIX no-match) -> exit 0.
+#   4a. live #942: xargs grep/rg exit 123 (xargs aggregates grep no-match
+#       exit 1 into 123) -> exit 0. xargs rm exit 123 (non-search) and
+#       xargs grep with a real error (Permission denied) -> exit 1.
 #   5. Origin case: 404 Not Found walked past -> exit 1.
 #   6. Timeout unflagged -> exit 1.
 #   6d. Bash [N/M] progress + timeout, flag only in toolCall comment (live #686) -> exit 1.
@@ -305,6 +308,81 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "grep exit 1 should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "grep exit 1 is treated as no-match, not a swallowed failure"
 rm -f "$sessions/grep-nomatch.jsonl"
+
+# --- 4a. live #942: xargs grep exit 123 is POSIX no-match -------------------
+# Real live shape from the session that auto-filed the issue:
+#   `find ... -name "*.conf" 2>&1 | xargs grep -l "AUDIT_" 2>/dev/null
+#    && echo "---" && ls -la ... 2>&1 | head -20`
+# xargs exits 123 when an invoked command exits 1-125; grep exit 1 is
+# no-match, so xargs 123 is the same no-match class as direct grep exit 1.
+# The && chain stops at the xargs 123, so the toolResult shows "(no output)"
+# and "Command exited with code 123". The detector must treat this as a
+# benign no-match probe, not a swallowed failure.
+write_session "xargs-grep-nomatch" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_xg","name":"bash","arguments":{"command":"find /home/nish/.config/systemd -name \"*.conf\" 2>&1 | xargs grep -l \"AUDIT_\" 2>/dev/null && echo \"---\" && ls -la /home/nish/.config/systemd/user/ 2>&1 | head -20"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_xg","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 123"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No matches in any drop-in. Let me check the service file directly."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "xargs grep exit 123 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "xargs grep exit 123 (live #942) is treated as no-match, not a swallowed failure"
+rm -f "$sessions/xargs-grep-nomatch.jsonl"
+
+# --- 4a-flags. xargs with flags before grep, exit 123, is still benign ------
+write_session "xargs-flags-grep" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_xf","name":"bash","arguments":{"command":"find . -name '*.ts' -print0 | xargs -0 grep -l \"TODO\" 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_xf","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 123"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No TODO markers found. Clean."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "xargs -0 grep exit 123 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "xargs with flags before grep, exit 123, is still benign"
+rm -f "$sessions/xargs-flags-grep.jsonl"
+
+# --- 4a-rg. xargs rg exit 123 is also benign --------------------------------
+write_session "xargs-rg-nomatch" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_xr","name":"bash","arguments":{"command":"find . -name '*.py' | xargs rg \"deprecated\" 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_xr","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 123"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nothing deprecated. Moving on."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "xargs rg exit 123 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "xargs rg exit 123 is treated as no-match, not a swallowed failure"
+rm -f "$sessions/xargs-rg-nomatch.jsonl"
+
+# --- 4a-real. xargs grep exit 123 with a real error is still flagged --------
+# xargs 123 can also come from grep exit 2 (e.g. Permission denied). When the
+# text carries a real error indicator (Permission denied is in REAL_ERR_RE),
+# the detector must still flag it as a swallowed failure.
+write_session "xargs-grep-real-err" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_xp","name":"bash","arguments":{"command":"find /root -name '*.conf' 2>&1 | xargs grep -l \"AUDIT_\" 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_xp","toolName":"bash","isError":true,"content":[{"type":"text","text":"grep: /root/secret.conf: Permission denied\n\nCommand exited with code 123"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on to the next check."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "xargs grep with Permission denied should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "xargs grep Permission denied must be flagged as swallowed"
+ok "xargs grep exit 123 with a real error (Permission denied) is still flagged"
+rm -f "$sessions/xargs-grep-real-err.jsonl"
+
+# --- 4a-nonsearch. xargs rm exit 123 is a real failure, not benign ----------
+# xargs 123 from a non-search command (rm, chmod, etc.) is a real error, not
+# a no-match probe. XARGS_BENIGN_RE only matches xargs wrapping grep/rg/diff.
+write_session "xargs-rm-real" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_xrm","name":"bash","arguments":{"command":"find /tmp/stale -type f | xargs rm 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_xrm","toolName":"bash","isError":true,"content":[{"type":"text","text":"rm: cannot remove '/tmp/stale/locked': Operation not permitted\n\nCommand exited with code 123"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Done with cleanup."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "xargs rm exit 123 should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "xargs rm exit 123 must be flagged as swallowed"
+ok "xargs rm exit 123 (non-search command) is still flagged as swallowed"
+rm -f "$sessions/xargs-rm-real.jsonl"
 
 # --- 4b. ls no-match (exit 2) is a probe, not a swallowed failure -----------
 write_session "ls-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"cd /tmp && echo \"---\"; ls nonexistent-glob-* 2>/dev/null"}}]}}
