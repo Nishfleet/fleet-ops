@@ -62,7 +62,7 @@
     {
       "id": "opencode",
       "class": "free",
-      "note": "OpenCode Zen (ledger name opencode-go). hy3-free and mimo-v2.5-free are live (fleet-ops#640); deepseek-v4-flash-free benched at cap=0 after pi spawn returned 'Model is unavailable' (2026-08-27, fleet-ops#639). MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
+      "note": "OpenCode Zen (ledger name opencode-go). hy3-free and mimo-v2.5-free are live (fleet-ops#640); deepseek-v4-flash-free benched at cap=0 after pi spawn returned 'Model is unavailable' (2026-08-27, fleet-ops#639); x-preview-f-free benched at cap=0 after pi spawn returned 'Model x-preview-f-free is not supported' (HTTP 401, 2026-08-27, fleet-ops#811). MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
     },
     {
       "id": "orcarouter",

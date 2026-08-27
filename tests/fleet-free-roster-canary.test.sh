@@ -354,4 +354,45 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slug"
 
+# --- 14. production lock: x-preview-f-free stay-benched (fleet-ops#811) ----
+# The class prevention for "auditioned free slug silently unwired after a
+# failed live spawn": a later PR that removes the cap=0 row or the dated
+# reason without a passing re-audition fails this lock. The cap=0 row is
+# required so the canary stops re-filing "free-slug-available" on every
+# tick while the slug sits in the catalog but the API rejects it.
+xpf_cap=$(jq -r '.providers.opencode.models["x-preview-f-free"] // "missing"' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$xpf_cap" == "missing" ]]; then
+  fail "scenario14: production seat-caps must keep an x-preview-f-free row (cap=0 bench, fleet-ops#811)"
+fi
+if [[ "$xpf_cap" != "0" ]]; then
+  fail "scenario14: production x-preview-f-free must be capped 0 while the API returns 401 (got $xpf_cap, fleet-ops#811)"
+fi
+# Dated reason field required: the cap=0 row is the bench, the dated reason
+# is the audit trail. The reason must cite fleet-ops#811 and the date.
+reason=$(jq -r '.providers.opencode._x_preview_f_free // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario14: production seat-caps must carry _x_preview_f_free dated reason (fleet-ops#811)"
+fi
+if ! grep -qE 'fleet-ops#811' <<<"$reason"; then
+  fail "scenario14: _x_preview_f_free must cite fleet-ops#811 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario14: _x_preview_f_free must start with an ISO date (got: $reason)"
+fi
+# No billing sibling (x-preview) on the opencode allowlist: free-form is the
+# only path; a billing row would be a money lane on a free-class provider.
+# Exclude the free-form slug itself (`x-preview-f-free`) and any other
+# free-form variant (`x-preview-*-free` / `x-preview-*/...`).
+while IFS= read -r k; do
+  lk="${k,,}"
+  case "$lk" in
+    x-preview-f-free|x-preview-*-free|x-preview-*/*) : ;;  # free-form variants allowed
+    x-preview|x-preview-*|*/x-preview|*/x-preview-*)
+      fail "scenario14: production opencode allowlists a non-free x-preview slug: $k" ;;
+  esac
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario14: production seat-caps keep x-preview-f-free benched at cap=0 with dated reason and no billing sibling"
+
 ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
