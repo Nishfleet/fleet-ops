@@ -49,6 +49,18 @@ case "$cmd" in
   api)
     endpoint="$1"
     shift
+    case "$endpoint" in
+      repos/*/issues/*/comments)
+        issue_num="$(printf '%s' "$endpoint" | awk -F/ '{print $(NF-1)}')"
+        record "ISSUE_COMMENT $issue_num REST"
+        cat >/dev/null || true
+        if [ -n "${GH_COMMENT_REST_FAIL:-}" ]; then
+          echo "REST: comment create failed" >&2
+          exit 1
+        fi
+        exit 0
+        ;;
+    esac
     filter=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -129,8 +141,11 @@ case "$cmd" in
       record "ISSUE_CREATE title=$title body=$body label=$label"
       exit 0
     elif [ "$sub" = "comment" ]; then
-      record "ISSUE_COMMENT $*"
-      exit 0
+      # Production AUTO_REVERT_PAT cannot call GraphQL addComment (fleet-ops#596).
+      # Always fail this subcommand so a revert to `gh issue comment` reddens A2/A3.
+      record "ISSUE_COMMENT_GRAPHQL $*"
+      echo "GraphQL: Resource not accessible by personal access token (addComment)" >&2
+      exit 1
     elif [ "$sub" = "close" ]; then
       record "ISSUE_CLOSE $*"
       exit 0
@@ -370,6 +385,47 @@ if grep -q "ISSUE_CREATE" "$calls_a3"; then
 fi
 ok "scenario A3: multiple SKIP issues -> comment on oldest, close extras as duplicates"
 
+# Scenario A5 (fleet-ops#596): REST comment create fails. SKIP must still
+# exit 0 — the halt issue already exists; a comment API failure must not
+# paint Auto revert red on main.
+calls_a5="$scratch/calls-a5"
+: > "$calls_a5"
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$head_sha" \
+    RUN_NAME="CI" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/128" \
+    GH_CALLS_FILE="$calls_a5" \
+    REQUIRED_CONTEXTS_JSON="$required_contexts" \
+    CHECK_RUNS_JSON="$check_runs_a" \
+    GH_HALT_ISSUE_NUMBER="42" \
+    GH_HALT_ISSUE_TITLE="AUTO-REVERT SKIP: only non-required checks failed" \
+    GH_COMMENT_REST_FAIL="1" \
+    bash "$script"
+) >"$scratch/scenario-a5.out" 2>"$scratch/scenario-a5.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario A5: expected exit 0 when REST comment fails, got $rc (stderr: $(cat "$scratch/scenario-a5.err"))"
+grep -q "ISSUE_COMMENT 42 " "$calls_a5" \
+  || fail "scenario A5: expected a REST comment attempt on #42, got calls: $(cat "$calls_a5")"
+if grep -q "ISSUE_COMMENT_GRAPHQL" "$calls_a5"; then
+  fail "scenario A5: must not fall back to GraphQL gh issue comment, got calls: $(cat "$calls_a5")"
+fi
+if grep -q "ISSUE_CREATE" "$calls_a5"; then
+  fail "scenario A5: must not create a new halt issue when one is already open, got calls: $(cat "$calls_a5")"
+fi
+if grep -q "PR_CREATE\|PR_MERGE" "$calls_a5"; then
+  fail "scenario A5: must not open or merge a revert PR, got calls: $(cat "$calls_a5")"
+fi
+ok "scenario A5: REST comment failure on existing SKIP issue -> exit 0, no revert"
+
 # Scenario B: the required Semgrep check failed. Should open a revert PR.
 check_runs_b="$scratch/check-runs-b.json"
 cat >"$check_runs_b" <<'EOF'
@@ -417,6 +473,17 @@ fi
 ok "scenario B: Semgrep (required) failed -> revert PR created and armed"
 
 ok "auto-revert gates on required checks: non-required skips, required reverts"
+
+# fleet-ops#596: GraphQL `gh issue comment` reddens Auto revert on a PAT.
+# The fake `issue comment` subcommand always exits 1 with that production
+# error, so A2/A3 fail if the script reverts. Also lock the source.
+if grep -E '^[[:space:]]*gh[[:space:]]+issue[[:space:]]+comment[[:space:]]' "$script"; then
+  fail "auto-revert.sh must post comments via REST (gh api .../comments), not GraphQL gh issue comment"
+fi
+if ! grep -q 'repos/${REPO}/issues/${num}/comments' "$script"; then
+  fail "auto-revert.sh must POST comments to repos/\$REPO/issues/\$num/comments"
+fi
+ok "contract: halt comments use REST, not GraphQL gh issue comment"
 
 # fleet-ops#349: stale auto-revert PRs must close themselves so heartbeat
 # cannot auto-merge them after main has moved. A named ci.yml step is out

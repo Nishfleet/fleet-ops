@@ -35,7 +35,17 @@ halt () {
       2>/dev/null || true)"
   fi
   if [ -n "$num" ]; then
-    gh issue comment "$num" --repo "$REPO" --body "$body"
+    # gh issue comment uses GraphQL addComment. AUTO_REVERT_PAT is a personal
+    # access token; GitHub refuses that mutation with
+    # "Resource not accessible by personal access token (addComment)"
+    # (run 33014946635, fleet-ops#596). REST Create an issue comment accepts
+    # the same PAT. `gh api -F` POSTs when fields are set (see gh api --help).
+    # Comment failure must not redden Auto revert: the halt issue already
+    # exists, which is the loud surface. SKIP then exits 0.
+    if ! printf '%s' "$body" | gh api "repos/${REPO}/issues/${num}/comments" \
+         -F body=@- >/dev/null; then
+      echo "warning: REST comment on #${num} failed; halt issue already open" >&2
+    fi
     extras="$(printf '%s' "$hits" | jq -r --arg t "$title" --arg n "$num" \
       '.[] | select(.title == $t and (.number | tostring) != $n) | .number' \
       2>/dev/null || true)"
