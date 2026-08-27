@@ -488,6 +488,22 @@ seat_usable() {
         seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
         return 1
     fi
+    # Auditor 2026-08-27: hang_bench (model accepted request but never
+    # finalised before TimeoutStartSec / PI_HANG_TIMEOUT_S). Same fail-open
+    # semantics as overload_bench; a 180s default is short so the ladder
+    # is not starved if the hang self-clears.
+    if [[ "$hc" == "hang_bench" ]]; then
+        if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
+            seat_log "seat $p/$m: benched until $bench_until (hang_bench)"
+            return 1
+        fi
+        if [[ -n "$bench_until" ]]; then
+            seat_log "seat $p/$m: hang bench expired ($bench_until passed) — assuming usable (fail-open)"
+            return 0
+        fi
+        seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
+        return 1
+    fi
     if ! _seat_observed_fresh "$observed"; then
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
         return 0
@@ -1646,6 +1662,80 @@ mark_seat_overload_bench() {
         return 0
     fi
     seat_log "overload-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- hang bench (auditor 2026-08-27, pi-scout-repair@0509 hung) ------------
+# A seat whose model accepted the request (no 429, no 5xx, no quota wall) but
+# never sent a final response before the unit's TimeoutStartSec / wrapper
+# PI_HANG_TIMEOUT_S killed it is a HUNG SEAT, not a transient. The reactive
+# seat-health ledger only writes on a live-session response hook, so a hang
+# never records itself — pick_seat then re-offers the same hung seat to the
+# next worker, which stalls the same way (this is the auditor 2026-08-27
+# 14:12Z trip on pi-scout-repair@0509: opencode/nemotron-3-ultra-free had
+# health_class=healthy (last probe PONG 08:44:03Z) but never finalised a
+# real 8KB packet; systemd TimeoutStartSec=1800 killed the unit at
+# 14:12:15Z with status=15/TERM; no other bench class fits this shape).
+#
+# Distinct failure_mode="hang_no_response" so the auditor / post-mortem
+# tooling can tell hang benches apart from quota/cap/overload. Default
+# window is short (180s) — a hang often self-resolves within a minute or
+# two (the upstream has to drain a stuck connection); a longer default
+# would starve the ladder for no reason. Caller can override with
+# mark_seat_hang_bench <p> <m> <text>; if the text contains an explicit
+# "retry after Ns" or "resets in N" window we use it.
+mark_seat_hang_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    # Try to parse an advertised reset window from the text (rare for a
+    # hang; included for symmetry with the other benches).
+    local window_s=180  # short default; hangs usually clear in < 1 min
+    local parsed
+    parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
+    [[ "$parsed" =~ ^[0-9]+$ ]] && (( parsed > 0 )) && window_s="$parsed"
+
+    local now_utc bench_until
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$(($(date -u +%s) + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.hang.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg observed "$now_utc" --arg bench_until "$bench_until" \
+        --argjson window_s "$window_s" --argjson merged "$merged_count" \
+        '{
+          provider:$provider, model:$model,
+          http_status:0, retry_after:null,
+          health_class:"hang_bench",
+          retryable:true, seat_dead:false, poison_ladder:false,
+          observed_at:$observed,
+          source:"hang_no_response",
+          failure_mode:"hang_no_response",
+          bench_until:$bench_until,
+          hang_window_s:$window_s,
+          consecutive_failure_count:$merged
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "hang-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "hang-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count) — hung unit TimeoutStartSec / PI_HANG_TIMEOUT_S"
+        return 0
+    fi
+    seat_log "hang-bench: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }
