@@ -85,6 +85,36 @@ if leaked:
 PY
 ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format (fleet-ops#636)"
 
+# fleet-ops#709: behaviour-locked. Build a scratch repo with a real
+# vault-knowledge-format.service on disk and prove the audit emits no
+# `unit:vault-knowledge-format.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch709=$(mktemp -d -t role-gates-709.XXXXXX)
+trap 'rm -rf "$scratch709"' EXIT INT TERM
+mkdir -p "$scratch709/systemd" "$scratch709/prompts" "$scratch709/bin" "$scratch709/config" "$scratch709/tests"
+cat >"$scratch709/systemd/vault-knowledge-format.service" <<'UNIT'
+[Unit]
+Description=vault knowledge-format lint (fixture for fleet-ops#709)
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+UNIT
+# Minimal catalog so the auditor can parse it.
+cp "$catalog" "$scratch709/config/role-quality-gates.json"
+audit709_out=$(python3 "$lib" audit --repo-root "$scratch709" --catalog "$scratch709/config/role-quality-gates.json" 2>&1) || true
+echo "$audit709_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit709_out"
+if echo "$audit709_out" | jq -e '.findings[] | select(.id == "unit:vault-knowledge-format.service")' >/dev/null; then
+  fail "fleet-ops#709 regression: vault-knowledge-format.service leaked into ungated-role findings: $(echo "$audit709_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line the issue reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit709_out" | jq -e '.findings[] | select(.detail | test("vault-knowledge-format.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#709 regression: exact issue symptom re-appeared: $(echo "$audit709_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: vault-knowledge-format.service is not flagged (fleet-ops#709)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
