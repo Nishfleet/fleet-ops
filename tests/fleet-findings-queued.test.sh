@@ -353,6 +353,43 @@ set -e
 grep -q "FINDINGS-QUEUED-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
 ok "missing helper fails loud (guard wins over installed fallback)"
 
+# --- 7b. observe-to-close: backticked <slug> example is NOT closed (fleet-ops#820) ---
+# A body that contains the literal text `signal: findings-queued/<slug>`
+# as a code-fence example (not an actual signal) must not be closed. The
+# regex must skip backticked placeholders so a meta-issue about the rule
+# is not closed as if it were a real auto-filed finding. Without the
+# backtick guard, the previous regex captured the backtick of the literal
+# `\`<slug>\`` and treated the example as a real signal, phantom-closing
+# the meta-issue. Start clean so prior tests' auto-filed issues do not
+# leak into this drill (issue-2 from case 6c carries a real signal and
+# would otherwise be closed here for the wrong reason).
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.close-comment
+printf 'Title of a meta-issue\n\nSee `signal: findings-queued/<slug>` for the rule format.\n' >"$gh_store/issue-1.body"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-backtick.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "clean tick with backtick example should exit 0 (got $rc) $(cat "$scratch/err-backtick.log")"
+# The meta-issue must NOT have been closed (backticked <slug> is prose).
+[ -f "$gh_store/issue-1.closed" ] \
+  && fail "meta-issue was closed on a backtick slug match (should be left open) $(cat "$scratch/err-backtick.log")" || true
+grep -q "observe-to-close" "$scratch/err-backtick.log" \
+  && fail "observe-to-close fired on a backtick example — should be skipped $(cat "$scratch/err-backtick.log")" || true
+ok "observe-to-close skips backticked <slug> placeholder (fleet-ops#820 regression)"
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.close-comment
+
 # --- 8. Cursor transcript shape (fleet-ops#602) -----------------------------
 # Cursor transcripts: top-level role, no `type`, tool_use chunks with `input`.
 cursor_root="$scratch/cursor/projects/proj-x/agent-transcripts/sess-cursor"

@@ -12,6 +12,10 @@
 # Exit 0: no unqueued offers in the window. Exit 1: at least one
 # (LOUD + auto-filed, deduped by signal: findings-queued/<slug>).
 # Exit 1 also if the helper itself is broken (missing python/lib).
+# Observe-to-close (fleet-ops#725): auto-filed issues whose slug is no
+# longer a finding are closed with evidence on the same tick — the
+# session either aged out of the 24h window or was resolved. Without
+# this, the auto-file half of the detector leaves issues open forever.
 #
 # The standing rule binds every agent on Mac and VPS, so every reachable
 # transcript root is scanned with the same predicates (fleet-ops#602):
@@ -135,19 +139,20 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     open_json="${open_json:-[]}"
 fi
 
-# Observe-to-close (fleet-ops#724): close auto-filed issues whose slug is no
-# longer a finding. The detector filed these; it closes them when the signal
-# is clean on a real heartbeat tick — the session aged out of the window or
-# was queued in-session. Without this, auto-filed issues pile up with no
-# close path (the #724 class: "Do not close until the detector reports this
-# clean on a real heartbeat tick").
+# Observe-to-close (fleet-ops#724, fleet-ops#725): close auto-filed issues
+# whose slug is no longer a finding. The detector filed these; it closes
+# them when the signal is clean on a real heartbeat tick — the session
+# aged out of the window or was queued in-session. Without this, auto-
+# filed issues pile up with no close path (the #724 / #725 class: "Do
+# not close until the detector reports this clean on a real heartbeat
+# tick").
 closed=0
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     while IFS=$'\t' read -r num slug; do
         [[ -n "$num" && -n "$slug" ]] || continue
         if ! grep -qxF "$slug" <<<"$current_slugs"; then
             ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            comment="observe-to-close: signal findings-queued/${slug} no longer reported as a finding on heartbeat tick at $ts."
+            comment="observe-to-close: signal: findings-queued/${slug} no longer reported as a finding on heartbeat tick at $ts."
             set +e
             "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" 2>/dev/null
             close_rc=$?
@@ -161,8 +166,16 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
         fi
     done < <(printf '%s' "$open_json" | jq -r '
         .[] | .number as $n | (.body // "") as $b |
+        # Match the auto-file signal key. Real slugs are non-backtick,
+        # non-whitespace identifier chars (UUIDs, names); a backtick would
+        # mean we hit a literal example in prose and should ignore it
+        # (e.g. an issue body explaining the rule with `signal: findings-
+        # queued/<slug>` as a placeholder — fleet-ops#820 documented this
+        # false positive: a body that quotes the rule in backticks would
+        # otherwise match and trigger a phantom close).
         select($b | contains("signal: findings-queued/")) |
-        ($b | capture("signal: findings-queued/(?<slug>[^\\s]+)") | .slug) as $slug |
+        (try ($b | capture("signal: findings-queued/(?<slug>[^\\s`]+)") | .slug) catch null) as $slug |
+        select($slug != null and $slug != "<slug>") |
         "\($n)\t\($slug)"
     ' 2>/dev/null)
 fi
@@ -214,5 +227,5 @@ $signal"
     fi
 done < <(jq -c '.findings[]' <<<"$report")
 
-loud "FINDINGS-QUEUED-FAIL" "unqueued offers=$finding_count — a finding named in chat was never filed; heartbeat tick will fail"
+loud "FINDINGS-QUEUED-FAIL" "unqueued offers=$finding_count closed=$closed — a finding named in chat was never filed; heartbeat tick will fail"
 exit 1
