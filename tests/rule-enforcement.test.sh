@@ -107,6 +107,11 @@ ok "rule-enforcement: quality-ratchet drill"
 bash "$here/fleet-precedence-band.test.sh" || fail "precedence-band canary drill failed"
 ok "rule-enforcement: precedence-band canary drill"
 
+# fleet-ops#234: escalate-senior intake path (senior panel). Nested host so
+# the worker token does not need a workflow edit (fleet-ops#566).
+bash "$here/pi-escalation-audit.test.sh" || fail "pi-escalation-audit drill failed"
+ok "rule-enforcement: pi-escalation-audit drill"
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e

@@ -182,6 +182,16 @@ bin/fleet-heartbeat-auditor /home/nish/.local/bin/fleet-heartbeat-auditor
 bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
 bin/pi-audit-tally /home/nish/.local/bin/pi-audit-tally
 prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
+# fleet-ops#234: escalate-senior intake path. The orchestrator routes open
+# escalate-senior issues to the three-senior panel; the tally files an
+# agent-ready fix issue on 2-of-3 PASS or dismisses (comment + close) on
+# 2-of-3 FAIL. The @ template reuses pi-audit-run with the escalation prompt.
+bin/pi-escalation-audit /home/nish/.local/bin/pi-escalation-audit
+bin/pi-escalation-audit-tally /home/nish/.local/bin/pi-escalation-audit-tally
+prompts/escalation-auditor.md /home/nish/.pi/agent/prompts/escalation-auditor.md
+systemd/pi-escalation-audit@.service /home/nish/.config/systemd/user/pi-escalation-audit@.service
+systemd/pi-escalation-audit.service /home/nish/.config/systemd/user/pi-escalation-audit.service
+systemd/pi-escalation-audit.timer /home/nish/.config/systemd/user/pi-escalation-audit.timer
 systemd/pi-audit@.service /home/nish/.config/systemd/user/pi-audit@.service
 # fleet-ops#146 (storm-tolerant panel): concurrency cap. Slice is the
 # aggregate CPU/Memory ceiling for the audit cohort (300% CPU / 4G
