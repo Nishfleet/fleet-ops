@@ -130,7 +130,9 @@ packet_mechanical_fix_rule() {
 }
 
 # packet_decisions_ledger
-# Print the DECISIONS LEDGER section from the plan file, or the first 8KB.
+# Print the DECISIONS LEDGER section from the plan file, or the whole file.
+# Do not byte-cap: starving the ledger to save tokens is forbidden
+# (sr-token-efficiency; fleet-ops#670).
 packet_decisions_ledger() {
     local f="$PACKET_PLAN_FILE"
     if [[ ! -f "$f" ]]; then
@@ -143,9 +145,9 @@ packet_decisions_ledger() {
         awk 'BEGIN{flag=0}
              /^#* *DECISIONS LEDGER/{flag=1; print; next}
              flag && (/^#/ || /^--- *$/){ if (/^--- *$/) exit; if (/^#/) exit }
-             flag' "$f" | head -c 8000
+             flag' "$f"
     else
-        head -c 8000 "$f"
+        cat "$f"
     fi
     printf '\n\n'
 }
