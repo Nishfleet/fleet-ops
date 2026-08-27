@@ -1739,9 +1739,31 @@ else
 fi
 
 # ============================================================================
+# 26. EXECUTION-IS-REVIEW RECEIPT CANARY (fleet-ops#537)
+# ============================================================================
+# Standing rule: Execution IS the review. The inner loop stays agentic
+# (no bin/exec-review dispatcher). This canary detects a worker PR that
+# skipped the run: no Verification: run-cue and no run-proof: line.
+# Observe-to-open on a skip (auto-file, tick stays green). Fail loud if
+# the watch is broken (gh/python/helper).
+EXEC_REVIEW_CANARY_BIN="${FLEET_EXEC_REVIEW_CANARY:-/home/nish/.local/bin/fleet-exec-review-canary}"
+exec_review_canary_rc=0
+if [ -x "$EXEC_REVIEW_CANARY_BIN" ]; then
+    log "26. exec-review receipt canary starting"
+    if "$EXEC_REVIEW_CANARY_BIN"; then
+        log "26. exec-review receipt canary complete"
+    else
+        exec_review_canary_rc=$?
+        log "26. exec-review receipt canary FAILED (rc=$exec_review_canary_rc) — receipt watch is broken; unit will land in --state=failed"
+    fi
+else
+    log "26. exec-review receipt canary missing at $EXEC_REVIEW_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1808,6 +1830,9 @@ if [ "${repo_visibility_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${straitly_canary_rc:-0}" -ne 0 ]; then
     exit "$straitly_canary_rc"
+fi
+if [ "${exec_review_canary_rc:-0}" -ne 0 ]; then
+    exit "$exec_review_canary_rc"
 fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"

@@ -280,6 +280,13 @@ config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.js
 # meter-check evidence within minutes of first active draw. Heartbeat-tier1
 # block 25.
 bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
+# fleet-ops#537: Execution IS the review receipt canary. Worker prompt
+# inner loop stays agentic (no bin/exec-review dispatcher). This canary
+# detects a worker PR that skipped the run (no Verification: run-cue /
+# run-proof: line), auto-files, and fails loud if the watch is broken.
+# Heartbeat-tier1 block 26.
+lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.py
+bin/fleet-exec-review-canary /home/nish/.local/bin/fleet-exec-review-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

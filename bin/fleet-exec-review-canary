@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# fleet-exec-review-canary — journal/proof receipt check (fleet-ops#537).
+#
+# Standing rule: Execution IS the review — run it, log the bugs, fix,
+# run again. The inner loop stays in the worker prompt (no bin/exec-review
+# dispatcher, no bash retry wrapper). This canary detects a worker that
+# skipped the run.
+#
+# STEP 0: ran `prove-one-run-check --help` and `gh pr list --help`.
+# prove-one-run-check only takes --body FILE --name-status FILE|- and
+# SKIPs any PR that does not add a new unit/timer/workflow; it cannot
+# scan live PRs or auto-file. gh pr list --app nishfleet-worker can
+# list worker PRs and dump --json body, but does not classify a receipt,
+# fail-loud, or auto-file. GitHub Actions PR-template validators exist
+# but this token cannot add workflows.
+#
+# Modes:
+#   --body FILE   local worker gate. Exit 0 if the body has a receipt,
+#                 exit 1 if it does not. No gh.
+#   (default)     heartbeat scan of recent OPEN nishfleet-worker PRs on
+#                 enrolled repos. Missing receipt -> auto-file
+#                 (observe-to-open, tick stays green). Watcher broken
+#                 (gh/python/helper) -> exit 1 LOUD. Merged history is
+#                 out of scope; the --body gate covers new PRs before
+#                 they open.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 26.
+#
+# Environment seams (tests):
+#   FLEET_EXEC_REVIEW_LIB          python helper
+#   FLEET_EXEC_REVIEW_PR_LIST      JSON array fixture (skips gh)
+#   FLEET_EXEC_REVIEW_INTAKE       intake-repos.json override
+#   FLEET_EXEC_REVIEW_WINDOW_HOURS default 24
+#   FLEET_EXEC_REVIEW_NOW          ISO timestamp
+#   FLEET_EXEC_REVIEW_FILE         1 (default) / 0
+#   FLEET_EXEC_REVIEW_ISSUE_REPO   default Nishfleet/fleet-ops
+#   FLEET_EXEC_REVIEW_CAP          default 5
+#   FLEET_HEARTBEAT_TRIAGE
+#   GH
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+LIB="${FLEET_EXEC_REVIEW_LIB:-$_canon_repo/lib/exec-review-receipt.py}"
+if [[ -z "${FLEET_EXEC_REVIEW_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/exec-review-receipt.py" ]]; then
+    LIB="${HOME}/.local/lib/pi-packet/exec-review-receipt.py"
+fi
+
+INTAKE="${FLEET_EXEC_REVIEW_INTAKE:-$_canon_repo/config/intake-repos.json}"
+WINDOW_HOURS="${FLEET_EXEC_REVIEW_WINDOW_HOURS:-24}"
+NOW_ISO="${FLEET_EXEC_REVIEW_NOW:-}"
+FILE_ISSUES="${FLEET_EXEC_REVIEW_FILE:-1}"
+ISSUE_REPO="${FLEET_EXEC_REVIEW_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_EXEC_REVIEW_CAP:-5}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+PR_LIST_FIXTURE="${FLEET_EXEC_REVIEW_PR_LIST:-}"
+
+log() {
+    printf '[%s] [fleet-exec-review-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    printf 'usage: fleet-exec-review-canary [--body FILE]\n' >&2
+    exit 2
+}
+
+# --- local worker gate -----------------------------------------------------
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+fi
+
+if [[ "${1:-}" == "--body" ]]; then
+    [[ $# -ge 2 ]] || usage
+    if ! command -v python3 >/dev/null 2>&1; then
+        printf 'REJECT: python3 missing\n' >&2
+        exit 1
+    fi
+    if [[ ! -f "$LIB" ]]; then
+        printf 'REJECT: helper missing at %s\n' "$LIB" >&2
+        exit 1
+    fi
+    python3 "$LIB" check --body "$2"
+    exit $?
+fi
+
+[[ $# -eq 0 ]] || usage
+
+# --- heartbeat scan --------------------------------------------------------
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "EXEC-REVIEW-BROKEN" "python3 missing — cannot lint PR receipts"
+    exit 1
+fi
+if [[ ! -f "$LIB" ]]; then
+    loud "EXEC-REVIEW-BROKEN" "helper missing at $LIB"
+    exit 1
+fi
+
+scratch=$(mktemp -d -t exec-review-canary.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+prs_json="$scratch/prs.json"
+
+if [[ -n "$PR_LIST_FIXTURE" ]]; then
+    if [[ ! -f "$PR_LIST_FIXTURE" ]]; then
+        loud "EXEC-REVIEW-BROKEN" "PR list fixture missing: $PR_LIST_FIXTURE"
+        exit 1
+    fi
+    if ! jq -e 'type == "array"' "$PR_LIST_FIXTURE" >/dev/null 2>&1; then
+        loud "EXEC-REVIEW-BROKEN" "PR list fixture is not a JSON array"
+        exit 1
+    fi
+    cp "$PR_LIST_FIXTURE" "$prs_json"
+else
+    if [[ ! -f "$INTAKE" ]]; then
+        loud "EXEC-REVIEW-BROKEN" "intake-repos.json missing: $INTAKE"
+        exit 1
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        loud "EXEC-REVIEW-BROKEN" "gh missing ($GH) — cannot list worker PRs"
+        exit 1
+    fi
+    mapfile -t repos < <(jq -r '.repos[]?.name // empty | "Nishfleet/" + .' "$INTAKE" 2>/dev/null || true)
+    if [[ ${#repos[@]} -eq 0 ]]; then
+        loud "EXEC-REVIEW-BROKEN" "no enrolled repos in $INTAKE"
+        exit 1
+    fi
+    printf '[\n' >"$prs_json"
+    first=1
+    for repo in "${repos[@]}"; do
+        [[ -n "$repo" ]] || continue
+        set +e
+        chunk=$("$GH" pr list -R "$repo" --app nishfleet-worker --state open \
+            --limit 50 --json number,title,body,createdAt,url,headRefName,author 2>"$scratch/gh.err")
+        gh_rc=$?
+        set -e
+        if [[ "$gh_rc" -ne 0 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$chunk"; then
+            loud "EXEC-REVIEW-BROKEN" "gh pr list failed for $repo (rc=$gh_rc) $(tr '\n' ' ' <"$scratch/gh.err")"
+            exit 1
+        fi
+        while IFS= read -r row; do
+            [[ -n "$row" ]] || continue
+            row=$(jq -c --arg r "$repo" '. + {repo: $r}' <<<"$row")
+            if [[ "$first" -eq 1 ]]; then
+                first=0
+            else
+                printf ',\n' >>"$prs_json"
+            fi
+            printf '%s\n' "$row" >>"$prs_json"
+        done < <(jq -c '.[]' <<<"$chunk")
+    done
+    printf ']\n' >>"$prs_json"
+fi
+
+scan_args=(scan --prs "$prs_json" --window-hours "$WINDOW_HOURS")
+if [[ -n "$NOW_ISO" ]]; then
+    scan_args+=(--now "$NOW_ISO")
+fi
+
+set +e
+report=$(python3 "$LIB" "${scan_args[@]}" 2>"$scratch/scan.err")
+scan_rc=$?
+set -e
+
+if [[ "$scan_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$report"; then
+    loud "EXEC-REVIEW-BROKEN" "helper produced no JSON (rc=$scan_rc) $(tr '\n' ' ' <"$scratch/scan.err")"
+    exit 1
+fi
+
+finding_count=$(jq '.findings | length' <<<"$report")
+scanned=$(jq -r '.scanned' <<<"$report")
+log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") human=$(jq -r .skipped_human <<<"$report") receipt=$(jq -r .skipped_receipt <<<"$report") findings=$finding_count"
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "EXEC-REVIEW-OK" "no skipped-run worker PRs in window (scanned=$scanned)"
+    exit 0
+fi
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    set -e
+    open_json="${open_json:-[]}"
+fi
+
+filed=0
+while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    slug=$(jq -r '.slug' <<<"$row")
+    url=$(jq -r '.url' <<<"$row")
+    title_pr=$(jq -r '.title' <<<"$row")
+    loud "EXEC-REVIEW-SKIP" "worker PR $slug has no run receipt url=$url title=$title_pr"
+
+    [[ "$FILE_ISSUES" == "1" ]] || continue
+    [[ "$filed" -lt "$CAP" ]] || continue
+    command -v "$GH" >/dev/null 2>&1 || continue
+
+    signal="signal: exec-review-receipt/${slug}"
+    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        log "auto-file: $slug already open (deduped)"
+        continue
+    fi
+
+    title="fix(exec-review): $slug — worker PR opened with no run receipt"
+    body="The execution-is-review canary (fleet-ops#537) found a worker PR with no journal/proof receipt.
+
+- PR: ${url:-$slug}
+- detector: bin/fleet-exec-review-canary (heartbeat tier1 block 26)
+
+The inner loop stays agentic. Add a Verification: section with a real run-cue (journalctl, systemctl, URL, exit N, a fenced block, or \`ok: N\`) or a run-proof: line, then re-run the canary.
+
+Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
+
+$signal"
+    set +e
+    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    create_rc=$?
+    set -e
+    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+        log "auto-file: FILED $slug -> $created"
+        filed=$((filed + 1))
+    else
+        log "auto-file: failed to file $slug (rc=$create_rc)"
+    fi
+done < <(jq -c '.findings[]' <<<"$report")
+
+# Observe-to-open: tickets are the prevention. A backlog of old skip PRs
+# must not brick the heartbeat tick.
+loud "EXEC-REVIEW-FILED" "skipped-run worker PRs=$finding_count filed=$filed (observe-to-open)"
+exit 0
