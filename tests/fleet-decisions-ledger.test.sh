@@ -39,6 +39,7 @@ cat >"$scratch/ledger.md" <<'EOF'
 # Fixture ledger
 - 2026-08-25 | 0509 deploys | auto deploy on green | test
 - 2026-08-26 | bikeshed colour | never ask about zebras painted purple | test
+- 2026-08-26 | worker-lane refresh | use whichever flash model is cheapest; caps land via seat-caps.json; file a wiring issue for the change | test
 EOF
 
 gh_store="$scratch/gh-issues"
@@ -173,6 +174,29 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "confirm-that prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "implementation confirm-that prose is ignored"
 rm -f "$sessions/confirm-prose.jsonl"
+
+# --- 7c. directive "ask Nish to land this" + later-sentence "?" --------
+# fleet-ops#846: "ask Nish to land this." is a directive (file an issue for
+# Nish to push a workflow change), NOT a question. A "?" in a LATER
+# sentence ("What about using a fork to use a PR?") was falling inside the
+# 320-char window, so the old window-based "?" check mis-flagged it as a
+# re-ask of the worker-lane-refresh line on 4 generic words (change, issue,
+# land, use). The same-sentence "?" check must reject it.
+write_session "directive-later-q" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Open a new issue explaining the worker scope cant push workflow change, and ask Nish to land this.\n\nWhat about using a fork to use a PR? The worker could push the change to a fork."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "directive + later-sentence ? should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "directive ask-Nish-to-land-this with a later-sentence ? is ignored"
+rm -f "$sessions/directive-later-q.jsonl"
+
+# --- 7d. same-sentence question overlapping the same line IS flagged ----
+# Positive control for 7c: a real same-sentence question that overlaps the
+# worker-lane-refresh line on its distinctive tokens must still be flagged.
+write_session "real-reask-same-line" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nish, should we use the cheapest flash model for the worker-lane refresh?"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "same-sentence re-ask of worker-lane-refresh should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "DECISIONS-LEDGER-REASK" "$scratch/err.log" || fail "missing REASK for same-sentence question"
+ok "same-sentence question overlapping the same ledger line is flagged"
+rm -f "$sessions/real-reask-same-line.jsonl"
 
 # --- 8. auto-file + dedupe --------------------------------------------------
 write_session "reask" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nish, should we auto deploy on green for 0509?"}]}}'
