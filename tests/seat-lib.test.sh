@@ -1849,9 +1849,10 @@ bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-
 # when the slug stops being a finding. Same CI constraint (worker
 # token cannot add a new workflow line in ci.yml).
 bash "$here/fleet-failed-command-ledger-dedup.test.sh" || fail "fleet-failed-command-ledger-dedup tests failed"
-# fleet-ops#956: `edit` 'Could not find the exact text' (stale oldText)
-# walked past, with a silent read/grep recovery and a later thinking-only
-# note that the file was different, is the same class. Same CI constraint.
+# fleet-ops#956 / #1053: `edit` 'Could not find the exact text' (stale
+# oldText, 0 matches) OR 'Found N occurrences of the text' (oldText
+# matched multiple locations; live #1053, AUDITOR-LOG.md, 42 hits)
+# walked past. Same class; same CI constraint.
 bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-command-edit-unmatch tests failed"
 # fleet-ops#965: leftover duplicates of the same 01a03dee session signal
 # (index-delay filings #956/#965/#970/#975/#980) must ALL drain via
