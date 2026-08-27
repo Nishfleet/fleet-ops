@@ -36,6 +36,12 @@ grep -q 'audit-target-noncanonical: fleet-ops#367' "$bin" \
     || fail "fleet-blind-audit must auto-file with the #367 marker"
 grep -q 'fleet-ops-deploy-clone' "$repo_root/prompts/blind-audit.md" \
     || fail "blind-audit prompt must name the canonical deploy-clone so reviewers do not re-file #367"
+# fleet-ops#619: P14 is an explicit list plus hosted tests. A grep of
+# ci.yml alone re-files hosted tests (the auditor panel test) as missing.
+grep -q 'p14-test-listing-gate.test.sh' "$repo_root/prompts/blind-audit.md" \
+    || fail "blind-audit prompt must name p14-test-listing-gate.test.sh so reviewers do not re-file hosted tests as missing from P14 (fleet-ops#619)"
+grep -q 'Do not file "test is not in the CI P14 list"' "$repo_root/prompts/blind-audit.md" \
+    || fail "blind-audit prompt must forbid filing 'not in the CI P14 list' from a workflows grep alone (fleet-ops#619)"
 # fleet-ops#402: panel-PASS findings must be filed with agent-ready or
 # intake/pi-issue never see them. This grep is the class guard — a create
 # that only stamps gap-audit is a failed run.

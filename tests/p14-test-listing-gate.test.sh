@@ -161,6 +161,17 @@ if (( ${#stale[@]} > 0 )); then
 fi
 ok "known-orphan list is accurate (no stale entries)"
 
+# fleet-ops#619: the auditor panel test is the only automated check that
+# the admission panel lists scout-candidates, starts the three pi-audit
+# units, and tallies 2-of-3. It must stay in the P14 reachable set.
+# Parking it on known_orphans after dropping the host would pass the
+# accounting above and silently leave the panel untested in CI.
+[[ -n "${reachable[fleet-heartbeat-auditor.test.sh]:-}" ]] \
+  || fail "fleet-heartbeat-auditor.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#619)"
+[[ -z "${known_orphan_set[fleet-heartbeat-auditor.test.sh]:-}" ]] \
+  || fail "fleet-heartbeat-auditor.test.sh must not be a known orphan (fleet-ops#619)"
+ok "fleet-heartbeat-auditor.test.sh is in the P14 reachable set (fleet-ops#619)"
+
 # Self-check: this file is hosted by ci-standards-audit, not by ci.yml.
 grep -Fq 'bash "$here/p14-test-listing-gate.test.sh"' "$here/ci-standards-audit.test.sh" \
   || fail "ci-standards-audit.test.sh must host p14-test-listing-gate.test.sh"
