@@ -232,6 +232,9 @@ systemd/stop-escalation.service /home/nish/.config/systemd/user/stop-escalation.
 systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service
 systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf
 systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf
+# fleet-ops#618: .path and .timer units do not inherit service.d/.
+systemd/path.d/10-escalate.conf /home/nish/.config/systemd/user/path.d/10-escalate.conf
+systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-escalate.conf
 # fleet-ops#428: pi-transport-check is owned by the pi package, but its
 # OnFailure= was wired to the old direct Telegram page. This drop-in removes
 # the page and keeps only the unit-escalation path.
