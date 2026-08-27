@@ -157,11 +157,19 @@ export_last_run() {
         done
         shopt -u nullglob
     } >"$tmp"
+    # node_exporter runs as prometheus; mktemp is 0600. 0644 or the
+    # family is absent and FleetScoutStale fires (2026-08-27T19:41Z).
+    chmod 0644 "$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        log "WARN: cannot chmod 0644 $tmp"
+        return 0
+    }
     if ! mv -f "$tmp" "$PROM" 2>/dev/null; then
         rm -f "$tmp"
         log "WARN: cannot write $PROM"
         return 0
     fi
+    chmod 0644 "$PROM" 2>/dev/null || log "WARN: cannot chmod 0644 $PROM"
 }
 
 with_lock() {
