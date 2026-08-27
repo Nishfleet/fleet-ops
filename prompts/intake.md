@@ -6,6 +6,12 @@ Hard rules:
 - Never close issues, never merge PRs, never push to main, never edit repo code.
 - Touch only the TARGET repo.
 - If a gh or git command errors (auth, network), print the error and exit nonzero — fail loud. A REJECTED claim push is NOT an error: another agent won that issue; skip it.
+- Clone convention (fleet-ops#1213): if a packet clones a repo, use
+  `git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`.
+  Never `--dissociate` on throwaway worktrees. Never push to a mirror
+  (read-only fetch target). A missing or corrupt mirror degrades to a
+  plain clone. Mirrors are fetched on the existing 5-min exporter tick;
+  intake still `fetch`/`push` from the products checkout for the claim.
 - NEVER push a claim branch when the issue number is empty. An unnumbered `claim/issue-` belongs to no issue, can never be released by the normal path, and accumulates as garbage (fleet-ops#39). Before step 3b, assert `N` is a non-empty integer (`[[ "$N" =~ ^[1-9][0-9]*$ ]]`); if it is not, print "intake: refusing claim push with empty/non-numeric issue number N='$N'", skip, and continue. The claim-reconciler sweeps any that slip through, but the push must refuse them at the source.
 
 Steps:
