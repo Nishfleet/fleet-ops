@@ -1,0 +1,488 @@
+#!/usr/bin/env bash
+# pi-salvage-worktree — ExecStopPost hook for pi-systemd-run (fleet-ops#1204).
+#
+# When a worker unit stops with a dirty git worktree, bank the work on
+# wip/<unit>-<ts> so a dead seat costs minutes, not the whole run.
+#
+# Invoked by systemd as ExecStopPost. Reads:
+#   $SERVICE_RESULT $EXIT_CODE $EXIT_STATUS  (systemd.exec, stop-path only)
+#   $PI_SALVAGE_WORKDIR  git worktree to bank (pi-systemd-run --working-directory)
+#   $PI_SALVAGE_UNIT     transient unit name
+#   $PI_SALVAGE_PACKET   packet file to stamp with a resume pointer
+#
+# Modes:
+#   (default)     salvage the worktree
+#   --gc          delete merged/superseded/stale wip/* branches
+#   --help
+#
+# Salvage safety: secret-scan the staged diff before push. A hit commits
+# locally only and marks the ledger salvage_quarantined.
+#
+# Environment (tests):
+#   PI_SALVAGE_WORKDIR, PI_SALVAGE_UNIT, PI_SALVAGE_PACKET, PI_SALVAGE_NOW
+#   PI_SALVAGE_REMOTE (default origin), PI_SALVAGE_SKIP_SGSCAN
+#   PI_SALVAGE_SCAN (optional helper; exit 0 clean, 1 quarantine)
+#   FLEET_DISPATCH_LEDGER, AGENT_STATE, PI_SALVAGE_GC_ROOT, PI_SALVAGE_GC_MAX_AGE_S
+#
+# Exit:
+#   0  no-op, salvaged, quarantined, or GC complete
+#   1  salvage failed loud (local commit did not land)
+#   2  usage
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF' >&2
+usage: pi-salvage-worktree [--gc] [--help]
+
+Bank a dying worker's dirty worktree onto wip/<unit>-<ts>.
+ExecStopPost hook for pi-systemd-run (fleet-ops#1204). --gc deletes
+merged, superseded, or 14-day-old unreferenced wip/ branches.
+EOF
+    exit 2
+}
+
+log() {
+    printf '[%s] pi-salvage-worktree: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+mode="salvage"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --gc) mode="gc"; shift ;;
+        -h|--help) usage ;;
+        *)
+            log "unknown flag: $1"
+            usage
+            ;;
+    esac
+done
+
+AS="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
+LEDGER="${FLEET_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
+REMOTE="${PI_SALVAGE_REMOTE:-origin}"
+NOW="${PI_SALVAGE_NOW:-$(date -u +%Y%m%dT%H%M%SZ)}"
+ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+sanitize_unit() {
+    local u="$1"
+    u="${u%.service}"
+    u="${u//[^A-Za-z0-9:_.\\-]/_}"
+    printf '%s' "$u"
+}
+
+# --- secret scan (guard_secrets HARD_PATTERNS; optional helper / sgscan) -----
+scan_text() {
+    python3 -c '
+import re, sys
+text = sys.stdin.read()
+patterns = [
+    ("AWS access key id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("GitHub PAT", re.compile(r"\bghp_[A-Za-z0-9]{36,}\b")),
+    ("GitHub OAuth", re.compile(r"\bgho_[A-Za-z0-9]{36,}\b")),
+    ("GitHub fine-grained PAT", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
+    ("OpenAI/Anthropic-style key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
+    ("Stripe live/test key", re.compile(r"\b[psr]k_(?:live|test)_[A-Za-z0-9]{20,}\b")),
+    ("Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("PEM private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+]
+for name, rx in patterns:
+    if rx.search(text):
+        print(name)
+        sys.exit(1)
+sys.exit(0)
+'
+}
+
+staged_has_secret() {
+    local wd="$1"
+    local diff rc
+    diff="$(git -C "$wd" diff --cached -U0 2>/dev/null || true)"
+    [[ -n "$diff" ]] || return 1
+    set +e
+    printf '%s' "$diff" | scan_text >/dev/null
+    rc=$?
+    set -e
+    [[ "$rc" -eq 1 ]]
+}
+
+run_extra_scan() {
+    local wd="$1"
+    local helper="${PI_SALVAGE_SCAN:-}"
+    if [[ -n "$helper" && -x "$helper" ]]; then
+        "$helper" "$wd" HEAD || return 1
+        return 0
+    fi
+    if [[ "${PI_SALVAGE_SKIP_SGSCAN:-0}" == "1" ]]; then
+        return 0
+    fi
+    if ! command -v sgscan >/dev/null 2>&1; then
+        return 0
+    fi
+    local out rc
+    set +e
+    out="$(cd "$wd" && sgscan --json 2>/dev/null)"
+    rc=$?
+    set -e
+    # Only honour a real JSON findings document. A crash is not a secret hit.
+    if printf '%s' "$out" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.exit(0)
+results = data.get("results") if isinstance(data, dict) else None
+if not results:
+    sys.exit(0)
+sys.exit(1)
+' >/dev/null; then
+        return 0
+    fi
+    [[ "$rc" -eq 1 || "$rc" -eq 2 ]]
+}
+
+append_ledger() {
+    local unit="$1" branch="$2" salvage_status="$3" packet="$4" workdir="$5"
+    mkdir -p "$(dirname "$LEDGER")"
+    python3 -c '
+import json, os, sys, uuid
+from datetime import datetime, timezone
+
+ledger, unit, branch, salvage_status, packet, workdir, iso_now = sys.argv[1:8]
+latest = {}
+if os.path.isfile(ledger):
+    with open(ledger) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rec_id = rec.get("id")
+            if rec_id:
+                latest[str(rec_id)] = rec
+match = None
+for rec in latest.values():
+    if rec.get("unit") == unit and rec.get("status") == "open":
+        match = rec
+        break
+if match is None:
+    out = {
+        "id": str(uuid.uuid4()),
+        "ts": iso_now,
+        "unit": unit,
+        "packet_path": packet,
+        "status": "salvaged",
+    }
+else:
+    out = dict(match)
+out["salvaged_branch"] = branch
+out["salvage_status"] = salvage_status
+out["salvage_ts"] = iso_now
+out["salvage_workdir"] = workdir
+if packet:
+    out["packet_path"] = packet
+with open(ledger, "a") as f:
+    f.write(json.dumps(out, separators=(",", ":")) + "\n")
+' "$LEDGER" "$unit" "$branch" "$salvage_status" "$packet" "$workdir" "$ISO_NOW"
+}
+
+stamp_packet() {
+    local packet="$1" branch="$2" salvage_status="$3"
+    [[ -n "$packet" && -f "$packet" ]] || return 0
+    local begin="<!-- fleet-ops#1204 salvage resume -->"
+    local end="<!-- /fleet-ops#1204 salvage resume -->"
+    local where="origin"
+    [[ "$salvage_status" == "pushed" ]] || where="local"
+    local block
+    block=$(cat <<EOF
+${begin}
+The previous worker died. Continue from \`${branch}\` (${where}). Verify that work, finish it. Do not start from zero.
+${end}
+
+EOF
+)
+    python3 -c '
+import sys
+path, begin, end, block = sys.argv[1:5]
+text = open(path).read()
+start = text.find(begin)
+stop = text.find(end)
+if start != -1 and stop != -1 and stop >= start:
+    stop += len(end)
+    while stop < len(text) and text[stop] == "\n":
+        stop += 1
+    text = text[:start] + block + text[stop:]
+else:
+    text = block + text
+open(path, "w").write(text)
+' "$packet" "$begin" "$end" "$block"
+}
+
+discover_workdir() {
+    local wd="${PI_SALVAGE_WORKDIR:-}"
+    local unit="${PI_SALVAGE_UNIT:-}"
+    local inst="${PI_UNIT_INSTANCE:-}"
+    local root="${HOME:-/home/nish}/workspaces/agent-worktrees"
+    if [[ -n "$wd" ]] && git -C "$wd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf '%s' "$wd"
+        return 0
+    fi
+    local cand
+    for cand in \
+        "${root}/issue-${inst}" \
+        "${root}/issue-${unit}" \
+        "${root}/${unit}"
+    do
+        [[ -n "${cand##*/}" ]] || continue
+        if git -C "$cand" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            printf '%s' "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+
+cmd_salvage() {
+    local unit workdir packet branch porcelain salvage_status
+    unit="$(sanitize_unit "${PI_SALVAGE_UNIT:-unknown}")"
+    [[ -n "$unit" ]] || unit="unknown"
+    packet="${PI_SALVAGE_PACKET:-}"
+
+    if ! workdir="$(discover_workdir)"; then
+        log "no git worktree for unit=$unit workdir=${PI_SALVAGE_WORKDIR:-} — no-op"
+        return 0
+    fi
+
+    porcelain="$(git -C "$workdir" status --porcelain 2>/dev/null || true)"
+    if [[ -z "$porcelain" ]]; then
+        log "worktree clean unit=$unit workdir=$workdir — no-op"
+        return 0
+    fi
+
+    branch="wip/${unit}-${NOW}"
+    case "$branch" in
+        wip/*) ;;
+        *)
+            log "refusing non-wip branch name: $branch"
+            return 1
+            ;;
+    esac
+
+    log "salvaging unit=$unit result=${SERVICE_RESULT:-unset} status=${EXIT_STATUS:-unset} workdir=$workdir branch=$branch"
+
+    local head
+    head="$(git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+    # Never commit onto main/master. pi-issue@ Restart=on-failure must
+    # keep the worktree on claim/issue-N; only the wip/ ref is extra.
+    if [[ "$head" == "main" || "$head" == "master" || "$head" == "HEAD" ]]; then
+        if ! git -C "$workdir" switch -c "$branch" >/dev/null 2>&1; then
+            git -C "$workdir" checkout -B "$branch" >/dev/null
+        fi
+    fi
+
+    git -C "$workdir" add -A -- .
+    if git -C "$workdir" diff --cached --quiet; then
+        log "nothing staged after add unit=$unit — no-op"
+        return 0
+    fi
+
+    local secret=0
+    if staged_has_secret "$workdir"; then
+        secret=1
+        log "secret pattern in staged diff unit=$unit — local-only salvage"
+    elif ! run_extra_scan "$workdir"; then
+        secret=1
+        log "sgscan/helper flagged unit=$unit — local-only salvage"
+    fi
+
+    if ! git -C "$workdir" \
+        -c user.email=fleet-salvage@localhost \
+        -c user.name=fleet-salvage \
+        commit -m "salvage: bank uncommitted work for unit ${unit}" >/dev/null; then
+        log "LOUD: local salvage commit failed unit=$unit workdir=$workdir"
+        return 1
+    fi
+
+    # Extra pointer so the fleet can resume from wip/<unit>-<ts> even when
+    # the commit landed on claim/issue-N (the restart-safe path).
+    git -C "$workdir" branch -f "$branch" HEAD >/dev/null 2>&1 || true
+
+    salvage_status="local"
+    if [[ "$secret" -eq 1 ]]; then
+        salvage_status="quarantined"
+    elif git -C "$workdir" remote get-url "$REMOTE" >/dev/null 2>&1; then
+        GIT_TERMINAL_PROMPT=0 git -C "$workdir" push \
+            --force-with-lease="refs/heads/${branch}:" \
+            "$REMOTE" "HEAD:refs/heads/${branch}" >/dev/null 2>&1 \
+            && salvage_status="pushed" \
+            || {
+                log "push failed unit=$unit branch=$branch — work is banked locally"
+                salvage_status="local"
+            }
+    fi
+
+    append_ledger "$unit" "$branch" "$salvage_status" "$packet" "$workdir"
+    stamp_packet "$packet" "$branch" "$salvage_status"
+    log "salvaged branch=$branch status=$salvage_status unit=$unit"
+    return 0
+}
+
+# --- GC ---------------------------------------------------------------------
+branch_unit_prefix() {
+    # wip/<unit>-<YYYYMMDDTHHMMSSZ> → <unit>
+    local name="$1"
+    name="${name#wip/}"
+    printf '%s' "${name%-????????T??????Z}"
+}
+
+open_ledger_branches() {
+    python3 -c '
+import json, os, sys
+ledger = sys.argv[1]
+if not os.path.isfile(ledger):
+    sys.exit(0)
+latest = {}
+with open(ledger) as f:
+    for raw in f:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rec_id = rec.get("id")
+        if rec_id:
+            latest[str(rec_id)] = rec
+for rec in latest.values():
+    branch = rec.get("salvaged_branch") or ""
+    if rec.get("status") == "open" and branch:
+        print(branch)
+' "$LEDGER"
+}
+
+any_ledger_branches() {
+    python3 -c '
+import json, os, sys
+ledger = sys.argv[1]
+if not os.path.isfile(ledger):
+    sys.exit(0)
+with open(ledger) as f:
+    for raw in f:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        branch = rec.get("salvaged_branch") or ""
+        if branch:
+            print(branch)
+' "$LEDGER"
+}
+
+gc_one_repo() {
+    local repo="$1"
+    local max_age="${PI_SALVAGE_GC_MAX_AGE_S:-1209600}"  # 14d
+    local now_s
+    now_s="$(date -u +%s)"
+
+    git -C "$repo" fetch -q "$REMOTE" "+refs/heads/wip/*:refs/remotes/${REMOTE}/wip/*" 2>/dev/null || true
+    git -C "$repo" fetch -q "$REMOTE" main:refs/remotes/${REMOTE}/main 2>/dev/null || true
+
+    local main_ref="refs/remotes/${REMOTE}/main"
+    if ! git -C "$repo" rev-parse "$main_ref" >/dev/null 2>&1; then
+        main_ref="refs/remotes/${REMOTE}/master"
+    fi
+    if ! git -C "$repo" rev-parse "$main_ref" >/dev/null 2>&1; then
+        log "GC skip $repo: no ${REMOTE}/main"
+        return 0
+    fi
+
+    local open_refs all_refs
+    open_refs="$(open_ledger_branches | sort -u)"
+    all_refs="$(any_ledger_branches | sort -u)"
+
+    local ref name ahead cherry age keep reason
+    while read -r ref; do
+        [[ -n "$ref" ]] || continue
+        name="${ref#refs/remotes/${REMOTE}/}"
+        case "$name" in
+            wip/*) ;;
+            *) continue ;;
+        esac
+        keep=0
+        reason=""
+        if printf '%s\n' "$open_refs" | grep -Fxq "$name"; then
+            log "GC keep $name (open ledger)"
+            continue
+        fi
+        ahead="$(git -C "$repo" rev-list --count "${main_ref}..${ref}" 2>/dev/null || echo 1)"
+        if [[ "$ahead" == "0" ]]; then
+            reason="merged-zero-ahead"
+        else
+            cherry="$(git -C "$repo" cherry "$main_ref" "$ref" 2>/dev/null || true)"
+            if [[ -n "$cherry" ]] && ! printf '%s\n' "$cherry" | grep -q '^+'; then
+                reason="cherry-equivalent"
+            fi
+        fi
+        if [[ -z "$reason" ]]; then
+            age="$(git -C "$repo" log -1 --format=%ct "$ref" 2>/dev/null || echo "$now_s")"
+            if (( now_s - age >= max_age )); then
+                if ! printf '%s\n' "$all_refs" | grep -Fxq "$name"; then
+                    reason="stale-14d-unreferenced"
+                fi
+            fi
+        fi
+        # superseded: a newer wip/<same-unit>-* exists
+        if [[ -z "$reason" ]]; then
+            local prefix newer
+            prefix="$(branch_unit_prefix "$name")"
+            newer="$(git -C "$repo" for-each-ref --format='%(refname:short)' "refs/remotes/${REMOTE}/wip/${prefix}-*" \
+                | sort | tail -n 1)"
+            newer="${newer#${REMOTE}/}"
+            if [[ -n "$newer" && "$newer" != "$name" && "$newer" > "$name" ]]; then
+                reason="superseded-by-${newer}"
+            fi
+        fi
+        if [[ -z "$reason" ]]; then
+            log "GC keep $name (live unique work)"
+            continue
+        fi
+        if git -C "$repo" push "$REMOTE" ":refs/heads/${name}" >/dev/null 2>&1; then
+            log "GC deleted $name ($reason)"
+        else
+            log "LOUD: GC failed to delete $name ($reason)"
+            return 1
+        fi
+    done < <(git -C "$repo" for-each-ref --format='%(refname)' "refs/remotes/${REMOTE}/wip")
+    return 0
+}
+
+cmd_gc() {
+    local root="${PI_SALVAGE_GC_ROOT:-${HOME:-/home/nish}/workspaces/products}"
+    local d rc=0
+    if [[ -d "$root/.git" ]] || git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        gc_one_repo "$root" || rc=1
+        return "$rc"
+    fi
+    shopt -s nullglob
+    for d in "$root"/*; do
+        [[ -d "$d" ]] || continue
+        git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+        gc_one_repo "$d" || rc=1
+    done
+    return "$rc"
+}
+
+case "$mode" in
+    salvage) cmd_salvage ;;
+    gc) cmd_gc ;;
+    *) usage ;;
+esac

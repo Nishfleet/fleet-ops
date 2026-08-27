@@ -32,6 +32,14 @@ StandardError=file:/home/nish/.local/state/pi-issues/%i.err
 # state and rotates seat via pick_seat on every restart.
 ExecStart=/home/nish/.local/bin/pi-issue-run %i
 
+# fleet-ops#1204: bank a dirty issue worktree when this worker dies.
+# issue-%i is the intake worktree contract (prompts/worker.md).
+Environment=PI_SALVAGE_WORKDIR=/home/nish/workspaces/agent-worktrees/issue-%i
+Environment=PI_SALVAGE_UNIT=pi-issue-%i
+Environment=PI_SALVAGE_PACKET=/home/nish/.local/state/pi-issues/%i.in
+ExecStopPost=/home/nish/.local/bin/pi-salvage-worktree
+TimeoutStopSec=180
+
 # Retry policy - systemd's own, not a counter in bash.
 Restart=on-failure
 RestartSec=240
