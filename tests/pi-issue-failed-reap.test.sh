@@ -164,10 +164,18 @@ out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state" SEAT_LIB="$fake/no-seat-lib.sh" "$bin" fleet-ops-381 2>&1)"
 rc=$?
 set -e
+# Diagnostic context for the next failure mode. If the reaper hits the
+# transient-gh-failure exit-0 path (no truncate, but rc=0), the next
+# failure will print the reaper's stderr so we can see what happened.
+# fleet-ops#516 + #1127 + #1001: that path is "exit 0, let the 30-min
+# orphan sweep pick this up" — a deliberate no-op, but a test that
+# silently passes a no-op would mask a real bug, so we assert both the
+# truncate AND the TRIED-SEATS-RESET triage line.
 [[ "$rc" == "0" ]] || fail "claim-release reap must exit 0, got $rc ($out)"
-[[ -f "$tried" ]] || fail "tried-seats file must still exist after reap"
-[[ ! -s "$tried" ]] || fail "tried-seats must be truncated after claim release, got: $(cat "$tried")"
-grep -q 'TRIED-SEATS-RESET' "$triage" || fail "triage missing TRIED-SEATS-RESET: $(cat "$triage")"
+[[ -f "$tried" ]] || fail "tried-seats file must still exist after reap (reaper stderr: $out)"
+if [[ -s "$tried" ]] || ! grep -q 'TRIED-SEATS-RESET' "$triage"; then
+    fail "tried-seats must be truncated after claim release. file=$(cat "$tried" 2>/dev/null); reaper stderr: $out; triage: $(cat "$triage")"
+fi
 ok "reaper truncates tried-seats after claim release (fleet-ops#381)"
 
 # fleet-ops#638 (auditor 2026-08-27T03:31Z): a stale .in packet at
