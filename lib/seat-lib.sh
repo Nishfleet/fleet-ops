@@ -59,6 +59,23 @@ seat_log() {
 
 now_s() { date -u +%s; }
 
+# Single source of truth for "now" inside seat-lib's freshness/expire
+# checks. Production callers leave FLEET_SEAT_RECOVERY_NOW unset and
+# fall through to real wall clock (date -u +%s); tests set it to an ISO
+# timestamp so the bench_until / observed_at / usable_at comparisons see
+# the same clock the harness set, not the host's real wall clock. Without
+# this, a hard-coded bench_until in a test fixture ages out the moment
+# the host clock passes it, the fail-open path returns "usable" for
+# every quota_bench ledger, and any test that needs a "no-usable" verdict
+# silently degrades to "no transition — nothing to fire" (fleet-ops#735).
+_seat_now_epoch() {
+    if [[ -n "${FLEET_SEAT_RECOVERY_NOW:-}" ]]; then
+        date -u -d "$FLEET_SEAT_RECOVERY_NOW" +%s 2>/dev/null || date -u +%s
+        return
+    fi
+    date -u +%s
+}
+
 # --- capacity map (P4-A) ----------------------------------------------------
 # Read once per shell. Returns 0 on success, 1 if the map is missing/unreadable.
 # Caller is expected to fall back to "no caps" behaviour (allow everything)
@@ -340,7 +357,7 @@ seat_ledger_path() {
 _seat_observed_fresh() {
     local obs="$1" now obs_s
     [[ -n "$obs" ]] || return 1
-    now=$(date -u +%s)
+    now=$(_seat_now_epoch)
     obs_s=$(date -u -d "$obs" +%s 2>/dev/null || echo 0)
     [[ "$obs_s" =~ ^[0-9]+$ ]] || return 1
     (( obs_s > 0 && now - obs_s <= STALE_SECS ))
@@ -352,7 +369,7 @@ _seat_observed_fresh() {
 _seat_rate_limit_fresh() {
     local obs="$1" now obs_s
     [[ -n "$obs" ]] || return 1
-    now=$(date -u +%s)
+    now=$(_seat_now_epoch)
     obs_s=$(date -u -d "$obs" +%s 2>/dev/null || echo 0)
     [[ "$obs_s" =~ ^[0-9]+$ ]] || return 1
     (( obs_s > 0 && now - obs_s <= RATE_LIMIT_FRESH_SECS ))
@@ -362,7 +379,7 @@ _seat_rate_limit_fresh() {
 _seat_in_future() {
     local ts="$1" now ts_s
     [[ -n "$ts" ]] || return 1
-    now=$(date -u +%s)
+    now=$(_seat_now_epoch)
     ts_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
     [[ "$ts_s" =~ ^[0-9]+$ ]] || return 1
     (( ts_s > now ))
