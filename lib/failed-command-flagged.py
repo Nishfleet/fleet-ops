@@ -37,7 +37,8 @@ moves on is not a user-facing flag. #966 is the same session shape as
 #957 (the 01a03e38 python-traceback session); it is a leftover open
 duplicate filed by the same GitHub-search-index-delay that produced
 #951 / #965, so the citation chain must carry it. The leftover-duplicate
-observe-to-close drain for the 01a03e38 pile is locked under
+observe-to-close drain for the 01a03e38 pile (#952, #957, #966, #971,
+#976, #981) is locked under
 tests/fleet-failed-command-observe-duplicate-python-traceback.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
