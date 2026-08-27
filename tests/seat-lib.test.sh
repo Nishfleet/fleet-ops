@@ -2033,6 +2033,14 @@ bash "$here/fleet-failed-command-read-eisdir.test.sh" || fail "fleet-failed-comm
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
+# fleet-ops#1254: `bash tests/<lock-test>.est.sh` (truncated `.test.sh`
+# typo) returns exit 127 `No such file or directory` with no prior
+# harness block. The next turn is thinking-only "The path is wrong"
+# plus a silent retry of the real `.test.sh`. Distinct from #677
+# (same 127 wording, but downstream of a spawn-guard block) and #793
+# (file existed, script exit 1, empty snippet). Same CI constraint
+# (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-typo-est-sh.test.sh" || fail "fleet-failed-command-typo-est-sh tests failed"
 # fleet-ops#698: `gh api` 4xx/5xx walked past is a real swallowed failure.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-command-gh-api-404 tests failed"

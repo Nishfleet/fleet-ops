@@ -273,6 +273,28 @@ ages out of the 24h window. Live session
 2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
 `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
 head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A `bash tests/<lock-test>.est.sh` (truncated `.test.sh` typo) that
+returns `bash: tests/<lock-test>.est.sh: No such file or directory`
+plus `Command exited with code 127` is a real swallowed failure
+(fleet-ops#1254): there is no prior harness block, so the #677
+cascade exemption does not apply, and the next assistant turn is a
+thinking-only "The path is wrong" plus a silent retry with the
+correct `.test.sh`. The detector already flags this class via the
+generic `isError or code != 0` path. A future refactor that drops
+the `had_prior_block` gate on the #677 127-ENOENT cascade, treats a
+truncated `.est.sh` as an existence probe, treats thinking-only
+"The path is wrong" as a flag, or lets a later successful
+`.test.sh` sibling discharge the 127 would silently suppress this
+real signal. The class is distinct from #677 (127 ENOENT
+*downstream of a harness block*), #793 (`bash /tmp/<fresh-script>`
+exit 1 with empty snippet, file existed), and the read-ENOENT
+family (#651 / #953 / #1001 / #1059; `read` tool, no exit-code
+line). The dedicated regression test
+tests/fleet-failed-command-typo-est-sh.test.sh pins that. The
+auto-filed issue closes via observe-to-close when the session mtime
+ages out of the 24h window. Live session
+2026-08-27T16-16-10-880Z_01a04401-e880-7f21-b990-b20a28e67e9d.jsonl:
+`bash tests/fleet-failed-command-edit-unmatch.est.sh`.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
