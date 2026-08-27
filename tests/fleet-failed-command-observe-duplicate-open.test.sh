@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/fleet-failed-command-observe-duplicate-open.test.sh
 #
-# fleet-ops#965 / #970 / #975: leftover duplicate open issues for the SAME
-# session signal must ALL drain via observe-to-close, not just the
-# first match.
+# fleet-ops#965 / #970 / #975 / #980: leftover duplicate open issues for
+# the SAME session signal must ALL drain via observe-to-close, not just
+# the first match.
 #
 # GitHub's search-index delay filed 7 copies of
 #   signal: failed-command-flagged/2026-08-26t11-57-42-915z-01a03dee-ea83-759b-8044-ba3adddcbe8b
@@ -13,15 +13,15 @@
 # Those close only when the detector is green for the slug and
 # observe-to-close walks every matching open issue (fleet-ops#650 /
 # #758). A `first`-only close, or a CAP that silently drops the rest
-# forever, would leave #965 / #970 / #975 (and their siblings) dispatching
-# workers after the session has aged out.
+# forever, would leave #965 / #970 / #975 / #980 (and their siblings)
+# dispatching workers after the session has aged out.
 #
 # The edit-unmatch shape itself is locked under #956
 # (tests/fleet-failed-command-edit-unmatch.test.sh). This file locks
 # the leftover-duplicate DRAIN so a future observe-to-close refactor
 # cannot resolve only issue 0 of a same-signal pile, and so the
 # citation chain (worker.md + detector docstring + seat-lib.test.sh
-# host) for #965, #970 and #975 is verified.
+# host) for #965, #970, #975 and #980 is verified.
 #
 # Live session: 2026-08-26T11-57-42-915Z_01a03dee-ea83-759b-8044-ba3adddcbe8b.jsonl
 #
@@ -33,10 +33,10 @@
 #   2. later tick with the marker already on all five: closes all five,
 #      still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. prompt-side citation lock: prompts/worker.md cites #965, #970
-#      and #975 (the 01a03dee leftover-duplicate pile).
+#   4. prompt-side citation lock: prompts/worker.md cites #965, #970,
+#      #975 and #980 (the 01a03dee leftover-duplicate pile).
 #   5. detector-side citation lock: lib/failed-command-flagged.py
-#      docstring cites #965, #970 and #975.
+#      docstring cites #965, #970, #975 and #980.
 #   6. CI host: seat-lib.test.sh nests this file so the drain
 #      drill cannot be skipped by a fresh CI line.
 
@@ -294,13 +294,14 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "live #965: still-dirty slug leaves all leftover duplicates open"
 
-# --- 4. prompt-side citation lock for #965 / #970 / #975 ----------------
-# Same pin as #937 / #957 / #966: dropping the #965, #970 or #975
+# --- 4. prompt-side citation lock for #965 / #970 / #975 / #980 ---------
+# Same pin as #937 / #957 / #966: dropping the #965, #970, #975 or #980
 # citation from the prompt is a regression even if the drain drill
 # still passes. The existing edit-unmatch test (fleet-ops#956) already
 # pins #956; this file adds the #965 citation next to it, the #970
-# citation next to #965, and the #975 citation next to #970 — all are
-# siblings in the 01a03dee leftover-duplicate pile (fleet-ops#951).
+# citation next to #965, the #975 citation next to #970, and the #980
+# citation next to #975 — all are siblings in the 01a03dee leftover-
+# duplicate pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
 grep -q 'fleet-ops#965' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#965 (prompt-side lock for the leftover 01a03dee duplicate)"
@@ -311,12 +312,15 @@ ok "worker.md cites #970"
 grep -q '#970, #975' "$worker" \
   || fail "prompts/worker.md must carry the #975 citation next to the #970 leftover-duplicate citation"
 ok "worker.md cites #975"
+grep -q '#975, #980' "$worker" \
+  || fail "prompts/worker.md must carry the #980 citation next to the #975 leftover-duplicate citation"
+ok "worker.md cites #980"
 
-# --- 5. detector-side citation lock for #965 / #970 / #975 ----------------
+# --- 5. detector-side citation lock for #965 / #970 / #975 / #980 ---------
 # The lib docstring is the standing-rule contract for the next
 # detector maintainer. The sibling #937 / #957 / #966 tests already
 # use the same three-place pattern: prompt + detector docstring +
-# CI host. Dropping the #965, #970 or #975 citation from the lib
+# CI host. Dropping the #965, #970, #975 or #980 citation from the lib
 # docstring is a regression even if the prompt lock and the drill
 # still pass. Future detectors refactor the lib freely; this scenario
 # is the regression fence.
@@ -329,6 +333,9 @@ ok "lib/failed-command-flagged.py docstring cites #970"
 grep -q '#970, #975' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #975 next to #970"
 ok "lib/failed-command-flagged.py docstring cites #975"
+grep -q '#975, #980' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #980 next to #975"
+ok "lib/failed-command-flagged.py docstring cites #980"
 
 # --- 6. CI host: seat-lib.test.sh nests this file -------------------------
 # A fresh PR cannot add a workflow line on this repo (worker token has
@@ -340,4 +347,4 @@ grep -F -q 'fleet-failed-command-observe-duplicate-open.test.sh' \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-observe-duplicate-open: live #965 / #970 / #975 leftover-duplicate drain"
+echo "OK: fleet-failed-command-observe-duplicate-open: live #965 / #970 / #975 / #980 leftover-duplicate drain"
