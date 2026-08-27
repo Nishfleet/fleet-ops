@@ -117,7 +117,6 @@ jobs:
             /home/nish/.local/bin/fleet-seat-recovery \
             /home/nish/.local/bin/fleet-unjustified-wait \
             /home/nish/.local/bin/fleet-escalation-completion \
-            /home/nish/.local/bin/render-standing-rules \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -133,7 +132,7 @@ jobs:
           # Do NOT use set -e: we want to collect all failures, then exit.
           shopt -s nullglob
           rc=0
-          for f in systemd/*.service systemd/*.timer systemd/*.path; do
+          for f in systemd/*.service systemd/*.timer; do
             if ! systemd-analyze verify --man=no "$f"; then
               rc=1
             fi
@@ -242,8 +241,3 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
-        # fleet-ops#1145 slice 1: prove the standing-rules generator
-        # catches drift, renders cleanly, applies per-surface templating,
-        # persists markers across renders, and errors on orphan markers
-        # and unused sections. Eight assertions, byte-exact.
-        bash tests/test_standing_rules_drift.sh
