@@ -55,3 +55,7 @@ ok "inactive worker calls systemctl start"
 # add a new workflow line (no Workflows permission). The exec-review prompt
 # contract rides here so CI fails if someone deletes it from prompts/worker.md.
 bash "$here/exec-review-prompt.test.sh" || fail "exec-review prompt contract tests failed"
+# fleet-ops#1260: pstack playbooks are the default worker discipline.
+# Hosted here so CI fails if someone deletes the routing from worker.md
+# without a workflow edit (workers have no Workflows permission).
+bash "$here/pstack-worker-prompt.test.sh" || fail "pstack worker prompt contract tests failed"

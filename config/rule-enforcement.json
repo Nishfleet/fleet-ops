@@ -145,8 +145,8 @@
     {
       "id": "sr-pstack-review",
       "source": "global-standing-rules.md: pstack full review + blind stress test (Nish, 2026-08-20)",
-      "mechanism": "Adopted skills are installed on the Pi harness: blast-radius, why, session-pickup, pause-safely, unslop, design-it-twice, review-adjudication",
-      "proof": "~/.pi/agent/skills/{blast-radius,why,session-pickup,pause-safely,unslop,design-it-twice,review-adjudication}/SKILL.md",
+      "mechanism": "Worker prompt routes each issue to the matching upstream pstack playbook at ~/.pi/agent/skills/poteto-mode/playbooks/ (bug-fix, feature, investigation, perf-issue). Adopted house skills stay installed. Depth-1 spawn-guard forbids arena/architect/swarm/interrogate fan-out. Claim mutex, salvage, and progress files stay fleet-owned.",
+      "proof": "prompts/worker.md; tests/pstack-worker-prompt.test.sh; docs/pstack-adoption.md; ~/.pi/agent/skills/{blast-radius,why,session-pickup,pause-safely,unslop,design-it-twice,review-adjudication}/SKILL.md",
       "status": "enforced"
     },
     {
@@ -763,10 +763,9 @@
     {
       "id": "led-2026-08-27-geo-aeo-fleet-executes-measurement-owned-content-",
       "source": "decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish",
-      "mechanism": "GEO/AEO: fleet executes measurement + owned-content tactics; brand gate (preview-then-autonomous) on each public content surface; Reddit/community and digital-PR parked as Nish-reserved. Mechanism issue open.",
-      "proof": "fleet-ops#1245",
-      "status": "queued(#1245)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat GEO/AEO canary (fleet-geo-aeo-canary): config/geo-aeo-policy.json locks allowed_tactics to measurement + owned-content and parks reddit-community / digital-pr; brand gate is preview-then-autonomous (approved_surfaces need Nish preview); llms.txt is developer-docs-only; worker.md names the parked tactics; bin/ and systemd/ fail loud on Reddit-API / PRAW / HARO posting machinery. Observe-to-close via the rule-coverage join on a real heartbeat tick.",
+      "proof": "bin/fleet-geo-aeo-canary; lib/geo-aeo.py; config/geo-aeo-policy.json; prompts/worker.md; tests/fleet-geo-aeo.test.sh; fleet-heartbeat-tier1 block 34; fleet-ops#1245",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-geo-plan-approved-lets-go",
