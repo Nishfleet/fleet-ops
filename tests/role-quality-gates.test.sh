@@ -36,6 +36,45 @@ echo "$live" | jq -e . >/dev/null || fail "live audit did not emit JSON: $live"
 [[ "$live_rc" == "0" ]] || fail "live catalog has findings: $(echo "$live" | jq -c '.findings')"
 ok "live catalog: every named role is gated ($(echo "$live" | jq -r .role_count) roles)"
 
+# fleet-ops#592: researcher is a standing role — dropping the catalog row
+# must fail even if the live scan happens to be empty for other reasons.
+python3 - "$catalog" <<'PY' || fail "researcher catalog row missing or incomplete"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+row = next((r for r in data["roles"] if r.get("id") == "researcher"), None)
+if row is None:
+    raise SystemExit("researcher role missing")
+if "researcher.md" not in (row.get("prompts") or []):
+    raise SystemExit("researcher prompts must include researcher.md")
+if "fleet-researcher.service" not in (row.get("units") or []):
+    raise SystemExit("researcher units must include fleet-researcher.service")
+if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
+    raise SystemExit("researcher must name researcher_delta_contract")
+PY
+ok "catalog: researcher role is gated (fleet-ops#592)"
+
+# fleet-ops#592: session-reap and the vault knowledge-format lint timer are
+# plumbing, not work-producing roles. Dropping either prefix re-reds the audit.
+python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("role_quality_gates", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+required = ("interactive-session-reap", "vault-knowledge-format")
+missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
+if missing:
+    raise SystemExit("NON_ROLE_UNIT_PREFIXES missing " + ", ".join(missing))
+repo = Path(sys.argv[2])
+units = mod.discover_units(repo)
+leaked = [u for u in ("interactive-session-reap.service", "vault-knowledge-format.service") if u in units]
+if leaked:
+    raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
+PY
+ok "plumbing skips: session-reap and vault-knowledge-format (fleet-ops#592)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
