@@ -1853,6 +1853,15 @@ bash "$here/fleet-failed-command-observe-duplicate-python-traceback.test.sh" || 
 # live 01a03e61 signal. Same CI constraint (worker token cannot add a
 # P14 line).
 bash "$here/fleet-failed-command-observe-duplicate-enoent.test.sh" || fail "fleet-failed-command-observe-duplicate-enoent tests failed"
+# fleet-ops#1003 / #1019: leftover-duplicate observe-to-close drain for
+# the 01a041a5 gh--json+python3 KeyError pile (the 2-issue pile
+# #1003 / #1019, filed by the same GitHub-search-index-delay as the
+# 01a03e38 / 01a03dee / 01a03e61 piles). The drain mechanism is the
+# same as the other leftover-duplicate drains; this test pins the
+# citation chain and the 2-leftover exhaustion under the live
+# 01a041a5 signal. Same CI constraint (worker token cannot add a
+# P14 line).
+bash "$here/fleet-failed-command-observe-duplicate-1003.test.sh" || fail "fleet-failed-command-observe-duplicate-1003 tests failed"
 # fleet-ops#985: leftover-duplicate observe-to-close drain for the
 # 01a04105 git-branch-force pile (index-delay filings #849/#985; #849
 # closed by PR #990, #985 still open). The drain mechanism is the same

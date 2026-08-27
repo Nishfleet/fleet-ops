@@ -53,10 +53,17 @@
 #      NOT name the failure -> still a finding.
 #   4. same shape plus a later "the python3 call failed" user-facing flag
 #      -> clean.
-#   5. worker.md cites fleet-ops#957 (prompt-side lock).
-#   6. lib/failed-command-flagged.py docstring cites fleet-ops#957
+#   5. live #1003 shape: `gh issue view --json ... | python3 -c` where
+#      the python probe crashes with `KeyError: 'comments'` (the worker
+#      asked for a field the gh --json filter did not return) and walks
+#      past with a toolCall-only re-probe -> finding. The class is the
+#      same as #957 (python3 -c walked past); the live wording is
+#      distinct and a future refactor must not let a `KeyError: 'comments'`
+#      string get treated as a benign no-match probe.
+#   6. worker.md cites fleet-ops#957 (prompt-side lock).
+#   7. lib/failed-command-flagged.py docstring cites fleet-ops#957
 #      (detector-side lock).
-#   7. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   8. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -176,14 +183,56 @@ count=$(jq '.findings | length' <<<"$report")
 ok "python3 KeyError plus later user-facing flag is clean"
 rm -f "$sessions/python-traceback-flagged.jsonl"
 
-# --- 5. worker.md cites fleet-ops#957 (prompt-side lock) ----------------
+# --- 5. live #1003: gh --json + python3 KeyError: 'comments' walked past ---
+# Live session: 2026-08-27T05-16-15-343Z_01a041a5-ba6f-771c-9de4-d9ddaa6a54b0
+# (filed fleet-ops#1003). The worker (running on issue #844, which was
+# already CLOSED via observe-to-close by the time the worker started)
+# piped `gh issue view 844 --comments --json author,body,createdAt` into
+# a `python3 -c` probe that indexed `d['comments']`. The probe crashed
+# with `KeyError: 'comments'`, isError=true, and "Command exited with
+# code 1". The worker's next turn was a toolCall-only re-probe (a
+# slightly different --json filter and the same python script) — no
+# user-facing text. The class is the same as #957 (python3 -c walked
+# past); the live wording `KeyError: 'comments'` is distinct and a
+# future refactor must not let the literal string 'comments' be treated
+# as a benign no-match probe (it is a Python KeyError on a dict access,
+# not a grep/rg/diff/ls/which no-match). Replay that exact shape.
+write_session "python-traceback-gh-json-comments" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_gh1","name":"bash","arguments":{"command":"gh issue view 844 -R Nishfleet/fleet-ops --comments --json author,body,createdAt 2>&1 | python3 -c \"import json,sys; d=json.load(sys.stdin); [print(c['author']['login'],c['createdAt'],':',c['body'][:300]) for c in d['comments']]\""}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh1","toolName":"bash","isError":true,"content":[{"type":"text","text":"Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nKeyError: 'comments'\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_retry1","name":"bash","arguments":{"command":"gh issue view 844 -R Nishfleet/fleet-ops --json author,body,createdAt 2>&1 | python3 -c \"import json,sys; d=json.load(sys.stdin); [print(c['author']['login'],c['createdAt'],':',c['body'][:300]) for c in d['comments']]\""}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1003 KeyError: 'comments' from gh issue view --json should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Traceback' <<<"$snippet" \
+  || fail "finding snippet should mention Traceback (got $snippet)"
+grep -q "KeyError: 'comments'" <<<"$snippet" \
+  || fail "finding snippet should mention KeyError: 'comments' (got $snippet)"
+ok "live #1003: gh --json + python3 KeyError: 'comments' walked past is flagged"
+rm -f "$sessions/python-traceback-gh-json-comments.jsonl"
+
+# --- 6. worker.md cites fleet-ops#957 (prompt-side lock) ----------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#957' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#957 (prompt-side lock for the live Python traceback shape)"
 grep -q "KeyError: 'input_domain'" "$worker" \
   || fail "prompts/worker.md must name the live KeyError wording so workers flag it"
-ok "worker.md cites fleet-ops#957 and the live KeyError wording"
+# #1003 is a sibling python-traceback shape on a DIFFERENT session
+# (the 01a041a5 gh--json+python3 KeyError session). The class is the
+# same as #957 (python3 -c walked past); the live wording is distinct
+# (`KeyError: 'comments'` from a `gh issue view --json ... | python3 -c`
+# pipe whose --json filter omitted the field the probe tried to read).
+# Dropping the #1003 citation from the prompt is a regression even if
+# the #957 lock and the live #1003 drill still pass.
+grep -q 'fleet-ops#1003' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1003 (prompt-side lock for the gh--json+python3 KeyError sibling shape)"
+grep -q "KeyError: 'comments'" "$worker" \
+  || fail "prompts/worker.md must name the live #1003 KeyError: 'comments' wording so workers flag it"
+ok "worker.md cites fleet-ops#957, fleet-ops#1003 and the live KeyError wordings"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#957 ----
 # (detector-side lock). The docstring is the standing-rule contract
@@ -197,9 +246,16 @@ grep -q 'fleet-ops#957' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#957 (detector-side lock)"
 grep -q "KeyError, NameError" "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the Python traceback family (KeyError, NameError) for #957"
-ok "lib/failed-command-flagged.py docstring cites fleet-ops#957 and the Python traceback family"
+# #1003 is the gh--json+python3 KeyError sibling of #957. The class is
+# the same (python3 -c walked past); the session slug is different
+# (01a041a5 vs 01a03e38), so the citation chain must carry both.
+grep -q 'fleet-ops#957, #966, #1003' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #1003 next to #957 / #966"
+grep -q 'gh issue view' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the live #1003 gh issue view --json shape"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#957, fleet-ops#1003 and the python traceback family"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
+# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
 grep -Fq 'bash "$here/fleet-failed-command-python-traceback.test.sh"' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
