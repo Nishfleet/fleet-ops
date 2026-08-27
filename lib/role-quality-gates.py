@@ -164,6 +164,28 @@ def check_researcher_delta_contract(repo: Path, _role: dict[str, Any]) -> str | 
     return None
 
 
+def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any]) -> str | None:
+    """WFR (fleet-ops#1146) must lock the 5-action cap + signal in the prompt.
+
+    The prompt is the only output-contract surface — a worker that drops
+    the cap or the `signal: wfr-action/...` attribution can flood the
+    queue or break the rolling-ratio self-score. Gate-checked here so a
+    hand-edit cannot bypass either.
+    """
+    text = _read(repo / "prompts" / "weekly-fleet-review.md")
+    if not text:
+        return "prompts/weekly-fleet-review.md missing"
+    if "Adopt \u2264 5" not in text and "Adopt <= 5" not in text and "Adopt \\u2264 5" not in text:
+        return "prompts/weekly-fleet-review.md does not lock the Adopt \u2264 5 cap"
+    if "signal: wfr-action/" not in text:
+        return "prompts/weekly-fleet-review.md does not require signal: wfr-action/ attribution"
+    if "claimed work only" not in text:
+        return "prompts/weekly-fleet-review.md drops the 'claimed work only' output rule (no Nish report)"
+    if "blind" not in text.lower():
+        return "prompts/weekly-fleet-review.md drops the blind 5-lens structure"
+    return None
+
+
 BYPASS_CHECKS = {
     "scout_agent_ready_product": check_scout_agent_ready_product,
     "sweep_blank_approval": check_sweep_blank_approval,
@@ -174,6 +196,7 @@ BYPASS_CHECKS = {
     "orchestrator_verdict_guard": check_orchestrator_verdict_guard,
     "audit_has_panel": check_audit_has_panel,
     "researcher_delta_contract": check_researcher_delta_contract,
+    "weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract,
 }
 
 

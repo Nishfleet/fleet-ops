@@ -131,6 +131,13 @@ prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-mark
 systemd/quality-research-weekly.service /home/nish/.config/systemd/user/quality-research-weekly.service
 systemd/quality-research-weekly.timer /home/nish/.config/systemd/user/quality-research-weekly.timer
 prompts/quality-research-weekly.md /home/nish/.pi/agent/prompts/quality-research-weekly.md
+# fleet-ops#1146: Weekly Fleet Review — blind 5-lens senior research +
+# conference, output capped at 5 specced actions. agent-cron-run owns
+# seat rotation; this unit is the runner with the weekly-fleet-review
+# slug. Same proven pattern as quality-research-weekly.
+systemd/fleet-weekly-fleet-review.service /home/nish/.config/systemd/user/fleet-weekly-fleet-review.service
+systemd/fleet-weekly-fleet-review.timer /home/nish/.config/systemd/user/fleet-weekly-fleet-review.timer
+prompts/weekly-fleet-review.md /home/nish/.pi/agent/prompts/weekly-fleet-review.md
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile

@@ -795,6 +795,12 @@ ok "rule-enforcement: opencode/commandcode MiniMax M3 catalog canary drill"
 bash "$here/quality-research-weekly.test.sh" || fail "quality-research-weekly drill failed"
 ok "rule-enforcement: quality-research-weekly drill"
 
+# fleet-ops#1146: Weekly Fleet Review (WFR) — blind 5-lens senior research
+# + conference, output capped at 5 specced actions. Nested host so this
+# token does not need a workflow edit.
+bash "$here/weekly-fleet-review.test.sh" || fail "weekly-fleet-review drill failed"
+ok "rule-enforcement: weekly-fleet-review drill"
+
 # fleet-ops#544: VPS→Mac Tailscale lockdown canary. Same nested-CI host so
 # this token does not need a workflow edit.
 bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"

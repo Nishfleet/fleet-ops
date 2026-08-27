@@ -88,6 +88,20 @@
       "units": ["fleet-researcher.service", "quality-research-weekly.service"],
       "prompts": ["researcher.md", "quality-research-weekly.md"],
       "bypass_checks": ["researcher_delta_contract"]
+    },
+    {
+      "id": "weekly-fleet-review",
+      "gate": "blind 5-lens research + senior conference, output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only (no Nish report) — fleet-ops#1146, ledger 2026-08-27 Weekly Fleet Review approved",
+      "proof": [
+        "prompts/weekly-fleet-review.md",
+        "systemd/fleet-weekly-fleet-review.service",
+        "systemd/fleet-weekly-fleet-review.timer",
+        "bin/agent-cron-run",
+        "config/rule-enforcement.json"
+      ],
+      "units": ["fleet-weekly-fleet-review.service"],
+      "prompts": ["weekly-fleet-review.md"],
+      "bypass_checks": ["weekly_fleet_review_output_contract"]
     }
   ]
 }
