@@ -13,6 +13,12 @@
 # (LOUD + auto-filed, deduped by signal: findings-queued/<slug>).
 # Exit 1 also if the helper itself is broken (missing python/lib).
 #
+# Observe-to-close (fleet-ops#515, mirrors fleet-ops#362/#521): an auto-filed
+# issue whose signal is no longer in the scan gets a `resolved-at:
+# findings-queued/<slug>` comment this tick; a later tick that is still clean
+# closes it as completed. Without this, auto-filed issues can never close
+# once the session ages out of the window.
+#
 # The standing rule binds every agent on Mac and VPS, so every reachable
 # transcript root is scanned with the same predicates (fleet-ops#602):
 # Pi sessions, Cursor agent-transcripts, and Claude project sessions.
@@ -31,6 +37,13 @@
 #   FLEET_FINDINGS_QUEUED_GRACE_MINUTES  default 20 (skip in-flight sessions)
 #   FLEET_FINDINGS_QUEUED_NOW        ISO timestamp
 #   FLEET_FINDINGS_QUEUED_FILE_ISSUES    1 (default) / 0
+#   FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES 1 (default) post resolved-at: marker
+#                                        on auto-filed issues once the
+#                                        detector stops flagging their
+#                                        signal (observe-to-close); 0 skips
+#   FLEET_FINDINGS_QUEUED_CLOSE_ISSUES   1 (default) close auto-filed issues
+#                                        once a prior tick posted resolved-at:
+#                                        and the signal is still clean; 0 skips
 #   FLEET_FINDINGS_QUEUED_ISSUE_REPO     default Nishfleet/fleet-ops
 #   FLEET_FINDINGS_QUEUED_CAP            default 5
 #   FLEET_HEARTBEAT_TRIAGE
@@ -58,6 +71,8 @@ WINDOW_HOURS="${FLEET_FINDINGS_QUEUED_WINDOW_HOURS:-24}"
 GRACE_MINUTES="${FLEET_FINDINGS_QUEUED_GRACE_MINUTES:-20}"
 NOW_ISO="${FLEET_FINDINGS_QUEUED_NOW:-}"
 FILE_ISSUES="${FLEET_FINDINGS_QUEUED_FILE_ISSUES:-1}"
+OBSERVE_ISSUES="${FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES:-1}"
+CLOSE_ISSUES="${FLEET_FINDINGS_QUEUED_CLOSE_ISSUES:-1}"
 ISSUE_REPO="${FLEET_FINDINGS_QUEUED_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_FINDINGS_QUEUED_CAP:-5}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
@@ -126,13 +141,17 @@ log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skip
 
 if [[ "$finding_count" == "0" ]]; then
     loud "FINDINGS-QUEUED-OK" "no unqueued offers in window (scanned=$scanned)"
-    exit 0
 fi
 
+# Open issues are needed for auto-file dedup AND observe-to-close. Fetch once
+# with comments so the same call serves both. `comments` is a supported
+# `gh issue list` field; absent comments are treated as [] by the helper.
 open_json="[]"
-if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+if { [[ "$FILE_ISSUES" == "1" ]] || [[ "$OBSERVE_ISSUES" == "1" ]] || [[ "$CLOSE_ISSUES" == "1" ]]; } \
+    && command -v "$GH" >/dev/null 2>&1; then
     set +e
-    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 \
+        --json number,body,comments 2>/dev/null)
     set -e
     open_json="${open_json:-[]}"
 fi
@@ -179,5 +198,84 @@ $signal"
     fi
 done < <(jq -c '.findings[]' <<<"$report")
 
-loud "FINDINGS-QUEUED-FAIL" "unqueued offers=$finding_count — a finding named in chat was never filed; heartbeat tick will fail"
-exit 1
+# ---------------------------------------------------------------------------
+# Observe-to-close (fleet-ops#515, mirrors fleet-ops#362/#521).
+# An auto-filed issue whose signal is no longer in the scan is clean: post a
+# `resolved-at:` marker this tick (observe), close it on a later clean tick
+# (close). Same-tick comment-then-close is avoided so the green report is
+# durable before the close fires. Runs on every tick, including clean ones
+# (a clean tick is exactly when resolved issues should close).
+# ---------------------------------------------------------------------------
+observed=0
+closed=0
+obs_skip=0
+if command -v "$GH" >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    _rep="/tmp/findings-queued-report.$$.json"
+    _iss="/tmp/findings-queued-open.$$.json"
+    printf '%s\n' "$report" >"$_rep"
+    printf '%s\n' "$open_json" >"$_iss"
+    set +e
+    oc_targets=$(python3 "$LIB" observe-close-targets --report "$_rep" --issues "$_iss" --cap "$CAP")
+    oc_rc=$?
+    set -e
+    rm -f "$_rep" "$_iss"
+    if [[ "$oc_rc" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"${oc_targets:-}"; then
+        # Observe step: post resolved-at: on clean signals not yet marked.
+        if [[ "$OBSERVE_ISSUES" == "1" ]]; then
+            while IFS= read -r ot; do
+                [[ -n "$ot" ]] || continue
+                ot_num=$(jq -r '.number' <<<"$ot")
+                ot_slug=$(jq -r '.slug' <<<"$ot")
+                [[ -n "$ot_num" && "$ot_num" != "null" ]] || continue
+                ot_body="resolved-at: findings-queued/${ot_slug}
+
+The detector reports this signal clean on a real heartbeat tick (observe-to-close, fleet-ops#515). A later tick that is still clean closes this issue as completed."
+                set +e
+                "$GH" issue comment "$ot_num" -R "$ISSUE_REPO" --body "$ot_body" \
+                    >/tmp/findings-queued-comment.err 2>&1
+                comment_rc=$?
+                set -e
+                if [[ "$comment_rc" -eq 0 ]]; then
+                    observed=$((observed + 1))
+                    log "observe-to-close: OBSERVED-CLEAN $ot_slug -> #$ot_num"
+                else
+                    obs_skip=$((obs_skip + 1))
+                    log "observe-to-close: WARN failed to comment #$ot_num (rc=$comment_rc) $(tr '\n' ' ' </tmp/findings-queued-comment.err 2>/dev/null)"
+                fi
+            done < <(jq -c '.observe[]' <<<"$oc_targets")
+        fi
+        # Close step: a prior tick posted resolved-at: and the signal is
+        # still clean -> close as completed.
+        if [[ "$CLOSE_ISSUES" == "1" ]]; then
+            while IFS= read -r ct; do
+                [[ -n "$ct" ]] || continue
+                ct_num=$(jq -r '.number' <<<"$ct")
+                ct_slug=$(jq -r '.slug' <<<"$ct")
+                [[ -n "$ct_num" && "$ct_num" != "null" ]] || continue
+                set +e
+                "$GH" issue close "$ct_num" -R "$ISSUE_REPO" --reason completed \
+                    >/tmp/findings-queued-close.err 2>&1
+                close_rc=$?
+                set -e
+                if [[ "$close_rc" -eq 0 ]]; then
+                    closed=$((closed + 1))
+                    log "observe-to-close: OBSERVE-CLOSED $ct_slug -> #$ct_num (resolved-at + clean)"
+                else
+                    obs_skip=$((obs_skip + 1))
+                    log "observe-to-close: WARN failed to close #$ct_num (rc=$close_rc) $(tr '\n' ' ' </tmp/findings-queued-close.err 2>/dev/null)"
+                fi
+            done < <(jq -c '.close[]' <<<"$oc_targets")
+        fi
+    else
+        log "observe-to-close: WARN helper produced no JSON (rc=$oc_rc) — skip this tick"
+    fi
+fi
+if [[ "$observed" -gt 0 || "$closed" -gt 0 ]]; then
+    loud "FINDINGS-QUEUED-OBSERVE-CLOSE" "observed=$observed closed=$closed skipped=$obs_skip"
+fi
+
+if [[ "$finding_count" -gt 0 ]]; then
+    loud "FINDINGS-QUEUED-FAIL" "unqueued offers=$finding_count — a finding named in chat was never filed; heartbeat tick will fail"
+    exit 1
+fi
+exit 0

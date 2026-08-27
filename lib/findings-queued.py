@@ -69,6 +69,12 @@ QUEUE_RE = re.compile(
 
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# `signal: findings-queued/<slug>` lives in every auto-filed issue body.
+SIGNAL_RE = re.compile(r"signal:\s*findings-queued/([^\s\n]+)")
+# `resolved-at: findings-queued/<slug>` is the observe-to-close marker a
+# prior tick posted once the detector stopped flagging that signal.
+RESOLVED_RE = re.compile(r"resolved-at:\s*findings-queued/([^\s\n]+)")
+
 
 def parse_now(value: str | None) -> float:
     if not value:
@@ -284,6 +290,83 @@ def scan(
     }
 
 
+def _issue_blob(issue: dict[str, Any]) -> str:
+    """Body plus all comment bodies, for marker dedupe."""
+    parts = [str(issue.get("body") or "")]
+    for comment in issue.get("comments") or []:
+        if isinstance(comment, dict):
+            parts.append(str(comment.get("body") or ""))
+        else:
+            parts.append(str(comment))
+    return "\n".join(parts)
+
+
+def observe_close_targets(
+    report: dict[str, Any], issues: list[dict[str, Any]], cap: int = 5
+) -> dict[str, list[dict[str, Any]]]:
+    """Observe-to-close targets for auto-filed findings-queued issues.
+
+    Mirrors the rule-enforcement canary's two-step pattern (fleet-ops#362,
+    #521): a finding named in chat is auto-filed with
+    `signal: findings-queued/<slug>`. When a later tick's scan no longer
+    reports that slug (the session aged out of the window, or the offer was
+    followed through), the detector is clean for that signal:
+
+      - observe step: post `resolved-at: findings-queued/<slug>` if the
+        issue does not already carry it (deduped).
+      - close step: a later tick that still does not flag the slug AND sees
+        the marker from a prior tick closes the issue as completed.
+
+    The marker-from-a-prior-tick requirement makes the close evidence-backed
+    rather than manual — the detector reported clean on a real tick, and an
+    observing tick closes. Same-tick comment-then-close is avoided so the
+    green report is durable before the close fires.
+
+    Returns {"observe": [...], "close": [...]} capped at `cap` each.
+    """
+    active: set[str] = {
+        str(f.get("slug") or "") for f in (report.get("findings") or []) if isinstance(f, dict)
+    }
+    observe: list[dict[str, Any]] = []
+    close: list[dict[str, Any]] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        number = issue.get("number")
+        if not isinstance(number, int):
+            continue
+        body = str(issue.get("body") or "")
+        sig_match = SIGNAL_RE.search(body)
+        if sig_match is None:
+            continue
+        slug = sig_match.group(1).strip()
+        if not slug:
+            continue
+        # Still actively flagged this tick -> not clean yet, leave open.
+        if slug in active:
+            continue
+        blob = _issue_blob(issue)
+        already_resolved = RESOLVED_RE.search(blob) is not None
+        if already_resolved:
+            # Marker persisted from a prior tick + still clean -> close.
+            if len(close) < cap:
+                close.append({"number": number, "slug": slug})
+        else:
+            # Clean for the first observed tick -> post the marker.
+            if len(observe) < cap:
+                observe.append({"number": number, "slug": slug})
+    return {"observe": observe, "close": close}
+
+
+def observe_comment(slug: str) -> str:
+    return (
+        f"resolved-at: findings-queued/{slug}\n\n"
+        "The detector reports this signal clean on a real heartbeat tick "
+        "(observe-to-close, fleet-ops#515). A later tick that is still clean "
+        "closes this issue as completed.\n"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -299,6 +382,13 @@ def main(argv: list[str] | None = None) -> int:
     scan_p.add_argument("--now", default="")
     scan_p.add_argument("--window-hours", type=float, default=24.0)
     scan_p.add_argument("--grace-minutes", type=float, default=20.0)
+    oc_p = sub.add_parser(
+        "observe-close-targets",
+        help="open findings-queued issues to observe (comment) or close once clean",
+    )
+    oc_p.add_argument("--report", required=True, help="scan report JSON file")
+    oc_p.add_argument("--issues", required=True, help="open issues JSON (number,body,comments)")
+    oc_p.add_argument("--cap", type=int, default=5)
     args = parser.parse_args(argv)
 
     if args.cmd == "scan":
@@ -309,6 +399,18 @@ def main(argv: list[str] | None = None) -> int:
             grace_minutes=args.grace_minutes,
         )
         json.dump(report, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if args.cmd == "observe-close-targets":
+        with open(args.report, encoding="utf-8") as fh:
+            report = json.load(fh)
+        with open(args.issues, encoding="utf-8") as fh:
+            issues = json.load(fh)
+        if not isinstance(issues, list):
+            print("issues JSON must be an array", file=sys.stderr)
+            return 1
+        targets = observe_close_targets(report, issues, cap=args.cap)
+        json.dump(targets, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
     return 2

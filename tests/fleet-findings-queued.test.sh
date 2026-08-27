@@ -60,6 +60,32 @@ case "$cmd" in
         printf '%s\n' "$body" >> "$f"
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
+      comment)
+        num=""; body=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --body) body="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            [0-9]*) num="$1"; shift ;;
+            *) shift ;;
+          esac
+        done
+        cf="$store/issue-${num}.comments"
+        printf '%s\n' "$body" >> "$cf"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#comment"
+        ;;
+      close)
+        num=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --reason) shift 2 ;;
+            --repo|-R) shift 2 ;;
+            [0-9]*) num="$1"; shift ;;
+            *) shift ;;
+          esac
+        done
+        : >"$store/issue-${num}.closed"
+        ;;
       list)
         printf '[\n'
         first=1
@@ -67,9 +93,29 @@ case "$cmd" in
         for f in "$store"/*.body; do
           [ -f "$f" ] || continue
           n=$((n+1))
+          # Skip closed issues for --state open (the detector lists open).
+          [ -f "$store/issue-${n}.closed" ] && continue
           body=$(tail -n +2 "$f")
+          cf="$store/issue-${n}.comments"
+          comments="[]"
+          if [ -f "$cf" ]; then
+            comments=$(python3 -c '
+import json, sys
+cfile = sys.argv[1]
+out = []
+with open(cfile) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if line:
+            out.append({"body": line})
+print(json.dumps(out))
+' "$cf")
+          fi
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+          printf '{"number":%s,"title":"","body":%s,"comments":%s}' \
+            "$n" \
+            "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" \
+            "$comments"
         done
         printf '\n]\n'
         ;;
@@ -208,6 +254,176 @@ grep -rl "signal: findings-queued/" "$scratch/gh-issues" | wc -l | grep -q "^1$"
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/ask-nofile.jsonl"
+
+# --- 6b. observe-to-close: file -> age out -> observe -> close ---------------
+# The class of failure (fleet-ops#722): the detector auto-filed issues but
+# had no observe-to-close, so an auto-filed issue could never close once the
+# session aged out of the window. This proves the two-step wiring:
+#   tick 1: flagged session -> auto-file issue (signal: findings-queued/<slug>)
+#   tick 2: session gone (aged out) -> clean scan -> post resolved-at: marker
+#   tick 3: still clean + marker persisted -> close as completed
+# Same-tick comment-then-close is avoided so the green report is durable.
+oc_sessions="$scratch/sessions/ws"
+mkdir -p "$oc_sessions"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The canary is silent. Want me to file it?"}]}}' >"$oc_sessions/oc-offer.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$oc_sessions/oc-offer.jsonl"
+oc_store="$scratch/gh-issues-oc"
+mkdir -p "$oc_store"
+# tick 1: auto-file.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$oc_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/oc1.log"
+oc1_rc=$?
+set -e
+[[ "$oc1_rc" == "1" ]] || fail "observe-close tick1 should exit 1 (got $oc1_rc) $(cat "$scratch/oc1.log")"
+grep -q "FILED" "$scratch/oc1.log" || fail "observe-close tick1 did not file"
+grep -rq "signal: findings-queued/" "$oc_store" || fail "observe-close tick1 missing signal"
+# tick 1 must NOT close or observe (slug still active).
+grep -q "OBSERVED-CLEAN\|OBSERVE-CLOSED" "$scratch/oc1.log" \
+  && fail "observe-close tick1 must not observe/close an active slug" || true
+ok "observe-close tick1: auto-files, no observe/close on active slug"
+
+# tick 2: session aged out of the window -> clean scan -> observe (post marker).
+rm -f "$oc_sessions/oc-offer.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$oc_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/oc2.log"
+oc2_rc=$?
+set -e
+[[ "$oc2_rc" == "0" ]] || fail "observe-close tick2 (clean) should exit 0 (got $oc2_rc) $(cat "$scratch/oc2.log")"
+grep -q "OBSERVED-CLEAN" "$scratch/oc2.log" || fail "observe-close tick2 did not post marker $(cat "$scratch/oc2.log")"
+grep -rq "resolved-at: findings-queued/" "$oc_store" || fail "observe-close tick2 missing resolved-at comment"
+# tick 2 must NOT close yet (no prior marker before this tick).
+grep -q "OBSERVE-CLOSED" "$scratch/oc2.log" \
+  && fail "observe-close tick2 must not close same-tick as the marker" || true
+ok "observe-close tick2: clean scan posts resolved-at marker, no same-tick close"
+
+# tick 3: still clean + marker persisted from tick 2 -> close as completed.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$oc_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/oc3.log"
+oc3_rc=$?
+set -e
+[[ "$oc3_rc" == "0" ]] || fail "observe-close tick3 (clean) should exit 0 (got $oc3_rc) $(cat "$scratch/oc3.log")"
+grep -q "OBSERVE-CLOSED" "$scratch/oc3.log" || fail "observe-close tick3 did not close $(cat "$scratch/oc3.log")"
+[[ -f "$oc_store/issue-1.closed" ]] || fail "observe-close tick3 did not mark issue closed"
+ok "observe-close tick3: marker persisted + still clean -> closed as completed"
+
+# tick 4: issue is now closed -> list returns empty -> no further action.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$oc_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/oc4.log"
+oc4_rc=$?
+set -e
+[[ "$oc4_rc" == "0" ]] || fail "observe-close tick4 should exit 0 (got $oc4_rc) $(cat "$scratch/oc4.log")"
+grep -q "OBSERVED-CLEAN\|OBSERVE-CLOSED" "$scratch/oc4.log" \
+  && fail "observe-close tick4 must not re-observe/close a closed issue" || true
+ok "observe-close tick4: closed issue is not re-observed or re-closed"
+
+# Observe/close gates: OBSERVE_ISSUES=0 suppresses the marker; CLOSE_ISSUES=0
+# suppresses the close even when the marker is present.
+gate_store="$scratch/gh-issues-gate"
+mkdir -p "$gate_store"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Silent again. Want me to file it?"}]}}' >"$oc_sessions/gate-offer.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$oc_sessions/gate-offer.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=1 FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" GH="$scratch/gh" \
+GH_MOCK_STORE="$gate_store" FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/gate1.log"
+set -e
+grep -q "FILED" "$scratch/gate1.log" || fail "gate setup did not file"
+rm -f "$oc_sessions/gate-offer.jsonl"
+# OBSERVE=0 -> no marker posted on a clean tick.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=0 FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" GH="$scratch/gh" \
+GH_MOCK_STORE="$gate_store" FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/gate2.log"
+set -e
+grep -q "OBSERVED-CLEAN" "$scratch/gate2.log" \
+  && fail "OBSERVE_ISSUES=0 must suppress the marker" || true
+grep -rq "resolved-at: findings-queued/" "$gate_store" \
+  && fail "OBSERVE_ISSUES=0 must not post a resolved-at comment" || true
+ok "observe-close gate: OBSERVE_ISSUES=0 suppresses the marker"
+# Manually plant the marker, then CLOSE=0 -> no close.
+printf 'resolved-at: findings-queued/gate-offer\n' >>"$gate_store/issue-1.comments"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OBSERVE_ISSUES=1 FLEET_FINDINGS_QUEUED_CLOSE_ISSUES=0 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" GH="$scratch/gh" \
+GH_MOCK_STORE="$gate_store" FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/gate3.log"
+set -e
+grep -q "OBSERVE-CLOSED" "$scratch/gate3.log" \
+  && fail "CLOSE_ISSUES=0 must suppress the close" || true
+[[ -f "$gate_store/issue-1.closed" ]] \
+  && fail "CLOSE_ISSUES=0 must not close the issue" || true
+ok "observe-close gate: CLOSE_ISSUES=0 suppresses the close"
+rm -f "$oc_sessions/gate-offer.jsonl"
 
 # --- 7. missing helper fails loud -------------------------------------------
 # Harden the drill (fleet-ops#612): install a WORKING fake helper at the
