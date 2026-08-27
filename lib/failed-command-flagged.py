@@ -178,6 +178,21 @@ toolCalls did not name the failure. It is not a GraphQL transient error
 (fleet-ops#678) or a no-match probe; it is a real swallowed failure and
 must be flagged. The dedicated regression test locks it under
 tests/fleet-failed-command-gh-issue-view-body.test.sh.
+A `gh issue view <N> -R ... --json <fields>` command whose filter names
+an unknown field (e.g. `label` instead of `labels`) is not valid: `gh`
+rejects it with `Unknown JSON field: "label"` and the list of available
+fields, then exits 1 (fleet-ops#1219, session
+2026-08-27T15-14-27-082Z_01a043c9-648a-75d9-add1-a7f78fe03f68). The
+assistant issued the invalid `--json` filter alongside a valid
+`gh issue view --json body` sibling in the same turn; the next turn was
+a thinking block plus follow-up toolCalls with no user-facing text
+naming the failure. Distinct from #1055 (`unknown flag: --body`, an
+invalid flag) and #1003 (`KeyError: 'comments'` from python parsing
+`--json` output that omitted a field the probe then read — gh itself
+succeeded). It is not a GraphQL transient error (fleet-ops#678) or a
+no-match probe; it is a real swallowed failure and must be flagged. The
+dedicated regression test locks it under
+tests/fleet-failed-command-gh-issue-view-unknown-field.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
@@ -282,6 +297,19 @@ ages out of the 24h window. Live session
 2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
 `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
 head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A `gh api /user` (or `gh api user`) call under a GitHub App
+installation token that returns `Resource not accessible by
+integration` + `gh: Resource not accessible by integration (HTTP 403)`
++ `Command exited with code 1` (isError=true) is a real swallowed
+failure (fleet-ops#1253). App installation tokens cannot call the
+Users API. The live session probed identity with a compound
+`gh api /user` + `whoami` + `gh api /user --jq '.login'` chain and
+walked past both 403s. A successful `whoami` in the same compound
+command is not a user-facing flag. Naming `403` or `not accessible by
+integration` in later assistant text is. The dedicated regression test
+tests/fleet-failed-command-gh-api-403-integration.test.sh pins that.
+Live session
+2026-08-27T16-15-45-417Z_01a04401-8509-7e94-8611-0fc81a5d1b85.jsonl.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
@@ -413,9 +441,12 @@ GIT_REAL_ERR_RE = re.compile(
     re.I,
 )
 # Unquoted assistant report. Tight on the standing-rule verbs.
+# \b403\b and "not accessible by integration" are the live #1253
+# `gh api /user` App-token 403 class (parallel to \b404\b for #698).
 FLAG_RE = re.compile(
     r"(failed|fails|failing|failure|\berror\b|non-zero|exited with|"
-    r"timed out|timeout|blocker|not found|\b404\b|\b50[0-9]\b|"
+    r"timed out|timeout|blocker|not found|\b404\b|\b403\b|\b50[0-9]\b|"
+    r"not accessible by integration|"
     r"unexpected failing command|it is now the blocker)",
     re.I,
 )
