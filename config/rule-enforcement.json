@@ -763,10 +763,9 @@
     {
       "id": "led-2026-08-27-geo-aeo-fleet-executes-measurement-owned-content-",
       "source": "decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish",
-      "mechanism": "GEO/AEO: fleet executes measurement + owned-content tactics; brand gate (preview-then-autonomous) on each public content surface; Reddit/community and digital-PR parked as Nish-reserved. Mechanism issue open.",
-      "proof": "fleet-ops#1245",
-      "status": "queued(#1245)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat GEO/AEO canary (fleet-geo-aeo-canary): config/geo-aeo-policy.json locks allowed_tactics to measurement + owned-content and parks reddit-community / digital-pr; brand gate is preview-then-autonomous (approved_surfaces need Nish preview); llms.txt is developer-docs-only; worker.md names the parked tactics; bin/ and systemd/ fail loud on Reddit-API / PRAW / HARO posting machinery. Observe-to-close via the rule-coverage join on a real heartbeat tick.",
+      "proof": "bin/fleet-geo-aeo-canary; lib/geo-aeo.py; config/geo-aeo-policy.json; prompts/worker.md; tests/fleet-geo-aeo.test.sh; fleet-heartbeat-tier1 block 34; fleet-ops#1245",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-geo-plan-approved-lets-go",

@@ -37,18 +37,20 @@ repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
 `read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, #953,
-fleet-ops#958, #972, #967, #977, #1001, #1059, #1170) is a
+fleet-ops#958, #972, #967, #977, #1001, #1059, #1170, #1243) is a
 real swallowed failure: it is not a probe like ls no-match or read
-offset beyond end. The EISDIR class (#1170) is the `read` tool pointed at
+offset beyond end. The EISDIR class (#1170 / #1243) is the `read` tool pointed at
 a directory path instead of a file — Pi returns `EISDIR: illegal operation
 on a directory, read` with isError=True and no exit-code line, and the
 assistant walked it past with thinking-only recovery turns; it is a
 real failure, never a negative result like the #651 offset-beyond-end
 exemption. The dedicated regression test
 tests/fleet-failed-command-read-eisdir.test.sh pins the live
-fleet-ops#1170 shape (two sessions: 01a04334 reading the sessions dir,
-01a043ee reading the 0509 e2e/fixtures dir) so a future refactor that
-adds a "directory read is benign" exemption is caught. #972 is the same session shape as #958 (the
+fleet-ops#1170 shape (01a04334 reading the sessions dir) and the
+fleet-ops#1243 sibling on a DIFFERENT session slug (01a043ee reading
+the 0509 e2e/fixtures dir, walked past with "Now let me also look at
+the printStackTrace threshold setting you mentioned:") so a future
+refactor that adds a "directory read is benign" exemption is caught. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
 the same GitHub-search-index-delay that produced #951 / #965 / #966, so
 the citation chain must carry it. #967 is the same session shape as
@@ -472,6 +474,9 @@ HARNESS_BLOCK_RE = re.compile(
 )
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
+# Do NOT add a similar exemption for `read` "EISDIR: illegal operation
+# on a directory, read" (fleet-ops#1170 / #1243: the path is a
+# directory, not a missing file and not an overshot offset).
 # Do NOT add a similar exemption for `edit` "Could not find the exact
 # text" (fleet-ops#956, #965, #970, #975, #980), "Found N occurrences"
 # (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
@@ -651,6 +656,11 @@ def result_failed(
         return False, text
     if msg.get("toolName") == "read" and READ_OFFSET_RE.search(text):
         return False, text
+    # No sibling exemption belongs here for `read` EISDIR
+    # (fleet-ops#1170 / #1243, "EISDIR: illegal operation on a
+    # directory, read"). That is a real swallowed failure: the path
+    # was a directory. tests/fleet-failed-command-read-eisdir.test.sh
+    # goes red if an exemption is added here.
     # No sibling exemption belongs here for the `edit` tool. All three
     # edit-unmatch shapes are real swallowed failures, not negative
     # results: "Could not find the exact text" (0 matches, fleet-ops#956
