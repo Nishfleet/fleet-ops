@@ -360,6 +360,16 @@ def result_failed(
     # is content, not a swallowed timeout — treat it as not a failure.
     if timed_out and not is_error and code is None:
         return False, text
+    # Live #943: "Command exited with code N" appears as a literal string in
+    # the content of a toolResult whose call succeeded (isError=false) — a
+    # `git log` / `git show` whose commit body quotes the phrase, a `read` of
+    # a source or test file that contains it, an issue/PR body that quotes it.
+    # The genuine-failure contract is isError=true: the Pi harness sets it on
+    # a non-zero exit or a timeout. A bare exit-code string in the content of
+    # a successful call is content, not a swallowed failure (same principle as
+    # the #821 timeout guard above) — treat it as not a failure.
+    if code is not None and not is_error and not timed_out:
+        return False, text
     # Downstream of a harness block (fleet-ops#677): the spawn-guard refused
     # the heredoc/redirect that would have created the script, so invoking it
     # fails with exit 127 "No such file or directory". The assistant recovers
