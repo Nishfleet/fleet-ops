@@ -59,6 +59,13 @@ HARNESS_BLOCK_RE = re.compile(
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
+# Downstream of a harness block (fleet-ops#677): the spawn-guard refused the
+# heredoc/redirect that would have created a script, so a later `bash <path>`
+# fails with exit 127 "No such file or directory". The assistant recovers via
+# the write tool. That ENOENT is a cascade of the block, not a swallowed
+# command failure. Only exempt when a prior toolResult in the session was a
+# harness block — a 127 ENOENT with no prior block is a real failure.
+ENOENT_RE = re.compile(r"No such file or directory", re.I)
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -119,7 +126,9 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     return BENIGN_STAGE_RE.search(command) is not None
 
 
-def result_failed(msg: dict[str, Any], command: str) -> tuple[bool, str]:
+def result_failed(
+    msg: dict[str, Any], command: str, had_prior_block: bool = False
+) -> tuple[bool, str]:
     text = _text_chunks(msg.get("content"))
     if HARNESS_BLOCK_RE.search(text):
         return False, text
@@ -129,6 +138,12 @@ def result_failed(msg: dict[str, Any], command: str) -> tuple[bool, str]:
     timed_out = TIMEOUT_RE.search(text) is not None
     code = _exit_code(text)
     if not is_error and not timed_out and code is None:
+        return False, text
+    # Downstream of a harness block (fleet-ops#677): the spawn-guard refused
+    # the heredoc/redirect that would have created the script, so invoking it
+    # fails with exit 127 "No such file or directory". The assistant recovers
+    # via the write tool. Only exempt when a prior toolResult was a block.
+    if had_prior_block and code == 127 and ENOENT_RE.search(text):
         return False, text
     if is_benign_no_match(command, text, code if code is not None else (1 if is_error else None)):
         return False, text
@@ -151,6 +166,7 @@ def session_slug(path: str) -> str:
 def scan_session(path: str) -> dict[str, str] | None:
     calls: dict[str, str] = {}
     pending: list[str] = []
+    had_harness_block = False
     try:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -181,7 +197,12 @@ def scan_session(path: str) -> dict[str, str] | None:
                 elif role == "toolResult":
                     tid = str(msg.get("toolCallId") or "")
                     command = calls.get(tid, "")
-                    failed, text = result_failed(msg, command)
+                    result_text = _text_chunks(msg.get("content"))
+                    if HARNESS_BLOCK_RE.search(result_text):
+                        had_harness_block = True
+                    failed, text = result_failed(
+                        msg, command, had_prior_block=had_harness_block
+                    )
                     if failed:
                         pending.append(snippet_for(text or command or msg.get("toolName") or "tool"))
     except OSError:

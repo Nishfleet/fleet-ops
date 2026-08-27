@@ -1031,6 +1031,9 @@ bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger test
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
 # fleet-ops#651: read tool offset beyond end of file is a negative result.
 bash "$here/fleet-failed-command-read.test.sh" || fail "fleet-failed-command-read tests failed"
+# fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
+# a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 
