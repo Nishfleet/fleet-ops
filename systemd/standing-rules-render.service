@@ -21,7 +21,7 @@ Type=oneshot
 #
 # Stdout/stderr go to the journal under the unit name so a failed
 # render is searchable.
-ExecStart=/home/nish/.local/bin/render-standing-rules --render
+ExecStart=/home/nish/.local/bin/render-standing-rules.py --render
 # Defensive: never rewrite a file that lacks both markers. The
 # generator errors before writing, so a half-migrated target stays
 # half-migrated and we see the error in the journal.
