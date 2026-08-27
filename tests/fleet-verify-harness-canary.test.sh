@@ -14,6 +14,11 @@
 #  10. Production skip names non-products and does not skip 0509.
 #  11. Heartbeat-tier1 wires the canary, fail-loud, MANIFEST installs it.
 #  12. Live 0509 checkout (VPS) with FILE=0 is green.
+#  13. Stale local checkout, valid harness on origin/main -> ok, no file
+#      (fleet-ops#927: canary filed 7s after the harness PR merged because the
+#      local HEAD was behind origin/main).
+#  14. ORIGIN_FALLBACK=0 re-asserts the local-only missing path (the pre-#927
+#      behavior), proving the seam is real and the fallback is opt-out.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -329,4 +334,66 @@ else
   ok "scenario12: live 0509 checkout not present — skip"
 fi
 
-ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live"
+# --- 13. stale local, valid harness on origin/main (fleet-ops#927) ---------
+# Reproduces the #927 class: PR #190 merged the harness to origin/main, but the
+# local checkout's HEAD was behind, so the canary filed a false positive 7s
+# later. The fix re-checks origin's default-branch HEAD before reporting a gap.
+: >"$gh_log"; : >"$triage"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+# Build a bare "origin" whose default branch (main) carries a valid harness.
+origin_bare="$scratch/origin-0509.git"
+git init -q --bare -b main "$origin_bare"
+work_clone="$scratch/origin-work"
+git init -q -b main "$work_clone"
+git -C "$work_clone" config user.email t@t
+git -C "$work_clone" config user.name t
+make_valid_harness "$work_clone" 0509 2>/dev/null
+git -C "$work_clone" remote add origin "$origin_bare"
+git -C "$work_clone" push -q origin main
+# Now create the inspected checkout: clone so origin/main exists, then reset
+# HEAD to an earlier commit that has NO harness, leaving origin/main ahead.
+git clone -q "$origin_bare" "$products/0509"
+git -C "$products/0509" config user.email t@t
+git -C "$products/0509" config user.name t
+git -C "$products/0509" reset -q --hard HEAD~0  # at origin/main tip (has harness)
+# Move local HEAD back to a harness-less commit while keeping origin/main.
+git -C "$products/0509" checkout -q --orphan stale-local
+git -C "$products/0509" rm -rf --quiet .claude 2>/dev/null || true
+rm -rf "$products/0509/.claude"
+echo "no harness here" >"$products/0509/README"
+git -C "$products/0509" add README
+git -C "$products/0509" commit -q -m "stale local HEAD without harness"
+# origin/main still points at the harness commit (remote-tracking ref present).
+git -C "$products/0509" rev-parse --verify --quiet origin/main >/dev/null \
+  || fail "scenario13: fixture must have origin/main ref"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario13: stale-local with valid origin must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-OK' <<<"$env_out" || fail "scenario13: must log OK ($env_out)"
+grep -q 'stale-local: 0509' <<<"$env_out" || fail "scenario13: must log stale-local ($env_out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario13: must not file when origin has the harness (gh=$(cat "$gh_log"))"
+fi
+ok "scenario13: stale local checkout with valid origin/main harness is ok, no file (fleet-ops#927)"
+
+# --- 14. ORIGIN_FALLBACK=0 re-asserts the local-only missing path ----------
+# Same fixture as 13, but the fallback disabled: the stale local HEAD is a
+# real violation again. Proves the seam is real and the fix is opt-out.
+: >"$gh_log"; : >"$triage"
+set +e
+env_out=$(
+  FLEET_VERIFY_HARNESS_JSON="$scratch/verify-harness.json" \
+  FLEET_VERIFY_HARNESS_INTAKE="$scratch/intake-repos.json" \
+  FLEET_VERIFY_HARNESS_CHECKOUT_ROOT="$products" \
+  FLEET_VERIFY_HARNESS_ORIGIN_FALLBACK=0 \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+env_rc=$?
+set -e
+[[ "$env_rc" == "1" ]] || fail "scenario14: fallback=0 + stale local must exit 1, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-VIOLATION' <<<"$env_out" || fail "scenario14: must LOUD ($env_out)"
+grep -q 'issue create' "$gh_log" || fail "scenario14: must auto-file (gh=$(cat "$gh_log"))"
+ok "scenario14: ORIGIN_FALLBACK=0 re-asserts the local-only missing path"
+
+ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam"
