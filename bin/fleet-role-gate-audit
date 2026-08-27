@@ -6,10 +6,13 @@
 #   2. Run the named bypass checks (scout admission, #376 sweep, etc.).
 #   3. Flag a prompt or unit that appeared with no catalog row.
 #   4. Auto-file each finding (deduped on signal: role-quality-gate/<id>).
+#   5. Observe-to-close auto-filed issues whose id is no longer a finding
+#      (fleet-ops#636). The skip for vault-conflict-resolver landed and
+#      the ticket stayed open because this auditor filed but never closed.
 #
 # No new scheduler. Run by fleet-heartbeat-tier1.
 #
-# Exit 0: audit ran (findings filed or clean).
+# Exit 0: audit ran (findings filed or clean; stale tickets closed).
 # Exit 1: auditor itself is broken (missing python/catalog) — fail loud.
 #
 # Environment seams (tests override all of these):
@@ -91,18 +94,58 @@ fi
 finding_count=$(jq '.findings | length' <<<"$report")
 log "roles=$(jq .role_count <<<"$report") findings=$finding_count rc=$rc"
 
+# Current finding ids — used for both dedup and observe-to-close.
+current_ids=$(jq -r '.findings[].id' <<<"$report" | sort -u)
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --json number,body --limit 200 2>/dev/null)
+    set -e
+    open_json="${open_json:-[]}"
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        open_json='[]'
+    fi
+fi
+
+# Observe-to-close (fleet-ops#636): close auto-filed bypass issues whose id
+# is no longer a finding. The skip for vault-conflict-resolver landed in
+# #667 as a drive-by and #636 stayed open because this auditor filed but
+# never closed. Without this, auto-filed role-gate issues pile up after
+# the catalog or skip list goes green.
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    while IFS=$'\t' read -r num fid; do
+        [[ -n "$num" && -n "$fid" ]] || continue
+        if ! grep -qxF "$fid" <<<"$current_ids"; then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: signal role-quality-gate/${fid} no longer reported as a finding on heartbeat tick at ${ts}."
+            set +e
+            "$GH" issue close "$num" -R "$REPO" --comment "$comment" 2>/dev/null
+            close_rc=$?
+            set -e
+            if [[ "$close_rc" -eq 0 ]]; then
+                log "observe-to-close: CLOSED issue #${num} (id=$fid no longer in findings)"
+                closed=$((closed + 1))
+            else
+                log "observe-to-close: failed to close issue #${num} (rc=$close_rc)"
+            fi
+        fi
+    done < <(printf '%s' "$open_json" | jq -r '
+        .[] | .number as $n | (.body // "") as $b |
+        select($b | contains("signal: role-quality-gate/")) |
+        ($b | capture("signal: role-quality-gate/(?<id>[^\\s]+)") | .id) as $id |
+        "\($n)\t\($id)"
+    ' 2>/dev/null)
+fi
+
 if [[ "$finding_count" == "0" ]]; then
-    log "all roles gated"
+    log "all roles gated closed=$closed"
     exit 0
 fi
 
 cap=$(jq -r '.auto_file_cap_per_tick // 5' "$CATALOG")
 filed=0
-
-open_json="[]"
-if [[ "$FILE_ISSUES" == "1" ]]; then
-    open_json=$("$GH" issue list -R "$REPO" --state open --json number,body --limit 200 2>/dev/null || printf '[]')
-fi
 
 while IFS= read -r row; do
     [[ -n "$row" ]] || continue
@@ -121,9 +164,10 @@ while IFS= read -r row; do
     fi
 
     title="feat(quality): role gate bypass — ${fid}"
-    body=$(printf '%s\n\n%s\n\n%s\n' \
+    body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
         "The per-role quality-gate auditor (fleet-ops#457) found a bypass." \
         "$detail" \
+        "Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close)." \
         "$signal")
     if created=$("$GH" issue create -R "$REPO" --title "$title" --body "$body" 2>/tmp/role-gate-create.err); then
         log "FILED $fid -> $created"

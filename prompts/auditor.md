@@ -27,9 +27,12 @@ Should this candidate issue be labeled `agent-ready` and worked by a fleet lane?
 
 ## What your reason must address
 
-Your one-paragraph reason must explicitly mention:
-1. **Duplicates / collisions**: whether the candidate duplicates an existing open issue, an open PR, a recently merged PR, or an in-flight campaign item. Use the repo reality in the context.
-2. **North-star fit**: whether the candidate advances beating the customer's own edge AI, or is just parity / maintenance / self-maintenance. Reference the decisions-ledger lines in the context.
+Your one-paragraph reason MUST include these exact keywords — the tally script verifies them literally:
+
+1. The word **duplicate** (or **duplicates**) — state whether this candidate duplicates an existing open issue, an open PR, a recently merged PR, or an in-flight campaign item. Use the repo reality in the context.
+2. One of these words: **north-star**, **customer**, **edge**, **parity**, or **beat** — explain whether the candidate advances beating the customer's own edge AI, or is just parity / maintenance / self-maintenance. Reference the decisions-ledger lines.
+
+**You must use at least one word from group 1 AND at least one word from group 2 in your reason paragraph, or the vote will be rejected as incomplete and the unit will fail.** This is not optional — it is enforced by the tally script.
 
 If the candidate has no clear user-facing product impact, is a duplicate, is refactor-for-its-own-sake, is pure fleet/CI tooling, or is not the smallest durable fix, you MUST return FAIL — unless it is a research-delta (below).
 

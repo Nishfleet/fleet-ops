@@ -25,8 +25,9 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # not judging/building roles. fleet-resilience / resilience-drill landed
 # with fleet-ops#575; they are recovery cycles, not a new work-producing role.
 # interactive-session-reap (fleet-ops#592) reaps idle scopes; it is not a
-# work-producing role. vault-knowledge-format is the daily lint timer for
-# vault shape (fleet-ops#525); same class as vault-conflict.
+# work-producing role. vault-conflict-resolver (fleet-ops#529 / #636) is the
+# Syncthing freeze handler; vault-knowledge-format is the daily lint timer
+# for vault shape (fleet-ops#525). Both are plumbing, same class.
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",

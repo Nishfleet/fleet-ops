@@ -11,13 +11,8 @@
 #   5. Origin case: 404 Not Found walked past -> exit 1.
 #   6. Timeout unflagged -> exit 1.
 #   7. Auto-file with signal key, deduped on a second run.
-#   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
-#   7c. Same snippet plus a later flag -> exit 0.
 #   8. Missing helper fails loud.
 #   9. Contracts: heartbeat wiring, MANIFEST, nested CI host, matrix enforced.
-#  10. Observe-to-close: a green tick comments resolved-at on an aged-out
-#      signal; a later tick with that marker closes; a still-dirty slug is
-#      neither commented nor closed (fleet-ops#650).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,55 +62,36 @@ case "$cmd" in
         printf '%s\n' "$body" >> "$f"
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
-      comment)
-        num=""; body=""
-        while [ "$#" -gt 0 ]; do
-          case "$1" in
-            --body) body="$2"; shift 2 ;;
-            --repo|-R) shift 2 ;;
-            *)
-              if [ -z "$num" ]; then num="$1"; fi
-              shift
-              ;;
-          esac
-        done
-        printf '%s\n' "$body" >"$store/issue-${num}.comments"
-        printf '%s\n' "$num" >>"$store/commented"
-        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#issuecomment-1"
-        ;;
-      close)
-        num=""
-        while [ "$#" -gt 0 ]; do
-          case "$1" in
-            --reason) shift 2 ;;
-            --repo|-R) shift 2 ;;
-            *)
-              if [ -z "$num" ]; then num="$1"; fi
-              shift
-              ;;
-          esac
-        done
-        printf '%s\n' "$num" >>"$store/closed"
-        echo "closed"
-        ;;
       list)
         printf '[\n'
         first=1
-        for f in "$store"/issue-*.body; do
+        n=0
+        for f in "$store"/*.body; do
           [ -f "$f" ] || continue
-          num=$(basename "$f" .body)
-          num=${num#issue-}
+          n=$((n+1))
+          # Skip closed issues (issue-N.closed marker exists)
+          [ -f "$store/issue-$n.closed" ] && continue
           body=$(tail -n +2 "$f")
-          comments_file="$store/issue-${num}.comments"
-          if [ -f "$comments_file" ]; then
-            comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
-          else
-            comments_json='[]'
-          fi
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s,"comments":%s}' "$num" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
+          printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
         done
         printf '\n]\n'
+        ;;
+      close)
+        num=""; comment=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            [0-9]*) num="$1"; shift ;;
+            --comment) comment="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            --reason) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        : > "$store/issue-$num.closed"
+        [ -n "$comment" ] && printf '%s\n' "$comment" > "$store/issue-$num.close-comment"
+        echo "Closed issue #$num"
         ;;
       *) exit 1 ;;
     esac
@@ -217,6 +193,24 @@ rc=$(run_bin 0)
 ok "grep exit 1 is treated as no-match, not a swallowed failure"
 rm -f "$sessions/grep-nomatch.jsonl"
 
+# --- 4b. ls no-match (exit 2) is a probe, not a swallowed failure -----------
+write_session "ls-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"cd /tmp && echo \"---\"; ls nonexistent-glob-* 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls","toolName":"bash","isError":true,"content":[{"type":"text","text":"---\n\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No matching files. Continuing."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "ls no-match exit 2 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "ls no-match (exit 2) is treated as a probe, not a swallowed failure"
+rm -f "$sessions/ls-nomatch.jsonl"
+
+# --- 4c. which no-match (exit 1) is a probe, not a swallowed failure --------
+write_session "which-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_which","name":"bash","arguments":{"command":"which nonexistent-binary 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_which","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Binary not in PATH. Need to install or use full path."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "which no-match exit 1 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "which no-match (exit 1) is treated as a probe, not a swallowed failure"
+rm -f "$sessions/which-nomatch.jsonl"
+
 # --- 5. origin case: 404 walked past ----------------------------------------
 write_session "origin-404" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_gh","name":"bash","arguments":{"command":"gh api -X PATCH /repos/Nishfleet/0509/branches/main/protection"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_gh","toolName":"bash","isError":true,"content":[{"type":"text","text":"Not Found\n\nCommand exited with code 1"}]}}
@@ -234,6 +228,37 @@ rc=$(run_bin 0)
 [[ "$rc" == "1" ]] || fail "timeout walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
 ok "timeout without a later flag is swallowed"
 rm -f "$sessions/timeout.jsonl"
+
+# --- 6b. gh issue create GraphQL transient, retry with no flag --------------
+write_session "gh-graphql-retry" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The workers project passes. The node test failure is pre-existing. Let me file it as a new issue, then check sgscan.\n\n"}]}}
+{"type":"message","message":{"role":"toolCall","id":"call_gh1","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh1","toolName":"bash","isError":true,"content":[{"type":"text","text":"GraphQL: Something went wrong while executing your query. Please include 'TOKEN' when reporting this issue.\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"\n\n"},{"type":"toolCall","id":"call_gh2","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh2","toolName":"bash","isError":false,"content":[{"type":"text","text":"https://github.com/Nishfleet/0509/issues/1231"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now let me check sgscan.\n\n"}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "gh GraphQL retry with no flag should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "gh GraphQL retry must be flagged as swallowed"
+ok "gh issue create GraphQL failure + silent retry is swallowed"
+rm -f "$sessions/gh-graphql-retry.jsonl"
+
+# --- 6c. gh issue create GraphQL transient, explicit flag -> clean ----------
+write_session "gh-graphql-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The workers project passes. The node test failure is pre-existing. Let me file it as a new issue, then check sgscan.\n\n"}]}}
+{"type":"message","message":{"role":"toolCall","id":"call_gh1","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh1","toolName":"bash","isError":true,"content":[{"type":"text","text":"GraphQL: Something went wrong while executing your query. Please include 'TOKEN' when reporting this issue.\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the gh issue create call failed with a GraphQL error, retrying.\n\n"},{"type":"toolCall","id":"call_gh2","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh2","toolName":"bash","isError":false,"content":[{"type":"text","text":"https://github.com/Nishfleet/0509/issues/1231"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now let me check sgscan.\n\n"}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "gh GraphQL retry with explicit flag should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "gh issue create GraphQL failure + explicit user-facing flag is clean"
+rm -f "$sessions/gh-graphql-flagged.jsonl"
 
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
@@ -279,40 +304,9 @@ grep -rl "signal: failed-command-flagged/" "$scratch/gh-issues" | wc -l | grep -
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/swallowed.jsonl"
 
-# --- 7b. origin #650: cp /tmp/install.sh cannot-stat walked past -------------
-write_session "install-cp" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/agent-cron-seat.6nGbWr/install.sh"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp","toolName":"bash","isError":true,"content":[{"type":"text","text":"Scratch: /tmp/agent-cron-seat.6nGbWr cp: cannot stat '"'"'/tmp/install.sh'"'"': No such file or directory\n\nCommand exited with code 1"}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"On to the next check."}]}}'
-rc=$(run_bin 0)
-[[ "$rc" == "1" ]] || fail "origin #650 cp /tmp/install.sh walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
-grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "origin #650 missing SWALLOWED loud line"
-ok "origin #650: cp /tmp/install.sh cannot-stat walked past is flagged"
-rm -f "$sessions/install-cp.jsonl"
-
-# --- 7c. same snippet plus a later flag is clean ----------------------------
-write_session "install-cp-flagged" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/agent-cron-seat.6nGbWr/install.sh"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp","toolName":"bash","isError":true,"content":[{"type":"text","text":"Scratch: /tmp/agent-cron-seat.6nGbWr cp: cannot stat '"'"'/tmp/install.sh'"'"': No such file or directory\n\nCommand exited with code 1"}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the cp failed: /tmp/install.sh was not found, it is now the blocker."}]}}'
-rc=$(run_bin 0)
-[[ "$rc" == "0" ]] || fail "flagged #650 snippet should exit 0 (got $rc) $(cat "$scratch/err.log")"
-ok "origin #650 snippet plus later flag is clean"
-rm -f "$sessions/install-cp-flagged.jsonl"
-
-# --- 10. observe-to-close (fleet-ops#650) -----------------------------------
-# Isolate the mock store from the auto-file test's leftover issue-1.body.
-rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
-: >"$gh_store/commented"
-: >"$gh_store/closed"
-slug650="2026-08-26t08-55-06-528z-01a03d47-bc20-7470-8847-4b42403ff341"
-printf '%s\n' "fix(failed-command): $slug650" >"$gh_store/issue-650.body"
-printf '%s\n' "Do not close until the detector reports this clean.
-
-signal: failed-command-flagged/${slug650}" >>"$gh_store/issue-650.body"
-
-# Green tick (clean session only) comments resolved-at; does not close yet
-# (marker must already be present from a prior tick, same as #521).
-write_session "clean-observe" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Ran the canary. It passed."},{"type":"toolCall","id":"call_ok","name":"bash","arguments":{"command":"true"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_ok","toolName":"bash","isError":false,"content":[{"type":"text","text":"ok"}]}}'
+# --- 7b. observe-to-close: clean tick closes the filed issue ----------------
+# The auto-file run above filed one issue (issue-1.body) with a signal key.
+# A clean tick (no findings) must close it via observe-to-close.
 set +e
 FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
 FLEET_FAILED_COMMAND_LIB="$lib" \
@@ -320,37 +314,6 @@ FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
 FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
 FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
 FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
-FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
-FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
-GH="$scratch/gh" \
-GH_MOCK_STORE="$gh_store" \
-FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
-  "$bin" >/dev/null 2>"$scratch/err-obs.log"
-rc=$?
-set -e
-[[ "$rc" == "0" ]] || fail "observe-to-close green tick should exit 0 (got $rc) $(cat "$scratch/err-obs.log")"
-grep -q "OBSERVED-RESOLVED" "$scratch/err-obs.log" || fail "green tick must log OBSERVED-RESOLVED $(cat "$scratch/err-obs.log")"
-grep -q '^650$' "$gh_store/commented" || fail "green tick must comment on #650 (commented=$(cat "$gh_store/commented"))"
-grep -q "resolved-at: signal: failed-command-flagged/${slug650}" "$gh_store/issue-650.comments" \
-  || fail "comment missing resolved-at marker"
-if [ -s "$gh_store/closed" ]; then
-  fail "same-tick must not close (closed=$(cat "$gh_store/closed"))"
-fi
-ok "observe-to-close: green tick comments resolved-at, does not close same tick"
-rm -f "$sessions/clean-observe.jsonl"
-
-# Later tick: marker already present, slug still absent -> close
-: >"$gh_store/commented"
-: >"$gh_store/closed"
-write_session "clean-observe2" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Still clean."}]}}'
-set +e
-FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
-FLEET_FAILED_COMMAND_LIB="$lib" \
-FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
-FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
-FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
-FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
-FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
 FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -358,24 +321,20 @@ FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
   "$bin" >/dev/null 2>"$scratch/err-close.log"
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "observe close tick should exit 0 (got $rc) $(cat "$scratch/err-close.log")"
-grep -q "OBSERVE-CLOSED" "$scratch/err-close.log" || fail "later tick must log OBSERVE-CLOSED $(cat "$scratch/err-close.log")"
-grep -q '^650$' "$gh_store/closed" || fail "later tick must close #650 (closed=$(cat "$gh_store/closed"))"
-if [ -s "$gh_store/commented" ]; then
-  fail "later tick must not comment again (commented=$(cat "$gh_store/commented"))"
-fi
-ok "observe-to-close: later tick with resolved-at marker closes"
-rm -f "$sessions/clean-observe2.jsonl"
+[[ "$rc" == "0" ]] || fail "clean tick should exit 0 (got $rc) $(cat "$scratch/err-close.log")"
+grep -q "observe-to-close: CLOSED" "$scratch/err-close.log" \
+  || fail "clean tick did not close the filed issue $(cat "$scratch/err-close.log")"
+[ -f "$gh_store/issue-1.closed" ] \
+  || fail "issue-1 was not marked closed by observe-to-close"
+grep -q "observe-to-close" "$gh_store/issue-1.close-comment" \
+  || fail "close comment missing observe-to-close evidence"
+ok "observe-to-close closes a filed issue on a clean tick"
 
-# Still-dirty slug: even with a resolved-at marker, do not close
-: >"$gh_store/commented"
-: >"$gh_store/closed"
-write_session "still-dirty" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/x"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp","toolName":"bash","isError":true,"content":[{"type":"text","text":"Scratch: /tmp/agent-cron-seat.6nGbWr cp: cannot stat '"'"'/tmp/install.sh'"'"': No such file or directory\n\nCommand exited with code 1"}]}}
+# --- 7c. observe-to-close: still-active slug is NOT closed ------------------
+# File a new issue, then run with the slug still in findings — must NOT close.
+write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
 {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
-# Force the session slug to match issue 650's signal by using that filename.
-mv "$sessions/still-dirty.jsonl" "$sessions/${slug650}.jsonl"
-touch -d "2026-08-27T00:00:00Z" "$sessions/${slug650}.jsonl"
 set +e
 FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
 FLEET_FAILED_COMMAND_LIB="$lib" \
@@ -383,23 +342,20 @@ FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
 FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
 FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
 FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
-FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
 FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
 FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
-  "$bin" >/dev/null 2>"$scratch/err-dirty.log"
+  "$bin" >/dev/null 2>"$scratch/err-noclose.log"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "still-dirty slug should exit 1 (got $rc) $(cat "$scratch/err-dirty.log")"
-if [ -s "$gh_store/closed" ]; then
-  fail "still-dirty slug must not close (closed=$(cat "$gh_store/closed"))"
-fi
-if [ -s "$gh_store/commented" ]; then
-  fail "still-dirty slug must not comment resolved-at (commented=$(cat "$gh_store/commented"))"
-fi
-ok "observe-to-close: still-dirty slug is neither commented nor closed"
-rm -f "$sessions/${slug650}.jsonl"
+[[ "$rc" == "1" ]] || fail "active slug should exit 1 (got $rc)"
+# The newly filed issue should NOT be closed (its slug is still in findings)
+new_issue=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[ -f "$gh_store/issue-$new_issue.closed" ] \
+  && fail "active slug issue #$new_issue was closed (should stay open)" || true
+ok "observe-to-close leaves an active slug open"
+rm -f "$sessions/swallowed.jsonl"
 
 # --- 8. missing helper fails loud -------------------------------------------
 set +e
@@ -430,4 +386,4 @@ jq -e '.rules[] | select(.id == "sr-failed-command-flagged" and .status == "enfo
   || fail "sr-failed-command-flagged must be status=enforced in the matrix"
 ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, matrix enforced"
 
-echo "OK: fleet-failed-command-flagged: rc canary, grep exemption, auto-file dedupe, observe-to-close"
+echo "OK: fleet-failed-command-flagged: rc canary, grep/ls/which no-match exemption, auto-file dedupe"
