@@ -29,11 +29,12 @@
 #      escalate loudly after N attempts so a unit never ends failed quietly.
 #      Then surface remaining failed units in triage (no Telegram, #428).
 #      Skip fleet-heartbeat itself.
-#   4b. Senior-auditor admission panel (fleet-ops#146 / #616). Delegates to
-#      bin/fleet-heartbeat-auditor: start missing pi-audit@ units for open
+#   4b. Senior-auditor admission panel (fleet-ops#146 / #615 / #616). Delegates
+#      to bin/fleet-heartbeat-auditor: start missing pi-audit@ units for open
 #      scout-candidates, reset-failed + start any that are StartLimitBurst-
-#      wedged, tally 2-of-3 votes. HELPER-MISSING fails loud in production
-#      — a silent skip is what left failed audit units sitting for an hour.
+#      wedged, tally 2-of-3 votes. HELPER-MISSING and a FATAL helper exit
+#      both fail the tick — a swallowed rc left the admission gate dead
+#      while heartbeat stayed green (fleet-ops#615).
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
 #      outside this repo, and the GitHub App has no webhooks. If every
@@ -925,7 +926,7 @@ else
 fi
 
 # ============================================================================
-# 4b. SENIOR AUDITOR PANEL (fleet-ops#146 / #616)
+# 4b. SENIOR AUDITOR PANEL (fleet-ops#146 / #615 / #616)
 # ============================================================================
 # pi-audit@.service is a oneshot with StartLimitBurst=2 / Interval=1h and
 # no OnFailure reap. After two seat faults systemd marks it failed and
@@ -939,6 +940,8 @@ fi
 # reason this is a sweep: the GitHub App has no webhooks for scout-candidate
 # label changes, and systemd will not retry a StartLimit-exhausted unit.
 # HELPER-MISSING in production fails the tick (fleet-ops#485 / #616).
+# A FATAL helper exit (missing intake / jq / tally) also fails the tick
+# (fleet-ops#615) — gh list flakes are swallowed inside the helper.
 AUDITOR_BIN="${FLEET_HEARTBEAT_AUDITOR:-/home/nish/.local/bin/fleet-heartbeat-auditor}"
 auditor_rc=0
 if require_manifest_helper "$AUDITOR_BIN"; then
@@ -946,8 +949,8 @@ if require_manifest_helper "$AUDITOR_BIN"; then
     if "$AUDITOR_BIN"; then
         log "4b. senior-auditor panel complete"
     else
-        _aud_rc=$?
-        log "4b. senior-auditor panel FAILED (rc=$_aud_rc) — next tick retries"
+        auditor_rc=$?
+        log "4b. senior-auditor panel FAILED (rc=$auditor_rc) — auditor broken; unit will land in --state=failed"
     fi
 else
     _req=$?
