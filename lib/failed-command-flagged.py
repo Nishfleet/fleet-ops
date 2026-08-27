@@ -107,6 +107,15 @@ filed by the same GitHub-search-index-delay that produced
 leftover-duplicate observe-to-close drain for the 01a041a5 pile
 (#1003, #1019) is locked under
 tests/fleet-failed-command-observe-duplicate-1003.test.sh.
+A `gh issue view <N> -R ... --body` command is not valid: `gh issue view`
+has no `--body` flag, so it exits 1 with `unknown flag: --body` and the
+full usage help (fleet-ops#1055, session
+2026-08-27T07-15-49-602Z_01a04213-32e2-7409-a4ba-bd86f12ad936). The
+assistant's next turn was empty (model provider 503 errors) and later
+toolCalls did not name the failure. It is not a GraphQL transient error
+(fleet-ops#678) or a no-match probe; it is a real swallowed failure and
+must be flagged. The dedicated regression test locks it under
+tests/fleet-failed-command-gh-issue-view-body.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
