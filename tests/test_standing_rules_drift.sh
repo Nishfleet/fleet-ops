@@ -17,7 +17,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-gen="$repo_root/bin/render-standing-rules"
+gen="$repo_root/bin/render-standing-rules.py"
 canonical="$repo_root/lib/standing-rules/canonical.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

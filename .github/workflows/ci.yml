@@ -117,6 +117,7 @@ jobs:
             /home/nish/.local/bin/fleet-seat-recovery \
             /home/nish/.local/bin/fleet-unjustified-wait \
             /home/nish/.local/bin/fleet-escalation-completion \
+            /home/nish/.local/bin/render-standing-rules \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -132,7 +133,7 @@ jobs:
           # Do NOT use set -e: we want to collect all failures, then exit.
           shopt -s nullglob
           rc=0
-          for f in systemd/*.service systemd/*.timer; do
+          for f in systemd/*.service systemd/*.timer systemd/*.path; do
             if ! systemd-analyze verify --man=no "$f"; then
               rc=1
             fi
