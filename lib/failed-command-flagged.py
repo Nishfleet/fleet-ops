@@ -180,12 +180,27 @@ past it with thinking-only recovery and later
 "Now I have the full picture. Let me fix and re-dispatch." prose,
 which does not name the failure. Distinct from #1055 (`gh issue view
 --body` with visible `unknown flag: --body`), #698 (`gh api` HTTP 404
-with visible `Not Found`), and grep POSIX no-match (BENIGN_STAGE_RE;
-a `; grep` sibling that prints the same `=== MERGED RECENT ===`
-marker must stay a probe). `gh pr list` is not a no-match probe, and
-silencing stderr does not make an invalid sort benign. The dedicated
-regression test locks it under
+with visible `Not Found`), #1219 (`Unknown JSON field: "label"`), and
+grep POSIX no-match (BENIGN_STAGE_RE; a `; grep` sibling that prints
+the same `=== MERGED RECENT ===` marker must stay a probe). `gh pr list`
+is not a no-match probe, and silencing stderr does not make an invalid
+sort benign. The dedicated regression test locks it under
 tests/fleet-failed-command-gh-pr-list-invalid-sort.test.sh.
+A `gh issue view <N> -R ... --json <fields>` command whose filter names
+an unknown field (e.g. `label` instead of `labels`) is not valid: `gh`
+rejects it with `Unknown JSON field: "label"` and the list of available
+fields, then exits 1 (fleet-ops#1219, session
+2026-08-27T15-14-27-082Z_01a043c9-648a-75d9-add1-a7f78fe03f68). The
+assistant issued the invalid `--json` filter alongside a valid
+`gh issue view --json body` sibling in the same turn; the next turn was
+a thinking block plus follow-up toolCalls with no user-facing text
+naming the failure. Distinct from #1055 (`unknown flag: --body`, an
+invalid flag) and #1003 (`KeyError: 'comments'` from python parsing
+`--json` output that omitted a field the probe then read — gh itself
+succeeded). It is not a GraphQL transient error (fleet-ops#678) or a
+no-match probe; it is a real swallowed failure and must be flagged. The
+dedicated regression test locks it under
+tests/fleet-failed-command-gh-issue-view-unknown-field.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
