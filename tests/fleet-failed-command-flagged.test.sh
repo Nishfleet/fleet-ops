@@ -95,22 +95,78 @@ case "$cmd" in
         echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#issuecomment-1"
         ;;
       list)
+        # Parse: --state {open|closed|all}, --search QUERY, --limit N,
+        # --json fields. The dedup test (#847) only needs the basic
+        # body / closedAt / number fields plus the in:body search and
+        # the closed:>=YYYY-MM-DD cutoff. Anything we don't recognise
+        # is silently consumed.
+        list_state="open"; list_search=""; list_limit="30"
+        list_json_fields="number,body,comments"
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --state) list_state="$2"; shift 2 ;;
+            --search) list_search="$2"; shift 2 ;;
+            --limit|-L) list_limit="$2"; shift 2 ;;
+            --json) list_json_fields="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        # Build the in:body needle from the search query (loose: scan
+        # the whole search blob for substrings that are also stored on
+        # the issue body). The detector's real search is
+        #   signal: failed-command-flagged/ in:body closed:>=YYYY-MM-DD
+        # For the mock we only honour the in:body substring matching.
+        search_needle=""
+        case "$list_search" in
+          *in:body*) search_needle="${list_search%% in:body*}" ;;
+        esac
+        # For the cutoff qualifier, the mock accepts anything (it does
+        # not simulate date filtering; tests control the clock by NOT
+        # storing a `closed_at` marker older than the cutoff window).
         printf '[\n'
         first=1
+        count=0
         for f in "$store"/issue-*.body; do
           [ -f "$f" ] || continue
           num=$(basename "$f" .body)
           num=${num#issue-}
-          [ -f "$store/issue-${num}.closed" ] && continue
-          body=$(tail -n +2 "$f")
-          comments_file="$store/issue-${num}.comments"
-          if [ -f "$comments_file" ]; then
-            comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
-          else
-            comments_json='[]'
+          # State filter
+          if [ "$list_state" = "open" ] && [ -f "$store/issue-${num}.closed" ]; then
+            continue
           fi
+          if [ "$list_state" = "closed" ] && [ ! -f "$store/issue-${num}.closed" ]; then
+            continue
+          fi
+          body=$(tail -n +2 "$f")
+          # Search filter (loose substring)
+          if [ -n "$search_needle" ]; then
+            case "$body" in
+              *"$search_needle"*) ;;
+              *) continue ;;
+            esac
+          fi
+          # Build the JSON object. closedAt is a sentinel string when
+          # the issue is closed; absent otherwise. comments is only
+          # populated for the open list (observe-to-close path).
+          if [ -f "$store/issue-${num}.closed" ]; then
+            closed_at_field='"closedAt":"2026-08-27T00:00:00Z"'
+            comments_field='"comments":[]'
+          else
+            closed_at_field='"closedAt":null'
+            comments_file="$store/issue-${num}.comments"
+            if [ -f "$comments_file" ]; then
+              comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
+            else
+              comments_json='[]'
+            fi
+            comments_field="\"comments\":${comments_json}"
+          fi
+          obj="{\"number\":${num},\"title\":\"\",\"body\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body"),${closed_at_field},${comments_field}}"
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s,"comments":%s}' "$num" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
+          printf '%s' "$obj"
+          count=$((count + 1))
+          if [ "$count" -ge "$list_limit" ]; then break; fi
         done
         printf '\n]\n'
         ;;
@@ -661,6 +717,106 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "observe-to-close: still-dirty slug is neither commented nor closed"
 rm -f "$sessions/${slug650}.jsonl"
+
+# --- 11. re-filing suppression (fleet-ops#847) -----------------------------
+# The detector's auto-file dedup used to look at `--state open` only.
+# When a previously-filed issue was closed (observe-to-close), a
+# follow-up scan would re-file the SAME signal as a brand-new issue
+# (live #650 closed on 2026-08-27T02:11Z, then re-filed as #847).
+# The fix: also dedup against recently-closed issues carrying the
+# same signal key, within a configurable window (default 7 days).
+rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+slug847="2026-08-26t08-55-06-528z-01a03d47-bc20-7470-8847-4b42403ff341"
+printf '%s\n' "fix(failed-command): $slug847" >"$gh_store/issue-650.body"
+printf '%s\n' "Do not close until the detector reports this clean.
+
+signal: failed-command-flagged/${slug847}" >>"$gh_store/issue-650.body"
+# Mark the existing issue as closed (mimic observe-to-close).
+: >"$gh_store/issue-650.closed"
+
+# Same swallowed-failure session as before — must NOT re-file because
+# the signal is already on the books (recently-closed).
+write_session "still-swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/x"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp","toolName":"bash","isError":true,"content":[{"type":"text","text":"Scratch: /tmp/agent-cron-seat.6nGbWr cp: cannot stat '"'"'/tmp/install.sh'"'"': No such file or directory\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+# Force the session slug to match the closed issue's signal.
+mv "$sessions/still-swallowed.jsonl" "$sessions/${slug847}.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$sessions/${slug847}.jsonl"
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-rededup.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "still-swallowed slug should still exit 1 (got $rc) $(cat "$scratch/err-rededup.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err-rededup.log" \
+  || fail "still-swallowed slug must still log SWALLOWED (live #847)"
+grep -q "auto-file: $slug847 already on the books" "$scratch/err-rededup.log" \
+  || fail "still-swallowed slug must dedup against closed issue (live #847) (got: $(cat "$scratch/err-rededup.log"))"
+# No new issue must be filed — count of issue-*.body files must stay 1.
+n_issues=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_issues" == "1" ]] || fail "still-swallowed slug re-filed (n=$n_issues)"
+# Observe-to-close must NOT fire either (the closed issue is closed,
+# not pending; and the slug is in the finding list, so it would be
+# skipped by the dirty-skip path).
+if [ -s "$gh_store/commented" ]; then
+  fail "still-swallowed slug must not comment (commented=$(cat "$gh_store/commented"))"
+fi
+ok "re-filing suppression: same signal on a recently-closed issue is not re-filed (live #847)"
+rm -f "$sessions/${slug847}.jsonl"
+
+# --- 11b. FLEET_FAILED_COMMAND_DEDUP_CLOSED_DAYS=0 disables the dedup -------
+# Setting the dedup window to 0 must restore the previous open-only
+# behavior so operators can opt out (e.g. while investigating a
+# false-positive close). The still-swallowed slug WILL be re-filed.
+rm -f "$gh_store"/issue-*.body
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+# Re-create the closed issue with the same signal.
+printf '%s\n' "fix(failed-command): $slug847" >"$gh_store/issue-650.body"
+printf '%s\n' "signal: failed-command-flagged/${slug847}" >>"$gh_store/issue-650.body"
+: >"$gh_store/issue-650.closed"
+write_session "still-swallowed-b" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/x"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp","toolName":"bash","isError":true,"content":[{"type":"text","text":"Scratch: /tmp/agent-cron-seat.6nGbWr cp: cannot stat '"'"'/tmp/install.sh'"'"': No such file or directory\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+mv "$sessions/still-swallowed-b.jsonl" "$sessions/${slug847}.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$sessions/${slug847}.jsonl"
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
+FLEET_FAILED_COMMAND_DEDUP_CLOSED_DAYS="0" \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-optout.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "opt-out run should still exit 1 (got $rc)"
+n_issues=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_issues" == "2" ]] || fail "opt-out must re-file (n=$n_issues)"
+grep -q "FILED" "$scratch/err-optout.log" || fail "opt-out run must log FILED (got: $(cat "$scratch/err-optout.log"))"
+ok "DEDUP_CLOSED_DAYS=0 opts out of the recently-closed dedup (re-file as before)"
+rm -f "$sessions/${slug847}.jsonl"
+rm -f "$gh_store"/issue-*.body "$gh_store/issue-*.closed"
 
 # --- 8. missing helper fails loud -------------------------------------------
 set +e

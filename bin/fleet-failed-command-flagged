@@ -30,6 +30,10 @@
 #   FLEET_FAILED_COMMAND_CLOSE_ISSUES   1 (default) / 0
 #   FLEET_FAILED_COMMAND_ISSUE_REPO     default Nishfleet/fleet-ops
 #   FLEET_FAILED_COMMAND_CAP            default 5
+#   FLEET_FAILED_COMMAND_DEDUP_CLOSED_DAYS  default 7 (re-filing
+#       suppression window: a slug that was already filed-and-closed
+#       within this many days is NOT re-filed on a later scan). 0
+#       disables the closed-issue dedup (open-only behavior).
 #   FLEET_HEARTBEAT_TRIAGE
 #   GH
 
@@ -55,6 +59,7 @@ FILE_ISSUES="${FLEET_FAILED_COMMAND_FILE_ISSUES:-1}"
 CLOSE_ISSUES="${FLEET_FAILED_COMMAND_CLOSE_ISSUES:-1}"
 ISSUE_REPO="${FLEET_FAILED_COMMAND_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_FAILED_COMMAND_CAP:-5}"
+DEDUP_CLOSED_DAYS="${FLEET_FAILED_COMMAND_DEDUP_CLOSED_DAYS:-7}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 
 log() {
@@ -70,6 +75,25 @@ loud() {
         printf '\n[%s] [%s] %s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# _closed_cutoff <now-iso> <days> -> YYYY-MM-DD
+# The YYYY-MM-DD form is the GitHub search `closed:>=YYYY-MM-DD` shape.
+_closed_cutoff() {
+    local now_iso="$1" days="$2"
+    python3 -c '
+import sys
+from datetime import datetime, timedelta, timezone
+now = sys.argv[1]
+if now.endswith("Z"):
+    now = now[:-1] + "+00:00"
+else:
+    # Allow YYYY-MM-DDTHH:MM:SS[.ffffff][+00:00]
+    pass
+dt = datetime.fromisoformat(now)
+cutoff = (dt - timedelta(days=int(sys.argv[2]))).date()
+print(cutoff.isoformat())
+' "$now_iso" "$days"
 }
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -112,6 +136,48 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     fi
 fi
 
+# Recently-closed dedup (fleet-ops#847): a slug that was already
+# filed-and-closed within DEDUP_CLOSED_DAYS days must NOT be re-filed.
+# Otherwise the observe-to-close path (fleet-ops#650) closes a finding
+# and the next scan re-files the same slug as a new issue, looping.
+# The previous open-only dedup let through duplicates whenever a
+# previously-closed issue carried the same signal key.
+closed_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && [[ "${DEDUP_CLOSED_DAYS}" != "0" ]] \
+    && command -v "$GH" >/dev/null 2>&1; then
+    search_query="signal: failed-command-flagged/ in:body"
+    # Cap the closed search to a stable window so the dedup doesn't
+    # quietly grow forever. When NOW_ISO is unset, use the current
+    # UTC instant so live and pinned-clock tests share the shape.
+    _now_for_cutoff="${NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    search_query="${search_query} closed:>=$(_closed_cutoff "${_now_for_cutoff}" "${DEDUP_CLOSED_DAYS}")"
+    set +e
+    closed_json=$("$GH" issue list -R "$ISSUE_REPO" --state closed --limit 200 \
+        --search "${search_query}" --json number,body,closedAt 2>/dev/null)
+    set -e
+    closed_json="${closed_json:-[]}"
+    if ! jq -e . >/dev/null 2>&1 <<<"$closed_json"; then
+        log "WARN: gh issue list (closed) produced no JSON"
+        closed_json="[]"
+    fi
+    log "dedup: open=$(jq 'length' <<<"$open_json") closed_within_${DEDUP_CLOSED_DAYS}d=$(jq 'length' <<<"$closed_json")"
+fi
+
+# Pre-compute the set of signal keys already on the books (open OR
+# recently-closed). One jq pass instead of two per finding. Pass the
+# two lists via slugs files (the combined JSON can easily exceed the
+# argv limit on a high-volume repo: fleet-ops#847 hit
+#   Argument list too long
+# with `--argjson open=... --argjson closed=...` on a 200-open +
+# 35-closed dedup pool).
+known_signals_tmp=$(mktemp -t fleet-failed-dedup.XXXXXX)
+trap 'rm -f "$known_signals_tmp"' RETURN
+printf '%s' "$open_json" >"$known_signals_tmp.open"
+printf '%s' "$closed_json" >"$known_signals_tmp.closed"
+known_signals=$(jq -r '(.[]? | .body // "")' \
+    "$known_signals_tmp.open" "$known_signals_tmp.closed" 2>/dev/null \
+    | grep -oE 'signal: failed-command-flagged/[a-z0-9-]+' | sort -u || true)
+
 filed=0
 if [[ "$finding_count" != "0" ]]; then
     while IFS= read -r row; do
@@ -126,10 +192,8 @@ if [[ "$finding_count" != "0" ]]; then
         command -v "$GH" >/dev/null 2>&1 || continue
 
         signal="signal: failed-command-flagged/${slug}"
-        if printf '%s' "$open_json" | jq -e --arg s "$signal" \
-            '[.[] | select((.body // "") | contains($s))] | length > 0' \
-            >/dev/null 2>&1; then
-            log "auto-file: $slug already open (deduped)"
+        if printf '%s\n' "$known_signals" | grep -qxF -- "$signal"; then
+            log "auto-file: $slug already on the books (open or recently-closed, deduped)"
             continue
         fi
 
