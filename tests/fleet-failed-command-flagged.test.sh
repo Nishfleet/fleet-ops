@@ -310,6 +310,23 @@ grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "missing FAILED-CO
 ok "isError without a later flag is swallowed"
 rm -f "$sessions/swallowed.jsonl"
 
+# --- 2b. Pi platform 'Tool not found' error (live #1252) --------------------
+# The session 2026-08-27T16-08-10-764Z_01a043fa-950c-7868-a55d-d650753255c2.jsonl
+# made a bash toolCall but the toolResult returned 'Tool not found' with
+# isError=true and no exit code trailer. The assistant walked past it with
+# no user-facing flag. This is a Pi platform error class distinct from the
+# normal 'Command exited with code N' shape — the toolResult carries no
+# exit-code line, just the 'Tool not found' message. The detector must flag
+# this as a swallowed failure via the isError=true path.
+write_session "tool-not-found" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bash","name":"bash","arguments":{"command":"ls -la /home/nish/workspaces/ 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bash","content":[{"type":"text","text":"Tool not found"}],"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "Tool not found walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "Tool not found must be flagged as swallowed"
+ok "Pi platform Tool not found error (live #1252) is flagged as swallowed"
+rm -f "$sessions/tool-not-found.jsonl"
+
 # --- 3. isError plus later flag ---------------------------------------------
 write_session "flagged" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
