@@ -706,8 +706,12 @@ ok "scenario11: #76 wiring incomplete -> PENDING naming the delivery gap"
 # failed the canary (auditor summon 2026-08-26T16:18Z). fleet-ops#393 is the
 # named follow-up: pin that wrapper AND the unit->wrapper class so a sibling
 # cannot drop off the list without failing this test.
+#
+# Do not treat quoted `"pi --print"` as an invocation. The console tile
+# drill asserts that string in JSON and is not a pi runner (P14 red on
+# #1275 / main).
 canary_src="$repo_root/bin/fleet-escalation-canary"
-pi_print_re='^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print'
+pi_print_re='^([[:space:]]*pi[[:space:]]+--print|[^#]*"\$PI(_BIN)?"[[:space:]]+--print|[^#]*[[:space:]]pi[[:space:]]+--print)'
 
 mapfile -t sanctioned_runners < <(
   awk '
@@ -744,6 +748,11 @@ for f in "${live_pi_runners[@]}"; do
   name=$(basename "$f")
   in_sanctioned "$name" \
     || fail "scenario12: bin/$name invokes pi --print but is missing from SANCTIONED_PI_RUNNERS"
+done
+# Quoted string in the tile drill is not an invocation (P14 false positive).
+for f in "${live_pi_runners[@]}"; do
+  [[ "$(basename "$f")" == "fleet-console-tile-truth-drill" ]] \
+    && fail "scenario12: tile drill must not count as a pi --print wrapper"
 done
 
 # Unit side of the same class: a systemd ExecStart that points at a bin
