@@ -21,7 +21,7 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953) is a
+`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, #958) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. An `edit` tool returning "Could not find the exact
 text in <path>. The old text must match exactly including all
