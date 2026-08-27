@@ -37,8 +37,8 @@ bash "$here/fleet-seat-recovery-units.test.sh"
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seatrecover.XXXXXX)"
-trap 'rm -rf "$scratch"' EXIT INT TERM
+scratch=/tmp/fsr-persist
+# trap removed
 
 # Seat-lib needs a models.json + seat-caps.json. SINGLE provider so the
 # only pick is devin/glm-5-2 — a second provider with no ledger file would

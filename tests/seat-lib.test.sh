@@ -775,6 +775,323 @@ ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SE
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"
 ok "quota_bench: opencode/mimo-v2.5-free FreeUsageLimitError (no window) benches 900s via provider default; pick_seat skips (fleet-ops#650/661)"
 
+# --- fleet-ops#652 hot-patch: 503 / upstream-overload bench ----------------
+# commandcode/minimax-m3-free returned 35 of 200+ tool calls as 503
+# "Upstream model provider is temporarily unavailable" in the first 20 min of
+# the worker run 2026-08-27T02:17:01Z (AUDITOR-LOG 2026-08-27T03:08Z block).
+# is_quota_cap_error did NOT match (no quota/cap keyword in the body), so
+# the seat was never benched and pick_seat re-offered the same seat to every
+# subsequent worker. The fix: a separate matcher (is_overload_error) + a
+# separate writer (mark_seat_overload_bench) + a per-provider default
+# (503_bench_default_s, falls back to overload_bench_default_s). All three
+# must compose: matcher triggers, writer writes the marker with the
+# 600s default, pick_seat skips the seat until bench_until.
+#
+# 9h-1: is_overload_error detects the live 503 body.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    'errorMessage' \
+    '503: Upstream model provider is temporarily unavailable.' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_overload: commandcode 503 body must match (rc=$rc)"
+# Co-occurrence: a transient 200 with a log line mentioning 'temporarily' is NOT overload.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    'temporarily unavailable' \
+    '' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_overload: 'temporarily unavailable' without 'upstream' must NOT match (co-occurrence guard)"
+# Retry-After form (HTTP 503 with explicit window) matches even without 'upstream'.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    '' \
+    $'HTTP/1.1 503 Service Unavailable\nRetry-After: 30' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_overload: '503 Service Unavailable + Retry-After' must match (rc=$rc)"
+# Disjoint from quota/cap: a quota/cap 429 with no upstream word must NOT trigger overload.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    '' \
+    'INFERENCE_CAP_ERROR: weekly Clinepass limit. The limit resets in 1d 11h' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_overload: ClinePass weekly cap text must NOT match (quota path owns it)"
+# Empty body: no.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" "" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_overload: empty input must NOT match"
+
+# 9h-2: writer uses the 503_bench_default_s (alias overload_bench_default_s)
+# when the body has no Retry-After. The summoning-trip fault was the writer
+# failing open; this test guarantees the bench actually lands.
+cc_ledger="$scratch/ledger-cc-overload"
+mkdir -p "$cc_ledger"
+cat >"$scratch/seat-caps-cc.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": {
+      "cap": 2,
+      "class": "free",
+      "503_bench_default_s": 600,
+      "models": {
+        "deepseek/deepseek-v4-flash": 2,
+        "minimax/minimax-m3-free": 1
+      }
+    }
+  }
+}
+JSON
+export PI_SEAT_HEALTH_LEDGER_DIR="$cc_ledger"
+export PI_PACKET_STATE="$scratch/state-cc-overload"
+# Fresh models.json with the commandcode minimax-m3-free row matching seat-caps.
+cat >"$scratch/models-cc.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": {
+      "models": [
+        { "id": "deepseek/deepseek-v4-flash", "cost": { "input": 0 } },
+        { "id": "minimax/minimax-m3-free",    "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/models-cc.json"
+set +e
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    'errorMessage: 503: Upstream model provider is temporarily unavailable.' \
+    >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "overload-writer: commandcode 503 body must write marker (rc=$rc) — was the summoning-trip fault"
+cc_lf="$cc_ledger/commandcode__minimax_minimax-m3-free.json"
+[[ -f "$cc_lf" ]] || fail "overload-writer: ledger file not written at $cc_lf"
+hc=$(jq -r '.health_class' "$cc_lf")
+bw=$(jq -r '.bench_window_s' "$cc_lf")
+fm=$(jq -r '.failure_mode' "$cc_lf")
+hs=$(jq -r '.http_status' "$cc_lf")
+[[ "$hc" == "overload_bench" ]] || fail "overload-writer: health_class expected overload_bench, got '$hc'"
+[[ "$bw" == "600" ]] || fail "overload-writer: bench_window_s expected 600 (503_bench_default_s), got '$bw'"
+[[ "$fm" == "overload_503" ]] || fail "overload-writer: failure_mode expected overload_503, got '$fm'"
+[[ "$hs" == "503" ]] || fail "overload-writer: http_status expected 503, got '$hs'"
+# bench_until must be in the future (now + 600s, +/- 5s for clock drift).
+bu=$(jq -r '.bench_until' "$cc_lf")
+bu_s=$(date -u -d "$bu" +%s 2>/dev/null || echo 0)
+now_s=$(date -u +%s)
+delta=$((bu_s - now_s))
+(( delta > 590 && delta < 610 )) || fail "overload-writer: bench_until delta expected ~600s, got ${delta}s (bench_until=$bu)"
+
+# 9h-3: writer uses a parsed Retry-After when the body has one, not the
+# 600s default. Confirms the writer actually consults the body first.
+cat >"$scratch/seat-caps-cc-short.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": {
+      "cap": 2,
+      "class": "free",
+      "503_bench_default_s": 600,
+      "models": { "minimax/minimax-m3-free": 1 }
+    }
+  }
+}
+JSON
+rm -f "$cc_ledger/commandcode__minimax_minimax-m3-free.json"
+set +e
+SEAT_CAPS_JSON="$scratch/seat-caps-cc-short.json" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    $'HTTP/1.1 503 Service Unavailable\nRetry-After: 45\n\nUpstream model provider is temporarily unavailable.' \
+    >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "overload-writer-retry-after: expected rc=0, got $rc"
+bw2=$(jq -r '.bench_window_s' "$cc_ledger/commandcode__minimax_minimax-m3-free.json")
+[[ "$bw2" == "45" ]] || fail "overload-writer-retry-after: bench_window_s expected 45 (parsed Retry-After), got '$bw2'"
+
+# 9h-4: writer fails open (no marker) when no Retry-After AND no provider
+# default — the same fail-open contract as mark_seat_quota_bench. Without
+# a default, pick_seat would re-offer the seat, so the operator MUST set
+# 503_bench_default_s for any provider that is observed to 503-storm.
+cat >"$scratch/seat-caps-cc-nodefault.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": {
+      "cap": 2,
+      "class": "free",
+      "models": { "minimax/minimax-m3-free": 1 }
+    }
+  }
+}
+JSON
+rm -f "$cc_ledger/commandcode__minimax_minimax-m3-free.json"
+set +e
+SEAT_CAPS_JSON="$scratch/seat-caps-cc-nodefault.json" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    'errorMessage: 503: Upstream model provider is temporarily unavailable.' \
+    >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "overload-fail-open: commandcode without 503_bench_default_s must rc=1 (fail-open), got $rc"
+[[ -f "$cc_ledger/commandcode__minimax_minimax-m3-free.json" ]] \
+  && fail "overload-fail-open: no marker must be written without a default" || true
+grep -q "overload-bench: commandcode/minimax/minimax-m3-free NOT benched" "$PI_PACKET_STATE/watch.log" \
+  || fail "overload-fail-open: must log the NOT-benched line"
+
+# 9h-5: pick_seat must skip the seat when the overload marker is fresh AND
+# bench_until is in the future. The summoning-trip fault was that no marker
+# was written; this proves the marker DOES make pick_seat route around the
+# storming seat. Mirror the 9f-mimo pick_seat check.
+# Use a scratch cap with ONLY the benched model so the test exercises the
+# NO-USABLE-SEAT path (the seat-caps-cc.json has both models, so pick_seat
+# would correctly fall through to the other one — that is NOT the fault we
+# are testing for).
+cat >"$scratch/seat-caps-cc-only.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": {
+      "cap": 1,
+      "class": "free",
+      "503_bench_default_s": 600,
+      "models": { "minimax/minimax-m3-free": 1 }
+    }
+  }
+}
+JSON
+cc_ledger_only="$scratch/ledger-cc-only"
+mkdir -p "$cc_ledger_only"
+rm -f "$cc_ledger_only/commandcode__minimax_minimax-m3-free.json"
+set +e
+SEAT_CAPS_JSON="$scratch/seat-caps-cc-only.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$cc_ledger_only" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    'errorMessage: 503: Upstream model provider is temporarily unavailable.' \
+    >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "pick-after-overload: marker must be written, got rc=$rc"
+export PI_PACKET_STATE="$scratch/state-cc-overload-pick"
+rm -f "$scratch/tried-cc.txt"
+set +e
+out=$(SEAT_CAPS_JSON="$scratch/seat-caps-cc-only.json" \
+      PI_SEAT_HEALTH_LEDGER_DIR="$cc_ledger_only" \
+      PI_PACKET_STATE="$scratch/state-cc-overload-pick" \
+      PI_MODELS_JSON="$scratch/models-cc.json" \
+  bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/tried-cc.txt" 2>/dev/null)
+rc=$?
+set -e
+# Only the benched commandcode/minimax-m3-free is allowlisted, so an
+# ALL-benched commandcode returns rc=1 NO USABLE SEAT. The acceptance
+# criterion is: pick_seat does NOT return the benched commandcode row.
+[[ "$rc" == "1" ]] || fail "pick-after-overload: pick_seat must rc=1 (only seat benched), got rc=$rc out='$out'"
+grep -q "commandcode/minimax/minimax-m3-free: benched until" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log the 'benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+[[ -z "$out" ]] || fail "pick-after-overload: stdout must be empty (no seat), got '$out'"
+# Distinct from quota path: the skip line mentions the overload bench class
+# (the auditor distinguishes them via health_class=overload_bench). The
+# writer logs 'overload-bench: benched ...' (dash) in PI_PACKET_STATE; the
+# seat_usable reader logs 'benched until ... (overload_bench)' (underscore)
+# in the pick_seat PI_PACKET_STATE. Accept either, but NOT 'quota_bench' or
+# 'quota-bench:' — those would be the wrong class.
+grep -q "overload-bench:\|(overload_bench)" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must mention overload class (not quota); log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")"
+# Sanity: the quota class is NOT in this log (otherwise the bench class is
+# being mis-typed and the post-mortem rollup would be wrong).
+grep -q "quota-bench:\|(quota_bench)" "$PI_PACKET_STATE/watch.log" \
+  && fail "pick-after-overload: log must NOT mention quota class (would mis-classify the bench) — log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")" || true
+
+# 9h-6: 503_bench_default_s field name. The live seat-caps.json uses the
+# 503_bench_default_s key; the alias overload_bench_default_s is also
+# accepted (the load loop tries the semantic name first, then the legacy
+# 503 name). Use the 503 key explicitly to prove the live config shape
+# is loaded — the structural-fix issue relies on this contract.
+default_s=$(SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+    bash -c 'source "$0"; load_seat_caps; provider_overload_bench_default "$1"' \
+    "$lib" "commandcode" 2>/dev/null)
+[[ "$default_s" == "600" ]] || fail "field-name-503: provider_overload_bench_default expected 600 (from 503_bench_default_s), got '$default_s'"
+# Both key names work.
+cat >"$scratch/seat-caps-cc-alias.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": {
+      "cap": 2,
+      "class": "free",
+      "overload_bench_default_s": 600,
+      "models": { "minimax/minimax-m3-free": 1 }
+    }
+  }
+}
+JSON
+default_s2=$(SEAT_CAPS_JSON="$scratch/seat-caps-cc-alias.json" \
+    bash -c 'source "$0"; load_seat_caps; provider_overload_bench_default "$1"' \
+    "$lib" "commandcode" 2>/dev/null)
+[[ "$default_s2" == "600" ]] || fail "field-name-alias: overload_bench_default_s must also be accepted, got '$default_s2'"
+
+# 9h-7: distinguishability from quota_bench. A seat with a quota_bench
+# marker (from a prior 429) and a seat with an overload_bench marker
+# (from a 503) both block pick_seat, but the failure_mode / health_class
+# fields tell the auditor which to roll up. This is a structural
+# invariant the post-mortem tooling depends on.
+quota_scratch_ledger="$scratch/ledger-quota-disjoint"
+mkdir -p "$quota_scratch_ledger"
+# Re-write the overload marker to a clean ledger for 9h-7 (the 9h-2/9h-3
+# writes to $cc_ledger are still on disk, but 9h-4 rm-f'd the same path
+# while exercising the fail-open contract — re-write into a fresh ledger
+# so the assert below is hermetic).
+overload_scratch_ledger="$scratch/ledger-overload-disjoint"
+mkdir -p "$overload_scratch_ledger"
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$overload_scratch_ledger" \
+PI_PACKET_STATE="$scratch/state-overload-disjoint" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    'errorMessage: 503: Upstream model provider is temporarily unavailable.' >/dev/null 2>&1 || true
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$quota_scratch_ledger" \
+PI_PACKET_STATE="$scratch/state-quota-disjoint" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' \
+    "$lib" "cline" "cline-pass/deepseek-v4-flash" \
+    'INFERENCE_CAP_ERROR: weekly Clinepass limit. The limit resets in 1d 11h' >/dev/null 2>&1 || true
+quota_hc=$(jq -r '.health_class' "$quota_scratch_ledger/cline__cline-pass_deepseek-v4-flash.json" 2>/dev/null || echo "")
+quota_fm=$(jq -r '.failure_mode' "$quota_scratch_ledger/cline__cline-pass_deepseek-v4-flash.json" 2>/dev/null || echo "")
+overload_hc=$(jq -r '.health_class' "$overload_scratch_ledger/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || echo "")
+overload_fm=$(jq -r '.failure_mode' "$overload_scratch_ledger/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || echo "")
+[[ "$quota_hc" == "quota_bench" && "$quota_fm" == "quota_cap" ]] \
+  || fail "distinguishability: quota path must write health_class=quota_bench / failure_mode=quota_cap (got $quota_hc / $quota_fm)"
+[[ "$overload_hc" == "overload_bench" && "$overload_fm" == "overload_503" ]] \
+  || fail "distinguishability: overload path must write health_class=overload_bench / failure_mode=overload_503 (got $overload_hc / $overload_fm)"
+
+# Restore the canonical scratch cap map and ledger for any later sections.
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+export PI_MODELS_JSON="$scratch/models.json"
+
+ok "overload_bench: is_overload_error matches commandcode 503 + Retry-After; rejects co-occurrence / quota text / empty"
+ok "overload_bench: writer uses 503_bench_default_s=600 when body has no Retry-After; bench_until ~now+600s; failure_mode=overload_503"
+ok "overload_bench: writer prefers parsed Retry-After (45s) over provider default (600s)"
+ok "overload_bench: writer fails open (rc=1, no marker) when no Retry-After and no 503_bench_default_s"
+ok "overload_bench: pick_seat skips a benched commandcode/minimax-m3-free; rc=1 NO USABLE SEAT; logs 'benched until' + 'overload-bench:'"
+ok "overload_bench: 503_bench_default_s AND overload_bench_default_s are both accepted as field names"
+ok "overload_bench: distinct from quota_bench (health_class / failure_mode) for post-mortem rollup (fleet-ops#652)"
+
 # --- P15 wedge-age liveness probe ----------------------------------------
 # A unit stuck in `activating` past PI_SEAT_ACTIVATING_MAX_S is a wedged pi
 # (the fleet-ops#83 finalize-hang), not a live worker. The registry entry

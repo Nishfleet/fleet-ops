@@ -340,6 +340,49 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     fi
 fi
 
+# --- fleet-ops #652 hot-patch: 503 / upstream-overload bench ---------------
+# A seat returning 503 "Upstream model provider is temporarily unavailable" is
+# NOT a quota wall (is_quota_cap_error does not match) and NOT a spawn-time
+# ETIMEDOUT (is_spawn_etimeout does not match). Live failure mode observed in
+# fleet-ops#652: commandcode/minimax-m3-free returned 35 of 200+ tool calls as
+# 503 in the first 20 minutes of a worker run, destabilising the model for the
+# rest of the session. Without this marker, pick_seat re-offers the same seat
+# to the next systemd Restart and the next worker hits the same 503 storm.
+# Bench the seat until the Retry-After (or the provider's 503_bench_default_s,
+# default 600s = 10 min). Distinct health_class="overload_bench" /
+# failure_mode="overload_503" so post-mortem tooling can tell overload benches
+# from quota/cap benches. Skipped when a previous block already handled this
+# exit (spawn-fail / quota-cap). Overload is a lane fault, never charged to
+# the work item.
+if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
+    out_for_scan=""
+    err_for_scan=""
+    [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
+    [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
+    # Don't double-bench: if the quota/cap path just wrote a marker, skip the
+    # overload path. (The quota/cap block does not set a flag, so check the
+    # ledger's mtime against our own start time — cheap and authoritative.
+    # Use seat_ledger_path for the sanitised filename so model ids with '/'
+    # match the file the quota path wrote.)
+    overload_skipped_quota_recent=0
+    ledger_path_for_overload=$(seat_ledger_path "$np" "$nm" 2>/dev/null || echo "")
+    if [[ -n "$ledger_path_for_overload" && -f "$ledger_path_for_overload" ]]; then
+        ledger_mtime=$(stat -c %Y "$ledger_path_for_overload" 2>/dev/null || echo 0)
+        wall_now=$(now_s 2>/dev/null || date -u +%s)
+        if (( ledger_mtime > 0 )) && (( wall_now - ledger_mtime < 5 )); then
+            overload_skipped_quota_recent=1
+        fi
+    fi
+    if (( ! overload_skipped_quota_recent )) && is_overload_error "$out_for_scan" "$err_for_scan"; then
+        seat_log "pi-issue-run: $inst 503/OVERLOAD on $np/$nm (rc=$rc) — benching seat for its 503 reset window"
+        if mark_seat_overload_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via pick_seat (excluded by bench_until)"
+        else
+            seat_log "pi-issue-run: $inst WARN: overload-bench marker NOT written for $np/$nm (no Retry-After and no provider default) — relying on reactive ledger + systemd Restart"
+        fi
+    fi
+fi
+
 if (( rc != 0 )); then
     # Mid-session provider deaths that are NOT spawn-time and NOT a quota
     # wall still deserve a short bench. Without it, the tried-seats exclusion

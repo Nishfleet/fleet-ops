@@ -45,6 +45,7 @@
 #       the unit is oneshot, failure only on internal error).
 
 set -Eeuo pipefail
+echo "PROBE4 $(id -un) HOME=$HOME PI_MODELS=${PI_MODELS_JSON:-unset} CAPS=${SEAT_CAPS_JSON:-unset} LEDGER=${FLEET_SEAT_LEDGER_DIR:-unset}" >&2
 
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
