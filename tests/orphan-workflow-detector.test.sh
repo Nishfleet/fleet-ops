@@ -106,7 +106,7 @@ eq(collapsed.length, 2, "collapseAlerts must dedupe by (repo, path)");
 const fleet2 = collapsed.find((x) => x.repository === "Nishfleet/fleet2");
 if (!fleet2) throw new Error("collapseAlerts must keep fleet2");
 if (fleet2.workflow_id !== 50) throw new Error(`collapseAlerts must keep lower id, got ${fleet2.workflow_id}`);
-if (fleet2.workflow_name !== "New arm") throw new Error("collapseAlerts must keep the lower-id alert's name");
+if (fleet2.workflow_name !== "New arm") throw new Error("collapseAlerts must keep the lower-id alert name");
 
 // checksFromFixture accepts the {repository, workflows, file_checks} shape.
 const checks = checksFromFixture({
@@ -129,12 +129,34 @@ const arrayShape = checksFromFixture([
 ]);
 if (arrayShape.length !== 2) throw new Error(`array-shape fixture must have 2 rows, got ${arrayShape.length}`);
 
+// checksFromFixture also accepts the multi-repo {repositories:[...]} shape.
+const repoShape = checksFromFixture({
+  repositories: [
+    {
+      repository: "Nishfleet/fleet2",
+      workflows: [active, disabled],
+      file_checks: {
+        ".github/workflows/ci.yml": "missing",
+        ".github/workflows/old.yml": "exists",
+      },
+    },
+    {
+      repository: "Nishfleet/siterep",
+      workflows: [active],
+      file_checks: { ".github/workflows/ci.yml": "exists" },
+    },
+  ],
+});
+if (repoShape.length !== 3) throw new Error(`repositories-shape fixture must have 3 rows, got ${repoShape.length}`);
+if (repoShape[0].repository !== "Nishfleet/fleet2") throw new Error("repositories-shape must carry repository");
+if (repoShape[2].repository !== "Nishfleet/siterep") throw new Error("repositories-shape must carry siterep");
+
 // checksFromFixture must reject garbage silently (not throw).
 checksFromFixture(null);
 checksFromFixture({});
 checksFromFixture({ repository: 42 });
 checksFromFixture([{ repository: 1 }, null, { workflow: "x" }]);
-ok("pure function tests pass: filter, isOrphan, buildAlert, render, title, collapse, fixture");
+console.log("OK: pure function tests pass: filter, isOrphan, buildAlert, render, title, collapse, fixture");
 ' || fail "pure function tests failed"
 
 # --- replay: single-orphan fixture (one alert, dynamic+disabled filtered) ----

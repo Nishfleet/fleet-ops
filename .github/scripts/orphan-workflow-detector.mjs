@@ -163,9 +163,10 @@ export function isOrphan(workflow, fileState) {
 
 /**
  * Read the orphan-classification input from JSON.
- * Two shapes accepted:
+ * Three shapes accepted:
  *   { repository, workflows: [...], file_checks: {path: "exists"|"missing"|"unknown"} }
  *   [ { repository, workflow, file_state }, ... ]
+ *   { repositories: [ { repository, workflows, file_checks }, ... ] }
  *
  * @param {unknown} payload
  * @returns {Array<{ repository: string, workflow: RegisteredWorkflow, file_state: "exists"|"missing"|"unknown" }>}
@@ -195,6 +196,35 @@ export function checksFromFixture(payload) {
   }
   if (typeof payload === "object") {
     const obj = /** @type {Record<string, unknown>} */ (payload);
+    // Multi-repo shape: { repositories: [ { repository, workflows, file_checks } ] }
+    if (Array.isArray(obj.repositories)) {
+      return obj.repositories.flatMap((repoEntry) => {
+        if (!repoEntry || typeof repoEntry !== "object") return [];
+        const repo = /** @type {Record<string, unknown>} */ (repoEntry);
+        if (typeof repo.repository !== "string") return [];
+        const workflows = Array.isArray(repo.workflows) ? repo.workflows : [];
+        const fileChecks =
+          repo.file_checks && typeof repo.file_checks === "object"
+            ? /** @type {Record<string, string>} */ (repo.file_checks)
+            : {};
+        return workflows
+          .map((w) => {
+            if (!w || typeof w !== "object") return null;
+            const wf = /** @type {RegisteredWorkflow} */ (w);
+            if (!wf.path) return null;
+            const state = fileChecks[wf.path];
+            if (state !== "exists" && state !== "missing" && state !== "unknown") {
+              return null;
+            }
+            return {
+              repository: /** @type {string} */ (repo.repository),
+              workflow: wf,
+              file_state: state,
+            };
+          })
+          .filter((x) => x !== null);
+      });
+    }
     if (typeof obj.repository !== "string") return [];
     const workflows = Array.isArray(obj.workflows) ? obj.workflows : [];
     const fileChecks =
