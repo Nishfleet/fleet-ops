@@ -17,17 +17,11 @@
 # Flags:
 #   --dry-run              Print the systemd-run argv; do not start anything.
 #   --unit NAME            Transient unit name (default: pi-job-<ts>-<pid>).
-#   --working-directory D  Default: /home/nish. MUST be the git worktree to
-#                          salvage on a non-clean stop (fleet-ops#1204).
+#   --working-directory D  Default: /home/nish.
 #   --stdin FILE           StandardInput=file: (absolute path). Packet on stdin.
 #
-# Salvage (fleet-ops#1204): every real dispatch sets ExecStopPost to
-# pi-salvage-worktree and TimeoutStopSec=180 so a SIGTERM/SIGKILL/nonzero
-# exit banks a dirty worktree onto wip/<unit>-<ts>. --working-directory is
-# the worktree contract. PI_SALVAGE_DISABLE=1 omits the hook (tests).
-#
 # Environment overrides (tests):
-#   SYSTEMD_RUN, SYSTEMCTL, PI_SALVAGE_BIN, PI_SALVAGE_DISABLE
+#   SYSTEMD_RUN, SYSTEMCTL
 #
 # Exit:
 #   0  started, already-running no-op, or dry-run
@@ -126,9 +120,6 @@ if [[ "$dry_run" != "1" ]]; then
     fi
 fi
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-salvage_bin="${PI_SALVAGE_BIN:-$here/pi-salvage-worktree}"
-
 cmd=(
     "$SYSTEMD_RUN" --user
     --unit="$unit"
@@ -142,26 +133,6 @@ cmd=(
 )
 if [[ -n "${GH_TOKEN:-}" ]]; then
     cmd+=(--setenv=GH_TOKEN)
-fi
-if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
-    # ExecStopPost still runs after SIGKILL of the main PID (proven
-    # 2026-08-27: SERVICE_RESULT=signal EXIT_CODE=killed EXIT_STATUS=KILL).
-    # TimeoutStopSec covers the stop job so commit+push is not aborted at
-    # the 90s user default.
-    cmd+=(--setenv=PI_SALVAGE_WORKDIR="$workdir")
-    cmd+=(--setenv=PI_SALVAGE_UNIT="$unit")
-    if [[ -n "$stdin_file" ]]; then
-        cmd+=(--setenv=PI_SALVAGE_PACKET="$stdin_file")
-    fi
-    # Inherit test/runtime overrides so ExecStopPost writes the same ledger.
-    for v in AGENT_STATE FLEET_DISPATCH_LEDGER PI_SALVAGE_SKIP_SGSCAN \
-             PI_SALVAGE_NOW PI_SALVAGE_REMOTE PI_SALVAGE_SCAN; do
-        if [[ -n "${!v:-}" ]]; then
-            cmd+=(--setenv="$v")
-        fi
-    done
-    cmd+=(--property="ExecStopPost=${salvage_bin}")
-    cmd+=(--property=TimeoutStopSec=180)
 fi
 if [[ -n "$stdin_file" ]]; then
     cmd+=(--property="StandardInput=file:${stdin_file}")

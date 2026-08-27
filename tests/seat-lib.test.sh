@@ -1741,6 +1741,9 @@ bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed
 bash "$here/fleet-findings-queued.test.sh" || fail "fleet-findings-queued tests failed"
 # fleet-ops#514: session-close lint for decisions-ledger re-asks. Same
 # CI constraint (worker token cannot add a P14 line in ci.yml).
+# fleet-ops#1138: systemd `should we read from the service` self-talk is
+# not a vacation-window re-ask; observe-to-close drains the auto-filed
+# issue once the detector is green for that slug.
 bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger tests failed"
 # fleet-ops#535: session-close lint for swallowed non-zero. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
