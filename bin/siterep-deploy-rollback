@@ -73,28 +73,34 @@ TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # worktree) — "Rollback a deployment for a Worker", positional [version-id]
 # optional (defaults to previous), `-y` auto-accept, `-m` message.
 log "wrangler rollback -y -m \"${ROLLBACK_MSG}\""
-if ! rb_out=$(npx wrangler rollback -y -m "$ROLLBACK_MSG" 2>&1); then
+# Capture from the else branch. `if ! cmd; then rc=$?` always logs
+# FAILED (rc=0) because `!` inverts the child's status (fleet-ops#486
+# heartbeat pattern; same class re-discovered here in fleet-ops#653).
+if rb_out=$(npx wrangler rollback -y -m "$ROLLBACK_MSG" 2>&1); then
+  log "wrangler rollback succeeded"
+  printf '%s\n' "$rb_out" | tail -20
+else
   rc=$?
   printf '[siterep-deploy-rollback] FAILED: wrangler rollback exit %s. Output tail follows:\n' "$rc" >&2
   printf '%s\n' "$rb_out" | tail -40 >&2
   # Still file the incident so the failure is queued and visible.
   file_incident "ROLLBACK ITSELF FAILED: wrangler rollback exit ${rc}. Verify unit stays failed. Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback" "$rb_out"
-  exit 1
+  exit "$rc"
 fi
-log "wrangler rollback succeeded"
-printf '%s\n' "$rb_out" | tail -20
 
 # 2. Post-rollback canary (canary only; live SHA is the OLD sha by design).
 log "post-rollback canary"
-if ! v_out=$("$VERIFY" --post-rollback 2>&1); then
+# Same `if ! cmd; then rc=$?` inversion guard (fleet-ops#653).
+if v_out=$("$VERIFY" --post-rollback 2>&1); then
+  log "post-rollback canary passed"
+  printf '%s\n' "$v_out" | tail -10
+else
   rc=$?
   printf '[siterep-deploy-rollback] FAILED: post-rollback canary exit %s. Output tail follows:\n' "$rc" >&2
   printf '%s\n' "$v_out" | tail -40 >&2
   file_incident "AUTO-ROLLBACK applied but post-rollback canary FAILED (exit ${rc}). Verify unit stays failed. Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback" "$v_out"
-  exit 1
+  exit "$rc"
 fi
-log "post-rollback canary passed"
-printf '%s\n' "$v_out" | tail -10
 
 # 3. File the incident (queued + visible). The verify unit it responded to
 # stays failed regardless — that is the LOUD signal.
