@@ -211,6 +211,43 @@ rc=$(run_bin 0)
 ok "timeout without a later flag is swallowed"
 rm -f "$sessions/timeout.jsonl"
 
+# --- 6d. unknown-flag help output walked past (fleet-ops#676) --------------
+# The session at /home/nish/.pi/agent/sessions/--home-nish--/2026-08-26T15-55-56-431Z_...
+# ran `gh issue edit ... --json labels --jq '.labels[].name'`. The toolResult
+# was a multi-line `unknown flag: --json` + `Usage:` block. The agent named
+# the failure only in the thinking block, then said "Labels updated. Now
+# releasing the claim and removing the worktree." — a clear swallow of the
+# `gh issue edit` failure. This drill locks the detector on the exact shape:
+# thinking-block flag does not count, user-facing does.
+write_session "unknown-flag-swallowed" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"toolCall","id":"call_gh_edit","name":"bash","arguments":{"command":"cd /home/nish/workspaces/products/fleet-ops && gh issue edit 234 -R Nishfleet/fleet-ops --add-label agent-blocked --remove-label agent-ready --json labels --jq '.labels[].name'"}}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh_edit","toolName":"bash","isError":true,"content":[{"type":"text","text":"unknown flag: --json\n\nUsage:  gh issue edit {<numbers> | <urls>} [flags]\n\nFlags:\n      --add-assignee login      Add assigned users by their login. Use \"@me\" to assign yourself, or \"@copilot\" to assig\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The --json flag failed. Let me verify labels.","thinkingSignature":"reasoning"},{"type":"text","text":"Labels updated. Now releasing the claim and removing the worktree."},{"type":"toolCall","id":"call_release","name":"bash","arguments":{"command":"git push origin :refs/heads/claim/issue-234"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "unknown-flag help output walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "unknown-flag swallowed must be flagged as swallowed"
+grep -q "unknown flag: --json" "$scratch/err.log" || fail "snippet must echo the unknown-flag failure text"
+ok "unknown-flag help output walked past is flagged (thinking-block flag does not count)"
+rm -f "$sessions/unknown-flag-swallowed.jsonl"
+
+# --- 6e. unknown-flag help output with explicit user-facing flag -> clean ---
+# Same `gh issue edit --json` shape, but the user-facing text names the
+# failure in the same turn ("the gh issue edit call failed with
+# 'unknown flag: --json', it is now the blocker."). This is the standing-
+# rule-correct response.
+write_session "unknown-flag-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"toolCall","id":"call_gh_edit","name":"bash","arguments":{"command":"cd /home/nish/workspaces/products/fleet-ops && gh issue edit 234 -R Nishfleet/fleet-ops --add-label agent-blocked --remove-label agent-ready --json labels --jq '.labels[].name'"}}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh_edit","toolName":"bash","isError":true,"content":[{"type":"text","text":"unknown flag: --json\n\nUsage:  gh issue edit {<numbers> | <urls>} [flags]\n\nFlags:\n      --add-assignee login      Add assigned users by their login. Use \"@me\" to assign yourself, or \"@copilot\" to assig\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the gh issue edit call failed with 'unknown flag: --json', it is now the blocker. Releasing the claim and switching to a non-JSON view."},{"type":"toolCall","id":"call_view","name":"bash","arguments":{"command":"gh issue view 234 -R Nishfleet/fleet-ops --json labels --jq '.labels[].name'"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "unknown-flag with explicit flag should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "unknown-flag help output + explicit user-facing flag is clean"
+rm -f "$sessions/unknown-flag-flagged.jsonl"
+
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
