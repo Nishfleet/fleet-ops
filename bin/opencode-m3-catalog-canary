@@ -191,6 +191,169 @@ emit_catalog_ids_for() {
         | awk -v p="$provider" '$1 == p { print $2 }'
 }
 
+# is_allowlisted provider slug — true (0) iff slug is in seat-caps
+# providers.<provider>.models. False (1) otherwise (including when the
+# provider has no models map or seat-caps is unparseable).
+is_allowlisted() {
+    local provider="$1" slug="$2"
+    if [[ -z "$provider" || -z "$slug" ]]; then
+        return 1
+    fi
+    if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+        return 1
+    fi
+    jq -e --arg p "$provider" --arg s "$slug" \
+        '(.providers[$p].models // {}) | has($s)' "$SEAT_CAPS_JSON" >/dev/null
+}
+
+# provider_from_kind kind — derive the original provider the marker was
+# filed against. opencode keeps the bare kind; other providers are
+# prefixed (`<provider>-<kind>`).
+provider_from_kind() {
+    case "$1" in
+        billing-wired|bills-wired|free-slug-available) printf 'opencode' ;;
+        commandcode-billing-wired|commandcode-bills-wired|commandcode-free-slug-available) printf 'commandcode' ;;
+        *) return 1 ;;
+    esac
+}
+
+# signal_still_active kind slug — true (0) iff the original violation
+# recorded by the canary is STILL present. False (1) when the signal has
+# cleared, which is when observe-to-close should fire.
+#
+#   billing-wired / commandcode-billing-wired
+#       violation = billing M3 slug allowlisted on the provider
+#       clean     = slug no longer in seat-caps
+#   bills-wired / commandcode-bills-wired
+#       violation = free-form M3 allowlisted AND models.json cost > 0
+#       clean     = slug no longer in seat-caps, OR cost is now zero
+#   free-slug-available / commandcode-free-slug-available
+#       violation = free-form M3 in catalog AND not in seat-caps
+#       clean     = slug no longer in catalog, OR now allowlisted
+signal_still_active() {
+    local kind="$1" slug="$2"
+    local provider
+    provider=$(provider_from_kind "$kind") || return 0
+    case "$kind" in
+        billing-wired|commandcode-billing-wired)
+            is_allowlisted "$provider" "$slug"
+            ;;
+        bills-wired|commandcode-bills-wired)
+            if ! is_allowlisted "$provider" "$slug"; then
+                return 1
+            fi
+            local cost
+            cost=$(models_cost_sum "$provider" "$slug")
+            if [[ -z "$cost" ]]; then
+                return 1
+            fi
+            awk -v c="$cost" 'BEGIN { exit !(c+0 > 0) }'
+            ;;
+        free-slug-available|commandcode-free-slug-available)
+            if is_allowlisted "$provider" "$slug"; then
+                return 1
+            fi
+            local ids=""
+            if ! ids=$(emit_catalog_ids_for "$provider" 2>/dev/null); then
+                # Catalog unread — preserve the open issue (cannot prove
+                # clean without the catalog; same posture as the gate
+                # branch above).
+                return 0
+            fi
+            if printf '%s\n' "$ids" | grep -qxF "$slug"; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# parse_marker body — extract `kind` and `slug` from a body that carries
+# an `opencode-m3-catalog-canary: <kind> <slug>` marker line. Prints
+# "kind<TAB>slug" on stdout; returns 1 if the marker is absent or
+# malformed. The kind never contains whitespace; the slug may.
+parse_marker() {
+    local body="$1"
+    local line
+    line=$(printf '%s\n' "$body" \
+        | grep -E '^[[:space:]]*opencode-m3-catalog-canary:[[:space:]]+' \
+        | head -n 1) || return 1
+    [[ -n "$line" ]] || return 1
+    # Strip the leading marker label.
+    line=$(printf '%s' "$line" \
+        | sed -E 's/^[[:space:]]*opencode-m3-catalog-canary:[[:space:]]+//')
+    local kind slug
+    kind=$(printf '%s' "$line" | awk '{ print $1 }')
+    slug=$(printf '%s' "$line" | awk '{ $1=""; sub(/^[[:space:]]+/, ""); print }')
+    [[ -n "$kind" && -n "$slug" ]] || return 1
+    printf '%s\t%s\n' "$kind" "$slug"
+}
+
+# observe_to_close — close auto-filed opencode-m3-catalog-canary issues
+# whose signal has cleared on this heartbeat tick (fleet-ops#687). The
+# canary files these on discovery / violation; without a close path they
+# pile up with no resolution. For each open issue carrying the marker,
+# re-evaluate signal_still_active — when the original violation or
+# discovery is no longer present in seat-caps / catalog / models.json,
+# close the issue with an evidence comment. Wired only when
+# FLEET_OPENCODE_M3_CANARY_FILE=1 (default) and gh is callable; offline
+# mode is a no-op so the rest of the canary keeps running on hosted CI.
+observe_to_close() {
+    closed=0
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        return 0
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: gh missing, skip"
+        return 0
+    fi
+    local open_json=""
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 200 \
+        --json number,body 2>/dev/null)
+    local list_rc=$?
+    set -e
+    if [[ "$list_rc" -ne 0 || -z "$open_json" ]]; then
+        log "observe-to-close: gh issue list failed (rc=$list_rc), skip"
+        return 0
+    fi
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "observe-to-close: gh issue list returned non-JSON, skip"
+        return 0
+    fi
+    local num body parsed kind slug ts comment close_rc
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row" 2>/dev/null) || continue
+        body=$(jq -r '.body // ""' <<<"$row" 2>/dev/null) || continue
+        [[ -n "$num" && -n "$body" ]] || continue
+        parsed=$(parse_marker "$body" 2>/dev/null) || continue
+        kind=$(printf '%s' "$parsed" | awk -F'\t' '{ print $1 }')
+        slug=$(printf '%s' "$parsed" | awk -F'\t' '{ print $2 }')
+        [[ -n "$kind" && -n "$slug" ]] || continue
+        if signal_still_active "$kind" "$slug"; then
+            log "observe-to-close: keep #$num (kind=$kind slug=$slug still active)"
+            continue
+        fi
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        comment="observe-to-close: opencode-m3-catalog-canary/${kind} ${slug} no longer reported on heartbeat tick at ${ts}. The original signal (seat-caps allowlist, models.json cost, or catalog presence) has cleared."
+        set +e
+        "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1
+        close_rc=$?
+        set -e
+        if [[ "$close_rc" -eq 0 ]]; then
+            log "observe-to-close: CLOSED issue #$num (kind=$kind slug=$slug)"
+            closed=$((closed + 1))
+        else
+            log "observe-to-close: failed to close #$num (rc=$close_rc)"
+        fi
+    done < <(printf '%s' "$open_json" | jq -c '.[]' 2>/dev/null)
+    return 0
+}
+
 if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
     loud "OPENCODE-M3-VIOLATION" "seat-caps missing: $SEAT_CAPS_JSON"
     exit 1
@@ -291,19 +454,23 @@ fi
 
 if (( violations > 0 )); then
     log "FAIL: $violations billing MiniMax M3 allowlist violation(s)"
+    observe_to_close
     exit 1
 fi
 
+observe_to_close
+closed_count=$closed
+
 if (( discovered > 0 )); then
-    log "M3-FREE-AVAILABLE: $discovered unwired free slug(s); issues filed; tick stays green"
+    log "M3-FREE-AVAILABLE: $discovered unwired free slug(s); issues filed; tick stays green (closed=$closed_count)"
     exit 0
 fi
 
 if [[ "$live_catalog_rc" -ne 0 || "$catalog_failed" -ne 0 ]]; then
     log "WARN: catalog unread on at least one provider; billing-allowlist gate still ran"
-    loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode or commandcode (catalog unread)"
+    loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode or commandcode (catalog unread, closed=$closed_count)"
     exit 0
 fi
 
-loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode or commandcode; no unwired free MiniMax M3 slug in catalog"
+loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode or commandcode; no unwired free MiniMax M3 slug in catalog (closed=$closed_count)"
 exit 0
