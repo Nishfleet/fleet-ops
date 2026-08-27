@@ -472,6 +472,15 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now quality-research-weekly.timer
     fi
   fi
+  # fleet-ops#1146: Weekly Fleet Review. Sunday 04:00 IST, after the
+  # quality-research-weekly 03:00 sweep and the daily fleet-blind-audit
+  # 03:30 floor. Same #183 enable pattern as the other weekly timers;
+  # [Install] alone is not enough.
+  if [ -f "$here/systemd/fleet-weekly-review.timer" ]; then
+    if ! is_unit_enabled fleet-weekly-review.timer; then
+      "$SYSTEMCTL" --user enable --now fleet-weekly-review.timer
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

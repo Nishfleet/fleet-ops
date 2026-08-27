@@ -202,6 +202,20 @@ bin/fleet-researcher-dispatch /home/nish/.local/bin/fleet-researcher-dispatch
 bin/fleet-researcher-run /home/nish/.local/bin/fleet-researcher-run
 lib/researcher-delta.py /home/nish/.local/lib/pi-packet/researcher-delta.py
 prompts/researcher.md /home/nish/.pi/agent/prompts/researcher.md
+# fleet-ops#1146: Weekly Fleet Review (WBR / kaizen). Sunday 04:00 IST
+# timer (after the quality-research-weekly 03:00 sweep and the daily
+# blind-audit 03:30 floor). Three phases: six-lens senior research,
+# conference (max 5 actions + discards), deterministic quality ratchet
+# (one-way tightening, loosening requires Nish decision). Supersedes the
+# dead Hermes-cron autoreview/refactor sweeps.
+bin/fleet-weekly-review /home/nish/.local/bin/fleet-weekly-review
+bin/fleet-quality-ratchet /home/nish/.local/bin/fleet-quality-ratchet
+lib/quality-ratchet.py /home/nish/.local/lib/pi-packet/quality-ratchet.py
+prompts/weekly-review-research.md /home/nish/.pi/agent/prompts/weekly-review-research.md
+prompts/weekly-review-conference.md /home/nish/.pi/agent/prompts/weekly-review-conference.md
+prompts/weekly-review-ratchet.md /home/nish/.pi/agent/prompts/weekly-review-ratchet.md
+systemd/fleet-weekly-review.service /home/nish/.config/systemd/user/fleet-weekly-review.service
+systemd/fleet-weekly-review.timer /home/nish/.config/systemd/user/fleet-weekly-review.timer
 systemd/fleet-researcher.service /home/nish/.config/systemd/user/fleet-researcher.service
 # fleet-ops#388: control-plane restore drill. Proves the rebuild story on a
 # 6h cycle — backup freshness (system restic units, no sudo needed), fleet

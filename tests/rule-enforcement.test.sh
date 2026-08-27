@@ -812,4 +812,12 @@ ok "rule-enforcement: verify-harness canary drill"
 bash "$here/paid-flash-canary.test.sh" || fail "paid-flash-canary drill failed"
 ok "rule-enforcement: paid-flash canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, and paid-flash drills"
+# fleet-ops#1146: Weekly Fleet Review (six-lens senior research +
+# conference + quality ratchet). Nested host so the worker token does
+# not need a workflow edit. The matrix row for both
+# led-2026-08-27-weekly-fleet-review-approved and
+# led-2026-08-27-quality-ratchet-nish is asserted in (a) of this test.
+bash "$here/fleet-weekly-review.test.sh" || fail "fleet-weekly-review drill failed"
+ok "rule-enforcement: fleet-weekly-review drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, and fleet-weekly-review drills"

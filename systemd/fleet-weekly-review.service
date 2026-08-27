@@ -1,0 +1,28 @@
+[Unit]
+Description=Weekly Fleet Review — six-lens research + conference + ratchet (fleet-ops#1146)
+# Named reason (vault "a schedule needs a named reason", fleet-ops#378):
+# the weekly WBR cadence is the calendar floor for unknown unknowns about
+# the fleet's own quality. The Sunday 04:00 IST slot is the slot AFTER
+# the Sunday 03:00 quality-research-weekly sweep AND the Sunday 03:30
+# fleet-blind-audit so this run does not collide with their seat picks.
+# Cadence-overdue escalates through tier1 so a stuck review must scream.
+#
+# One review at a time: the script takes a non-blocking flock and the
+# script no-ops when another instance is already activating.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-weekly-review
+# The three phases (research + conference in pi, then the deterministic
+# ratchet) take longer than the daily fleet-blind-audit. 90 min is the
+# smallest safe ceiling.
+TimeoutStartSec=90min
+# Never restart: the weekly timer is the retry. A crashed review lands
+# in --state=failed so tier1 §11 notices the gap and escalates.
+Restart=no

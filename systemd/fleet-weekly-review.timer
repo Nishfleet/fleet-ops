@@ -1,0 +1,20 @@
+[Unit]
+Description=Weekly Fleet Review — six-lens senior research + conference + ratchet (fleet-ops#1146)
+# Named reason: an Amazon-WBR / Toyota-kaizen cadence is inherently
+# periodic. The frontier changes weekly (new tools, models, GitHub
+# features, attack surfaces); a weekly delta sweep catches what changed
+# since the prior review without re-deriving the baseline. Sunday 04:00
+# Asia/Kolkata is the slot AFTER the Sunday 03:00 quality-research-
+# weekly sweep AND the Sunday 03:30 fleet-blind-audit so this run does
+# not collide with their seat picks, and well after the Saturday VPS
+# maintenance window (fleet-ops#541 / #378). The quality bar ratchets
+# forward every week from this run; no other timer can replace it.
+# Ledger: 2026-08-27 | Weekly Fleet Review approved.
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Asia/Kolkata
+Persistent=true
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target
