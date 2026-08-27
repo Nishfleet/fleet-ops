@@ -24,6 +24,11 @@
 #                 out of scope; the --body gate covers new PRs before
 #                 they open.
 #
+# Observe-to-close (fleet-ops#729, same two-tick shape as #650/#521): a
+# green tick for a previously filed slug comments `resolved-at: signal:
+# ...`. A later tick that already carries that marker closes the issue.
+# A slug still in findings is neither commented nor closed.
+#
 # No new scheduler. Run by fleet-heartbeat-tier1 block 26.
 #
 # Environment seams (tests):
@@ -33,6 +38,7 @@
 #   FLEET_EXEC_REVIEW_WINDOW_HOURS default 24
 #   FLEET_EXEC_REVIEW_NOW          ISO timestamp
 #   FLEET_EXEC_REVIEW_FILE         1 (default) / 0
+#   FLEET_EXEC_REVIEW_CLOSE        1 (default) / 0
 #   FLEET_EXEC_REVIEW_ISSUE_REPO   default Nishfleet/fleet-ops
 #   FLEET_EXEC_REVIEW_CAP          default 5
 #   FLEET_HEARTBEAT_TRIAGE
@@ -57,6 +63,7 @@ INTAKE="${FLEET_EXEC_REVIEW_INTAKE:-$_canon_repo/config/intake-repos.json}"
 WINDOW_HOURS="${FLEET_EXEC_REVIEW_WINDOW_HOURS:-24}"
 NOW_ISO="${FLEET_EXEC_REVIEW_NOW:-}"
 FILE_ISSUES="${FLEET_EXEC_REVIEW_FILE:-1}"
+CLOSE_ISSUES="${FLEET_EXEC_REVIEW_CLOSE:-1}"
 ISSUE_REPO="${FLEET_EXEC_REVIEW_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_EXEC_REVIEW_CAP:-5}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
@@ -187,41 +194,41 @@ finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") human=$(jq -r .skipped_human <<<"$report") receipt=$(jq -r .skipped_receipt <<<"$report") findings=$finding_count"
 
-if [[ "$finding_count" == "0" ]]; then
-    loud "EXEC-REVIEW-OK" "no skipped-run worker PRs in window (scanned=$scanned)"
-    exit 0
-fi
-
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     set +e
-    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body,comments 2>/dev/null)
     set -e
     open_json="${open_json:-[]}"
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "WARN: gh issue list produced no JSON"
+        open_json="[]"
+    fi
 fi
 
 filed=0
-while IFS= read -r row; do
-    [[ -n "$row" ]] || continue
-    slug=$(jq -r '.slug' <<<"$row")
-    url=$(jq -r '.url' <<<"$row")
-    title_pr=$(jq -r '.title' <<<"$row")
-    loud "EXEC-REVIEW-SKIP" "worker PR $slug has no run receipt url=$url title=$title_pr"
+if [[ "$finding_count" != "0" ]]; then
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        slug=$(jq -r '.slug' <<<"$row")
+        url=$(jq -r '.url' <<<"$row")
+        title_pr=$(jq -r '.title' <<<"$row")
+        loud "EXEC-REVIEW-SKIP" "worker PR $slug has no run receipt url=$url title=$title_pr"
 
-    [[ "$FILE_ISSUES" == "1" ]] || continue
-    [[ "$filed" -lt "$CAP" ]] || continue
-    command -v "$GH" >/dev/null 2>&1 || continue
+        [[ "$FILE_ISSUES" == "1" ]] || continue
+        [[ "$filed" -lt "$CAP" ]] || continue
+        command -v "$GH" >/dev/null 2>&1 || continue
 
-    signal="signal: exec-review-receipt/${slug}"
-    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
-        '[.[] | select((.body // "") | contains($s))] | length > 0' \
-        >/dev/null 2>&1; then
-        log "auto-file: $slug already open (deduped)"
-        continue
-    fi
+        signal="signal: exec-review-receipt/${slug}"
+        if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+            '[.[] | select((.body // "") | contains($s))] | length > 0' \
+            >/dev/null 2>&1; then
+            log "auto-file: $slug already open (deduped)"
+            continue
+        fi
 
-    title="fix(exec-review): $slug — worker PR opened with no run receipt"
-    body="The execution-is-review canary (fleet-ops#537) found a worker PR with no journal/proof receipt.
+        title="fix(exec-review): $slug — worker PR opened with no run receipt"
+        body="The execution-is-review canary (fleet-ops#537) found a worker PR with no journal/proof receipt.
 
 - PR: ${url:-$slug}
 - detector: bin/fleet-exec-review-canary (heartbeat tier1 block 26)
@@ -231,17 +238,82 @@ The inner loop stays agentic. Add a Verification: section with a real run-cue (j
 Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
 
 $signal"
-    set +e
-    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
-    create_rc=$?
-    set -e
-    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
-        log "auto-file: FILED $slug -> $created"
-        filed=$((filed + 1))
-    else
-        log "auto-file: failed to file $slug (rc=$create_rc)"
-    fi
-done < <(jq -c '.findings[]' <<<"$report")
+        set +e
+        created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+        create_rc=$?
+        set -e
+        if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+            log "auto-file: FILED $slug -> $created"
+            filed=$((filed + 1))
+        else
+            log "auto-file: failed to file $slug (rc=$create_rc)"
+        fi
+    done < <(jq -c '.findings[]' <<<"$report")
+fi
+
+# Observe-to-close: comment resolved-at when a previously filed slug is no
+# longer a finding; close on a later tick once that marker is already present.
+observed=0
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    finding_slugs=$(jq -r '.findings[].slug // empty' <<<"$report")
+    while IFS= read -r irow; do
+        [[ -n "$irow" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$irow")
+        [[ -n "$num" && "$num" != "null" ]] || continue
+        body=$(jq -r '.body // ""' <<<"$irow")
+        signal=$(grep -oE 'signal: exec-review-receipt/[^[:space:]]+' <<<"$body" | head -1 || true)
+        [[ -n "$signal" ]] || continue
+        slug="${signal#signal: exec-review-receipt/}"
+        if printf '%s\n' "$finding_slugs" | grep -qxF -- "$slug"; then
+            log "observe: $slug still a finding (#$num) — skip"
+            continue
+        fi
+        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")
+        marker="resolved-at: ${signal}"
+        if grep -Fq -- "$marker" <<<"$blob"; then
+            if [[ "$CLOSE_ISSUES" == "1" ]] && [[ "$closed" -lt "$CAP" ]]; then
+                set +e
+                "$GH" issue close "$num" -R "$ISSUE_REPO" --reason completed \
+                    >"$scratch/close.err" 2>&1
+                close_rc=$?
+                set -e
+                if [[ "$close_rc" -eq 0 ]]; then
+                    closed=$((closed + 1))
+                    log "OBSERVE-CLOSED $slug -> #$num (resolved-at + no longer a finding)"
+                else
+                    log "WARN: failed to close #$num (rc=$close_rc) $(tr '\n' ' ' <"$scratch/close.err")"
+                fi
+            else
+                log "dedup observe: #$num already carries $marker"
+            fi
+            continue
+        fi
+        [[ "$observed" -lt "$CAP" ]] || continue
+        comment="${marker}
+
+observed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Detector is green for this PR on a real heartbeat tick (fleet-ops#729 observe-to-close)."
+        set +e
+        "$GH" issue comment "$num" -R "$ISSUE_REPO" --body "$comment" \
+            >"$scratch/comment.err" 2>&1
+        comment_rc=$?
+        set -e
+        if [[ "$comment_rc" -eq 0 ]]; then
+            observed=$((observed + 1))
+            log "OBSERVED-RESOLVED $slug -> #$num"
+        else
+            log "WARN: failed to comment on #$num (rc=$comment_rc) $(tr '\n' ' ' <"$scratch/comment.err")"
+        fi
+    done < <(jq -c '.[]' <<<"$open_json")
+    log "observe-to-close: commented=$observed closed=$closed"
+fi
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "EXEC-REVIEW-OK" "no skipped-run worker PRs in window (scanned=$scanned)"
+    exit 0
+fi
 
 # Observe-to-open: tickets are the prevention. A backlog of old skip PRs
 # must not brick the heartbeat tick.
