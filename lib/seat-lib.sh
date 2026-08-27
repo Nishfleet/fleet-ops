@@ -323,6 +323,8 @@ provider_overload_bench_default() {
 
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
 # If /proc/meminfo can't be read, returns 9999 (effectively unbounded) and logs.
+# If a unit slip makes the computed cap >= 64, the function logs and returns 1
+# so callers cannot silently dispatch to a five-digit lane count.
 ram_governor_cap() {
     # Lazy-load the cap map FIRST. Without this, SEAT_RAM_GB_PER_WORKER keeps
     # its hardcoded 1.5 default and ram_gb_per_worker in seat-caps.json is
@@ -339,16 +341,34 @@ ram_governor_cap() {
         echo 9999
         return
     fi
-    # 1.5 GB default. floor(MemAvailable_GB / per_worker). per_worker may be a
-    # decimal (1.5), so do the division in awk — bash integer math can't, and
-    # `${x%.*}` turns "1.5" into "1", inflating the cap ~1.5x.
+    # floor(MemAvailable_GB / per_worker). per_worker may be a decimal, so do
+    # the division in awk — bash integer math can't, and `${x%.*}` turns "1.5"
+    # into "1", inflating the cap ~1.5x.
     # Launch FLOOR, restored from the pre-2026-08-23 lane-manager design
     # (MIN_FREE_RAM_MB = 2500): reserve headroom for the rest of the host
-    # FIRST, then divide what is genuinely spare. Dividing raw MemAvailable
-    # let the fleet plan to consume every last byte.
+    # FIRST, then divide what is genuinely spare. Keep every conversion step
+    # explicit (kB->GB, MB->GB, GB/per) so an MB/GB slip fails the sanity
+    # check instead of silently emitting a five-digit lane count.
     local floor_mb=${SEAT_MIN_FREE_RAM_MB:-2500}
-    ram_budget=$(awk -v m="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" -v fl="$floor_mb" 'BEGIN{ if (per+0 <= 0) per=1.5; spare=(m/1024)-fl; if (spare<0) spare=0; r=int((spare/1024)/per); if (r<1) r=1; print r }')
-    (( ram_budget < 1 )) && ram_budget=1
+    ram_budget=$(awk -v mem_kb="$mem_avail_kb" -v per="$SEAT_RAM_GB_PER_WORKER" -v floor_mb="$floor_mb" 'BEGIN {
+        if (per + 0 <= 0) per = 1.5
+        # Explicit unit conversions: all quantities in GB before the final division.
+        mem_gb   = mem_kb / 1024 / 1024
+        floor_gb = floor_mb / 1024
+        spare = mem_gb - floor_gb
+        if (spare < 0) spare = 0
+        r = int(spare / per)
+        if (r < 1) r = 1
+        print r
+    }')
+    if [[ ! "$ram_budget" =~ ^[0-9]+$ ]]; then
+        seat_log "ram_governor: computed non-numeric cap '$ram_budget' — failing loud"
+        return 1
+    fi
+    if (( ram_budget >= 64 )); then
+        seat_log "ram_governor: sanity fail — computed cap $ram_budget >= 64 (MB/GB unit slip?); failing loud"
+        return 1
+    fi
     echo "$ram_budget"
 }
 
