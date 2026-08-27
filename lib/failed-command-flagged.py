@@ -331,6 +331,29 @@ ages out of the 24h window. Live session
 2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
 `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
 head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A `git clone git@github.com:...` that returns
+`Permission denied (publickey)` +
+`fatal: Could not read from remote repository` +
+`Command exited with code 128` (isError=true) is a real swallowed
+failure (fleet-ops#1185). This host has no GitHub deploy SSH key.
+The live worker walked past it with a thinking-only
+"The SSH key doesn't have access. Let me try HTTPS" plus a silent
+HTTPS retry (harness-blocked) and then a successful `gh repo clone`.
+Thinking is not a user-facing flag. A later successful clone does
+not discharge the SSH failure. `git clone` is NOT in GIT_BENIGN_RE
+(log|rev-parse|show|diff|cat-file|shortlog only). REAL_ERR_RE
+matches `Permission denied`, so adding `git clone` to GIT_BENIGN_RE
+alone would not hide this — a future refactor would also have to
+drop `Permission denied` from REAL_ERR_RE, or start collecting
+`thinking` in `_text_chunks`. The class is distinct from #1217
+(HTTPS clone racing a silenced cd, empty snippet, exit 1), #765
+(`fatal: not a git repository`), #822 (git-ref probe), and #1061
+(compound-chain ls Permission denied). The dedicated regression
+test tests/fleet-failed-command-clone-ssh-publickey.test.sh pins
+that. The auto-filed issue closes via observe-to-close when the
+session mtime ages out of the 24h window. Live session
+2026-08-27T14-20-10-780Z_01a04397-b49c-7f5e-8b60-46b28e3bed5d.jsonl:
+`git clone git@github.com:Nishfleet/fleet-ops.git .`.
 A `gh api /user` (or `gh api user`) call under a GitHub App
 installation token that returns `Resource not accessible by
 integration` + `gh: Resource not accessible by integration (HTTP 403)`
