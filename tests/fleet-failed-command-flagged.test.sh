@@ -800,6 +800,62 @@ grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "real isError=true
 ok "live #987 positive: real isError=true dual-literal body is still flagged"
 rm -f "$sessions/bash-dual-literal-real.jsonl"
 
+# --- 6n. live #1075: bash `cat lib/failed-command-flagged.py | head -150` ---
+# The session 2026-08-27T08-17-58-249Z ran `cat
+# /home/nish/workspaces/tooling/fleet-ops-deploy-clone/lib/failed-command-flagged.py
+# 2>/dev/null | head -150` to read the detector's own source. The output
+# succeeded (isError=false) but quotes the source's own `Command exited with
+# code 1` comments. Pre-#987 the detector matched EXIT_RE against that content,
+# treated the successful `cat` as a non-zero exit, and auto-filed the session
+# as #1075. Unify: no isError means content, not a swallowed failure.
+source_session_jsonl=$(python3 - "$lib" <<'PY'
+import json, sys
+lib_path = sys.argv[1]
+with open(lib_path, encoding="utf-8") as fh:
+    text = "".join(fh.readline() for _ in range(150))
+session = [
+    {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cat","name":"bash","arguments":{"command":f"cat {lib_path} 2>/dev/null | head -150"}}]}},
+    {"type":"message","message":{"role":"toolResult","toolCallId":"call_cat","toolName":"bash","isError":False,"content":[{"type":"text","text":text}]}},
+    {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Confirmed the source text has the literal exit-code phrase."}]}}
+]
+for m in session:
+    print(json.dumps(m))
+PY
+)
+write_session "bash-cat-detector-source" "$source_session_jsonl"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #1075 bash cat of detector source should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #1075: bash cat of detector source (isError=false) is not a swallowed failure"
+rm -f "$sessions/bash-cat-detector-source.jsonl"
+
+# --- 6n2. live #1075 positive control: the same `cat` source text with a
+#          real isError=true and a trailing exit-code trailer is still flagged.
+# The isError=false guard must NOT swallow genuine failures. A real `cat` of a
+# missing file would be isError=true and contain an actual `Command exited with
+# code 1` trailer; the source text already contains the literal, but isError=true
+# and the trailing trailer make it a real swallowed failure.
+real_failure_session_jsonl=$(python3 - "$lib" <<'PY'
+import json, sys
+lib_path = sys.argv[1]
+with open(lib_path, encoding="utf-8") as fh:
+    text = "".join(fh.readline() for _ in range(150))
+text += "\n\nCommand exited with code 1"
+session = [
+    {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cat","name":"bash","arguments":{"command":f"cat {lib_path} 2>/dev/null | head -150"}}]}},
+    {"type":"message","message":{"role":"toolResult","toolCallId":"call_cat","toolName":"bash","isError":True,"content":[{"type":"text","text":text}]}},
+    {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Confirmed the source text."}]}}
+]
+for m in session:
+    print(json.dumps(m))
+PY
+)
+write_session "bash-cat-detector-source-real" "$real_failure_session_jsonl"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "live #1075 positive control: real isError=true cat failure must still be flagged (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "live #1075 positive control must be flagged as swallowed"
+ok "live #1075 positive: real isError=true cat failure is still flagged"
+rm -f "$sessions/bash-cat-detector-source-real.jsonl"
+
 # --- 6i. live #953: read tool ENOENT, no exit code, no later user-facing flag -
 # The session 2026-08-26T14-02-29-714Z ran `read` on a file that did not
 # exist. The toolResult had isError=true, details={}, and the text
