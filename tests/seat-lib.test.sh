@@ -2184,6 +2184,14 @@ bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable te
 # the whole body equals that string). Same CI constraint.
 bash "$here/gate-integrity-reusable-828.test.sh" || fail "gate-integrity reusable 828 tests failed"
 
+# fleet-ops#1198: reusable surface-audit (visual-quality matrix extension).
+# Same CI constraint as the gate-integrity reusable: workers cannot add
+# a P14 line in .github/workflows/ci.yml, so this file is the listed CI
+# host for the new shape-lock drill. The reusable is parked in
+# docs/pending-surface-audit/ until a token with Workflows scope lands
+# it at .github/workflows/reusable-surface-audit.yml.
+bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit tests failed"
+
 # fleet-ops#703: lock the orcarouter sr-never-vibes citation. Workers
 # cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host.

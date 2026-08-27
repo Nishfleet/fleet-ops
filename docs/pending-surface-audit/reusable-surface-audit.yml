@@ -1,0 +1,243 @@
+# Reusable surface-audit — visual-quality matrix extension (fleet-ops#1198).
+#
+# Augments the wave-1 visual-check.yml with two axes the bare visual check
+# misses:
+#   1. theme     {light, dark} — catches hardcoded-literal/themed-token pairs
+#      that break in dark mode on the exact surfaces (/app, /search) paying
+#      customers use. The shipped 0509 defect at 2.14:1 contrast lived here.
+#   2. auth state {logged-out} x {each plan tier} x {expired, dunning} —
+#      catches "the page says something false for THIS viewer" defects that
+#      only appear behind the login, on a specific plan tier.
+#
+# Per-product deterministic rules live in the consumer repo's
+# `scripts/surface-audit.mjs`. This reusable provides:
+#   - matrix expansion (theme x auth-state x viewport x route), passed as
+#     a JSON env var SURFACE_AUDIT_MATRIX; the per-product script loops
+#   - install scaffolding (setup-node + the caller's install-command)
+#   - artifact collection (results/ directory, surface-audit-results name)
+#
+# Self-skip contract (matches the wave-1 visual-check.yml pattern): repos
+# without `surface-audit.json` skip with a notice. No Node install wasted.
+#
+# Reference implementation: Nishfleet/0509#1302 (`e2e/surface-audit.mjs`
+# catches the four shipped defects against cf0d3189~3 and passes clean
+# against main).
+#
+# Call from a consumer:
+#   jobs:
+#     surface-audit:
+#       uses: Nishfleet/fleet-ops/.github/workflows/reusable-surface-audit.yml@v1
+#       with:
+#         config-path: surface-audit.json
+#         audit-script: scripts/surface-audit.mjs
+#         node-version: "24"
+#         install-command: npm ci
+#
+# Same-repo callers use ./.github/workflows/reusable-surface-audit.yml.
+#
+# The per-product script (audit-script) MUST honour these env vars:
+#   SURFACE_AUDIT_MATRIX     JSON array of cells, each {theme, authState,
+#                            viewport, width, height, route}
+#   SURFACE_AUDIT_BASE_URL   URL where the product is being served (set by
+#                            the per-product script, not the reusable; the
+#                            reusable does NOT start the server — it is the
+#                            script's job because only the consumer knows the
+#                            right command + readiness probe)
+#   SURFACE_AUDIT_OUT_DIR    directory to write per-cell artifacts into
+#                            (default "results")
+# The script MUST exit 0 only when every cell passes; non-zero on any
+# failure. The reusable uploads results/ as the surface-audit-results
+# artifact regardless of exit code so failures are inspectable.
+#
+# Standing CI standard, by construction:
+#   1. timeout-minutes on the job.
+#   2. concurrency + cancel-in-progress, grouped by PR number.
+#   3. dependency caching via setup-node cache: npm when install-command
+#      is set.
+#   4. one batched job: install + run + artifact upload.
+#   5. fetch-depth: 0 — the per-product script may diff against base.
+#   6. artifact retention-days: 7 (matches gitleaks SARIF).
+#   7. self-skip when surface-audit.json is absent — required checks must
+#      never silently disappear.
+#   8. no CI that watches CI.
+
+name: Reusable surface audit
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: "Path to surface-audit.json (consumer repo root). Absent = self-skip."
+        type: string
+        required: false
+        default: "surface-audit.json"
+      audit-script:
+        description: "Path to per-product surface-audit.mjs (consumer repo)."
+        type: string
+        required: false
+        default: "scripts/surface-audit.mjs"
+      node-version:
+        description: "Node version for setup-node. Empty string skips Node setup."
+        type: string
+        required: false
+        default: "24"
+      install-command:
+        description: "Dependency install (e.g. npm ci). Empty string skips install and npm cache."
+        type: string
+        required: false
+        default: "npm ci"
+      out-dir:
+        description: "Directory the per-product script writes per-cell artifacts into. Uploaded as surface-audit-results."
+        type: string
+        required: false
+        default: "results"
+      timeout-minutes:
+        description: "Job timeout. Default 15 (~3x a 50-cell matrix on a healthy PR)."
+        type: number
+        required: false
+        default: 15
+
+concurrency:
+  group: surface-audit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  surface-audit:
+    name: Surface audit
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Self-skip gate
+        id: gate
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          set -euo pipefail
+          if [ -f "$CONFIG_PATH" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Surface audit configured at $CONFIG_PATH — running matrix"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Surface audit not configured (no $CONFIG_PATH at repo root) — self-skip"
+          fi
+
+      - name: Validate config
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          set -euo pipefail
+          python3 - "$CONFIG_PATH" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          with open(path, "r", encoding="utf-8") as fh:
+              cfg = json.load(fh)
+          m = cfg.get("matrix")
+          if not isinstance(m, dict):
+              raise SystemExit("surface-audit.json: matrix must be an object")
+          for axis in ("themes", "authStates", "viewports", "routes"):
+              if axis not in m:
+                  raise SystemExit(f"surface-audit.json: matrix.{axis} is required")
+              if not isinstance(m[axis], list) or not m[axis]:
+                  raise SystemExit(f"surface-audit.json: matrix.{axis} must be a non-empty array")
+          for vp in m["viewports"]:
+              if not (isinstance(vp, dict) and "name" in vp and "width" in vp and "height" in vp):
+                  raise SystemExit("surface-audit.json: every viewport needs {name, width, height}")
+          themes = m["themes"]
+          for t in themes:
+              if t not in ("light", "dark"):
+                  raise SystemExit(f"surface-audit.json: theme must be light or dark, got {t!r}")
+          auth = cfg.get("auth", {})
+          if "method" in auth and auth["method"] != "cookie":
+              raise SystemExit("surface-audit.json: auth.method must be 'cookie' (only supported form)")
+          print("config valid")
+          print(f"themes={themes}")
+          print(f"authStates={m['authStates']}")
+          print(f"viewports={[vp['name'] for vp in m['viewports']]}")
+          print(f"routes={m['routes']}")
+          PY
+
+      - name: Build matrix JSON
+        if: steps.gate.outputs.configured == 'true'
+        id: matrix
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          set -euo pipefail
+          python3 - "$CONFIG_PATH" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          with open(sys.argv[1], "r", encoding="utf-8") as fh:
+              cfg = json.load(fh)
+          m = cfg["matrix"]
+          cells = []
+          for theme in m["themes"]:
+              for auth_state in m["authStates"]:
+                  for vp in m["viewports"]:
+                      for route in m["routes"]:
+                          cells.append({
+                              "theme": theme,
+                              "authState": auth_state,
+                              "viewport": vp["name"],
+                              "width": int(vp["width"]),
+                              "height": int(vp["height"]),
+                              "route": route,
+                          })
+          print(f"cell-count={len(cells)}")
+          # GITHUB_OUTPUT truncates newlines in multi-line values; emit as a
+          # one-line JSON string. The script reads it via env.
+          print(f"matrix-json={json.dumps(cells, separators=(',', ':'))}")
+          PY
+
+      - name: Set up Node (with npm cache)
+        if: steps.gate.outputs.configured == 'true' && inputs.node-version != '' && inputs.install-command != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Set up Node (no cache)
+        if: steps.gate.outputs.configured == 'true' && inputs.node-version != '' && inputs.install-command == ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        if: steps.gate.outputs.configured == 'true' && inputs.install-command != ''
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: eval "$INSTALL_COMMAND"
+
+      - name: Run surface-audit matrix
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          AUDIT_SCRIPT: ${{ inputs.audit-script }}
+          OUT_DIR: ${{ inputs.out-dir }}
+          SURFACE_AUDIT_MATRIX: ${{ steps.matrix.outputs.matrix-json }}
+          SURFACE_AUDIT_CONFIG: ${{ inputs.config-path }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$AUDIT_SCRIPT" ]; then
+            echo "::error::Audit script not found: $AUDIT_SCRIPT (set audit-script input or create it)"
+            exit 1
+          fi
+          mkdir -p "$OUT_DIR"
+          node "$AUDIT_SCRIPT"
+
+      - name: Upload surface-audit results
+        if: always() && steps.gate.outputs.configured == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: surface-audit-results
+          path: ${{ inputs.out-dir }}/
+          retention-days: 7
+          if-no-files-found: ignore
