@@ -29,7 +29,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 RUN_PROOF_RE = re.compile(r"^[\t ]*run-proof:[\t ]+\S+", re.M)
-VERIFICATION_RE = re.compile(r"(^|[\t ])[Vv]erification:[\t ]*")
+# Section marker: a markdown heading ("## Verification" with or without a
+# trailing colon), a bold heading ("**Verification**" / "**Verification:**"),
+# or an inline "Verification:" line. Workers commonly write the heading
+# without the colon; the prior regex required it and produced false
+# positives for legitimately run-cued PRs (fleet-ops#728).
+VERIFICATION_RE = re.compile(
+    r"(?:^#+\s+[Vv]erification:?[\t ]*\*?[\t ]*$"
+    r"|\*{2}[\t ]*[Vv]erification:?[\t ]*\*{0,2}[\t ]*$"
+    r"|(?:^|[\t ])[Vv]erification:[\t ]*)"
+)
 JOURNALCTL_RE = re.compile(r"(^|[^A-Za-z0-9_])journalctl([^A-Za-z0-9_]|$)")
 SYSTEMCTL_RE = re.compile(r"(^|[^A-Za-z0-9_])systemctl([^A-Za-z0-9_]|$)")
 EXIT_RE = re.compile(r"exit[\t ]+[0-9]")

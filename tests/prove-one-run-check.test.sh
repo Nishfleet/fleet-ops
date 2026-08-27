@@ -99,6 +99,19 @@ if check "$body" "$timer_ns" >/dev/null 2>&1; then
 fi
 ok "C3: Verification: without run-cue rejected"
 
+body=$'## Summary\n- changed\n\n## Verification\n- journalctl -u fleet-heartbeat.service --since "5 min ago" — no errors.\n'
+if check "$body" "$timer_ns" >/dev/null; then
+    ok "C4: heading form (no colon) + journalctl accepted (fleet-ops#728)"
+else
+    fail "C4: heading form (no colon) with journalctl cue must accept"
+fi
+
+body=$'## Summary\n- changed\n\n## Verification\n- I did the thing.\n'
+if check "$body" "$timer_ns" >/dev/null 2>&1; then
+    fail "C5: heading form (no colon) without run-cue must reject"
+fi
+ok "C5: heading form (no colon) without run-cue rejected"
+
 # ============================================================================
 # Phase D: drill — fixture PR adding a timer with no run-proof
 # ============================================================================

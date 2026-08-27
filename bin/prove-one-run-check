@@ -108,7 +108,10 @@ set +e
 printf '%s\n' "$body" | awk '
     BEGIN { in_v=0; matched=0 }
     {
-        if ($0 ~ /(^|[[:space:]])[Vv]erification:[[:space:]]*/) {
+        if ($0 ~ /^#+[[:space:]]+[Vv]erification[[:space:]]*$/ \
+            || $0 ~ /^#+[[:space:]]+[Vv]erification:[[:space:]]*$/ \
+            || $0 ~ /\*{2}[[:space:]]*[Vv]erification:?[[:space:]]*\*{0,2}[[:space:]]*$/ \
+            || $0 ~ /(^|[[:space:]])[Vv]erification:[[:space:]]*/) {
             in_v=1
         }
         if (!in_v) next
