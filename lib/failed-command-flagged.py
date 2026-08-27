@@ -121,8 +121,12 @@ failure. Do NOT add a READ_OFFSET_RE-style exemption for the no-op
 wording on the theory that "nothing broke": the worker believed it had
 edited the file and it had not, which is the whole point of the rule.
 tests/fleet-failed-command-edit-unmatch.test.sh pins the single-edit,
-multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
-unmatch.test.sh pins the multi-edit array `edits[0]` shape
+multi-match, no-op, and READY-WORK.md `cat >>` append-recovery shapes
+(fleet-ops#1140: same 0-match wording as #956, live path
+/home/nish/workspaces/agent-state/READY-WORK.md; a successful bash
+`cat >>` of the same path does not discharge the unmatch). tests/fleet-
+failed-command-edit-array-unmatch.test.sh pins the multi-edit array
+`edits[0]` shape
 (fleet-ops#1173). #970 is the same session shape as #956 / #965 (the
 01a03dee edit-unmatch session); it is a leftover open duplicate filed
 by the same GitHub-search-index-delay that produced #951 / #965, so
@@ -456,14 +460,15 @@ HARNESS_BLOCK_RE = re.compile(
 # on a directory, read" (fleet-ops#1170 / #1243: the path is a
 # directory, not a missing file and not an overshot offset).
 # Do NOT add a similar exemption for `edit` "Could not find the exact
-# text" (fleet-ops#956, #965, #970, #975, #980), "Found N occurrences"
+# text" (fleet-ops#956, #965, #970, #975, #980, #1140), "Found N occurrences"
 # (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
 # locations, not zero), or "No changes made ... The replacement produced
 # identical content" (fleet-ops#1139, same class: the edit matched but the
 # intended change never landed). Those are real swallowed failures: the
-# worker's oldText or newText was stale. A silent read/grep recovery, and
-# cause-explaining prose ("The text is already the same"), do not
-# discharge it.
+# worker's oldText or newText was stale. A silent read/grep recovery, a
+# successful bash `cat >>` append of the same path (fleet-ops#1140, live
+# READY-WORK.md), and cause-explaining prose ("The text is already the
+# same"), do not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
@@ -642,11 +647,14 @@ def result_failed(
     # No sibling exemption belongs here for the `edit` tool. All three
     # edit-unmatch shapes are real swallowed failures, not negative
     # results: "Could not find the exact text" (0 matches, fleet-ops#956
-    # / #965), "Found N occurrences" (many matches, fleet-ops#1053), and
-    # "No changes made ... The replacement produced identical content"
+    # / #965 / #1140), "Found N occurrences" (many matches, fleet-ops#1053),
+    # and "No changes made ... The replacement produced identical content"
     # (matched, but the intended change never landed, fleet-ops#1139).
     # The no-op shape is the tempting one — it reads as harmless — but the
-    # worker believed the file changed and it did not.
+    # worker believed the file changed and it did not. Do NOT add a
+    # "successful write/append of the same path" exemption either: the
+    # live #1140 recovery was bash `cat >>` of READY-WORK.md and still
+    # must flag.
     # tests/fleet-failed-command-edit-unmatch.test.sh goes red if an
     # exemption is added here.
     is_error = bool(msg.get("isError"))
