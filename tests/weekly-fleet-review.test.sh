@@ -130,10 +130,14 @@ jq -e '.roles[] | select(.id == "weekly-fleet-review") | .units | index("fleet-w
   || fail "weekly-fleet-review role must list fleet-weekly-fleet-review.service in units[]"
 jq -e '.roles[] | select(.id == "weekly-fleet-review") | .bypass_checks | index("weekly_fleet_review_output_contract")' "$role_gates" >/dev/null \
   || fail "weekly-fleet-review role must name the weekly_fleet_review_output_contract bypass check"
+jq -e '.roles[] | select(.id == "weekly-fleet-review") | .bypass_checks | index("quality_ratchet_contract")' "$role_gates" >/dev/null \
+  || fail "weekly-fleet-review role must name the quality_ratchet_contract bypass check"
 grep -q 'def check_weekly_fleet_review_output_contract' "$role_gates_lib" \
   || fail "lib/role-quality-gates.py must define check_weekly_fleet_review_output_contract"
 grep -q '"weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract' "$role_gates_lib" \
   || fail "BYPASS_CHECKS must register check_weekly_fleet_review_output_contract"
+grep -q 'def check_quality_ratchet_contract' "$role_gates_lib" \
+  || fail "lib/role-quality-gates.py must define check_quality_ratchet_contract"
 
 # Live audit must be green — the new role, prompt, and unit cannot show
 # up as findings (or the role-gate auditor is itself broken).

@@ -83,6 +83,10 @@ bin/fleet-failed-command-flagged /home/nish/.local/bin/fleet-failed-command-flag
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
+# fleet-ops#1222: Weekly Fleet Review quality ratchet (one notch per week,
+# never loosen without Nish). Heartbeat-tier1 block 34.
+config/quality-ratchet.json /home/nish/.local/state/pi-packet/quality-ratchet.json
+lib/quality-ratchet.py /home/nish/.local/lib/pi-packet/quality-ratchet.py
 lib/role-quality-gates.py /home/nish/.local/lib/pi-packet/role-quality-gates.py
 lib/quality-routing.py /home/nish/.local/lib/pi-packet/quality-routing.py
 bin/fleet-role-gate-audit /home/nish/.local/bin/fleet-role-gate-audit

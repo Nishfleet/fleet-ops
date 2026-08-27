@@ -101,7 +101,7 @@
       ],
       "units": ["fleet-weekly-fleet-review.service"],
       "prompts": ["weekly-fleet-review.md"],
-      "bypass_checks": ["weekly_fleet_review_output_contract"]
+      "bypass_checks": ["weekly_fleet_review_output_contract", "quality_ratchet_contract"]
     }
   ]
 }

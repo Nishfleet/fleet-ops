@@ -186,6 +186,31 @@ def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any])
     return None
 
 
+def check_quality_ratchet_contract(repo: Path, _role: dict[str, Any]) -> str | None:
+    """WFR (fleet-ops#1222) must lock the weekly quality ratchet.
+
+    The ledger says gates that were consistently met tighten one notch per
+    week and never loosen without Nish. The prompt is the WFR output
+    contract; dropping it lets a weekly run skip the bar-raise.
+    """
+    text = _read(repo / "prompts" / "weekly-fleet-review.md")
+    if not text:
+        return "prompts/weekly-fleet-review.md missing"
+    if "Quality ratchet" not in text:
+        return "prompts/weekly-fleet-review.md drops the Quality ratchet phase"
+    if "one notch" not in text:
+        return "prompts/weekly-fleet-review.md does not lock one notch per week"
+    if "last-ratchet.json" not in text:
+        return "prompts/weekly-fleet-review.md does not require last-ratchet.json"
+    if "never loosen" not in text.lower():
+        return "prompts/weekly-fleet-review.md drops 'never loosen without Nish'"
+    if not (repo / "lib" / "quality-ratchet.py").exists():
+        return "lib/quality-ratchet.py missing (quality ratchet canary)"
+    if not (repo / "config" / "quality-ratchet.json").exists():
+        return "config/quality-ratchet.json missing (committed floors)"
+    return None
+
+
 BYPASS_CHECKS = {
     "scout_agent_ready_product": check_scout_agent_ready_product,
     "sweep_blank_approval": check_sweep_blank_approval,
@@ -197,6 +222,7 @@ BYPASS_CHECKS = {
     "audit_has_panel": check_audit_has_panel,
     "researcher_delta_contract": check_researcher_delta_contract,
     "weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract,
+    "quality_ratchet_contract": check_quality_ratchet_contract,
 }
 
 
