@@ -20,7 +20,12 @@ remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
 `read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953) is a
 real swallowed failure: it is not a probe like ls no-match or read
-offset beyond end. A spawn-guard or harness block (SPAWN_BLOCKED
+offset beyond end. An `edit` tool returning "Could not find the exact
+text in <path>. The old text must match exactly including all
+whitespace and newlines." (fleet-ops#956) is also a real swallowed
+failure: a silent `read` recovery, a later thinking-only note that the
+file was different, or unrelated prose that moves on, is not a
+user-facing flag. A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
 
@@ -151,6 +156,9 @@ HARNESS_BLOCK_RE = re.compile(
 )
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
+# Do NOT add a similar exemption for `edit` "Could not find the exact
+# text" (fleet-ops#956). That is a real swallowed failure: the worker's
+# oldText was stale. A silent read recovery does not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
