@@ -605,6 +605,13 @@
       "status": "enforced"
     },
     {
+      "id": "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou",
+      "source": "decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: \"can't stress enough\")",
+      "mechanism": "Heartbeat volume-lane-order canary: volume_providers_in_order must equal ollama,devin,commandcode,cline exactly; every volume provider must be live (cap>0 + models); cursor must not appear in the volume prefix; seat-lib pick_seat must load SEAT_VOLUME_ORDER and prefer the volume_seats bucket before leftover free / leftover prepaid / metered. Observe-to-open when xai-oauth is in models.json but unwired (coordinates #1163).",
+      "proof": "bin/fleet-volume-lane-order-canary; tests/fleet-volume-lane-order-canary.test.sh; config/seat-caps.json volume_providers_in_order; lib/seat-lib.sh SEAT_VOLUME_ORDER + volume_seats; fleet-heartbeat-tier1 block 33; fleet-ops#1178",
+      "status": "enforced"
+    },
+    {
       "id": "led-north-star-quality",
       "source": "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through",
       "mechanism": "CI drill + lib/north-star-quality.py verify: config/quality-routing.json must keep the three primary SLO cuts (revert_rate, defect_rate, overturn_rate) and no cut may exceed its NORTH STAR ceiling; config/role-quality-gates.json must keep reviewer/senior/researcher gates tied to the quality scoreboard. A PR that drops a SLO or weakens a cut is rejected at the gate.",
@@ -727,14 +734,6 @@
       "mechanism": "Cursor $400 extra-usage budget expires with the 25d cycle: target ~$16/day SPENT on keystone/senior-review/Weekly-Review work (floor, not ceiling), meter-checked; do not bank it. Mechanism issue open.",
       "proof": "fleet-ops#1177",
       "status": "queued(#1177)",
-      "queued_since": "2026-08-27"
-    },
-    {
-      "id": "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou",
-      "source": "decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: \"can't stress enough\")",
-      "mechanism": "Volume selection order: ollamacloud -> devin -> commandcode -> cline first, before everything else; then xai-oauth (alternate), free tier; cursor keystone-only at ~$16/day target. Mechanism issue open.",
-      "proof": "fleet-ops#1178",
-      "status": "queued(#1178)",
       "queued_since": "2026-08-27"
     },
     {
