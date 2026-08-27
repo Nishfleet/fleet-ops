@@ -65,6 +65,14 @@ sorted="$(printf '%s\n' "$names" | LC_ALL=C sort)"
 [[ "$(printf '%s\n' "$names")" == "$(printf '%s\n' "$sorted")" ]] \
   || fail "repos must be sorted ascending by name (LC_ALL=C byte order)"
 
+# 6b. 0509 is the only product repo in active supply and fleet-ops is the only
+#     control-plane repo (decisions ledger 2026-08-27: fleet-ops precedence
+#     over 0509, for now). Any other product must stay in deferred[].
+expected_repos='["0509","fleet-ops"]'
+got_repos="$(jq -c '.repos | map(.name)' "$file")"
+[[ "$got_repos" == "$expected_repos" ]] \
+  || fail "repos must be exactly 0509 + fleet-ops (2026-08-27 fleet-ops precedence), got $got_repos"
+
 # 7. no repo in both repos and excluded.
 excluded_names="$(jq -r '.excluded[].name' "$file")"
 overlap="$(printf '%s\n%s\n' "$names" "$excluded_names" | LC_ALL=C sort | uniq -d)"
@@ -94,7 +102,7 @@ fleet2_excluded="$(jq -r '[.excluded[] | select(.name=="fleet2" and .permanent==
 [[ "$fleet2_excluded" == "1" ]] \
   || fail "fleet2 must be listed in excluded with permanent=true (standing rule)"
 
-echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count excluded, fleet2 guard live)"
+echo "OK: intake-repos.json shape locked ($repo_count repos, $excl_count excluded, fleet2 guard live, 0509 only product + fleet-ops control plane)"
 
 # fleet-ops#29: the agent-blocked label is a live queue, not a parking lot.
 # CI's tests job does not yet have a named step for tests/blocked-reconcile.test.sh

@@ -660,6 +660,53 @@
       "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal",
       "proof": "fleet-ops #468 / #480; enforced by bin/fleet-escalation-completion (per-chain stall budget + fail-loud ladder, wired into fleet-heartbeat-tier1); tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-d1-prod-migrations",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations",
+      "mechanism": "No canary enforcing the D1 prod migration senior process (independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish). Mechanism issue open.",
+      "proof": "fleet-ops#905",
+      "status": "queued(#905)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-d1-prod-migrations-correction",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — CORRECTION",
+      "mechanism": "Superseded/corrected D1 prod migration decision; the live enforcer must gate on the final process amendment. Mechanism issue open.",
+      "proof": "fleet-ops#906",
+      "status": "queued(#906)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-d1-prod-migrations-decided",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — DECIDED (plain-language re-ask, informed)",
+      "mechanism": "D1 prod migration vacation grant: fleet MAY apply prod migrations autonomously through 2026-09-08 via senior process. Mechanism issue open.",
+      "proof": "fleet-ops#907",
+      "status": "queued(#907)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-d1-prod-migrations-process-amendment",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — process amendment (Nish, same conversation)",
+      "mechanism": "D1 prod migration process: strong lane plan + independent senior blind-review + apply + live verification + text Nish. Mechanism issue open.",
+      "proof": "fleet-ops#908",
+      "status": "queued(#908)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-fleet-ops-precedence-over-0509-for-now",
+      "source": "decisions-ledger.md: 2026-08-27 | Fleet-ops precedence over 0509, for now",
+      "mechanism": "Heartbeat canary step in bin/fleet-heartbeat-undersaturation: product vs control-plane throughput split is informational only; when control-plane merges exceed product merges the canary emits THROUGHPUT-PRECEDENCE-OK. CI shape lock in tests/intake-repos-shape.test.sh enforces that 0509 is the only product repo in config/intake-repos.json repos[] and fleet-ops is the only control-plane repo.",
+      "proof": "bin/fleet-heartbeat-undersaturation; tests/fleet-heartbeat-throughput-split.test.sh; tests/intake-repos-shape.test.sh; config/intake-repos.json; fleet-ops#909",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-vacation-window-corrected",
+      "source": "decisions-ledger.md: 2026-08-27 | Vacation window corrected",
+      "mechanism": "No canary checking credential/token/quota expiry covers through 2026-09-08. Mechanism issue open.",
+      "proof": "fleet-ops#938",
+      "status": "queued(#938)",
+      "queued_since": "2026-08-27"
     }
   ]
 }
