@@ -28,6 +28,9 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # work-producing role. vault-conflict-resolver (fleet-ops#529 / #636) is the
 # Syncthing freeze handler; vault-knowledge-format is the daily lint timer
 # for vault shape (fleet-ops#525). Both are plumbing, same class.
+# fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
+# exporter (writes /var/lib/prometheus/node-exporter/fleet.prom every 5m);
+# it is observability plumbing, not a judging/building role.
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",
@@ -47,6 +50,7 @@ NON_ROLE_UNIT_PREFIXES = (
     "app-pi",
     "vault-conflict",
     "vault-knowledge-format",
+    "fleet-metrics-export",
 )
 
 
