@@ -1698,6 +1698,10 @@ bash "$here/fleet-failed-command-git-branch-cannot-force-update.test.sh" || fail
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
 bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-command-dedup-open-list tests failed"
+# fleet-ops#956: `edit` 'Could not find the exact text' (stale oldText)
+# walked past, with a silent read/grep recovery and a later thinking-only
+# note that the file was different, is the same class. Same CI constraint.
+bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-command-edit-unmatch tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
