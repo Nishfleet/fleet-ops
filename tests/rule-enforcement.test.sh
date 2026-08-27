@@ -56,6 +56,11 @@ jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' 
   || fail "sr-verify-harness must be status=enforced (fleet-ops#524)"
 ok "matrix row sr-verify-harness is enforced"
 
+jq -e '.rules[] | select(.id == "sr-pstack-review" and .status == "enforced") | .proof | test("prompts/worker.md")' \
+  "$matrix" >/dev/null \
+  || fail "sr-pstack-review must be enforced and proof must name prompts/worker.md (fleet-ops#1260)"
+ok "matrix row sr-pstack-review is enforced via worker.md"
+
 # fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
 # rows even when the live vault is absent (CI skips the live join).
 for src in \

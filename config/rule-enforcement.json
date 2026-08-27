@@ -145,8 +145,8 @@
     {
       "id": "sr-pstack-review",
       "source": "global-standing-rules.md: pstack full review + blind stress test (Nish, 2026-08-20)",
-      "mechanism": "Adopted skills are installed on the Pi harness: blast-radius, why, session-pickup, pause-safely, unslop, design-it-twice, review-adjudication",
-      "proof": "~/.pi/agent/skills/{blast-radius,why,session-pickup,pause-safely,unslop,design-it-twice,review-adjudication}/SKILL.md",
+      "mechanism": "Worker prompt routes each issue to the matching upstream pstack playbook at ~/.pi/agent/skills/poteto-mode/playbooks/ (bug-fix, feature, investigation, perf-issue). Adopted house skills stay installed. Depth-1 spawn-guard forbids arena/architect/swarm/interrogate fan-out. Claim mutex, salvage, and progress files stay fleet-owned.",
+      "proof": "prompts/worker.md; tests/pstack-worker-prompt.test.sh; docs/pstack-adoption.md; ~/.pi/agent/skills/{blast-radius,why,session-pickup,pause-safely,unslop,design-it-twice,review-adjudication}/SKILL.md",
       "status": "enforced"
     },
     {
