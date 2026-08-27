@@ -706,6 +706,78 @@
       "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire — official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted — worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness.",
       "proof": "bin/fleet-credential-expiry-canary; lib/credential-expiry-canary.py; tests/credential-expiry-canary.test.sh; bin/fleet-heartbeat-tier1 block 31; fleet-ops#938",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-weekly-fleet-review-approved",
+      "source": "decisions-ledger.md: 2026-08-27 | Weekly Fleet Review approved",
+      "mechanism": "Weekly (Sunday post-maintenance) blind 5-lens senior research + conference, output capped at 5 specced actions + ledger discards, self-scoring, ratio-governed. Mechanism issue open.",
+      "proof": "fleet-ops#1175",
+      "status": "queued(#1175)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-token-economy-rebalance-nish-from-live-meters",
+      "source": "decisions-ledger.md: 2026-08-27 | Token economy rebalance (Nish, from live meters)",
+      "mechanism": "Routing policy from live meters: Claude leanest turns; Devin first in alternation with raised caps; Cursor keystone/senior-review only; xai-oauth joins the alternation at $0. Mechanism issue open.",
+      "proof": "fleet-ops#1176",
+      "status": "queued(#1176)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-cursor-400-correction-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 correction (Nish)",
+      "mechanism": "Cursor $400 extra-usage budget expires with the 25d cycle: target ~$16/day SPENT on keystone/senior-review/Weekly-Review work (floor, not ceiling), meter-checked; do not bank it. Mechanism issue open.",
+      "proof": "fleet-ops#1177",
+      "status": "queued(#1177)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou",
+      "source": "decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: \"can't stress enough\")",
+      "mechanism": "Volume selection order: ollamacloud -> devin -> commandcode -> cline first, before everything else; then xai-oauth (alternate), free tier; cursor keystone-only at ~$16/day target. Mechanism issue open.",
+      "proof": "fleet-ops#1178",
+      "status": "queued(#1178)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)",
+      "mechanism": "Cursor $400 extra-usage opens only after included usage is exhausted; on overage use cursor-grok-4.6-high for keystone/senior-review, ~$16/day target, meter-checked. Mechanism issue open.",
+      "proof": "fleet-ops#1179",
+      "status": "queued(#1179)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-quality-ratchet-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Quality ratchet (Nish)",
+      "mechanism": "Weekly Fleet Review raises the quality bar one notch per week, evidence-based; tightening only, never loosening without Nish. Mechanism issue open.",
+      "proof": "fleet-ops#1222",
+      "status": "queued(#1222)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-precedence-band-overnight-machinery-surge-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Precedence band + overnight machinery surge (Nish)",
+      "mechanism": "From 2026-08-28 08:00 IST: blanket fleet-precedence ends; machinery capped ~30% of lanes, product 70%; machinery jumps the band only by naming its multiplier; Weekly Fleet Review owns the dial via the ratchet. Mechanism issue open.",
+      "proof": "fleet-ops#1223",
+      "status": "queued(#1223)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-geo-aeo-fleet-executes-measurement-owned-content-",
+      "source": "decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish",
+      "mechanism": "GEO/AEO: fleet executes measurement + owned-content tactics; brand gate (preview-then-autonomous) on each public content surface; Reddit/community and digital-PR parked as Nish-reserved. Mechanism issue open.",
+      "proof": "fleet-ops#1245",
+      "status": "queued(#1245)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-geo-plan-approved-lets-go",
+      "source": "decisions-ledger.md: 2026-08-27 | GEO plan approved (\"lets go\")",
+      "mechanism": "GEO plan approved: #1236 probe starts immediately; #1237/#1238 ride the 08-28 product share; preview-then-autonomous brand gate as the approval mechanism for public content voice. Mechanism issue open.",
+      "proof": "fleet-ops#1256",
+      "status": "queued(#1256)",
+      "queued_since": "2026-08-27"
     }
   ]
 }
