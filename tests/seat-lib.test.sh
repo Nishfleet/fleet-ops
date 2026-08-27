@@ -2034,6 +2034,12 @@ bash "$here/fleet-failed-command-read-enoent-archived-packet.test.sh" || fail "f
 # read is benign" exemption a future refactor might add. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-read-eisdir.test.sh" || fail "fleet-failed-command-read-eisdir tests failed"
+# fleet-ops#1255: same read-ENOENT class as #953 / #1001 / #1059 but the
+# recovery is thinking-only cause-prose naming the OTHER checkout
+# ("The salvage-secret-scan is in fleet-ops-sync, not in fleet-ops-rg")
+# plus successful reads of unrelated files. Cause that names the wrong
+# checkout is not a flag. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-read-enoent-stale-rg.test.sh" || fail "fleet-failed-command-read-enoent-stale-rg tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
