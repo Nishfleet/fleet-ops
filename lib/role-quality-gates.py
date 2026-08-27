@@ -51,6 +51,12 @@ NON_ROLE_UNIT_PREFIXES = (
     "vault-conflict",
     "vault-knowledge-format",
     "fleet-metrics-export",
+    # fleet-ops#1152: standing-rules-render is a file-render maintenance
+    # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
+    # no model, owns no prompt and produces no work items, so it has no
+    # role gate; its own gate is the drift --check plus
+    # tests/test_standing_rules_drift.sh.
+    "standing-rules-render",
 )
 
 
