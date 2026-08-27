@@ -3,7 +3,7 @@
 
 The standing rule's failure mode is a finding named in chat and nowhere
 else: "I noticed X, want me to file it?" and "Say the word and I'll…".
-This helper reads Pi session JSONL (assistant text only — the user prompt
+This helper reads session JSONL (assistant text only — the user prompt
 quotes those phrases as documentation and must not trip the detector)
 and reports sessions that ASK to file/queue without a matching queue
 action in the same session.
@@ -11,8 +11,19 @@ action in the same session.
 Quoted / fenced text is stripped before the offer scan so a PR body that
 names the failure mode in quotes is not itself a violation.
 
+Three transcript shapes are scanned with the same offer/queue predicates
+(fleet-ops#602 — the rule binds every agent on Mac and VPS, so every
+reachable transcript root is scanned, not a second detector):
+  - Pi:        {"type":"message","message":{"role":...,"content":[...]}}
+               tool results arrive as role:"toolResult" messages.
+  - Cursor:    {"role":"...","message":{"content":[{"type":"text"|"tool_use",
+               "input":...}]}} (top-level role, no `type` field).
+  - Claude:    {"type":"user"|"assistant","message":{"role":...,"content":
+               [{"type":"text"|"tool_use"|"tool_result",...}]}}; tool_result
+               chunks live inside user messages.
+
 Usage:
-  python3 lib/findings-queued.py scan --root DIR [--now ISO]
+  python3 lib/findings-queued.py scan --root DIR [--root DIR ...] [--now ISO]
       [--window-hours 24] [--grace-minutes 20]
 """
 from __future__ import annotations
@@ -80,14 +91,49 @@ def _content_chunks(content: Any) -> tuple[list[str], list[str]]:
         kind = chunk.get("type")
         if kind == "text":
             texts.append(str(chunk.get("text") or ""))
-        elif kind == "toolCall":
+        elif kind == "toolCall":  # Pi
             tools.append(str(chunk.get("name") or ""))
             args = chunk.get("arguments")
             if isinstance(args, dict):
                 tools.append(json.dumps(args, ensure_ascii=False))
             elif args:
                 tools.append(str(args))
+        elif kind == "tool_use":  # Cursor / Claude
+            tools.append(str(chunk.get("name") or ""))
+            inp = chunk.get("input")
+            if isinstance(inp, dict):
+                tools.append(json.dumps(inp, ensure_ascii=False))
+            elif inp:
+                tools.append(str(inp))
+        elif kind == "tool_result":  # Cursor / Claude (inside user msgs)
+            rc = chunk.get("content")
+            if isinstance(rc, str):
+                tools.append(rc)
+            elif isinstance(rc, list):
+                for sub in rc:
+                    if isinstance(sub, dict) and sub.get("type") == "text":
+                        tools.append(str(sub.get("text") or ""))
+                    elif isinstance(sub, str):
+                        tools.append(sub)
+        # "thinking" / unknown chunk types are not user-visible text; skip.
     return texts, tools
+
+
+def _role_of(obj: dict[str, Any]) -> str | None:
+    # Cursor puts role at the top level; Pi and Claude put it under message.
+    role = obj.get("role")
+    if isinstance(role, str):
+        return role
+    msg = obj.get("message")
+    if isinstance(msg, dict):
+        role = msg.get("role")
+        if isinstance(role, str):
+            return role
+    # Claude uses top-level type == "user" | "assistant".
+    top = obj.get("type")
+    if top in ("user", "assistant"):
+        return top
+    return None
 
 
 def session_blobs(path: str) -> tuple[str, str]:
@@ -103,16 +149,24 @@ def session_blobs(path: str) -> tuple[str, str]:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                msg = obj.get("message")
-                if not isinstance(msg, dict):
+                role = _role_of(obj)
+                if role is None:
                     continue
-                role = msg.get("role")
-                chunk_texts, chunk_tools = _content_chunks(msg.get("content"))
+                msg = obj.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                chunk_texts, chunk_tools = _content_chunks(content)
                 if role == "assistant":
                     texts.extend(chunk_texts)
                     tools.extend(chunk_tools)
-                elif role == "toolResult":
-                    tools.extend(chunk_texts)
+                else:
+                    # User prompts are documentation (offers there are
+                    # ignored). Tool results of any shape feed queue
+                    # evidence; Pi delivers them as role:"toolResult"
+                    # text messages, Cursor/Claude as tool_result chunks
+                    # (already routed to chunk_tools by _content_chunks).
+                    tools.extend(chunk_tools)
+                    if role in ("toolResult", "tool_result"):
+                        tools.extend(chunk_texts)
     except OSError:
         return "", ""
     return "\n".join(texts), "\n".join(tools)
@@ -140,20 +194,25 @@ def snippet_for(match: re.Match[str], text: str, width: int = 160) -> str:
     return chunk[:200]
 
 
-def iter_session_files(root: str) -> list[str]:
+def iter_session_files(roots: list[str]) -> list[str]:
     out: list[str] = []
-    if not os.path.isdir(root):
-        return out
-    for dirpath, _dirnames, filenames in os.walk(root):
-        for name in filenames:
-            if name.endswith(".jsonl"):
-                out.append(os.path.join(dirpath, name))
+    seen: set[str] = set()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                if name.endswith(".jsonl"):
+                    p = os.path.join(dirpath, name)
+                    if p not in seen:
+                        seen.add(p)
+                        out.append(p)
     out.sort()
     return out
 
 
 def scan(
-    root: str,
+    roots: list[str],
     now: float,
     window_hours: float,
     grace_minutes: float,
@@ -166,7 +225,7 @@ def scan(
     skipped_grace = 0
     skipped_unreadable = 0
 
-    for path in iter_session_files(root):
+    for path in iter_session_files(roots):
         try:
             mtime = os.path.getmtime(path)
         except OSError:
@@ -200,15 +259,22 @@ def scan(
         "skipped_old": skipped_old,
         "skipped_grace": skipped_grace,
         "skipped_unreadable": skipped_unreadable,
-        "root": root,
+        "roots": roots,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    scan_p = sub.add_parser("scan", help="scan Pi session JSONL for unqueued offers")
-    scan_p.add_argument("--root", required=True)
+    scan_p = sub.add_parser(
+        "scan", help="scan session JSONL (Pi/Cursor/Claude) for unqueued offers"
+    )
+    scan_p.add_argument(
+        "--root",
+        action="append",
+        required=True,
+        help="session root dir (repeatable: Pi, Cursor, Claude roots)",
+    )
     scan_p.add_argument("--now", default="")
     scan_p.add_argument("--window-hours", type=float, default=24.0)
     scan_p.add_argument("--grace-minutes", type=float, default=20.0)
@@ -216,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "scan":
         report = scan(
-            root=args.root,
+            roots=args.root,
             now=parse_now(args.now or None),
             window_hours=args.window_hours,
             grace_minutes=args.grace_minutes,
