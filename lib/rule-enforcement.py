@@ -428,6 +428,67 @@ def observe_targets(
     return out
 
 
+def close_targets(
+    report: dict[str, Any], issues: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Open mechanism issues that are ready to close (observe-to-close).
+
+    An issue is closeable when BOTH hold:
+      1. it matches an enforced covered row (issue_matches_covered), AND
+      2. it already carries the `canary-covered: <source>` marker in body or
+         comments — the persisted green report from a prior heartbeat tick.
+
+    The marker-from-a-prior-tick requirement is what makes the close
+    evidence-backed rather than manual (#362): the canary reported green on a
+    real tick, and a later observing tick closes. Same-tick comment-then-close
+    is avoided so the green report is durable before the close fires.
+
+    Issues whose rule is not `enforced` are never closed here — a queued or
+    uncovered row has no green report to close on. Caps at
+    auto_file_cap_per_tick.
+    """
+    cap = int(report.get("auto_file_cap_per_tick") or 5)
+    rows = [
+        r
+        for r in (report.get("covered_rows") or [])
+        if isinstance(r, dict) and r.get("status") == "enforced"
+    ]
+    out: list[dict[str, Any]] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        number = issue.get("number")
+        if not isinstance(number, int):
+            continue
+        body = str(issue.get("body") or "")
+        comment_bits = []
+        for comment in issue.get("comments") or []:
+            if isinstance(comment, dict):
+                comment_bits.append(str(comment.get("body") or ""))
+            else:
+                comment_bits.append(str(comment))
+        blob = body + "\n" + "\n".join(comment_bits)
+        for row in rows:
+            src = str(row.get("source") or "")
+            if not src or not issue_matches_covered(body, row):
+                continue
+            marker = f"canary-covered: {src}"
+            if marker not in blob:
+                break
+            out.append(
+                {
+                    "number": number,
+                    "id": row.get("id"),
+                    "source": src,
+                    "marker": marker,
+                }
+            )
+            break
+        if len(out) >= cap:
+            break
+    return out
+
+
 def issue_title(item: dict[str, Any]) -> str:
     src = str(item.get("source") or item.get("id") or "unknown")
     short = src
@@ -558,6 +619,20 @@ def cmd_observe_targets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_close_targets(args: argparse.Namespace) -> int:
+    with open(args.report, encoding="utf-8") as fh:
+        report = json.load(fh)
+    with open(args.issues, encoding="utf-8") as fh:
+        issues = json.load(fh)
+    if not isinstance(issues, list):
+        print("issues JSON must be an array", file=sys.stderr)
+        return 1
+    targets = close_targets(report, issues)
+    json.dump(targets, sys.stdout, indent=2, ensure_ascii=False)
+    sys.stdout.write("\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -589,6 +664,14 @@ def main(argv: list[str] | None = None) -> int:
     obs_p.add_argument("--report", required=True)
     obs_p.add_argument("--issues", required=True)
     obs_p.set_defaults(func=cmd_observe_targets)
+
+    close_p = sub.add_parser(
+        "close-targets",
+        help="open mechanism issues ready to close (canary-covered + enforced)",
+    )
+    close_p.add_argument("--report", required=True)
+    close_p.add_argument("--issues", required=True)
+    close_p.set_defaults(func=cmd_close_targets)
 
     args = parser.parse_args(argv)
     return int(args.func(args))
