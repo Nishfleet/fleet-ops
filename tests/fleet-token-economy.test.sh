@@ -4,12 +4,13 @@
 # CI drill for the 2026-08-27 token economy rebalance
 # (fleet-ops#1176). Locks the seat-cap configuration that implements the
 # rebalance from live meters:
-#   - devin is first in the prepaid alternation and capped at 4
+#   - volume prefix is first in prepaid_providers_in_order (ollama ->
+#     devin -> cline -> leftover cursor -> xai-oauth) per fleet-ops#1178
 #   - xai-oauth (SuperGrok) is the last prepaid weekly seat, cap 1,
 #     alternating grok-4.6 and grok-4.5
-#   - cursor is capped at 1, after devin, and is not a free lane
-#   - free lanes (commandcode/hetzner/opencode) are tried before prepaid,
-#     metered (minimax/straitly/...) last
+#   - cursor is capped at 1, leftover prepaid (not a free lane, not volume)
+#   - leftover free lanes (commandcode/hetzner/opencode) sit after the
+#     volume prefix; metered (minimax/straitly/...) last
 #   - grok (the legacy grok.com/CLI slug) is cap=0 with a dated reason
 #   - opencode-anthropic (Claude) is cap=0 (Nish-only)
 #
@@ -31,10 +32,10 @@ command -v jq >/dev/null || fail "jq required"
 
 jq -e . "$caps" >/dev/null || fail "seat-caps.json does not parse"
 
-# --- devin: first in prepaid order, cap 4, class prepaid-quota ------------
+# --- volume prefix first, leftover prepaid after (fleet-ops#1178) ---------
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
-[[ "$prepaid_order" == "devin cursor cline ollama xai-oauth" ]] \
-  || fail "prepaid order must be 'devin cursor cline ollama xai-oauth', got: $prepaid_order"
+[[ "$prepaid_order" == "ollama devin cline cursor xai-oauth" ]] \
+  || fail "prepaid order must be 'ollama devin cline cursor xai-oauth', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ "$devin_cap" == "4" ]] || fail "devin cap must be 4, got: $devin_cap"
@@ -42,7 +43,7 @@ devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 [[ "$devin_class" == "prepaid-quota" ]] || fail "devin class must be prepaid-quota, got: $devin_class"
 
-ok "devin first in prepaid order, cap 4, class prepaid-quota"
+ok "prepaid order is volume prefix then leftover (ollama devin cline cursor xai-oauth); devin cap 4, class prepaid-quota"
 
 # --- xai-oauth (SuperGrok): last prepaid, cap 1, weekly, alternates -------
 xai_cap=$(jq -r '.providers["xai-oauth"].cap // empty' "$caps")
@@ -71,9 +72,10 @@ fi
 ok "cursor cap 1, after devin, not a free lane"
 
 # --- free lanes are the commandcode/hetzner/opencode allowlist ------------
+# leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
 free_order=$(jq -r '.free_providers_in_order | join(" ")' "$caps")
-[[ "$free_order" == "commandcode hetzner opencode" ]] \
-  || fail "free order must be 'commandcode hetzner opencode', got: $free_order"
+[[ "$free_order" == "bai commandcode hetzner opencode" ]] \
+  || fail "free order must be 'bai commandcode hetzner opencode', got: $free_order"
 
 # prepaid and metered providers must not appear as free lanes
 for p in devin cursor cline ollama xai-oauth grok minimax straitly zenmux openrouter; do
@@ -82,7 +84,7 @@ for p in devin cursor cline ollama xai-oauth grok minimax straitly zenmux openro
   fi
 done
 
-ok "free lanes are commandcode, hetzner, opencode; paid lanes are not free"
+ok "free lanes are bai, commandcode, hetzner, opencode; paid lanes are not free"
 
 # --- grok (legacy grok.com/CLI slug) stays cap=0 and dated ----------------
 grok_cap=$(jq -r '.providers.grok.cap // empty' "$caps")
@@ -108,14 +110,16 @@ done
 
 ok "minimax and straitly are metered (last bucket)"
 
-# --- lib/seat-lib.sh enforces the order and cap map -----------------------
-grep -q 'Free first, then prepaid (alternate), then metered' "$lib" \
-  || fail "lib/seat-lib.sh must document the free -> prepaid -> metered order"
+# --- lib/seat-lib.sh enforces volume-first then leftover prepaid ----------
+grep -q 'volume front-of-ladder' "$lib" \
+  || fail "lib/seat-lib.sh must document volume front-of-ladder (#1178)"
+grep -q 'leftover prepaid' "$lib" \
+  || fail "lib/seat-lib.sh must document leftover prepaid after the volume prefix"
 grep -q 'prepaid_providers_in_order' "$lib" \
   || fail "lib/seat-lib.sh must read prepaid_providers_in_order"
 grep -q 'free_providers_in_order' "$lib" \
   || fail "lib/seat-lib.sh must read free_providers_in_order"
 
-ok "lib/seat-lib.sh enforces free -> prepaid -> metered and reads provider orders"
+ok "lib/seat-lib.sh enforces volume-first then leftover prepaid and reads provider orders"
 
-ok "token economy: devin-first, xai-oauth last prepaid, cursor cap 1, free-before-metered, grok/Claude cap 0"
+ok "token economy: volume prefix first, xai-oauth last prepaid, cursor cap 1, leftover-free before metered, grok/Claude cap 0"
