@@ -36,9 +36,19 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059) is a
+`read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, #953,
+fleet-ops#958, #972, #967, #977, #1001, #1059, #1170) is a
 real swallowed failure: it is not a probe like ls no-match or read
-offset beyond end. #972 is the same session shape as #958 (the
+offset beyond end. The EISDIR class (#1170) is the `read` tool pointed at
+a directory path instead of a file — Pi returns `EISDIR: illegal operation
+on a directory, read` with isError=True and no exit-code line, and the
+assistant walked it past with thinking-only recovery turns; it is a
+real failure, never a negative result like the #651 offset-beyond-end
+exemption. The dedicated regression test
+tests/fleet-failed-command-read-eisdir.test.sh pins the live
+fleet-ops#1170 shape (two sessions: 01a04334 reading the sessions dir,
+01a043ee reading the 0509 e2e/fixtures dir) so a future refactor that
+adds a "directory read is benign" exemption is caught. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
 the same GitHub-search-index-delay that produced #951 / #965 / #966, so
 the citation chain must carry it. #967 is the same session shape as
@@ -159,6 +169,21 @@ toolCalls did not name the failure. It is not a GraphQL transient error
 (fleet-ops#678) or a no-match probe; it is a real swallowed failure and
 must be flagged. The dedicated regression test locks it under
 tests/fleet-failed-command-gh-issue-view-body.test.sh.
+A `gh issue view <N> -R ... --json <fields>` command whose filter names
+an unknown field (e.g. `label` instead of `labels`) is not valid: `gh`
+rejects it with `Unknown JSON field: "label"` and the list of available
+fields, then exits 1 (fleet-ops#1219, session
+2026-08-27T15-14-27-082Z_01a043c9-648a-75d9-add1-a7f78fe03f68). The
+assistant issued the invalid `--json` filter alongside a valid
+`gh issue view --json body` sibling in the same turn; the next turn was
+a thinking block plus follow-up toolCalls with no user-facing text
+naming the failure. Distinct from #1055 (`unknown flag: --body`, an
+invalid flag) and #1003 (`KeyError: 'comments'` from python parsing
+`--json` output that omitted a field the probe then read — gh itself
+succeeded). It is not a GraphQL transient error (fleet-ops#678) or a
+no-match probe; it is a real swallowed failure and must be flagged. The
+dedicated regression test locks it under
+tests/fleet-failed-command-gh-issue-view-unknown-field.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
