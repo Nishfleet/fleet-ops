@@ -193,6 +193,24 @@ rc=$(run_bin 0)
 ok "grep exit 1 is treated as no-match, not a swallowed failure"
 rm -f "$sessions/grep-nomatch.jsonl"
 
+# --- 4b. ls no-match (exit 2) is a probe, not a swallowed failure -----------
+write_session "ls-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"cd /tmp && echo \"---\"; ls nonexistent-glob-* 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls","toolName":"bash","isError":true,"content":[{"type":"text","text":"---\n\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No matching files. Continuing."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "ls no-match exit 2 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "ls no-match (exit 2) is treated as a probe, not a swallowed failure"
+rm -f "$sessions/ls-nomatch.jsonl"
+
+# --- 4c. which no-match (exit 1) is a probe, not a swallowed failure --------
+write_session "which-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_which","name":"bash","arguments":{"command":"which nonexistent-binary 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_which","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Binary not in PATH. Need to install or use full path."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "which no-match exit 1 should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "which no-match (exit 1) is treated as a probe, not a swallowed failure"
+rm -f "$sessions/which-nomatch.jsonl"
+
 # --- 5. origin case: 404 walked past ----------------------------------------
 write_session "origin-404" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_gh","name":"bash","arguments":{"command":"gh api -X PATCH /repos/Nishfleet/0509/branches/main/protection"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_gh","toolName":"bash","isError":true,"content":[{"type":"text","text":"Not Found\n\nCommand exited with code 1"}]}}
@@ -337,4 +355,4 @@ jq -e '.rules[] | select(.id == "sr-failed-command-flagged" and .status == "enfo
   || fail "sr-failed-command-flagged must be status=enforced in the matrix"
 ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, matrix enforced"
 
-echo "OK: fleet-failed-command-flagged: rc canary, grep exemption, auto-file dedupe"
+echo "OK: fleet-failed-command-flagged: rc canary, grep/ls/which no-match exemption, auto-file dedupe"
