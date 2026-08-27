@@ -33,7 +33,7 @@ grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null | while IFS= re
   # next morning. Nish got paged for nothing. So: if this entry names provider
   # seats, re-probe them live. All healthy => suppress the text, record it as
   # revoked. Any seat still down => deliver, the wall is real.
-  seats=$(printf '%s' "$body" | grep -oE '\b(devin|minimax|openrouter|cursor|deepseek|opencode-go)/[A-Za-z0-9._-]+' | sort -u)
+  seats=$(printf '%s' "$body" | grep -oE '\b(devin|minimax|openrouter|cursor|deepseek|opencode-go)/[A-Za-z0-9._-]+' | sort -u || true)
   if [ -n "$seats" ]; then
     all_ok=1
     for seat in $seats; do
