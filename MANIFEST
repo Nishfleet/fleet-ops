@@ -172,6 +172,8 @@ prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
 # evaluator — no dispatcher. Blind audit merges recurrence hits before filing.
 bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-gate
 lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
+bin/fleet-same-repo-closes-gate /home/nish/.local/bin/fleet-same-repo-closes-gate
+lib/same-repo-closes-gate.py /home/nish/.local/lib/pi-packet/same-repo-closes-gate.py
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
