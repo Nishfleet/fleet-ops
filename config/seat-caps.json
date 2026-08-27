@@ -80,6 +80,15 @@
       "cap": 2,
       "class": "metered"
     },
+    "mergegateway": {
+      "cap": 2,
+      "class": "metered",
+      "_class_detail": "credits-free, expires-when-drained",
+      "_note": "Merge Gateway (mg_ key) — OpenAI-compat router at https://api-gateway.merge.dev/v1, bearer auth, 50+ model catalog (anthropic, deepseek, google, minimax, mistral, bytedance, etc.). $10 free-credit allowance on signup; no API exposes credit balance or expiry (tried /v1/account, /v1/dashboard, /v1/credits, /v1/billing, /v1/usage, /v1/me, /v1/key, /v1/balance — all 404). Treated as metered (it draws) but flagged credits-free because the allowance is finite and replenishes do not occur: once exhausted, the seat retires via expires-when-drained rather than the free-402 daily re-probe loop (fleet-ops#42 follow-up). Ladder slot: after unlimited-free (free_providers_in_order), before paid (prepaid_providers_in_order) — see credits_providers_in_order. Initial cap 2 (per packet: '1-2 measured cap to supplement rather than double-wire'). Audition 2026-08-27 23:10Z: chat.completions HTTP 200 on deepseek-v4-flash and anthropic/claude-sonnet-5; usage.cost returns per-request in USD; total spend after 6 test calls: ~$0.0021. Never-double-wire rule verified: spend indicator moved from $0 to non-zero within the audition window. Audit trial: models.json has 4 models wired (deepseek-v4-flash, anthropic/claude-sonnet-5, minimax/minimax-m3, google/gemini-3.7-flash); allowlist only the strong default here so the cap map stays narrow.",
+      "models": {
+        "anthropic/claude-sonnet-5": 2
+      }
+    },
     "openrouter": {
       "cap": 2,
       "class": "metered"
@@ -143,6 +152,10 @@
     "hetzner",
     "opencode"
   ],
+  "credits_providers_in_order": [
+    "mergegateway"
+  ],
+  "_comment_credits_ladder": "2026-08-27: New ladder slot for credit-bounded free seats (e.g. Merge Gateway $10 free credits). Sits between unlimited-free (free_providers_in_order) and paid (prepaid_providers_in_order). Per the packet directive 'in the ladder after the unlimited-free tier, before paid'. Each entry is drained deliberately (expiry-first) up to a measured cap (1-2), and the expires-when-drained marker tells seat-lib to retire the seat cleanly when credits truly exhaust, instead of looping the free-402 daily re-probe. Currently mergegateway is the only entry; add others here when a $X-credit signup lands.",
   "prepaid_providers_in_order": [
     "devin",
     "cursor",
@@ -152,6 +165,6 @@
   "_comment_cursor": "cursor provider cap=1 (2026-08-25): cursor flakes with spawnSync ETIMEDOUT on long-running jobs; short probes are fine. The provider cap holds the fleet to one cursor worker at a time, and the code-level capable-provider whitelist in seat-lib.sh keeps cursor out of the heavy-task rotation. Raise to 2 if cursor stays clean on long jobs for a week.",
   "_comment_devin": "devin provider cap=4 (2026-08-25): originally 0 after a spawn-phase outage invisible to seat-health (e927da2). Raised later; kept at 4. 2026-08-27 empty-run fault (tools=0, exit 0) is retryable with the 15min quota_bench_default_s cooldown — fleet-ops#902 — not a cap-0 incident. Meter that day: 84% daily / 73% weekly remaining; glm-5-2 completed real packets the same day. Do not drop to 0 for #902.",
   "_comment_seat_roster": "Nish 2026-08-25: ALL seats available everywhere so work never stops. Ten seats probed live and answering: devin, cursor, cline, ollama (Ollama Cloud), minimax, commandcode, openrouter, grok (SuperGrok via grok-cli), zenmux, hetzner. zenmux and hetzner carry FREE lanes as well as credits, and openrouter has free lanes alongside credits - none of them are metered-only, so none is capped 0. Only providers with no working credential stay at 0.",
-  "_comment_credits": "zenmux and openrouter both carry FREE lanes AND paid credits (Nish, 2026-08-25). class=metered records that, but seat-lib.sh computes class_of() and then ignores it - pick_seat buckets by literal provider name, so both currently sit in the FREE bucket and their credits can be spent as if free. free_providers_in_order is the only working control until that is fixed (fleet-ops#42): free lanes first, credit-bearing seats last.",
+  "_comment_credits": "zenmux and openrouter both carry FREE lanes AND paid credits (Nish, 2026-08-25). class=metered records that, but seat-lib.sh computes class_of() and then ignores it - pick_seat buckets by literal provider name, so both currently sit in the FREE bucket and their credits can be spent as if free. free_providers_in_order is the only working control until that is fixed (fleet-ops#42): free lanes first, credit-bearing seats last.\n\n2026-08-27 (mergegateway-seat addendum): The new mergegateway provider is also a credit-bounded seat ($10 free-credit allowance, no API exposes balance or expiry). It uses class=metered so existing code keeps working, and carries _class_detail='credits-free, expires-when-drained' so the upcoming auto-retry cooldown policy (still TBD in seat-lib.sh) can retire the seat cleanly when the allowance is gone, instead of looping the free-402 daily re-probe. Listed in credits_providers_in_order (between unlimited-free and paid) so the new cooldown policy can drain it deliberately per expiry-first without it being mistaken for an unlimited-free lane.",
   "_comment_grok": "grok cap=0 (2026-08-26): SuperGrok's subscription covers the grok.com app and the grok CLI, NOT the x.ai API. pi reaching api.x.ai/v1 with the CLI's own OAuth token returns 403 'You have run out of credits or need a Grok subscription'. pi also has NO registered grok-cli adapter ('No API provider registered for api: grok-cli'), so the CLI route is not reachable from pi either. Raising this cap requires either x.ai API credits (money - Nish only) or a pi custom-provider extension wrapping the grok CLI. Tracked in fleet-ops#41."
 }
