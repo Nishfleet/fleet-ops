@@ -808,8 +808,12 @@ awk() {
 export -f awk
 
 # Shim systemctl: the probe calls `systemctl --user is-active UNIT` and
-# `systemctl --user show UNIT --property=ActiveEnterTimestampMonotonic
-# --value`. wedged is 3600s into activating, fresh 60s, dead failed.
+# `systemctl --user show UNIT --property=ExecMainStartTimestampMonotonic
+# --value` (fleet-ops#993: ActiveEnterTimestampMonotonic is 0 for every
+# activating oneshot, so the wedge age is read from ExecMainStart).
+# wedged is 3600s into running, fresh 60s, dead failed, trap 0/3600s:
+# ActiveEnter-style 0 (the pre-#993 bug) but a real ExecMainStart of 3600s
+# -> the #993 regression must NOT be reaped.
 systemctl() {
   [[ "$1" == "--user" ]] && shift
   case "$1" in
@@ -817,6 +821,7 @@ systemctl() {
       case "$2" in
         pi-issue@wedged.service) echo activating ;;
         pi-issue@fresh.service) echo activating ;;
+        pi-issue@trap.service) echo activating ;;
         pi-issue@dead.service) echo failed ;;
         *) echo inactive ;;
       esac ;;
@@ -825,6 +830,7 @@ systemctl() {
       case "$2" in
         pi-issue@wedged.service) echo "$(( (now_s - 3600) * 1000000 ))" ;;
         pi-issue@fresh.service) echo "$(( (now_s - 60) * 1000000 ))" ;;
+        pi-issue@trap.service) echo "$(( (now_s - 1200) * 1000000 ))" ;;
         *) echo 0 ;;
       esac ;;
   esac
@@ -843,6 +849,24 @@ echo "$live" | grep -q 'pi-issue-wedged.json' \
 grep -q "stuck activating" "$PI_PACKET_STATE/watch.log" \
   || fail "wedge probe: must log the stuck-activating reap"
 ok "wedge-age probe: stuck-activating reaped, fresh-activating kept"
+
+# fleet-ops#993 regression: a live activating oneshot has
+# ActiveEnterTimestampMonotonic=0 (systemd only stamps it on start
+# completion) while ExecMainStartTimestampMonotonic is nonzero. The
+# pre-fix probe read ActiveEnter=0 as age = uptime - 0 = 1.4M s and
+# reaped EVERY live seat. The trap unit simulates exactly that: 1200s
+# ExecMainStart (a legitimately long 20-min run, under the 3300s wedge
+# bound), which read as 0 under the old probe. It must stay live.
+# shellcheck disable=SC2034
+jq -n '{unit:"pi-issue-trap"}' > "$PI_PACKET_STATE/active-seats/pi-issue-trap.json"
+set +e
+live=$(bash -c 'source "$1"; _seat_live_registry_files' _ "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "#993 regression: _seat_live_registry_files failed rc=$rc"
+echo "$live" | grep -q 'pi-issue-trap.json' \
+  || fail "#993 regression: ExecMainStart-set activating unit must stay live, got: $live"
+ok "#993 regression: ActiveEnter=0 + ExecMainStart set -> live, not reaped"
 
 # Later pick_seat cases are offline again. The stubbed systemctl above would
 # also isolate them, but the default must stay 0 so a future edit that drops
