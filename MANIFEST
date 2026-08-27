@@ -300,6 +300,12 @@ bin/fleet-exec-review-canary /home/nish/.local/bin/fleet-exec-review-canary
 # under 12h. Heartbeat-tier1 block 27.
 lib/work-supply.sh /home/nish/.local/lib/pi-packet/work-supply.sh
 bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
+# fleet-ops#544: VPS→Mac Tailscale grants lockdown canary (led-tailscale).
+# Fail-loud if compiled PacketFilter (`tailscale debug netmap`) allows this
+# VPS as src toward the Mac. Heartbeat-tier1 block 28.
+bin/fleet-tailscale-acl-canary /home/nish/.local/bin/fleet-tailscale-acl-canary
+lib/tailscale-acl-lockdown.py /home/nish/.local/bin/tailscale-acl-lockdown.py
+config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

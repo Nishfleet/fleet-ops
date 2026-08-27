@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# fleet-tailscale-acl-canary — VPS→Mac Tailscale lockdown (fleet-ops#544).
+#
+# Ledger 2026-08-24 Tailscale: Server→Mac tailnet traffic is locked down
+# via ACL/grants. The 48h watch closed; live policy already contains the
+# lockdown in grants syntax. Pasting acl-draft.json would LOOSEN it.
+#
+# Official Tailscale docs (policy file + route-injection): grants/ACLs are
+# deny-by-default; the compiled packet filter is PacketFilter in
+# `tailscale debug netmap`. `tailscale ping --help` says ping does NOT
+# inject into TUN, so it does not test this ACL. fleet-resilience-drill
+# access_policy checks tailscaled Restart=always and public SSH, not the
+# compiled filter.
+#
+# This canary is the class prevention: every heartbeat tick, read the
+# live netmap (sudo -n tailscale debug netmap) and fail loud if any
+# PacketFilter rule has this VPS as src toward the Mac as dst.
+# Missing netmap / missing Mac peer / not running on the VPS = watcher
+# broken (fail closed). Auto-files, deduped by marker.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 28.
+#
+# Environment seams (tests):
+#   FLEET_TAILSCALE_NETMAP     fixture netmap JSON (skips sudo tailscale)
+#   FLEET_TAILSCALE_ACL_CONFIG lockdown needle config
+#   FLEET_TAILSCALE_ACL_LIB    lib/tailscale-acl-lockdown.py
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_TAILSCALE_ACL_REPO   default Nishfleet/fleet-ops
+#   FLEET_TAILSCALE_ACL_FILE   1 (default) file issues; 0 skip gh
+#   GH                         gh binary (tests stub this)
+#   TAILSCALE_NETMAP_CMD       override for the live fetch
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_dir=$(dirname "$_canon_script")
+_canon_repo=$(cd "$_canon_dir/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+CONFIG="${FLEET_TAILSCALE_ACL_CONFIG:-$FLEET_OPS_REPO/config/tailscale-acl-lockdown.json}"
+if [[ ! -f "$CONFIG" ]]; then
+    CONFIG="${HOME}/.local/state/pi-packet/tailscale-acl-lockdown.json"
+fi
+
+LIB="${FLEET_TAILSCALE_ACL_LIB:-$FLEET_OPS_REPO/lib/tailscale-acl-lockdown.py}"
+if [[ ! -f "$LIB" ]]; then
+    LIB="${_canon_dir}/tailscale-acl-lockdown.py"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_TAILSCALE_ACL_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_TAILSCALE_ACL_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-tailscale-acl-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local kind="$1" title="$2" body="$3"
+    local marker="tailscale-acl-canary: ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_TAILSCALE_ACL_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+scratch=$(mktemp -d -t tailscale-acl-canary.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+if [[ ! -f "$CONFIG" ]]; then
+    loud "TAILSCALE-ACL-WATCHER-BROKEN" "config missing: $CONFIG"
+    file_finding "watcher-broken" \
+        "Tailscale ACL lockdown canary cannot run (led-tailscale)" \
+        "config/tailscale-acl-lockdown.json is missing. Without it the VPS→Mac grants lockdown cannot be judged.
+
+signal: rule-enforcement/led-tailscale"
+    exit 1
+fi
+
+if [[ ! -f "$LIB" ]]; then
+    loud "TAILSCALE-ACL-WATCHER-BROKEN" "verifier missing: $LIB"
+    file_finding "watcher-broken" \
+        "Tailscale ACL lockdown verifier missing (led-tailscale)" \
+        "lib/tailscale-acl-lockdown.py is missing. The compiled PacketFilter cannot be checked.
+
+signal: rule-enforcement/led-tailscale"
+    exit 1
+fi
+
+netmap="$scratch/netmap.json"
+if [[ -n "${FLEET_TAILSCALE_NETMAP:-}" ]]; then
+    if [[ ! -f "$FLEET_TAILSCALE_NETMAP" ]]; then
+        loud "TAILSCALE-ACL-WATCHER-BROKEN" "netmap fixture missing: $FLEET_TAILSCALE_NETMAP"
+        file_finding "watcher-broken" \
+            "Tailscale ACL netmap fixture missing (led-tailscale)" \
+            "FLEET_TAILSCALE_NETMAP was set but the file is missing.
+
+signal: rule-enforcement/led-tailscale"
+        exit 1
+    fi
+    cp "$FLEET_TAILSCALE_NETMAP" "$netmap"
+else
+    # Do not log netmap JSON: it carries node keys.
+    set +e
+    if [[ -n "${TAILSCALE_NETMAP_CMD:-}" ]]; then
+        bash -c "$TAILSCALE_NETMAP_CMD" >"$netmap" 2>"$scratch/netmap.err"
+        fetch_rc=$?
+    else
+        # Scratch is ours; sudo wraps only tailscale (redirect must stay user-owned).
+        # shellcheck disable=SC2024
+        sudo -n tailscale debug netmap >"$netmap" 2>"$scratch/netmap.err"
+        fetch_rc=$?
+    fi
+    set -e
+    if [[ "$fetch_rc" -ne 0 ]] || [[ ! -s "$netmap" ]]; then
+        loud "TAILSCALE-ACL-WATCHER-BROKEN" "tailscale debug netmap failed (rc=$fetch_rc)"
+        file_finding "watcher-broken" \
+            "Tailscale ACL lockdown canary cannot read netmap (led-tailscale)" \
+            "\`tailscale debug netmap\` failed (rc=$fetch_rc). The compiled PacketFilter is the only honest read of the grants lockdown; a dead watch must not read as clean.
+
+signal: rule-enforcement/led-tailscale"
+        exit 1
+    fi
+fi
+
+set +e
+verify_out=$(python3 "$LIB" verify --netmap "$netmap" --config "$CONFIG" 2>&1)
+verify_rc=$?
+set -e
+
+if [[ "$verify_rc" -eq 0 ]]; then
+    {
+        printf '\n[%s] [TAILSCALE-ACL-OK] compiled PacketFilter has no VPS→Mac allow\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >> "$TRIAGE" 2>/dev/null || true
+    log "OK: compiled PacketFilter has no VPS→Mac allow"
+    exit 0
+fi
+
+if grep -q 'LOCKDOWN-BROKEN' <<<"$verify_out"; then
+    loud "TAILSCALE-ACL-LOCKDOWN-BROKEN" "$verify_out"
+    file_finding "lockdown-broken" \
+        "VPS→Mac Tailscale PacketFilter allow detected (led-tailscale)" \
+        "The compiled Tailscale PacketFilter on this VPS now allows this node as src toward the Mac. Ledger 2026-08-24 said that grant is denied. Do not paste acl-draft.json; restore the grants lockdown.
+
+${verify_out}
+
+signal: rule-enforcement/led-tailscale"
+    exit 1
+fi
+
+loud "TAILSCALE-ACL-WATCHER-BROKEN" "$verify_out"
+file_finding "watcher-broken" \
+    "Tailscale ACL lockdown canary cannot judge the filter (led-tailscale)" \
+    "The verifier could not prove the VPS→Mac deny. A dead watch must not read as clean.
+
+${verify_out}
+
+signal: rule-enforcement/led-tailscale"
+exit 1

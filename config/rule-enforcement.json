@@ -564,10 +564,9 @@
     {
       "id": "led-tailscale",
       "source": "decisions-ledger.md: 2026-08-24 | Tailscale",
-      "mechanism": "ACL lockdown is date-gated on Nish pasting acl-draft.json; 48h watch closed 2026-08-26 23:50 IST",
-      "proof": "Nishfleet/fleet-ops#544",
-      "status": "queued(#544)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat canary reads the compiled Tailscale PacketFilter (`tailscale debug netmap`) and fails loud if this VPS is a src toward the Mac. Live grants already lockdown; pasting acl-draft.json would loosen. Auto-files, deduped by marker.",
+      "proof": "bin/fleet-tailscale-acl-canary; lib/tailscale-acl-lockdown.py; tests/fleet-tailscale-acl-canary.test.sh; fleet-heartbeat-tier1 block 28; fleet-ops#544",
+      "status": "enforced"
     },
     {
       "id": "led-attestation-breach",

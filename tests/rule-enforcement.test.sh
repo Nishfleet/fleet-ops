@@ -94,6 +94,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | continuous research" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report Tailscale ACL lockdown as enforced covered_rows (fleet-ops#544): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -107,6 +109,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
+  ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -717,7 +720,7 @@ ok "rule-enforcement: vault knowledge-format drill"
 bash "$here/guard-shared-file-collision.test.sh" || fail "shared-file collision guard drill failed"
 ok "rule-enforcement: shared-file collision guard drill"
 
-# fleet-ops#540: 24h/12h work-supply drain canary. Nested host so the worker
+# fleet-ops#540: 24h/12h work-supply drain trigger. Nested host so the worker
 # token does not need to edit .github/workflows/**.
 bash "$here/fleet-work-supply-canary.test.sh" || fail "work-supply canary drill failed"
 ok "rule-enforcement: work-supply 24h/12h drain canary drill"
@@ -732,4 +735,9 @@ ok "rule-enforcement: opencode/commandcode MiniMax M3 catalog canary drill"
 bash "$here/quality-research-weekly.test.sh" || fail "quality-research-weekly drill failed"
 ok "rule-enforcement: quality-research-weekly drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, and quality-research-weekly drills"
+# fleet-ops#544: VPS→Mac Tailscale lockdown canary. Same nested-CI host so
+# this token does not need a workflow edit.
+bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"
+ok "rule-enforcement: Tailscale ACL lockdown canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, and tailscale-acl drills"
