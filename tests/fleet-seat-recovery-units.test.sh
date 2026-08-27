@@ -109,7 +109,17 @@ fi
 # default limit (5/10s), and assert the path unit stays active (waiting) —
 # i.e. the storm no longer wedges it. Skipped outside the VPS (no user systemd
 # session) so CI hosted runners don't false-positive.
+#
+# fleet-ops#622: the original gate only checked for an XDG_RUNTIME_DIR socket
+# and a systemctl binary. GitHub-hosted runners (Ubuntu 24.04 image) provide
+# BOTH, and HOME has no `~/.config/systemd/user/` directory by default — so
+# the test's `sed > "$drill_svc"` opened a non-existent path and red'd P14 on
+# a runner that has no user-systemd-managed services to actually wedge.
+# Gate on the existence of the per-user unit dir (the VPS has it; CI does
+# not) so the drill only runs where it can actually exercise the real
+# path-watcher storm.
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
+   && [[ -d "$HOME/.config/systemd/user" ]] \
    && command -v systemctl >/dev/null 2>&1; then
   drill_unit="fleet-seat-recovery-drill"
   drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
