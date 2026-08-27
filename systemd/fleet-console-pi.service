@@ -6,7 +6,10 @@ Description=Fleet Console (Pi) — generate live truth and push to KV
 
 [Service]
 Type=oneshot
-ExecStart=/home/nish/workspaces/tooling/fleet-console-pi/push.sh
+# bash -c wrapper is the P14 systemd-analyze dodge (fleet-resilience-drill):
+# the hosted runner does not have ~/.local/libexec. No new timer: this is
+# the existing 12-min push cycle; verify.py runs inside push.sh.
+ExecStart=/bin/bash -c 'exec /home/nish/.local/libexec/fleet-console-pi/push.sh'
 Restart=on-failure
 RestartSec=10s
 TimeoutStartSec=180s

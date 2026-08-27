@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+libexec/fleet-console-pi/data.json
+libexec/fleet-console-pi/.pushed-*.sha

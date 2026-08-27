@@ -267,9 +267,18 @@ fi
 mid_session_bench=0
 if [[ -n "$last_seat" ]]; then
     # shellcheck disable=SC1091
-    source "$HOME/.local/lib/pi-packet/seat-lib.sh" 2>/dev/null || true
-    if ! seat_usable "${last_seat%%/*}" "${last_seat#*/}" 2>/dev/null; then
-        mid_session_bench=1
+    # Source the repo copy when present so CI does not leak the live VPS
+    # seat ledger (a missing seat_usable there looks like "benched" and
+    # keeps tried-seats, which is the opposite of the recover case).
+    _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    if [[ -f "$_seat_lib" ]]; then
+        # shellcheck disable=SC1090
+        source "$_seat_lib" 2>/dev/null || true
+    fi
+    if declare -F seat_usable >/dev/null 2>&1; then
+        if ! seat_usable "${last_seat%%/*}" "${last_seat#*/}" 2>/dev/null; then
+            mid_session_bench=1
+        fi
     fi
 fi
 

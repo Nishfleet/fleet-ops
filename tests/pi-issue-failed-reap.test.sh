@@ -123,26 +123,31 @@ gh_bin="$fake/gh-bin"
 mkdir -p "$gh_bin"
 cat >"$gh_bin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
+# The reaper loads issue state + open PRs via REST `gh api` (fleet-ops#1001),
+# not GraphQL `gh issue view` / `gh pr list`.
 case "$1" in
+  api)
+    path="${2:-}"
+    if [[ "$path" == */issues/* ]]; then
+      printf '%s\n' '{"state":"open","labels":[{"name":"agent-in-progress"}]}'
+      exit 0
+    fi
+    if [[ "$path" == */pulls* ]]; then
+      printf '%s\n' '[]'
+      exit 0
+    fi
+    if [[ "$path" == */git/refs/heads/* ]]; then
+      # Branch does not exist — skip delete, continue to label flip + reset.
+      exit 1
+    fi
+    echo "unexpected gh api $*" >&2
+    exit 1
+    ;;
   issue)
     case "$2" in
-      view)
-        printf '%s\n' '{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}'
-        exit 0
-        ;;
-      edit|comment)
-        exit 0
-        ;;
+      edit|comment) exit 0 ;;
       *) echo "unexpected gh issue $*" >&2; exit 1 ;;
     esac
-    ;;
-  pr)
-    echo 0
-    exit 0
-    ;;
-  api)
-    # Branch does not exist — skip delete, continue to label flip + reset.
-    exit 1
     ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac
@@ -151,9 +156,12 @@ chmod +x "$gh_bin/gh"
 
 : >"$triage"
 write_fake inactive 0
+# Point SEAT_LIB at a missing path so the reap cannot leak the live VPS
+# seat ledger (a missing seat_usable looks like "benched" and keeps
+# tried-seats — the opposite of this recover case).
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
-    PI_PACKET_STATE="$state" "$bin" fleet-ops-381 2>&1)"
+    PI_PACKET_STATE="$state" SEAT_LIB="$fake/no-seat-lib.sh" "$bin" fleet-ops-381 2>&1)"
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "claim-release reap must exit 0, got $rc ($out)"
@@ -172,30 +180,30 @@ write_gh_fake() {
     cat >"$gh_bin/gh" <<FAKE_GH
 #!/usr/bin/env bash
 case "\$1" in
-  issue)
-    case "\$2" in
-      view)
-        printf '%s\n' '$state_json'
-        exit 0
-        ;;
-      edit|comment)
-        exit 0
-        ;;
-      *) echo "unexpected gh issue \$*" >&2; exit 1 ;;
-    esac
-    ;;
-  pr)
-    echo 0
-    exit 0
-    ;;
   api)
-    # GET refs/heads/<branch>: decide existence by \$3
-    if [[ "\${1:-GET}" == "GET" ]]; then
+    path="\${2:-}"
+    if [[ "\$path" == */issues/* ]]; then
+      printf '%s\n' '$state_json'
+      exit 0
+    fi
+    if [[ "\$path" == */pulls* ]]; then
+      printf '%s\n' '[]'
+      exit 0
+    fi
+    if [[ "\$path" == */git/refs/heads/* ]]; then
+      if [[ "\$*" == *-X*DELETE* ]]; then
+        exit 0
+      fi
       exit ${branch_delete}
     fi
-    # DELETE: succeed on a live delete, no-op otherwise (the script treats
-    # exit 0 as a successful delete).
-    exit 0
+    echo "unexpected gh api \$*" >&2
+    exit 1
+    ;;
+  issue)
+    case "\$2" in
+      edit|comment) exit 0 ;;
+      *) echo "unexpected gh issue \$*" >&2; exit 1 ;;
+    esac
     ;;
   *) echo "unexpected gh \$*" >&2; exit 1 ;;
 esac
