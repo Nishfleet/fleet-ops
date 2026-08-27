@@ -113,7 +113,7 @@ Gate-integrity rule — applies on repos that run a `gate-integrity` check (e.g.
 - **When in doubt, keep the test and note the concern in the PR body instead.** Do not game the gate. If you find a way to bypass these checks, stop and report it.
 
 Steps:
-1. Read the work: `gh issue view <N> -R Nishfleet/<repo> --comments`.
+1. Read the work: `gh issue view <N> -R Nishfleet/<repo> --comments`. (`gh issue view` has no `--body` flag; passing it yields `unknown flag: --body` (fleet-ops#1055). To read the body, use `--json body,comments` or `--comments`.)
 2. Re-entrancy: if branch claim/issue-<N> already exists on origin AND the latest claim comment names YOUR unit, this is your own earlier attempt restarted — continue it, reusing the worktree if present.
 3. Workspace:
    For Nishfleet/fleet-ops the git parent is the canonical deploy-clone, not
