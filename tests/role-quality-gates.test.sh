@@ -81,6 +81,7 @@ required = (
     "vault-knowledge-format",
     "vault-conflict",
     "fleet-metrics-export",
+    "fleet-aeo",
 )
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
@@ -94,13 +95,14 @@ leaked = [
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
         "fleet-metrics-export.service",
+        "fleet-aeo-probe.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export (fleet-ops#1180)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, fleet-aeo-probe (fleet-ops#1180/#1236)"
 
 # fleet-ops#709: behaviour-locked. Build a scratch repo with a real
 # vault-knowledge-format.service on disk and prove the audit emits no

@@ -821,6 +821,11 @@ ok "rule-enforcement: quality-research-weekly drill"
 bash "$here/weekly-fleet-review.test.sh" || fail "weekly-fleet-review drill failed"
 ok "rule-enforcement: weekly-fleet-review drill"
 
+# fleet-ops#1236: weekly AEO visibility probe. Nested host so this token
+# does not need a workflow edit.
+bash "$here/aeo-probe.test.sh" || fail "aeo-probe drill failed"
+ok "rule-enforcement: aeo-probe drill"
+
 # fleet-ops#544: VPS→Mac Tailscale lockdown canary. Same nested-CI host so
 # this token does not need a workflow edit.
 bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"
@@ -843,4 +848,4 @@ ok "rule-enforcement: paid-flash canary drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, and volume-lane-order drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, and aeo-probe drills"

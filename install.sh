@@ -480,6 +480,13 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now fleet-weekly-fleet-review.timer
     fi
   fi
+  # fleet-ops#1236: weekly AEO visibility probe — Sun 03:30 IST, before WFR.
+  # Same install-sh enable as #541 / #1146 (MANIFEST [Install] is not enough).
+  if [ -f "$here/systemd/fleet-aeo-probe.timer" ]; then
+    if ! is_unit_enabled fleet-aeo-probe.timer; then
+      "$SYSTEMCTL" --user enable --now fleet-aeo-probe.timer
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.
