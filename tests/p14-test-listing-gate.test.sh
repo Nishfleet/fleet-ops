@@ -126,6 +126,11 @@ done
 # open because neither fix PR included "Closes #824"; this comment
 # plus the closing PR is the receipt.
 #
+# fleet-ops#831 was filed on 2026-08-27T04:45:45Z as a duplicate of
+# #824 (same FAIL class, same test) and never independently fixed; it
+# closed via this PR (no new code, the host line and named pin above
+# already do the work). #824 provenance was re-anchored in PR #924.
+#
 # class-prevention: the named FAIL is the loudest signal; a future
 # worker who sees "1 test file(s) are neither ..." and parks the
 # test on known_orphans to silence the message would now also fail
