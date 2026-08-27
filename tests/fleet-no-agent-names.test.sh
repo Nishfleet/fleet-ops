@@ -190,4 +190,92 @@ ok "D1: bad PR body with clean commits is rejected"
 
 cd "$here"
 
+# ============================================================================
+# Phase E: origin/main..HEAD (asymmetric) vs origin/main...HEAD (symmetric)
+# ============================================================================
+# fleet-ops#944: a worker ran
+#   fleet-no-agent-names-check --pr-body <body> --commit-range origin/main...HEAD
+# `git log` with `...` is the SYMMETRIC DIFFERENCE: it lists commits in
+# HEAD not in origin/main AND commits in origin/main not in HEAD. When
+# origin/main has advanced with other PRs (each carrying legitimate
+# Co-Authored-By trailers), the symmetric difference pulls those
+# unrelated commits into the scan, producing a false REJECT on commits
+# the worker never wrote. The correct range for "my PR's commits" is
+# `origin/main..HEAD` (asymmetric: commits in HEAD not in origin/main).
+#
+# This test locks the contrast so a future worker.md that reverts to `...`
+# is caught by CI, and so the check's own test suite proves the distinction.
+
+git_repo3="$scratch/repo3"
+mkdir -p "$git_repo3"
+cd "$git_repo3"
+git init -q -b main
+git config user.email "agent@example.com"
+git config user.name "Test Agent"
+printf 'initial\n' >file3
+git add file3
+git commit -q -m "initial"
+
+# Worker's own commit — clean, no attribution.
+git checkout -q -b feature
+printf 'change\n' >>file3
+git add file3
+git commit -q -m "feat: worker cleanup
+
+No attribution here."
+
+# Simulate origin/main advancing with a prior PR that shipped with a
+# Co-Authored-By trailer (legitimate — that was another worker's PR).
+# The worker's branch does NOT contain this commit.
+git checkout -q main
+printf 'remote\n' >>file3
+git add file3
+commit_args="feat: remote PR merged to main
+
+Co-Authored-By: nishfleet-worker[bot] <bot@example.com>"
+git -c "user.email=agent@example.com" -c "user.name=Test Agent" \
+  commit -q -F - <<<"$commit_args"
+
+# --- E1. `main...feature` (symmetric) is a FALSE POSITIVE on diverged main --
+# The symmetric difference includes the main commit (which has a
+# Co-Authored-By trailer from a prior PR). The check REJECTs — but that
+# commit was not written by the current worker, so this is a false alarm.
+# This reproduces the #944 incident: the worker got a REJECT on commits
+# it did not author.
+set +e
+out=$("$bin" --pr-body "$scratch/body.md" --commit-range main...feature 2>&1)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "symmetric diff should REJECT (got rc=$rc out=$out) — the main commit's trailer leaks in"
+[[ "$out" == *"Co-Authored-By"* ]] || fail "symmetric diff must surface the unrelated main commit's trailer"
+ok "E1: origin/main...HEAD (symmetric) is a false positive when main diverged (#944 reproduced)"
+
+# --- E2. `main..feature` (asymmetric) checks only the worker's own commits --
+# The asymmetric range lists only commits in feature not in main — i.e.,
+# the worker's own commit, which is clean. The check passes. This is the
+# correct range worker.md now instructs.
+set +e
+out=$("$bin" --pr-body "$scratch/body.md" --commit-range main..feature 2>&1)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "asymmetric diff should pass (got rc=$rc out=$out) — the worker's own commit is clean"
+ok "E2: origin/main..HEAD (asymmetric) checks only the worker's own commits, no false positive (#944 fix verified)"
+
+# --- E3. contrast: worker's own commit with a trailer must still REJECT ----
+# Proves the `..` fix does not suppress real attribution in the worker's
+# own commits — only unrelated main commits are excluded.
+git checkout -q feature
+git -c "user.email=agent@example.com" -c "user.name=Test Agent" commit -q \
+  --amend -m "feat: worker cleanup
+
+Co-Authored-By: claude <claude@example.com>"
+set +e
+out=$("$bin" --pr-body "$scratch/body.md" --commit-range main..feature 2>&1)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "asymmetric diff must REJECT when worker's own commit has a trailer (rc=$rc out=$out)"
+ok "E3: origin/main..HEAD still catches the worker's own Co-Authored-By trailer (no suppression of real hits)"
+
+cd "$here"
+
 echo "all phases passed"

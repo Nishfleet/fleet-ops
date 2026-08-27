@@ -81,7 +81,7 @@ exists is a failed run (fleet-ops#534).
 Agent names are forbidden on Nish's work. No `Co-Authored-By` trailers, no
 "Generated with" footers, and no agent names in the PR body or issue comments
 (fleet-ops#519). Run
-`bin/fleet-no-agent-names-check --pr-body <pr-body-file> --commit-range origin/main...HEAD`
+`bin/fleet-no-agent-names-check --pr-body <pr-body-file> --commit-range origin/main..HEAD`
 before opening the PR and fix any REJECT it reports.
 
 Fleet-wipe lessons (fleet-ops#533): never `pgrep -f` / substring command-line
