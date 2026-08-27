@@ -69,12 +69,20 @@ err_file="${pkt%/*}/${pid}.run.err"
 
 # --- pick a different seat than all previously tried ---------------------------
 weight=$(task_weight "$pkt")
+difficulty="$weight"
+if declare -F packet_difficulty >/dev/null 2>&1; then
+    difficulty=$(packet_difficulty "$pkt")
+fi
 need_capable=0
-[[ "$weight" == "heavy" ]] && need_capable=1
+[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" || true)
+seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" || true)
 if [[ -z "$seat" ]]; then
-    seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
+    if [[ "$difficulty" == "keystone" ]]; then
+        seat_log "pi-packet-run: KEYSTONE ESCALATION for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure summons senior conference"
+    else
+        seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
+    fi
     exit 1
 fi
 
@@ -85,7 +93,7 @@ nm=$(printf '%s' "$seat" | cut -f2)
 # pick the same one. Append "provider/model" per line.
 printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
 
-seat_log "pi-packet-run: $pid running on $np/$nm (weight=$weight, tried: $(wc -l < "$tried_file") seat(s))"
+seat_log "pi-packet-run: $pid running on $np/$nm (weight=$difficulty, tried: $(wc -l < "$tried_file") seat(s))"
 
 # --- run pi, capture stdout/stderr --------------------------------------------
 # pi reads the packet from stdin. We capture stdout to measure output size

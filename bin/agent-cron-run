@@ -70,13 +70,21 @@ test -f "$PROMPT" || { echo "FATAL: prompt missing: $PROMPT" >&2; exit 1; }
 # Cron prompts are light probes/answers (market signal, daily summary); they
 # do not edit code, so need_capable=0 unless task_weight says otherwise.
 weight=$(task_weight "$PROMPT")
+difficulty="$weight"
+if declare -F packet_difficulty >/dev/null 2>&1; then
+    difficulty=$(packet_difficulty "$PROMPT")
+fi
 need_capable=0
-[[ "$weight" == "heavy" ]] && need_capable=1
+[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-seat=$(pick_seat "" "" "$need_capable" "$tried_file" || true)
+seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
 if [[ -z "$seat" ]]; then
     seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"
     echo "FATAL: agent-cron-run: $slug no healthy seat available — every allowlisted seat is walled" >&2
+    if [[ "$difficulty" == "keystone" ]]; then
+        seat_log "agent-cron-run: $slug KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
+        exit 1
+    fi
     # Reset tried-seats: every allowlisted seat has been tried and failed.
     # The seat-health ledger (usable_at/bench_until) is the durable avoidance
     # authority; clearing tried_file lets the next restart retry seats that
@@ -101,7 +109,7 @@ printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
 register_active_seat "agent-cron-${slug}" "$np" "$nm"
 trap 'clear_active_seat "agent-cron-${slug}"' EXIT INT TERM
 
-seat_log "agent-cron-run: $slug running on $np/$nm (weight=$weight, tried: $(wc -l <"$tried_file") seat(s))"
+seat_log "agent-cron-run: $slug running on $np/$nm (weight=$difficulty, tried: $(wc -l <"$tried_file") seat(s))"
 
 # --- run pi, capture stdout/stderr ------------------------------------------
 # P15 hang watchdog: pi intermittently never finalizes in --print mode (does

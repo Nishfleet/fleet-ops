@@ -2214,3 +2214,8 @@ bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
 bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
 
+# fleet-ops#1133: reliability-first routing for keystone packets.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file
+# is the listed CI host.
+bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
+
