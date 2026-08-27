@@ -269,6 +269,12 @@ bin/fleet-cline-glm53-canary /home/nish/.local/bin/fleet-cline-glm53-canary
 # Heartbeat-tier1 block 24.
 bin/fleet-repo-visibility-canary /home/nish/.local/bin/fleet-repo-visibility-canary
 config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.json
+# fleet-ops#546: straitly ds4-pro worker-rotation canary. Enforces the
+# 2026-08-27 ledger line: metered, cap=2, only deepseek/deepseek-v4-pro on
+# straitly, no double-wire, slug proven in models.json and `pi --list-models`,
+# meter-check evidence within minutes of first active draw. Heartbeat-tier1
+# block 25.
+bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

@@ -99,6 +99,25 @@
 #      gap-closure cycle, failed cycle. Starts fleet-researcher.service.
 #      Adopted-delta rate below floor cuts cadence. Missing helper skips
 #      (not installed); a broken decide fails the tick.
+#  21. Free-model roster canary (fleet-ops#518). Quality-gated free-model
+#      roster: fail-loud on Ollama non-flash or missing providers; observe-to
+#      open on unwired free slugs and wired slugs leaving the catalog.
+#  22. Pi extensions proven-allowlist canary (fleet-ops#536). Diff live
+#      extensions against config/pi-extensions-allowlist.json; unproven or
+#      re-enabled banned ids fail loud and auto-file.
+#  23. ClinePass GLM 5.3 flash canary (fleet-ops#462). Fail loud if a billing,
+#      non-flash, or unproven flash slug is allowlisted on cline; auto-file
+#      a prove+wire ticket when a new free cline-pass GLM 5.3 flash slug
+#      appears and keep the tick green.
+#  24. Repo visibility canary (fleet-ops#542). Fail loud and auto-file when
+#      gh repo list shows a non-archived private Nishfleet repo that is not
+#      in config/repo-visibility.json allow_private[].
+#  25. Straitly ds4-pro worker-rotation canary (fleet-ops#546). Enforces the
+#      2026-08-27 ledger line: metered, cap=2, only deepseek/deepseek-v4-pro
+#      on straitly, no double-wire, proven in models.json and `pi --list-models`,
+#      and a meter-check evidence file within minutes of the first active draw.
+#      Fail loud on allowlist/routing violations; observe-to-open on the
+#      first-draw meter check.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -1696,9 +1715,33 @@ else
 fi
 
 # ============================================================================
+# 25. STRAITLY DS4-PRO WORKER-ROTATION CANARY (fleet-ops#546)
+# ============================================================================
+# Ledger 2026-08-27: deepseek-v4-pro on straitly is approved for worker
+# rotation, metered, cap=2, AIMD only with evidence. Sol stays
+# orchestration-only; qwen3.8-max not approved; no double-wire; the slug
+# must be present in models.json and `pi --list-models`; a meter-check
+# evidence file must be written within minutes of the first active draw.
+# Fail loud on allowlist violations; observe-to-open on the first-draw
+# meter check.
+STRAITLY_CANARY_BIN="${FLEET_STRAITLY_DS4PRO_CANARY:-/home/nish/.local/bin/fleet-straitly-ds4-pro-canary}"
+straitly_canary_rc=0
+if [ -x "$STRAITLY_CANARY_BIN" ]; then
+    log "25. straitly ds4-pro canary starting"
+    if "$STRAITLY_CANARY_BIN"; then
+        log "25. straitly ds4-pro canary complete"
+    else
+        straitly_canary_rc=$?
+        log "25. straitly ds4-pro canary FAILED (rc=$straitly_canary_rc) — straitly ds4-pro allowlist or routing is broken; unit will land in --state=failed"
+    fi
+else
+    log "25. straitly ds4-pro canary missing at $STRAITLY_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1762,6 +1805,9 @@ if [ "${cline_glm53_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${repo_visibility_canary_rc:-0}" -ne 0 ]; then
     exit "$repo_visibility_canary_rc"
+fi
+if [ "${straitly_canary_rc:-0}" -ne 0 ]; then
+    exit "$straitly_canary_rc"
 fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"
