@@ -53,8 +53,10 @@ if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
 PY
 ok "catalog: researcher role is gated (fleet-ops#592)"
 
-# fleet-ops#592: session-reap and the vault knowledge-format lint timer are
-# plumbing, not work-producing roles. Dropping either prefix re-reds the audit.
+# fleet-ops#592 / #636: session-reap, vault-conflict-resolver, and the
+# vault knowledge-format lint timer are plumbing, not work-producing roles.
+# Dropping any prefix re-reds the audit (the live catalog test is not enough
+# if the unit file is also gone).
 python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
 import importlib.util
 import sys
@@ -63,17 +65,25 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("role_quality_gates", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-required = ("interactive-session-reap", "vault-knowledge-format")
+required = ("interactive-session-reap", "vault-knowledge-format", "vault-conflict")
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
     raise SystemExit("NON_ROLE_UNIT_PREFIXES missing " + ", ".join(missing))
 repo = Path(sys.argv[2])
 units = mod.discover_units(repo)
-leaked = [u for u in ("interactive-session-reap.service", "vault-knowledge-format.service") if u in units]
+leaked = [
+    u
+    for u in (
+        "interactive-session-reap.service",
+        "vault-knowledge-format.service",
+        "vault-conflict-resolver.service",
+    )
+    if u in units
+]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap and vault-knowledge-format (fleet-ops#592)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format (fleet-ops#636)"
 
 scratch=$(mktemp -d -t role-gates.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
@@ -89,8 +99,8 @@ case "${1:-}" in
   issue)
     case "${2:-}" in
       list)
-        if [[ -f "${GH_OPEN_ISSUES:-/dev/null}" ]]; then
-          cat "${GH_OPEN_ISSUES}"
+        if [[ -n "${GH_OPEN_ISSUES:-}" && -f "$GH_OPEN_ISSUES" ]]; then
+          cat "$GH_OPEN_ISSUES"
         else
           printf '[]\n'
         fi
@@ -98,6 +108,9 @@ case "${1:-}" in
       create)
         echo "https://github.com/Nishfleet/fleet-ops/issues/4571"
         echo create >>"${GH_CREATED:-/dev/null}"
+        ;;
+      close)
+        echo "$*" >>"${GH_CLOSED:-/dev/null}"
         ;;
     esac
     ;;
@@ -121,6 +134,7 @@ run_audit() {
     FLEET_ROLE_GATES_EXTRA_PROMPT="${EXTRA_PROMPT:-}" \
     GH_LOG="$scratch/gh.log" \
     GH_CREATED="$scratch/created.txt" \
+    GH_CLOSED="$scratch/closed.txt" \
     GH_OPEN_ISSUES="${GH_OPEN_ISSUES:-}" \
     "$bin" 2>&1
   )
@@ -130,6 +144,7 @@ run_audit() {
 
 # Clean run (no extra prompt): exit 0, no issue filed.
 : >"$scratch/created.txt"
+: >"$scratch/closed.txt"
 : >"$scratch/triage.md"
 unset EXTRA_PROMPT || true
 unset GH_OPEN_ISSUES || true
@@ -170,6 +185,43 @@ fi
 grep -q 'dedup' <<<"$env_out" || fail "dedupe must log dedup (out=$env_out)"
 ok "replay: open issue with signal key is deduped"
 
+# Observe-to-close (fleet-ops#636): a stale unit finding is closed on a
+# clean tick. This is the class that left #636 open after #667 skipped the
+# unit: the auditor filed, never closed.
+: >"$scratch/created.txt"
+: >"$scratch/closed.txt"
+: >"$scratch/triage.md"
+unset EXTRA_PROMPT || true
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'The per-role quality-gate auditor (fleet-ops#457) found a bypass.\n\nunit vault-conflict-resolver.service is not in the role-quality-gates catalog\n\nsignal: role-quality-gate/unit:vault-conflict-resolver.service\n' \
+  '[{number: 636, body: $b}]' >"$GH_OPEN_ISSUES"
+run_audit
+[[ "$env_rc" == "0" ]] || fail "observe-to-close expected rc=0, got $env_rc ($env_out)"
+if grep -q create "$scratch/created.txt"; then
+  fail "observe-to-close must not file: $(cat "$scratch/created.txt")"
+fi
+grep -q 'observe-to-close: CLOSED issue #636' <<<"$env_out" \
+  || fail "clean tick must close stale unit finding (out=$env_out)"
+grep -q 'issue close 636' "$scratch/closed.txt" \
+  || fail "gh issue close 636 must be invoked (closed=$(cat "$scratch/closed.txt"))"
+grep -q 'observe-to-close:' "$scratch/closed.txt" \
+  || fail "close comment must name observe-to-close (closed=$(cat "$scratch/closed.txt"))"
+ok "observe-to-close closes stale vault-conflict-resolver finding (fleet-ops#636)"
+
+# Observe-to-close leaves an active finding open
+: >"$scratch/closed.txt"
+export EXTRA_PROMPT="planner-v2.md"
+jq -n --arg b $'body\nsignal: role-quality-gate/prompt:planner-v2.md\n' \
+  '[{number: 77, body: $b}]' >"$GH_OPEN_ISSUES"
+run_audit
+[[ "$env_rc" == "0" ]] || fail "active finding expected rc=0, got $env_rc ($env_out)"
+if grep -q 'issue close 77' "$scratch/closed.txt"; then
+  fail "active finding must stay open (closed=$(cat "$scratch/closed.txt"))"
+fi
+ok "observe-to-close leaves an active finding open"
+unset EXTRA_PROMPT || true
+unset GH_OPEN_ISSUES || true
+
 # Broken auditor (missing catalog) fails loud
 set +e
 broken_out=$(
@@ -196,8 +248,10 @@ grep -F -- 'exit "$role_gate_rc"' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the auditor is broken"
 grep -q 'bin/fleet-role-gate-audit' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-role-gate-audit"
+grep -F 'observe-to-close' "$bin" >/dev/null \
+  || fail "auditor must observe-to-close auto-filed findings (fleet-ops#636)"
 grep -Fq 'bash "$here/role-quality-gates.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "contracts: heartbeat-tier1, MANIFEST, nested CI host"
 
-ok "role-quality-gates: live catalog, bypass auto-file, dedupe, fail-loud"
+ok "role-quality-gates: live catalog, bypass auto-file, dedupe, observe-to-close, fail-loud"
