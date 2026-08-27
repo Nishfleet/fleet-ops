@@ -1377,6 +1377,10 @@ bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-
 # branch` (exit 128). The next assistant turn is a recovery toolCall
 # with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-git-branch-cannot-force-update.test.sh" || fail "fleet-failed-command-git-branch-cannot-force-update tests failed"
+# fleet-ops#951: open-issue dedup must use the already-fetched open issue
+# list (open_json), not GitHub's search API (which has an indexing delay
+# that caused 7 duplicate filings of the same session). Same CI constraint.
+bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-command-dedup-open-list tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
