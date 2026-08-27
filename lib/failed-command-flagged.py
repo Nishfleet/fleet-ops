@@ -7,7 +7,10 @@ with isError / 'Command exited with code N' / timeout, and no later
 assistant text that names the failure. Burying it in the tool result the
 user may not read does not count.
 
-grep/rg/diff exit 1 (POSIX no-match) is not a failure. ls no-match
+grep/rg/diff exit 1 (POSIX no-match) is not a failure. `xargs grep/rg/diff`
+exit 123 is the same no-match class: xargs exits 123 when an invoked
+command exits 1-125, and for grep/rg/diff exit 1 is no-match (live #942).
+ls no-match
 (exit 2, the canonical "ls: cannot access '<path>': No such file or
 directory" line) and which no-match (exit 1) are also treated as probes.
 ls exit 2 with any other error (Permission denied, I/O error, Is a
@@ -49,6 +52,21 @@ TIMEOUT_RE = re.compile(r"Command timed out", re.I)
 BENIGN_STAGE_RE = re.compile(
     r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
     r"(?:grep|egrep|fgrep|rg|ripgrep|diff|git\s+grep|git\s+diff|which)\b",
+    re.I,
+)
+# xargs wrapping a benign search command (live #942). xargs exits 123 when an
+# invoked command exits 1-125; for grep/rg/diff exit 1 is POSIX no-match, so
+# `find ... | xargs grep -l "X" 2>/dev/null` exits 123 with "(no output)" when
+# nothing matched. The detector treated that 123 as a real swallowed failure
+# when it is the same no-match class as direct grep exit 1. The inner search
+# command must be one of the BENIGN_STAGE_RE commands; `xargs rm` / `xargs
+# chmod` exiting 123 is a real error and must NOT match. Flags between xargs
+# and the search command (e.g. `xargs -0 grep`, `xargs -I {} grep`) are
+# allowed; the gap may not cross a pipeline/logic separator.
+XARGS_BENIGN_RE = re.compile(
+    r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
+    r"xargs\b[^|;&\n]*?"
+    r"(?:grep|egrep|fgrep|rg|ripgrep|diff|git\s+grep|git\s+diff)\b",
     re.I,
 )
 # Real errors that must not hide behind a grep in the same script.
@@ -308,6 +326,14 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     # real failures.
     if GIT_BENIGN_RE.search(command) and code == 128:
         return _git_canonical_probe(text)
+    # xargs wrapping a benign search command (live #942): `xargs grep/rg/diff`
+    # exits 123 when the inner command exits 1-125. For grep/rg/diff exit 1 is
+    # POSIX no-match, so xargs 123 is the no-match signal propagated through
+    # the wrapper. REAL_ERR_RE (checked above) still guards against real
+    # errors in the text; `xargs rm`/`xargs chmod` exiting 123 does not match
+    # XARGS_BENIGN_RE and stays a real failure.
+    if code == 123 and XARGS_BENIGN_RE.search(command):
+        return True
     if code != 1:
         return False
     return BENIGN_STAGE_RE.search(command) is not None
