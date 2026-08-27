@@ -41,10 +41,14 @@ prompt_file="$PROMPT_DIR/intake-repair.md"
 # code and must run on a capable seat), so compute need_capable from the
 # prompt weight.
 weight=$(task_weight "$prompt_file")
+difficulty="$weight"
+if declare -F packet_difficulty >/dev/null 2>&1; then
+    difficulty=$(packet_difficulty "$prompt_file")
+fi
 need_capable=0
-[[ "$weight" == "heavy" ]] && need_capable=1
+[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-seat=$(pick_seat "" "" "$need_capable" || true)
+seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-intake-repair-run: $repo no healthy seat available"
     echo "pi-intake-repair-run: $repo no healthy seat available" >&2
@@ -54,7 +58,7 @@ fi
 np=$(printf '%s' "$seat" | cut -f1)
 nm=$(printf '%s' "$seat" | cut -f2)
 
-seat_log "pi-intake-repair-run: $repo running on $np/$nm (weight=$weight)"
+seat_log "pi-intake-repair-run: $repo running on $np/$nm (weight=$difficulty)"
 
 {
     cat "$prompt_file"

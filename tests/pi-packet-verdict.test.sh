@@ -4,8 +4,10 @@
 # proves it can parse, run, and detect worker/real mismatch.
 #
 # Hosted under tests/seat-lib.test.sh per the worker-token CI constraint
-# (workers cannot add a ci.yml line). Run with `bash seat-lib.test.sh` or
-# directly: `bash tests/pi-packet-verdict.test.sh`.
+# (workers cannot add a ci.yml line). The host line is pinned by
+# tests/p14-test-listing-gate.test.sh (fleet-ops#1200). Run with
+# `bash tests/seat-lib.test.sh` or directly:
+# `bash tests/pi-packet-verdict.test.sh`.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -136,10 +138,26 @@ must-match: success-marker
 verdict: PASS
 <!--END-VERIFY-->" false false
 
+# CI host lock (fleet-ops#1200). Workers cannot add a verify-command
+# line. This file must stay invoked from seat-lib.test.sh (already
+# listed in ci.yml). Dropping the host is the class this issue exists
+# to prevent. A filename mention in a comment is not an invoke.
+host="$ROOT/tests/seat-lib.test.sh"
+if [ ! -f "$host" ]; then
+    echo "FAIL 10. CI host missing: $host"
+    FAIL=$((FAIL + 1))
+elif grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-packet-verdict\.test\.sh"?' "$host"; then
+    echo "OK   10. CI host lock (seat-lib.test.sh bash-invokes this file)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL 10. CI host lock: tests/seat-lib.test.sh must bash-invoke this file (fleet-ops#1200)"
+    FAIL=$((FAIL + 1))
+fi
+
 echo
 echo "RESULT: pass=$PASS fail=$FAIL"
 if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
-echo "OK: 9 scenarios green"
+echo "OK: $PASS scenarios green"
 exit 0

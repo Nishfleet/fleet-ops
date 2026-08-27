@@ -1,0 +1,301 @@
+groups:
+  - name: fleet_watchdog
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Watchdog heartbeat for the alerting pipeline"
+          description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
+
+      - alert: FleetHeartbeatStale
+        expr: (time() - fleet_timer_last_trigger_seconds{timer="fleet-heartbeat.timer"}) > 7200
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet-heartbeat.timer has not fired in 2+ hours"
+          description: "Fleet orchestrator heartbeat is dead; nothing is dispatching or repairing."
+
+      - alert: FleetMetricsExportStale
+        expr: (time() - node_textfile_mtime_seconds{file=~".*fleet.prom"}) > 1200
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet metrics exporter frozen for 20+ minutes"
+          description: "Timer alerts are blind; fleet-metrics-export.timer or its script is dead."
+
+      - alert: FleetMetricsExportMissing
+        expr: absent(node_textfile_mtime_seconds{file=~".*fleet.prom"})
+        for: 5m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet metrics textfile missing"
+          description: "fleet.prom is gone from the node-exporter textfile dir."
+
+      - alert: FleetCompletionCanaryAbsent
+        expr: absent(fleet_chain_open)
+        for: 3h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "completion canary metrics absent — the finish checker is missing or dead"
+          description: "Repair worker: the completion canary (packet at /home/nish/workspaces/agent-state/alert-repair/packet-11-completion-canary.md) must be (re)built/(re)started until fleet_chain_open exports. Check unit canary-build-r2-20260827 / fleet-completion-canary.timer first."
+
+      - alert: FleetChainStalled
+        expr: max(fleet_chain_stalled) > 0
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "Alert-repair chain stalled past its hop clock for 15+ minutes"
+          description: "The completion canary is climbing the ladder; check /home/nish/workspaces/agent-state/alert-repair/completion-canary-build-20260827.md and fleet-completion-canary/chains.terminated.jsonl."
+
+      - alert: FleetUndersatGuardAbsent
+        expr: absent(fleet_pi_workers_active)
+        for: 3h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "undersaturation guard metrics absent — the never-idle guard is missing or dead"
+          description: "Repair worker: (re)build per /home/nish/workspaces/agent-state/alert-repair/packet-13-undersaturation-guard.md until fleet_pi_workers_active exports. Check unit undersat-guard-r2-20260827 first."
+
+      - alert: FleetPiSeatUnhealthy
+        expr: fleet_pi_seat_healthy == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "Pi seat unhealthy for 30+ minutes"
+          description: "pi-seat-health.json reports a non-healthy seat class."
+
+      - alert: FleetKeystoneRoutingAbsent
+        expr: absent(fleet_keystone_routing_heartbeat_seconds)
+        for: 3h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "keystone routing organ absent — reliability-first routing is missing or dead"
+          description: "fleet-ops#1133: the keystone routing ledger (keystone-routing.jsonl) has not been touched in 3h. pick_seat is not routing keystone packets to strong seats, or the ledger was wiped. Check seat-lib.sh packet_is_keystone / pick_seat keystone branch and the pi-packet state dir."
+
+      - alert: FleetTestAlert
+        expr: fleet_test_alert == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "Fleet monitoring test alert"
+          description: "Synthetic alert for end-to-end proof."
+
+  - name: host_and_system
+    rules:
+      - alert: SystemUnitFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "system unit {{ $labels.name }} failed"
+          description: "Root-level systemd unit in failed state; user-level escalation cannot see it."
+
+      - alert: DiskAlmostFull
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) < 0.10
+        for: 10m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "filesystem {{ $labels.mountpoint }} below 10% free"
+          description: "filesystem {{ $labels.mountpoint }} below 10% free"
+
+      - alert: DiskWillFillIn24h
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: "filesystem {{ $labels.mountpoint }} predicted to fill within 24h"
+          description: "filesystem {{ $labels.mountpoint }} predicted to fill within 24h based on 6h trend"
+
+      - alert: InodesAlmostFull
+        expr: (node_filesystem_files_free / node_filesystem_files) < 0.10
+        for: 10m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "inodes {{ $labels.mountpoint }} below 10% free"
+          description: "filesystem {{ $labels.mountpoint }} below 10% inodes free"
+
+      - alert: LoadStorm
+        expr: node_load1 > 3 * count(node_cpu_seconds_total{mode="idle"})
+        for: 2m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "load1 above 3x core count for 2m — restart storm likely"
+          description: "node_load1 > 3 * count(idle cpus) (3x nproc). Fast deterministic brake fires; LLM root-cause follows via STOP-REASON."
+
+      - alert: SustainedLoadHigh
+        expr: node_load15 > 6
+        for: 30m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: "sustained load15 above 6 for 30m"
+          description: "Box has 8 vCPUs (nproc=8); threshold = 0.75 * 8 = 6. Sustained load15 > 6."
+
+      - alert: MemoryPressureHigh
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.08
+        for: 10m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "memory available below 8% for 10m"
+          description: "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.08"
+
+  - name: fleet_self_observation
+    rules:
+      - alert: FleetThroughputCollapse
+        expr: sum(fleet_merged_prs_24h) < 10
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet merged fewer than 10 PRs in 24h; investigate stalls."
+          description: "sum(fleet_merged_prs_24h) < 10 for 6h. Family omitted (stale gh cache) does not fire this rule."
+
+      - alert: FleetEscalationStorm
+        expr: sum(fleet_escalations_24h) > 300
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "escalation volume abnormal; a unit is flapping."
+          description: "sum(fleet_escalations_24h) > 300 for 30m."
+
+      # fleet-ops#1199: tightened from 2h to 30m. The 30m floor is enforced
+      # by the alert-repair-dispatch mutex (claim/<alert-scope>-<repo> on
+      # the target repo) so two dispatches 10s apart cannot both spawn a
+      # worker. The threshold is ratchet-managed from this 30m start —
+      # raising it back requires a new issue and the same atomic guard
+      # to ship with the change.
+      - alert: FleetMainRed
+        expr: fleet_main_ci_green == 0
+        for: 30m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "main branch CI red on {{ $labels.repo }} for 30+ minutes"
+          description: "Trunk is broken; merges/deploys unsafe. The alert-repair-dispatch mutex guarantees exactly one repair worker spawns per (alert, repo) pair."
+  - name: fleet_undersaturation_guard
+    rules:
+      - alert: FleetUndersaturated
+        expr: fleet_pi_workers_active{kind="sum"} < 2 and on (instance, job) fleet_ready_work > 0 and on (instance, job) fleet_maintenance_quiescing == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+          guard: undersaturation
+        annotations:
+          summary: "workers idle while agent-ready work waits"
+          description: "fleet_pi_workers_active{kind=\"sum\"} < 2 with fleet_ready_work > 0 for 30m, and not in the maintenance window. The fleet has ready work and fewer than 2 live workers — concurrency silently dropped. The repair worker should: (1) check Pi seat health (`cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json`); (2) start the intake loop for every enrolled repo (`for s in 0509 fleet-ops; do systemctl --user start pi-intake@${s}.service || true; done`); (3) verify workers climb (re-check the exporter output and `systemctl --user list-units 'pi-*.service' --state=active,activating`). If workers do not climb within 10 min, fail loud (exit non-zero) so the senior-auditor pipeline picks it up. The weekly maintenance window is excluded by fleet_maintenance_quiescing (read from agent-state/maintenance.json), NOT by the 30m `for` — the window drains workers for >30m."
+  - name: fleet_self_maintenance
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). fleet_self_maintenance_merges
+      # is ALWAYS emitted by a live exporter run (even on a no-merge day, as
+      # zeros), so absent() fires only when the #1136 code path is dead or
+      # removed — not on a quiet day. The ratio gauge itself is omitted when
+      # total=0, so the heartbeat keys on the always-present kind="total" gauge.
+      - alert: FleetSelfMaintenanceAbsent
+        expr: absent(fleet_self_maintenance_merges{kind="total"})
+        for: 3h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "self-maintenance metrics absent — the #1136 ratio/quality exporter path is missing or dead"
+          description: "Repair worker: fleet-metrics-export.py must emit fleet_self_maintenance_merges. Check fleet-metrics-export.timer is running and `journalctl --user -u fleet-metrics-export.service` for errors. The #1136 code path (self-maintenance ratio + upgrade/repair/churn classification) is not exporting. Rebuild/restart per /home/nish/workspaces/agent-state/alert-repair/issue-1136-progress.md until fleet_self_maintenance_merges{kind=\"total\"} appears."
+
+      # Regression TREND alert, not a level. fleet2 died at 64% self-maintenance;
+      # the level is Nish's policy call, but a 15-point drop versus yesterday's
+      # 24h window is physics. offset 24h compares today's rolling 24h ratio to
+      # yesterday's; on the first day after deploy the offset is absent so the
+      # rule cannot fire (no false alarm during warmup). The ratio is omitted on
+      # a no-merge day, so a quiet day never trips this either.
+      - alert: FleetSelfMaintenanceRegression
+        expr: (fleet_self_maintenance_ratio - fleet_self_maintenance_ratio offset 24h) < -0.15
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "self-maintenance ratio fell 15+ points versus yesterday's 24h window"
+          description: "fleet_self_maintenance_ratio dropped by more than 0.15 compared to its value 24h ago, sustained 6h. This is a TREND alert (delta), not a level — the absolute ratio is Nish's policy. fleet2 died at 64% self-maintenance; a sustained drop is the physics to watch. Inspect fleet_self_maintenance_merges{kind=\"self\"|\"product\"} and the merged-PR mix."
+
+      # Churn-share regression TREND. The 2026-08-14 baseline was 49% churn; a
+      # 20-point rise versus yesterday is the fleet spending more of its merge
+      # budget on churn (chore/refactor/docs/unclassified) and less on
+      # upgrade/repair. Trend, not level — the acceptable churn level is policy.
+      - alert: FleetQualityChurnRegression
+        expr: (fleet_pr_quality_share{class="churn"} - fleet_pr_quality_share{class="churn"} offset 24h) > 0.20
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
+          description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
+
+  - name: fleet_console_truth
+    rules:
+      # fleet-ops#1157: a tile whose independent truth-check disagrees with
+      # the number on the page. Warning, 30m, rides the existing repair rail
+      # (severity=warning -> repair-dispatch). Exact counts mismatch immediately;
+      # the 30m `for` is the lie that persists across two push cycles.
+      - alert: ConsoleLying
+        expr: fleet_console_tile_mismatch > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet console tile {{ $labels.tile }} is DISPUTED for 30+ minutes"
+          description: "fleet_console_tile_mismatch{tile=\"{{ $labels.tile }}\"} > 0 for 30m. The console push job's verify pass recomputed this tile from source and disagreed with the rendered number. Repair: read the tile's verify.cmd on the page (what is this?), run it, and fix the collector (not the verify). PI WORK mismatches against ExecStart content are fleet-ops#1155."
+
+      # Organ heartbeat (fleet-ops#1010 standing pattern). The verify pass
+      # writes fleet_console_tile_verify_timestamp_seconds on every push.
+      # 40m is >3 push cycles (12 min). absent() catches a missing file;
+      # time()-timestamp catches a frozen file (textfile collector keeps
+      # the last scrape). No new timer: fleet-console-pi.timer is the schedule.
+      - alert: ConsoleTileVerifyAbsent
+        expr: absent(fleet_console_tile_verify_timestamp_seconds) or (time() - fleet_console_tile_verify_timestamp_seconds) > 2400
+        for: 40m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "console tile-verify organ absent — the self-audit pass is missing or dead"
+          description: "Repair worker: fleet-console-pi/verify.py must write fleet_console_tile_verify_timestamp_seconds (and fleet_console_tile_mismatch). Check fleet-console-pi.timer is running and journalctl --user -u fleet-console-pi.service. No new timer was added; verify piggybacks the existing push cycle (fleet-ops#1157)."
+

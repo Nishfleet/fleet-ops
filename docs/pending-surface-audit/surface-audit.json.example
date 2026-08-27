@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Sample surface-audit.json for a product repo (ship a copy at the repo root,",
+    "trimmed to that product's real axes). Self-skip: if this file is absent,",
+    "the reusable surface-audit workflow logs a notice and exits clean — no",
+    "Node install wasted. See docs/pending-surface-audit/README.md for the",
+    "design (fleet-ops#1198).",
+    "",
+    "matrix.themes: every theme the product has. Omit 'dark' for light-only.",
+    "matrix.authStates: {logged-out} x {each plan tier} x {expired, dunning}.",
+    "matrix.viewports: mobile + desktop is the minimum; add 'wide' (>=2000px)",
+    "when a paying tier shows a CTA floated off-page (the 0509 shipped bug).",
+    "matrix.routes: every authenticated route + the public landing. /app and",
+    "/search are the two surfaces that broke on 0509 — list them by name.",
+    "",
+    "auth.method: only 'cookie' is supported (fixtures live in the consumer",
+    "repo; no live credentials cross CI).",
+    "auth.cookieName: the name your fixture script sets (0509 uses",
+    "'f9_e2e_fixture').",
+    "auth.fixtureScript: optional. Path to a Node script the consumer repo",
+    "owns that primes users per auth state. If absent, the audit script must",
+    "either run logged-out only or hydrate fixtures itself.",
+    "",
+    "serve.command: how to start the product for the audit. The reusable",
+    "does NOT start the server (only the consumer knows the readiness probe).",
+    "serve.port: localhost port the command listens on.",
+    "serve.baseUrl: optional override; default 'http://127.0.0.1:<port>'."
+  ],
+  "matrix": {
+    "themes": ["light", "dark"],
+    "authStates": [
+      "logged-out",
+      "free",
+      "scout",
+      "starter",
+      "agency",
+      "expired"
+    ],
+    "viewports": [
+      { "name": "mobile", "width": 390, "height": 844 },
+      { "name": "desktop", "width": 1440, "height": 900 },
+      { "name": "wide", "width": 2000, "height": 900 }
+    ],
+    "routes": ["/", "/app", "/search"]
+  },
+  "auth": {
+    "method": "cookie",
+    "cookieName": "f9_e2e_fixture",
+    "fixtureScript": "scripts/e2e-prepare-local.mjs"
+  },
+  "serve": {
+    "command": "npm run preview -- --port 4180 --strictPort",
+    "port": 4180
+  }
+}

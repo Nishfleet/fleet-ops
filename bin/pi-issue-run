@@ -148,12 +148,16 @@ mkdir -p "$ATTEMPTS_DIR" "$(dirname "$out_file")"
 
 # --- pick a seat for THIS attempt ------------------------------------------
 weight=$(task_weight "$pkt")
+difficulty="$weight"
+if declare -F packet_difficulty >/dev/null 2>&1; then
+    difficulty=$(packet_difficulty "$pkt")
+fi
 need_capable=0
-[[ "$weight" == "heavy" ]] && need_capable=1
+[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # First attempt: no exclusions. Subsequent attempts (after a restart) carry
 # the previously-tried seats in $tried_file; pick_seat excludes them all.
-seat=$(pick_seat "" "" "$need_capable" "$tried_file" || true)
+seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
 if [[ -z "$seat" ]]; then
     # The tried file does not exist on the first attempt; the `2>/dev/null`
     # on `tr` does not suppress a failed redirection, so test before reading.
@@ -175,6 +179,14 @@ if [[ -z "$seat" ]]; then
     # 8+ restarts exited instantly with "no seat available").
     if ! mkdir -p "$ATTEMPTS_DIR" 2>/dev/null; then
         seat_log "pi-issue-run: $inst FAILED to recreate $ATTEMPTS_DIR (wiped and unrecoverable) — exiting 1"
+        exit 1
+    fi
+    # fleet-ops#1133: a keystone two-strike must NOT reset tried-seats.
+    # Clearing the list would let the next systemd Restart pick a cheap
+    # free lane. Keep the strikes so pick_seat stays empty and OnFailure
+    # summons the senior auditor.
+    if [[ "$difficulty" == "keystone" ]]; then
+        seat_log "pi-issue-run: $inst KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
         exit 1
     fi
     : >"$tried_file"
@@ -211,7 +223,7 @@ printf '%s/%s\n' "$np" "$nm" >"$ATTEMPTS_DIR/pi-issue-${inst}.seat" 2>/dev/null 
 register_active_seat "pi-issue-${inst}" "$np" "$nm"
 trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
 
-seat_log "pi-issue-run: $inst running on $np/$nm (weight=$weight, tried: $(wc -l < "$tried_file") seat(s))"
+seat_log "pi-issue-run: $inst running on $np/$nm (weight=$difficulty, tried: $(wc -l < "$tried_file") seat(s))"
 
 # --- P14: mint a short-lived nishfleet-worker installation token ------------
 # The App creds file must exist. Creds present and mint fails → scream, do not

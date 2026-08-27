@@ -389,10 +389,10 @@ trips.
 ## Worker RAM measurement — `ram-measure` (issue #45)
 
 `ram_gb_per_worker` in `config/seat-caps.json` is the governor budget the
-RAM governor divides `MemAvailable` by. It is sized on cgroup `memory.current`
-(1.5 GiB) with the tail bounded three ways (per-worker `MemoryHigh=3G`
-throttle, `MemoryMax=6G` hard stop, and `TimeoutStartSec=45min` to kill a
-wedge). A re-derive is one command:
+RAM governor divides `MemAvailable` by. It is sized on typical-worker
+cgroup `memory.current` (0.6 GiB, fleet-ops#1168) with the tail bounded
+three ways (per-worker `MemoryHigh=3G` throttle, `MemoryMax=6G` hard stop,
+and `TimeoutStartSec=45min` to kill a wedge). A re-derive is one command:
 
 ```
 ram-measure                          # one-line summary
@@ -412,7 +412,8 @@ an escalation, never an edit to the cap map.
 both cgroup `memory.current` and process VmRSS. The 35 MB figure in older
 comments is VmRSS, not cgroup cost. Live 2026-08-26: `memory.current` p95
 was 822.6 MB. The compare command records both every tick. fleet-ops#489
-decided to keep `memory.current` for admission, so `ram_gb_per_worker` is
-now 1.5 GiB, the clamped p95*3 ceiling.
+decided to keep `memory.current` for admission. fleet-ops#1168 then set
+`ram_gb_per_worker` to 0.6 GiB from the live typical-worker measurement
+(the 1.5 GiB figure was the p95*3 clamp).
 
 

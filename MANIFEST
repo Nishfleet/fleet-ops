@@ -16,6 +16,18 @@ systemd/siterep-live-canary.service /home/nish/.config/systemd/user/siterep-live
 systemd/siterep-live-canary.timer /home/nish/.config/systemd/user/siterep-live-canary.timer
 systemd/fleet-console-pi.service /home/nish/.config/systemd/user/fleet-console-pi.service
 systemd/fleet-console-pi.timer /home/nish/.config/systemd/user/fleet-console-pi.timer
+# fleet-ops#1157: self-auditing console. Generator + verify + shell live in
+# fleet-ops so the tile truth-check is version-controlled. push.sh still
+# runs on the existing 12-min timer (no new timer). verify.py writes
+# /var/lib/prometheus/node-exporter/fleet-console-tiles.prom.
+libexec/fleet-console-pi/generate.py /home/nish/.local/libexec/fleet-console-pi/generate.py
+libexec/fleet-console-pi/verify.py /home/nish/.local/libexec/fleet-console-pi/verify.py
+libexec/fleet-console-pi/push.sh /home/nish/.local/libexec/fleet-console-pi/push.sh
+libexec/fleet-console-pi/shell.html /home/nish/.local/libexec/fleet-console-pi/shell.html
+bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-truth-drill
+# fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
+# install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
+config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
 bin/siterep-live-canary /home/nish/.local/bin/siterep-live-canary
 bin/siterep-deploy /home/nish/.local/bin/siterep-deploy
 bin/siterep-deploy-verify /home/nish/.local/bin/siterep-deploy-verify
@@ -79,6 +91,10 @@ systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
+# fleet-ops#1204: ExecStopPost salvage — bank a dying worker's dirty
+# worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
+bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree
+systemd/vps-weekly-update.service.d/20-wip-gc.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/20-wip-gc.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;
@@ -115,6 +131,13 @@ prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-mark
 systemd/quality-research-weekly.service /home/nish/.config/systemd/user/quality-research-weekly.service
 systemd/quality-research-weekly.timer /home/nish/.config/systemd/user/quality-research-weekly.timer
 prompts/quality-research-weekly.md /home/nish/.pi/agent/prompts/quality-research-weekly.md
+# fleet-ops#1146: Weekly Fleet Review — blind 5-lens senior research +
+# conference, output capped at 5 specced actions. agent-cron-run owns
+# seat rotation; this unit is the runner with the weekly-fleet-review
+# slug. Same proven pattern as quality-research-weekly.
+systemd/fleet-weekly-fleet-review.service /home/nish/.config/systemd/user/fleet-weekly-fleet-review.service
+systemd/fleet-weekly-fleet-review.timer /home/nish/.config/systemd/user/fleet-weekly-fleet-review.timer
+prompts/weekly-fleet-review.md /home/nish/.pi/agent/prompts/weekly-fleet-review.md
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
@@ -129,6 +152,12 @@ bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # overwrite from silently dropping a reserved token.
 bin/nish-boundary-notify /home/nish/.local/bin/nish-boundary-notify
 bin/fleet-claim /home/nish/.local/bin/fleet-claim
+# fleet-ops#1199: atomic alert-repair claim mutex. Lives next to
+# alert-repair-dispatch under /home/nish/.local/libexec/ so the dispatch
+# script can resolve it via ALERT_REPAIR_CLAIM_BIN default. install.sh
+# honours the libexec/ -> /home/nish/.local/libexec/ prefix.
+libexec/alert-repair-claim /home/nish/.local/libexec/alert-repair-claim
+libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
@@ -305,6 +334,12 @@ config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.js
 # meter-check evidence within minutes of first active draw. Heartbeat-tier1
 # block 25.
 bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
+# fleet-ops#1178: volume front-of-ladder canary (led-2026-08-27-worker-lane-order).
+# Fail-loud if volume_providers_in_order is missing/wrong, a volume provider
+# is dark, cursor sneaks into the volume prefix, or seat-lib lacks the
+# volume_seats bucket. Observe-to-open when xai-oauth is in models.json but
+# unwired. Heartbeat-tier1 block 33.
+bin/fleet-volume-lane-order-canary /home/nish/.local/bin/fleet-volume-lane-order-canary
 # fleet-ops#537: Execution IS the review receipt canary. Worker prompt
 # inner loop stays agentic (no bin/exec-review dispatcher). This canary
 # detects a worker PR that skipped the run (no Verification: run-cue /

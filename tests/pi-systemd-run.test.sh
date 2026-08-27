@@ -31,6 +31,9 @@ printf '%s\n' "$out" | grep -q -- '--no-block' || fail "dry-run must pass --no-b
 printf '%s\n' "$out" | grep -q -- '--unit=issue26-shape' || fail "dry-run must pass --unit: $out"
 printf '%s\n' "$out" | grep -qv 'nohup' || fail "dry-run must not mention nohup: $out"
 ok "dry-run is systemd-run --user --collect --no-block"
+printf '%s\n' "$out" | grep -q 'ExecStopPost=' || fail "dry-run must set ExecStopPost (fleet-ops#1204): $out"
+printf '%s\n' "$out" | grep -q 'TimeoutStopSec=180' || fail "dry-run must set TimeoutStopSec=180: $out"
+ok "dry-run wires ExecStopPost salvage"
 
 # --- 2. --stdin becomes StandardInput=file: --------------------------------
 pkt="$(mktemp)"
@@ -129,19 +132,23 @@ fi
 if ! systemctl --user is-system-running >/dev/null 2>&1 \
     && ! systemctl --user show -p Version >/dev/null 2>&1; then
     echo "SKIP: no user systemd (CI runner) — live survive-parent not run here"
-    exit 0
+else
+    unit="issue26-survive-$$"
+    # Parent starts the unit and exits. The child sleep must still be running.
+    bash -c "$bin --unit $unit -- /bin/sleep 20"
+    # Parent is gone. Give systemd a moment to register the unit.
+    sleep 0.4
+    state="$(systemctl --user is-active "${unit}.service" 2>/dev/null || true)"
+    if [[ "$state" != "active" && "$state" != "activating" ]]; then
+        systemctl --user status "${unit}.service" --no-pager >&2 || true
+        fail "unit ${unit}.service should still be live after parent exit, state=$state"
+    fi
+    systemctl --user stop "${unit}.service" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "${unit}.service" >/dev/null 2>&1 || true
+    ok "unit still live after launching parent exited (state=$state)"
 fi
 
-unit="issue26-survive-$$"
-# Parent starts the unit and exits. The child sleep must still be running.
-bash -c "$bin --unit $unit -- /bin/sleep 20"
-# Parent is gone. Give systemd a moment to register the unit.
-sleep 0.4
-state="$(systemctl --user is-active "${unit}.service" 2>/dev/null || true)"
-if [[ "$state" != "active" && "$state" != "activating" ]]; then
-    systemctl --user status "${unit}.service" --no-pager >&2 || true
-    fail "unit ${unit}.service should still be live after parent exit, state=$state"
-fi
-systemctl --user stop "${unit}.service" >/dev/null 2>&1 || true
-systemctl --user reset-failed "${unit}.service" >/dev/null 2>&1 || true
-ok "unit still live after launching parent exited (state=$state)"
+# fleet-ops#1204: nested so hosted CI runs salvage tests without a workflow edit
+# (nishfleet-worker cannot push .github/workflows/**). Hermetic cases do not
+# need user systemd; the nested file skips its own live SIGTERM drill.
+bash "$here/pi-salvage-worktree.test.sh" || fail "pi-salvage-worktree tests failed"

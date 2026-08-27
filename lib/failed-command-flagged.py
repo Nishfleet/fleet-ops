@@ -36,9 +36,19 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059) is a
+`read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, #953,
+fleet-ops#958, #972, #967, #977, #1001, #1059, #1170) is a
 real swallowed failure: it is not a probe like ls no-match or read
-offset beyond end. #972 is the same session shape as #958 (the
+offset beyond end. The EISDIR class (#1170) is the `read` tool pointed at
+a directory path instead of a file — Pi returns `EISDIR: illegal operation
+on a directory, read` with isError=True and no exit-code line, and the
+assistant walked it past with thinking-only recovery turns; it is a
+real failure, never a negative result like the #651 offset-beyond-end
+exemption. The dedicated regression test
+tests/fleet-failed-command-read-eisdir.test.sh pins the live
+fleet-ops#1170 shape (two sessions: 01a04334 reading the sessions dir,
+01a043ee reading the 0509 e2e/fixtures dir) so a future refactor that
+adds a "directory read is benign" exemption is caught. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
 the same GitHub-search-index-delay that produced #951 / #965 / #966, so
 the citation chain must carry it. #967 is the same session shape as
@@ -87,7 +97,11 @@ must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) — or the variant
 "Found N occurrences of the text in <path>. The text must be unique."
 (fleet-ops#1053, same class: oldText matched multiple locations, not zero)
-— or the no-op variant
+— or the multi-edit array variant
+"Could not find edits[0] in <path>. The oldText must match exactly
+including all whitespace and newlines." (fleet-ops#1173, same class:
+the first edit in a multi-edit array had stale oldText) — or the no-op
+variant
 "No changes made to <path>. The replacement produced identical content.
 This might indicate an issue with special characters or the text not
 existing as expected." (fleet-ops#1139, same class: the edit matched but
@@ -104,7 +118,10 @@ not the FAILURE (the edit returned isError), exactly like the #1059
 failure. Do NOT add a READ_OFFSET_RE-style exemption for the no-op
 wording on the theory that "nothing broke": the worker believed it had
 edited the file and it had not, which is the whole point of the rule.
-tests/fleet-failed-command-edit-unmatch.test.sh pins all three shapes. #970 is the same session shape as #956 / #965 (the
+tests/fleet-failed-command-edit-unmatch.test.sh pins the single-edit,
+multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
+unmatch.test.sh pins the multi-edit array `edits[0]` shape
+(fleet-ops#1173). #970 is the same session shape as #956 / #965 (the
 01a03dee edit-unmatch session); it is a leftover open duplicate filed
 by the same GitHub-search-index-delay that produced #951 / #965, so
 the citation chain must carry it. #975 is the same session shape as
@@ -230,6 +247,32 @@ the dedicated regression test
 tests/fleet-failed-command-compound-ls-permission-denied.test.sh
 pins that it does not. The auto-filed issue closes via
 observe-to-close when the session mtime ages out of the 24h window.
+A same-turn sibling of a `git clone` into `/tmp/<fresh-clone>` that
+races with `cd /tmp/<fresh-clone> 2>/dev/null && ls ...` and returns
+`(no output)  Command exited with code 1` is a real swallowed failure
+(fleet-ops#1217): the clone is still in flight, `cd` fails, stderr is
+silenced so the snippet is empty, and the next assistant turn is a
+silent `cd && ls` recovery with no user-facing text naming the failure.
+The detector already flags this class via the generic
+`isError or code != 0` path. `cd` is not in BENIGN_STAGE_RE.
+`LS_BENIGN_RE` matches the command text because it contains `ls`, but
+that short-circuit only applies on exit 2; the live shape is exit 1.
+A future refactor that treats `cd ... 2>/dev/null` as a probe, treats
+`(no output)` + exit 1 as benign whenever stderr is silenced, broadens
+`LS_BENIGN_RE` to code==1, or lets a same-turn sibling success mask a
+sibling failure would silently suppress this real signal. The class is
+distinct from #793 (`bash /tmp/<fresh-script>` exit 1 with the same
+empty snippet, different command), #765 (`cd ... 2>/dev/null && git
+status` exit 128 with `fatal: not a git repository`), and grep/rg
+POSIX no-match (BENIGN_STAGE_RE; the live session also carried a later
+`grep -nF` with the same empty snippet, which must stay a probe). The
+dedicated regression test
+tests/fleet-failed-command-clone-race-cd.test.sh pins that. The
+auto-filed issue closes via observe-to-close when the session mtime
+ages out of the 24h window. Live session
+2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
+`cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
+head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
@@ -583,6 +626,12 @@ def result_failed(
     # code is None; exit-code-only when not timed_out), so a body that
     # quoted both strings fell through to timed_out=True and was
     # flagged. Unify: no isError means content.
+    # Live #1074: a successful `git show HEAD` (isError=false) whose
+    # FULL DIFF output quotes 'Command exited with code', 'Command
+    # timed out', and 'fatal:' in the diff content (the worker.md +/-
+    # lines embed them). A stale detector version filed #1074 from
+    # this session; the isError=false guard already prevents the class.
+    # Locked by 6h6/6h7 alongside 6h2/6h4.
     if not is_error:
         return False, text
     # Downstream of a harness block (fleet-ops#677): the spawn-guard refused

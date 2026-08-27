@@ -11,6 +11,11 @@
 # one. Classes: free / prepaid-quota / metered (subscription is an alias of
 # prepaid-quota).
 #
+# fleet-ops#1133: a packet that declares `difficulty: keystone` inverts that
+# cost-first walk (prepaid capable first, then metered, free last) and
+# refuses a third cheap retry so systemd OnFailure can summon the senior
+# auditor. Unmarked packets keep the #387/#1178 order (volume first).
+#
 # Survivors justified against systemd: systemd Restart= restarts the SAME
 # ExecStart — it cannot choose a different provider/model seat. Seat rotation
 # (pick a DIFFERENT seat on each retry) is real added value that systemd
@@ -97,6 +102,7 @@ declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
 declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
+SEAT_VOLUME_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
 # Org/repair packets charge at most this many seats against the intake
 # cap (fleet-ops 2026-08-27 seat-cap un-strangle). Extra org units keep
@@ -141,6 +147,7 @@ load_seat_caps() {
     SEAT_PROVIDER_WEEKLY_BUDGET=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
+    SEAT_VOLUME_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
 
@@ -188,6 +195,9 @@ load_seat_caps() {
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # fleet-ops#1178: cross-class volume front-of-ladder (ollama -> devin ->
+    # commandcode -> cline FIRST). Empty means legacy free-then-prepaid behaviour.
+    SEAT_VOLUME_ORDER=$(jq -r '.volume_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p window budget; do
         [[ -n "$p" ]] || continue
@@ -376,6 +386,43 @@ task_weight() {
         echo "heavy"; return
     fi
     echo "light"
+}
+
+# fleet-ops#1133: explicit difficulty marker on a packet.
+# Scans the packet for a `difficulty: keystone|heavy|light` line (or
+# `keystone: true`). First match wins. Falls back to task_weight() when
+# no marker is present. Missing file -> light.
+packet_difficulty() {
+    local pkt="$1" line lowered
+    if [[ ! -f "$pkt" ]]; then
+        echo "light"
+        return
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lowered="${line,,}"
+        if [[ "$lowered" =~ ^difficulty:[[:space:]]*(keystone|heavy|light)[[:space:]]*$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return
+        fi
+        if [[ "$lowered" =~ ^keystone:[[:space:]]*(true|yes|1)[[:space:]]*$ ]]; then
+            echo "keystone"
+            return
+        fi
+    done < "$pkt"
+    task_weight "$pkt"
+}
+
+# fleet-ops#1133: JSONL ledger the metrics exporter heartbeats on.
+# Fail-open: a write error must never brick pick_seat.
+keystone_record_event() {
+    local event="${1:-}" p="${2:-}" m="${3:-}"
+    local ledger="${KEYSTONE_LEDGER:-$STATE_DIR/keystone-routing.jsonl}"
+    event="${event//[^A-Za-z0-9._-]/}"
+    p="${p//[^A-Za-z0-9._/-]/}"
+    m="${m//[^A-Za-z0-9._/-]/}"
+    mkdir -p "$(dirname "$ledger")" 2>/dev/null || return 0
+    printf '{"ts":"%s","event":"%s","provider":"%s","model":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$p" "$m" >>"$ledger" 2>/dev/null || true
 }
 
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
@@ -1112,17 +1159,25 @@ _rr_pick() {
 }
 
 # Pick a different seat than the failed one(s).
-# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file]
+# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
 # (one per line); all are excluded. If not given, only fail_provider/fail_model
 # is excluded.
+# difficulty (fleet-ops#1133): keystone forces need_capable=1, walks strongest
+# class first (prepaid -> metered -> free), and returns empty after 2 strikes
+# so the caller escalates to the senior conference instead of another cheap
+# retry. heavy/light (default) keep the #387/#1178 walk (volume first).
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
-    local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}"
+    local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
 
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
+
+    if [[ "$difficulty" == "keystone" ]]; then
+        need_capable=1
+    fi
 
     # Reset the per-call credential cache so a provider is resolved once
     # per selection pass (fleet-ops#36). A provider with several models
@@ -1133,11 +1188,21 @@ pick_seat() {
     # Build the set of tried seats for exclusion.
     declare -A tried=()
     tried["$fail_p/$fail_m"]=1
+    local tried_count=0
     if [[ -n "$tried_file" && -f "$tried_file" ]]; then
         local tp tm
         while IFS=/ read -r tp tm; do
-            [[ -n "$tp" ]] && tried["$tp/$tm"]=1
+            [[ -n "$tp" ]] && tried["$tp/$tm"]=1 && tried_count=$((tried_count + 1))
         done <"$tried_file"
+    fi
+
+    # fleet-ops#1133: two strikes on a keystone packet end cheap retries.
+    # tried_count is lines already recorded by the wrapper BEFORE this pick,
+    # so 0 = first attempt, 1 = one retry left, >=2 = escalate.
+    if [[ "$difficulty" == "keystone" ]] && (( tried_count >= 2 )); then
+        seat_log "pick_seat: KEYSTONE ESCALATION — ${tried_count} strikes; refusing further cheap retries (senior conference via OnFailure)"
+        keystone_record_event escalated
+        return 1
     fi
 
     # Buckets (fleet-ops#387):
@@ -1258,9 +1323,67 @@ pick_seat() {
         fi
     fi
 
-    # Free first, then prepaid (alternate), then metered.
+    # fleet-ops#1133 keystone inverts cost-first: prepaid (strongest class)
+    # first, then metered, free last. Skip prepaid round-robin so a hard
+    # packet cannot rotate onto ollama-flash as "just another prepaid".
+    # Skip volume front-of-ladder (#1178) on keystone so reliability beats
+    # cheap. Unmarked packets keep volume-first, then leftover free,
+    # leftover prepaid (alternate), then metered.
+    local -a volume_seats=() leftover_free=() leftover_prepaid=()
+    if [[ "$difficulty" != "keystone" && -n "$SEAT_VOLUME_ORDER" ]]; then
+        declare -A _vol_seen=()
+        local _vp _fm
+        for _vp in $SEAT_VOLUME_ORDER; do
+            _vol_seen["$_vp"]=1
+        done
+        for _fm in "${free_seats[@]:-}" "${prepaid_seats[@]:-}"; do
+            [[ -n "$_fm" ]] || continue
+            p="${_fm%%$'\t'*}"
+            if [[ -n "${_vol_seen[$p]:-}" ]]; then
+                volume_seats+=("$_fm")
+            fi
+        done
+        if (( ${#volume_seats[@]} > 0 )); then
+            mapfile -t volume_seats < <(_order_seats_by "$SEAT_VOLUME_ORDER" "${volume_seats[@]}")
+        fi
+        for _fm in "${free_seats[@]:-}"; do
+            [[ -n "$_fm" ]] || continue
+            p="${_fm%%$'\t'*}"
+            [[ -n "${_vol_seen[$p]:-}" ]] && continue
+            leftover_free+=("$_fm")
+        done
+        for _fm in "${prepaid_seats[@]:-}"; do
+            [[ -n "$_fm" ]] || continue
+            p="${_fm%%$'\t'*}"
+            [[ -n "${_vol_seen[$p]:-}" ]] && continue
+            leftover_prepaid+=("$_fm")
+        done
+        free_seats=("${leftover_free[@]:-}")
+        prepaid_seats=("${leftover_prepaid[@]:-}")
+    fi
+
     local chosen="" chosen_p=""
-    if (( ${#free_seats[@]} > 0 )); then
+    if [[ "$difficulty" == "keystone" ]]; then
+        if (( ${#prepaid_seats[@]} > 0 )); then
+            chosen="${prepaid_seats[0]}"
+            chosen_p="${chosen%%$'\t'*}"
+            _record_prepaid_pick "$chosen_p"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (prepaid/strongest class first)"
+        elif (( ${#metered_seats[@]} > 0 )); then
+            chosen="${metered_seats[0]}"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (metered; no prepaid left)"
+        elif (( ${#free_seats[@]} > 0 )); then
+            chosen="${free_seats[0]}"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (free last-resort)"
+        fi
+    elif (( ${#volume_seats[@]} > 0 )); then
+        chosen="${volume_seats[0]}"
+        chosen_p="${chosen%%$'\t'*}"
+        # Prepaid members of the volume set still burn weekly pacing.
+        if [[ "$(class_of "$chosen_p")" == "prepaid-quota" ]]; then
+            _record_prepaid_pick "$chosen_p"
+        fi
+    elif (( ${#free_seats[@]} > 0 )); then
         chosen="${free_seats[0]}"
     elif (( ${#prepaid_seats[@]} > 0 )); then
         chosen=$(_rr_pick "$STATE_DIR/prepaid-rr.idx" "${prepaid_seats[@]}")
@@ -1270,6 +1393,9 @@ pick_seat() {
         chosen="${metered_seats[0]}"
     fi
     if [[ -n "$chosen" ]]; then
+        if [[ "$difficulty" == "keystone" ]]; then
+            keystone_record_event routed "${chosen%%$'\t'*}" "${chosen#*$'\t'}"
+        fi
         printf '%s\n' "$chosen"
         return 0
     fi

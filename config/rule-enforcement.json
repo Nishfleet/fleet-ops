@@ -29,7 +29,7 @@
     {
       "id": "sr-findings-queued",
       "source": "global-standing-rules.md: Every finding gets queued, automatically (Nish, 2026-08-22)",
-      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates — Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602). Observe-to-close: a clean heartbeat tick closes the auto-filed issue when that session slug is no longer a finding (fleet-ops#724)",
+      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates \u2014 Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602). Observe-to-close: a clean heartbeat tick closes the auto-filed issue when that session slug is no longer a finding (fleet-ops#724)",
       "proof": "bin/fleet-findings-queued; lib/findings-queued.py; tests/fleet-findings-queued.test.sh; fleet-heartbeat-tier1 block 15",
       "status": "enforced"
     },
@@ -605,6 +605,13 @@
       "status": "enforced"
     },
     {
+      "id": "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou",
+      "source": "decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: \"can't stress enough\")",
+      "mechanism": "Heartbeat volume-lane-order canary: volume_providers_in_order must equal ollama,devin,commandcode,cline exactly; every volume provider must be live (cap>0 + models); cursor must not appear in the volume prefix; seat-lib pick_seat must load SEAT_VOLUME_ORDER and prefer the volume_seats bucket before leftover free / leftover prepaid / metered. Observe-to-open when xai-oauth is in models.json but unwired (coordinates #1163).",
+      "proof": "bin/fleet-volume-lane-order-canary; tests/fleet-volume-lane-order-canary.test.sh; config/seat-caps.json volume_providers_in_order; lib/seat-lib.sh SEAT_VOLUME_ORDER + volume_seats; fleet-heartbeat-tier1 block 33; fleet-ops#1178",
+      "status": "enforced"
+    },
+    {
       "id": "led-north-star-quality",
       "source": "decisions-ledger.md: 2026-08-26 | NORTH STAR: quality through and through",
       "mechanism": "CI drill + lib/north-star-quality.py verify: config/quality-routing.json must keep the three primary SLO cuts (revert_rate, defect_rate, overturn_rate) and no cut may exceed its NORTH STAR ceiling; config/role-quality-gates.json must keep reviewer/senior/researcher gates tied to the quality scoreboard. A PR that drops a SLO or weakens a cut is rejected at the gate.",
@@ -671,7 +678,7 @@
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-correction",
-      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — CORRECTION",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 CORRECTION",
       "mechanism": "Superseded/corrected D1 prod migration decision; the live enforcer must gate on the final process amendment. Mechanism issue open.",
       "proof": "fleet-ops#906",
       "status": "queued(#906)",
@@ -679,7 +686,7 @@
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-decided",
-      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — DECIDED (plain-language re-ask, informed)",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 DECIDED (plain-language re-ask, informed)",
       "mechanism": "D1 prod migration vacation grant: fleet MAY apply prod migrations autonomously through 2026-09-08 via senior process. Mechanism issue open.",
       "proof": "fleet-ops#907",
       "status": "queued(#907)",
@@ -687,7 +694,7 @@
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-process-amendment",
-      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — process amendment (Nish, same conversation)",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 process amendment (Nish, same conversation)",
       "mechanism": "D1 prod migration process: strong lane plan + independent senior blind-review + apply + live verification + text Nish. Mechanism issue open.",
       "proof": "fleet-ops#908",
       "status": "queued(#908)",
@@ -703,9 +710,71 @@
     {
       "id": "led-2026-08-27-vacation-window-corrected",
       "source": "decisions-ledger.md: 2026-08-27 | Vacation window corrected",
-      "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire — official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted — worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness.",
+      "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire \u2014 official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted \u2014 worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness.",
       "proof": "bin/fleet-credential-expiry-canary; lib/credential-expiry-canary.py; tests/credential-expiry-canary.test.sh; bin/fleet-heartbeat-tier1 block 31; fleet-ops#938",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-weekly-fleet-review-approved",
+      "source": "decisions-ledger.md: 2026-08-27 | Weekly Fleet Review approved",
+      "mechanism": "Weekly systemd timer (Sun 04:30 IST, post-vps-weekly-update) fires agent-cron-run weekly-fleet-review: blind 5-lens senior research + conference, output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only. Role-gate catalog entry locks the cap and the signal-attribution contract; the rule-enforcement canary observes the source as covered on a real heartbeat tick (observe-to-close).",
+      "proof": "systemd/fleet-weekly-fleet-review.timer; systemd/fleet-weekly-fleet-review.service; prompts/weekly-fleet-review.md; bin/agent-cron-run; config/role-quality-gates.json; lib/role-quality-gates.py (check_weekly_fleet_review_output_contract); tests/weekly-fleet-review.test.sh; fleet-ops#1146",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-token-economy-rebalance-nish-from-live-meters",
+      "source": "decisions-ledger.md: 2026-08-27 | Token economy rebalance (Nish, from live meters)",
+      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus config/seat-caps.json and lib/seat-lib.sh pick_seat enforce the 2026-08-27 rebalance: devin cap 4 and first in the prepaid alternation; cursor cap 1 and excluded from free lanes; xai-oauth (SuperGrok) cap 1, last in the prepaid alternation, weekly quota, alternating grok-4.6 and grok-4.5; free lanes (commandcode/hetzner/opencode) before prepaid and metered (minimax/straitly) last; the legacy grok.com/CLI slug and opencode-anthropic (Claude) cap 0 with dated reasons. Cursor $400 overage pacing is tracked in Nishfleet/fleet-ops#1167.",
+      "proof": "config/seat-caps.json; lib/seat-lib.sh; tests/fleet-token-economy.test.sh; tests/seat-lib.test.sh; Nishfleet/fleet-ops#1163; Nishfleet/fleet-ops#1167",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-cursor-400-correction-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 correction (Nish)",
+      "mechanism": "Cursor $400 extra-usage budget expires with the 25d cycle: target ~$16/day SPENT on keystone/senior-review/Weekly-Review work (floor, not ceiling), meter-checked; do not bank it. Mechanism issue open.",
+      "proof": "fleet-ops#1177",
+      "status": "queued(#1177)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)",
+      "mechanism": "Cursor $400 extra-usage opens only after included usage is exhausted; on overage use cursor-grok-4.6-high for keystone/senior-review, ~$16/day target, meter-checked. Mechanism issue open.",
+      "proof": "fleet-ops#1179",
+      "status": "queued(#1179)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-quality-ratchet-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Quality ratchet (Nish)",
+      "mechanism": "Weekly Fleet Review raises the quality bar one notch per week, evidence-based; tightening only, never loosening without Nish. Mechanism issue open.",
+      "proof": "fleet-ops#1222",
+      "status": "queued(#1222)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-precedence-band-overnight-machinery-surge-nish",
+      "source": "decisions-ledger.md: 2026-08-27 | Precedence band + overnight machinery surge (Nish)",
+      "mechanism": "From 2026-08-28 08:00 IST: blanket fleet-precedence ends; machinery capped ~30% of lanes, product 70%; machinery jumps the band only by naming its multiplier; Weekly Fleet Review owns the dial via the ratchet. Mechanism issue open.",
+      "proof": "fleet-ops#1223",
+      "status": "queued(#1223)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-geo-aeo-fleet-executes-measurement-owned-content-",
+      "source": "decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish",
+      "mechanism": "GEO/AEO: fleet executes measurement + owned-content tactics; brand gate (preview-then-autonomous) on each public content surface; Reddit/community and digital-PR parked as Nish-reserved. Mechanism issue open.",
+      "proof": "fleet-ops#1245",
+      "status": "queued(#1245)",
+      "queued_since": "2026-08-27"
+    },
+    {
+      "id": "led-2026-08-27-geo-plan-approved-lets-go",
+      "source": "decisions-ledger.md: 2026-08-27 | GEO plan approved (\"lets go\")",
+      "mechanism": "GEO plan approved: #1236 probe starts immediately; #1237/#1238 ride the 08-28 product share; preview-then-autonomous brand gate as the approval mechanism for public content voice. Mechanism issue open.",
+      "proof": "fleet-ops#1256",
+      "status": "queued(#1256)",
+      "queued_since": "2026-08-27"
     }
   ]
 }

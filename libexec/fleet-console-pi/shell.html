@@ -1,0 +1,434 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Fleet Console</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0E1210">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon.svg"><link rel="icon" href="icon.svg">
+<style>
+:root{
+  --ink:#080A0B; --panel:#0F1315; --panel2:#151A1D; --line:#1E262A;
+  --text:#E9EFF0; --mut:#78878C; --dim:#4A585D;
+  --teal:#4FC3D9; --gold:#F0A72C; --ok:#4FB477; --warn:#D8A33F; --risk:#DE5B4C;
+  --unk:#5A635E; --r:4px;
+}
+@media (prefers-color-scheme:light){:root{
+  --ink:#F7F6F1; --panel:#FFFFFF; --panel2:#F1F0EA; --line:#E2E0D6;
+  --text:#191E1B; --mut:#6A736D; --dim:#8C948E;
+  --teal:#1F857A; --gold:#A9761A; --ok:#3E8B54; --warn:#A9761A; --risk:#B04A3E;
+  --unk:#9BA69D;
+}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--ink);color:var(--text)}
+body{font:17px/1.75 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif;
+  letter-spacing:.012em;word-spacing:.05em;padding-bottom:env(safe-area-inset-bottom)}
+p{max-width:62ch}
+h1,h2,h3{font-family:"Avenir Next Condensed","Bahnschrift","Arial Narrow",ui-sans-serif,sans-serif;
+  margin:0;letter-spacing:.01em;text-wrap:balance}
+.lab{font:600 12px/1.5 ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--dim)}
+
+header.top{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--ink) 88%,transparent);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.top-in{max-width:960px;margin:0 auto;padding:12px 18px 10px;display:flex;align-items:center;
+  justify-content:space-between;gap:14px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand h1{font-size:21px;letter-spacing:.26em;font-weight:700}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent);animation:blip 2.4s ease-in-out infinite}
+@keyframes blip{50%{opacity:.35}}
+.when{font-size:14px;color:var(--mut);text-align:right}
+.conveyor{height:1px;background:var(--line);position:relative;overflow:hidden}
+.conveyor::after{content:"";position:absolute;inset:0;width:22%;
+  background:linear-gradient(90deg,transparent,var(--teal),transparent);
+  animation:sweep 3.4s cubic-bezier(.4,0,.6,1) infinite}
+@keyframes sweep{0%{transform:translateX(-120%)}100%{transform:translateX(560%)}}
+@media (prefers-reduced-motion:reduce){.conveyor,.dot{animation:none!important}}
+
+.frozen{background:var(--warn);color:#12100a;font:600 12.5px/1.45 ui-sans-serif,-apple-system,sans-serif;
+  padding:8px 16px;border-radius:3px 3px 0 0;letter-spacing:.01em}
+.band.frozen-data .cell .v,.band.frozen-data .cell .k{opacity:.45}
+
+.band{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-bottom:4px}
+.band .cell{background:var(--panel);padding:15px 16px;text-align:left}
+.band .k{font:600 10.5px/1 ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--dim)}
+.band .v{font:700 32px/1.05 ui-monospace,"SF Mono",Menlo,monospace;margin-top:9px;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.band .s{font-size:13px;line-height:1.35;color:var(--mut);margin-top:3px}
+.band .cell.hot .v{color:var(--gold)}
+.band .cell.cool .v{color:var(--teal)}
+.band .cell.disputed{outline:2px solid var(--risk);outline-offset:-2px}
+.band .cell .disputed-mark{margin-top:6px;font:700 11px/1.3 ui-monospace,"SF Mono",Menlo,monospace;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--risk)}
+@media (max-width:620px){.band{grid-template-columns:repeat(2,1fr)}}
+
+.band button.cell{font:inherit;color:inherit;text-align:left;border:0;width:100%;cursor:pointer;
+  display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start}
+.band button.cell:hover .k,.band button.cell:focus-visible .k{color:var(--teal)}
+.band button.cell:focus-visible{outline:2px solid var(--teal);outline-offset:-2px}
+.band .cell .explain-t{margin-top:9px;font-size:14.5px}
+.band .cell .explain-x{margin-top:7px;max-width:none;font-size:15px;line-height:1.55}
+
+.explain-t{align-self:flex-start;background:transparent;border:none;color:var(--mut);
+  font:inherit;font-size:15px;cursor:pointer;padding:0;
+  text-decoration:underline dotted;text-underline-offset:3px}
+.explain-t:hover,.explain-t:focus-visible{color:var(--text)}
+.band .cell:hover .explain-t{color:var(--text)}
+.explain-x{display:none;font-size:16px;line-height:1.6;color:var(--text);
+  border:1px solid var(--line);border-radius:4px;padding:13px 15px;max-width:62ch}
+.explain-x.open{display:block}
+.explain-x{white-space:pre-line}
+
+.pause-card{background:var(--panel);border:1px solid var(--warn);border-radius:var(--r);
+  padding:14px 16px;display:flex;gap:12px;align-items:center}
+.pause-card .dot{width:7px;height:7px;border-radius:50%;background:var(--warn);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 22%,transparent)}
+.pause-card .txt{flex:1;font-size:15px;line-height:1.5}
+.pause-card .txt strong{color:var(--warn)}
+
+.prod{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.ph{display:flex;align-items:center;gap:12px;padding:15px 16px 13px}
+.ph h2{font-size:24px}
+.ph .tag{font-size:15px;color:var(--mut);margin:3px 0 0}
+.state{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:15px;color:var(--mut)}
+.led{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.led.on{background:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb,var(--teal) 20%,transparent)}
+
+.d{display:flex;gap:14px;align-items:center;padding:13px 16px;border-top:1px solid var(--line)}
+.d:first-of-type{border-top:0}
+.d .body{flex:1;min-width:0}
+.d .t{margin:5px 0 0;font-size:18px;line-height:1.55}
+.d .t a{color:var(--text);text-decoration:none;
+  border-bottom:1px solid color-mix(in srgb,var(--gold) 55%,transparent)}
+.d .t a:hover{border-bottom-color:var(--gold)}
+
+.pill{font-size:13.5px;border-radius:3px;padding:5px 11px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
+.pill.up{border-color:var(--teal);color:var(--teal)}
+.draft{color:var(--warn);font-size:11px;border:1px solid var(--warn);
+  border-radius:3px;padding:1px 7px;font-weight:600}
+.ref{font:700 13px/1.7 ui-monospace,"SF Mono",Menlo,monospace;
+  color:var(--teal);flex:none;white-space:nowrap}
+.empty{padding:18px;color:var(--mut);font-size:17px;margin:0}
+
+.tick{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
+.tick ul{list-style:none;margin:9px 0 0;padding:0}
+.tick li{display:flex;gap:12px;font-size:16px;color:var(--mut);padding:8px 0;
+  border-top:1px solid color-mix(in srgb,var(--line) 60%,transparent)}
+.tick li:first-child{border-top:0;color:var(--text)}
+.tick time{font-size:14px;color:var(--teal);flex:none;min-width:72px}
+.tick strong{font-weight:700}
+
+footer{text-align:center;color:var(--dim);font-size:14.5px;line-height:1.7}
+
+a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.tick li span,.d .t{overflow-wrap:anywhere}
+.lab .stale{color:var(--warn)}
+
+.v-ok{color:var(--ok)!important}
+.v-warn{color:var(--warn)!important}
+.v-risk{color:var(--risk)!important}
+
+.wrap{max-width:960px;margin:0 auto;padding:20px 18px 72px;display:flex;flex-direction:column;gap:22px}
+
+@media (max-width:560px){
+  .top-in{flex-wrap:wrap;row-gap:10px}
+  .brand{flex:1 1 100%}
+}
+</style></head><body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><span class="dot" id="dot"></span><h1>THE FLEET</h1>
+      <span class="lab" id="scope"></span></div>
+    <span class="when" id="age"></span>
+  </div>
+  <div class="conveyor"></div>
+</header>
+<div class="wrap">
+  <div id="frozen" class="frozen" hidden></div>
+  <div id="paused"></div>
+  <div id="band" class="band"></div>
+  <section class="prod" id="section-prs"><div class="ph"><h2>Open PRs</h2><span class="tag" id="prs-src"></span><div class="state"><span class="led" id="prs-led"></span></div></div><div id="prs-body"></div></section>
+  <section class="prod" id="section-shipped"><div class="ph"><h2>Shipped in the last 24h</h2><span class="tag" id="shipped-src"></span><div class="state"><span class="led" id="shipped-led"></span></div></div><div id="shipped-body"></div></section>
+  <section class="prod" id="section-ci"><div class="ph"><h2>MAIN RED</h2><span class="tag" id="ci-src"></span><div class="state"><span class="led" id="ci-led"></span></div></div><div id="ci-body"></div></section>
+  <section class="prod" id="section-alerts"><div class="ph"><h2>Firing alerts</h2><span class="tag" id="alerts-src"></span><div class="state"><span class="led" id="alerts-led"></span></div></div><div id="alerts-body"></div></section>
+  <section class="prod" id="section-repairs"><div class="ph"><h2>Repairs in flight</h2><span class="tag" id="repairs-src"></span><div class="state"><span class="led" id="repairs-led"></span></div></div><div id="repairs-body"></div></section>
+  <section class="prod" id="section-pi"><div class="ph"><h2>Running Pi work</h2><span class="tag" id="pi-src"></span><div class="state"><span class="led" id="pi-led"></span></div></div><div id="pi-body"></div></section>
+  <footer id="foot"></footer>
+</div>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const agoMs = ms => {
+  if (ms == null) return "?";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.round(s / 60) + "m";
+  if (s < 172800) return Math.round(s / 3600) + "h";
+  return Math.round(s / 86400) + "d";
+};
+const since = iso => iso ? agoMs(Date.now() - new Date(iso).getTime()) : "?";
+const parseInstant = iso => Date.parse(iso);
+
+function freshness(t){
+  if (!t || !t.ok || t.observed_at == null)
+    return {state:"unknown", reason: t && t.reason ? t.reason : "source unreadable"};
+  const ageS = Date.now() / 1000 - t.observed_at;
+  if (ageS > t.stale_after_s)
+    return {state:"stale", reason: "source last seen " + agoMs(ageS * 1000) + " ago"};
+  return {state:"ok"};
+}
+
+function freshState(t){
+  const f = freshness(t);
+  return [f.state === "ok", f];
+}
+
+function bigValCell(t, val, cls){
+  const f = freshness(t);
+  if (f.state !== "ok"){
+    const mark = f.state === "stale" ? "stale" : "missing";
+    return `<div class="v" style="font-size:26px;color:var(--unk)">—</div>
+      <div class="s">${esc(mark)} · ${esc(f.reason)}</div>`;
+  }
+  let rateCls = "";
+  if (cls === "rate" && val != null){
+    const n = parseFloat(val);
+    if (n < 15) rateCls = " v-ok";
+    else if (n < 30) rateCls = " v-warn";
+    else rateCls = " v-risk";
+  }
+  const colorClass = cls === "rate" ? rateCls : (cls ? " " + cls : "");
+  const disputed = t && t.disputed;
+  const mark = disputed ? `<div class="disputed-mark">DISPUTED</div>` : "";
+  return `<div class="v${colorClass}">${val == null ? "?" : esc(String(val))}</div>${mark}`;
+}
+
+function explainToggleHTML(tile, label){
+  const f = freshness(tile);
+  const ageTxt = tile.observed_at ? "evidence " + agoMs((Date.now()/1000 - tile.observed_at)*1000) + " old" : "no evidence timestamp";
+  const src = tile.source ? "source: " + tile.source : "source unknown";
+  const honesty = tile.explain || label;
+  const okTxt = f.state === "ok" ? "This tile is reading fresh data." : (f.state === "stale" ? "This tile's source data is stale — last seen " + agoMs((Date.now()/1000 - tile.observed_at)*1000) + " ago. Showing —, not the last number." : "This tile could not read its source. Showing —, not a frozen value.");
+  const v = tile.verify || {};
+  const verifyTxt = v.cmd ? "Verify: " + v.cmd + "." : "Verify: none.";
+  const disputeTxt = tile.disputed ? " DISPUTED: displayed value failed that check (" + (v.reason || "mismatch") + ")." : "";
+  const txt = honesty + " " + okTxt + " " + src + ". " + ageTxt + ". " + verifyTxt + disputeTxt;
+  return `<span class="explain-t">what is this?</span>
+    <div class="explain-x" data-panel="${esc(tile.source || label)}">${esc(txt)}</div>`;
+}
+
+function repoCountRows(items, cap, moreLabel){
+  if (!items || !items.length) return '<p class="empty">none</p>';
+  const show = items.slice(0, cap);
+  let html = show.map(p => {
+    return `<div class="d"><div class="body">
+      <p class="t">${esc(p.repo)}</p>
+      <span class="ref">${esc(String(p.count))}</span></div></div>`;
+  }).join("");
+  if (items.length > cap) html += `<p class="empty">+ ${items.length - cap} more ${esc(moreLabel || "repos")}</p>`;
+  return html;
+}
+
+function render(d){
+  if (!d) return;
+  const t = d.tiles || {};
+  const now = Date.now();
+  const ageMs = now - (d.generated_epoch || 0) * 1000;
+  const cadence = d.cadence_min || 12;
+  const frozen = ageMs > (cadence * 2 + 2) * 60 * 1000;
+
+  const o = t.open_prs || {};
+  const s = t.shipped_24h || {};
+  const c = t.main_ci || {};
+  const p = t.running_pi || {};
+  const fl = t.fleet_state || {};
+  const al = t.firing_alerts || {};
+  const rp = t.repairs_inflight || {};
+
+  // ---- Header
+  document.getElementById("scope").textContent = (d.org || "org") + " · " + (d.repos ? d.repos.length : 0) + " repos";
+  document.getElementById("age").textContent = "updated " + agoMs(ageMs) + " ago";
+
+  // ---- Frozen banner
+  const frozEl = document.getElementById("frozen");
+  if (frozen){
+    frozEl.hidden = false;
+    frozEl.textContent = "Data is frozen — last generated " + esc(d.generated_at) + " (" + agoMs(ageMs) + " ago). The refresh timer may have stopped.";
+  } else {
+    frozEl.hidden = true;
+  }
+
+  // ---- Frozen class on band
+  const band = document.getElementById("band");
+  band.classList.toggle("frozen-data", frozen);
+
+  // ---- Paused card
+  const pausedEl = document.getElementById("paused");
+  const flOk = freshness(fl);
+  if (flOk.state === "ok" && fl.paused === true){
+    pausedEl.innerHTML = `<div class="pause-card"><span class="dot"></span>
+      <div class="txt"><strong>FLEET PAUSED</strong> — ${esc(fl.note || "all timers stopped")}</div></div>`;
+  } else {
+    pausedEl.innerHTML = "";
+  }
+
+  // ---- Band
+  const prOk = freshness(o).state === "ok";
+  const shOk = freshness(s).state === "ok";
+  const ciOk = freshness(c).state === "ok";
+  const piOk = freshness(p).state === "ok";
+  const alOk = freshness(al).state === "ok";
+  const rpOk = freshness(rp).state === "ok";
+
+  const prVal = bigValCell(o, prOk ? o.count : null, "cool");
+  const shVal = bigValCell(s, shOk ? s.count : null, "hot");
+  const ciVal = bigValCell(c, ciOk ? c.red_count : null, ciOk && c.red_count > 0 ? "v-risk" : "");
+  const piVal = bigValCell(p, piOk ? p.count : null);
+  const alVal = bigValCell(al, alOk ? al.count : null, alOk && al.count > 0 ? "v-risk" : "");
+  const rpVal = bigValCell(rp, rpOk ? rp.count : null);
+
+  const prSub = prOk ? "open across the org" : "";
+  const shSub = shOk ? "merged PRs, trailing 24h" : "";
+  const ciSub = ciOk ? ((c.items || []).length + " repos with known CI") : "";
+  const piSub = piOk ? (String(p.proc_count) + " procs + " + String(p.unit_count) + " units · " + (p.note || "")) : "";
+  const alSub = alOk ? "Watchdog excluded" : "";
+  const rpSub = rpOk && rp.dispatch_24h != null ? (rp.dispatch_24h + " dispatched / 24h") : (rpOk ? "running transients" : "");
+
+  const cellCls = (base, tile) => (base + (tile && tile.disputed ? " disputed" : "")).trim();
+  band.innerHTML = `
+    <button class="${cellCls("cell cool", o)}" aria-expanded="false"><div class="k">OPEN PRS</div>${prVal}${prSub ? `<div class="s">${esc(prSub)}</div>` : ""}${explainToggleHTML(o, "Prometheus fleet_open_prs, current open-PR count per repo.")}</button>
+    <button class="${cellCls("cell hot", s)}" aria-expanded="false"><div class="k">SHIPPED 24H</div>${shVal}${shSub ? `<div class="s">${esc(shSub)}</div>` : ""}${explainToggleHTML(s, "Prometheus fleet_merged_prs_24h, trailing 24h, skipped/cancelled runs excluded.")}</button>
+    <button class="${cellCls("cell", c)}" aria-expanded="false"><div class="k">MAIN RED</div>${ciVal}${ciSub ? `<div class="s">${esc(ciSub)}</div>` : ""}${explainToggleHTML(c, "Prometheus fleet_main_ci_green: count of repos whose default-branch CI is red.")}</button>
+    <button class="${cellCls("cell", p)}" aria-expanded="false"><div class="k">PI WORK</div>${piVal}${piSub ? `<div class="s">${esc(piSub)}</div>` : ""}${explainToggleHTML(p, "Running user units whose ExecStart contains pi --print (never a unit-name pattern).")}</button>
+    <button class="${cellCls("cell", al)}" aria-expanded="false"><div class="k">ALERTS</div>${alVal}${alSub ? `<div class="s">${esc(alSub)}</div>` : ""}${explainToggleHTML(al, "Prometheus /api/v1/alerts, currently firing, Watchdog excluded.")}</button>
+    <button class="${cellCls("cell", rp)}" aria-expanded="false"><div class="k">REPAIRS</div>${rpVal}${rpSub ? `<div class="s">${esc(rpSub)}</div>` : ""}${explainToggleHTML(rp, "Running alert-repair-* transient units; subtitle is fleet_repair_dispatch_24h.")}</button>`;
+
+  // ---- Sections
+
+  const [prLive, prFr] = freshState(o);
+  document.getElementById("prs-src").textContent = o.source || "";
+  document.getElementById("prs-led").className = "led" + (prLive ? " on" : "");
+  if (!prLive){
+    document.getElementById("prs-body").innerHTML = `<p class="empty">${esc(prFr.reason || "source unavailable")}</p>`;
+  } else {
+    document.getElementById("prs-body").innerHTML = repoCountRows(o.items, 30, "repos");
+  }
+
+  const [shLive, shFr] = freshState(s);
+  document.getElementById("shipped-src").textContent = s.source || "";
+  document.getElementById("shipped-led").className = "led" + (shLive ? " on" : "");
+  if (!shLive){
+    document.getElementById("shipped-body").innerHTML = `<p class="empty">${esc(shFr.reason || "source unavailable")}</p>`;
+  } else {
+    document.getElementById("shipped-body").innerHTML = repoCountRows(s.items, 30, "repos");
+  }
+
+  const [ciLive, ciFr] = freshState(c);
+  document.getElementById("ci-src").textContent = c.source || "";
+  document.getElementById("ci-led").className = "led" + (ciLive ? " on" : "");
+  const ciBody = document.getElementById("ci-body");
+  if (!ciLive){
+    ciBody.innerHTML = `<p class="empty">${esc(ciFr.reason || "source unavailable")}</p>`;
+  } else {
+    const rows = (c.items || []);
+    if (!rows.length){
+      ciBody.innerHTML = `<p class="empty" style="color:var(--ok)">no default-branch CI samples (pending omitted)</p>`;
+    } else {
+      ciBody.innerHTML = rows.map(r => {
+        const red = r.green === 0;
+        return `<div class="d"><div class="body">
+          <p class="t">${esc(r.repo)}</p>
+          <span class="pill ${red ? "" : "up"}" style="${red ? "border-color:var(--risk);color:var(--risk)" : ""}">${red ? "MAIN RED" : "green"}</span></div></div>`;
+      }).join("");
+    }
+  }
+
+  const [alLive, alFr] = freshState(al);
+  document.getElementById("alerts-src").textContent = al.source || "";
+  document.getElementById("alerts-led").className = "led" + (alLive ? " on" : "");
+  const alertsBody = document.getElementById("alerts-body");
+  if (!alLive){
+    alertsBody.innerHTML = `<p class="empty">${esc(alFr.reason || "source unavailable")}</p>`;
+  } else if (!(al.items || []).length){
+    alertsBody.innerHTML = `<p class="empty" style="color:var(--ok)">no firing alerts (Watchdog excluded)</p>`;
+  } else {
+    alertsBody.innerHTML = al.items.map(a =>
+      `<div class="d"><div class="body">
+        <p class="t">${esc(a.alertname)}</p>
+        <span class="pill">${esc(a.severity || "")}</span></div></div>`
+    ).join("");
+  }
+
+  const [rpLive, rpFr] = freshState(rp);
+  document.getElementById("repairs-src").textContent = rp.source || "";
+  document.getElementById("repairs-led").className = "led" + (rpLive ? " on" : "");
+  const repairsBody = document.getElementById("repairs-body");
+  if (!rpLive){
+    repairsBody.innerHTML = `<p class="empty">${esc(rpFr.reason || "source unavailable")}</p>`;
+  } else {
+    const units = (rp.units || []).map(u => `<span class="pill up">${esc(u)}</span>`).join("");
+    let html = `<p class="empty">${rp.count ? rp.count + " repair unit(s) running" : "none in flight"}</p>`;
+    if (units) html += `<div style="margin:8px 0 10px 16px">${units}</div>`;
+    if (rp.dispatch_24h != null) html += `<p class="empty">dispatched in trailing 24h: <b>${rp.dispatch_24h}</b></p>`;
+    repairsBody.innerHTML = html;
+  }
+
+  const [piLive, piFr] = freshState(p);
+  document.getElementById("pi-src").textContent = p.source || "";
+  document.getElementById("pi-led").className = "led" + (piLive ? " on" : "");
+  const piBody = document.getElementById("pi-body");
+  if (!piLive){
+    piBody.innerHTML = `<p class="empty">${esc(piFr.reason || "source unavailable")}</p>`;
+  } else {
+    const units = (p.units || []).map(u => `<span class="pill up">${esc(u)}</span>`).join("");
+    let html = `<p class="empty">${esc(p.note || "active Pi work")}</p>`;
+    if (units) html += `<div style="margin:8px 0 10px 16px">${units}</div>`;
+    if (flOk.state === "ok" && fl.active_timers != null){
+      html += `<p class="empty">active user timers: <b>${fl.active_timers}</b></p>`;
+    }
+    piBody.innerHTML = html;
+  }
+
+  // ---- Footer
+  const srcs = Object.entries(t).map(([k, v]) =>
+    k + ": " + (v && v.ok ? "ok" : "DOWN") + " (" + (v && v.source ? v.source : "?") + ")"
+  ).join(" · ");
+  const disputedNames = Object.entries(t).filter(([, v]) => v && v.disputed).map(([k]) => k);
+  const disputedLine = disputedNames.length
+    ? "<br><b>DISPUTED</b>: " + esc(disputedNames.join(", ")) + " failed the independent truth-check."
+    : "";
+  document.getElementById("foot").innerHTML =
+    `Generated ${esc(d.generated_at)} · ${d.gen_seconds}s · org ${esc(d.org)} · ${d.repos ? d.repos.length : 0} repos<br>${esc(srcs)}${disputedLine}<br>Auto-refresh 60s. Every tile fails closed to <b>—</b> when its source is stale, missing, or unreadable. Never a frozen last value.`;
+}
+
+// ---- Explain toggles (event delegation)
+document.addEventListener("click", function(e){
+  const cell = e.target.closest(".band .cell");
+  if (!cell) return;
+  const panel = cell.querySelector(".explain-x");
+  if (!panel) return;
+  const open = panel.classList.toggle("open");
+  cell.setAttribute("aria-expanded", open);
+});
+
+// ---- Load
+async function load(){
+  try {
+    const r = await fetch("data.json", {cache:"no-store"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    render(d);
+  } catch(e){
+    document.getElementById("frozen").hidden = false;
+    document.getElementById("frozen").textContent = "Cannot reach data.json: " + esc(e.message) + ". The console shell is live but its data source is not.";
+  }
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
