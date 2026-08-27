@@ -1,0 +1,40 @@
+{
+  "description": "Two-orphan fixture: fleet2 has the auto-merge-arm orphan and a healthy ci.yml. siterep has a healthy ci.yml and no orphan. Used by tests/orphan-workflow-detector.test.sh to prove isOrphan / collapseAlerts / buildAlert stay correct on multi-repo input without reaching GitHub.",
+  "repositories": [
+    {
+      "repository": "Nishfleet/fleet2",
+      "workflows": [
+        {
+          "id": 342125743,
+          "name": "Auto-merge arm",
+          "path": ".github/workflows/auto-merge-arm.yml",
+          "state": "active"
+        },
+        {
+          "id": 330000001,
+          "name": "CI",
+          "path": ".github/workflows/ci.yml",
+          "state": "active"
+        }
+      ],
+      "file_checks": {
+        ".github/workflows/auto-merge-arm.yml": "missing",
+        ".github/workflows/ci.yml": "exists"
+      }
+    },
+    {
+      "repository": "Nishfleet/siterep",
+      "workflows": [
+        {
+          "id": 294410573,
+          "name": "CI",
+          "path": ".github/workflows/ci.yml",
+          "state": "active"
+        }
+      ],
+      "file_checks": {
+        ".github/workflows/ci.yml": "exists"
+      }
+    }
+  ]
+}
