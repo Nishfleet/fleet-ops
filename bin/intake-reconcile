@@ -382,7 +382,18 @@ converge_repo() {
                             loud "INTAKE-PRECOND-CHECK-ERROR" \
                                 "$repo: label check failed (gh API/network) — skip this tick ($n/$TRANSIENT_THRESHOLD)"
                             audit "$repo" "skip" "transient-gh-label-check:$n/$TRANSIENT_THRESHOLD"
-                            RECONCILE_ERRORS=1
+                            # Auditor 2026-08-27T19:00Z: previously this also
+                            # set RECONCILE_ERRORS=1, which made the script
+                            # FATAL out at the end on a SINGLE gh blip and
+                            # fire OnFailure -> unit-escalation -> auditor
+                            # summon. The threshold-aware path below already
+                            # handles a SUSTAINED blip (n >= threshold adds
+                            # repo-label-check-error to fail[] and resets
+                            # the counter); the under-threshold skip is the
+                            # documented "single blip must not disable"
+                            # path and should NOT escalate. Leave state
+                            # preserved (snapshot already written) and exit
+                            # clean so the timer can retry next tick.
                             return 0
                         fi
                         fail+=("repo-label-check-error")
