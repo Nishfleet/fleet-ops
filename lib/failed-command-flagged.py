@@ -30,10 +30,16 @@ failure: a silent `read` recovery, a later thinking-only note that the
 file was different, or unrelated prose that moves on, is not a
 user-facing flag. A `python3 -c` / `python3 << 'EOF'` probe that crashes
 with a Python traceback (KeyError, NameError, etc.) and
-'Command exited with code 1' (fleet-ops#957) is also a real swallowed
+'Command exited with code 1' (fleet-ops#957, #966) is also a real swallowed
 failure: the command is not grep/rg/diff/ls/which so it is not a no-match
 probe, and a silent re-probe, a thinking block, or later prose that
-moves on is not a user-facing flag. A `python3 -c "from <hyphenated_name>
+moves on is not a user-facing flag. #966 is the same session shape as
+#957 (the 01a03e38 python-traceback session); it is a leftover open
+duplicate filed by the same GitHub-search-index-delay that produced
+#951 / #965, so the citation chain must carry it. The leftover-duplicate
+observe-to-close drain for the 01a03e38 pile is locked under
+tests/fleet-failed-command-observe-duplicate-python-traceback.test.sh.
+A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
 importing `failed_command_flagged`) fails with `ModuleNotFoundError:

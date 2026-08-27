@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/fleet-failed-command-python-traceback.test.sh
 #
-# fleet-ops#957: a `python3 -c` / `python3 << EOF` probe that crashes with
+# fleet-ops#957 / #966: a `python3 -c` / `python3 << EOF` probe that crashes with
 # a Python traceback (KeyError, NameError, etc.) is a real failure. The
 # toolResult carries isError=true, the traceback text, and
 # "Command exited with code 1". The command text is `python3 -c ...` or
@@ -25,6 +25,13 @@
 # real signal. The auto-filed issue closes via observe-to-close
 # (fleet-ops#758) when the session mtime ages out of the 24h window after
 # 2026-08-26T13:18:31Z.
+#
+# The same session was also auto-filed as leftover duplicates #952,
+# #966, #971, #976, #981 (search-index delay, fleet-ops#951). The shape
+# lock lives here; leftover-duplicate observe-to-close drain for that
+# pile lives in
+# tests/fleet-failed-command-observe-duplicate-python-traceback.test.sh
+# (#966).
 #
 # Live session: 2026-08-26T13-18-31-426Z_01a03e38-e602-737c-b399-576dcf48d08e.jsonl
 # The agent (writing the P18 v2 discovery-spike synthesis report) ran a
