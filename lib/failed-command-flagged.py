@@ -52,13 +52,17 @@ future refactor that drops the #937 citation from the docstring, the
 prompt, or the test host list is caught. A `git checkout <branch>` (or a
 compound `&&` chain whose tail is `git checkout <branch>`) inside a
 worktree whose target branch is checked out in another worktree is a
-real swallowed failure (fleet-ops#954, #962): git refuses with
+real swallowed failure (fleet-ops#954, #962, #968): git refuses with
 `fatal: '<branch>' is already used by worktree at '<path>'` and exits
 128. The fatal line is not a canonical no-ref probe (GIT_CANONICAL_NO_REF_RE
 matches only `ambiguous argument` / `bad revision`), and `git checkout`
 is not in the git-ref probe family, so the failure must be flagged. A
 successful `git fetch origin` prefix in the same `&&` chain must not
-mask the failing `git checkout` tail. A spawn-guard or harness block (SPAWN_BLOCKED
+mask the failing `git checkout` tail. The same session can carry BOTH
+shapes (a &&-chain with a `git fetch origin` prefix AND a follow-up
+bare `cd <worktree> && git checkout main` recovery attempt); each is
+its own finding and must be emitted with the worktree-conflict
+fingerprint, not mixed with the other toolResult's snippet. A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
 

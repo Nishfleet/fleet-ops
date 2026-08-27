@@ -1799,6 +1799,17 @@ bash "$here/fleet-failed-command-git-branch-cannot-force-update.test.sh" || fail
 # flag. The successful `git fetch origin` prefix in a `&&` chain must
 # not mask the failing `git checkout` tail. Same CI constraint.
 bash "$here/fleet-failed-command-git-checkout-worktree-conflict.test.sh" || fail "fleet-failed-command-git-checkout-worktree-conflict tests failed"
+# fleet-ops#968: a SIBLING duplicate of #962 (same origin session,
+# same worktree-conflict toolResult, but a separate auto-filing
+# under the open-list-dedup gap that PR #1021 closed for new
+# filings). The dedicated #962 file pins the &&-chain-with-
+# git-fetch-prefix shape; this #968 file pins the bare
+# `cd <worktree> && git checkout main` (no `git fetch` prefix)
+# follow-up shape from the same origin session. The detector must
+# catch BOTH shapes and emit the worktree-conflict fingerprint
+# (NOT a `From https://github.com` line, which lives in the OTHER
+# toolResult of the same session). Same CI constraint.
+bash "$here/fleet-failed-command-git-checkout-worktree-conflict-968.test.sh" || fail "fleet-failed-command-git-checkout-worktree-conflict-968 tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
