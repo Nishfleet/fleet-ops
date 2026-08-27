@@ -1169,6 +1169,11 @@ bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-com
 # fleet-ops#698: `gh api` 4xx/5xx walked past is a real swallowed failure.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-command-gh-api-404 tests failed"
+# fleet-ops#727: a verification canary script (e.g. `npm run canary:*`,
+# `node scripts/*-verification.mjs`) that legitimately exits 1 on a
+# failed gate walked past is the same class. Same CI constraint
+# (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-canary-script-exit-1.test.sh" || fail "fleet-failed-command-canary-script-exit-1 tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
