@@ -38,6 +38,11 @@
 #      deploy-clone-off-main: fleet-ops#477. The canary emits DRIFT-OFF-MAIN
 #      and dedups. An auditor branch that is an ancestor of origin/main is
 #      not fast-forwarded (that would move the auditor pointer).
+#  17f. The off-main observe-to-close (fleet-ops#620) fires as soon as
+#      check_checkout passes, even when a later check (e.g. DRIFT-MISSING-EXEC
+#      from a leftover service) is still red (fleet-ops#774). The class is
+#      binary — branch is main or not — so the `resolved-at:` comment must
+#      not wait for the whole canary to be green.
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -1208,6 +1213,47 @@ grep -q 'issue comment' "$off_gh_log" \
 [[ ! -s "$off_comment_log" ]] \
   || fail "scenario17e replay: must not record a second comment (commented=$(cat "$off_comment_log"))"
 ok "scenario17e replay: off-main observe-to-close does not repeat"
+
+# --- scenario 17f: off-main observe-to-close fires even when a later check
+# is red (fleet-ops#774). The canary is on main and clean, but a leftover
+# service with a missing ExecStart makes check_missing_execstarts fail. The
+# off-main class is binary (branch is main or not), so the `resolved-at:`
+# comment must still land on the open off-main issue. The end-of-canary
+# observe_close_drift_issues is held back by DRIFT-MISSING-EXEC, so the only
+# path is the per-check call inside check_checkout.
+mkdir -p "$HOME/.config/systemd/user"
+cat >"$HOME/.config/systemd/user/leftover-774.service" <<'UNIT'
+[Unit]
+Description=Leftover service for the #774 observe-to-close drill
+
+[Service]
+ExecStart=/nonexistent/leftover-774-bin
+UNIT
+: >"$off_gh_log"
+: >"$off_comment_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 774, body: $b, comments: []}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  fail "scenario17f: canary should still fail on DRIFT-MISSING-EXEC, got: $out"
+fi
+[[ "$out" == *"DRIFT-MISSING-EXEC"* ]] \
+  || fail "scenario17f: expected DRIFT-MISSING-EXEC (got: $out)"
+[[ "$out" == *"OBSERVED-RESOLVED"* ]] \
+  || fail "scenario17f: off-main observe-to-close must fire even when a later check is red (got: $out)"
+grep -q 'issue comment' "$off_gh_log" \
+  || fail "scenario17f: must call gh issue comment for #774 (log=$(cat "$off_gh_log"))"
+grep -q '^774$' "$off_comment_log" \
+  || fail "scenario17f: must comment on #774 (commented=$(cat "$off_comment_log"))"
+ok "scenario17f: off-main observe-to-close fires despite a later red check (fleet-ops#774)"
+rm -f "$HOME/.config/systemd/user/leftover-774.service"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
