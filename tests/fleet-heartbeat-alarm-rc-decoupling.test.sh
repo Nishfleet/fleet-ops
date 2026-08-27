@@ -129,25 +129,40 @@ propagation = "".join(text[start:])
 # Pre-declare all rc vars to 0 so the sourced block has consistent
 # defaults if the caller forgot to set any of them. The block
 # references each as `${X_rc:-0}` so the caller's env wins.
+#
+# Why we do NOT pre-declare here: a script-level `X=0` assignment would
+# SHADOW the env var that the caller passes (`env deploy_rc=7 bash
+# block.sh` sets deploy_rc=7 in the script's environment, but a
+# script-local `deploy_rc=0` line overrides it). The block uses
+# `${X_rc:-0}` for every propagation guard it needs to read, and
+# `[ "$X_rc" -ne 0 ]` (no `:-0`) for the helpers whose contract is
+# "always set by the script" — with `set -u` off, the latter expand
+# to empty + integer-compare-error, which `if` treats as false. That
+# is exactly the shape we want to test (the propagation chain).
+#
+# Note: we deliberately do NOT enable `set -u` here. The propagation
+# block's `tier 1 complete: ...` log line references non-rc counters
+# (queued, released, seen, ...) that live in the upper tiers of the
+# script. Pre-declaring every counter would be brittle (the log line
+# changes as new canaries land) and adds no class-lock value. Dropping
+# `-u` lets bash expand unset names to empty strings, which is exactly
+# what we want for a propagation-shape test.
 prefix = """#!/usr/bin/env bash
 # Extracted propagation block from bin/fleet-heartbeat-tier1.
-# Pre-set rc defaults to 0 (the test harness overrides per-scenario).
-set -euo pipefail
-# Stub log() so the `tier 1 complete: ...` line does not fail.
-log() { :; }
-# Stub all rc vars to 0 unless the caller set them.
+# Caller-supplied env vars (deploy_rc=7 etc.) drive the propagation.
+set -eo pipefail
+# Pass log() through to stdout so the scenario 4 baseline can assert
+# that the `tier 1 complete: ...` line is reached (i.e., the propagation
+# block made it past every rc guard without early-exiting).
+log() { printf '%s\n' "$*"; }
+# Default the three rc vars that the production script reads WITHOUT a
+# ${X_rc:-0} default. The `:="${var:=0}"` form leaves any caller-supplied
+# env value intact (it only assigns when the var is unset/empty), so the
+# harness can still drive scenarios by exporting deploy_rc=7 etc.
+: "${undersat_rc:=0}"
+: "${low_water_rc:=0}"
+: "${entitled_canary_rc:=0}"
 """
-
-# Collect every ${X_rc:-0}-style variable the block references so we
-# can pre-declare each one. We use a simple regex on the propagation
-# text.
-import re
-rc_vars = sorted(set(re.findall(r'\$\{?(\w+_rc):?-?0?\}?', propagation)))
-# The first match is the long log line's `queued=$queued` — but our
-# regex only matches *_rc. Filter to the rc-propagation ones.
-rc_only = [v for v in rc_vars if v.endswith("_rc")]
-# Pre-declare with default 0
-prefix += "\n".join(f"{v}=0" for v in rc_only) + "\n\n"
 
 # Append the propagation block itself.
 dst.write_text(prefix + propagation, encoding="utf-8")
@@ -165,6 +180,11 @@ run_scenario() {
     local name="$1"
     shift
     local extra_env=("$@")
+    # Note: `$rc` and `$out` are intentionally NOT local. The caller
+    # reads them after run_scenario returns to assert the propagated
+    # exit. `set -u` would catch an unbound read; we keep `set -u` on
+    # in the outer test, so the caller is required to set `rc=0` (or
+    # some sentinel) before the first scenario runs.
     set +e
     out="$(env -i PATH="/usr/bin:/bin" "${extra_env[@]}" bash "$prop_block" 2>&1)"
     rc=$?
@@ -173,23 +193,27 @@ run_scenario() {
     printf 'scenario %s: rc=%s\n' "$name" "$rc"
 }
 
+# Note on why each scenario goes through run_scenario: the propagation
+# block is expected to exit non-zero in scenarios 2 and 3 (rc=7 crash
+# propagation). With the outer `set -e`, a direct `out="$(...)"` capture
+# would propagate that exit code and terminate the test harness before
+# the assertion runs. run_scenario wraps the capture with `set +e` /
+# `set -e` so the harness survives the propagation's expected crash and
+# the assertion sees the real rc.
+
 # --- scenario 1: alarm-stub (rc=1) on every alarm detector -> exits 0 ------
-out="$(env -i PATH="/usr/bin:/bin" \
+run_scenario 1 \
     deploy_rc=1 redpr_rc=1 canary_rc=1 \
-    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1 \
-    bash "$prop_block" 2>&1)"
-rc=$?
+    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1
 if [ "$rc" -ne 0 ]; then
     fail "scenario 1: alarm-stub (rc=1) on every alarm detector made propagation exit $rc — alarm-vs-failure separation broken. output: $out"
 fi
 ok "scenario 1: alarm-stub (rc=1) on alarm detectors -> propagation exits 0 (alarm-vs-failure separation)"
 
 # --- scenario 2: crash-stub (rc=7) on every alarm detector -> exits 7 ------
-out="$(env -i PATH="/usr/bin:/bin" \
+run_scenario 2 \
     deploy_rc=7 redpr_rc=7 canary_rc=7 \
-    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7 \
-    bash "$prop_block" 2>&1)"
-rc=$?
+    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7
 if [ "$rc" -ne 7 ]; then
     fail "scenario 2: crash-stub (rc=7) on every alarm detector made propagation exit $rc — real crashes must surface. output: $out"
 fi
@@ -200,18 +224,14 @@ ok "scenario 2: crash-stub (rc=7) on alarm detectors -> propagation exits 7 (rea
 # rc=0. The first rc=7 encountered in the propagation chain (deploy is
 # 0, so we skip to redpr=7) triggers the exit. Tier 1's chain order:
 #   deploy (rc=0) -> blocked (rc=0) -> ... -> redpr (rc=7) -> exit 7.
-out="$(env -i PATH="/usr/bin:/bin" \
-    redpr_rc=7 decisions_ledger_rc=1 \
-    bash "$prop_block" 2>&1)"
-rc=$?
+run_scenario 3 redpr_rc=7 decisions_ledger_rc=1
 if [ "$rc" -ne 7 ]; then
     fail "scenario 3: mixed (redpr=7 + decisions_ledger=1) made propagation exit $rc — crash must win over alarm. output: $out"
 fi
 ok "scenario 3: both-stubs (alarm=1 + crash=7) -> propagation exits 7 (crash wins)"
 
 # --- scenario 4: all-cans-pass (rc=0) -> exits 0 (regression) --------------
-out="$(env -i PATH="/usr/bin:/bin" bash "$prop_block" 2>&1)"
-rc=$?
+run_scenario 4
 if [ "$rc" -ne 0 ]; then
     fail "scenario 4: all-cans-pass baseline failed: propagation exited $rc. output: $out"
 fi
