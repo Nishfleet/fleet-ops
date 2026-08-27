@@ -147,6 +147,22 @@ rc=$(run_bin 0)
 ok "quoted offer in assistant text is ignored"
 rm -f "$sessions/quoted.jsonl"
 
+# --- 5b. "say the word" with a non-filing action is not a finding (fleet-ops#723)
+write_session "say-word-action" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Wiring is a two-line job. Say the word once there is balance and I will land it and prove it with a live call. Money is yours, so I stopped there rather than topping it up."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "say the word with non-filing action should exit 0 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-QUEUED-OK" "$scratch/err.log" || fail "say the word with non-filing action missing OK line"
+ok "say the word with non-filing action is not flagged"
+rm -f "$sessions/say-word-action.jsonl"
+
+# --- 5c. "say the word" with an explicit file/queue action is still a finding
+write_session "say-word-file" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I noticed the canary is silent. Say the word and I will file it."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "say the word with file action should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "say the word with file action missing FINDINGS-UNQUEUED"
+ok "say the word with explicit file action is still flagged"
+rm -f "$sessions/say-word-file.jsonl"
+
 # --- 6. auto-file + dedupe --------------------------------------------------
 write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
 set +e
