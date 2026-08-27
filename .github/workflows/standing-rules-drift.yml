@@ -1,0 +1,66 @@
+name: standing-rules-drift
+
+# Pinned to fleet-ops#1145 slice 1. The canonical file lives in the
+# vault and is NOT in this repo's working tree at CI time, so this
+# workflow inlines a small check that runs the generator against
+# the canonical sections committed to lib/standing-rules/canonical.md.
+# This proves the in-repo canonical stays in sync with the
+# generator's expectations and that the targets in this repo are
+# not silently broken.
+
+on:
+  pull_request:
+    paths:
+      - "lib/standing-rules/canonical.md"
+      - "bin/render-standing-rules"
+      - "tests/test_standing_rules_drift.sh"
+      - ".github/workflows/standing-rules-drift.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "lib/standing-rules/canonical.md"
+      - "bin/render-standing-rules"
+      - "tests/test_standing_rules_drift.sh"
+      - ".github/workflows/standing-rules-drift.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: drift unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install python3 (pinned)
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null 2>&1 || {
+            sudo apt-get update -y
+            sudo apt-get install -y python3
+          }
+          python3 --version
+      - name: Run drift tests
+        run: bash tests/test_standing_rules_drift.sh
+      - name: Run shellcheck on the generator
+        run: |
+          set -euo pipefail
+          SHELLCHECK_VERSION="v0.11.0"
+          SHELLCHECK_SHA256="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+          ARCHIVE="shellcheck-v0.11.0.linux.x86_64.tar.xz"
+          URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${ARCHIVE}"
+          curl -fsSL -o "${ARCHIVE}" "${URL}"
+          echo "${SHELLCHECK_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          install -d "${HOME}/.local/bin"
+          tar -xJf "${ARCHIVE}" -C "${HOME}/.local/bin" --strip-components=1 "shellcheck-v0.11.0/shellcheck"
+          chmod +x "${HOME}/.local/bin/shellcheck"
+          "${HOME}/.local/bin/shellcheck" -x tests/test_standing_rules_drift.sh
