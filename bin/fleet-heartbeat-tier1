@@ -1956,7 +1956,12 @@ log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
 # --state=failed -> unit-escalation).
-if [ "$deploy_rc" -ne 0 ]; then
+# deploy: only propagate when the helper CRASHED (rc >= 2). exit 1 means
+# "I found an install-divergence / non-ancestor-of-origin-main" — that is
+# already raised via the loud log + auto-file path; landing the unit in
+# --state=failed every 15 min for it is the trip-loop we are fixing
+# (fleet-ops#1116, the alarm-vs-failure separation that #486 missed).
+if [ "${deploy_rc:-0}" -ge 2 ]; then
     exit "$deploy_rc"
 fi
 if [ "${blocked_rc:-0}" -ne 0 ]; then
@@ -1980,13 +1985,22 @@ fi
 if [ "${auditor_rc:-0}" -ne 0 ]; then
     exit "${auditor_rc}"
 fi
-if [ "$redpr_rc" -ne 0 ]; then
+# redpr: only propagate when the helper CRASHED (rc >= 2). exit 1 means
+# "a red PR exhausted its repair budget" — that is already loud + auto-
+# paged via the red-pr-repair log; landing the unit in --state=failed
+# every 15 min for it is the trip-loop we are fixing (fleet-ops#1116).
+if [ "${redpr_rc:-0}" -ge 2 ]; then
     exit "$redpr_rc"
 fi
 if [ "${ram_measure_rc:-0}" -ne 0 ]; then
     exit "${ram_measure_rc}"
 fi
-if [ "$canary_rc" -ne 0 ]; then
+# canary: only propagate when the helper CRASHED (rc >= 2). exit 1 means
+# "two-plane invariant violated" — the loud + auto-file path is the
+# alarm; the unit failure is redundant. A real canary crash (python
+# import fail, missing helper exit 2+) still trips the unit (fleet-
+# ops#1116 acceptance 8: bin/fleet-escalation-canary stays loud).
+if [ "${canary_rc:-0}" -ge 2 ]; then
     exit "$canary_rc"
 fi
 if [ "$entitled_canary_rc" -ne 0 ]; then
@@ -2043,13 +2057,25 @@ fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"
 fi
-if [ "${decisions_ledger_rc:-0}" -ne 0 ]; then
+# decisions-ledger: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "a decided question was re-asked" — already loud + auto-
+# filed; landing the unit in --state=failed every 15 min for it is the
+# trip-loop we are fixing (fleet-ops#1116).
+if [ "${decisions_ledger_rc:-0}" -ge 2 ]; then
     exit "$decisions_ledger_rc"
 fi
-if [ "${failed_command_rc:-0}" -ne 0 ]; then
+# failed-command-flagged: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "a failed command was walked past" — already loud + auto-
+# filed + observe-to-close-drained; landing the unit in --state=failed
+# every 15 min for it is the trip-loop we are fixing (fleet-ops#1116).
+if [ "${failed_command_rc:-0}" -ge 2 ]; then
     exit "$failed_command_rc"
 fi
-if [ "${unjustified_rc:-0}" -ne 0 ]; then
+# unjustified-wait: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "TOP GEAR invariant violated" — already loud + auto-
+# filed; landing the unit in --state=failed every 15 min for it is the
+# trip-loop we are fixing (fleet-ops#1116).
+if [ "${unjustified_rc:-0}" -ge 2 ]; then
     exit "${unjustified_rc}"
 fi
 if [ "${escalation_completion_rc:-0}" -ne 0 ]; then

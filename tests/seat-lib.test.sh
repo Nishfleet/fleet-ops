@@ -1855,6 +1855,11 @@ bash "$here/fleet-failed-command-observe-duplicate-python-traceback.test.sh" || 
 bash "$here/fleet-failed-command-observe-duplicate-enoent.test.sh" || fail "fleet-failed-command-observe-duplicate-enoent tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
+# fleet-ops#1116: heartbeat tier-1 alarm-vs-failure separation. The
+# alarm channel (rc=1) must NOT propagate to unit-failure; the crash
+# channel (rc>=2) MUST. Same CI constraint (worker token cannot add
+# a P14 line in .github/workflows/ci.yml).
+bash "$here/fleet-heartbeat-alarm-rc-decoupling.test.sh" || fail "fleet-heartbeat-alarm-rc-decoupling tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/siterep-deploy-rollback-rc-propagation.test.sh" || fail "siterep-deploy-rollback-rc-propagation tests failed"
