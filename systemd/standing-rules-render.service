@@ -1,6 +1,6 @@
 [Unit]
 Description=Regenerate standing-rules regions in CLAUDE.md and AGENTS.md
-Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/bin/render-standing-rules
+Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/bin/render-standing-rules.py
 # Binds every agent on every machine (vault global-standing-rules.md,
 # "Everything runs through Pi, directly. No launchers."). This unit
 # is the only mechanism allowed to rewrite the marked regions of
@@ -21,7 +21,7 @@ Type=oneshot
 #
 # Stdout/stderr go to the journal under the unit name so a failed
 # render is searchable.
-ExecStart=/home/nish/.local/bin/render-standing-rules --render
+ExecStart=/usr/bin/python3 /home/nish/.local/bin/render-standing-rules.py --render
 # Defensive: never rewrite a file that lacks both markers. The
 # generator errors before writing, so a half-migrated target stays
 # half-migrated and we see the error in the journal.

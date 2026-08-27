@@ -12,7 +12,7 @@ Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/systemd/standing-
 # full regeneration: the canonical itself AND the generator script
 # (in case the generator's templating changes).
 PathChanged=/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.canonical.md
-PathChanged=/home/nish/workspaces/fleet-ops/bin/render-standing-rules
+PathChanged=/home/nish/.local/bin/render-standing-rules.py
 # Do not poll, do not trickle, do not keep state across reboots.
 # MakeOnBoot=off is the default; PathChanged= fires the unit
 # every time the file is closed-after-write.
