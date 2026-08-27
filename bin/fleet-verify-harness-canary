@@ -27,9 +27,12 @@
 #      enrolled checkout missing / not a git repo.
 #   4. OBSERVE-TO-CLOSE: when inspect_product returns ok, close EVERY
 #      open issue carrying `fleet-verify-harness-canary: missing-harness
-#      <name>` (leftover-duplicate drain for fleet-ops#812 / #999).
+#      <name>` (leftover-duplicate drain for fleet-ops#812 / #999 / #997).
 #      Open-list uses --limit 1000; --limit 50 missed #812 on a 200-issue
-#      desk and filed leftover #999.
+#      desk and filed leftover #999. The same drain must close leftover
+#      #997 (aiconverter-app; skill already on origin/main via
+#      Nishfleet/aiconverter-app#190) — a tinystudio-in-only close
+#      leaves the aiconverter pile on the desk.
 #
 # Why not wrap an existing tool:
 #   0. Read gh api --help, gh search code --help, gh issue list --help,
@@ -57,7 +60,7 @@
 #                                 observe-to-close leftovers; 0 skip both
 #   FLEET_VERIFY_HARNESS_CAP      per-tick file cap (default 5). Does not
 #                                 cap observe-to-close: leftover piles
-#                                 (#812 + #999) must all drain same tick.
+#                                 (#812 + #999 + #997) must all drain same tick.
 #   FLEET_VERIFY_HARNESS_LIST_LIMIT  open-issue list cap (default 1000).
 #                                 Was hardcoded 50; that missed #812 on a
 #                                 200-issue desk and filed leftover #999.
@@ -162,14 +165,16 @@ ${marker}
 }
 
 # observe_to_close — drain leftover missing-harness tickets when the
-# product is now ok (fleet-ops#812 / #999). GitHub's --limit 50 open-list
-# plus no close path left #812 sitting while a later tick filed #999 for
-# the same marker, even though tinystudio-in origin/main already had the
-# harness (Nishfleet/tinystudio-in#281). Walk every matching open issue;
-# do not first-only close; do not apply FILE_CAP (that cap is for filing).
-# Wired only when FLEET_VERIFY_HARNESS_FILE=1; FILE=0 live probes stay
-# read-only. Closes only on a positive inspect_product=ok — a still-missing
-# leftover stays open.
+# product is now ok (fleet-ops#812 / #999 / #997). GitHub's --limit 50
+# open-list plus no close path left #812 sitting while a later tick filed
+# #999 for the same marker, even though tinystudio-in origin/main already
+# had the harness (Nishfleet/tinystudio-in#281). The same class left
+# leftover #997 sitting after aiconverter-app origin/main already had
+# verify-aiconverter (Nishfleet/aiconverter-app#190). Walk every matching
+# open issue; do not first-only close; do not apply FILE_CAP (that cap is
+# for filing). Wired only when FLEET_VERIFY_HARNESS_FILE=1; FILE=0 live
+# probes stay read-only. Closes only on a positive inspect_product=ok —
+# a still-missing leftover stays open.
 observe_to_close() {
     if [[ "$FILE_ISSUES" != "1" ]]; then
         log "observe-to-close skipped (FLEET_VERIFY_HARNESS_FILE=$FILE_ISSUES)"
@@ -206,7 +211,7 @@ observe_to_close() {
             continue
         fi
         ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        comment="observe-to-close: fleet-verify-harness-canary missing-harness ${name} is no longer a gap on heartbeat tick at ${ts}. HEAD on the default branch has a valid verify skill (LAUNCH/DOCTOR/DRIVE/EVIDENCE/CLEANUP + features/). Leftover-duplicate drain (fleet-ops#812, fleet-ops#999)."
+        comment="observe-to-close: fleet-verify-harness-canary missing-harness ${name} is no longer a gap on heartbeat tick at ${ts}. HEAD on the default branch has a valid verify skill (LAUNCH/DOCTOR/DRIVE/EVIDENCE/CLEANUP + features/). Leftover-duplicate drain (fleet-ops#812, fleet-ops#999, fleet-ops#997)."
         set +e
         "$GH" issue close "$num" -R "$REPO" --reason completed --comment "$comment" >/dev/null 2>&1
         close_rc=$?

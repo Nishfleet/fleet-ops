@@ -30,6 +30,12 @@
 #      ahead of the marker. Dedup must still see #812 and not file a
 #      second copy. The live desk had 200+ open issues; --limit 50 missed
 #      #812 and filed leftover #999.
+#  22. Leftover-duplicate drain for aiconverter-app (fleet-ops#997):
+#      origin/main already has verify-aiconverter (Nishfleet/aiconverter-app#190)
+#      with LAUNCH/DOCTOR/DRIVE/EVIDENCE/CLEANUP plus features/. Local HEAD
+#      is behind. Leftover #997 (and sibling #768 from the same marker pile)
+#      must close on the same tick as an unrelated issue stays open. A
+#      tinystudio-in-only drain would leave #997 on the desk.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -728,4 +734,82 @@ fi
 unset GH_OPEN_ISSUES
 ok "scenario21: marker past index 50 still dedups; --limit 50 is gone (fleet-ops#999)"
 
-ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty, leftover-drain, still-gap-no-close, file0-no-close, deep-list-dedup"
+# --- 22. leftover-duplicate drain for aiconverter-app (fleet-ops#997) ------
+# Live class: aiconverter-app origin/main already has the harness (PR #190)
+# but local HEAD is four commits behind without it. inspect_product is ok
+# via the origin fallback (fleet-ops#927). Heartbeat logged
+# `ok: aiconverter-app` at 11:52Z, then #1117 landed the drain at 12:14Z,
+# then freshness skipped the next tick, so leftover #997 sat. Drain must
+# not be tinystudio-in-only: #997 (and sibling #768, same marker) close;
+# unrelated #42 stays; nothing new is filed.
+: >"$gh_log"; : >"$triage"; : >"$closed_log"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg
+write_intake <<JSON
+{
+  "checkout_root": "$products",
+  "repos": [{"name": "0509"}, {"name": "fleet-ops"}],
+  "deferred": [{"name": "aiconverter-app"}]
+}
+JSON
+make_valid_harness "$products/0509" 0509
+origin_bare="$scratch/origin-aiconverter-22.git"
+git -c init.defaultBranch=main init -q --bare "$origin_bare"
+work_clone="$scratch/origin-aiconverter-work-22"
+git init -q -b main "$work_clone"
+git -C "$work_clone" config user.email t@t
+git -C "$work_clone" config user.name t
+make_valid_harness "$work_clone" aiconverter
+git -C "$work_clone" remote add origin "$origin_bare"
+git -C "$work_clone" push -q origin main
+git clone -q "$origin_bare" "$products/aiconverter-app"
+git -C "$products/aiconverter-app" config user.email t@t
+git -C "$products/aiconverter-app" config user.name t
+git -C "$products/aiconverter-app" checkout -q --orphan stale-local
+git -C "$products/aiconverter-app" rm -rf --quiet .claude 2>/dev/null || true
+rm -rf "$products/aiconverter-app/.claude"
+echo "no harness here" >"$products/aiconverter-app/README"
+git -C "$products/aiconverter-app" add README
+git -C "$products/aiconverter-app" commit -q -m "stale local HEAD without harness"
+git -C "$products/aiconverter-app" rev-parse --verify --quiet origin/main >/dev/null \
+  || fail "scenario22: fixture must have origin/main ref"
+jq -n \
+  --arg b997 $'body\nfleet-verify-harness-canary: missing-harness aiconverter-app\n' \
+  --arg b768 $'body\nfleet-verify-harness-canary: missing-harness aiconverter-app\n' \
+  --arg b42 $'unrelated body, no verify-harness marker\n' \
+  '[{number: 997, body: $b997}, {number: 768, body: $b768}, {number: 42, body: $b42}]' \
+  >"$scratch/open.json"
+export GH_OPEN_ISSUES="$scratch/open.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario22: leftover drain must stay exit 0, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-OK' <<<"$env_out" || fail "scenario22: must log OK ($env_out)"
+grep -q 'stale-local: aiconverter-app' <<<"$env_out" || fail "scenario22: must log stale-local ($env_out)"
+grep -q 'OBSERVE-CLOSED aiconverter-app -> #997' <<<"$env_out" \
+  || fail "scenario22: must close leftover #997 ($env_out)"
+grep -q 'OBSERVE-CLOSED aiconverter-app -> #768' <<<"$env_out" \
+  || fail "scenario22: must close leftover #768 ($env_out)"
+if grep -q 'OBSERVE-CLOSED .* -> #42' <<<"$env_out"; then
+  fail "scenario22: must not close unrelated #42 ($env_out)"
+fi
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario22: must not file (gh=$(cat "$gh_log"))"
+fi
+grep -q 'issue close 997 ' "$closed_log" || fail "scenario22: gh must close 997 (closed=$(cat "$closed_log"))"
+grep -q 'issue close 768 ' "$closed_log" || fail "scenario22: gh must close 768 (closed=$(cat "$closed_log"))"
+if grep -q 'issue close 42 ' "$closed_log"; then
+  fail "scenario22: gh must not close 42 (closed=$(cat "$closed_log"))"
+fi
+unset GH_OPEN_ISSUES
+ok "scenario22: leftover #997 and #768 both close; unrelated #42 stays (fleet-ops#997)"
+
+# Citation lock: dropping #997 from the canary is a regression even if
+# the aiconverter-app drill still passes (same pin as #965 leftover piles).
+grep -q 'fleet-ops#812 / #999 / #997' "$bin" \
+  || fail "canary header must cite leftover #997 next to #812 / #999"
+grep -q 'fleet-ops#812, fleet-ops#999, fleet-ops#997' "$bin" \
+  || fail "observe-to-close comment must cite leftover fleet-ops#997"
+grep -q '#812 + #999 + #997' "$bin" \
+  || fail "FILE_CAP comment must cite leftover pile #997 next to #812 + #999"
+ok "canary cites leftover #997 next to #812 / #999"
+
+ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty, leftover-drain, still-gap-no-close, file0-no-close, deep-list-dedup, aiconverter-leftover-drain"
