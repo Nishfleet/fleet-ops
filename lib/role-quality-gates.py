@@ -31,6 +31,8 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
 # exporter (writes /var/lib/prometheus/node-exporter/fleet.prom every 5m);
 # it is observability plumbing, not a judging/building role.
+# fleet-aeo-probe (fleet-ops#1236) is the weekly 0509 citation probe; it
+# writes fleet-aeo.prom. Same plumbing class as the metrics exporter.
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",
@@ -57,6 +59,7 @@ NON_ROLE_UNIT_PREFIXES = (
     # role gate; its own gate is the drift --check plus
     # tests/standing-rules-drift.test.sh.
     "standing-rules-render",
+    "fleet-aeo",
 )
 
 

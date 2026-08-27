@@ -20,7 +20,7 @@ This is **NOT** the daily quality delta sweep (fleet-ops#541). That one
 tracks frontier deltas; this one audits the fleet against its current bar
 and proposes up to 5 changes that move the bar. Same seat, different lens.
 
-## Inputs (read all four before acting)
+## Inputs (read all five before acting)
 
 1. `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md`
    — what Nish has already decided. Never re-recommend a decided item.
@@ -34,6 +34,11 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
    (`/home/nish/workspaces/agent-state/scoreboard/wfr-ratio.json` or the
    same field the heartbeat-tick produces). A high adopt-rate from the
    last 4 reviews is the green light; a low one tightens the cap.
+5. Latest 0509 AEO probe (fleet-ops#1236):
+   `/home/nish/workspaces/agent-state/aeo-probe/latest.json` and Prometheus
+   `fleet_aeo_cited`. Missing file means the probe has not run yet, not a
+   fail. `engine_up=0` means that engine had no API seat this week. Do
+   not treat that as "0509 is invisible".
 
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.

@@ -151,6 +151,14 @@ prompts/quality-research-weekly.md /home/nish/.pi/agent/prompts/quality-research
 systemd/fleet-weekly-fleet-review.service /home/nish/.config/systemd/user/fleet-weekly-fleet-review.service
 systemd/fleet-weekly-fleet-review.timer /home/nish/.config/systemd/user/fleet-weekly-fleet-review.timer
 prompts/weekly-fleet-review.md /home/nish/.pi/agent/prompts/weekly-fleet-review.md
+# fleet-ops#1236: weekly AEO visibility probe. Phase A found no $0 SaaS
+# that runs custom money-queries weekly; this is the residue. python3
+# libexec (not agent-cron-run) so a missing ChatGPT key does not burn a
+# pi seat. Timer fires Sun 03:30 IST, before Weekly Fleet Review.
+systemd/fleet-aeo-probe.service /home/nish/.config/systemd/user/fleet-aeo-probe.service
+systemd/fleet-aeo-probe.timer /home/nish/.config/systemd/user/fleet-aeo-probe.timer
+libexec/fleet-aeo-probe.py /home/nish/.local/libexec/fleet-aeo-probe.py
+config/aeo-probe.json /home/nish/.config/fleet-aeo/probe.json
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile

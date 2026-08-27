@@ -82,6 +82,7 @@ required = (
     "vault-conflict",
     "fleet-metrics-export",
     "standing-rules-render",
+    "fleet-aeo",
 )
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
@@ -96,13 +97,14 @@ leaked = [
         "vault-conflict-resolver.service",
         "fleet-metrics-export.service",
         "standing-rules-render.service",
+        "fleet-aeo-probe.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render (fleet-ops#1180, #1152)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe (fleet-ops#1180, #1152, #1236)"
 
 # fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
 # standing-rules-render.service on disk (the canonical-render unit that
@@ -134,6 +136,33 @@ if [[ "$detail_hit" == "yes" ]]; then
   fail "fleet-ops#1152 regression: exact issue symptom re-appeared: $(echo "$audit1152_out" | jq -c '.findings')"
 fi
 ok "behaviour lock: standing-rules-render.service is not flagged (fleet-ops#1152)"
+
+# fleet-ops#1236: behaviour-locked. Build a scratch repo with a real
+# fleet-aeo-probe.service on disk and prove the audit emits no
+# `unit:fleet-aeo-probe.service` finding. The structural-prefix test
+# above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1236=$(mktemp -d -t role-gates-1236.XXXXXX)
+trap 'rm -rf "$scratch1152" "$scratch1236"' EXIT INT TERM
+mkdir -p "$scratch1236/systemd" "$scratch1236/prompts" "$scratch1236/bin" "$scratch1236/config" "$scratch1236/tests"
+cat >"$scratch1236/systemd/fleet-aeo-probe.service" <<'UNIT'
+[Unit]
+Description=Weekly AEO visibility probe for 0509 (fixture for fleet-ops#1236)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-aeo-probe.py --config /home/nish/.config/fleet-aeo/probe.json
+UNIT
+cp "$catalog" "$scratch1236/config/role-quality-gates.json"
+audit1236_out=$(python3 "$lib" audit --repo-root "$scratch1236" --catalog "$scratch1236/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1236_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1236_out"
+if echo "$audit1236_out" | jq -e '.findings[] | select(.id == "unit:fleet-aeo-probe.service")' >/dev/null; then
+  fail "fleet-ops#1236 regression: fleet-aeo-probe.service leaked into ungated-role findings: $(echo "$audit1236_out" | jq -c '.findings')"
+fi
+detail_hit=$(echo "$audit1236_out" | jq -e '.findings[] | select(.detail | test("fleet-aeo-probe.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1236 regression: exact issue symptom re-appeared: $(echo "$audit1236_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: fleet-aeo-probe.service is not flagged (fleet-ops#1236)"
 
 # fleet-ops#709: behaviour-locked. Build a scratch repo with a real
 # vault-knowledge-format.service on disk and prove the audit emits no
