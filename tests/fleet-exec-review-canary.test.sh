@@ -219,10 +219,13 @@ fi
 grep -q 'REJECT:' "$scratch/body.err" || fail "4: REJECT missing from stderr"
 ok "4: --body with no receipt rejected (the skip drill)"
 
-# --- 4a. --body with `## Verification` (no colon) is rejected ---------------
-# Locks the canary's strict colon requirement (fleet-ops#731): a markdown
-# heading without the trailing colon must not be accepted even when the
-# body has a fenced block, so PR #630's pre-fix shape stays a skip.
+# --- 4a. --body with `## Verification` (no colon) + fenced block accepted ----
+# Locks the canary's lenient colon handling (fleet-ops#728): a markdown
+# heading WITHOUT the trailing colon is accepted as a section marker when
+# the body has a fenced block. Workers commonly write `## Verification`
+# without the colon; rejecting that shape produced false positives for
+# legitimately run-cued PRs (#728). The prior strict-colon test (#731)
+# was rendered obsolete by the canary regex change in PR #834.
 printf '%s\n' 'Heartbeat canary.
 
 ## Verification
@@ -232,10 +235,9 @@ printf '%s\n' 'Heartbeat canary.
 [2026-08-26T22:49:01Z] [canary] LOUD rc=0
 ```
 ' >"$scratch/body.md"
-if run_body "$scratch/body.md"; then
-  fail "4a: `## Verification` (no colon) must reject even with a fenced block"
-fi
-ok "4a: --body with `## Verification` (no colon) rejected (the #631 shape)"
+run_body "$scratch/body.md" \
+  || fail "4a: \`## Verification\` (no colon) + fenced block must accept ($(cat "$scratch/body.err"))"
+ok "4a: --body with \`## Verification\` (no colon) + fenced block accepted (the #728 shape)"
 
 # --- 4b. --body with `## Verification:` (colon) + fenced block accepted ----
 # PR #630's post-fix shape (fleet-ops#731): colon + fenced block + exit N
@@ -407,10 +409,13 @@ grep -rl "signal: exec-review-receipt/" "$gh_store" | wc -l | grep -q "^1$" \
   || fail "9: signal key filed more than once"
 ok "9: auto-file dedupes the signal key"
 
-# --- 9a. PR #630 pre-fix shape: `## Verification` (no colon) -> skip --------
-# Regression lock (fleet-ops#731). The canary must flag PR #630's pre-fix
-# shape (heading without colon, even with a fenced block) so the same
-# markdown typo cannot silently re-pass after the regex is touched.
+# --- 9a. PR #630 pre-fix shape: `## Verification` (no colon) + run-cue -> OK ----
+# Regression lock (fleet-ops#728 supersedes #731). The canary's lenient
+# colon handling (PR #834) accepts `## Verification` without a colon as
+# long as the body has a run-cue (fenced block, exit N, etc.). PR #630's
+# pre-fix shape is now correctly classified as a RECEIPT, not a skip.
+# The legacy strict-colon test was rendered obsolete by the canary
+# regex change; this lock proves the post-#728 classification holds.
 cat >"$scratch/prs-630-pre.json" <<'JSON'
 [
   {
@@ -429,11 +434,9 @@ rm -f "$gh_store"/*.body
 : >"$triage"
 FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-630-pre.json" \
   || fail "9a1: pre-fix scan must exit 0"
-grep -q 'EXEC-REVIEW-SKIP' "$scratch/scan.err" \
-  || fail "9a1: pre-fix PR #630 must be SKIP-flagged ($(cat "$scratch/scan.err"))"
-grep -q 'Nishfleet/fleet-ops#630' "$scratch/scan.err" \
-  || fail "9a1: pre-fix PR #630 must be named in the finding"
-ok "9a1: PR #630 pre-fix shape (`## Verification`, no colon) is SKIP-flagged"
+grep -q 'EXEC-REVIEW-OK' "$scratch/scan.err" \
+  || fail "9a1: pre-fix PR #630 must be OK-flagged (no colon, but run-cue present) ($(cat "$scratch/scan.err"))"
+ok "9a1: PR #630 pre-fix shape (\`## Verification\`, no colon) is OK-classified (the #728 lenient-colon shape)"
 
 # --- 9a. PR #630 post-fix shape: `## Verification:` + run-proof: -> OK ------
 # Regression lock (fleet-ops#731). Once the worker adds the colon and a
