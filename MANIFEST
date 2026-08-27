@@ -449,6 +449,12 @@ systemd/interactive-session-reap.timer /home/nish/.config/systemd/user/interacti
 # systemctl daemon-reload; --check treats both symlink and content-equal as OK.
 systemd/system/user-1000.slice.d/50-ram-governor.conf /etc/systemd/system/user-1000.slice.d/50-ram-governor.conf
 systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf
+# fleet-ops#1145 slice 1: standing-rules generator + canonical source
+bin/render-standing-rules.py /home/nish/.local/bin/render-standing-rules.py
+lib/standing-rules/canonical.md /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.canonical.md
+systemd/standing-rules-render.service /home/nish/.config/systemd/user/standing-rules-render.service
+systemd/standing-rules-render.path /home/nish/.config/systemd/user/standing-rules-render.path
+
 
 # fleet-ops#468 TOP GEAR: merge->live <=5min. fleet-deploy-check runs on a
 # 2-minute timer, git-fetches + rev-compares origin/main, and ONLY invokes
