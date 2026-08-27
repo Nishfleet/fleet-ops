@@ -18,6 +18,18 @@
 #       out' as commit body text (isError=false) -> exit 0. The 6f/6g
 #       tests cover `read` and `bash grep`; this one covers a successful
 #       git log whose multi-commit body embeds the literal string.
+#   6i. Live #953: `read` ENOENT (isError=true, no exit code) with only a
+#       `thinking` block in the next turn -> exit 1. Thinking is not a
+#       user-facing flag.
+#   6j. Live #936: `read` ENOENT followed by a recovery turn (toolCalls
+#       only) and then unrelated user-facing prose ("Got the lay of the
+#       land...") that does NOT name the failure -> exit 1. Real
+#       user-facing text that moves on without naming the failure does
+#       not clear the pending swallowed failure.
+#   6k. Live #936 positive: same shape as 6j but the later prose NAMES the
+#       failure ("the OVERNIGHT.md read failed ... it is now the blocker")
+#       -> exit 0. Naming the failure is the standing rule's required
+#       discharge and must clear.
 #   7. Auto-file with signal key, deduped on a second run.
 #   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
 #   7c. Same snippet plus a later flag -> exit 0.
@@ -587,6 +599,54 @@ rc=$(run_bin 0)
 grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "read ENOENT must be flagged as swallowed"
 ok "live #953: read ENOENT with no exit code and only thinking in next turn is flagged"
 rm -f "$sessions/read-enoent.jsonl"
+
+# --- 6j. live #936: read ENOENT, then unrelated user-facing prose + recovery -
+# The session 2026-08-27T03-43-57-659Z read OVERNIGHT.md (a canonical path
+# named in AGENTS.md that does not exist on disk). The read toolResult was
+# isError=true with "ENOENT: no such file or directory, access '<path>'".
+# The assistant's next turn ran recovery toolCalls (ls / find / read a
+# different file) with NO user-facing text, and the turn after that emitted
+# user-facing prose "Got the lay of the land. Let me load the audit skill
+# and set up the todo list, then start hitting each check." — which does NOT
+# name the failure. The detector must keep flagging this: a recovery turn
+# and later unrelated prose must NOT clear the pending swallowed failure.
+# This locks the class #953's thinking-only test did not cover: real
+# user-facing text that simply moves on without naming the failure.
+write_session "read-enoent-unrelated-prose" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"ls ~/workspaces/agent-state/lanes/seats/ 2>&1"}},{"type":"toolCall","id":"call_seat","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"}},{"type":"toolCall","id":"call_overnight","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/OVERNIGHT.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls","toolName":"bash","isError":false,"content":[{"type":"text","text":"seat-a.json\nseat-b.json"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_seat","toolName":"read","isError":false,"content":[{"type":"text","text":"{\"health_class\":\"healthy\"}"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_overnight","toolName":"read","content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/agent-state/OVERNIGHT.md'"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_find","name":"bash","arguments":{"command":"find ~/workspaces/agent-state -maxdepth 2 -name \"OVERNIGHT*\" 2>/dev/null"}},{"type":"toolCall","id":"call_triage","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_find","toolName":"bash","isError":false,"content":[{"type":"text","text":""}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_triage","toolName":"read","isError":false,"content":[{"type":"text","text":"triage log"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Got the lay of the land. Let me load the audit skill and set up the todo list, then start hitting each check."},{"type":"toolCall","id":"call_todo","name":"todo","arguments":{"action":"add","text":"1. Reboot survival","id":1}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "read ENOENT followed by unrelated prose should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "read ENOENT + unrelated prose must be flagged as swallowed"
+ok "live #936: read ENOENT with later unrelated user-facing prose is still flagged"
+rm -f "$sessions/read-enoent-unrelated-prose.jsonl"
+
+# --- 6k. live #936 positive control: same shape but the prose NAMES the fail -
+# Same read-ENOENT + recovery shape as 6j, but the later user-facing text
+# names the failure ("the OVERNIGHT.md read failed, it is now the blocker").
+# FLAG_RE must match and clear the pending failure -> exit 0. Proves 6j is
+# not "always flag": naming the failure in user-facing text is the standing
+# rule's required discharge and must clear.
+write_session "read-enoent-flagged-prose" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_overnight","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/OVERNIGHT.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_overnight","toolName":"read","content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/agent-state/OVERNIGHT.md'"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_find","name":"bash","arguments":{"command":"find ~/workspaces/agent-state -maxdepth 2 -name \"OVERNIGHT*\" 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_find","toolName":"bash","isError":false,"content":[{"type":"text","text":""}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The OVERNIGHT.md read failed with ENOENT — the AGENTS.md reference is dangling, it is now the blocker. Filing a separate issue."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "read ENOENT with later failure-naming prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #936 positive: read ENOENT with later failure-naming prose clears (exit 0)"
+rm -f "$sessions/read-enoent-flagged-prose.jsonl"
 
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
