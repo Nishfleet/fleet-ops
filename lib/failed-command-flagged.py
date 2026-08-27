@@ -217,6 +217,14 @@ def result_failed(
     code = _exit_code(text)
     if not is_error and not timed_out and code is None:
         return False, text
+    # Live #821: "Command timed out" appears as a literal string in source
+    # code (e.g. lib/failed-command-flagged.py's TIMEOUT_RE regex definition)
+    # and in doc text (e.g. prompts/worker.md's standing-rule paragraph).
+    # A real Pi timeout always has isError=True (the harness sets it on
+    # timeout) or a non-zero exit code. Bare text without a failure signal
+    # is content, not a swallowed timeout — treat it as not a failure.
+    if timed_out and not is_error and code is None:
+        return False, text
     # Downstream of a harness block (fleet-ops#677): the spawn-guard refused
     # the heredoc/redirect that would have created the script, so invoking it
     # fails with exit 127 "No such file or directory". The assistant recovers
