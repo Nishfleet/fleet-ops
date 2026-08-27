@@ -54,7 +54,9 @@
 #   4. same shape plus a later "the python3 call failed" user-facing flag
 #      -> clean.
 #   5. worker.md cites fleet-ops#957 (prompt-side lock).
-#   6. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   6. lib/failed-command-flagged.py docstring cites fleet-ops#957
+#      (detector-side lock).
+#   7. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -183,7 +185,21 @@ grep -q "KeyError: 'input_domain'" "$worker" \
   || fail "prompts/worker.md must name the live KeyError wording so workers flag it"
 ok "worker.md cites fleet-ops#957 and the live KeyError wording"
 
-# --- 6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
+# --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#957 ----
+# (detector-side lock). The docstring is the standing-rule contract
+# for the next detector maintainer, and dropping the #957 citation
+# is a regression even if the drill still passes. Same pattern as
+# #937 scenario 6: a future refactor that drops the citation from
+# the docstring still has the prompt lock and the drill, but the
+# docstring is what the next maintainer reads to know which
+# session/signal the class came from.
+grep -q 'fleet-ops#957' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#957 (detector-side lock)"
+grep -q "KeyError, NameError" "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the Python traceback family (KeyError, NameError) for #957"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#957 and the Python traceback family"
+
+# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
 grep -Fq 'bash "$here/fleet-failed-command-python-traceback.test.sh"' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
