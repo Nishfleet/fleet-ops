@@ -54,6 +54,24 @@ case "$*" in
     echo "https://github.com/Nishfleet/fleet-ops/issues/999"
     exit 0
     ;;
+  *"issue close"*)
+    num=$(printf '%s' "$*" | sed -nE 's/.*issue close[[:space:]]+([0-9]+).*/\1/p')
+    if [[ -n "$num" ]]; then
+      if [[ -f "${GH_CLOSED_ISSUES:-/dev/null}" ]]; then
+        printf '%s\n' "$num" >>"${GH_CLOSED_ISSUES}"
+      fi
+      if [[ -n "${GH_OPEN_ISSUES:-}" && -f "${GH_OPEN_ISSUES}" ]]; then
+        if command -v jq >/dev/null 2>&1; then
+          tmp="${GH_OPEN_ISSUES}.tmp"
+          jq --argjson n "$num" '[.[] | select(.number != $n)]' \
+              "${GH_OPEN_ISSUES}" >"$tmp" 2>/dev/null \
+              && mv "$tmp" "${GH_OPEN_ISSUES}" || true
+        fi
+      fi
+    fi
+    echo "https://github.com/Nishfleet/fleet-ops/issues/$num"
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
@@ -221,6 +239,20 @@ write_cc_catalog() {
   cat >"$scratch/cc-catalog.json"
 }
 
+# write_models_zero — empty stub models.json (the canary's bills-wired
+# gate only fires when the slug is found with a non-zero cost). Scenarios
+# 9, 10, 14, 15, 16, 17, 19 use this so they are independent of a stale
+# models.json from scenarios 11/18.
+write_models_zero() {
+  cat >"$scratch/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": { "models": [] }
+  }
+}
+JSON
+}
+
 run_cc_canary() {
   set +e
   env_out=$(
@@ -349,4 +381,204 @@ jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforc
   || fail "scenario13: led-worker-lane-refresh must be status=enforced"
 ok "scenario13: led-worker-lane-refresh is enforced in the rule matrix"
 
-ok "opencode-m3-catalog-canary: billing gate, free-slug detector, m2.7 ignore, dedup, production clean, commandcode fail-closed"
+# --- 14. observe-to-close: commandcode free-slug-available clears ---------
+# The canary auto-filed this when the slug was unwired; the slug is now
+# wired (live spawn + meter check passed). The stale issue must close
+# (fleet-ops#687).
+: >"$gh_log"
+: >"$triage"
+: >"$scratch/closed.log"
+write_models_zero
+export GH_CLOSED_ISSUES="$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nopencode-m3-catalog-canary: commandcode-free-slug-available minimax/minimax-m3-free\n' \
+  '[{number: 687, body: $b}]' >"$GH_OPEN_ISSUES"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2, "minimax/minimax-m3-free": 1 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["deepseek/deepseek-v4-flash", "minimax/minimax-m3-free"]
+JSON
+run_cc_canary
+[[ "$env_rc" == "0" ]] || fail "scenario14: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #687' <<<"$env_out" \
+  || fail "scenario14: must close #687 (the wired-free case), env_out=$env_out"
+grep -q 'issue close 687' "$gh_log" \
+  || fail "scenario14: gh must receive close 687, gh_log=$gh_log"
+grep -q '^687$' "$scratch/closed.log" \
+  || fail "scenario14: closed issue ledger must record 687 (got $(cat "$scratch/closed.log"))"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario14: must not re-file an already-closed issue"
+ok "scenario14: commandcode free-slug-available clears when wired, closes the stale issue"
+
+# --- 15. observe-to-close: opencode free-slug-available clears -------------
+: >"$gh_log"
+: >"$triage"
+: >"$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nopencode-m3-catalog-canary: free-slug-available hy3-free\n' \
+  '[{number: 615, body: $b}]' >"$GH_OPEN_ISSUES"
+write_caps <<'JSON'
+{ "providers": { "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } } } }
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario15: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #615' <<<"$env_out" \
+  || fail "scenario15: must close #615 (the wired opencode free case), env_out=$env_out"
+grep -q 'issue close 615' "$gh_log" \
+  || fail "scenario15: gh must receive close 615, gh_log=$gh_log"
+grep -q '^615$' "$scratch/closed.log" \
+  || fail "scenario15: closed issue ledger must record 615"
+ok "scenario15: opencode free-slug-available clears when wired, closes the stale issue"
+
+# --- 16. observe-to-close: commandcode billing-wired clears when slug removed
+: >"$gh_log"
+: >"$triage"
+: >"$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nopencode-m3-catalog-canary: commandcode-billing-wired minimax/minimax-m3\n' \
+  '[{number: 616, body: $b}]' >"$GH_OPEN_ISSUES"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["deepseek/deepseek-v4-flash"]
+JSON
+run_cc_canary
+[[ "$env_rc" == "0" ]] || fail "scenario16: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #616' <<<"$env_out" \
+  || fail "scenario16: must close #616 (the unwired-billing case), env_out=$env_out"
+grep -q 'issue close 616' "$gh_log" \
+  || fail "scenario16: gh must receive close 616, gh_log=$gh_log"
+grep -q '^616$' "$scratch/closed.log" \
+  || fail "scenario16: closed issue ledger must record 616"
+ok "scenario16: commandcode billing-wired clears when slug removed from seat-caps"
+
+# --- 17. observe-to-close: signal STILL active -> keep the issue open ------
+# A free-slug-available issue is still in catalog AND not wired. The canary
+# must NOT close it. The discover path also re-fires the loud (no new file
+# because dedup).
+: >"$gh_log"
+: >"$triage"
+: >"$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nopencode-m3-catalog-canary: commandcode-free-slug-available minimax/minimax-m3-free\n' \
+  '[{number: 687, body: $b}]' >"$GH_OPEN_ISSUES"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["deepseek/deepseek-v4-flash", "minimax/minimax-m3-free"]
+JSON
+run_cc_canary
+[[ "$env_rc" == "0" ]] || fail "scenario17: discovery tick must stay rc=0, got $env_rc ($env_out)"
+! grep -q 'observe-to-close: CLOSED issue #687' <<<"$env_out" \
+  || fail "scenario17: must NOT close #687 while the signal is still active"
+! grep -q '^687$' "$scratch/closed.log" \
+  || fail "scenario17: must not record 687 in the close ledger"
+grep -q 'COMMANDCODE-M3-FREE-AVAILABLE' "$triage" \
+  || fail "scenario17: must still LOUD the unwired free slug"
+ok "scenario17: signal-still-active issue is kept open (no false close)"
+
+# --- 18. observe-to-close: bills-wired clears when models.json cost -> 0 --
+: >"$gh_log"
+: >"$triage"
+: >"$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nopencode-m3-catalog-canary: commandcode-bills-wired minimax/minimax-m3-free\n' \
+  '[{number: 618, body: $b}]' >"$GH_OPEN_ISSUES"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "minimax/minimax-m3-free": 2 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["minimax/minimax-m3-free"]
+JSON
+cat >"$scratch/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": {
+      "models": [
+        { "id": "minimax/minimax-m3-free", "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }
+      ]
+    }
+  }
+}
+JSON
+run_cc_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #618' <<<"$env_out" \
+  || fail "scenario18: must close #618 (cost now zero), env_out=$env_out"
+grep -q 'issue close 618' "$gh_log" \
+  || fail "scenario18: gh must receive close 618, gh_log=$gh_log"
+grep -q '^618$' "$scratch/closed.log" \
+  || fail "scenario18: closed issue ledger must record 618"
+ok "scenario18: commandcode bills-wired clears when models.json cost is now zero"
+
+# --- 19. observe-to-close: production seat-caps closes #687 ----------------
+# This is the live-shaped scenario. The current seat-caps already has
+# minimax/minimax-m3-free wired on commandcode (PR #761 / fleet-ops#637).
+# Issue #687 (the canary's auto-filed duplicate) should be closed by
+# observe-to-close on the next tick.
+prod_open="$scratch/prod-open.json"
+jq -n --arg b $'body\nopencode-m3-catalog-canary: commandcode-free-slug-available minimax/minimax-m3-free\n' \
+  '[{number: 687, body: $b}]' >"$prod_open"
+: >"$scratch/closed.log"
+printf '%s\n' '["hy3-free"]' >"$scratch/prod-oc.json"
+printf '%s\n' '["deepseek/deepseek-v4-flash","minimax/minimax-m3-free"]' >"$scratch/prod-cc.json"
+set +e
+prod_obs_out=$(
+  SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" \
+  OPENCODE_CATALOG_JSON="$scratch/prod-oc.json" \
+  COMMANDCODE_CATALOG_JSON="$scratch/prod-cc.json" \
+  FLEET_OPS_REPO="$repo_root" \
+  FLEET_OPENCODE_M3_CANARY_FILE=1 \
+  GH_OPEN_ISSUES="$prod_open" \
+  GH_CLOSED_ISSUES="$scratch/closed.log" \
+  GH="$gh_fake" \
+  "$bin" 2>&1
+)
+prod_obs_rc=$?
+set -e
+[[ "$prod_obs_rc" == "0" ]] || fail "scenario19: production observe-to-close tick must exit 0, got $prod_obs_rc ($prod_obs_out)"
+grep -q 'observe-to-close: CLOSED issue #687' <<<"$prod_obs_out" \
+  || fail "scenario19: production tick must close #687 ($prod_obs_out)"
+ok "scenario19: production seat-caps closes the stale #687 via observe-to-close"
+
+unset GH_OPEN_ISSUES GH_CLOSED_ISSUES
+
+ok "opencode-m3-catalog-canary: billing gate, free-slug detector, m2.7 ignore, dedup, production clean, commandcode fail-closed, observe-to-close"
