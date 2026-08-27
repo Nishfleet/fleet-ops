@@ -6,6 +6,7 @@
 #   (a) fixture prompt with no catalog row -> finding + auto-filed issue
 #   replay: open issue with the signal key is deduped
 #   contracts: heartbeat-tier1 call + MANIFEST + nested CI host
+#   missing-helper drill (fleet-ops#708) is gated on the #667 fallback
 #
 # Offline. Live gh is stubbed.
 
@@ -248,6 +249,40 @@ grep -q 'ROLE-GATE-AUDITOR-BROKEN' "$scratch/triage.md" \
   || fail "missing catalog must be LOUD"
 ok "auditor broken (missing catalog) fails loud"
 
+# fleet-ops#708: missing helper fails loud even when an installed
+# fallback exists. A bare missing-path check is a no-op on machines
+# that already have ~/.local/lib/pi-packet/role-quality-gates.py: the
+# wrapper would take the fallback and exit 0. The fallback gate added
+# in #667 (env var unset -> fallback) must hold — a revert of that
+# gate flips this drill green for the wrong reason on a VPS install.
+# Same shape as #609: plant a succeeding helper under a fake HOME,
+# set the env var to a missing path, and assert exit 1 + LOUD that
+# names the explicit missing path (not the installed fallback).
+fake_home="$scratch/fake-home"
+mkdir -p "$fake_home/.local/lib/pi-packet"
+cp "$lib" "$fake_home/.local/lib/pi-packet/role-quality-gates.py"
+missing_helper="$scratch/no-such-helper.py"
+: >"$scratch/triage.md"
+set +e
+missing_helper_out=$(
+  HOME="$fake_home" \
+  FLEET_OPS_REPO="$scratch" \
+  FLEET_ROLE_GATES_JSON="$catalog" \
+  FLEET_ROLE_GATES_LIB="$missing_helper" \
+  FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  FLEET_ROLE_GATES_FILE=0 \
+  "$bin" 2>&1
+)
+missing_helper_rc=$?
+set -e
+[[ "$missing_helper_rc" == "1" ]] \
+  || fail "missing helper expected rc=1, got $missing_helper_rc — guard did not win over installed fallback ($missing_helper_out)"
+grep -q 'ROLE-GATE-AUDITOR-BROKEN' "$scratch/triage.md" \
+  || fail "missing helper must be LOUD (triage=$(cat "$scratch/triage.md"))"
+grep -Fq "$missing_helper" "$scratch/triage.md" \
+  || fail "LOUD line must name the explicit missing helper path, not the installed fallback (triage=$(cat "$scratch/triage.md"))"
+ok "missing helper fails loud even with installed fallback present (fleet-ops#708)"
+
 # Contracts
 grep -F 'fleet-role-gate-audit' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-role-gate-audit"
@@ -261,6 +296,12 @@ grep -F 'observe-to-close' "$bin" >/dev/null \
   || fail "auditor must observe-to-close auto-filed findings (fleet-ops#636)"
 grep -Fq 'bash "$here/role-quality-gates.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "contracts: heartbeat-tier1, MANIFEST, nested CI host"
+# fleet-ops#708: installed-lib fallback must be gated on unset
+# FLEET_ROLE_GATES_LIB so an explicit missing-path pin still fails
+# loud. A revert of the #667 gate (or refactor of the fallback) flips
+# the new drill green for the wrong reason on a VPS install.
+grep -Fq '[[ -z "${FLEET_ROLE_GATES_LIB:-}" && ! -f "$LIB"' "$bin" \
+  || fail "installed-lib fallback must be gated on unset FLEET_ROLE_GATES_LIB (fleet-ops#708)"
+ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, #708 fallback gate"
 
-ok "role-quality-gates: live catalog, bypass auto-file, dedupe, observe-to-close, fail-loud"
+ok "role-quality-gates: live catalog, bypass auto-file, dedupe, observe-to-close, fail-loud, missing-helper-drill"
