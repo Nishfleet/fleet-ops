@@ -144,6 +144,25 @@ flagged. #985 is the leftover open duplicate of #849 for the 01a04105
 git-branch-force session (same signal slug); the leftover-duplicate
 observe-to-close drain for that pile is locked under
 tests/fleet-failed-command-observe-duplicate-git-branch-force.test.sh.
+A `git cherry-pick <sha>` that exits 1 with `isError=true` because the
+cherry-pick resulted in an empty commit (the change is already on the
+target) is a real swallowed failure (fleet-ops#1065): git prints
+`Auto-merging <path>` + `The previous cherry-pick is now empty,
+possibly due to conflict resolution.` + `Command exited with code 1`,
+and the worker walks past it with a thinking-only next turn plus a
+recovery toolCall (no user-facing text naming the failure). The class
+is distinct from the #954 / #962 / #968 git-checkout worktree-conflict
+shape and the #849 / #985 git-branch-force shape (both exit 128 with a
+`fatal:` line): the cherry-pick empty shape is exit 1 with NO `fatal:`
+line. `git cherry-pick` is NOT in the git-ref probe family
+(GIT_BENIGN_RE covers only log|rev-parse|show|diff|cat-file|shortlog)
+and not in BENIGN_STAGE_RE, so the exit-1 path flags it directly. A
+future refactor that adds `cherry-pick` to GIT_BENIGN_RE (or to
+BENIGN_STAGE_RE) would silently suppress this real signal; the
+dedicated regression test
+tests/fleet-failed-command-git-cherry-pick-empty.test.sh pins that it
+does not. The auto-filed issue closes via observe-to-close when the
+session mtime ages out of the 24h window.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
