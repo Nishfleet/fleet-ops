@@ -301,6 +301,26 @@ integration` in later assistant text is. The dedicated regression test
 tests/fleet-failed-command-gh-api-403-integration.test.sh pins that.
 Live session
 2026-08-27T16-15-45-417Z_01a04401-8509-7e94-8611-0fc81a5d1b85.jsonl.
+An unpiped `gh pr view <N> --json mergedAt,merged` (or `--json merged`)
+is not valid: `gh pr view` has no JSON field named `merged` (the valid
+fields are `mergedAt` / `mergedBy` / `state`), so it exits 1 with
+`Unknown JSON field: "merged"` and isError=true (fleet-ops#1244, session
+2026-08-27T15-58-21-599Z_01a043f1-979f-75e8-93f5-9b72f5c84db9). The
+assistant's next turn was a thinking-only note ("doesn't have the
+mergedAt field") plus a silent retry (`gh pr view --json title,state`).
+Thinking is not a flag (`_text_chunks` only reads `type=text`). It is
+not a GraphQL transient error (fleet-ops#678), not an invalid flag
+(fleet-ops#1055 `unknown flag: --body`), not a python KeyError on
+omitted --json output (fleet-ops#1003), and not a `gh issue view`
+unknown-field (fleet-ops#1219 `Unknown JSON field: "label"` — that
+is `issue view` + `label`; this is `pr view` + `merged`). The detector already flags this
+class via the generic isError path. Do NOT add `Unknown JSON field` to
+REAL_ERR_RE and check it when isError is false: that is the pipe-masked
+sibling (fleet-ops#1193, `2>&1 | head` so bash exits 0) and would break
+the #1048 / #1122 / #1074 contract that successful output quoting error
+strings is content. The dedicated regression test locks it under
+tests/fleet-failed-command-gh-pr-view-merged.test.sh. Live command:
+`gh pr view 392 -R Nishfleet/fleet-ops --json mergedAt,merged 2>&1`.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.

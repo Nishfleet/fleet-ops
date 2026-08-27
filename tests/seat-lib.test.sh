@@ -2124,6 +2124,17 @@ bash "$here/fleet-failed-command-gh-issue-view-body.test.sh" || fail "fleet-fail
 # --body`) and #1003 (python `KeyError` after a valid `--json` filter).
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-unknown-field.test.sh" || fail "fleet-failed-command-gh-issue-view-unknown-field tests failed"
+# fleet-ops#1244: unpiped `gh pr view <N> --json mergedAt,merged` (or
+# `--json merged`) is not valid — `gh pr view` has no JSON field named
+# `merged`, so it exits 1 with `Unknown JSON field: "merged"` and
+# isError=true. The next assistant turn is thinking-only plus a silent
+# `--json title,state` retry, so the failure is never named. Distinct
+# from #1055 (unknown flag --body), #1003 (python KeyError on omitted
+# --json output), #1219 (`gh issue view` unknown field `label`), and
+# #1193 (same error text piped through `head`, isError=false, detector
+# must stay silent). Same CI constraint (worker token cannot add a P14
+# line).
+bash "$here/fleet-failed-command-gh-pr-view-merged.test.sh" || fail "fleet-failed-command-gh-pr-view-merged tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
