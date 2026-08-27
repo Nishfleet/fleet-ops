@@ -1343,6 +1343,259 @@ set -e
   || fail "weekly pace: alpha at 80% of budget must be skipped in favour of beta, got: $out"
 ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
 
+# --- fleet-ops#1163: xai-oauth (SuperGrok sub) prepaid weekly seat --------
+# BINDING: prepaid seats ALTERNATE, never stack. xai-oauth enters the
+# prepaid-quota bucket with cap=1 and per-model cap=1. _rr_pick rotates
+# between grok-4.6 and grok-4.5 so the weekly meter is shared, not
+# stacked on a single model. The provider must also be present in
+# models.json (enumerated) — the cap map is the allowlist, models.json
+# is the inventory. xai-oauth joins prepaid_providers_in_order after
+# devin/cursor/cline/ollama so the named hard-cap prepaid seats are
+# tried first.
+mkdir -p "$scratch/1163"
+cat >"$scratch/1163/models.json" <<'JSON'
+{
+  "providers": {
+    "xai-oauth": {
+      "models": [
+        { "id": "grok-4.6", "reasoning": true, "contextWindow": 500000 },
+        { "id": "grok-4.5", "reasoning": true, "contextWindow": 500000 }
+      ]
+    },
+    "ollama": {
+      "models": [
+        { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/1163/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "prepaid_providers_in_order": ["xai-oauth", "ollama"],
+  "providers": {
+    "xai-oauth": {
+      "cap": 1,
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "quota_bench_default_s": 604800,
+      "models": { "grok-4.6": 1, "grok-4.5": 1 }
+    },
+    "ollama": {
+      "cap": 4,
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "models": { "deepseek-v4-flash:0731": 4 }
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1163/models.json"
+export SEAT_CAPS_JSON="$scratch/1163/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1163/ledger"
+export PI_PACKET_STATE="$scratch/1163/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+
+# (a) First pick: xai-oauth wins because it is the head of
+#     prepaid_providers_in_order. Pick a heavy-capable row (both groks
+#     qualify on reasoning + 500K context).
+set +e
+first=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1163-first: expected a heavy pick, got rc=$rc"
+case "$first" in
+    "xai-oauth	grok-4.6"|"xai-oauth	grok-4.5")
+        ok "1163-first: xai-oauth wins first prepaid pick ($first)"
+        ;;
+    *)
+        fail "1163-first: expected xai-oauth/grok-4.6 or grok-4.5, got: $first"
+        ;;
+esac
+
+# (b) Alternation: 4 picks across the two grok models split 2/2 with no
+#     consecutive same-provider picks. _rr_pick rotates the prepaid
+#     bucket. When xai-oauth is the ONLY prepaid seat, the rotation
+#     is between its two models; when other prepaid seats are live too,
+#     the rotation is across ALL prepaid seats (covered in the
+#     fleet-ops#387 RR test above). We isolate to xai-oauth here to
+#     pin the within-provider alternation discipline that protects
+#     the SuperGrok weekly sub from being drained by one model.
+mkdir -p "$scratch/1163/b"
+cat >"$scratch/1163/b/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "prepaid_providers_in_order": ["xai-oauth"],
+  "providers": {
+    "xai-oauth": {
+      "cap": 1,
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "quota_bench_default_s": 604800,
+      "models": { "grok-4.6": 1, "grok-4.5": 1 }
+    }
+  }
+}
+JSON
+export SEAT_CAPS_JSON="$scratch/1163/b/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1163/ledger"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+picks=""
+# shellcheck disable=SC2034 # i is the loop index; the picks are accumulated in $picks
+for i in 1 2 3 4; do
+    set +e
+    one=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+    set -e
+    picks="${picks}${one}"$'\n'
+done
+g46=$(printf '%s' "$picks" | grep -c 'grok-4.6' || true)
+g45=$(printf '%s' "$picks" | grep -c 'grok-4.5' || true)
+[[ "$g46" == "2" && "$g45" == "2" ]] \
+    || fail "1163-rr: 4 picks across two grok models must split 2/2, got 4.6=$g46 4.5=$g45 picks=$picks"
+# No consecutive same-model picks (the alternation discipline).
+prev=""
+while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ -n "$prev" && "$line" == "$prev" ]] \
+        && fail "1163-rr: consecutive picks stacked on $line (got: $picks)"
+    prev="$line"
+done <<<"$picks"
+ok "1163-rr: cap=1 + alternation gives 2/2 split between grok-4.6 and grok-4.5"
+# restore the 1163 baseline for any later tests
+export SEAT_CAPS_JSON="$scratch/1163/caps.json"
+
+# (c) Never stack at the provider level: with xai-oauth as the ONLY
+#     prepaid seat in the fixture (re-use b/caps.json) and one
+#     xai-oauth worker in flight (ACTIVE_SEATS_DIR entry), a second
+#     xai-oauth pick must be impossible — the only routable prepaid
+#     seat is the already-saturated xai-oauth, so pick_seat returns
+#     nothing (rc=1) and the seat is provably gated.
+export SEAT_CAPS_JSON="$scratch/1163/b/caps.json"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+unit="pi-test-xaistack"
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+jq -nc --arg p "xai-oauth" --arg m "grok-4.6" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1163-stack: with one xai-oauth worker live and xai-oauth as the only prepaid seat, the cap=1 must reject all picks (rc=0 was returned, output: $out)"
+if echo "$out" | grep -q '^xai-oauth'; then fail "1163-stack: cap=1 must keep pick_seat off xai-oauth when 1 is already live, got: $out"; fi
+ok "1163-stack: cap=1 blocks a second xai-oauth worker (rc=$rc, no xai-oauth in output)"
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+
+# (d) Dead token means a dead seat: a credentials_bad ledger entry
+#     must keep pick_seat off xai-oauth (the 'never lie "ready" again'
+#     half of #1163). Without the ledger the seat would be picked
+#     silently; with it, pick_seat returns 1 / skips.
+ledger_dir="$scratch/1163/ledger-dead"
+mkdir -p "$ledger_dir"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+dead_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -nc --arg p "xai-oauth" --arg m "grok-4.6" --arg obs "$dead_at" \
+    '{provider:$p, model:$m, health_class:"credentials_bad", seat_dead:true, observed_at:$obs, source:"after_provider_response"}' \
+    > "$ledger_dir/xai-oauth__grok-4.6.json"
+jq -nc --arg p "xai-oauth" --arg m "grok-4.5" --arg obs "$dead_at" \
+    '{provider:$p, model:$m, health_class:"credentials_bad", seat_dead:true, observed_at:$obs, source:"after_provider_response"}' \
+    > "$ledger_dir/xai-oauth__grok-4.5.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger_dir"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1163-dead: credentials_bad must keep xai-oauth out of the ladder, got rc=0 output=$out"
+if echo "$out" | grep -q '^xai-oauth'; then fail "1163-dead: a credentials_bad xai-oauth must never be picked, got: $out"; fi
+ok "1163-dead: credentials_bad ledger skips xai-oauth (rc=$rc, no xai-oauth in output)"
+
+# (e) Order: with the production order devin -> cursor -> cline ->
+#     ollama -> xai-oauth, xai-oauth is the LAST prepaid seat. When
+#     every earlier prepaid lane is full, xai-oauth is the rescue.
+mkdir -p "$scratch/1163/e"
+cat >"$scratch/1163/e/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "prepaid_providers_in_order": ["devin", "cursor", "cline", "ollama", "xai-oauth"],
+  "providers": {
+    "devin": { "cap": 0, "class": "prepaid-quota" },
+    "cursor": { "cap": 0, "class": "prepaid-quota" },
+    "cline": { "cap": 0, "class": "prepaid-quota" },
+    "ollama": { "cap": 0, "class": "prepaid-quota" },
+    "xai-oauth": { "cap": 1, "class": "prepaid-quota", "quota_window": "weekly", "models": { "grok-4.6": 1, "grok-4.5": 1 } }
+  }
+}
+JSON
+export SEAT_CAPS_JSON="$scratch/1163/e/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1163/ledger"  # fresh, no health data
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1163-order: with earlier prepaid lanes at cap=0, xai-oauth must be picked, got rc=$rc output=$out"
+case "$out" in
+    "xai-oauth	grok-4.6"|"xai-oauth	grok-4.5") ok "1163-order: xai-oauth is the rescue when earlier prepaid lanes are full ($out)" ;;
+    *) fail "1163-order: expected xai-oauth to be picked last in prepaid order, got: $out" ;;
+esac
+
+# (f) Cap-map ALLOWLIST: a provider in models.json with NO seat-caps
+#     entry (xai-oauth removed) must never be picked. This is the
+#     P15 escape that lost the 2026-08-25 groq/openai/gpt-oss pick —
+#     xai-oauth cannot fall through as "free" the way the old grok
+#     provider did.
+mkdir -p "$scratch/1163/f"
+cat >"$scratch/1163/f/models.json" <<'JSON'
+{
+  "providers": {
+    "xai-oauth": {
+      "models": [
+        { "id": "grok-4.6", "reasoning": true, "contextWindow": 500000 }
+      ]
+    },
+    "ollama": {
+      "models": [
+        { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/1163/f/caps-no-xai.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "prepaid_providers_in_order": ["xai-oauth"],
+  "providers": {
+    "xai-oauth": { "cap": 1, "class": "prepaid-quota" },
+    "ollama": { "cap": 4, "class": "free", "models": { "deepseek-v4-flash:0731": 4 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1163/f/models.json"
+export SEAT_CAPS_JSON="$scratch/1163/f/caps-no-xai.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1163/ledger"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1163-allowlist: cap map without an xai-oauth model entry should fall through to a free lane, got rc=$rc"
+if echo "$out" | grep -q '^xai-oauth'; then fail "1163-allowlist: xai-oauth with no model in the cap map must never be picked (P15 escape closed), got: $out"; fi
+ok "1163-allowlist: xai-oauth without a cap-map model entry is rejected (P15 contract)"
+# restore the 1163 baseline for any later tests
+export PI_MODELS_JSON="$scratch/1163/models.json"
+export SEAT_CAPS_JSON="$scratch/1163/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1163/ledger"
+
 # --- fleet-ops#437: empty models map skips the live hetzner slug -----------
 # Isolated fixtures so later cap-map edits cannot silently drop this case.
 mkdir -p "$scratch/437"
