@@ -1395,11 +1395,17 @@ fi
 # ask to file/queue in assistant text without a queue action in the same
 # session are LOUD + auto-filed. The tick fails so a named-in-chat finding
 # cannot vanish when the session ends. Runs before the coverage canary.
+# Opt in to observe-to-close via FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1
+# (fleet-ops#820): the production heartbeat is the only caller trusted
+# to close issues, and it is the only one that sets the flag. A test
+# or one-off invocation with empty/isolated session roots would
+# otherwise close every open signal-keyed issue against the live repo
+# (this is exactly how #721-#725 got phantom-closed on 2026-08-27).
 FINDINGS_QUEUED_BIN="${FLEET_FINDINGS_QUEUED:-/home/nish/.local/bin/fleet-findings-queued}"
 findings_queued_rc=0
 if [ -x "$FINDINGS_QUEUED_BIN" ]; then
     log "15. findings-queued session-close lint starting"
-    if "$FINDINGS_QUEUED_BIN"; then
+    if FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1 "$FINDINGS_QUEUED_BIN"; then
         log "15. findings-queued session-close lint complete"
     else
         findings_queued_rc=$?
