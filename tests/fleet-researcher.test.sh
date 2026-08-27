@@ -119,6 +119,78 @@ printf '%s' "$t" | jq -e '.triggers | index("domain-stale:fleet-workflow")' >/de
   || fail "domain-stale trigger missing: $t"
 ok "triggers: plateau, regression, nth cycle, failed cycle, seat-map, domain-stale"
 
+# --- 2b. #457 snapshot triggers --------------------------------------------
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat >"$scratch/snap-plateau.json" <<JSON
+{
+  "generated_at": "$now_iso",
+  "lanes": {
+    "ollama/deepseek-v4-flash:0731": {
+      "revert_rate": 0.01,
+      "defect_rate": 0.10,
+      "overturn_rate": 0.0
+    }
+  }
+}
+JSON
+
+cat >"$scratch/snap-regress.json" <<JSON
+{
+  "generated_at": "$now_iso",
+  "lanes": {
+    "ollama/deepseek-v4-flash:0731": {
+      "revert_rate": 0.05,
+      "defect_rate": 0.10,
+      "overturn_rate": 0.0
+    }
+  }
+}
+JSON
+
+cat >"$scratch/snap-stale.json" <<JSON
+{
+  "generated_at": "2026-08-01T00:00:00Z",
+  "lanes": {
+    "ollama/deepseek-v4-flash:0731": {
+      "revert_rate": 0.05,
+      "defect_rate": 0.10,
+      "overturn_rate": 0.0
+    }
+  }
+}
+JSON
+
+python3 "$lib" init --state "$scratch/snap-state.json" >/dev/null
+python3 - "$scratch/snap-state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["domains"] = {
+  "fleet-workflow": {"last_research_at": "2026-08-21T00:00:00Z"},
+  "product-0509": {"last_research_at": "2026-08-21T00:00:00Z"},
+}
+s["last_quality_primary"] = {"revert_rate": 0.01, "defect_rate": 0.10, "overturn_rate": 0.0}
+json.dump(s, open(p, "w"), indent=2)
+open(p, "a").write("\n")
+PY
+
+t=$(python3 "$lib" triggers --state "$scratch/snap-state.json" --quality "$scratch/snap-plateau.json" --now "2026-08-21T00:00:00Z")
+printf '%s' "$t" | jq -e '.triggers | index("quality-plateau")' >/dev/null \
+  || fail "snapshot plateau trigger missing: $t"
+
+t=$(python3 "$lib" triggers --state "$scratch/snap-state.json" --quality "$scratch/snap-regress.json" --now "2026-08-21T00:00:00Z")
+printf '%s' "$t" | jq -e '.triggers | index("quality-regression")' >/dev/null \
+  || fail "snapshot regression trigger missing: $t"
+
+t=$(python3 "$lib" triggers --state "$scratch/snap-state.json" --quality "$scratch/snap-stale.json" --now "2026-08-21T00:00:00Z")
+printf '%s' "$t" | jq -e '[.triggers[] | select(startswith("quality-"))] | length == 0' >/dev/null \
+  || fail "stale snapshot must not fire quality triggers: $t"
+
+t=$(python3 "$lib" triggers --state "$scratch/snap-state.json" --quality "$scratch/missing.json" --now "2026-08-21T00:00:00Z")
+printf '%s' "$t" | jq -e '[.triggers[] | select(startswith("quality-"))] | length == 0' >/dev/null \
+  || fail "missing snapshot must not fire quality triggers: $t"
+ok "triggers: #457 snapshot plateau, regression, stale, missing all fail-open"
+
 # --- 3/4. dispatch with fake systemctl -------------------------------------
 calls="$scratch/calls.log"
 : >"$calls"
@@ -245,6 +317,26 @@ run_dispatch "$scratch/plat" "$scratch/plateau.json" || fail "plateau dispatch s
 grep -q 'start --no-block fleet-researcher.service' "$calls" \
   || fail "plateau should start the unit: $(cat "$calls")"
 ok "dispatch: quality plateau starts the unit"
+
+# --- 3b. dispatch from #457 snapshot regression ----------------------------
+mkdir -p "$scratch/snap-dispatch"
+python3 "$lib" init --state "$scratch/snap-dispatch/state.json" >/dev/null
+python3 - "$scratch/snap-dispatch/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["domains"] = {
+  "fleet-workflow": {"last_research_at": "2026-08-21T00:00:00Z"},
+  "product-0509": {"last_research_at": "2026-08-21T00:00:00Z"},
+}
+json.dump(s, open(p, "w"), indent=2)
+open(p, "a").write("\n")
+PY
+: >"$calls"
+run_dispatch "$scratch/snap-dispatch" "$scratch/snap-regress.json" || fail "snapshot regression dispatch should exit 0"
+grep -q 'start --no-block fleet-researcher.service' "$calls" \
+  || fail "snapshot regression should start the unit: $(cat "$calls")"
+ok "dispatch: #457 snapshot regression starts the unit"
 
 mkdir -p "$scratch/cut"
 python3 "$lib" init --state "$scratch/cut/state.json" >/dev/null

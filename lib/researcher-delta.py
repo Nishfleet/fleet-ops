@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 DOMAINS = ("fleet-workflow", "product-0509")
@@ -31,6 +33,15 @@ GENERIC_ADOPTING = re.compile(
     re.I,
 )
 ISO_Z = re.compile(r"Z$")
+
+# fleet-ops#457 snapshot metrics and the NORTH STAR cuts they are compared to.
+PRIMARY_SLO_METRICS = ("revert_rate", "defect_rate", "overturn_rate")
+DEFAULT_QUALITY_CUTS = {
+    "revert_rate_cut": 0.04,
+    "defect_rate_cut": 0.40,
+    "overturn_rate_cut": 0.25,
+}
+DEFAULT_STALE_SNAPSHOT_SECS = 86400
 
 
 def parse_iso(value: str | None) -> datetime | None:
@@ -54,6 +65,119 @@ def now_utc(override: str | None = None) -> datetime:
 def fingerprint(they: str, we: str) -> str:
     blob = f"{they.strip().lower()}\n{we.strip().lower()}".encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _quality_routing_path() -> str:
+    return (
+        os.environ.get("RESEARCHER_QUALITY_ROUTING_JSON")
+        or os.environ.get("QUALITY_ROUTING_JSON")
+        or str(Path.home() / ".local/state/pi-packet/quality-routing.json")
+    )
+
+
+def load_quality_thresholds() -> dict[str, float | int]:
+    """Load SLO cuts from quality-routing config, with safe NORTH STAR defaults."""
+    data = load_json(_quality_routing_path(), {})
+    if not isinstance(data, dict):
+        data = {}
+    thresholds: dict[str, float | int] = {}
+    for key in PRIMARY_SLO_METRICS:
+        cut_key = f"{key}_cut"
+        val = data.get(cut_key)
+        if isinstance(val, (int, float)):
+            thresholds[cut_key] = float(val)
+        else:
+            thresholds[cut_key] = DEFAULT_QUALITY_CUTS[cut_key]
+    stale = data.get("stale_snapshot_secs")
+    if isinstance(stale, int) and stale >= 1:
+        thresholds["stale_snapshot_secs"] = stale
+    else:
+        thresholds["stale_snapshot_secs"] = DEFAULT_STALE_SNAPSHOT_SECS
+    return thresholds
+
+
+def _is_old_quality(raw: Any) -> bool:
+    return isinstance(raw, dict) and (
+        "verdict" in raw or "primary" in raw or "prior_primary" in raw
+    )
+
+
+def _is_quality_snapshot(raw: Any) -> bool:
+    return isinstance(raw, dict) and "generated_at" in raw and "lanes" in raw
+
+
+def _snapshot_stale(
+    snapshot: dict[str, Any],
+    thresholds: dict[str, float | int],
+    now: datetime | None = None,
+) -> bool:
+    generated = parse_iso(str(snapshot.get("generated_at") or ""))
+    if generated is None:
+        return True
+    now = now or now_utc()
+    age = (now - generated).total_seconds()
+    return age > thresholds["stale_snapshot_secs"]
+
+
+def _primary_from_snapshot(snapshot: dict[str, Any]) -> dict[str, float]:
+    """Summarise a #457 snapshot into the worst per-SLO rate across all lanes."""
+    primary: dict[str, float] = {key: 0.0 for key in PRIMARY_SLO_METRICS}
+    lanes = snapshot.get("lanes") or {}
+    if not isinstance(lanes, dict):
+        return primary
+    for metrics in lanes.values():
+        if not isinstance(metrics, dict):
+            continue
+        for key in PRIMARY_SLO_METRICS:
+            val = metrics.get(key)
+            if isinstance(val, (int, float)):
+                primary[key] = max(primary[key], float(val))
+    return primary
+
+
+def _verdict_from_primary(
+    primary: dict[str, float], thresholds: dict[str, float | int]
+) -> str:
+    """FAIL if any primary SLO is over its cut; otherwise PASS."""
+    for key in PRIMARY_SLO_METRICS:
+        if primary.get(key, 0.0) > thresholds[f"{key}_cut"]:
+            return "FAIL"
+    return "PASS"
+
+
+def normalize_quality(
+    quality: Any,
+    state: dict[str, Any],
+    thresholds: dict[str, float | int] | None = None,
+) -> dict[str, Any] | None:
+    """Return an old-shaped quality dict.
+
+    Accepts the legacy #456 shape ({verdict, primary, prior_primary}) or the
+    live #457 snapshot ({generated_at, lanes: {...}}). A missing, malformed,
+    or stale snapshot becomes None so the heartbeat tick does not fail.
+    """
+    if not isinstance(quality, dict) or not quality:
+        return None
+    if _is_old_quality(quality):
+        return quality
+    if not _is_quality_snapshot(quality):
+        return None
+    if thresholds is None:
+        thresholds = load_quality_thresholds()
+    if _snapshot_stale(quality, thresholds):
+        return None
+    primary = _primary_from_snapshot(quality)
+    prior = state.get("last_quality_primary")
+    if not isinstance(prior, dict):
+        prior = {}
+    verdict = _verdict_from_primary(primary, thresholds)
+    # Persist the current primary so the next tick can compare for plateau.
+    state["last_quality_primary"] = primary
+    return {
+        "verdict": verdict,
+        "primary": primary,
+        "prior_primary": prior,
+    }
 
 
 def _field(delta: dict[str, Any], *keys: str) -> str:
@@ -148,6 +272,7 @@ def empty_state() -> dict[str, Any]:
         "last_dispatch_at": "",
         "last_run_at": "",
         "last_seat_map_hash": "",
+        "last_quality_primary": {},
         "cadence_cut": False,
         "min_interval_s": DEFAULT_MIN_INTERVAL_S,
         "domains": {name: {"last_research_at": ""} for name in DOMAINS},
@@ -162,6 +287,12 @@ def load_json(path: str, default: Any) -> Any:
             return json.load(handle)
     except (OSError, json.JSONDecodeError):
         return default
+
+
+def save_state(path: str, state: dict[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2, sort_keys=True)
+        handle.write("\n")
 
 
 def judged_tail(deltas: list[dict[str, Any]], trailing: int = DEFAULT_TRAILING) -> list[dict[str, Any]]:
@@ -193,12 +324,14 @@ def evaluate_triggers(
     nth_cycle: int = DEFAULT_NTH_CYCLE,
 ) -> list[str]:
     reasons: list[str] = []
-    if isinstance(quality, dict) and quality:
-        verdict = str(quality.get("verdict") or "").upper()
+    thresholds = load_quality_thresholds()
+    normalized = normalize_quality(quality, state, thresholds)
+    if isinstance(normalized, dict) and normalized:
+        verdict = str(normalized.get("verdict") or "").upper()
         if verdict == "FAIL":
             reasons.append("quality-regression")
-        primary = quality.get("primary")
-        prior = quality.get("prior_primary")
+        primary = normalized.get("primary")
+        prior = normalized.get("prior_primary")
         if (
             verdict != "FAIL"
             and isinstance(primary, dict)
@@ -321,9 +454,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, "created": False, "path": path}))
         return 0
     state = empty_state()
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    save_state(path, state)
     print(json.dumps({"ok": True, "created": True, "path": path}))
     return 0
 
@@ -385,6 +516,8 @@ def cmd_decide(args: argparse.Namespace) -> int:
         min_interval_s=args.min_interval_s,
         floor=args.floor,
     )
+    if args.state:
+        save_state(args.state, state)
     print(json.dumps(verdict))
     return 0 if not args.fail_on_skip else (0 if verdict["dispatch"] else 1)
 
@@ -397,9 +530,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     coerced = {str(k): list(v) if isinstance(v, list) else [] for k, v in labels.items()}
     state = apply_label_refresh(state, coerced)
     if args.write:
-        with open(args.state, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        save_state(args.state, state)
     rate, adopted, judged = adoption_rate(state.get("deltas") or [])
     print(
         json.dumps(
