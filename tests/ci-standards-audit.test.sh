@@ -174,6 +174,10 @@ bash "$here/p14-test-listing-gate.test.sh"
 # .github/workflows/**).
 bash "$here/same-repo-closes-gate.test.sh"
 
+# fleet-ops#1229: merge-trample gate. Hosted here so P14 runs the drill
+# without a workflow-file edit.
+bash "$here/merge-trample-gate.test.sh"
+
 # fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/console-tile-verify.test.sh"

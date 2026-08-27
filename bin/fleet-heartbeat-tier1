@@ -545,7 +545,7 @@ while IFS= read -r repo; do
     # Fetch open PRs. --jq filters to fleet-worker head refs and excludes
     # dependabot (handled by its own policy).
     prs_json=$(gh pr list -R "$repo" --state open \
-        --json number,headRefName,isDraft,mergeable \
+        --json number,headRefName,isDraft,mergeable,title \
         --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert)/")))]' \
         2>/dev/null) || {
             log "2.  - $repo: gh pr list FAILED — skipping (auth/network?)"
@@ -599,6 +599,33 @@ while IFS= read -r repo; do
             log "2.  - $repo#$pr_num ($pr_head): not green (fail=$n_fail pending=$n_pending) — skip"
             skipped=$((skipped+1))
             continue
+        fi
+
+        # fleet-ops#1229: merge-trample gate. Fail-open on missing
+        # clone/fetch so a helper gap does not freeze the queue.
+        # REJECT (exit 1) skips the arm. revert/ heads pass the gate
+        # via --head-ref.
+        trample_bin="${FLEET_MERGE_TRAMPLE_GATE:-/home/nish/.local/bin/fleet-merge-trample-gate}"
+        if [ -x "$trample_bin" ] && [ "$repo" = "Nishfleet/fleet-ops" ]; then
+            trample_repo="${FLEET_MERGE_TRAMPLE_REPO:-/home/nish/workspaces/tooling/fleet-ops}"
+            if [ -d "$trample_repo/.git" ] || [ -f "$trample_repo/.git" ]; then
+                if git -C "$trample_repo" fetch -q origin main \
+                    "pull/${pr_num}/head:refs/trample/pr-${pr_num}" 2>/dev/null; then
+                    trample_rc=0
+                    pr_title=$(printf '%s' "$row" | jq -r '.title // empty')
+                    "$trample_bin" evaluate \
+                        --repo "$trample_repo" \
+                        --base origin/main \
+                        --head "refs/trample/pr-${pr_num}" \
+                        --head-ref "$pr_head" \
+                        --title "$pr_title" >/dev/null 2>&1 || trample_rc=$?
+                    if [ "$trample_rc" -eq 1 ]; then
+                        log "2.  - $repo#$pr_num ($pr_head): MERGE-TRAMPLE REJECT — skip arm (fleet-ops#1229)"
+                        skipped=$((skipped+1))
+                        continue
+                    fi
+                fi
+            fi
         fi
 
         # Green: enable auto-merge (squash is the fleet default; matches
