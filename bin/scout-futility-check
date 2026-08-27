@@ -40,6 +40,7 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 STATE_DIR="${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}"
 N="${SCOUT_FUTILITY_N:-3}"
@@ -208,7 +209,7 @@ This is a judge, provider, or quality problem, not a crash. Do not restart the s
 
 ${marker}
 EOF
-    if "$GH" issue create -R "$FILE_REPO" \
+    if "$ISSUE_FILE" file -R "$FILE_REPO" \
         --title "$title" \
         --body-file "$body_file" \
         --label escalate-senior \

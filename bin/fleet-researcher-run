@@ -21,6 +21,7 @@ export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 STATE_DIR="${RESEARCHER_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-researcher}"
 PROMPT="${RESEARCHER_PROMPT:-$HOME/.pi/agent/prompts/researcher.md}"
@@ -274,7 +275,7 @@ if [ "$DRY_RUN" != "1" ] && [ "$n_file" -gt 0 ]; then
         ensure_label "$repo" scout-candidate "1D76DB" "Awaiting senior-auditor admission"
         ensure_label "$repo" research-delta "5319E7" "Frontier delta from the researcher role"
         set +e
-        url=$("$GH" issue create -R "Nishfleet/$repo" --title "research-delta: $title" --body "$body" \
+        url=$("$ISSUE_FILE" file -R "Nishfleet/$repo" --title "research-delta: $title" --body "$body" \
             --label scout-candidate --label research-delta 2>"$REPORT_DIR/gh-create.err")
         create_rc=$?
         set -e

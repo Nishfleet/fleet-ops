@@ -67,6 +67,9 @@ AUDIT_NONCANON_MARKER="audit-target-noncanonical: fleet-ops#367"
 # Resolve this script's repo root for fallbacks when not installed yet.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 repo_fallback="$(cd "$here/.." && pwd)"
+
+# fleet-ops#1212: route issue filings through the same-problem dedupe gate.
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$here/fleet-issue-file}"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/blind-audit.md"
 
 SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
@@ -131,7 +134,7 @@ auto_file_audit_noncanonical() {
     # (which lists agent-ready only) sees the detector issue immediately,
     # without waiting for lifecycle-label-sweep. Same class as the #402
     # panel-PASS create site.
-    if gh issue create -R "$REPO" \
+    if "$ISSUE_FILE" file -R "$REPO" \
         --title "Blind audit targeted non-canonical fleet-ops checkout" \
         --body-file "$body_file" \
         --label gap-audit --label agent-ready >/dev/null 2>&1; then
@@ -540,16 +543,24 @@ while IFS= read -r finding; do
         } > "$body_file"
 
         set +e
-        new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>&1)
+        new_issue=$("$ISSUE_FILE" file --json -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>/dev/null)
         new_rc=$?
         set -e
         if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
-            issue_url=$(printf '%s\n' "$new_issue" | awk '/https?:\/\//{print; exit}')
-            [ -n "$issue_url" ] || issue_url="$new_issue"
+            issue_url=$(printf '%s' "$new_issue" | jq -r '.url // empty' 2>/dev/null)
+            if [ -z "$issue_url" ]; then
+                # Helper classified this as a duplicate and commented on the
+                # existing issue rather than filing. Carry the link so the
+                # verdict log still shows the dedupe.
+                issue_url=$(printf '%s' "$new_issue" | jq -r '.existing // empty' 2>/dev/null)
+            fi
+            if [ -n "$issue_url" ] && [[ "$issue_url" != http* ]]; then
+                issue_url="https://github.com/${issue_url#*github.com/}"
+            fi
             log "finding $rank: FILED $issue_url"
             filed=$((filed + 1))
         else
-            reason="gh issue create failed: $new_issue"
+            reason="fleet-issue-file failed: $new_issue"
             log "finding $rank: FAILED to file issue ($new_issue)"
             unfiled_pass=$((unfiled_pass + 1))
         fi

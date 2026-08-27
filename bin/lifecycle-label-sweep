@@ -60,6 +60,7 @@ set -euo pipefail
 export HOME="${HOME:-/home/nish}"
 export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
 classify() {
     local title="$1"
@@ -228,7 +229,7 @@ if [ "$DRILL" = "1" ]; then
         log "DRY drill: would file unlabeled fixture on $drill_repo"
         drill_num="0"
     else
-        drill_url=$(gh issue create -R "$drill_repo" \
+        drill_url=$("$ISSUE_FILE" file -R "$drill_repo" \
             --title "drill: unlabeled-lifecycle fixture" \
             --body "Unlabeled fixture for fleet-ops#376. The sweep must apply a lifecycle label within this tick, then this issue is closed." \
             2>/dev/null) || {

@@ -91,7 +91,7 @@ grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must refuse a non-canonical FLEET_OPS_CHECKOUT"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag live dests that point outside the canonical checkout"
-grep -q 'gh issue create' "$repo_root/bin/fleet-ops-drift.py" \
+grep -q 'issue-file.py' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file a canonical-checkout drift issue"
 grep -q 'DRIFT-MISSING-EXEC' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag user units whose ExecStart binary is missing"
@@ -822,7 +822,7 @@ exit 0
 FAKE
 chmod +x "$hot_gh"
 set +e
-hot_out=$(PATH="$scratch:$PATH" GH="$hot_gh" GH_LOG="$hot_gh_log" FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" "$hot_repo/install.sh" 2>&1)
+hot_out=$(PATH="$scratch:$PATH" GH="$hot_gh" GH_LOG="$hot_gh_log" FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" "$hot_repo/install.sh" 2>&1)
 hot_rc=$?
 set -e
 [[ "$hot_rc" -eq 1 ]] || fail "scenario12g: hot-patched newer live file should refuse (rc=1), got rc=$hot_rc out=$hot_out"
@@ -886,6 +886,7 @@ run_orphan_canary() {
   GH_OPEN_ISSUES="$scratch/open-orphan.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 }
 if out=$(run_orphan_canary); then
@@ -959,6 +960,7 @@ run_paper_canary() {
   GH_OPEN_ISSUES="$scratch/open-paper.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 }
 if out=$(run_paper_canary); then
@@ -979,6 +981,7 @@ if out=$(
   GH_OPEN_ISSUES="$scratch/open-paper.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 ); then
     fail "scenario14b: canary should still fail on drop-in after dedup, got: $out"
@@ -1082,6 +1085,7 @@ if out=$(
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_deploy
 ); then
     fail "scenario17: deploy should block on a named non-main branch, got: $out"
@@ -1107,6 +1111,7 @@ if out=$(
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 ); then
     fail "scenario17b: canary should fail on a named non-main branch, got: $out"

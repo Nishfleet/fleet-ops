@@ -32,6 +32,9 @@ ROLLBACK_MSG="AUTO-ROLLBACK: deploy verification failed (siterep-deploy-verify.s
 log() { printf '[siterep-deploy-rollback] %s\n' "$*"; }
 die() { printf '[siterep-deploy-rollback] ERROR: %s\n' "$*" >&2; exit 2; }
 
+_here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$_here/fleet-issue-file}"
+
 # File a gh incident so the failure is queued and visible. Never masks the
 # rollback verdict: logs loudly and continues if gh fails.
 file_incident() {
@@ -43,7 +46,7 @@ file_incident() {
     "$body_prefix" \
     "$(printf '%s' "$evidence" | tail -40)" \
     "Journals: journalctl --user -u siterep-deploy -u siterep-deploy-verify -u siterep-deploy-rollback")
-  if gh issue create -R "$REPO_SLUG" --title "$title" --body "$body" >/dev/null 2>&1; then
+  if "$ISSUE_FILE" file -R "$REPO_SLUG" --title "$title" --body "$body" >/dev/null 2>&1; then
     log "incident filed: $title"
   else
     printf '[siterep-deploy-rollback] WARN: gh issue create failed; incident NOT filed but verdict stands\n' >&2

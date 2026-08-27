@@ -493,3 +493,7 @@ lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.p
 # the symlink and reads it. Do not MANIFEST-install into nish-vault — that
 # dirties the vault git tree. Recall prefers the vault path when present.
 bin/memoryctl-recall.py /home/nish/.local/bin/memoryctl-recall
+# fleet-ops#1212: filing-time same-problem dedupe. All auto-filers route
+# through this instead of raw `gh issue create`.
+bin/fleet-issue-file /home/nish/.local/bin/fleet-issue-file
+lib/issue-file.py /home/nish/.local/lib/pi-packet/issue-file.py
