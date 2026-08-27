@@ -169,6 +169,23 @@ toolCalls did not name the failure. It is not a GraphQL transient error
 (fleet-ops#678) or a no-match probe; it is a real swallowed failure and
 must be flagged. The dedicated regression test locks it under
 tests/fleet-failed-command-gh-issue-view-body.test.sh.
+A compound `echo "=== MERGED RECENT ==="` +
+`gh pr list -R ... --state merged --sort -mergedAt ... 2>/dev/null`
+chain is a real swallowed failure (fleet-ops#1107, session
+2026-08-27T11-16-51-853Z_01a042ef-e00d-7ace-b43a-7e40a2623f48):
+`--sort -mergedAt` is not a valid `gh pr list` sort value, stderr is
+silenced, and the toolResult is only the echo marker plus
+`Command exited with code 1` (isError=true). The assistant walked
+past it with thinking-only recovery and later
+"Now I have the full picture. Let me fix and re-dispatch." prose,
+which does not name the failure. Distinct from #1055 (`gh issue view
+--body` with visible `unknown flag: --body`), #698 (`gh api` HTTP 404
+with visible `Not Found`), and grep POSIX no-match (BENIGN_STAGE_RE;
+a `; grep` sibling that prints the same `=== MERGED RECENT ===`
+marker must stay a probe). `gh pr list` is not a no-match probe, and
+silencing stderr does not make an invalid sort benign. The dedicated
+regression test locks it under
+tests/fleet-failed-command-gh-pr-list-invalid-sort.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
