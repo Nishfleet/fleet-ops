@@ -386,6 +386,9 @@ ok "scenario9: failed unit with a vote on disk is left alone"
 # The incident class is "helper exists but is never called". A future edit
 # that drops block 4b fails this test instead of wedging pi-audit units
 # for an hour again.
+# fleet-ops#615: a FATAL auditor exit must land in auditor_rc. Swallowing
+# it as _aud_rc + "next tick retries" leaves the admission gate dead
+# while the heartbeat stays green.
 tier1="$repo_root/bin/fleet-heartbeat-tier1"
 [[ -f "$tier1" ]] || fail "missing $tier1"
 grep -q 'FLEET_HEARTBEAT_AUDITOR' "$tier1" \
@@ -396,9 +399,19 @@ grep -F -- 'require_manifest_helper "$AUDITOR_BIN"' "$tier1" >/dev/null \
     || fail "tier1 must call require_manifest_helper on AUDITOR_BIN"
 grep -F -- 'senior-auditor helper missing at $AUDITOR_BIN' "$tier1" >/dev/null \
     || fail "tier1 must loud HELPER-MISSING when the auditor dest is absent"
-grep -F -- 'auditor_rc' "$tier1" >/dev/null \
-    || fail "tier1 must propagate auditor_rc"
-ok "scenario10: tier1 block 4b invokes fleet-heartbeat-auditor (not-called class locked)"
+grep -F -- 'auditor_rc=$?' "$tier1" >/dev/null \
+    || fail "tier1 must assign auditor_rc from the auditor helper exit (fleet-ops#615); swallowed _aud_rc leaves a broken panel green"
+grep -F -- 'if [ "${auditor_rc:-0}" -ne 0 ]; then' "$tier1" >/dev/null \
+    || fail "tier1 exit-code list must propagate auditor_rc"
+if awk '
+    /# 4b\. SENIOR AUDITOR PANEL/ { in_block=1 }
+    in_block && /^# 5\./ { in_block=0 }
+    in_block && /next tick retries/ { found=1 }
+    END { exit found ? 0 : 1 }
+' "$tier1"; then
+    fail "tier1 4b must not swallow a failed auditor as 'next tick retries' (fleet-ops#615)"
+fi
+ok "scenario10: tier1 block 4b invokes fleet-heartbeat-auditor and fails the tick on helper FATAL (not-called + swallowed-rc class locked)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \
