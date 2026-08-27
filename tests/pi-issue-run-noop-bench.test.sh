@@ -94,10 +94,11 @@ if [[ "$args" == *" list-units "* ]]; then
   exit 0
 fi
 if [[ "$args" == *" show "* ]] && [[ "$args" == *"ExecStart"* ]]; then
+  # fleet-ops#1155: the enumerator matches the literal "pi --print" in ExecStart.
   if [[ "$args" == *"glm-5-2"* ]]; then
-    printf '/bin/sh -c --provider devin --model glm-5-2\n'
+    printf '/home/nish/.local/bin/pi --print --provider devin --model glm-5-2\n'
   else
-    printf '/bin/sh -c --provider devin --model swe-1-7\n'
+    printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n'
   fi
   exit 0
 fi

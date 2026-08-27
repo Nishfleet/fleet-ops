@@ -137,7 +137,8 @@ load_seat_caps || fail "load_seat_caps restore"
 fake="$scratch/systemctl"
 active_db="$scratch/active.db"
 desc_db="$scratch/desc.db"
-: >"$active_db"; : >"$desc_db"
+exec_db="$scratch/exec.db"
+: >"$active_db"; : >"$desc_db"; : >"$exec_db"
 cat >"$fake" <<'FAKE'
 #!/usr/bin/env bash
 shift  # --user
@@ -203,7 +204,8 @@ case "$1" in
         if (( value_only )); then printf '%s\n' "${desc:-}"; else printf 'Description=%s\n' "${desc:-}"; fi
         ;;
       ExecStart)
-        if (( value_only )); then printf '\n'; else printf 'ExecStart=\n'; fi
+        exec=$(grep -F "$unit|" "$FAKE_EXEC_DB" 2>/dev/null | head -n1 | cut -d'|' -f2-)
+        if (( value_only )); then printf '%s\n' "${exec:-}"; else printf 'ExecStart=%s\n' "${exec:-}"; fi
         ;;
       ActiveState)
         active=$(grep -F "$unit|" "$FAKE_ACTIVE_DB" | head -n1 | cut -d'|' -f2)
@@ -230,6 +232,7 @@ export PATH="$scratch:$PATH"
 hash -r
 export FAKE_ACTIVE_DB="$active_db"
 export FAKE_DESC_DB="$desc_db"
+export FAKE_EXEC_DB="$exec_db"
 
 seed_unit() {
     local u="$1" active="${2:-activating}" desc="${3:-}"
@@ -240,13 +243,26 @@ seed_unit() {
     return 0
 }
 
+seed_exec() {
+    local u="$1" exec="$2"
+    echo "${u}|${exec}" >>"$exec_db"
+    return 0
+}
+
 export PI_SEAT_LIB_CHECK_SYSTEMD=1
 clear_registry
-: >"$active_db"; : >"$desc_db"
+: >"$active_db"; : >"$desc_db"; : >"$exec_db"
 seed_unit alert-repair-load-storm.service activating
 seed_unit pi-job-20260827T120000Z-1.service activating
 seed_unit seat-cap-fix-20260827.service activating "Pi packet seat-cap-fix-20260827 (session-independent)"
 seed_unit pi-issue@fleet-ops-99.service activating
+
+# fleet-ops#1155: units are counted by ExecStart "pi --print" content.
+seed_exec alert-repair-load-storm.service 'pi --print --provider devin --model glm-5-2'
+seed_exec pi-job-20260827T120000Z-1.service 'pi --print --provider devin --model swe-1-7'
+seed_exec seat-cap-fix-20260827.service 'pi --print --provider devin --model glm-5-2'
+seed_exec pi-issue@fleet-ops-99.service ''
+
 seed_registry pi-issue-fleet-ops-99
 
 org=$(count_active_org)
@@ -259,6 +275,7 @@ ok "systemd org units (alert-repair, pi-job, description-stamped) charge reserve
 
 # a 4th org unit still charges only 2
 seed_unit alert-repair-other.service activating
+seed_exec alert-repair-other.service 'pi --print --provider devin --model glm-5-2'
 org=$(count_active_org)
 [[ "$org" == "4" ]] || fail "expected 4 org units, got $org"
 total=$(count_active_total)

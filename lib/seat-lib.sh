@@ -648,58 +648,53 @@ _parse_exec_provider_model() {
 
 # Count currently active workers on a given provider/model seat.
 # Aggregates state-dir + legacy grep. Used by pick_seat to honour per-model caps.
+
+# True if the given `ExecStart` line from `systemctl show -p ExecStart`
+# represents a pi worker. Matches the literal command sequence "pi --print"
+# so ad-hoc `pi-systemd-run --unit <odd-name>` units count, not only units
+# whose names start with `pi-` (fleet-ops#1155).
+_exec_is_pi_worker() {
+    local line="$1"
+    [[ "$line" == *"pi --print"* ]]
+}
+
+# Echo the unit names of active/activating user services whose ExecStart
+# contains the literal pattern "pi --print". Never filters by unit name.
 #
 # Note on iteration: `for u in $(list-units ...)` word-splits the multi-word
 # output of each line (e.g. "unit.service loaded active running /bin/sh ..."),
-# so only the first unit in each line is seen and the rest are silently
-# dropped. We use `while IFS= read -r line` and parse the unit name from the
-# first token. A line that doesn't start with a unit pattern is skipped.
-_seat_list_unit() {
-    # Echo the unit names (first whitespace-delimited token per line) of
-    # active or activating pi-* worker units. Skips lines that don't look
-    # like a unit. Offline tests set PI_SEAT_LIB_CHECK_SYSTEMD=0 so pick_seat
-    # cannot bleed live unit counts into a scratch cap map (fleet-ops#142).
+# so we use `while IFS= read -r line` and parse the unit name from the first
+# token. A line that does not end with .service is skipped.
+_seat_list_pi_exec() {
+    # Offline tests set PI_SEAT_LIB_CHECK_SYSTEMD=0 so pick_seat cannot bleed
+    # live unit counts into a scratch cap map (fleet-ops#142).
     if (( ! ${PI_SEAT_LIB_CHECK_SYSTEMD:-1} )); then
         return 0
     fi
+    local line u
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        # First whitespace-delimited token.
-        local u="${line%% *}"
-        # Only accept unit names (must end with .service).
-        [[ "$u" == *.service ]] || continue
-        echo "$u"
-    done < <(systemctl --user list-units 'pi-issue@*.service' 'pi-packet@*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
-}
-
-# Org/repair units that must not starve issue intake. Name globs cover the
-# templates and the pi-systemd-run default (`pi-job-<ts>-<pid>`). Ad-hoc
-# `--unit` names are detected by the Description stamp pi-systemd-run
-# always writes: "Pi packet <unit> (session-independent)".
-_seat_list_org_unit() {
-    if (( ! ${PI_SEAT_LIB_CHECK_SYSTEMD:-1} )); then
-        return 0
-    fi
-    local line u desc
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
+        # First whitespace-delimited token is the unit name.
         u="${line%% *}"
         [[ "$u" == *.service ]] || continue
-        echo "$u"
-    done < <(systemctl --user list-units 'pi-packet@*.service' 'alert-repair-*.service' 'pi-job-*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
-
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        u="${line%% *}"
-        [[ "$u" == *.service ]] || continue
-        case "$u" in
-            pi-issue@*.service|pi-intake@*.service|pi-scout@*.service|pi-audit@*.service) continue ;;
-            pi-packet@*.service|alert-repair-*.service|pi-job-*.service) continue ;;
-        esac
-        desc=$(systemctl --user show "$u" --property=Description --value 2>/dev/null || true)
-        [[ "$desc" == *"(session-independent)"* ]] || continue
+        local execstart
+        execstart=$(systemctl --user show "$u" --property=ExecStart --value 2>/dev/null || true)
+        _exec_is_pi_worker "$execstart" || continue
         echo "$u"
     done < <(systemctl --user list-units --type=service --state=active,activating --no-legend --plain 2>/dev/null || true)
+}
+
+# Active/activating worker units (legacy ExecStart path).
+# fleet-ops#1155: enumerate by ExecStart content, not unit-name patterns.
+_seat_list_unit() {
+    _seat_list_pi_exec
+}
+
+# Org/repair packets: same ExecStart-based list. Ad-hoc `pi-systemd-run`
+# units with odd names are included because their ExecStart contains
+# "pi --print" (fleet-ops#1155).
+_seat_list_org_unit() {
+    _seat_list_pi_exec
 }
 
 org_reserve() {
@@ -917,8 +912,10 @@ count_active_issue() {
     echo "$n"
 }
 
-# Org/repair packets: pi-packet registry, pi-packet@, alert-repair-*,
-# pi-job-*, and ad-hoc pi-systemd-run units (Description stamp).
+# Org/repair packets: pi-packet registry and any active/activating service
+# whose ExecStart contains "pi --print" (pi-packet@, alert-repair-*,
+# pi-job-*, and ad-hoc pi-systemd-run units with odd names).
+# fleet-ops#1155: enumerated by ExecStart content, not unit-name patterns.
 count_active_org() {
     local n=0 f base u instance
     declare -A seen=()
@@ -934,7 +931,12 @@ count_active_org() {
     while IFS= read -r u; do
         [[ -n "$u" ]] || continue
         [[ -n "${seen[$u]:-}" ]] && continue
+        # Issue workers are counted by count_active_issue, not here. This
+        # only guards against a mis-classified legacy pi-issue@ with a
+        # direct "pi --print" ExecStart; the new ExecStart enumerator would
+        # otherwise count it as org (fleet-ops#1155).
         case "$u" in
+            pi-issue@*.service) continue ;;
             pi-packet@*.service)
                 instance="${u#pi-packet@}"
                 instance="${instance%.service}"
@@ -986,11 +988,9 @@ count_degraded_total() {
             n=$((n+1))
         fi
     done < <(_seat_live_registry_files)
-    # Legacy grep path: scan pi-issue@*/pi-packet@* units in activating
-    # state (cheap) and filter by SubState=auto-restart. Same as
-    # _seat_list_unit but restricted to the activating state, so the
-    # filter is bounded. At-sign globs: template instances are
-    # pi-issue@<inst>.service (fleet-ops#28 / #103 / #355).
+    # Legacy grep path: scan active/activating worker units by ExecStart
+    # content and filter by SubState=auto-restart. fleet-ops#1155: never
+    # rely on unit-name patterns; any odd-named pi --print unit can crash-loop.
     local u sub state
     while IFS= read -r u; do
         [[ -n "$u" ]] || continue
@@ -1008,8 +1008,7 @@ count_degraded_total() {
             [[ -f "$ACTIVE_SEATS_DIR/pi-packet-${instance2}.json" ]] && continue
             n=$((n+1))
         fi
-    done < <(systemctl --user list-units 'pi-issue@*.service' 'pi-packet@*.service' --state=activating --no-legend --plain 2>/dev/null \
-                | awk '{print $1}' | grep -E '\.service$' || true)
+    done < <(_seat_list_unit)
     echo "$n"
 }
 
