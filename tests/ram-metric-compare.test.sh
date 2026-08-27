@@ -95,14 +95,14 @@ ok "3. zero units exit 0 and write state"
 # =========================================================================
 # 4. admission formula uses memory.current p95*3, no self-calibrate
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "1.5" ]] \
-    || fail "ram_gb_per_worker must be 1.5 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.6" ]] \
+    || fail "ram_gb_per_worker must be 0.6 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula is 1.5 G from memory.current p95*3, no self-calibrate"
+ok "4. admission formula is 0.6 G from cap map, no self-calibrate"
 
 # =========================================================================
 # 5. 35 MB cannot be cited as cgroup memory.current
