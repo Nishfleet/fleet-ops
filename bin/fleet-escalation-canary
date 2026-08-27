@@ -6,9 +6,11 @@
 # mechanically" on TWO planes, every heartbeat tick:
 #
 #   VPS plane (blocks 1-5):
-#     1. Every loaded user service is covered by the global escalation drop-in
-#        (OnFailure contains unit-escalation@<unit>.service) OR appears on the
-#        explicit anti-recursion exclusion list.
+#     1. Every loaded user .service, .path, and .timer is covered by the
+#        matching type drop-in (service.d / path.d / timer.d —
+#        OnFailure contains unit-escalation@<unit>.service) OR appears on
+#        the explicit anti-recursion exclusion list. service.d does not
+#        apply to path or timer units (fleet-ops#618).
 #     2. No fleet execution path exists outside a systemd unit: only the
 #        sanctioned bin wrappers invoke `pi --print --provider` directly.
 #     3. Terminal delivery (#76/#428): dead-man ping (healthchecks.io on a
@@ -265,17 +267,20 @@ if [[ ! -d "$FLEET_OPS_REPO/bin" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. loaded user service escalation coverage
+# 1. loaded user service/path/timer escalation coverage (fleet-ops#618)
 # ---------------------------------------------------------------------------
-log "1. checking escalation coverage for loaded user services"
-mapfile -t loaded_services < <(
-    "$SYSTEMCTL" --user list-units --type=service --no-legend --plain 2>/dev/null \
+# A service-only type filter is the class that missed fleet-seat-recovery.path
+# (unit-start-limit-hit, OnFailure empty). path.d/ and timer.d/ are the
+# matching type drop-ins; this block must enumerate all three types.
+log "1. checking escalation coverage for loaded user services, paths, and timers"
+mapfile -t loaded_units < <(
+    "$SYSTEMCTL" --user list-units --type=service,path,timer --no-legend --plain 2>/dev/null \
         | awk '{print $1}' \
-        | grep '\.service$' \
+        | grep -E '\.(service|path|timer)$' \
         || true
 )
 
-for unit in "${loaded_services[@]}"; do
+for unit in "${loaded_units[@]}"; do
     [[ -n "$unit" ]] || continue
 
     if is_escalation_excluded "$unit"; then
@@ -782,5 +787,5 @@ if [[ "$violations" -gt 0 ]]; then
     exit 1
 fi
 
-loud "ESCALATION-CANARY-OK" "two-plane invariant holds: VPS services + pi runners covered; GitHub coverage layers wired; pending=$pending"
+loud "ESCALATION-CANARY-OK" "two-plane invariant holds: VPS services/paths/timers + pi runners covered; GitHub coverage layers wired; pending=$pending"
 exit 0

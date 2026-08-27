@@ -5,11 +5,12 @@
 # helpers that were restored to main after the PR #114 history wipe.
 #
 # What it proves:
-#   1. All six unit/drop-in files and both helper scripts exist in the repo.
+#   1. All unit/drop-in files and both helper scripts exist in the repo.
 #   2. Every unit and helper has the exact MANIFEST entry this issue requires.
 #   3. The escalation chain is wired end-to-end:
 #      - service.d/10-escalate.conf adds OnFailure=unit-escalation@%n.service
-#        to every user service.
+#        to every user service. path.d/ and timer.d/ do the same for .path
+#        and .timer units (fleet-ops#618; service.d does not apply to them).
 #      - unit-escalation@.service calls unit-escalation-write %i.
 #      - unit-escalation@.service.d/no-self-escalate.conf resets OnFailure=
 #        so the template cannot recurse.
@@ -38,6 +39,8 @@ stop_svc="$repo_root/systemd/stop-escalation.service"
 stop_path="$repo_root/systemd/stop-escalation.path"
 unit_tmpl="$repo_root/systemd/unit-escalation@.service"
 global_dropin="$repo_root/systemd/service.d/10-escalate.conf"
+path_dropin="$repo_root/systemd/path.d/10-escalate.conf"
+timer_dropin="$repo_root/systemd/timer.d/10-escalate.conf"
 tmpl_dropin="$repo_root/systemd/unit-escalation@.service.d/no-self-escalate.conf"
 daily_svc="$repo_root/systemd/escalation-daily-sweep.service"
 daily_timer="$repo_root/systemd/escalation-daily-sweep.timer"
@@ -50,6 +53,8 @@ stop_dispatch="$repo_root/bin/stop-escalation-dispatch"
 [[ -f "$stop_path" ]]   || fail "missing: $stop_path"
 [[ -f "$unit_tmpl" ]]   || fail "missing: $unit_tmpl"
 [[ -f "$global_dropin" ]] || fail "missing: $global_dropin"
+[[ -f "$path_dropin" ]]   || fail "missing: $path_dropin"
+[[ -f "$timer_dropin" ]]  || fail "missing: $timer_dropin"
 [[ -f "$tmpl_dropin" ]]  || fail "missing: $tmpl_dropin"
 [[ -f "$daily_svc" ]]   || fail "missing: $daily_svc"
 [[ -f "$daily_timer" ]] || fail "missing: $daily_timer"
@@ -70,6 +75,8 @@ expected_manifest_entries=(
   "systemd/unit-escalation@.service /home/nish/.config/systemd/user/unit-escalation@.service"
   "systemd/unit-escalation@.service.d/no-self-escalate.conf /home/nish/.config/systemd/user/unit-escalation@.service.d/no-self-escalate.conf"
   "systemd/service.d/10-escalate.conf /home/nish/.config/systemd/user/service.d/10-escalate.conf"
+  "systemd/path.d/10-escalate.conf /home/nish/.config/systemd/user/path.d/10-escalate.conf"
+  "systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-escalate.conf"
   "systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service"
   "systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer"
   "bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write"
@@ -116,11 +123,13 @@ grep -q '^NoNewPrivileges=true$' "$unit_tmpl" || fail "unit-escalation@.service:
 grep -q '^PrivateTmp=true$' "$unit_tmpl" || fail "unit-escalation@.service: PrivateTmp=true"
 ok "unit-escalation@.service shape"
 
-# 7. service.d/10-escalate.conf shape (global OnFailure hook).
-grep -q '^\[Unit\]$' "$global_dropin" || fail "10-escalate.conf: missing [Unit]"
-grep -q '^OnFailure=unit-escalation@%n.service$' "$global_dropin" \
-  || fail "10-escalate.conf: OnFailure=unit-escalation@%n.service"
-ok "service.d/10-escalate.conf shape"
+# 7. service.d / path.d / timer.d 10-escalate.conf shape (global OnFailure).
+for dropin in "$global_dropin" "$path_dropin" "$timer_dropin"; do
+  grep -q '^\[Unit\]$' "$dropin" || fail "$(basename "$(dirname "$dropin")")/10-escalate.conf: missing [Unit]"
+  grep -q '^OnFailure=unit-escalation@%n.service$' "$dropin" \
+    || fail "$(basename "$(dirname "$dropin")")/10-escalate.conf: OnFailure=unit-escalation@%n.service"
+done
+ok "service.d/path.d/timer.d 10-escalate.conf shape"
 
 # 8. unit-escalation@.service.d/no-self-escalate.conf shape (recursion guard).
 grep -q '^\[Unit\]$' "$tmpl_dropin" || fail "no-self-escalate.conf: missing [Unit]"

@@ -4,8 +4,11 @@
 # Proves the escalation coverage canary (fleet-ops#152) on BOTH planes.
 #
 # VPS plane:
-#   1. All loaded services covered -> exit 0, OK line, pending/EXCLUDED logged.
+#   1. All loaded services/paths/timers covered -> exit 0, OK line, pending/EXCLUDED logged.
 #   2. A service missing unit-escalation@<unit>.service -> exit 1, named.
+#   2b. A path unit missing OnFailure -> exit 1, named (fleet-ops#618).
+#   2c. A timer unit missing OnFailure -> exit 1, named (fleet-ops#618).
+#   2d. Canary source must list --type=service,path,timer (class lock).
 #   3. A bin script with an unwrapped `pi --print --provider` -> exit 1, named.
 #   4. Excluded services (anti-recursion set) are skipped.
 #   5. Marker files for #76 and #124 suppress the pending findings; #76 is
@@ -76,9 +79,26 @@ cat >"$systemctl_fake" <<'FAKE'
 cmd="$1"; shift
 case "$cmd" in
   list-units)
+    type_filter=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --type=*) type_filter="${1#--type=}"; shift ;;
+        --type) type_filter="${2:-}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
     if [[ -f "${LOADED_UNITS:-/dev/null}" ]]; then
       while IFS= read -r u; do
-        [[ -n "$u" ]] && printf '%s loaded active running -\n' "$u"
+        [[ -n "$u" ]] || continue
+        if [[ -n "$type_filter" ]]; then
+          matched=0
+          IFS=',' read -ra types <<< "$type_filter"
+          for t in "${types[@]}"; do
+            [[ "$u" == *".$t" ]] && matched=1 && break
+          done
+          [[ "$matched" -eq 1 ]] || continue
+        fi
+        printf '%s loaded active running -\n' "$u"
       done < "${LOADED_UNITS:-/dev/null}"
     fi
     exit 0
@@ -357,10 +377,14 @@ SVC
 # ============================================================================
 reset_state
 cover "good-worker.service"
+cover "good-watcher.path"
+cover "good-tick.timer"
 exclude "unit-escalation@foo.service"
 exclude "stop-escalation.service"
+exclude "stop-escalation.path"
 exclude "ready-work.service"
 exclude "escalation-daily-sweep.service"
+exclude "escalation-daily-sweep.timer"
 exclude "resilience-drill-stub-restart.service"
 sanctioned_wrapper "pi-issue-run"
 sanctioned_wrapper "pi-packet-run"
@@ -419,6 +443,66 @@ grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario2: triage missi
 grep -q 'unit=naked.service' "$triage" || fail "scenario2: triage must name naked.service"
 ! grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario2: triage must not contain OK"
 ok "scenario2: missing-escalation unit named and canary exits 1"
+
+# ============================================================================
+# Scenario 2b (fleet-ops#618): a loaded .path unit missing OnFailure is a
+# VIOLATION. This is the class that missed fleet-seat-recovery.path
+# (unit-start-limit-hit, empty OnFailure) because block 1 used
+# --type=service only. If the canary regresses to service-only, this
+# fixture path unit is filtered out and the test fails.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+printf '%s\n' "naked.path" >>"$loaded"
+: >"$onf_dir/naked.path"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario2b: must exit 1, got $env_rc ($env_out)"
+grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario2b: triage missing VIOLATION"
+grep -q 'unit=naked.path' "$triage" || fail "scenario2b: triage must name naked.path"
+! grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario2b: triage must not contain OK"
+ok "scenario2b: missing-escalation path unit named and canary exits 1 (fleet-ops#618)"
+
+# ============================================================================
+# Scenario 2c (fleet-ops#618): a loaded .timer unit missing OnFailure is a
+# VIOLATION. Same class as 2b for timers.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+printf '%s\n' "naked.timer" >>"$loaded"
+: >"$onf_dir/naked.timer"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario2c: must exit 1, got $env_rc ($env_out)"
+grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario2c: triage missing VIOLATION"
+grep -q 'unit=naked.timer' "$triage" || fail "scenario2c: triage must name naked.timer"
+! grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario2c: triage must not contain OK"
+ok "scenario2c: missing-escalation timer unit named and canary exits 1 (fleet-ops#618)"
+
+# ============================================================================
+# Scenario 2d (fleet-ops#618): source lock. A future edit that lists only
+# --type=service (or greps only .service$) reopens the hole. The canary
+# must request service,path,timer in one list-units call.
+# ============================================================================
+canary_src="$repo_root/bin/fleet-escalation-canary"
+grep -F -- '--type=service,path,timer' "$canary_src" >/dev/null \
+  || fail "scenario2d: canary must list-units --type=service,path,timer (fleet-ops#618)"
+if grep -n -- '--type=service' "$canary_src" | grep -v -- 'service,path,timer' >/dev/null; then
+  fail "scenario2d: canary still has a service-only --type= list-units (fleet-ops#618)"
+fi
+grep -E "grep '\\\\.service\\\$'" "$canary_src" >/dev/null \
+  && fail "scenario2d: canary still filters loaded units to .service only (fleet-ops#618)" || true
+ok "scenario2d: canary source enumerates service, path, and timer (fleet-ops#618 class lock)"
 
 # ============================================================================
 # Scenario 3: VPS plane — a bin script runs pi --print --provider unwrapped
