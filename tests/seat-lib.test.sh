@@ -1814,6 +1814,14 @@ bash "$here/fleet-failed-command-git-checkout-worktree-conflict-968.test.sh" || 
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
 bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-command-dedup-open-list tests failed"
+# fleet-ops#1071: a per-tick local dedup ledger at
+# $FLEET_FAILED_COMMAND_LEDGER must survive a `gh issue list` outage
+# (401/5xx/network blip returning []) so consecutive heartbeat ticks
+# cannot file 5-7 duplicates per slug. The ledger is the last-resort
+# dedup after open-list and closed-search have run, and is pruned
+# when the slug stops being a finding. Same CI constraint (worker
+# token cannot add a new workflow line in ci.yml).
+bash "$here/fleet-failed-command-ledger-dedup.test.sh" || fail "fleet-failed-command-ledger-dedup tests failed"
 # fleet-ops#956: `edit` 'Could not find the exact text' (stale oldText)
 # walked past, with a silent read/grep recovery and a later thinking-only
 # note that the file was different, is the same class. Same CI constraint.

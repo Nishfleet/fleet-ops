@@ -7,6 +7,21 @@ with isError / 'Command exited with code N' / timeout, and no later
 assistant text that names the failure. Burying it in the tool result the
 user may not read does not count.
 
+The auto-file path lives in bin/fleet-failed-command-flagged. The bin
+dedupes against the open issue list (live #951 / #1021) AND, since
+fleet-ops#1071, against a local ledger at
+$FLEET_FAILED_COMMAND_LEDGER (default
+/var/tmp/fleet-failed-command-flagged.filed). The ledger is consulted
+as a last-resort dedup after the open-list and closed-search dedups
+have run: when `gh issue list` returns [] because of a 401 / 5xx /
+network blip, the open-list dedup falls through and would otherwise
+file 5-7 duplicates per slug across consecutive heartbeat ticks (live
+#1071: 5-7 duplicates per slug on 2026-08-27T05:10-05:14Z). The ledger
+survives gh outages and is pruned when the slug stops being a finding.
+The ledger dedup is locked under
+tests/fleet-failed-command-ledger-dedup.test.sh; cross-check that the
+test stays in tests/seat-lib.test.sh so it runs on CI.
+
 grep/rg/diff exit 1 (POSIX no-match) is not a failure. `xargs grep/rg/diff`
 exit 123 is the same no-match class: xargs exits 123 when an invoked
 command exits 1-125, and for grep/rg/diff exit 1 is no-match (live #942).

@@ -13,6 +13,18 @@
 # (LOUD + auto-filed, deduped by signal: failed-command-flagged/<slug>).
 # Exit 1 also if the helper itself is broken (missing python/lib).
 #
+# Local dedup ledger (fleet-ops#1071): the in-process open-issue dedup
+# relies on `gh issue list` returning the just-filed issue. When gh fails
+# (no auth, 5xx, network blip, stale token), open_json becomes [] and the
+# dedup falls through — every tick files a duplicate. Live #1071: 5-7
+# duplicates per slug across consecutive ticks on 2026-08-27T05:10-05:14Z.
+# The ledger is the first dedup check: a slug already on the ledger is
+# skipped before any gh call. The ledger survives gh outages and is
+# pruned when the detector sees the slug stop being a finding (the same
+# gate observe-to-close uses). A clear ledger can be removed by
+# `rm $FLEET_FAILED_COMMAND_LEDGER`; the bin never creates it on
+# read, only appends.
+#
 # Observe-to-close (fleet-ops#650, same two-tick shape as #521): a green
 # tick for a previously filed slug comments `resolved-at: signal: ...`.
 # A later tick that already carries that marker closes the issue. A slug
@@ -30,6 +42,8 @@
 #   FLEET_FAILED_COMMAND_CLOSE_ISSUES   1 (default) / 0
 #   FLEET_FAILED_COMMAND_ISSUE_REPO     default Nishfleet/fleet-ops
 #   FLEET_FAILED_COMMAND_CAP            default 5
+#   FLEET_FAILED_COMMAND_LEDGER         local dedup ledger path
+#                                       (default /var/tmp/fleet-failed-command-flagged.filed)
 #   FLEET_HEARTBEAT_TRIAGE
 #   GH
 
@@ -55,6 +69,7 @@ FILE_ISSUES="${FLEET_FAILED_COMMAND_FILE_ISSUES:-1}"
 CLOSE_ISSUES="${FLEET_FAILED_COMMAND_CLOSE_ISSUES:-1}"
 ISSUE_REPO="${FLEET_FAILED_COMMAND_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_FAILED_COMMAND_CAP:-5}"
+LEDGER="${FLEET_FAILED_COMMAND_LEDGER:-/var/tmp/fleet-failed-command-flagged.filed}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 
 log() {
@@ -100,6 +115,34 @@ finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
 skipped_grace_slugs=$(jq -r '.skipped_grace_slugs[] // empty' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
+
+# Local dedup ledger (fleet-ops#1071): read once at the top of the tick.
+# If a slug is on the ledger, the bin has filed it before; do not file
+# again this tick, even if open_json is empty because gh is broken.
+# A slug drops off the ledger when the detector sees it stop being a
+# finding (the prune step below), so a one-off gh outage does not block
+# a real new filing forever.
+ledger_slugs=""
+if [[ -s "$LEDGER" ]]; then
+    ledger_slugs=$(grep -v '^[[:space:]]*$' "$LEDGER" 2>/dev/null | sort -u || true)
+    log "ledger: $(printf '%s' "$ledger_slugs" | wc -l) slug(s) on $LEDGER"
+fi
+
+# Track which finding slugs to keep on the ledger. Anything NOT in the
+# current findings AND NOT in skipped_grace_slugs is pruned (the slug
+# is no longer a real swallowed failure; the auto-filed issue is now in
+# observe-to-close territory). Anything that IS still a finding or
+# still in grace stays on the ledger for next tick.
+declare -A keep_ledger
+finding_slugs_now=$(jq -r '.findings[].slug // empty' <<<"$report")
+while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    keep_ledger["$s"]=1
+done <<<"$finding_slugs_now"
+while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    keep_ledger["$s"]=1
+done <<<"$skipped_grace_slugs"
 
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
@@ -177,6 +220,24 @@ if [[ "$finding_count" != "0" ]]; then
             fi
         fi
 
+        # Local dedup ledger (fleet-ops#1071): the last-resort dedup
+        # after the open-list and closed-search dedups have run. The
+        # ledger is consulted only when neither the open list nor the
+        # closed search reported the slug — that is, only when gh is
+        # broken (open_json is empty AND closed search returned no
+        # match). Under healthy gh, the open-list dedup above is the
+        # authoritative source and the ledger is irrelevant. Under gh
+        # outage, the open-list dedup falls through (live #1071: 5-7
+        # duplicates per slug across consecutive ticks on
+        # 2026-08-27T05:10-05:14Z) and the ledger takes over so a
+        # single network blip cannot fan out 5-7 duplicates. The
+        # ledger entry is pruned on the first tick where the slug
+        # is no longer a finding.
+        if printf '%s\n' "$ledger_slugs" | grep -qxF -- "$slug"; then
+            log "auto-file: $slug already on local ledger — deduped via ledger (gh-open-list empty)"
+            continue
+        fi
+
         title="fix(failed-command): $slug — failed command walked past, never flagged"
         body="The session-close lint (fleet-ops#535, standing rule: a failed command is ALWAYS flagged) found a Pi toolResult with a non-zero exit / isError / timeout and no later assistant text naming the failure.
 
@@ -194,10 +255,50 @@ $signal"
         if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
             log "auto-file: FILED $slug -> $created"
             filed=$((filed + 1))
+            # Record the slug on the local ledger so the next tick — and
+            # the next five ticks if gh is down — do not re-file. The
+            # ledger is the source of truth under gh outage; the open
+            # list and the closed search are the source of truth when
+            # gh is healthy. The two reconcile because observe-to-close
+            # removes the slug from both when the finding clears.
+            if ! printf '%s\n' "$slug" >>"$LEDGER" 2>/tmp/failed-command-ledger.err; then
+                log "WARN: failed to append $slug to ledger $LEDGER: $(tr '\n' ' ' </tmp/failed-command-ledger.err 2>/dev/null)"
+            else
+                ledger_slugs=$(printf '%s\n%s\n' "$ledger_slugs" "$slug" | grep -v '^$' | sort -u)
+            fi
         else
             log "auto-file: failed to file $slug (rc=$create_rc)"
         fi
     done < <(jq -c '.findings[]' <<<"$report")
+fi
+
+# Ledger prune (fleet-ops#1071): drop slugs that are no longer in
+# findings AND no longer in skipped_grace. These slugs are no longer
+# swallowed failures; their auto-filed issues are in observe-to-close
+# territory. Leaving them on the ledger would block a real new filing
+# forever if a future tick ever re-encountered the same session-id
+# (e.g. a worker re-ran a session). The prune runs unconditionally
+# (even on a tick that filed nothing) so the ledger stays in sync with
+# reality.
+if [[ -s "$LEDGER" ]]; then
+    pruned=0
+    tmp_ledger="$LEDGER.tmp.$$"
+    : >"$tmp_ledger"
+    while IFS= read -r lslug; do
+        [[ -n "$lslug" ]] || continue
+        if [[ -n "${keep_ledger[$lslug]:-}" ]]; then
+            printf '%s\n' "$lslug" >>"$tmp_ledger"
+        else
+            pruned=$((pruned + 1))
+            log "ledger: pruned $lslug (no longer a finding or in grace)"
+        fi
+    done <"$LEDGER"
+    if mv "$tmp_ledger" "$LEDGER"; then
+        [[ "$pruned" -gt 0 ]] && log "ledger: pruned $pruned slug(s)"
+    else
+        log "WARN: failed to rotate ledger $LEDGER"
+        rm -f "$tmp_ledger"
+    fi
 fi
 
 # Observe-to-close: comment resolved-at when a previously filed slug is no
