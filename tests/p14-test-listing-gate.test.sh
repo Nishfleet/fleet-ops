@@ -112,6 +112,27 @@ for t in "${known_orphans[@]}"; do
   known_orphan_set[$t]=1
 done
 
+# fleet-ops#777: hard-pin the host line for dirty-worktree-audit BEFORE
+# the $bad[] accounting so a future refactor that drops the host line
+# in tests/rule-enforcement.test.sh is caught by name. The $bad[] check
+# below also fails (test becomes unhosted), but its message is generic
+# ("1 test file(s) are neither ..."). This named check runs first so
+# the operator gets the issue number in the FAIL line.
+#
+# class-prevention: the named FAIL is the loudest signal; a future
+# worker who sees "1 test file(s) are neither ..." and parks the
+# test on known_orphans to silence the message would now also fail
+# the named pin below (in the bypass-class section).
+#
+# The grep is anchored to a real `bash $here/...` invocation, not a
+# comment: a future "comment out the host line to silence the gate"
+# trick would still be caught by $bad[] but should be caught by name
+# here too. Use `^[[:space:]]*bash` to skip commented lines.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/dirty-worktree-audit\.test\.sh"?' \
+  "$here/rule-enforcement.test.sh" \
+  || fail "rule-enforcement.test.sh must bash-invoke dirty-worktree-audit.test.sh (fleet-ops#777)"
+ok "dirty-worktree-audit.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#777)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
@@ -179,6 +200,20 @@ ok "known-orphan list is accurate (no stale entries)"
 [[ -z "${known_orphan_set[fleet-heartbeat-auditor.test.sh]:-}" ]] \
   || fail "fleet-heartbeat-auditor.test.sh must not be a known orphan (fleet-ops#619)"
 ok "fleet-heartbeat-auditor.test.sh is in the P14 reachable set (fleet-ops#619)"
+
+# fleet-ops#777/#787: dirty-worktree-audit classifies a worktree as
+# landed by `ls-remote` (HEAD on origin) — the same check
+# fleet-wipe-lessons uses for its deletion guard. The early pin above
+# (before the $bad[] accounting) is the named-failure line of defence
+# for a dropped host. These checks below cover the bypass class: a
+# future worker who sees the generic "1 test file(s) are neither..."
+# message and parks the test on known_orphans to silence it would
+# also fail the named pin below.
+[[ -n "${reachable[dirty-worktree-audit.test.sh]:-}" ]] \
+  || fail "dirty-worktree-audit.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#777)"
+[[ -z "${known_orphan_set[dirty-worktree-audit.test.sh]:-}" ]] \
+  || fail "dirty-worktree-audit.test.sh must not be a known orphan (fleet-ops#777)"
+ok "dirty-worktree-audit.test.sh is in the P14 reachable set, not parked on known_orphans (fleet-ops#777)"
 
 # Self-check: this file is hosted by ci-standards-audit, not by ci.yml.
 grep -Fq 'bash "$here/p14-test-listing-gate.test.sh"' "$here/ci-standards-audit.test.sh" \
