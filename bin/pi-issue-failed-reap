@@ -285,6 +285,30 @@ archive_packets() {
     local archived=0
     local stamp
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    # fleet-ops#638 follow-up (senior auditor 2026-08-27): the .in packet
+    # must NOT be archived while the unit still has a pending restart in its
+    # ladder. The reaper runs on OnFailure= at the FIRST failure — systemd's
+    # Restart=on-failure ladder (RestartSteps=3, RestartSec=240) is still
+    # armed, and a unit with StartLimitBurst=3 gets 3 more chances after
+    # OnFailure fired. If we mv the .in now, the next ladder restart fails
+    # 208/STDIN (missing StandardInput=file) -> ANOTHER OnFailure -> another
+    # unit-escalation -> another STOP-REASON -> another auditor summon per
+    # ladder step. Fix: cancel the ladder first (stop + reset-failed), THEN
+    # archive. stop silences the pending restart timer; reset-failed clears
+    # the failure state so the unit cannot re-arm. Both are safe: the worker
+    # process already exited (MainPID=0 verified by worker_is_live) and the
+    # claim is being released on GitHub in this same run.
+    local unit_name="pi-issue@${instance}.service"
+    if "$SYSTEMCTL" --user stop "$unit_name" >/dev/null 2>&1; then
+        log "stopped $unit_name (cancel pending restart ladder before archiving packets)"
+    else
+        log "WARN: could not stop $unit_name before archiving packets (ladder may still fire 208/STDIN)"
+    fi
+    if "$SYSTEMCTL" --user reset-failed "$unit_name" >/dev/null 2>&1; then
+        log "reset-failed $unit_name (cleared failure state so no stale OnFailure re-fire)"
+    else
+        log "WARN: could not reset-failed $unit_name"
+    fi
     for ext in in out err; do
         local f="$ISSUES_DIR/${instance}.${ext}"
         if [[ -f "$f" ]]; then
