@@ -273,6 +273,30 @@ ages out of the 24h window. Live session
 2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
 `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
 head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A `bin/fleet-no-agent-names-check --pr-body /tmp/pr-body-<N>.md` run
+against a PR body file that has not been written yet is a real
+swallowed failure (fleet-ops#1241): the checker prints
+`fleet-no-agent-names-check: cannot read /tmp/pr-body-<N>.md:
+[Errno 2] No such file or directory: '/tmp/pr-body-<N>.md'` and
+`Command exited with code 2`, and a thinking-only next turn plus a
+recovery toolCall that writes the missing file is not a user-facing
+flag. The live session
+2026-08-27T15-47-35-701Z_01a043e7-bc95-7fb9-83a7-6e127fc31341.jsonl
+ran
+`cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1079 &&
+bin/fleet-no-agent-names-check --pr-body /tmp/pr-body-1079.md
+--commit-range origin/main..HEAD 2>&1` before writing the file. The
+class is distinct from the live #794 ls no-match exemption
+(canonical `ls: cannot access '<path>': No such file or directory`
+line, command is `ls`, exit 2): this command is
+`fleet-no-agent-names-check`, not `ls`, so `LS_BENIGN_RE` does not
+apply even though the error text contains `No such file or
+directory`. A future refactor that broadens the ls exemption to any
+`No such file or directory` line (regardless of command) would
+silently suppress this real signal; the dedicated regression test
+tests/fleet-failed-command-no-agent-names-pr-body-missing.test.sh
+pins that it does not. The auto-filed issue closes via
+observe-to-close when the session mtime ages out of the 24h window.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.

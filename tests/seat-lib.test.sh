@@ -2232,6 +2232,17 @@ bash "$here/cancelled-while-queued-detector.test.sh" || fail "cancelled-while-qu
 # new drill.
 bash "$here/fleet-failed-command-compound-ls-permission-denied.test.sh" || fail "fleet-failed-command-compound-ls-permission-denied tests failed"
 
+# fleet-ops#1241: `bin/fleet-no-agent-names-check --pr-body
+# /tmp/pr-body-<N>.md` against a PR body file that has not been
+# written yet fails with `cannot read ... [Errno 2] No such file or
+# directory` and `Command exited with code 2`, then a thinking-only
+# next turn plus a recovery toolCall that writes the missing file.
+# Not a #794 ls no-match probe: the command is
+# `fleet-no-agent-names-check`, not `ls`. Workers cannot add a P14
+# line in .github/workflows/ci.yml; this file is the listed CI host
+# for the new drill.
+bash "$here/fleet-failed-command-no-agent-names-pr-body-missing.test.sh" || fail "fleet-failed-command-no-agent-names-pr-body-missing tests failed"
+
 # fleet-ops#1134 / PR #1159 leftover: pi-packet-verdict.test.sh landed on
 # main without a host line. Hosting it here is the documented intent of
 # that test's header. Not a 1157 change of behaviour; it unblocks P14.
