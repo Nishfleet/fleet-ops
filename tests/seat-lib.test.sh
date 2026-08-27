@@ -2073,6 +2073,15 @@ bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-
 # (cd + git status, exit 128, fatal: not a git repository). Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-clone-race-cd.test.sh" || fail "fleet-failed-command-clone-race-cd tests failed"
+# fleet-ops#1185: `git clone git@github.com:...` returns
+# `Permission denied (publickey)` + `fatal: Could not read from
+# remote repository` + exit 128. The next turn is thinking-only
+# "The SSH key doesn't have access. Let me try HTTPS" plus a silent
+# HTTPS / `gh repo clone` retry with no user-facing flag. Distinct
+# from #1217 (HTTPS clone racing a silenced cd, empty snippet, exit
+# 1) and #822 (git-ref probe, GIT_BENIGN_RE). Same CI constraint
+# (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-clone-ssh-publickey.test.sh" || fail "fleet-failed-command-clone-ssh-publickey tests failed"
 # fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main`
 # (or `git push --force-with-lease`) on the very branch the worktree
 # has checked out is refused with `fatal: cannot force update the
