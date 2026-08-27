@@ -36,7 +36,7 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059) is a
+`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059, #1255) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
@@ -80,7 +80,26 @@ archived" as naming the failure, and must not treat a successful `cat`
 of the archived copy as discharging the read-ENOENT of the original
 path. The dedicated regression test
 tests/fleet-failed-command-read-enoent-archived-packet.test.sh pins
-that. The auto-filed issue closes via observe-to-close when the session
+that. #1255 (fleet-ops#1255) is the same read-ENOENT shape as #953 / #1001 / #1059 but
+on a DIFFERENT session slug (the 01a04402 salvage-scan session, where
+the worker `read`
+`/home/nish/workspaces/fleet-ops-rg/bin/salvage-secret-scan` — a stale,
+non-canonical checkout that does not carry the file — got the live
+`ENOENT: no such file or directory, access '<path>'` shape, and walked
+past it with thinking-only cause-prose "The salvage-secret-scan is in
+fleet-ops-sync (the sync copy), not in fleet-ops-rg" that names the
+OTHER checkout (the cause) but NOT the FAILURE (the read returned
+ENOENT), followed by successful `read`s of unrelated files in the same
+stale checkout). Thinking-only cause that names the wrong checkout is
+the same swallowed-failure class as the #953 thinking-only recovery,
+the #1001 "clear picture" prose, and the #1059 "The file was archived"
+prose: the user is never told the command failed. A future detector
+refactor must not treat "it's in fleet-ops-sync, not in fleet-ops-rg"
+as naming the failure, and must not treat later successful reads of
+unrelated files as discharging the read-ENOENT of salvage-secret-scan.
+The dedicated regression test
+tests/fleet-failed-command-read-enoent-stale-rg.test.sh pins that.
+The auto-filed issue closes via observe-to-close when the session
 mtime ages out of the 24h window. An `edit`
 tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
