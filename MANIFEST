@@ -407,5 +407,5 @@ bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completio
 # deadline (SAME packet file on the next healthy seat), escalates to the
 # SENIOR AUDITOR via STOP-REASON after 2 failed re-dispatches. Wired into
 # fleet-heartbeat-tier1 block 32.
-bin/fleet-dispatch-canary /home/nish/.local/bin/fleet-dispatch-canary
+bin/fleet-dispatch-canary.py /home/nish/.local/bin/fleet-dispatch-canary
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh

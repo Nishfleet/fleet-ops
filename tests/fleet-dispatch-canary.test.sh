@@ -34,13 +34,13 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-canary="$repo_root/bin/fleet-dispatch-canary"
+canary="$repo_root/bin/fleet-dispatch-canary.py"
 psrun="$repo_root/bin/pi-systemd-run"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -x "$canary" ]] || fail "fleet-dispatch-canary not executable: $canary"
+[[ -x "$canary" ]] || fail "fleet-dispatch-canary.py not executable: $canary"
 [[ -x "$psrun" ]]  || fail "pi-systemd-run not executable: $psrun"
 command -v jq >/dev/null || fail "jq required"
 command -v python3 >/dev/null || fail "python3 required"
@@ -445,8 +445,8 @@ grep -F 'dispatch_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture dispatch_canary_rc"
 grep -F -- 'exit "${dispatch_canary_rc}"' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the dispatch canary fails loud"
-n=$(grep -cF 'bin/fleet-dispatch-canary ' "$repo_root/MANIFEST" || true)
-[[ "$n" == "1" ]] || fail "MANIFEST must list fleet-dispatch-canary exactly once (got $n)"
+n=$(grep -cF 'bin/fleet-dispatch-canary.py ' "$repo_root/MANIFEST" || true)
+[[ "$n" == "1" ]] || fail "MANIFEST must list fleet-dispatch-canary.py exactly once (got $n)"
 grep -F 'fleet-dispatch-canary.test.sh' "$here/escalation-coverage-canary.test.sh" >/dev/null \
   || fail "escalation-coverage-canary.test.sh must invoke this suite (fleet-ops#1009)"
 grep -F 'fleet-dispatch-canary' "$repo_root/bin/fleet-escalation-canary" >/dev/null \
@@ -454,4 +454,4 @@ grep -F 'fleet-dispatch-canary' "$repo_root/bin/fleet-escalation-canary" >/dev/n
 ok "wiring: heartbeat fail-loud, MANIFEST once, nested canary runner, sanctioned pi runner"
 
 echo
-echo "ALL fleet-dispatch-canary tests passed"
+echo "ALL fleet-dispatch-canary.py tests passed"
