@@ -276,6 +276,37 @@ safe_findings="$(scan_p14_inline_verify "$safe")"
 [[ -z "$safe_findings" ]] || fail "/bin/bash -c verify must stay quiet, got: $safe_findings"
 ok "fixture: verify of a /bin/bash -c unit stays quiet"
 
+# --- 4b. Fixture: the fleet-ops#830 re-breakage shape is flagged ------------
+# fleet-ops#830: tests/escalation-units-shape.test.sh once inline-verified
+# systemd/fleet-seat-recovery.service (a VPS-only ExecStart). #617 (dd9b454)
+# replaced that call with a StartLimitIntervalSec=0 grep. This fixture proves
+# the detector still catches that exact re-breakage shape, so a future edit
+# that re-introduces it cannot silently re-merge.
+seat_red="$scratch/seat-recovery-830"
+mkdir -p "$seat_red/tests" "$seat_red/systemd" "$seat_red/.github/workflows"
+write_minimal_ci "$seat_red/.github/workflows/ci.yml" "tests/escalation-units-shape.test.sh"
+cat >"$seat_red/systemd/fleet-seat-recovery.service" <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-seat-recovery
+EOF
+cat >"$seat_red/tests/escalation-units-shape.test.sh" <<'EOF'
+#!/usr/bin/env bash
+# re-introduction of the fleet-ops#830 inline verify on fleet-seat-recovery
+if command -v systemd-analyze >/dev/null 2>&1; then
+  systemd-analyze verify --man=no \
+    systemd/fleet-seat-recovery.service >/dev/null 2>&1 \
+    || fail "systemd-analyze verify failed for fleet-seat-recovery"
+fi
+EOF
+seat_findings="$(scan_p14_inline_verify "$seat_red")"
+[[ -n "$seat_findings" ]] || fail "fixture seat-recovery-830 must flag the inline fleet-seat-recovery verify (drill regressed)"
+printf '%s\n' "$seat_findings" | grep -q 'escalation-units-shape.test.sh' \
+  || fail "fixture seat-recovery-830 must name the P14 test, got: $seat_findings"
+printf '%s\n' "$seat_findings" | grep -q 'fleet-seat-recovery' \
+  || fail "fixture seat-recovery-830 must name the VPS ExecStart, got: $seat_findings"
+ok "fixture: #830 inline verify of fleet-seat-recovery is flagged"
+
 # --- 5. Live repo: agent-cron P14 test has no live verify -------------------
 agent_cron="$repo_root/tests/agent-cron-seat-rotation.test.sh"
 [[ -f "$agent_cron" ]] || fail "missing $agent_cron"
