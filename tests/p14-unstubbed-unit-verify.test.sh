@@ -78,6 +78,40 @@ collect_service_rels() {
   grep -oE 'systemd/[A-Za-z0-9_@%.\\-]+\.service' "$f" 2>/dev/null | sort -u || true
 }
 
+# fleet-ops#718: a bare path reference like `svc=$repo_root/systemd/X.service`
+# or a `grep -q` on a unit file is NOT a `systemd-analyze verify` call. The
+# class lock fires ONLY when a service is on a line that itself contains a
+# live `systemd-analyze verify` invocation. A `seat_svc=...fleet-seat-recovery.service`
+# assignment followed by a `grep -q` is a SHAPE check, not a verify, and the
+# original detector false-positived on it (red-on-main: CI / P14 tests
+# `tests/escalation-units-shape.test.sh verifies systemd/fleet-seat-recovery.service`
+# despite the test never passing that path to `systemd-analyze verify`).
+# Continuation lines (backslash-newline) collapse into a single logical line
+# so `systemd-analyze verify --man=no \ \n systemd/X.service \` flags X.
+logical_lines_with_live_verify() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  awk '
+    {
+      buf = buf $0 "\n"
+      if ($0 !~ /\\$/) {
+        if (buf !~ /^[[:space:]]*#/ && buf !~ /^[[:space:]]*$/ && buf ~ /systemd-analyze[[:space:]]+verify/) {
+          printf "%s", buf
+        }
+        buf = ""
+      }
+    }
+  ' "$f"
+}
+
+collect_verified_service_rels() {
+  local f="$1" logical
+  while IFS= read -r logical; do
+    [[ -n "$logical" ]] || continue
+    printf '%s\n' "$logical" | grep -oE 'systemd/[A-Za-z0-9_@%.\\-]+\.service' 2>/dev/null
+  done < <(logical_lines_with_live_verify "$f") | sort -u
+}
+
 # Print one finding per line. Exit 0 even when findings exist (caller counts).
 scan_p14_inline_verify() {
   local root="$1"
@@ -117,7 +151,7 @@ scan_p14_inline_verify() {
         printf '%s verifies %s ExecStart=%s (hosted runner has no VPS stubs)\n' \
           "$testrel" "$svc_rel" "$token"
       fi
-    done < <(collect_service_rels "$testfile")
+    done < <(collect_verified_service_rels "$testfile")
   done < <(extract_p14_tests "$root")
 }
 
