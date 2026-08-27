@@ -2197,6 +2197,12 @@ bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-com
 # find edits[0] in <path>' (stale oldText on the first array element)
 # walked past. Same class; same CI constraint.
 bash "$here/fleet-failed-command-edit-array-unmatch.test.sh" || fail "fleet-failed-command-edit-array-unmatch tests failed"
+# fleet-ops#1286: `edit` with malformed arguments (top-level `path`
+# field omitted) returning 'Validation failed for tool "edit": - path:
+# must have required properties path' (the harness rejected the call
+# before dispatch) walked past. Same edit-failure class as the
+# #956/#1053/#1139/#1173 siblings; same CI constraint.
+bash "$here/fleet-failed-command-edit-schema-validation.test.sh" || fail "fleet-failed-command-edit-schema-validation tests failed"
 # fleet-ops#965: leftover duplicates of the same 01a03dee session signal
 # (index-delay filings #956/#965/#970/#975/#980) must ALL drain via
 # observe-to-close, not just the first match. Same CI constraint.

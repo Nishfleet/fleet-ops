@@ -126,7 +126,15 @@ variant
 "No changes made to <path>. The replacement produced identical content.
 This might indicate an issue with special characters or the text not
 existing as expected." (fleet-ops#1139, same class: the edit matched but
-the intended change did NOT land) —
+the intended change did NOT land) — or the schema-validation variant
+"Validation failed for tool \"edit\": - path: must have required properties path"
+(fleet-ops#1286, same class: the harness rejected
+the call BEFORE dispatch because the `edit` arguments omitted a
+required top-level field, isError=true, details={}, no
+"Command exited with code" line; live session 01a043c8 working
+/tmp/fleet-ops/bin/{pi-issue-run,pi-packet-run,pi-scout-run,agent-cron-run}
+where the worker omitted the top-level `path` field four times in a row)
+—
 is also a real swallowed
 failure: a silent `read` recovery, a later thinking-only note that the
 file was different, or unrelated prose that moves on, is not a
@@ -142,7 +150,28 @@ edited the file and it had not, which is the whole point of the rule.
 tests/fleet-failed-command-edit-unmatch.test.sh pins the single-edit,
 multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
 unmatch.test.sh pins the multi-edit array `edits[0]` shape
-(fleet-ops#1173). #970 is the same session shape as #956 / #965 (the
+(fleet-ops#1173); tests/fleet-failed-command-edit-schema-validation
+.test.sh pins the schema-validation shape (fleet-ops#1286, live
+session 01a043c8). The #1286 schema-validation class is the FOURTH
+sibling of the edit-failure family: the harness rejects the `edit`
+call before dispatch because the arguments omitted a required
+top-level field (`path` in the live case; `edits` is the other
+required field). The live recovery was thinking-only cause prose
+("The edit tool requires the path field", "Keep missing the path.
+Odd. Let me check if the old text actually matches exactly.") — that
+names the CAUSE (the worker omitted the field) but NOT the FAILURE
+(the call returned isError=true with the schema-validation message),
+exactly like the #1059 "The file was archived" prose and the #1139
+"The text is already the same" prose, so it does not discharge the
+pending failure. Do NOT add a READ_OFFSET_RE-style exemption for the
+schema-validation wording on the theory that "the call never ran": the
+worker believed the edit ran and it did not, which is the same
+swallowed-failure class as the #1139 no-op and the #956 stale-oldText
+siblings. The #1286 live session's retries DID eventually land the
+change, but only because the worker silently re-issued the edit with
+the missing `path` field added — that successful retry is content,
+not a user-facing flag, and the four schema-validation toolResults
+that preceded it must still be named. #970 is the same session shape as #956 / #965 (the
 01a03dee edit-unmatch session); it is a leftover open duplicate filed
 by the same GitHub-search-index-delay that produced #951 / #965, so
 the citation chain must carry it. #975 is the same session shape as
@@ -618,12 +647,17 @@ HARNESS_BLOCK_RE = re.compile(
 # Do NOT add a similar exemption for `edit` "Could not find the exact
 # text" (fleet-ops#956, #965, #970, #975, #980), "Found N occurrences"
 # (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
-# locations, not zero), or "No changes made ... The replacement produced
+# locations, not zero), "No changes made ... The replacement produced
 # identical content" (fleet-ops#1139, same class: the edit matched but the
-# intended change never landed). Those are real swallowed failures: the
-# worker's oldText or newText was stale. A silent read/grep recovery, and
-# cause-explaining prose ("The text is already the same"), do not
-# discharge it.
+# intended change never landed), or the schema-validation shape
+# "Validation failed for tool \"edit\": - path: must have required properties path"
+# (fleet-ops#1286, same class: the harness rejected the
+# call before dispatch because the `edit` arguments omitted a required
+# top-level field). Those are real swallowed failures: the worker's
+# oldText or newText was stale, or the worker's `edit` arguments were
+# malformed. A silent read/grep recovery, and cause-explaining prose
+# ("The text is already the same", "The edit tool requires the path
+# field"), do not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
@@ -799,15 +833,29 @@ def result_failed(
     # directory, read"). That is a real swallowed failure: the path
     # was a directory. tests/fleet-failed-command-read-eisdir.test.sh
     # goes red if an exemption is added here.
-    # No sibling exemption belongs here for the `edit` tool. All three
-    # edit-unmatch shapes are real swallowed failures, not negative
+    # No sibling exemption belongs here for the `edit` tool. All FOUR
+    # edit-failure shapes are real swallowed failures, not negative
     # results: "Could not find the exact text" (0 matches, fleet-ops#956
-    # / #965), "Found N occurrences" (many matches, fleet-ops#1053), and
+    # / #965), "Found N occurrences" (many matches, fleet-ops#1053),
+    # "Could not find edits[0] in <path>" (multi-edit array, stale
+    # oldText on the first element, fleet-ops#1173),
     # "No changes made ... The replacement produced identical content"
-    # (matched, but the intended change never landed, fleet-ops#1139).
-    # The no-op shape is the tempting one — it reads as harmless — but the
-    # worker believed the file changed and it did not.
-    # tests/fleet-failed-command-edit-unmatch.test.sh goes red if an
+    # (matched, but the intended change never landed, fleet-ops#1139),
+    # and the schema-validation class
+    # "Validation failed for tool \"edit\": - path: must have required properties path"
+    # (harness rejected the call before dispatch
+    # because the arguments omitted a required top-level field,
+    # fleet-ops#1286, live 01a043c8). The no-op shape is the tempting
+    # one — it reads as harmless — but the worker believed the file
+    # changed and it did not. The schema-validation shape is tempting
+    # on the same theory ("the call never ran, the file is fine") —
+    # but the worker believed the edit ran and it did not, exactly
+    # the same class as the #1139 no-op and the #956 stale-oldText
+    # siblings. tests/fleet-failed-command-edit-unmatch.test.sh goes red
+    # if an exemption is added for any of these shapes; the
+    # tests/fleet-failed-command-edit-array-unmatch.test.sh and
+    # tests/fleet-failed-command-edit-schema-validation.test.sh tests
+    # pin the multi-edit and schema-validation siblings.
     # exemption is added here.
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
