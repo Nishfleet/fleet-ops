@@ -703,10 +703,9 @@
     {
       "id": "led-2026-08-27-vacation-window-corrected",
       "source": "decisions-ledger.md: 2026-08-27 | Vacation window corrected",
-      "mechanism": "No canary checking credential/token/quota expiry covers through 2026-09-08. Mechanism issue open.",
-      "proof": "fleet-ops#938",
-      "status": "queued(#938)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire — official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted — worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness.",
+      "proof": "bin/fleet-credential-expiry-canary; lib/credential-expiry-canary.py; tests/credential-expiry-canary.test.sh; bin/fleet-heartbeat-tier1 block 31; fleet-ops#938",
+      "status": "enforced"
     }
   ]
 }

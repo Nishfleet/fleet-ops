@@ -1916,9 +1916,42 @@ else
 fi
 
 # ============================================================================
+# 31. CREDENTIAL / TOKEN EXPIRY CANARY (fleet-ops#938)
+# ============================================================================
+# led-2026-08-27-vacation-window-corrected: Nish departs 2026-08-28, returns
+# 2026-09-08. Credential/token/quota expiry checks must cover through
+# 2026-09-08 inclusive. GitHub App private keys do not expire (official
+# docs); this canary proves GET /app still accepts a minted App JWT, and
+# that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header is
+# after the window end when the PAT is present. Installation tokens are
+# <=1h and reminted — worker-app-canary (block 16) covers mint liveness.
+#
+# Fail-loud: dead App, or a PAT that expires on or before 2026-09-08.
+# SKIP (exit 0): network unreachable (not a credential failure).
+CRED_EXPIRY_CANARY_BIN="${FLEET_CRED_EXPIRY_CANARY:-/home/nish/.local/bin/fleet-credential-expiry-canary}"
+cred_expiry_canary_rc=0
+if require_manifest_helper "$CRED_EXPIRY_CANARY_BIN"; then
+    log "31. credential expiry canary starting"
+    if "$CRED_EXPIRY_CANARY_BIN"; then
+        log "31. credential expiry canary complete"
+    else
+        cred_expiry_canary_rc=$?
+        log "31. credential expiry canary FAILED (rc=$cred_expiry_canary_rc) — credential expires before vacation window end; unit will land in --state=failed"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "credential expiry canary missing at $CRED_EXPIRY_CANARY_BIN — MANIFEST dest; silent skip disabled the expiry-coverage check (fleet-ops#938)"
+        cred_expiry_canary_rc=1
+    else
+        log "31. credential expiry canary missing at $CRED_EXPIRY_CANARY_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -2003,6 +2036,9 @@ if [ "${verify_harness_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${seat_live_validate_rc:-0}" -ne 0 ]; then
     exit "$seat_live_validate_rc"
+fi
+if [ "${cred_expiry_canary_rc:-0}" -ne 0 ]; then
+    exit "$cred_expiry_canary_rc"
 fi
 if [ "${findings_queued_rc:-0}" -ne 0 ]; then
     exit "$findings_queued_rc"
