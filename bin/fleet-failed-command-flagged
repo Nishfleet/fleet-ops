@@ -98,6 +98,7 @@ fi
 
 finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
+skipped_grace_slugs=$(jq -r '.skipped_grace_slugs[] // empty' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
 
 open_json="[]"
@@ -126,11 +127,44 @@ if [[ "$finding_count" != "0" ]]; then
         command -v "$GH" >/dev/null 2>&1 || continue
 
         signal="signal: failed-command-flagged/${slug}"
-        if printf '%s' "$open_json" | jq -e --arg s "$signal" \
-            '[.[] | select((.body // "") | contains($s))] | length > 0' \
-            >/dev/null 2>&1; then
-            log "auto-file: $slug already open (deduped)"
-            continue
+
+        # Search both open and closed issues for this signal. Open dedup is
+        # existing behaviour. Closed dedup (fleet-ops#933) prevents re-filing
+        # the same session when a previous issue was closed by a worker PR
+        # before the session aged out of the 24h window. A closed issue with
+        # a resolved-at marker is a legitimate observe-to-close and is left
+        # alone. A closed issue without the marker is reopened so the session
+        # stays tracked and observe-to-close closes it for real.
+        set +e
+        all_for_signal=$("$GH" issue list -R "$ISSUE_REPO" --state all --search "\"$signal\"" --json number,body,comments,state 2>/dev/null)
+        signal_rc=$?
+        set -e
+        if [[ "$signal_rc" -eq 0 && -n "$all_for_signal" ]] && jq -e . >/dev/null 2>&1 <<<"$all_for_signal"; then
+            open_match=$(jq '[.[] | select(.state == "OPEN")] | first' <<<"$all_for_signal")
+            if [[ -n "$open_match" && "$open_match" != "null" ]]; then
+                onum=$(jq -r '.number' <<<"$open_match")
+                log "auto-file: $slug already open (#$onum) — deduped"
+                continue
+            fi
+            closed_match=$(jq '[.[] | select(.state == "CLOSED")] | first' <<<"$all_for_signal")
+            if [[ -n "$closed_match" && "$closed_match" != "null" ]]; then
+                cnum=$(jq -r '.number' <<<"$closed_match")
+                cblob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$closed_match")
+                if grep -Fq "resolved-at: $signal" <<<"$cblob"; then
+                    log "auto-file: $slug already closed with resolved-at (#$cnum) — deduped"
+                else
+                    set +e
+                    "$GH" issue reopen "$cnum" -R "$ISSUE_REPO" >/tmp/failed-command-reopen.err 2>&1
+                    reopen_rc=$?
+                    set -e
+                    if [[ "$reopen_rc" -eq 0 ]]; then
+                        log "REOPENED $slug -> #$cnum (was closed without resolved-at; leaving observe-to-close to close it)"
+                    else
+                        log "WARN: failed to reopen #$cnum (rc=$reopen_rc) $(tr '\n' ' ' </tmp/failed-command-reopen.err 2>/dev/null)"
+                    fi
+                fi
+                continue
+            fi
         fi
 
         title="fix(failed-command): $slug — failed command walked past, never flagged"
@@ -172,6 +206,10 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
         slug="${signal#signal: failed-command-flagged/}"
         if printf '%s\n' "$finding_slugs" | grep -qxF -- "$slug"; then
             log "observe: $slug still a finding (#$num) — skip"
+            continue
+        fi
+        if printf '%s\n' "$skipped_grace_slugs" | grep -qxF -- "$slug"; then
+            log "observe: $slug skipped due to in-flight grace (#$num) — not resolved"
             continue
         fi
         blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")

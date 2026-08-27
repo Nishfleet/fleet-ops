@@ -425,6 +425,8 @@ def scan(
     skipped_old = 0
     skipped_grace = 0
     skipped_unreadable = 0
+    skipped_grace_slugs: list[str] = []
+    skipped_old_slugs: list[str] = []
 
     for path in iter_session_files(root):
         try:
@@ -433,11 +435,14 @@ def scan(
             skipped_unreadable += 1
             continue
         age = now - mtime
+        slug = session_slug(path)
         if age > window_s:
             skipped_old += 1
+            skipped_old_slugs.append(slug)
             continue
         if age < grace_s:
             skipped_grace += 1
+            skipped_grace_slugs.append(slug)
             continue
         scanned += 1
         finding = scan_session(path)
@@ -450,6 +455,8 @@ def scan(
         "skipped_old": skipped_old,
         "skipped_grace": skipped_grace,
         "skipped_unreadable": skipped_unreadable,
+        "skipped_grace_slugs": skipped_grace_slugs,
+        "skipped_old_slugs": skipped_old_slugs,
         "root": root,
     }
 
