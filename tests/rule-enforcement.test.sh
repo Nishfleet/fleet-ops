@@ -100,6 +100,13 @@ ok "rule-enforcement: geo-aeo canary drill"
 bash "$here/quality-ratchet.test.sh" || fail "quality-ratchet drill failed"
 ok "rule-enforcement: quality-ratchet drill"
 
+# fleet-ops#1223: precedence-band canary (ledger rent-paying band). Nested
+# host so this token does not need a workflow edit. Before the live vault
+# join so a busy board of other uncovered sibling ledger lines cannot skip
+# this drill.
+bash "$here/fleet-precedence-band.test.sh" || fail "precedence-band canary drill failed"
+ok "rule-enforcement: precedence-band canary drill"
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e
