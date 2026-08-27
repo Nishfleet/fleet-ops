@@ -12,8 +12,13 @@
 # Exit 0: no swallowed failures in the window. Exit 1: at least one
 # (LOUD + auto-filed, deduped by signal: failed-command-flagged/<slug>).
 # Exit 1 also if the helper itself is broken (missing python/lib).
-# Observe-to-close (fleet-ops#649): auto-filed issues whose slug is no
-# longer a finding are closed with evidence on the same tick.
+#
+# Observe-to-close (fleet-ops#650, same two-tick shape as #521): a green
+# tick for a previously filed slug comments `resolved-at: signal: ...`.
+# A later tick that already carries that marker closes the issue. A slug
+# still in findings is neither commented nor closed. Same-tick close
+# (fleet-ops#649) is replaced because a single scan miss tried to close
+# #650 while the origin session was still a finding.
 #
 # Environment seams (tests override all of these):
 #   FLEET_FAILED_COMMAND_SESSIONS   default ~/.pi/agent/sessions
@@ -22,6 +27,7 @@
 #   FLEET_FAILED_COMMAND_GRACE_MINUTES  default 20 (skip in-flight sessions)
 #   FLEET_FAILED_COMMAND_NOW        ISO timestamp
 #   FLEET_FAILED_COMMAND_FILE_ISSUES    1 (default) / 0
+#   FLEET_FAILED_COMMAND_CLOSE_ISSUES   1 (default) / 0
 #   FLEET_FAILED_COMMAND_ISSUE_REPO     default Nishfleet/fleet-ops
 #   FLEET_FAILED_COMMAND_CAP            default 5
 #   FLEET_HEARTBEAT_TRIAGE
@@ -46,6 +52,7 @@ WINDOW_HOURS="${FLEET_FAILED_COMMAND_WINDOW_HOURS:-24}"
 GRACE_MINUTES="${FLEET_FAILED_COMMAND_GRACE_MINUTES:-20}"
 NOW_ISO="${FLEET_FAILED_COMMAND_NOW:-}"
 FILE_ISSUES="${FLEET_FAILED_COMMAND_FILE_ISSUES:-1}"
+CLOSE_ISSUES="${FLEET_FAILED_COMMAND_CLOSE_ISSUES:-1}"
 ISSUE_REPO="${FLEET_FAILED_COMMAND_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_FAILED_COMMAND_CAP:-5}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
@@ -93,74 +100,41 @@ finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
 
-# Current finding slugs — used for both dedup and observe-to-close.
-current_slugs=$(jq -r '.findings[].slug' <<<"$report" | sort -u)
-
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     set +e
-    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body,comments 2>/dev/null)
     set -e
     open_json="${open_json:-[]}"
-fi
-
-# Observe-to-close (fleet-ops#649): close auto-filed issues whose slug is no
-# longer a finding. The detector filed these; it closes them when the signal
-# is clean on a real heartbeat tick — the session aged out of the window or
-# was resolved. Without this, auto-filed issues pile up with no close path.
-closed=0
-if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
-    while IFS=$'\t' read -r num slug; do
-        [[ -n "$num" && -n "$slug" ]] || continue
-        if ! grep -qxF "$slug" <<<"$current_slugs"; then
-            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            comment="observe-to-close: signal failed-command-flagged/${slug} no longer reported as a finding on heartbeat tick at $ts."
-            set +e
-            "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" 2>/dev/null
-            close_rc=$?
-            set -e
-            if [[ "$close_rc" -eq 0 ]]; then
-                log "observe-to-close: CLOSED issue #$num (slug=$slug no longer in findings)"
-                closed=$((closed + 1))
-            else
-                log "observe-to-close: failed to close issue #$num (rc=$close_rc)"
-            fi
-        fi
-    done < <(printf '%s' "$open_json" | jq -r '
-        .[] | .number as $n | (.body // "") as $b |
-        select($b | contains("signal: failed-command-flagged/")) |
-        ($b | capture("signal: failed-command-flagged/(?<slug>[^\\s]+)") | .slug) as $slug |
-        "\($n)\t\($slug)"
-    ' 2>/dev/null)
-fi
-
-if [[ "$finding_count" == "0" ]]; then
-    loud "FAILED-COMMAND-OK" "no swallowed failures in window (scanned=$scanned closed=$closed)"
-    exit 0
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "WARN: gh issue list produced no JSON"
+        open_json="[]"
+    fi
 fi
 
 filed=0
-while IFS= read -r row; do
-    [[ -n "$row" ]] || continue
-    slug=$(jq -r '.slug' <<<"$row")
-    snippet=$(jq -r '.snippet' <<<"$row")
-    path=$(jq -r '.path' <<<"$row")
-    loud "FAILED-COMMAND-SWALLOWED" "session=$slug path=$path snippet=$snippet"
+if [[ "$finding_count" != "0" ]]; then
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        slug=$(jq -r '.slug' <<<"$row")
+        snippet=$(jq -r '.snippet' <<<"$row")
+        path=$(jq -r '.path' <<<"$row")
+        loud "FAILED-COMMAND-SWALLOWED" "session=$slug path=$path snippet=$snippet"
 
-    [[ "$FILE_ISSUES" == "1" ]] || continue
-    [[ "$filed" -lt "$CAP" ]] || continue
-    command -v "$GH" >/dev/null 2>&1 || continue
+        [[ "$FILE_ISSUES" == "1" ]] || continue
+        [[ "$filed" -lt "$CAP" ]] || continue
+        command -v "$GH" >/dev/null 2>&1 || continue
 
-    signal="signal: failed-command-flagged/${slug}"
-    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
-        '[.[] | select((.body // "") | contains($s))] | length > 0' \
-        >/dev/null 2>&1; then
-        log "auto-file: $slug already open (deduped)"
-        continue
-    fi
+        signal="signal: failed-command-flagged/${slug}"
+        if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+            '[.[] | select((.body // "") | contains($s))] | length > 0' \
+            >/dev/null 2>&1; then
+            log "auto-file: $slug already open (deduped)"
+            continue
+        fi
 
-    title="fix(failed-command): $slug — failed command walked past, never flagged"
-    body="The session-close lint (fleet-ops#535, standing rule: a failed command is ALWAYS flagged) found a Pi toolResult with a non-zero exit / isError / timeout and no later assistant text naming the failure.
+        title="fix(failed-command): $slug — failed command walked past, never flagged"
+        body="The session-close lint (fleet-ops#535, standing rule: a failed command is ALWAYS flagged) found a Pi toolResult with a non-zero exit / isError / timeout and no later assistant text naming the failure.
 
 - session: \`$path\`
 - snippet: $snippet
@@ -169,17 +143,80 @@ while IFS= read -r row; do
 Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
 
 $signal"
-    set +e
-    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
-    create_rc=$?
-    set -e
-    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
-        log "auto-file: FILED $slug -> $created"
-        filed=$((filed + 1))
-    else
-        log "auto-file: failed to file $slug (rc=$create_rc)"
-    fi
-done < <(jq -c '.findings[]' <<<"$report")
+        set +e
+        created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+        create_rc=$?
+        set -e
+        if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+            log "auto-file: FILED $slug -> $created"
+            filed=$((filed + 1))
+        else
+            log "auto-file: failed to file $slug (rc=$create_rc)"
+        fi
+    done < <(jq -c '.findings[]' <<<"$report")
+fi
+
+# Observe-to-close: comment resolved-at when a previously filed slug is no
+# longer a finding; close on a later tick once that marker is already present.
+observed=0
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    finding_slugs=$(jq -r '.findings[].slug // empty' <<<"$report")
+    while IFS= read -r irow; do
+        [[ -n "$irow" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$irow")
+        [[ -n "$num" && "$num" != "null" ]] || continue
+        body=$(jq -r '.body // ""' <<<"$irow")
+        signal=$(grep -oE 'signal: failed-command-flagged/[a-z0-9-]+' <<<"$body" | head -1 || true)
+        [[ -n "$signal" ]] || continue
+        slug="${signal#signal: failed-command-flagged/}"
+        if printf '%s\n' "$finding_slugs" | grep -qxF -- "$slug"; then
+            log "observe: $slug still a finding (#$num) — skip"
+            continue
+        fi
+        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")
+        marker="resolved-at: ${signal}"
+        if grep -Fq -- "$marker" <<<"$blob"; then
+            if [[ "$CLOSE_ISSUES" == "1" ]] && [[ "$closed" -lt "$CAP" ]]; then
+                set +e
+                "$GH" issue close "$num" -R "$ISSUE_REPO" --reason completed >/tmp/failed-command-close.err 2>&1
+                close_rc=$?
+                set -e
+                if [[ "$close_rc" -eq 0 ]]; then
+                    closed=$((closed + 1))
+                    log "OBSERVE-CLOSED $slug -> #$num (resolved-at + no longer a finding)"
+                else
+                    log "WARN: failed to close #$num (rc=$close_rc) $(tr '\n' ' ' </tmp/failed-command-close.err 2>/dev/null)"
+                fi
+            else
+                log "dedup observe: #$num already carries $marker"
+            fi
+            continue
+        fi
+        [[ "$observed" -lt "$CAP" ]] || continue
+        comment="${marker}
+
+observed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Detector is green for this session on a real heartbeat tick (fleet-ops#650 observe-to-close)."
+        set +e
+        "$GH" issue comment "$num" -R "$ISSUE_REPO" --body "$comment" >/tmp/failed-command-comment.err 2>&1
+        comment_rc=$?
+        set -e
+        if [[ "$comment_rc" -eq 0 ]]; then
+            observed=$((observed + 1))
+            log "OBSERVED-RESOLVED $slug -> #$num"
+        else
+            log "WARN: failed to comment on #$num (rc=$comment_rc) $(tr '\n' ' ' </tmp/failed-command-comment.err 2>/dev/null)"
+        fi
+    done < <(jq -c '.[]' <<<"$open_json")
+    log "observe-to-close: commented=$observed closed=$closed"
+fi
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "FAILED-COMMAND-OK" "no swallowed failures in window (scanned=$scanned)"
+    exit 0
+fi
 
 loud "FAILED-COMMAND-FAIL" "swallowed failures=$finding_count — a failed command was walked past; heartbeat tick will fail"
 exit 1
