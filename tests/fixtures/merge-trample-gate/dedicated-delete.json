@@ -1,0 +1,11 @@
+{
+  "title": "chore: remove dead helper",
+  "body": "Closes #4",
+  "headRefName": "claim/issue-4",
+  "merge_base": "abc",
+  "added_by_merge_base": ["bin/old-helper"],
+  "commit_touched": ["bin/old-helper"],
+  "merge_diff": {
+    "bin/old-helper": "D"
+  }
+}

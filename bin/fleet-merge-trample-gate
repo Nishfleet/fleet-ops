@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# fleet-merge-trample-gate — conference + merge-arm criterion for fleet-ops#1229.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes.
+# A PR whose effective diff-to-main deletes paths its own commits never
+# modified, or that deletes files its merge-base just added while also
+# changing other files (#1228 worktree-gap), is REJECT (exit 1).
+#
+# Usage:
+#   fleet-merge-trample-gate evaluate --repo DIR --base REF --head REF
+#   fleet-merge-trample-gate evaluate --input fixture.json
+#   fleet-merge-trample-gate sweep --repo DIR [--since '7 days ago']
+#   fleet-merge-trample-gate --ledger-line
+#
+# The implementation lives in lib/merge-trample-gate.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${MERGE_TRAMPLE_GATE_LIB:-$here/../lib/pi-packet/merge-trample-gate.py}"
+[ -f "$lib" ] || lib="$here/../lib/merge-trample-gate.py"
+[ -f "$lib" ] || { echo "fleet-merge-trample-gate: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

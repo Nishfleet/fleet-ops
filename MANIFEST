@@ -224,6 +224,13 @@ bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-g
 lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
 bin/fleet-same-repo-closes-gate /home/nish/.local/bin/fleet-same-repo-closes-gate
 lib/same-repo-closes-gate.py /home/nish/.local/lib/pi-packet/same-repo-closes-gate.py
+# fleet-ops#1229: merge-trample gate. Conference + heartbeat queue-pass
+# reject a PR whose merge diff deletes paths its commits never modified,
+# or the #1228 worktree-gap class. Pure evaluator — no dispatcher.
+# GitHub required-check / auto-merge-arm.yml is a follow-up: this token
+# cannot push .github/workflows/**.
+bin/fleet-merge-trample-gate /home/nish/.local/bin/fleet-merge-trample-gate
+lib/merge-trample-gate.py /home/nish/.local/lib/pi-packet/merge-trample-gate.py
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
