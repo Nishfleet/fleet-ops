@@ -29,12 +29,16 @@
 # the tier1 tick that already runs.
 #
 # Quality bar unchanged: scouts still apply their own spec gate (the
-# pi-scout@.service ExecCondition re-checks agent-ready < 12 and the scout
-# prompt applies the spec gate). This pass changes WHEN scouts look, never
-# what qualifies as work. "Nothing worth generating" remains a valid, logged
-# scout outcome — an empty pass must never manufacture make-work to satisfy
-# the threshold. We only nudge the scout to LOOK sooner; we do not feed it
-# work to do.
+# pi-scout@.service ExecCondition rests at >=24h of work at the measured
+# drain rate, fleet-ops#540, and the scout prompt applies the spec gate).
+# This pass changes WHEN scouts look, never what qualifies as work.
+# "Nothing worth generating" remains a valid, logged scout outcome — an
+# empty pass must never manufacture make-work to satisfy the threshold.
+# We only nudge the scout to LOOK sooner; we do not feed it work to do.
+#
+# Go-ham (ledger 2026-08-26): remaining hours < 12 at the measured drain
+# rate also dispatches, even when ready >= lanes. A fast drain can empty
+# a large ready queue in under 12h; lane-count alone would sit idle.
 #
 # This is a best-effort supply nudge, NOT a fail-loud alarm (that is
 # undersaturation's job). A non-zero exit here is a CONFIG error (missing
@@ -53,6 +57,8 @@
 #                                (test seam + production escape hatch)
 #   FLEET_LOW_WATER_MIN_INTERVAL_S  stamp freshness bound (default 7200 = 2h)
 #   FLEET_LOW_WATER_STAMP_DIR    stamp directory (default $LOG_DIR/low-water-mark)
+#   FLEET_WORK_SUPPLY_HOURS      override remaining hours (tests + #540 gate)
+#   FLEET_WORK_SUPPLY_LIB        work-supply.sh (default installed dest)
 #
 # Exit: 0 = pass complete (dispatched where appropriate, skipped otherwise).
 #       2 = config error (missing intake-repos.json / jq / seat-lib).
@@ -70,6 +76,17 @@ LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
 SEAT_LIB_DEFAULT="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 MIN_INTERVAL_S="${FLEET_LOW_WATER_MIN_INTERVAL_S:-7200}"
 STAMP_DIR="${FLEET_LOW_WATER_STAMP_DIR:-$LOG_DIR/low-water-mark}"
+WS_LIB="${FLEET_WORK_SUPPLY_LIB:-$HOME/.local/lib/pi-packet/work-supply.sh}"
+if [ ! -f "$WS_LIB" ]; then
+    _lwm_src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$_lwm_src/../lib/work-supply.sh" ]; then
+        WS_LIB="$(cd "$_lwm_src/../lib" && pwd)/work-supply.sh"
+    fi
+fi
+if [ -f "$WS_LIB" ]; then
+    # shellcheck source=../lib/work-supply.sh source-path=SCRIPTDIR
+    source "$WS_LIB"
+fi
 
 mkdir -p "$LOG_DIR" "$STAMP_DIR"
 
@@ -230,17 +247,36 @@ while IFS= read -r repo; do
             ;;
     esac
 
-    if [ "$ready" -ge "$lanes" ]; then
-        log "  - $repo: ready=$ready >= lanes=$lanes — no dispatch"
+    hours=""
+    if [ -n "${FLEET_WORK_SUPPLY_HOURS:-}" ]; then
+        hours="$FLEET_WORK_SUPPLY_HOURS"
+    elif [ -n "${WS_LIB:-}" ] && [ -f "$WS_LIB" ] && type work_supply_hours >/dev/null 2>&1; then
+        hours=$(work_supply_hours "$ready" 0)
+    fi
+    case "$hours" in
+        ''|*[!0-9]*) hours="" ;;
+    esac
+
+    go_ham=0
+    starve=0
+    if [ -n "$hours" ] && [ "$hours" -lt "${WORK_SUPPLY_GOHAM_H:-12}" ]; then
+        go_ham=1
+    fi
+    if [ "$ready" -lt "$lanes" ]; then
+        starve=1
+    fi
+
+    if [ "$go_ham" -eq 0 ] && [ "$starve" -eq 0 ]; then
+        log "  - $repo: ready=$ready >= lanes=$lanes hours=${hours:-n/a} — no dispatch"
         skipped_ready=$((skipped_ready+1))
         continue
     fi
 
-    # ready < lanes, scout idle, stamp stale -> refill.
+    # ready < lanes (starvation) and/or hours < 12 (go-ham), scout idle, stamp stale.
     if "$SYSTEMCTL" --user start --no-block "pi-scout@${short}.service" 2>/dev/null; then
         write_stamp "$short"
-        loud "LOW-WATER-REFILL" "repo=$repo ready=$ready lanes=$lanes — started pi-scout@${short}.service (threshold-triggered, stamp written)"
-        log "  - $repo: DISPATCHED pi-scout@${short}.service (ready=$ready < lanes=$lanes)"
+        loud "LOW-WATER-REFILL" "repo=$repo ready=$ready lanes=$lanes hours=${hours:-n/a} — started pi-scout@${short}.service (threshold-triggered, stamp written)"
+        log "  - $repo: DISPATCHED pi-scout@${short}.service (ready=$ready lanes=$lanes hours=${hours:-n/a} go_ham=$go_ham starve=$starve)"
         dispatched=$((dispatched+1))
     else
         loud "LOW-WATER-REFILL-FAIL" "repo=$repo ready=$ready lanes=$lanes — systemctl start pi-scout@${short}.service FAILED"

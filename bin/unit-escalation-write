@@ -46,9 +46,12 @@ fi
 # Self-trigger / feedback-loop guard (defense in depth alongside the
 # per-unit OnFailure= reset drop-ins). The escalation layer, the auditor
 # dispatcher, and the ready-work dispatcher must never summon an auditor
-# from their own failures.
+# from their own failures. resilience-drill-stub*.service are the #455
+# resurrection-plane stubs the drill DELIBERATELY SIGKILLs to prove
+# Restart=always; that intentional kill is the drill working, not a fault
+# (a real drill failure escalates normally via the drill unit itself).
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger)" >&2
     exit 0
     ;;

@@ -18,7 +18,7 @@
 # Missing netmap / missing Mac peer / not running on the VPS = watcher
 # broken (fail closed). Auto-files, deduped by marker.
 #
-# No new scheduler. Run by fleet-heartbeat-tier1 block 25.
+# No new scheduler. Run by fleet-heartbeat-tier1 block 28.
 #
 # Environment seams (tests):
 #   FLEET_TAILSCALE_NETMAP     fixture netmap JSON (skips sudo tailscale)
@@ -141,6 +141,8 @@ else
         bash -c "$TAILSCALE_NETMAP_CMD" >"$netmap" 2>"$scratch/netmap.err"
         fetch_rc=$?
     else
+        # Scratch is ours; sudo wraps only tailscale (redirect must stay user-owned).
+        # shellcheck disable=SC2024
         sudo -n tailscale debug netmap >"$netmap" 2>"$scratch/netmap.err"
         fetch_rc=$?
     fi

@@ -29,7 +29,7 @@
     {
       "id": "sr-findings-queued",
       "source": "global-standing-rules.md: Every finding gets queued, automatically (Nish, 2026-08-22)",
-      "mechanism": "Heartbeat session-close lint: Pi JSONL assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed",
+      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates — Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602)",
       "proof": "bin/fleet-findings-queued; lib/findings-queued.py; tests/fleet-findings-queued.test.sh; fleet-heartbeat-tier1 block 15",
       "status": "enforced"
     },
@@ -153,10 +153,9 @@
     {
       "id": "sr-vault-knowledge-format",
       "source": "global-standing-rules.md: Vault knowledge format: atomic facts, hub notes, glossary (Nish, 2026-08-20)",
-      "mechanism": "No shape linter for 03 Knowledge notes",
-      "proof": "Nishfleet/fleet-ops#525",
-      "status": "queued(#525)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Daily fleet-ops timer (vault-knowledge-format.timer) runs the vault-knowledge-lint.sh shape checker: verifies _hub.md with auto-contents markers in curated 03 Knowledge clusters, flags typed notes with fewer than 4 or more than 9 [[links]] or over 250 words, lists unresolved [[links]], regenerates hub contents, and writes vault-knowledge-lint-report.md",
+      "proof": "systemd/vault-knowledge-format.service; systemd/vault-knowledge-format.timer; MANIFEST; /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/vault-knowledge-lint.sh; /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/vault-knowledge-lint-report.md; tests/fleet-vault-knowledge-format.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-interventions-eliminated",
@@ -356,10 +355,9 @@
     {
       "id": "sr-execution-is-review",
       "source": "global-standing-rules.md: Execution IS the review \u2014 run it, log the bugs, fix, run again (Nish, 2026-08-25 \u2014 non-negotiable)",
-      "mechanism": "Worker prompt inner-loop; nothing detects a worker that skipped the run",
-      "proof": "Nishfleet/fleet-ops#537",
-      "status": "queued(#537)",
-      "queued_since": "2026-08-27"
+      "mechanism": "PR-body receipt gate plus heartbeat canary: every worker PR must carry Verification: run-cues or a run-proof: line; the canary scans recent nishfleet-worker PRs on enrolled repos and auto-files a skip; the watch fails loud when gh/python/helper is broken. The inner loop stays agentic (no bin/exec-review dispatcher).",
+      "proof": "bin/fleet-exec-review-canary; lib/exec-review-receipt.py; tests/fleet-exec-review-canary.test.sh; prompts/worker.md; fleet-heartbeat-tier1 block 26; fleet-ops#537",
+      "status": "enforced"
     },
     {
       "id": "sr-never-vibes",
@@ -372,10 +370,9 @@
     {
       "id": "sr-check-other-agents",
       "source": "global-standing-rules.md: Check for other agents before touching shared files (2026-08-26)",
-      "mechanism": "Worktrees isolate issue workers; no fleet-wide lock on shared non-git files",
-      "proof": "Nishfleet/fleet-ops#539",
-      "status": "queued(#539)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Claude PreToolUse guard warns when an open PR touches a shared control-plane file; fleet-claim conflicts checks live claim branches and open PRs. Warn-only, never block.",
+      "proof": "lib/guard_shared_file_collision.py; bin/guard_shared_file_collision; bin/guard_shared_file_collision_hook.py; tests/guard-shared-file-collision.test.sh; bin/fleet-claim; tests/fleet-claim.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-memory-oom",
@@ -461,10 +458,9 @@
     {
       "id": "led-work-supply-24h",
       "source": "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)",
-      "mechanism": "Scout buffer + auditor panel are specified; 24h/12h drain trigger is not a live canary",
-      "proof": "Nishfleet/fleet-ops#540",
-      "status": "queued(#540)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat work-supply canary: remaining hours = ceil(agent-ready / measured drain) over a 6h close window; pi-scout ExecCondition rests at >=24h; low-water-mark go-hams at <12h; workers stay ungated; senior panel stays 2-of-3. Idle scout under 12h fail-loud and auto-files.",
+      "proof": "bin/fleet-work-supply-canary; lib/work-supply.sh; tests/fleet-work-supply-canary.test.sh; systemd/pi-scout@.service ExecCondition; fleet-heartbeat-tier1 block 27; fleet-ops#540",
+      "status": "enforced"
     },
     {
       "id": "led-fleet-ops-enrolment",
@@ -570,7 +566,7 @@
       "id": "led-tailscale",
       "source": "decisions-ledger.md: 2026-08-24 | Tailscale",
       "mechanism": "Heartbeat canary reads the compiled Tailscale PacketFilter (`tailscale debug netmap`) and fails loud if this VPS is a src toward the Mac. Live grants already lockdown; pasting acl-draft.json would loosen. Auto-files, deduped by marker.",
-      "proof": "bin/fleet-tailscale-acl-canary; lib/tailscale-acl-lockdown.py; tests/fleet-tailscale-acl-canary.test.sh; fleet-heartbeat-tier1 block 25; fleet-ops#544",
+      "proof": "bin/fleet-tailscale-acl-canary; lib/tailscale-acl-lockdown.py; tests/fleet-tailscale-acl-canary.test.sh; fleet-heartbeat-tier1 block 28; fleet-ops#544",
       "status": "enforced"
     },
     {
@@ -650,10 +646,9 @@
     {
       "id": "led-straitly-ds4-pro-workers",
       "source": "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers",
-      "mechanism": "straitly ds4-pro approved for worker use per dated decision; metered spend for auditing approved; seat routing updated",
-      "proof": "Nishfleet/fleet-ops#546",
-      "status": "queued(#546)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat straitly ds4-pro canary: providers.straitly must be class=metered with cap<=2; only deepseek/deepseek-v4-pro may be allowlisted on straitly with cap<=2; gpt-5.6-sol and qwen/qwen3.8-max are not approved; the ds4-pro slug must not be double-wired on any other provider; the slug must be present in models.json and `pi --list-models`; an active straitly/ds4-pro worker auto-files a meter-check ticket until a dated meter-check evidence file is written within minutes of the worker's started_at",
+      "proof": "bin/fleet-straitly-ds4-pro-canary; tests/fleet-straitly-ds4-pro-canary.test.sh; fleet-heartbeat-tier1 block 25; fleet-ops#546",
+      "status": "enforced"
     },
     {
       "id": "led-top-gear-everywhere",

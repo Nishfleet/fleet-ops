@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# fleet-straitly-ds4-pro-canary — straitly ds4-pro worker-rotation gate (fleet-ops#546).
+#
+# Ledger 2026-08-27: "ds4 pro from straitly is fire" — metered worker-rotation
+# use APPROVED, cap=2, AIMD only with evidence; Sol stays orchestration-only;
+# qwen3.8-max not approved; meter check within minutes of first draws.
+#
+# Fail-loud gates (exit 1):
+#   1. straitly is missing from seat-caps.
+#   2. straitly class is not "metered".
+#   3. straitly provider cap or deepseek/deepseek-v4-pro model cap > 2.
+#   4. straitly allowlists any model other than deepseek/deepseek-v4-pro.
+#   5. deepseek/deepseek-v4-pro is allowlisted under any other provider.
+#   6. The allowlisted slug is missing from models.json.
+#   7. The allowlisted slug is missing from `pi --list-models` (unproven seat).
+#   8. watcher broken (pi missing / list-models failed and no catalog fixture).
+#
+# Observe-to-open (exit 0, auto-files one issue):
+#   - An active straitly/deepseek-v4-pro worker exists and the dated meter-check
+#     evidence file is missing or stale relative to the worker's started_at.
+#     A human checks the straitly meter and writes the evidence file; the
+#     canary stays quiet once it is recent.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 25.
+#
+# Environment seams (tests):
+#   SEAT_CAPS_JSON
+#   FLEET_STRAITLY_DS4PRO_MODELS_JSON  models.json fixture
+#   FLEET_STRAITLY_DS4PRO_CATALOG      pi --list-models stdout fixture
+#   FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS active-seats dir override
+#   FLEET_STRAITLY_DS4PRO_METER        meter-check evidence file override
+#   FLEET_STRAITLY_DS4PRO_METER_WINDOW minutes (default 60)
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_STRAITLY_DS4PRO_REPO         default Nishfleet/fleet-ops
+#   FLEET_STRAITLY_DS4PRO_FILE         1 (default) file issues; 0 skip
+#   GH                                 gh binary (tests stub)
+#   PI                                 pi binary (tests stub)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+PI="${PI:-pi}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+MODELS_JSON="${FLEET_STRAITLY_DS4PRO_MODELS_JSON:-${HOME}/.pi/agent/models.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_STRAITLY_DS4PRO_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_STRAITLY_DS4PRO_FILE:-1}"
+
+ACTIVE_SEATS_DIR="${FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS:-${HOME}/.local/state/pi-packet/active-seats}"
+METER_FILE="${FLEET_STRAITLY_DS4PRO_METER:-${HOME}/.local/state/pi-packet/straitly-meter-check.json}"
+METER_WINDOW_MIN="${FLEET_STRAITLY_DS4PRO_METER_WINDOW:-60}"
+
+APPROVED_MODEL="deepseek/deepseek-v4-pro"
+
+log() {
+    printf '[%s] [fleet-straitly-ds4-pro-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local kind="$1" slug="$2" title="$3" body="$4"
+    local marker="straitly-ds4pro-canary: ${kind} ${slug}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_STRAITLY_DS4PRO_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+emit_straitly_catalog_ids() {
+    local out
+    if [[ -n "${FLEET_STRAITLY_DS4PRO_CATALOG:-}" ]]; then
+        if [[ ! -f "$FLEET_STRAITLY_DS4PRO_CATALOG" ]]; then
+            log "WARN: FLEET_STRAITLY_DS4PRO_CATALOG missing: $FLEET_STRAITLY_DS4PRO_CATALOG"
+            return 1
+        fi
+        out=$(cat "$FLEET_STRAITLY_DS4PRO_CATALOG")
+    else
+        if ! command -v "$PI" >/dev/null 2>&1; then
+            log "FAIL: pi binary not found ($PI)"
+            return 1
+        fi
+        if ! out=$("$PI" --list-models 2>/dev/null); then
+            log "FAIL: pi --list-models exited non-zero"
+            return 1
+        fi
+    fi
+    printf '%s\n' "$out" \
+        | grep -v '^EXTLOAD-OK' \
+        | grep -v '^provider ' \
+        | awk '$1 == "straitly" { print $2 }'
+}
+
+# Return the earliest started_at ISO among active straitly/deepseek-v4-pro workers.
+first_draw_started_at() {
+    local f started earliest=""
+    if [[ ! -d "$ACTIVE_SEATS_DIR" ]]; then
+        return 0
+    fi
+    for f in "$ACTIVE_SEATS_DIR"/*.json; do
+        [[ -f "$f" ]] || continue
+        local p m
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        if [[ "$p" == "straitly" && "$m" == "$APPROVED_MODEL" ]]; then
+            started=$(jq -r '.started_at // ""' "$f" 2>/dev/null || true)
+            [[ -n "$started" ]] || continue
+            if [[ -z "$earliest" ]] || [[ "$started" < "$earliest" ]]; then
+                earliest="$started"
+            fi
+        fi
+    done
+    printf '%s\n' "$earliest"
+}
+
+# Return 0 if the meter-check evidence file is present and its checked_at is
+# within METER_WINDOW_MIN minutes of the given start timestamp.
+meter_check_recent_for() {
+    local start="$1"
+    if [[ ! -f "$METER_FILE" ]]; then
+        return 1
+    fi
+    if ! jq -e . "$METER_FILE" >/dev/null 2>&1; then
+        return 1
+    fi
+    local checked
+    checked=$(jq -r '.checked_at // ""' "$METER_FILE" 2>/dev/null || true)
+    [[ -n "$checked" ]] || return 1
+    local start_s checked_s diff
+    start_s=$(date -u -d "$start" +%s 2>/dev/null || true)
+    checked_s=$(date -u -d "$checked" +%s 2>/dev/null || true)
+    [[ -n "$start_s" && -n "$checked_s" ]] || return 1
+    if (( checked_s < start_s )); then
+        return 1
+    fi
+    diff=$(( (checked_s - start_s) / 60 ))
+    (( diff <= METER_WINDOW_MIN ))
+}
+
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "STRAITLY-DS4PRO-WATCHER-BROKEN" "seat-caps missing: $SEAT_CAPS_JSON"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "STRAITLY-DS4PRO-WATCHER-BROKEN" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+violations=0
+
+# 1. straitly must be present in seat-caps.
+if ! jq -e '.providers.straitly != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "STRAITLY-DS4PRO-VIOLATION" "straitly provider is missing from seat-caps.json"
+    file_finding "missing-provider" "straitly" \
+        "straitly ds4-pro missing from seat-caps" \
+        "The 2026-08-27 ledger line approves straitly deepseek-v4-pro for worker rotation, but config/seat-caps.json has no providers.straitly row. Add it as a metered provider with model deepseek/deepseek-v4-pro and cap=2."
+    violations=$((violations + 1))
+else
+    # 2. class must be metered.
+    class=$(jq -r '.providers.straitly.class // "free"' "$SEAT_CAPS_JSON")
+    if [[ "$class" != "metered" ]]; then
+        loud "STRAITLY-DS4PRO-VIOLATION" "straitly class is '$class', must be 'metered'"
+        file_finding "class-mismatch" "straitly" \
+            "straitly class is $class, must be metered" \
+            "config/seat-caps.json providers.straitly.class is \`${class}\`. The 2026-08-27 ledger line explicitly approves metered worker rotation. Change class to \`metered\`."
+        violations=$((violations + 1))
+    fi
+
+    # 3. provider cap and model cap must not exceed 2 (AIMD only with evidence).
+    provider_cap=$(jq -r '
+        .providers.straitly as $v
+        | if ($v|type)=="number" then $v else ($v.cap // 0) end' "$SEAT_CAPS_JSON")
+    if [[ "$provider_cap" =~ ^[0-9]+$ ]] && (( provider_cap > 2 )); then
+        loud "STRAITLY-DS4PRO-VIOLATION" "straitly provider cap=$provider_cap, must be <= 2 (AIMD only with evidence)"
+        file_finding "provider-cap" "straitly" \
+            "straitly provider cap $provider_cap exceeds allowed 2" \
+            "config/seat-caps.json providers.straitly.cap is \`${provider_cap}\`. The 2026-08-27 ledger line sets cap=2 and says AIMD raises only with evidence. Lower the cap to 2."
+        violations=$((violations + 1))
+    fi
+
+    model_cap=$(jq -r --arg m "$APPROVED_MODEL" '
+        .providers.straitly.models // {} | .[$m] // 0' "$SEAT_CAPS_JSON")
+    if [[ "$model_cap" =~ ^[0-9]+$ ]] && (( model_cap > 2 )); then
+        loud "STRAITLY-DS4PRO-VIOLATION" "straitly/$APPROVED_MODEL model cap=$model_cap, must be <= 2 (AIMD only with evidence)"
+        file_finding "model-cap" "$APPROVED_MODEL" \
+            "straitly/$APPROVED_MODEL cap $model_cap exceeds allowed 2" \
+            "config/seat-caps.json providers.straitly.models[\"$APPROVED_MODEL\"] is \`${model_cap}\`. The 2026-08-27 ledger line sets cap=2 and says AIMD raises only with evidence. Lower the model cap to 2."
+        violations=$((violations + 1))
+    fi
+
+    # 4. straitly may only allowlist deepseek/deepseek-v4-pro.
+    mapfile -t straitly_models < <(jq -r --arg m "$APPROVED_MODEL" '
+        (.providers.straitly.models // {}) | keys[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ ${#straitly_models[@]} -eq 0 ]]; then
+        loud "STRAITLY-DS4PRO-VIOLATION" "straitly has an empty model allowlist"
+        file_finding "empty-models" "straitly" \
+            "straitly has an empty model allowlist" \
+            "config/seat-caps.json providers.straitly.models is missing or empty. The 2026-08-27 ledger line approves only deepseek/deepseek-v4-pro for worker rotation. Add that slug with cap=2."
+        violations=$((violations + 1))
+    else
+        for m in "${straitly_models[@]}"; do
+            [[ -n "$m" ]] || continue
+            if [[ "$m" != "$APPROVED_MODEL" ]]; then
+                loud "STRAITLY-DS4PRO-VIOLATION" "straitly allowlists unapproved model: $m"
+                file_finding "unapproved-model" "$m" \
+                    "straitly allowlists unapproved model $m" \
+                    "config/seat-caps.json providers.straitly.models includes \`${m}\`. The 2026-08-27 ledger line approves only deepseek/deepseek-v4-pro for worker rotation and explicitly says Sol stays orchestration-only and qwen3.8-max is not approved. Remove $m from straitly."
+                violations=$((violations + 1))
+            fi
+        done
+    fi
+fi
+
+# 5. deepseek/deepseek-v4-pro must not be allowlisted on any other provider.
+if (( violations == 0 )) || jq -e '.providers.straitly != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    while IFS=$'\t' read -r p m; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        if [[ "$p" != "straitly" && "$m" == "$APPROVED_MODEL" ]]; then
+            loud "STRAITLY-DS4PRO-VIOLATION" "double-wire: $APPROVED_MODEL allowlisted on $p"
+            file_finding "double-wire" "$p" \
+                "double-wire: $APPROVED_MODEL allowlisted on $p" \
+                "config/seat-caps.json providers.${p}.models includes \`${APPROVED_MODEL}\`. The 2026-08-27 ledger line approves this slug ONLY on straitly. The never-double-wire rule for metered seats requires removing it from $p."
+            violations=$((violations + 1))
+        fi
+    done < <(jq -r --arg m "$APPROVED_MODEL" '
+        .providers | to_entries[] | .key as $p | (.value.models // {}) | keys[] | [$p, .] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+fi
+
+# 6. The allowlisted slug must exist in models.json.
+if jq -e --arg m "$APPROVED_MODEL" '.providers.straitly.models // [] | map(select(.id == $m)) | length > 0' "$MODELS_JSON" >/dev/null 2>&1; then
+    log "models.json: $APPROVED_MODEL present under providers.straitly"
+else
+    # Only fail loud if the slug is allowlisted; otherwise the missing models.json
+    # entry is irrelevant. If seat-caps is already broken, the earlier violation
+    # covers it, but this is an independent fail-closed check.
+    allowlisted=$(jq -r --arg m "$APPROVED_MODEL" '
+        .providers.straitly.models // {} | has($m)' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ "$allowlisted" == "true" ]]; then
+        loud "STRAITLY-DS4PRO-VIOLATION" "$APPROVED_MODEL allowlisted but missing from models.json providers.straitly.models"
+        file_finding "models-json-missing" "$APPROVED_MODEL" \
+            "$APPROVED_MODEL missing from models.json" \
+            "seat-caps allowlists \`${APPROVED_MODEL}\` on straitly, but ~/.pi/agent/models.json providers.straitly.models has no matching id. Custom-provider models need a models.json entry before pi can route. Add the entry. fleet-ops#546."
+        violations=$((violations + 1))
+    fi
+fi
+
+# 7. The allowlisted slug must be present in `pi --list-models` (proven live).
+catalog_rc=0
+catalog_out=""
+if ! catalog_out=$(emit_straitly_catalog_ids); then
+    catalog_rc=1
+fi
+
+if [[ "$catalog_rc" -ne 0 ]]; then
+    loud "STRAITLY-DS4PRO-WATCHER-BROKEN" "pi --list-models unavailable; cannot verify straitly catalog"
+    if (( violations > 0 )); then
+        log "FAIL: $violations straitly ds4-pro violation(s) and the catalog watcher is broken"
+    fi
+    exit 1
+fi
+
+declare -A catalog_set=()
+while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    catalog_set["$slug"]=1
+done <<< "$catalog_out"
+
+if ! jq -e '.providers.straitly != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    # Missing provider already counted; the catalog check adds nothing.
+    true
+else
+    if [[ -n "${catalog_set[$APPROVED_MODEL]:-}" ]]; then
+        log "catalog: $APPROVED_MODEL listed for straitly"
+    else
+        # Only fail if it is allowlisted (the missing-provider path would hit otherwise).
+        allowlisted=$(jq -r --arg m "$APPROVED_MODEL" '
+            .providers.straitly.models // {} | has($m)' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$allowlisted" == "true" ]]; then
+            loud "STRAITLY-DS4PRO-VIOLATION" "allowlisted $APPROVED_MODEL not in Pi's straitly catalog"
+            file_finding "unproven-wired" "$APPROVED_MODEL" \
+                "straitly $APPROVED_MODEL allowlisted but not in Pi catalog" \
+                "config/seat-caps.json allowlists \`${APPROVED_MODEL}\` on straitly, but \`pi --list-models\` does not list it. Either the slug is wrong, the provider is unhealthy, or the catalog changed. Do not route a guessed slug. fleet-ops#546."
+            violations=$((violations + 1))
+        fi
+    fi
+fi
+
+if (( violations > 0 )); then
+    log "FAIL: $violations straitly ds4-pro violation(s)"
+    exit 1
+fi
+
+# 8. Meter-check observe-to-open: an active straitly/ds4-pro worker must have
+# a recent, dated meter-check evidence file.
+first_draw=$(first_draw_started_at)
+if [[ -n "$first_draw" ]]; then
+    if meter_check_recent_for "$first_draw"; then
+        log "meter-check: evidence file is recent for first draw at $first_draw"
+    else
+        loud "STRAITLY-DS4PRO-METER-CHECK-NEEDED" "active straitly/$APPROVED_MODEL worker started at $first_draw; meter-check evidence file missing or stale"
+        file_finding "meter-check" "$APPROVED_MODEL" \
+            "straitly $APPROVED_MODEL first draw: check the meter" \
+            "A straitly/$APPROVED_MODEL worker is active (started ${first_draw}). The 2026-08-27 ledger line requires checking the straitly meter within minutes of first draws. Check the live balance/cost on the straitly dashboard or API, then write \`${METER_FILE}\` with a JSON object containing \`checked_at\` (ISO 8601) and \`balance_usd\`. This canary will stop filing once the evidence file has a \`checked_at\` within ${METER_WINDOW_MIN} minutes of the worker's started_at. fleet-ops#546."
+        # Observe-to-open: keep the heartbeat tick green while the ticket is open.
+    fi
+else
+    log "no active straitly/$APPROVED_MODEL worker; meter-check gate is quiet"
+fi
+
+loud "STRAITLY-DS4PRO-OK" "straitly ds4-pro worker rotation is gated: metered, cap<=2, only $APPROVED_MODEL, no double-wire, catalog+models.json proven"
+exit 0

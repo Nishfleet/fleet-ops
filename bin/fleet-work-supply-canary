@@ -1,0 +1,395 @@
+#!/usr/bin/env bash
+# fleet-work-supply-canary — 24h/12h drain trigger (fleet-ops#540).
+#
+# Ledger 2026-08-26: scouts run on a 24-hour work buffer; rest when the
+# ready queue holds >= 24 hours of work at the measured drain rate; go
+# ham when it holds < 12 hours. Workers stay at max always. Quality finds
+# still pass the senior auditor panel (2-of-3) before agent-ready.
+#
+# STEP 0: ran `gh issue list --help`. It lists issues and can emit
+# `--json number,closedAt` with `--state closed`, `--label`, `--limit`
+# (default 30), and `--search`. It does not compute remaining hours, does
+# not rest/go-ham a scout, and does not fail-loud when scouts sit idle
+# under 12h of work. `fleet-heartbeat-low-water-mark` triggers on
+# ready < lanes, not hours. `gh-velocity flow throughput` is a 30-day
+# report extension, not installed, and does not start pi-scout@.
+#
+# Subcommands:
+#   (default) / canary   heartbeat canary (fail-loud)
+#   gate <repo>          systemd ExecCondition: 0=run, 1=rest, 255=error
+#   hours <repo>         JSON snapshot of ready/drain/hours/action
+#   --help               usage
+#
+# Fail-loud gates (exit 1):
+#   1. ExecCondition is still a hardcoded issue count, not this gate.
+#   2. scout.md still rests on `ready_count >= 12`.
+#   3. pi-issue@.service gates workers on agent-ready count.
+#   4. auditor panel (prompts/auditor.md, 2-of-3 gate) is missing.
+#   5. gh watch broken (list failed, jq missing).
+#   6. Live: hours < 12 and the scout has been idle longer than
+#      FLEET_WORK_SUPPLY_MAX_IDLE_S (default 9000 = 2.5h).
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 27.
+#
+# Environment seams (tests):
+#   FLEET_WORK_SUPPLY_READY         override ready count
+#   FLEET_WORK_SUPPLY_CLOSED_JSON   closed-issue JSON fixture
+#   FLEET_WORK_SUPPLY_NOW_EPOCH     clock (default date -u +%s)
+#   FLEET_WORK_SUPPLY_HOURS         skip measurement; use this hours value
+#   FLEET_WORK_SUPPLY_WINDOW_H      drain window hours (default 6)
+#   FLEET_WORK_SUPPLY_GOHAM_H       default 12
+#   FLEET_WORK_SUPPLY_REST_H        default 24
+#   FLEET_WORK_SUPPLY_MAX_IDLE_S    default 9000
+#   FLEET_WORK_SUPPLY_SCOUT_STATE   active|activating|inactive fixture
+#   FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S  idle age fixture
+#   FLEET_INTAKE_REPOS_JSON
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_WORK_SUPPLY_REPO          default Nishfleet/fleet-ops
+#   FLEET_WORK_SUPPLY_FILE          1 (default) file issues; 0 skip
+#   GH SYSTEMCTL
+#   FLEET_OPS_REPO
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+WS_LIB="${FLEET_WORK_SUPPLY_LIB:-$FLEET_OPS_REPO/lib/work-supply.sh}"
+if [[ ! -f "$WS_LIB" ]]; then
+    WS_LIB="${HOME}/.local/lib/pi-packet/work-supply.sh"
+fi
+if [[ ! -f "$WS_LIB" ]]; then
+    echo "fleet-work-supply-canary: work-supply.sh missing" >&2
+    exit 1
+fi
+# shellcheck source=../lib/work-supply.sh source-path=SCRIPTDIR
+source "$WS_LIB"
+
+INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_WORK_SUPPLY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_WORK_SUPPLY_FILE:-1}"
+MAX_IDLE_S="${FLEET_WORK_SUPPLY_MAX_IDLE_S:-9000}"
+
+usage() {
+    cat <<'EOF'
+usage: fleet-work-supply-canary [canary]
+       fleet-work-supply-canary gate <repo>
+       fleet-work-supply-canary hours <repo>
+       fleet-work-supply-canary --help
+
+24h/12h work-supply drain trigger (fleet-ops#540).
+  canary  heartbeat fail-loud watch (default)
+  gate    systemd ExecCondition: exit 0 run, 1 rest, 255 error
+  hours   JSON snapshot of ready, drain, hours, action
+EOF
+}
+
+log() {
+    printf '[%s] [fleet-work-supply-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local kind="$1" slug="$2" title="$3" body="$4"
+    local marker="work-supply-canary: ${kind} ${slug}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_WORK_SUPPLY_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select((.body // "") | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+is_uint() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+valid_repo() {
+    case "${1:-}" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Fetch ready count for Nishfleet/<short>. Empty string on gh failure.
+fetch_ready() {
+    local short="$1" n
+    if [[ -n "${FLEET_WORK_SUPPLY_READY:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_READY"
+        return 0
+    fi
+    n=$("$GH" issue list -R "Nishfleet/${short}" -l agent-ready --state open \
+        --json number --limit 200 --jq 'length' 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+# Fetch closed agent-ready JSON. Empty on failure.
+fetch_closed_json() {
+    local short="$1"
+    if [[ -n "${FLEET_WORK_SUPPLY_CLOSED_JSON:-}" ]]; then
+        if [[ -f "$FLEET_WORK_SUPPLY_CLOSED_JSON" ]]; then
+            cat "$FLEET_WORK_SUPPLY_CLOSED_JSON"
+            return 0
+        fi
+        log "WARN: FLEET_WORK_SUPPLY_CLOSED_JSON missing: $FLEET_WORK_SUPPLY_CLOSED_JSON"
+        return 1
+    fi
+    "$GH" issue list -R "Nishfleet/${short}" -l agent-ready --state closed \
+        --limit 100 --search 'sort:updated-desc' \
+        --json number,closedAt 2>/dev/null || return 1
+}
+
+snapshot() {
+    local short="$1"
+    local ready closed_json closed hours action now_s window
+    window="${WORK_SUPPLY_WINDOW_H}"
+    if [[ -n "${FLEET_WORK_SUPPLY_HOURS:-}" ]]; then
+        hours="$FLEET_WORK_SUPPLY_HOURS"
+        is_uint "$hours" || return 1
+        ready=$(fetch_ready "$short")
+        is_uint "$ready" || ready=0
+        closed=0
+        action=$(work_supply_action "$hours")
+        jq -n --arg repo "$short" --argjson ready "$ready" --argjson closed "$closed" \
+            --argjson window "$window" --argjson hours "$hours" --arg action "$action" \
+            '{repo:$repo,ready:$ready,closed_in_window:$closed,window_h:$window,hours_of_work:$hours,action:$action,hours_overridden:true}'
+        return 0
+    fi
+    ready=$(fetch_ready "$short")
+    is_uint "$ready" || return 1
+    closed_json=$(fetch_closed_json "$short") || return 1
+    now_s="${FLEET_WORK_SUPPLY_NOW_EPOCH:-$(date -u +%s)}"
+    closed=$(work_supply_closed_in_window "$closed_json" "$window" "$now_s")
+    hours=$(work_supply_hours "$ready" "$closed" "$window")
+    action=$(work_supply_action "$hours")
+    jq -n --arg repo "$short" --argjson ready "$ready" --argjson closed "$closed" \
+        --argjson window "$window" --argjson hours "$hours" --arg action "$action" \
+        '{repo:$repo,ready:$ready,closed_in_window:$closed,window_h:$window,hours_of_work:$hours,action:$action,hours_overridden:false}'
+}
+
+cmd_hours() {
+    local short="$1" out
+    valid_repo "$short" || { log "hours: invalid repo '$short'"; return 1; }
+    out=$(snapshot "$short") || { log "hours: measurement failed for $short"; return 1; }
+    printf '%s\n' "$out"
+}
+
+# ExecCondition: 0 run (hours < 24), 1 skip rest, 255 error.
+cmd_gate() {
+    local short="$1" snap hours action
+    valid_repo "$short" || { log "gate: invalid repo '$short'"; return 255; }
+    snap=$(snapshot "$short") || { log "gate: gh/measurement failed for $short"; return 255; }
+    hours=$(jq -r '.hours_of_work' <<<"$snap")
+    action=$(jq -r '.action' <<<"$snap")
+    log "gate: $short hours=$hours action=$action"
+    if [[ "$action" == "rest" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+scout_state() {
+    local short="$1" state
+    if [[ -n "${FLEET_WORK_SUPPLY_SCOUT_STATE:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_SCOUT_STATE"
+        return 0
+    fi
+    state=$("$SYSTEMCTL" --user is-active "pi-scout@${short}.service" 2>/dev/null || echo inactive)
+    printf '%s\n' "$state"
+}
+
+last_trigger_age_s() {
+    local short="$1" raw s now
+    if [[ -n "${FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S"
+        return 0
+    fi
+    raw=$("$SYSTEMCTL" --user show "pi-scout@${short}.timer" -p LastTriggerUSec --value 2>/dev/null || true)
+    if [[ -z "$raw" || "$raw" == "0" || "$raw" == "n/a" ]]; then
+        printf '999999\n'
+        return 0
+    fi
+    s=$(date -u -d "$raw" +%s 2>/dev/null || echo "")
+    is_uint "$s" || { printf '999999\n'; return 0; }
+    now=$(date -u +%s)
+    printf '%s\n' $(( now - s ))
+}
+
+pick_existing() {
+    local f
+    for f in "$@"; do
+        if [[ -n "$f" && -f "$f" ]]; then
+            printf '%s\n' "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
+cmd_canary() {
+    local unit prompt issue_unit gates auditor violations=0
+    unit=$(pick_existing \
+        "$FLEET_OPS_REPO/systemd/pi-scout@.service" \
+        "$HOME/.config/systemd/user/pi-scout@.service") || unit=""
+    prompt=$(pick_existing \
+        "$FLEET_OPS_REPO/prompts/scout.md" \
+        "$HOME/.pi/agent/prompts/scout.md") || prompt=""
+    issue_unit=$(pick_existing \
+        "$FLEET_OPS_REPO/systemd/pi-issue@.service" \
+        "$HOME/.config/systemd/user/pi-issue@.service") || issue_unit=""
+    gates=$(pick_existing \
+        "$FLEET_OPS_REPO/config/role-quality-gates.json" \
+        "$HOME/.local/state/pi-packet/role-quality-gates.json") || gates=""
+    auditor=$(pick_existing \
+        "$FLEET_OPS_REPO/prompts/auditor.md" \
+        "$HOME/.pi/agent/prompts/auditor.md") || auditor=""
+    if [[ ! -f "$INTAKE_JSON" ]]; then
+        INTAKE_JSON=$(pick_existing \
+            "$FLEET_OPS_REPO/config/intake-repos.json" \
+            "$HOME/.local/state/pi-packet/intake-repos.json" \
+            "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json") || INTAKE_JSON=""
+    fi
+
+    if [[ ! -f "$unit" ]] || ! grep -q 'fleet-work-supply-canary' "$unit" || ! grep -q 'gate %i' "$unit"; then
+        loud "WORK-SUPPLY-VIOLATION" "pi-scout@.service ExecCondition is not the hours gate"
+        file_finding "execcondition" "pi-scout" \
+            "scout ExecCondition is not the 24h/12h hours gate" \
+            "systemd/pi-scout@.service must call \`fleet-work-supply-canary gate %i\` so rest is hours-of-work at the measured drain rate, not a hardcoded issue count. fleet-ops#540."
+        violations=$((violations + 1))
+    fi
+
+    if [[ -f "$prompt" ]] && grep -qE 'ready_count >= 12' "$prompt"; then
+        loud "WORK-SUPPLY-VIOLATION" "prompts/scout.md still rests on ready_count >= 12"
+        file_finding "scout-prompt" "scout.md" \
+            "scout prompt still rests on a 12-issue count" \
+            "prompts/scout.md still stops at \`ready_count >= 12\`. The 2026-08-26 ledger rule is 24h rest / 12h go-ham at the measured drain rate. fleet-ops#540."
+        violations=$((violations + 1))
+    fi
+
+    if [[ -f "$issue_unit" ]] && grep -qE 'ExecCondition=.*agent-ready' "$issue_unit"; then
+        loud "WORK-SUPPLY-VIOLATION" "pi-issue@.service gates workers on agent-ready count; workers must stay at max"
+        file_finding "workers-gated" "pi-issue" \
+            "workers are gated on the ready buffer; they must stay at max" \
+            "systemd/pi-issue@.service has an ExecCondition on agent-ready. The 2026-08-26 work-supply rule says workers stay at max always; only scouts rest. fleet-ops#540."
+        violations=$((violations + 1))
+    fi
+
+    if [[ ! -f "$auditor" ]]; then
+        loud "WORK-SUPPLY-VIOLATION" "prompts/auditor.md missing"
+        file_finding "auditor-missing" "auditor.md" \
+            "senior auditor panel prompt is missing" \
+            "The 2026-08-26 work-supply rule requires quality finds to pass the senior auditor panel. prompts/auditor.md is missing. fleet-ops#540."
+        violations=$((violations + 1))
+    fi
+
+    if [[ ! -f "$gates" ]] || ! jq -e '.roles[] | select(.id=="scout") | .gate | test("2-of-3")' "$gates" >/dev/null 2>&1; then
+        loud "WORK-SUPPLY-VIOLATION" "scout role gate is not the 2-of-3 senior panel"
+        file_finding "auditor-gate" "role-quality-gates" \
+            "scout admission is not the 2-of-3 senior panel" \
+            "config/role-quality-gates.json scout.gate must name the 2-of-3 senior admission panel. fleet-ops#540."
+        violations=$((violations + 1))
+    fi
+
+    if [[ ! -f "$INTAKE_JSON" ]] || ! jq -e . "$INTAKE_JSON" >/dev/null 2>&1; then
+        loud "WORK-SUPPLY-WATCHER-BROKEN" "intake-repos.json missing or unparseable: $INTAKE_JSON"
+        exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        loud "WORK-SUPPLY-WATCHER-BROKEN" "jq missing"
+        exit 1
+    fi
+
+    local repo short snap hours action state age
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        short="${repo##*/}"
+        snap=$(snapshot "$short") || {
+            loud "WORK-SUPPLY-WATCHER-BROKEN" "gh measurement failed for $repo"
+            violations=$((violations + 1))
+            continue
+        }
+        hours=$(jq -r '.hours_of_work' <<<"$snap")
+        action=$(jq -r '.action' <<<"$snap")
+        log "$repo hours=$hours action=$action ready=$(jq -r '.ready' <<<"$snap") closed=$(jq -r '.closed_in_window' <<<"$snap")"
+        if [[ "$action" != "go-ham" ]]; then
+            continue
+        fi
+        state=$(scout_state "$short")
+        case "$state" in
+            active|activating) log "$repo scout $state — go-ham already running"; continue ;;
+        esac
+        age=$(last_trigger_age_s "$short")
+        is_uint "$age" || age=999999
+        if [ "$age" -gt "$MAX_IDLE_S" ]; then
+            loud "WORK-SUPPLY-GO-HAM" "repo=$repo hours=$hours action=go-ham scout idle ${age}s > ${MAX_IDLE_S}s"
+            file_finding "go-ham-idle" "$short" \
+                "scouts idle while ready work is under 12 hours" \
+                "Nishfleet/${short} has ${hours} hours of agent-ready work at the measured drain rate (<12h go-ham). pi-scout@${short} is ${state} and last timer trigger was ${age}s ago (max idle ${MAX_IDLE_S}s). Start the scout. fleet-ops#540."
+            violations=$((violations + 1))
+        fi
+    done < <(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+
+    if (( violations > 0 )); then
+        log "FAIL: $violations work-supply violation(s)"
+        exit 1
+    fi
+    loud "WORK-SUPPLY-OK" "24h rest / 12h go-ham drain trigger is live; workers ungated; auditor panel present"
+    exit 0
+}
+
+cmd="${1:-canary}"
+case "$cmd" in
+    -h|--help) usage; exit 0 ;;
+    canary) cmd_canary ;;
+    gate)
+        [[ $# -ge 2 ]] || { usage >&2; exit 255; }
+        cmd_gate "$2"
+        exit $?
+        ;;
+    hours)
+        [[ $# -ge 2 ]] || { usage >&2; exit 1; }
+        cmd_hours "$2"
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

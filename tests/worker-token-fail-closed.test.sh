@@ -142,3 +142,11 @@ ok "manifest permissions exactly match the audit cross-check"
 bash "$here/attest-identity-gate.test.sh"
 bash "$here/worker-app-canary.test.sh"
 bash "$here/pi-issue-run-app-identity.test.sh"
+# fleet-ops#568: the failure-reason lock must keep reaching the generic
+# `pi exited` path after the App-identity gate. Worker tokens cannot add a
+# P14 verify-command line, so this already-listed host runs it.
+bash "$here/pi-issue-run-failure-reason.test.sh"
+# fleet-ops#567: scratch-HOME App identity class lock + the tried-reset
+# behavioural test, now green. Same P14-host constraint as above.
+bash "$here/pi-issue-run-scratch-home-identity.test.sh"
+bash "$here/pi-issue-run-tried-reset.test.sh"

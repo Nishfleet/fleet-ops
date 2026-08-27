@@ -93,6 +93,8 @@ run_bin() {
   local file_issues="${1:-0}"
   set +e
   FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+  FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+  FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
   FLEET_FINDINGS_QUEUED_LIB="$lib" \
   FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
   FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
@@ -149,6 +151,8 @@ rm -f "$sessions/quoted.jsonl"
 write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
 set +e
 FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
 FLEET_FINDINGS_QUEUED_LIB="$lib" \
 FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
 FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
@@ -168,6 +172,8 @@ ok "auto-file creates an issue with the signal key"
 
 set +e
 FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
 FLEET_FINDINGS_QUEUED_LIB="$lib" \
 FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
 FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
@@ -188,19 +194,177 @@ ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/ask-nofile.jsonl"
 
 # --- 7. missing helper fails loud -------------------------------------------
+# Harden the drill (fleet-ops#612): install a WORKING fake helper at the
+# fallback dest under a scratch HOME so the drill proves the guard (env-var
+# pin wins over the installed copy) regardless of whether the real machine
+# already has ~/.local/lib/pi-packet/findings-queued.py. Without the guard
+# the bin would fall back to the fake helper, scan clean, and exit 0 — the
+# drill would fail. With the guard the pin wins, LIB stays missing, exit 1.
+fake_home="$scratch/home"
+mkdir -p "$fake_home/.local/lib/pi-packet"
+cat >"$fake_home/.local/lib/pi-packet/findings-queued.py" <<'FAKE_HELPER'
+#!/usr/bin/env python3
+import argparse, json, sys
+p = argparse.ArgumentParser()
+sub = p.add_subparsers(dest="cmd", required=True)
+s = sub.add_parser("scan")
+s.add_argument("--root", required=True)
+s.add_argument("--now", default="")
+s.add_argument("--window-hours", type=float, default=24.0)
+s.add_argument("--grace-minutes", type=float, default=20.0)
+a = p.parse_args()
+json.dump({"findings": [], "scanned": 0, "skipped_old": 0,
+           "skipped_grace": 0, "skipped_unreadable": 0, "root": a.root},
+          sys.stdout)
+sys.stdout.write("\n")
+FAKE_HELPER
+chmod +x "$fake_home/.local/lib/pi-packet/findings-queued.py"
 set +e
+HOME="$fake_home" \
 FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
 FLEET_FINDINGS_QUEUED_LIB="$scratch/no-such.py" \
 FLEET_FINDINGS_QUEUED_FILE_ISSUES=0 \
 FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
   "$bin" >/dev/null 2>"$scratch/err4.log"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc)"
+[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc) — guard did not win over installed fallback"
 grep -q "FINDINGS-QUEUED-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
-ok "missing helper fails loud"
+ok "missing helper fails loud (guard wins over installed fallback)"
 
-# --- 8. contracts -----------------------------------------------------------
+# --- 8. Cursor transcript shape (fleet-ops#602) -----------------------------
+# Cursor transcripts: top-level role, no `type`, tool_use chunks with `input`.
+cursor_root="$scratch/cursor/projects/proj-x/agent-transcripts/sess-cursor"
+mkdir -p "$cursor_root"
+printf '%s\n' '{"role":"assistant","message":{"content":[{"type":"text","text":"The canary is silent again. Want me to file it?"}]}}' >"$cursor_root/sess-cursor.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$cursor_root/sess-cursor.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="$scratch/cursor/projects" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES="0" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-cur.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Cursor unqueued offer should exit 1 (got $rc) $(cat "$scratch/err-cur.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err-cur.log" || fail "Cursor offer missing FINDINGS-UNQUEUED"
+ok "Cursor transcript: unqueued offer is flagged"
+rm -rf "$scratch/cursor"
+
+# Cursor offer plus a tool_use that runs gh issue create -> clean.
+cursor_root="$scratch/cursor/projects/proj-y/agent-transcripts/sess-cursor-ok"
+mkdir -p "$cursor_root"
+printf '%s\n' '{"role":"assistant","message":{"content":[{"type":"text","text":"Out of scope. Want me to file it?"},{"type":"tool_use","name":"bash","input":{"command":"gh issue create -R Nishfleet/fleet-ops --title t --body b"}}]}}' >"$cursor_root/sess-cursor-ok.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$cursor_root/sess-cursor-ok.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="$scratch/cursor/projects" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES="0" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-cur2.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Cursor offer with gh issue create should exit 0 (got $rc) $(cat "$scratch/err-cur2.log")"
+ok "Cursor transcript: offer plus tool_use gh issue create is clean"
+rm -rf "$scratch/cursor"
+
+# --- 9. Claude session shape (fleet-ops#602) --------------------------------
+# Claude: top-level type user/assistant, tool_use/tool_result chunks; an
+# issue URL in a tool_result counts as queue evidence.
+claude_proj="$scratch/claude/projects/proj-claude"
+mkdir -p "$claude_proj"
+printf '%s\n' \
+'{"type":"user","message":{"role":"user","content":[{"type":"text","text":"check the build"}]}}' \
+'{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Build is red. Want me to file it?"},{"type":"tool_use","name":"bash","input":{"command":"gh issue create -R Nishfleet/fleet-ops --title t --body b"}}]}}' \
+'{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"https://github.com/Nishfleet/fleet-ops/issues/4321"}]}}' \
+  >"$claude_proj/sess-claude.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$claude_proj/sess-claude.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="$scratch/claude/projects" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES="0" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-cla.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Claude offer with tool_result issue URL should exit 0 (got $rc) $(cat "$scratch/err-cla.log")"
+ok "Claude session: offer plus tool_result issue URL is clean"
+rm -rf "$scratch/claude"
+
+# Claude offer with no queue action -> flagged.
+claude_proj="$scratch/claude/projects/proj-claude2"
+mkdir -p "$claude_proj"
+printf '%s\n' \
+'{"type":"user","message":{"role":"user","content":[{"type":"text","text":"check the build"}]}}' \
+'{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","text":"reasoning"},{"type":"text","text":"Build is red. Should I file a new issue?"}]}}' \
+  >"$claude_proj/sess-claude2.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$claude_proj/sess-claude2.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="$scratch/claude/projects" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES="0" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-cla2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Claude unqueued offer should exit 1 (got $rc) $(cat "$scratch/err-cla2.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err-cla2.log" || fail "Claude offer missing FINDINGS-UNQUEUED"
+ok "Claude session: unqueued offer is flagged (thinking chunk ignored)"
+rm -rf "$scratch/claude"
+
+# --- 10. multi-root merge (fleet-ops#602) -----------------------------------
+# A finding in Pi sessions AND a finding in Cursor transcripts both surface
+# in one run (one detector, three roots).
+sessions="$scratch/sessions/ws"
+mkdir -p "$sessions"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Pi side. Want me to file it?"}]}}' >"$sessions/pi-multi.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$sessions/pi-multi.jsonl"
+cursor_root="$scratch/cursor/projects/p/agent-transcripts/s"
+mkdir -p "$cursor_root"
+printf '%s\n' '{"role":"assistant","message":{"content":[{"type":"text","text":"Cursor side. Say the word and I will file it."}]}}' >"$cursor_root/s.jsonl"
+touch -d "2026-08-27T00:00:00Z" "$cursor_root/s.jsonl"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="$scratch/cursor/projects" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES="0" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-multi.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "multi-root merge should exit 1 (got $rc) $(cat "$scratch/err-multi.log")"
+count=$(grep -c "FINDINGS-UNQUEUED" "$scratch/err-multi.log")
+[[ "$count" -ge 2 ]] || fail "multi-root merge should report >=2 findings (got $count)"
+ok "multi-root merge: Pi + Cursor findings both surface in one run"
+rm -rf "$scratch/cursor" "$sessions/pi-multi.jsonl"
+
+# --- 11. contracts ----------------------------------------------------------
 grep -q 'fleet-findings-queued' "$tier1" \
   || fail "fleet-heartbeat-tier1 must invoke fleet-findings-queued"
 grep -q 'findings_queued_rc' "$tier1" \

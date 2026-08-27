@@ -6,7 +6,12 @@ OnFailure=pi-scout-repair@%i.service
 Type=oneshot
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/nish
-ExecCondition=/bin/sh -c 'n=$$(gh issue list -R Nishfleet/%i -l agent-ready --json number --jq length 2>&1) || { echo "gh failed: $$n" >&2; exit 255; }; [ "$$n" -lt 12 ]'
+# fleet-ops#540: rest when remaining work is >= 24h at the measured drain
+# rate; run when below that. A hardcoded issue count (the old `-lt 12`)
+# treated 1 issue as 1 hour and blocked go-ham while a fast drain still
+# had <12h of work. Missing helper is 255 so systemd does not skip-quiet.
+# /bin/bash -c keeps systemd-analyze verify from needing the dest in CI.
+ExecCondition=/bin/bash -c 'bin=/home/nish/.local/bin/fleet-work-supply-canary; if [ ! -x "$$bin" ]; then echo "work-supply-gate missing" >&2; exit 255; fi; exec "$$bin" gate %i'
 # fleet-ops#454: snapshot the agent-ready buffer around the scout so a
 # green run that files nothing cannot loop quietly. Leading '-' so a
 # tracker fault never skips the scout or trips OnFailure repair.

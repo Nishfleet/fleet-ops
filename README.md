@@ -354,8 +354,9 @@ fleet-resilience-drill --check  # report whether the repo files are present
 The drill never kills live tailscaled or live heartbeat. Resurrection is an
 isolated `Restart=always` stub. State recovery reuses #388. Compute
 break-glass is GitHub-hosted runners. Keystone healthchecks.io URLs (intake,
-scout, reconcile, restore) live in `~/.config/fleet-ops/keystone-hc.env`;
-unset URLs are a LOUD skip, not a silent pass.
+scout, reconcile, restore) live in `~/.config/fleet-ops/keystone-hc.env`
+and must be four checks distinct from the heartbeat dead-man. Unset URLs
+are a LOUD skip. A shared URL is a LOUD fail.
 
 ## systemd-oomd drill — `oomd-drill` (issue #62)
 

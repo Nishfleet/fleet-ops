@@ -248,7 +248,7 @@ chmod +x "$checkout/bin/intake-reconcile"
 
 # --- local git repo with a real origin ---------------------------------------
 origin_bare="$scratch/origin.git"
-git init --bare -q "$origin_bare"
+git -c init.defaultBranch=main init --bare -q "$origin_bare"
 git -C "$checkout" init -q -b main
 git -C "$checkout" config user.email "test@example.com"
 git -C "$checkout" config user.name "Test"

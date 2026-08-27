@@ -44,6 +44,11 @@ bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
 lib/fleet-wipe-lessons.py /home/nish/.local/lib/pi-packet/fleet-wipe-lessons.py
 bin/fleet-wipe-lessons-check /home/nish/.local/bin/fleet-wipe-lessons-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
+# fleet-ops#539: shared-file collision PreToolUse guard for the "check other
+# agents before touching shared files" standing rule.
+lib/guard_shared_file_collision.py /home/nish/.local/lib/pi-packet/guard_shared_file_collision.py
+bin/guard_shared_file_collision /home/nish/.local/bin/guard_shared_file_collision
+bin/guard_shared_file_collision_hook.py /home/nish/.claude/hooks/guard_shared_file_collision.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 # fleet-ops#383: join helper for the rule-enforcement canary step.
@@ -269,9 +274,28 @@ bin/fleet-cline-glm53-canary /home/nish/.local/bin/fleet-cline-glm53-canary
 # Heartbeat-tier1 block 24.
 bin/fleet-repo-visibility-canary /home/nish/.local/bin/fleet-repo-visibility-canary
 config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.json
+# fleet-ops#546: straitly ds4-pro worker-rotation canary. Enforces the
+# 2026-08-27 ledger line: metered, cap=2, only deepseek/deepseek-v4-pro on
+# straitly, no double-wire, slug proven in models.json and `pi --list-models`,
+# meter-check evidence within minutes of first active draw. Heartbeat-tier1
+# block 25.
+bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
+# fleet-ops#537: Execution IS the review receipt canary. Worker prompt
+# inner loop stays agentic (no bin/exec-review dispatcher). This canary
+# detects a worker PR that skipped the run (no Verification: run-cue /
+# run-proof: line), auto-files, and fails loud if the watch is broken.
+# Heartbeat-tier1 block 26.
+lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.py
+bin/fleet-exec-review-canary /home/nish/.local/bin/fleet-exec-review-canary
+# fleet-ops#540: 24h/12h work-supply drain trigger. Remaining hours from
+# agent-ready count / measured close rate. ExecCondition rests at >=24h;
+# low-water go-hams at <12h; heartbeat canary fail-loud if scouts sit idle
+# under 12h. Heartbeat-tier1 block 27.
+lib/work-supply.sh /home/nish/.local/lib/pi-packet/work-supply.sh
+bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
 # fleet-ops#544: VPS→Mac Tailscale grants lockdown canary (led-tailscale).
 # Fail-loud if compiled PacketFilter (`tailscale debug netmap`) allows this
-# VPS as src toward the Mac. Heartbeat-tier1 block 25.
+# VPS as src toward the Mac. Heartbeat-tier1 block 28.
 bin/fleet-tailscale-acl-canary /home/nish/.local/bin/fleet-tailscale-acl-canary
 lib/tailscale-acl-lockdown.py /home/nish/.local/bin/tailscale-acl-lockdown.py
 config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
@@ -306,6 +330,11 @@ systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.confi
 lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/vault-conflict-resolver.service /home/nish/.config/systemd/user/vault-conflict-resolver.service
 systemd/vault-conflict-resolver.timer /home/nish/.config/systemd/user/vault-conflict-resolver.timer
+# fleet-ops#525: daily vault knowledge-format lint. The script lives in
+# nish-vault because it writes the shared-memory report and 03 Knowledge hub
+# contents; the timer is the named, scheduled fleet-ops enforcer.
+systemd/vault-knowledge-format.service /home/nish/.config/systemd/user/vault-knowledge-format.service
+systemd/vault-knowledge-format.timer /home/nish/.config/systemd/user/vault-knowledge-format.timer
 # fleet-ops#85: hourly reaper for stale interactive Claude/ccd-cli sessions
 # in session-*.scope. SIGTERM then SIGKILL; skips dirty/claim worktrees.
 # N=8h from the 2026-08-27 idle tail (live pile at 0h, stale cluster from 6h).

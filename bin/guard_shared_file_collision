@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# guard_shared_file_collision — run the canonical shared-file guard on stdin.
+#
+# Reads a Claude Write/Edit/MultiEdit tool JSON payload and warns if the
+# target file is already touched by an open PR.  Warn only.
+
+set -euo pipefail
+
+here=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
+lib="${GUARD_SHARED_FILE_COLLISION_LIB:-$here/lib/guard_shared_file_collision.py}"
+
+exec python3 "$lib"

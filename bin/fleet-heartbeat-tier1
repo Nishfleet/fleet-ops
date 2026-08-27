@@ -99,6 +99,25 @@
 #      gap-closure cycle, failed cycle. Starts fleet-researcher.service.
 #      Adopted-delta rate below floor cuts cadence. Missing helper skips
 #      (not installed); a broken decide fails the tick.
+#  21. Free-model roster canary (fleet-ops#518). Quality-gated free-model
+#      roster: fail-loud on Ollama non-flash or missing providers; observe-to
+#      open on unwired free slugs and wired slugs leaving the catalog.
+#  22. Pi extensions proven-allowlist canary (fleet-ops#536). Diff live
+#      extensions against config/pi-extensions-allowlist.json; unproven or
+#      re-enabled banned ids fail loud and auto-file.
+#  23. ClinePass GLM 5.3 flash canary (fleet-ops#462). Fail loud if a billing,
+#      non-flash, or unproven flash slug is allowlisted on cline; auto-file
+#      a prove+wire ticket when a new free cline-pass GLM 5.3 flash slug
+#      appears and keep the tick green.
+#  24. Repo visibility canary (fleet-ops#542). Fail loud and auto-file when
+#      gh repo list shows a non-archived private Nishfleet repo that is not
+#      in config/repo-visibility.json allow_private[].
+#  25. Straitly ds4-pro worker-rotation canary (fleet-ops#546). Enforces the
+#      2026-08-27 ledger line: metered, cap=2, only deepseek/deepseek-v4-pro
+#      on straitly, no double-wire, proven in models.json and `pi --list-models`,
+#      and a meter-check evidence file within minutes of the first active draw.
+#      Fail loud on allowlist/routing violations; observe-to-open on the
+#      first-draw meter check.
 #
 # Logging: every action goes to stderr (systemd journal) AND to the per-
 # tick log file at $FLEET_HEARTBEAT_LOG_DIR/tier1-<UTC>.log. NO stdout
@@ -1696,7 +1715,76 @@ else
 fi
 
 # ============================================================================
-# 25. TAILSCALE VPS→MAC ACL LOCKDOWN CANARY (fleet-ops#544)
+# 25. STRAITLY DS4-PRO WORKER-ROTATION CANARY (fleet-ops#546)
+# ============================================================================
+# Ledger 2026-08-27: deepseek-v4-pro on straitly is approved for worker
+# rotation, metered, cap=2, AIMD only with evidence. Sol stays
+# orchestration-only; qwen3.8-max not approved; no double-wire; the slug
+# must be present in models.json and `pi --list-models`; a meter-check
+# evidence file must be written within minutes of the first active draw.
+# Fail loud on allowlist violations; observe-to-open on the first-draw
+# meter check.
+STRAITLY_CANARY_BIN="${FLEET_STRAITLY_DS4PRO_CANARY:-/home/nish/.local/bin/fleet-straitly-ds4-pro-canary}"
+straitly_canary_rc=0
+if [ -x "$STRAITLY_CANARY_BIN" ]; then
+    log "25. straitly ds4-pro canary starting"
+    if "$STRAITLY_CANARY_BIN"; then
+        log "25. straitly ds4-pro canary complete"
+    else
+        straitly_canary_rc=$?
+        log "25. straitly ds4-pro canary FAILED (rc=$straitly_canary_rc) — straitly ds4-pro allowlist or routing is broken; unit will land in --state=failed"
+    fi
+else
+    log "25. straitly ds4-pro canary missing at $STRAITLY_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 26. EXECUTION-IS-REVIEW RECEIPT CANARY (fleet-ops#537)
+# ============================================================================
+# Standing rule: Execution IS the review. The inner loop stays agentic
+# (no bin/exec-review dispatcher). This canary detects a worker PR that
+# skipped the run: no Verification: run-cue and no run-proof: line.
+# Observe-to-open on a skip (auto-file, tick stays green). Fail loud if
+# the watch is broken (gh/python/helper).
+EXEC_REVIEW_CANARY_BIN="${FLEET_EXEC_REVIEW_CANARY:-/home/nish/.local/bin/fleet-exec-review-canary}"
+exec_review_canary_rc=0
+if [ -x "$EXEC_REVIEW_CANARY_BIN" ]; then
+    log "26. exec-review receipt canary starting"
+    if "$EXEC_REVIEW_CANARY_BIN"; then
+        log "26. exec-review receipt canary complete"
+    else
+        exec_review_canary_rc=$?
+        log "26. exec-review receipt canary FAILED (rc=$exec_review_canary_rc) — receipt watch is broken; unit will land in --state=failed"
+    fi
+else
+    log "26. exec-review receipt canary missing at $EXEC_REVIEW_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 27. WORK-SUPPLY 24H/12H DRAIN CANARY (fleet-ops#540)
+# ============================================================================
+# Ledger 2026-08-26: scouts rest at >=24h of ready work at the measured
+# drain rate and go ham below 12h. Workers stay at max. This canary
+# fail-louds if ExecCondition is still a hardcoded issue count, if the
+# scout prompt still rests on ready_count>=12, if workers are gated on
+# the buffer, if the auditor panel is missing, or if a live repo is
+# under 12h of work with an idle scout.
+WORK_SUPPLY_CANARY_BIN="${FLEET_WORK_SUPPLY_CANARY:-/home/nish/.local/bin/fleet-work-supply-canary}"
+work_supply_canary_rc=0
+if [ -x "$WORK_SUPPLY_CANARY_BIN" ]; then
+    log "27. work-supply 24h/12h drain canary starting"
+    if "$WORK_SUPPLY_CANARY_BIN"; then
+        log "27. work-supply 24h/12h drain canary complete"
+    else
+        work_supply_canary_rc=$?
+        log "27. work-supply 24h/12h drain canary FAILED (rc=$work_supply_canary_rc) — drain trigger not live or scouts idle under 12h; unit will land in --state=failed"
+    fi
+else
+    log "27. work-supply 24h/12h drain canary missing at $WORK_SUPPLY_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 28. TAILSCALE VPS→MAC ACL LOCKDOWN CANARY (fleet-ops#544)
 # ============================================================================
 # Ledger 2026-08-24: Server→Mac tailnet traffic is locked down via grants.
 # Pasting acl-draft.json would loosen the live policy. The compiled
@@ -1706,21 +1794,21 @@ fi
 TAILSCALE_ACL_CANARY_BIN="${FLEET_TAILSCALE_ACL_CANARY:-/home/nish/.local/bin/fleet-tailscale-acl-canary}"
 tailscale_acl_canary_rc=0
 if [ -x "$TAILSCALE_ACL_CANARY_BIN" ]; then
-    log "25. Tailscale VPS→Mac ACL lockdown canary starting"
+    log "28. Tailscale VPS→Mac ACL lockdown canary starting"
     if "$TAILSCALE_ACL_CANARY_BIN"; then
-        log "25. Tailscale VPS→Mac ACL lockdown canary complete"
+        log "28. Tailscale VPS→Mac ACL lockdown canary complete"
     else
         tailscale_acl_canary_rc=$?
-        log "25. Tailscale VPS→Mac ACL lockdown canary FAILED (rc=$tailscale_acl_canary_rc) — PacketFilter allows VPS→Mac or watch is broken; unit will land in --state=failed"
+        log "28. Tailscale VPS→Mac ACL lockdown canary FAILED (rc=$tailscale_acl_canary_rc) — PacketFilter allows VPS→Mac or watch is broken; unit will land in --state=failed"
     fi
 else
-    log "25. Tailscale VPS→Mac ACL lockdown canary missing at $TAILSCALE_ACL_CANARY_BIN — skip (not installed)"
+    log "28. Tailscale VPS→Mac ACL lockdown canary missing at $TAILSCALE_ACL_CANARY_BIN — skip (not installed)"
 fi
 
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -1784,6 +1872,15 @@ if [ "${cline_glm53_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${repo_visibility_canary_rc:-0}" -ne 0 ]; then
     exit "$repo_visibility_canary_rc"
+fi
+if [ "${straitly_canary_rc:-0}" -ne 0 ]; then
+    exit "$straitly_canary_rc"
+fi
+if [ "${exec_review_canary_rc:-0}" -ne 0 ]; then
+    exit "$exec_review_canary_rc"
+fi
+if [ "${work_supply_canary_rc:-0}" -ne 0 ]; then
+    exit "$work_supply_canary_rc"
 fi
 if [ "${tailscale_acl_canary_rc:-0}" -ne 0 ]; then
     exit "$tailscale_acl_canary_rc"

@@ -62,6 +62,12 @@ run (journal lines, run URL, or a systemctl/journalctl transcript). Run
 `bin/prove-one-run-check --body <pr-body-file> --name-status <(git diff --name-status origin/main...HEAD)`
 before opening the PR. Armed without ran is a failed run (fleet-ops#378).
 
+Every worker PR, not only new machinery, must carry a `Verification:` section
+with a real run-cue or a `run-proof:` line. Run
+`bin/fleet-exec-review-canary --body <pr-body-file>`
+before opening the PR. A worker that skipped the run is a failed run
+(fleet-ops#537). Heartbeat scans recent worker PRs and auto-files any skip.
+
 A PR that adds a new file under `bin/` is not done without a `research:` line
 naming a last-30-days-scale pass (`last30days`, official docs, or equivalent
 live search), the existing options that were compared, and why they lost or
