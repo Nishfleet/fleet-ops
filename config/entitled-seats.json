@@ -57,7 +57,7 @@
     {
       "id": "commandcode",
       "class": "free",
-      "note": "Command Code free lane. MiniMax M3 via this pipe is fleet-ops#384."
+      "note": "Command Code free lane. Allowlist is deepseek/deepseek-v4-flash, minimax/minimax-m3-free (fleet-ops#637), and poolside/laguna-s-2.1-free (fleet-ops#638)."
     },
     {
       "id": "opencode",
