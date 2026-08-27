@@ -8,6 +8,9 @@
 #   3. install.sh --check from a hotfix still runs (auditors need DIFF).
 #   4. install.sh from the canonical overlay path succeeds.
 #   5. FLEET_OPS_ALLOW_NONCANONICAL=1 overrides the refuse.
+#   5b. install.sh retargets a hijacked worktree dest (fleet-ops#1189) —
+#       a leftover symlink at a non-canonical workspaces tree is repaired
+#       by a canonical install, not refused as a hot-patch.
 #   6. fleet-ops-deploy refuses a non-canonical FLEET_OPS_CHECKOUT.
 #   7. drift canary DRIFT-SOURCE + auto-files when checkout is a hotfix.
 #   8. drift canary WRONG-SYMLINK + auto-files when a dest points at a hotfix.
@@ -27,6 +30,8 @@ ok()   { echo "OK: $*"; }
 [[ -f "$repo_root/bin/fleet-ops-drift.py" ]] || fail "missing bin/fleet-ops-drift.py"
 grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
     || fail "install.sh must define refuse_noncanonical_install"
+grep -q 'live_target_is_noncanonical' "$repo_root/install.sh" \
+    || fail "install.sh must define live_target_is_noncanonical (fleet-ops#1189)"
 grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must emit DEPLOY-NONCANONICAL"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
@@ -131,6 +136,25 @@ SYSTEMCTL="$systemctl_fake" FLEET_OPS_ALLOW_NONCANONICAL=1 "$hotfix/install.sh" 
 ok "scenario5: FLEET_OPS_ALLOW_NONCANONICAL=1 overrides the refuse"
 rm -f "$demo_dest"
 SYSTEMCTL="$systemctl_fake" "$canon/install.sh" >/dev/null 2>&1 || true
+
+# --- 5b. install.sh retargets a hijacked worktree dest (fleet-ops#1189) -----
+# A leftover symlink whose live target is a worktree or worktree-parent
+# (non-canonical workspaces tree) is a hijacked install source, not a
+# hot-patch. The mtime guard must let the canonical install retarget it.
+printf 'hijacked-from-1136\n' >"$issue_wt/bin/demo-script"
+touch -d 'now + 1 hour' "$issue_wt/bin/demo-script"
+ln -sfn "$(readlink -f "$issue_wt/bin/demo-script")" "$demo_dest"
+[[ "$(readlink -f "$demo_dest")" = "$(readlink -f "$issue_wt/bin/demo-script")" ]] \
+    || fail "scenario5b: dest setup did not point at worktree, got $(readlink -f "$demo_dest")"
+set +e
+fix_out=$(SYSTEMCTL="$systemctl_fake" "$canon/install.sh" 2>&1)
+fix_rc=$?
+set -e
+[[ "$fix_rc" -eq 0 ]] || fail "scenario5b: canonical install should retarget hijacked dest, rc=$fix_rc out=$fix_out"
+[[ "$fix_out" != *"REFUSE:"* ]] || fail "scenario5b: must not REFUSE a hijacked worktree dest as a hot-patch, got: $fix_out"
+[[ "$(readlink -f "$demo_dest")" = "$(readlink -f "$canon/bin/demo-script")" ]] \
+    || fail "scenario5b: dest still points at $(readlink -f "$demo_dest"), want canonical"
+ok "scenario5b: install.sh retargets a hijacked worktree dest (fleet-ops#1189)"
 
 # --- 6. fleet-ops-deploy refuses hotfix checkout ----------------------------
 git -C "$hotfix" init -q
