@@ -381,11 +381,13 @@ grep -qx 'start pi-audit@demo--48--straitly.service' "$calls" \
 ok "scenario9: failed unit with a vote on disk is left alone"
 
 # ============================================================================
-# Scenario 10: class lock — tier1 must invoke the auditor (fleet-ops#366)
+# Scenario 10: class lock — tier1 must invoke the auditor (fleet-ops#366 / #587)
 # ============================================================================
 # The incident class is "helper exists but is never called". A future edit
-# that drops block 4b fails this test instead of wedging pi-audit units
-# for an hour again.
+# that drops block 4b fails this test instead of leaving scout-candidate
+# issues unattended (fleet-ops#587) or wedging pi-audit units for an hour
+# again (fleet-ops#616). The standing path is the heartbeat tick, not the
+# researcher-run nudge.
 # fleet-ops#615: a FATAL auditor exit must land in auditor_rc. Swallowing
 # it as _aud_rc + "next tick retries" leaves the admission gate dead
 # while the heartbeat stays green.
@@ -411,6 +413,8 @@ if awk '
 ' "$tier1"; then
     fail "tier1 4b must not swallow a failed auditor as 'next tick retries' (fleet-ops#615)"
 fi
+grep -q 'fleet-ops#587' "$tier1" \
+    || fail "tier1 must name fleet-ops#587 (standing path is the heartbeat tick, not the researcher-run nudge)"
 ok "scenario10: tier1 block 4b invokes fleet-heartbeat-auditor and fails the tick on helper FATAL (not-called + swallowed-rc class locked)"
 
 # Nested CI host (workers cannot add a ci.yml line).
