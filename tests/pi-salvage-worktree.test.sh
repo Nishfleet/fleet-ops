@@ -171,7 +171,7 @@ grep -Fxq 'bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree' "$
 dropin="$repo_root/systemd/vps-weekly-update.service.d/20-wip-gc.conf"
 [[ -f "$dropin" ]] || fail "missing $dropin"
 grep -q 'pi-salvage-worktree --gc' "$dropin" || fail "drop-in must run --gc"
-grep -q '^ExecStopPost=/home/nish/.local/bin/pi-salvage-worktree$' \
+grep -qE '^ExecStopPost=-?/home/nish/.local/bin/pi-salvage-worktree$' \
     "$repo_root/systemd/pi-issue@.service" \
     || fail "pi-issue@.service must ExecStopPost the salvage hook"
 ok "MANIFEST, weekly GC drop-in, and pi-issue@.service are wired"
