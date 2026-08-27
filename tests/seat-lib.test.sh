@@ -1669,6 +1669,11 @@ bash "$here/fleet-failed-command-read.test.sh" || fail "fleet-failed-command-rea
 # "Failed to read ...: No such file or directory" fixture. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-read-enoent-thinking.test.sh" || fail "fleet-failed-command-read-enoent-thinking tests failed"
+# fleet-ops#958: same origin session as #953. The live remainder is
+# several thinking-only recovery turns (including an explicit skip)
+# then "Now I have the full picture. Let me plan and execute." bundled
+# with todo toolCalls. Same CI constraint.
+bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh" || fail "fleet-failed-command-read-enoent-skip-todos tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"

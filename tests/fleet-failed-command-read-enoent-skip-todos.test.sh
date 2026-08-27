@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# tests/fleet-failed-command-read-enoent-skip-todos.test.sh
+#
+# fleet-ops#958: same origin session as #953/#662
+# (2026-08-26T14-02-29-714Z_01a03e61-27d2-7c3f-9101-da19c90f6ba5.jsonl).
+# PR #1050 locked one thinking-only recovery turn plus a later bare
+# "Now I have the full picture. Let me plan and execute." text message.
+# The live session was longer than that fixture:
+#
+#   - several thinking-only recovery turns in a row (find OVERNIGHT*,
+#     then skip, then more probes), including a thinking block that
+#     decides to skip ("Let me look for it elsewhere or skip")
+#   - the first user-facing text is that same "Now I have the full
+#     picture. Let me plan and execute." line bundled with todo
+#     toolCalls in the SAME assistant turn
+#
+# A thinking block that names the miss and decides to skip is not a
+# user-facing flag (fleet-ops#535). Todo toolCalls next to unrelated
+# prose do not name the failure either. A future detector refactor
+# must not:
+#   - treat "skip" in a thinking field as a discharge
+#   - treat the first user-facing turn as a flag just because it also
+#     carries todo toolCalls
+#   - only inspect the immediately-next assistant turn (the live
+#     session had many thinking-only turns before the prose)
+#
+# The auto-filed issue closes via observe-to-close (fleet-ops#758)
+# when the session mtime ages out of the 24h window.
+#
+# Scenarios:
+#   1. live #958 shape: parallel siblings + ENOENT + several
+#      thinking-only recoveries (including an explicit skip) + later
+#      "full picture" prose bundled with todos -> finding.
+#   2. same shape plus a later user-facing flag that NAMES the
+#      failure -> clean.
+#   3. worker.md cites fleet-ops#958 (prompt-side lock).
+#   4. seat-lib.test.sh hosts this file (CI cannot gain a new P14 line).
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lib="$here/../lib/failed-command-flagged.py"
+repo_root="$(cd "$here/.." && pwd)"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -f "$lib" ]] || fail "missing $lib"
+command -v python3 >/dev/null 2>&1 || fail "python3 missing"
+command -v jq >/dev/null 2>&1 || fail "jq missing"
+
+scratch="$(mktemp -d -t failed-command-read-enoent-skip-todos.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+sessions="$scratch/sessions"
+mkdir -p "$sessions"
+
+write_session() {
+  local name="$1"
+  cat >"$sessions/$name.jsonl"
+  touch -d "2026-08-26T14:02:00Z" "$sessions/$name.jsonl"
+}
+
+run_scan() {
+  python3 "$lib" scan \
+    --root "$sessions" \
+    --window-hours 24 \
+    --grace-minutes 0 \
+    --now "2026-08-26T14:30:00Z"
+}
+
+# --- 1. live #958: many thinking-only turns, skip, then todos + prose ------
+# Replay the live remainder that #1050 simplified away: three thinking-only
+# recovery turns (find / skip / "full picture" still inside thinking),
+# then the first user-facing text bundled with todo toolCalls.
+write_session "read-enoent-skip-todos" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me read the context files first."},{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"ls ~/workspaces/agent-state/ 2>/dev/null | head -30 && echo \"---\" && ls ~/workspaces/agent-state/FLEET-PAUSED 2>/dev/null"}},{"type":"toolCall","id":"call_intake","name":"read","arguments":{"path":"/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json"}},{"type":"toolCall","id":"call_overnight","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/OVERNIGHT.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls","toolName":"bash","isError":false,"content":[{"type":"text","text":"AUDITOR-LOG.md\nFLEET-HEARTBEAT-TRIAGE.md\nlanes\n---"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_intake","toolName":"read","isError":false,"content":[{"type":"text","text":"{\"repos\":[]}"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_overnight","toolName":"read","content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/agent-state/OVERNIGHT.md'"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"OVERNIGHT.md is missing. Let me look for it elsewhere or skip."},{"type":"toolCall","id":"call_find","name":"bash","arguments":{"command":"find /home/nish/workspaces/agent-state -maxdepth 2 -iname \"OVERNIGHT*\" 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_find","toolName":"bash","isError":false,"content":[{"type":"text","text":""}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Important findings: OVERNIGHT.md missing from agent-state dir. Let me look for it elsewhere or skip. Confirm fleet state."},{"type":"toolCall","id":"call_timers","name":"bash","arguments":{"command":"XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers --no-pager | head"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_timers","toolName":"bash","isError":false,"content":[{"type":"text","text":"NEXT LEFT LAST PASSED UNIT"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Excellent. Now I have the full picture: fleet is RESTORED. OVERNIGHT.md is still missing; skip it and execute."},{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && git log --oneline -3"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","toolName":"bash","isError":false,"content":[{"type":"text","text":"a8dd525 fix(tests): CI-safe no-agent-names"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now I have the full picture. Let me plan and execute."},{"type":"toolCall","id":"call_todo1","name":"todo","arguments":{"action":"add","text":"Create branch","id":1}},{"type":"toolCall","id":"call_todo2","name":"todo","arguments":{"action":"add","text":"Edit intake-repos.json","id":2}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #958 multi-turn skip + todos prose should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'ENOENT: no such file or directory, access' <<<"$snippet" \
+  || fail "finding snippet should mention live ENOENT wording (got $snippet)"
+grep -q 'OVERNIGHT.md' <<<"$snippet" \
+  || fail "finding snippet should mention OVERNIGHT.md (got $snippet)"
+ok "live #958: several thinking-only recoveries (skip) then todos + 'full picture' prose is flagged"
+rm -f "$sessions/read-enoent-skip-todos.jsonl"
+
+# --- 2. same shape plus a later user-facing flag is clean ------------------
+write_session "read-enoent-skip-todos-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_overnight2","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/OVERNIGHT.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_overnight2","toolName":"read","content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/agent-state/OVERNIGHT.md'"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"OVERNIGHT.md is missing. Let me look for it elsewhere or skip."},{"type":"toolCall","id":"call_find2","name":"bash","arguments":{"command":"find /home/nish/workspaces/agent-state -maxdepth 2 -iname \"OVERNIGHT*\" 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_find2","toolName":"bash","isError":false,"content":[{"type":"text","text":""}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Excellent. Now I have the full picture."},{"type":"toolCall","id":"call_todo3","name":"todo","arguments":{"action":"add","text":"Plan","id":1}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the OVERNIGHT.md read failed with ENOENT — the AGENTS.md reference is dangling, it is now the blocker."},{"type":"toolCall","id":"call_todo4","name":"todo","arguments":{"action":"add","text":"File the dangling path","id":2}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "read ENOENT with later user-facing flag should be clean (got $count) $report"
+ok "live #958 positive: skip-then-todos shape plus later named flag is clean"
+rm -f "$sessions/read-enoent-skip-todos-flagged.jsonl"
+
+# --- 3. worker.md cites fleet-ops#958 (prompt-side lock) -------------------
+worker="$repo_root/prompts/worker.md"
+[[ -f "$worker" ]] || fail "missing $worker"
+grep -q 'fleet-ops#958' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#958 (prompt-side lock for the live skip-then-todos ENOENT shape)"
+grep -q "ENOENT: no such file or directory, access" "$worker" \
+  || fail "prompts/worker.md must name the live ENOENT wording so workers flag it"
+ok "worker.md cites fleet-ops#958 and the live ENOENT wording"
+
+# --- 4. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+grep -Fq 'bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh"' \
+  "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat-lib.test.sh hosts this file"
+
+echo "OK: fleet-failed-command-read-enoent-skip-todos: live #958 multi-turn skip + todos drills"
