@@ -104,19 +104,21 @@ count_work() {
     echo "$total"
 }
 
-# --- count running: pi-issue@ units in active/activating state ---------------
-# #72's liveness rule: a worker is live iff ActiveState is active/activating
-# or MainPID is nonzero. For Type=oneshot the live set is exactly active+
-# activating (a unit with a nonzero MainPID is by definition in one of those
-# states), so the state filter is the live set.
+# --- count running: active/activating user services whose ExecStart contains
+# the literal "pi --print" (fleet-ops#1155). Never enumerate by unit-name
+# patterns: odd-named `pi-systemd-run --unit <name> -- ... pi --print` units
+# must count, and pi-packet@/alert-repair-*/pi-job-* workers are also live
+# capacity. #72's liveness rule still holds: the state filter is the live set.
 count_running() {
-    local unit n=0
+    local unit execstart n=0
     while IFS= read -r unit; do
         [ -n "$unit" ] || continue
-        case "$unit" in
-            pi-issue@*) n=$((n+1)) ;;
+        [ -z "${unit##*.service}" ] || continue
+        execstart=$("$SYSTEMCTL" --user show "$unit" --property=ExecStart --value 2>/dev/null || true)
+        case "$execstart" in
+            *"pi --print"*) n=$((n+1)) ;;
         esac
-    done < <("$SYSTEMCTL" --user list-units 'pi-issue@*.service' \
+    done < <("$SYSTEMCTL" --user list-units --type=service \
         --state=active,activating --no-legend --plain 2>/dev/null \
         | awk '{print $1}' || true)
     echo "$n"
