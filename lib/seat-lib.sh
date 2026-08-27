@@ -11,6 +11,11 @@
 # one. Classes: free / prepaid-quota / metered (subscription is an alias of
 # prepaid-quota).
 #
+# fleet-ops#1133: a packet that declares `difficulty: keystone` inverts that
+# cost-first walk (prepaid capable first, then metered, free last) and
+# refuses a third cheap retry so systemd OnFailure can summon the senior
+# auditor. Unmarked packets keep the #387/#1178 order (volume first).
+#
 # Survivors justified against systemd: systemd Restart= restarts the SAME
 # ExecStart — it cannot choose a different provider/model seat. Seat rotation
 # (pick a DIFFERENT seat on each retry) is real added value that systemd
@@ -381,6 +386,30 @@ task_weight() {
         echo "heavy"; return
     fi
     echo "light"
+}
+
+# fleet-ops#1133: explicit difficulty marker on a packet.
+# Scans the packet for a `difficulty: keystone|heavy|light` line (or
+# `keystone: true`). First match wins. Falls back to task_weight() when
+# no marker is present. Missing file -> light.
+packet_difficulty() {
+    local pkt="$1" line lowered
+    if [[ ! -f "$pkt" ]]; then
+        echo "light"
+        return
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lowered="${line,,}"
+        if [[ "$lowered" =~ ^difficulty:[[:space:]]*(keystone|heavy|light)[[:space:]]*$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return
+        fi
+        if [[ "$lowered" =~ ^keystone:[[:space:]]*(true|yes|1)[[:space:]]*$ ]]; then
+            echo "keystone"
+            return
+        fi
+    done < "$pkt"
+    task_weight "$pkt"
 }
 
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
@@ -1117,17 +1146,25 @@ _rr_pick() {
 }
 
 # Pick a different seat than the failed one(s).
-# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file]
+# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
 # (one per line); all are excluded. If not given, only fail_provider/fail_model
 # is excluded.
+# difficulty (fleet-ops#1133): keystone forces need_capable=1, walks strongest
+# class first (prepaid -> metered -> free), and returns empty after 2 strikes
+# so the caller escalates to the senior conference instead of another cheap
+# retry. heavy/light (default) keep the #387/#1178 walk (volume first).
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
-    local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}"
+    local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
 
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
+
+    if [[ "$difficulty" == "keystone" ]]; then
+        need_capable=1
+    fi
 
     # Reset the per-call credential cache so a provider is resolved once
     # per selection pass (fleet-ops#36). A provider with several models
@@ -1138,11 +1175,20 @@ pick_seat() {
     # Build the set of tried seats for exclusion.
     declare -A tried=()
     tried["$fail_p/$fail_m"]=1
+    local tried_count=0
     if [[ -n "$tried_file" && -f "$tried_file" ]]; then
         local tp tm
         while IFS=/ read -r tp tm; do
-            [[ -n "$tp" ]] && tried["$tp/$tm"]=1
+            [[ -n "$tp" ]] && tried["$tp/$tm"]=1 && tried_count=$((tried_count + 1))
         done <"$tried_file"
+    fi
+
+    # fleet-ops#1133: two strikes on a keystone packet end cheap retries.
+    # tried_count is lines already recorded by the wrapper BEFORE this pick,
+    # so 0 = first attempt, 1 = one retry left, >=2 = escalate.
+    if [[ "$difficulty" == "keystone" ]] && (( tried_count >= 2 )); then
+        seat_log "pick_seat: KEYSTONE ESCALATION — ${tried_count} strikes; refusing further cheap retries (senior conference via OnFailure)"
+        return 1
     fi
 
     # Buckets (fleet-ops#387):
@@ -1263,12 +1309,14 @@ pick_seat() {
         fi
     fi
 
-    # fleet-ops#1178: volume front-of-ladder. Pull volume-order providers out
-    # of free+prepaid into a strict-priority volume bucket (first live wins),
-    # then leftover free, then leftover prepaid (alternate), then metered.
-    # Empty SEAT_VOLUME_ORDER preserves the legacy free-then-prepaid ladder.
+    # fleet-ops#1133 keystone inverts cost-first: prepaid (strongest class)
+    # first, then metered, free last. Skip prepaid round-robin so a hard
+    # packet cannot rotate onto ollama-flash as "just another prepaid".
+    # Skip volume front-of-ladder (#1178) on keystone so reliability beats
+    # cheap. Unmarked packets keep volume-first, then leftover free,
+    # leftover prepaid (alternate), then metered.
     local -a volume_seats=() leftover_free=() leftover_prepaid=()
-    if [[ -n "$SEAT_VOLUME_ORDER" ]]; then
+    if [[ "$difficulty" != "keystone" && -n "$SEAT_VOLUME_ORDER" ]]; then
         declare -A _vol_seen=()
         local _vp _fm
         for _vp in $SEAT_VOLUME_ORDER; do
@@ -1300,10 +1348,21 @@ pick_seat() {
         prepaid_seats=("${leftover_prepaid[@]:-}")
     fi
 
-    # Volume first (strict), then leftover free, then leftover prepaid
-    # (alternate), then metered.
     local chosen="" chosen_p=""
-    if (( ${#volume_seats[@]} > 0 )); then
+    if [[ "$difficulty" == "keystone" ]]; then
+        if (( ${#prepaid_seats[@]} > 0 )); then
+            chosen="${prepaid_seats[0]}"
+            chosen_p="${chosen%%$'\t'*}"
+            _record_prepaid_pick "$chosen_p"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (prepaid/strongest class first)"
+        elif (( ${#metered_seats[@]} > 0 )); then
+            chosen="${metered_seats[0]}"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (metered; no prepaid left)"
+        elif (( ${#free_seats[@]} > 0 )); then
+            chosen="${free_seats[0]}"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (free last-resort)"
+        fi
+    elif (( ${#volume_seats[@]} > 0 )); then
         chosen="${volume_seats[0]}"
         chosen_p="${chosen%%$'\t'*}"
         # Prepaid members of the volume set still burn weekly pacing.
