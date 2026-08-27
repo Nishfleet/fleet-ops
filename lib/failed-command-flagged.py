@@ -8,7 +8,9 @@ assistant text that names the failure. Burying it in the tool result the
 user may not read does not count.
 
 grep/rg/diff exit 1 (POSIX no-match) is not a failure. Exit >= 2,
-timeouts, and non-grep exit 1 (the 404 origin case) are.
+timeouts, and non-grep exit 1 (the 404 origin case) are. A spawn-guard
+or harness block (SPAWN_BLOCKED / "Dangerous command blocked") is not a
+ran-and-failed command: the call never executed.
 
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
@@ -45,9 +47,11 @@ FLAG_RE = re.compile(
     r"unexpected failing command|it is now the blocker)",
     re.I,
 )
-# Harness refused the call; the command never ran, so there is nothing to flag.
+# Command never ran: Pi confirmation prompt, or fleet spawn-guard block.
+# SPAWN_BLOCKED is the live #648 class (git_stash_forbidden on `git stash list`).
 HARNESS_BLOCK_RE = re.compile(
-    r"Dangerous command blocked \(no UI for confirmation\)",
+    r"Dangerous command blocked \(no UI for confirmation\)"
+    r"|SPAWN_BLOCKED reason=",
     re.I,
 )
 SLUG_RE = re.compile(r"[^a-z0-9]+")

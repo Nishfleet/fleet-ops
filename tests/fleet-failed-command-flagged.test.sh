@@ -6,6 +6,7 @@
 #   1. Clean assistant text / successful toolResult -> exit 0, FAILED-COMMAND-OK.
 #   2. isError + no later flag -> exit 1.
 #   3. isError plus later "the call failed" -> exit 0.
+#   3d. SPAWN_BLOCKED (command never ran; live #648 git_stash_forbidden) -> exit 0.
 #   4. grep/rg exit 1 (POSIX no-match) -> exit 0.
 #   5. Origin case: 404 Not Found walked past -> exit 1.
 #   6. Timeout unflagged -> exit 1.
@@ -152,6 +153,18 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "harness block should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "harness-blocked command is not a swallowed failure"
 rm -f "$sessions/harness-block.jsonl"
+
+# --- 3d. SPAWN_BLOCKED is not a ran-and-failed command (fleet-ops#648) ------
+write_session "spawn-block" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_st","name":"bash","arguments":{"command":"git stash list"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_st","toolName":"bash","isError":true,"content":[{"type":"text","text":"SPAWN_BLOCKED reason=git_stash_forbidden. `git stash` is forbidden on this machine: checkouts are shared, so `git stash pop` grabs stash@{0}, which is very often another agent's work. Commit to a branch instead, or clone the repo fresh under /tmp and work there."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"On to the next check."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "SPAWN_BLOCKED should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "SPAWN_BLOCKED is not a swallowed failure (command never ran)"
+rm -f "$sessions/spawn-block.jsonl"
 
 # --- 4. grep exit 1 is POSIX no-match ---------------------------------------
 write_session "grep-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_g","name":"bash","arguments":{"command":"grep nowhere /etc/hosts"}}]}}
