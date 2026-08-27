@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily vault knowledge-format lint (07:45 IST)
+# Named reason (fleet-ops#525): a daily floor is the smallest cadence that
+# catches drift in 03 Knowledge shape (hubs, atomic-note links/words,
+# unresolved [[links]]) before the monthly red-team review. The heartbeat
+# does not need to poll the vault; this timer is the primary trigger.
+
+[Timer]
+OnCalendar=*-*-* 07:45:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

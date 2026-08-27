@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily vault knowledge-format lint + hub regeneration
+# Named reason (fleet-ops#525): the standing rule "Vault knowledge format:
+# atomic facts, hub notes, glossary" has no scheduled enforcer in fleet-ops.
+# This oneshot runs vault-knowledge-lint.sh, which lives in nish-vault because
+# it writes the shared-memory report and 03 Knowledge hub contents. The timer
+# is the named, scheduled gate; the lint is the shape checker.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/vault-knowledge-lint.sh
+TimeoutStartSec=5min
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true

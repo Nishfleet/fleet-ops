@@ -306,6 +306,11 @@ systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.confi
 lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/vault-conflict-resolver.service /home/nish/.config/systemd/user/vault-conflict-resolver.service
 systemd/vault-conflict-resolver.timer /home/nish/.config/systemd/user/vault-conflict-resolver.timer
+# fleet-ops#525: daily vault knowledge-format lint. The script lives in
+# nish-vault because it writes the shared-memory report and 03 Knowledge hub
+# contents; the timer is the named, scheduled fleet-ops enforcer.
+systemd/vault-knowledge-format.service /home/nish/.config/systemd/user/vault-knowledge-format.service
+systemd/vault-knowledge-format.timer /home/nish/.config/systemd/user/vault-knowledge-format.timer
 # fleet-ops#85: hourly reaper for stale interactive Claude/ccd-cli sessions
 # in session-*.scope. SIGTERM then SIGKILL; skips dirty/claim worktrees.
 # N=8h from the 2026-08-27 idle tail (live pile at 0h, stale cluster from 6h).

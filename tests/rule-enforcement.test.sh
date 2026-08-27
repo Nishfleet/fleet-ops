@@ -686,4 +686,9 @@ ok "rule-enforcement: repo-visibility canary drill"
 bash "$here/fleet-straitly-ds4-pro-canary.test.sh" || fail "straitly ds4-pro canary drill failed"
 ok "rule-enforcement: straitly ds4-pro canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, and straitly-ds4-pro drills"
+# fleet-ops#525: vault knowledge-format lint timer. Nested host so the worker
+# token does not need to edit .github/workflows/**.
+bash "$here/fleet-vault-knowledge-format.test.sh" || fail "vault knowledge-format drill failed"
+ok "rule-enforcement: vault knowledge-format drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, and vault-knowledge-format drills"

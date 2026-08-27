@@ -153,10 +153,9 @@
     {
       "id": "sr-vault-knowledge-format",
       "source": "global-standing-rules.md: Vault knowledge format: atomic facts, hub notes, glossary (Nish, 2026-08-20)",
-      "mechanism": "No shape linter for 03 Knowledge notes",
-      "proof": "Nishfleet/fleet-ops#525",
-      "status": "queued(#525)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Daily fleet-ops timer (vault-knowledge-format.timer) runs the vault-knowledge-lint.sh shape checker: verifies _hub.md with auto-contents markers in curated 03 Knowledge clusters, flags typed notes with fewer than 4 or more than 9 [[links]] or over 250 words, lists unresolved [[links]], regenerates hub contents, and writes vault-knowledge-lint-report.md",
+      "proof": "systemd/vault-knowledge-format.service; systemd/vault-knowledge-format.timer; MANIFEST; /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/vault-knowledge-lint.sh; /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/vault-knowledge-lint-report.md; tests/fleet-vault-knowledge-format.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-interventions-eliminated",
