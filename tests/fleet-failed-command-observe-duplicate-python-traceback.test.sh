@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/fleet-failed-command-observe-duplicate-python-traceback.test.sh
 #
-# fleet-ops#966: leftover duplicate open issues for the SAME python
+# fleet-ops#966 / #971: leftover duplicate open issues for the SAME python
 # traceback session signal must ALL drain via observe-to-close, not just
 # the first match.
 #
@@ -26,7 +26,8 @@
 # file locks the leftover-duplicate DRAIN for the python-traceback
 # pile so a future observe-to-close refactor cannot resolve only issue
 # 0 of the 01a03e38 pile, and so the citation chain (worker.md +
-# detector docstring + seat-lib.test.sh host) for #966 is verified.
+# detector docstring + seat-lib.test.sh host) for #966 and #971 is
+# verified.
 #
 # Live session: 2026-08-26T13-18-31-426Z_01a03e38-e602-737c-b399-576dcf48d08e.jsonl
 # Live signal:  failed-command-flagged/2026-08-26t13-18-31-426z-01a03e38-e602-737c-b399-576dcf48d08e
@@ -40,7 +41,8 @@
 #   2. later tick with the marker already on all six: closes all six,
 #      still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. three-place citation lock (prompt, detector, CI host) for #966.
+#   4. three-place citation lock (prompt, detector, CI host) for #966
+#      and #971.
 
 set -euo pipefail
 
@@ -305,23 +307,31 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "live #966: still-dirty slug leaves all six leftover duplicates open"
 
-# --- 4. three-place citation lock (prompt, detector, CI host) for #966 -----
-# Same pin as #937 / #957 / #965: dropping the #966 citation from any
-# one of these three places is a regression even if the drain drill
-# still passes. The existing python-traceback test (fleet-ops#957)
-# already pins #957; this file adds the #966 citation next to it.
+# --- 4. three-place citation lock (prompt, detector, CI host) for #966 / #971 -----
+# Same pin as #937 / #957 / #965: dropping the #966 or #971 citation
+# from any one of these three places is a regression even if the drain
+# drill still passes. The existing python-traceback test (fleet-ops#957)
+# already pins #957; this file adds the #966 citation next to it, and
+# the #971 citation next to #966 — both are siblings in the 01a03e38
+# leftover-duplicate pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
 grep -q '#966' "$worker" \
   || fail "prompts/worker.md must carry the #966 citation next to the #957 python-traceback citation"
 grep -q 'fleet-ops#957, #966' "$worker" \
   || fail "prompts/worker.md must cite #966 next to the #957 python-traceback citation"
 ok "worker.md cites #966"
+grep -q '#966, #971' "$worker" \
+  || fail "prompts/worker.md must carry the #971 citation next to the #966 python-traceback leftover-duplicate citation"
+ok "worker.md cites #971"
 grep -q 'fleet-ops#957, #966' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #966 next to #957"
 ok "lib/failed-command-flagged.py docstring cites #966"
+grep -q '#966, #971' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #971 next to #966"
+ok "lib/failed-command-flagged.py docstring cites #971"
 grep -F -q 'fleet-failed-command-observe-duplicate-python-traceback.test.sh' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-observe-duplicate-python-traceback: live #966 leftover-duplicate drain"
+echo "OK: fleet-failed-command-observe-duplicate-python-traceback: live #966 / #971 leftover-duplicate drain"
