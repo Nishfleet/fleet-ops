@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/fleet-failed-command-edit-unmatch.test.sh
 #
-# fleet-ops#956: an `edit` tool result with
+# fleet-ops#956 / #965: an `edit` tool result with
 #   "Could not find the exact text in <path>. The old text must match
 #    exactly including all whitespace and newlines."
 # is a real failure (the worker's `oldText` was stale) and must still be
@@ -20,6 +20,10 @@
 # 2026-08-27T11:57:42Z.
 #
 # Live session: 2026-08-26T11-57-42-915Z_01a03dee-ea83-759b-8044-ba3adddcbe8b.jsonl
+# The same session was also auto-filed as leftover duplicates #965,
+# #970, #975, #980 (search-index delay, fleet-ops#951). The shape lock
+# lives here; leftover-duplicate observe-to-close drain lives in
+# tests/fleet-failed-command-observe-duplicate-open.test.sh (#965).
 # The worker edited
 #   /home/nish/workspaces/agent-state/0509-transformation/discovery-spike-v2/discover_v2.py
 # with a stale `oldText` (`def fetch_0509_search(query: str, retries: int = 2)`).

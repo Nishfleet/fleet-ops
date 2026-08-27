@@ -1807,6 +1807,10 @@ bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-
 # walked past, with a silent read/grep recovery and a later thinking-only
 # note that the file was different, is the same class. Same CI constraint.
 bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-command-edit-unmatch tests failed"
+# fleet-ops#965: leftover duplicates of the same 01a03dee session signal
+# (index-delay filings #956/#965/#970/#975/#980) must ALL drain via
+# observe-to-close, not just the first match. Same CI constraint.
+bash "$here/fleet-failed-command-observe-duplicate-open.test.sh" || fail "fleet-failed-command-observe-duplicate-open tests failed"
 # fleet-ops#957: a `python3 -c` / `python3 << 'EOF'` probe that crashes
 # with a Python traceback (KeyError, NameError, etc.) and
 # `Command exited with code 1`, walked past with a silent re-probe, a
