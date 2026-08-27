@@ -87,7 +87,11 @@ must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) — or the variant
 "Found N occurrences of the text in <path>. The text must be unique."
 (fleet-ops#1053, same class: oldText matched multiple locations, not zero)
-— or the no-op variant
+— or the multi-edit array variant
+"Could not find edits[0] in <path>. The oldText must match exactly
+including all whitespace and newlines." (fleet-ops#1173, same class:
+the first edit in a multi-edit array had stale oldText) — or the no-op
+variant
 "No changes made to <path>. The replacement produced identical content.
 This might indicate an issue with special characters or the text not
 existing as expected." (fleet-ops#1139, same class: the edit matched but
@@ -104,7 +108,10 @@ not the FAILURE (the edit returned isError), exactly like the #1059
 failure. Do NOT add a READ_OFFSET_RE-style exemption for the no-op
 wording on the theory that "nothing broke": the worker believed it had
 edited the file and it had not, which is the whole point of the rule.
-tests/fleet-failed-command-edit-unmatch.test.sh pins all three shapes. #970 is the same session shape as #956 / #965 (the
+tests/fleet-failed-command-edit-unmatch.test.sh pins the single-edit,
+multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
+unmatch.test.sh pins the multi-edit array `edits[0]` shape
+(fleet-ops#1173). #970 is the same session shape as #956 / #965 (the
 01a03dee edit-unmatch session); it is a leftover open duplicate filed
 by the same GitHub-search-index-delay that produced #951 / #965, so
 the citation chain must carry it. #975 is the same session shape as
