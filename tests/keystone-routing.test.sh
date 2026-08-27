@@ -129,6 +129,12 @@ key=$(pick 1 keystone) || fail "4: keystone pick must succeed"
 [[ "$key" == "cursor	cursor-grok-4.6-high" ]] \
   || fail "4: keystone expected cursor-grok-4.6-high, got: $key"
 ok "4: keystone routes to prepaid grok, not commandcode"
+ks_ledger="$scratch/state-1-keystone-$$/keystone-routing.jsonl"
+[[ -f "$ks_ledger" ]] \
+  || fail "4b: keystone pick must write $ks_ledger"
+grep -q '"event":"routed"' "$ks_ledger" \
+  || fail "4b: expected routed event in the keystone ledger"
+ok "4b: keystone pick writes routed ledger event"
 
 # --- 5. two strikes escalate ----------------------------------------------
 tried2="$scratch/tried-2.txt"
@@ -140,6 +146,9 @@ set -e
 [[ "$two_rc" == "1" ]] || fail "5: two-strike expected rc=1, got $two_rc"
 [[ -z "$two" ]] || fail "5: two-strike expected empty seat, got: $two"
 ok "5: keystone two-strike returns empty (senior conference)"
+grep -q '"event":"escalated"' "$scratch/state-1-keystone-$$/keystone-routing.jsonl" \
+  || fail "5b: two-strike must write escalated ledger event"
+ok "5b: keystone two-strike writes escalated ledger event"
 
 # --- 6. one strike still picks --------------------------------------------
 tried1="$scratch/tried-1.txt"
