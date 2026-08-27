@@ -1174,6 +1174,10 @@ bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-comma
 # failed gate walked past is the same class. Same CI constraint
 # (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-canary-script-exit-1.test.sh" || fail "fleet-failed-command-canary-script-exit-1 tests failed"
+# fleet-ops#784: `systemctl --user status` of a failed unit (exit 3)
+# walked past is the same class. Same CI constraint (worker token cannot
+# add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-systemctl-status-failed.test.sh" || fail "fleet-failed-command-systemctl-status-failed tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
