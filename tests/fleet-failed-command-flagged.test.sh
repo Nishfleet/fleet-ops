@@ -8,6 +8,10 @@
 #   3. isError plus later "the call failed" -> exit 0.
 #   3d. SPAWN_BLOCKED (command never ran; live #648 git_stash_forbidden) -> exit 0.
 #   4. grep/rg exit 1 (POSIX no-match) -> exit 0.
+#   4b. ls no-match (exit 2) with stderr suppressed -> exit 0.
+#   4b2. live #764: ls natural no-match shape with stderr captured -> exit 0.
+#   4b3. ls real Permission denied walked past -> exit 1.
+#   4c. which no-match (exit 1) -> exit 0.
 #   5. Origin case: 404 Not Found walked past -> exit 1.
 #   6. Timeout unflagged -> exit 1.
 #   6d. Bash [N/M] progress + timeout, flag only in toolCall comment (live #686) -> exit 1.
@@ -223,12 +227,47 @@ rm -f "$sessions/grep-nomatch.jsonl"
 
 # --- 4b. ls no-match (exit 2) is a probe, not a swallowed failure -----------
 write_session "ls-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"cd /tmp && echo \"---\"; ls nonexistent-glob-* 2>/dev/null"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls","toolName":"bash","isError":true,"content":[{"type":"text","text":"---\n\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls","name":"bash","isError":true,"content":[{"type":"text","text":"---\n\n\nCommand exited with code 2"}]}}
 {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No matching files. Continuing."}]}}'
 rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "ls no-match exit 2 should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "ls no-match (exit 2) is treated as a probe, not a swallowed failure"
 rm -f "$sessions/ls-nomatch.jsonl"
+
+# --- 4b2. live #764: ls <path> 2>&1 (natural no-match shape captured) ------
+# The 0509 senior-auditor session that #764 was filed for ran:
+#   ls app/lib/aggression-score.ts ...; echo "---"; ls app/lib/change-criticality.server.ts 2>&1
+# The second `ls` is an existence probe and produced:
+#   ls: cannot access 'app/lib/change-criticality.server.ts': No such file or directory
+# followed by "Command exited with code 2". The natural `ls <missing>` output
+# is the canonical "does the file exist" probe — same shape as grep no-match.
+# The detector must treat this as a probe, not a swallowed failure.
+write_session "ls-nomatch-captured" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_probe764","name":"bash","arguments":{"command":"cd /home/nish/workspaces/products/0509 2>/dev/null && ls app/lib/aggression-score.ts app/lib/digest-rerank.ts 2>&1; echo \"---\"; ls app/lib/change-criticality.server.ts 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_probe764","name":"bash","isError":true,"content":[{"type":"text","text":"app/lib/aggression-score.ts\napp/lib/digest-rerank.ts\n---\nls: cannot access 'app/lib/change-criticality.server.ts': No such file or directory\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"PASS. The proposed file does not exist yet; that is the gap."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #764 ls natural no-match (exit 2, 'cannot access') should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "ls natural no-match shape (live #764) is treated as a probe, not a swallowed failure"
+rm -f "$sessions/ls-nomatch-captured.jsonl"
+
+# --- 4b3. ls Permission denied is a real error, not a probe -----------------
+# A real ls failure mode (real permission error) MUST still be flagged when
+# walked past. The natural no-match shape does not include "Permission denied",
+# so the tighter LS_ERR_RE keeps it on the deny-list.
+write_session "ls-permission-denied" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_pd","name":"bash","arguments":{"command":"ls /root/secret 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_pd","name":"bash","isError":true,"content":[{"type":"text","text":"ls: cannot open directory '/root/secret': Permission denied\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"On to the next check."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "ls Permission denied walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "ls Permission denied must be flagged as swallowed"
+ok "ls real Permission denied is still flagged (probe-vs-error split)"
+rm -f "$sessions/ls-permission-denied.jsonl"
 
 # --- 4c. which no-match (exit 1) is a probe, not a swallowed failure --------
 write_session "which-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_which","name":"bash","arguments":{"command":"which nonexistent-binary 2>&1"}}]}}

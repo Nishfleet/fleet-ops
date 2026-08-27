@@ -276,7 +276,7 @@
     {
       "id": "sr-failed-command-flagged",
       "source": "global-standing-rules.md: A failed command is ALWAYS flagged, never walked past (Nish, 2026-08-24 - forbidden to repeat)",
-      "mechanism": "Heartbeat session-close lint: Pi JSONL toolResult isError / non-zero exit / timeout without later assistant text naming the failure is LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped. SPAWN_BLOCKED / harness confirmation blocks are skipped (command never ran). Observe-to-close comments resolved-at when the slug ages out, then closes on a later tick (fleet-ops#650).",
+      "mechanism": "Heartbeat session-close lint: Pi JSONL toolResult isError / non-zero exit / timeout without later assistant text naming the failure is LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped; ls no-match (exit 2 with the natural `ls: cannot access 'X': No such file or directory` shape) and which no-match (exit 1) are also probes and skipped. SPAWN_BLOCKED / harness confirmation blocks are skipped (command never ran). Observe-to-close comments resolved-at when the slug ages out, then closes on a later tick (fleet-ops#650).",
       "proof": "bin/fleet-failed-command-flagged; lib/failed-command-flagged.py; tests/fleet-failed-command-flagged.test.sh; fleet-heartbeat-tier1 block 17",
       "status": "enforced"
     },

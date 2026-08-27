@@ -48,9 +48,23 @@ LS_BENIGN_RE = re.compile(
     r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?(?:ls|ll)\b",
     re.I,
 )
-# ls error text that must not be treated as a no-match probe.
+# The natural `ls <missing-path>` output:
+#   `ls: cannot access 'X': No such file or directory`
+# is the standard exit-2 result of an existence probe. The original
+# detector (#788) treated "cannot access" and "No such file or directory"
+# as a real error, which incorrectly flagged legitimate `ls` probes (live
+# #764: 0509 senior-auditor session checking for change-criticality.server.ts
+# before voting on a candidate). Match the exact natural shape so it
+# always wins over a blanket deny-list.
+LS_NOMATCH_RE = re.compile(
+    r"ls:\s*cannot access '[^']*':\s*No such file or directory",
+    re.I,
+)
+# Real ls errors that must NOT be treated as a no-match probe: permission
+# denied, bad option, invalid input. The "cannot access" / "No such file"
+# patterns moved into LS_NOMATCH_RE so the natural probe text is exempt.
 LS_ERR_RE = re.compile(
-    r"(?:ls:|cannot access|No such file or directory|Permission denied)",
+    r"(?:Permission denied|ls:\s*(?:unrecognized option|invalid\b|cannot open))",
     re.I,
 )
 # Unquoted assistant report. Tight on the standing-rule verbs.
@@ -137,8 +151,14 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     if REAL_ERR_RE.search(text):
         return False
     # ls(1) exits 2 when a path or glob does not match; agents use this as a probe.
-    if LS_BENIGN_RE.search(command) and code == 2 and not LS_ERR_RE.search(text):
-        return True
+    if LS_BENIGN_RE.search(command) and code == 2:
+        # The natural no-match shape always wins — this is the exact
+        # `ls <missing>: ...No such file or directory` output that
+        # `ls` produces when probing for a non-existent path.
+        if LS_NOMATCH_RE.search(text):
+            return True
+        if not LS_ERR_RE.search(text):
+            return True
     if code != 1:
         return False
     return BENIGN_STAGE_RE.search(command) is not None
