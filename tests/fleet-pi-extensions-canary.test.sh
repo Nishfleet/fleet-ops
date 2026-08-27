@@ -263,7 +263,7 @@ grep -F 'fleet-pi-extensions-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-pi-extensions-canary"
 grep -F 'pi_extensions_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture pi_extensions_canary_rc"
-grep -F -- 'exit "$pi_extensions_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash pi_extensions_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the extensions gate fails loud"
 grep -q 'bin/fleet-pi-extensions-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-pi-extensions-canary"

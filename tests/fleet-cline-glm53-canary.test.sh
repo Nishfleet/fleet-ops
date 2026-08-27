@@ -345,7 +345,7 @@ grep -F 'fleet-cline-glm53-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-cline-glm53-canary"
 grep -F 'cline_glm53_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture cline_glm53_canary_rc"
-grep -F -- 'exit "$cline_glm53_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash cline_glm53_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the ClinePass GLM 5.3 flash gate fails loud"
 grep -q 'bin/fleet-cline-glm53-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-cline-glm53-canary"

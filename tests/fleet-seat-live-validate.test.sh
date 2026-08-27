@@ -241,7 +241,7 @@ grep -F 'fleet-seat-live-validate' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-seat-live-validate"
 grep -F 'seat_live_validate_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture seat_live_validate_rc"
-grep -F -- 'exit "$seat_live_validate_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash seat_live_validate_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the live-validate watcher is broken"
 grep -q 'bin/fleet-seat-live-validate' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-seat-live-validate"

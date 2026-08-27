@@ -307,7 +307,7 @@ grep -F 'fleet-volume-lane-order-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-volume-lane-order-canary"
 grep -F 'volume_order_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture volume_order_canary_rc"
-grep -F -- 'exit "$volume_order_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash volume_order_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the volume-order gate fails loud"
 grep -q 'bin/fleet-volume-lane-order-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-volume-lane-order-canary"

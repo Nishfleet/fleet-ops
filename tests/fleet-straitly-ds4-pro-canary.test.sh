@@ -360,7 +360,7 @@ grep -F 'fleet-straitly-ds4-pro-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-straitly-ds4-pro-canary"
 grep -F 'straitly_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture straitly_canary_rc"
-grep -F -- 'exit "$straitly_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash straitly_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the straitly gate fails loud"
 grep -q 'bin/fleet-straitly-ds4-pro-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-straitly-ds4-pro-canary"

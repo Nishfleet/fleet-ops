@@ -272,7 +272,7 @@ grep -F 'fleet-tailscale-acl-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-tailscale-acl-canary"
 grep -F 'tailscale_acl_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture tailscale_acl_canary_rc"
-grep -F -- 'exit "$tailscale_acl_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash tailscale_acl_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the Tailscale ACL gate fails loud"
 grep -q 'bin/fleet-tailscale-acl-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-tailscale-acl-canary"

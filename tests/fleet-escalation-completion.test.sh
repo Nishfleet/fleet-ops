@@ -196,7 +196,7 @@ grep -F 'fleet-escalation-completion' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-escalation-completion"
 grep -F 'escalation_completion_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture escalation_completion_rc"
-grep -F -- 'exit "${escalation_completion_rc}"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash escalation_completion_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the completion enforcer fails loud"
 n=$(grep -cF 'bin/fleet-escalation-completion ' "$repo_root/MANIFEST" || true)
 [[ "$n" == "1" ]] || fail "MANIFEST must list fleet-escalation-completion exactly once (got $n)"

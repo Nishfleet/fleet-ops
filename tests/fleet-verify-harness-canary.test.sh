@@ -337,7 +337,7 @@ grep -F 'fleet-verify-harness-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-verify-harness-canary"
 grep -F 'verify_harness_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture verify_harness_canary_rc"
-grep -F -- 'exit "$verify_harness_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash verify_harness_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the verify-harness gate fails loud"
 grep -q 'bin/fleet-verify-harness-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-verify-harness-canary"

@@ -327,7 +327,7 @@ grep -F 'fleet-heartbeat-red-pr-repair' "$tier1" >/dev/null \
     || fail "tier1 must invoke fleet-heartbeat-red-pr-repair"
 grep -F 'redpr_rc' "$tier1" >/dev/null \
     || fail "tier1 must capture redpr_rc and propagate it"
-grep -F -- 'exit "$redpr_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash redpr_rc' "$tier1" >/dev/null \
     || fail "tier1 must exit non-zero when red-pr-repair fails loud (page path)"
 grep -F 'RED-PR-ESCALATE' "$bin" >/dev/null \
     || fail "helper must emit RED-PR-ESCALATE on exhaustion"

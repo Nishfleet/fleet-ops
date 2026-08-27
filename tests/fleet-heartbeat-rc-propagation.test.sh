@@ -175,6 +175,54 @@ set -e
 [[ "$drill_rc" != "0" ]] || fail "D: drill planted if-! then rc=\$? and the scanner stayed quiet"
 ok "D: drill: planted inverted capture is rejected"
 
+# --- E. alarm (rc=1) vs crash (rc>=2) (fleet-ops#1156) ----------------------
+# Live hot-patch: detector findings (rc=1) stay loud but must not fail the
+# unit. Helper crashes (rc>=2) still propagate. Extract the live function
+# so this drill dies if the helper is renamed or its contract changes.
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+[[ -x "$tier1" ]] || fail "E: not executable: $tier1"
+prop_src=$(awk '
+  /^_propagate_crash\(\)/ {grab=1}
+  grab {print}
+  grab && /^}/ {exit}
+' "$tier1")
+[[ -n "$prop_src" ]] || fail "E: _propagate_crash missing from bin/fleet-heartbeat-tier1"
+eval "$prop_src"
+run_prop() {
+  eval "$1=$2"
+  set +e
+  _propagate_crash "$1"
+  local got=$?
+  set -e
+  [[ "$got" == "$3" ]] || fail "E: $1=$2 must return $3, got $got"
+}
+run_prop deploy_rc 0 0
+run_prop deploy_rc 1 0
+run_prop deploy_rc 2 2
+run_prop canary_rc 7 7
+ok "E: _propagate_crash swallows rc=1, forwards rc>=2"
+
+# --- F. every captured *_rc is crash-propagated, old if-chain gone ---------
+python3 - "$tier1" <<'PY' || fail "F: crash-propagation source gate failed"
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+if "if [ \"$deploy_rc\" -ne 0 ]; then" in text:
+    print("old deploy_rc fail-loud if-chain still present")
+    sys.exit(1)
+# Tail after the final complete-log is the only propagation site.
+tail = text.rsplit('log "tier 1 complete:', 1)[-1]
+missing = []
+for name in re.findall(r"\b([a-z0-9_]+_rc)=", text.split('log "tier 1 complete:', 1)[-1].splitlines()[0]):
+    if f"_propagate_crash {name}" not in tail:
+        missing.append(name)
+if missing:
+    print("missing _propagate_crash for: " + ", ".join(missing))
+    sys.exit(1)
+sys.exit(0)
+PY
+ok "F: every logged *_rc has _propagate_crash; old if-chain gone"
+
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-rc-propagation.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"

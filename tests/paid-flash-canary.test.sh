@@ -166,7 +166,7 @@ grep -F 'fleet-paid-flash-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-paid-flash-canary"
 grep -F 'paid_flash_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture paid_flash_canary_rc"
-grep -F -- 'exit "$paid_flash_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash paid_flash_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the paid-flash watcher is broken"
 ok "scenario6: heartbeat-tier1 wires the canary and propagates fail-loud"
 

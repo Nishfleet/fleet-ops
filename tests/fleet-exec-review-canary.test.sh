@@ -498,7 +498,7 @@ grep -q 'fleet-exec-review-canary' "$tier1" \
   || fail "fleet-heartbeat-tier1 must invoke fleet-exec-review-canary"
 grep -q 'exec_review_canary_rc' "$tier1" \
   || fail "fleet-heartbeat-tier1 must propagate exec_review_canary_rc"
-grep -F -- 'exit "$exec_review_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash exec_review_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the exec-review watch is broken"
 grep -q 'bin/fleet-exec-review-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-exec-review-canary"

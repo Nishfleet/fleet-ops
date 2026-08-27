@@ -401,7 +401,7 @@ grep -F '20. researcher dispatch starting' "$tier1" >/dev/null \
   || fail "tier1 must log researcher dispatch as block 20"
 grep -F 'researcher_dispatch_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture researcher_dispatch_rc"
-grep -F -- 'exit "$researcher_dispatch_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash researcher_dispatch_rc' "$tier1" >/dev/null \
   || fail "tier1 must propagate a broken researcher dispatch"
 grep -F 'fleet-researcher-dispatch' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-researcher-dispatch"

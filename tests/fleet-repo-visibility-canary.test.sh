@@ -276,7 +276,7 @@ grep -F 'fleet-repo-visibility-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-repo-visibility-canary"
 grep -F 'repo_visibility_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture repo_visibility_canary_rc"
-grep -F -- 'exit "$repo_visibility_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash repo_visibility_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the repo-visibility gate fails loud"
 grep -q 'bin/fleet-repo-visibility-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-repo-visibility-canary"

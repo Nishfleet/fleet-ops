@@ -332,7 +332,7 @@ grep -F 'fleet-free-roster-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-free-roster-canary"
 grep -F 'free_roster_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture free_roster_canary_rc"
-grep -F -- 'exit "$free_roster_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash free_roster_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when a roster gate fails loud"
 grep -q 'bin/fleet-free-roster-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-free-roster-canary"

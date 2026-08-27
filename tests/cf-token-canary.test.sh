@@ -123,7 +123,7 @@ grep -q 'require_manifest_helper.*CF_TOKEN_CANARY' "$tier1" \
 grep -q 'HELPER-MISSING.*cf token' "$tier1" \
   || fail "tier1 block 32 must loud HELPER-MISSING"
 # exit propagation
-grep -Eq 'exit "\$cf_token_canary_rc"|\exit "\$\{cf_token_canary_rc' "$tier1" \
+grep -F -- '_propagate_crash cf_token_canary_rc' "$tier1" \
   || fail "tier1 must exit-propagate cf_token_canary_rc"
 # final log line includes the rc
 grep -q 'cf_token_canary_rc=' "$tier1" \

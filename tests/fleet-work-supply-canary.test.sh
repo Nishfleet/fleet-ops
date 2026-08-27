@@ -310,7 +310,7 @@ grep -F 'fleet-work-supply-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-work-supply-canary"
 grep -F 'work_supply_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture work_supply_canary_rc"
-grep -F -- 'exit "$work_supply_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash work_supply_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the work-supply gate fails loud"
 grep -q 'bin/fleet-work-supply-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-work-supply-canary"

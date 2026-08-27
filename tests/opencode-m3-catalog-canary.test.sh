@@ -229,7 +229,7 @@ grep -F 'opencode-m3-catalog-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke opencode-m3-catalog-canary"
 grep -F 'opencode_m3_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture opencode_m3_canary_rc"
-grep -F -- 'exit "$opencode_m3_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash opencode_m3_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the billing gate fails loud"
 grep -q 'bin/opencode-m3-catalog-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/opencode-m3-catalog-canary"

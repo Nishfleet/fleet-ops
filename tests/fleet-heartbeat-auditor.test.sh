@@ -403,7 +403,7 @@ grep -F -- 'senior-auditor helper missing at $AUDITOR_BIN' "$tier1" >/dev/null \
     || fail "tier1 must loud HELPER-MISSING when the auditor dest is absent"
 grep -F -- 'auditor_rc=$?' "$tier1" >/dev/null \
     || fail "tier1 must assign auditor_rc from the auditor helper exit (fleet-ops#615); swallowed _aud_rc leaves a broken panel green"
-grep -F -- 'if [ "${auditor_rc:-0}" -ne 0 ]; then' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash auditor_rc' "$tier1" >/dev/null \
     || fail "tier1 exit-code list must propagate auditor_rc"
 if awk '
     /# 4b\. SENIOR AUDITOR PANEL/ { in_block=1 }

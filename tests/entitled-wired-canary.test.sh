@@ -185,7 +185,7 @@ grep -F 'fleet-entitled-wired-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-entitled-wired-canary"
 grep -F 'entitled_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture entitled_canary_rc"
-grep -F -- 'exit "$entitled_canary_rc"' "$tier1" >/dev/null \
+grep -F -- '_propagate_crash entitled_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the entitled-vs-wired canary fails loud"
 ok "scenario7: heartbeat-tier1 wires the canary and propagates fail-loud"
 
