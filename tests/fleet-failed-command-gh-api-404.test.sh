@@ -53,7 +53,6 @@ JSONL
 
 report=$(run_scan)
 count=$(jq '.findings | length' <<<"$report")
-slug=$(jq -r '.findings[0].slug // ""' <<<"$report")
 [[ "$count" == "1" ]] || fail "live #698 gh api 404 walked past should be a finding (got $count) $report"
 grep -q 'Not Found' <<<"$(jq -r '.findings[0].snippet' <<<"$report")" \
   || fail "finding snippet should mention Not Found (got $(jq -r '.findings[0].snippet' <<<"$report"))"
