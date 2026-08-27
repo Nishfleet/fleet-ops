@@ -167,3 +167,9 @@ bash "$here/p14-unstubbed-unit-verify.test.sh"
 # fleet-ops#566: P14 verify-command is an explicit list. Workers cannot push
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
+
+# fleet-ops#695: same-repo `Closes <repo>#N` rejection gate. Pure
+# evaluator hosted by this listed test so the drill runs in P14
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/same-repo-closes-gate.test.sh"

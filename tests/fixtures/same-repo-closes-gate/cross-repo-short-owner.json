@@ -1,0 +1,7 @@
+{
+  "title": "fix(siterep): cross-repo Closes is allowed",
+  "body": "Closes fleet-ops#42",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "siterep-public"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "siterep-public"},
+  "closingIssuesReferences": []
+}

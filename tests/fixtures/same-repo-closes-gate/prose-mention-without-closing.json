@@ -1,0 +1,7 @@
+{
+  "title": "Close fleet-ops#480 now that the canary reports the ledger source covered",
+  "body": "## Goal\n\nClose fleet-ops#480 now that the canary reports the ledger source covered.\n\nThis PR does NOT use the closing reference syntax (the author forgot); the prose mentions the issue but the platform did not parse a close.\n",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": []
+}
