@@ -14,6 +14,10 @@
 #  10. Production seat-caps is clean.
 #  11. Heartbeat-tier1 wires the canary and propagates a fail-loud.
 #  12. pick_seat prefers volume prefix over leftover free (runtime proof).
+#  18. observe-to-close keeps xai-oauth unwired while seat-caps lacks the row.
+#  18b. observe-to-close CLOSES xai-oauth unwired once the seat-caps row lands
+#      (fleet-ops#1268 mechanical fix — the always-active arm was wrong).
+#  18c/18d. cap-zero-stale-reason closes on cap>0 / stays open on stale reason.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -495,20 +499,96 @@ grep -q 'observe-to-close: CLOSED issue #1292' <<<"$env_out" \
 ok "scenario17: closed in-volume-prefix issue once cursor is excluded"
 unset GH_OPEN_ISSUES
 
-# --- 18. observe-to-close: xai-oauth unwired must NOT be auto-closed by this canary ---
+# --- 18. observe-to-close: xai-oauth unwired kept while seat-caps still missing the row ---
+# Live #1268 class: the canary-filed ticket stays open while the wire is
+# absent. base_caps has no providers.xai-oauth, so signal_still_active
+# must return active and observe-to-close must keep the issue.
 : >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
 base_caps; base_models; base_seat_lib
 export GH_OPEN_ISSUES="$scratch/open.json"
 jq -n --arg b $'body\nvolume-lane-order-canary: xai-oauth unwired\n' \
-  '[{number: 1163, title: "wire xai-oauth into seat-caps", body: $b}]' >"$GH_OPEN_ISSUES"
+  '[{number: 1268, title: "volume lane order: wire xai-oauth into seat-caps", body: $b}]' >"$GH_OPEN_ISSUES"
 run_canary
 [[ "$env_rc" == "0" ]] || fail "scenario18: xai detector tick must stay green, got rc=$env_rc ($env_out)"
-grep -q 'observe-to-close: keep #1163' <<<"$env_out" \
-  || fail "scenario18: must keep #1163 (xai-oauth out of scope) ($env_out)"
-if [[ -s "$GH_CLOSE_LOG" ]] && grep -q '1163' "$GH_CLOSE_LOG"; then
-    fail "scenario18: must NOT call issue close on #1163 (log=$(cat "$GH_CLOSE_LOG"))"
+grep -q 'observe-to-close: keep #1268' <<<"$env_out" \
+  || fail "scenario18: must keep #1268 while still unwired ($env_out)"
+if [[ -s "$GH_CLOSE_LOG" ]] && grep -q '1268' "$GH_CLOSE_LOG"; then
+    fail "scenario18: must NOT call issue close on #1268 while unwired (log=$(cat "$GH_CLOSE_LOG"))"
 fi
-ok "scenario18: xai-oauth unwired kept open (wire owned by #1163)"
+ok "scenario18: xai-oauth unwired kept open while seat-caps still missing the row"
+unset GH_OPEN_ISSUES
+
+# --- 18b. observe-to-close: xai-oauth unwired CLOSES once the seat-caps row lands ---
+# The mechanical fix for live #1268. PR #1257 (and #1163) put providers.xai-oauth
+# on main; observe-to-close must now drain the canary-filed ticket instead of
+# hard-coding the signal as always-active. Hand-filed #1163 (no marker) is
+# ignored by parse_marker and stays on its own close path.
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps
+jq '.providers["xai-oauth"] = {
+  "cap": 1,
+  "class": "prepaid-quota",
+  "quota_window": "weekly",
+  "models": { "grok-4.6": 1, "grok-4.5": 1 }
+} | .prepaid_providers_in_order += ["xai-oauth"]' \
+  "$scratch/seat-caps.json" >"$scratch/seat-caps.tmp" \
+  && mv "$scratch/seat-caps.tmp" "$scratch/seat-caps.json"
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: xai-oauth unwired\n' \
+  '[{number: 1268, title: "volume lane order: wire xai-oauth into seat-caps", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18b: wired xai must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1268' <<<"$env_out" \
+  || fail "scenario18b: must close #1268 once xai-oauth is wired ($env_out)"
+ok "scenario18b: xai-oauth unwired closed once seat-caps row is present (fleet-ops#1268)"
+unset GH_OPEN_ISSUES
+
+# --- 18c. observe-to-close: xai-oauth cap-zero-stale-reason closes when cap>0 ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps
+jq '.providers["xai-oauth"] = {
+  "cap": 1,
+  "class": "prepaid-quota",
+  "models": { "grok-4.6": 1 }
+}' "$scratch/seat-caps.json" >"$scratch/seat-caps.tmp" \
+  && mv "$scratch/seat-caps.tmp" "$scratch/seat-caps.json"
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: xai-oauth cap-zero-stale-reason\n' \
+  '[{number: 1300, title: "volume lane order: xai-oauth cap=0 needs a fresh dated reason", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18c: cap>0 must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1300' <<<"$env_out" \
+  || fail "scenario18c: must close #1300 once cap>0 ($env_out)"
+ok "scenario18c: xai-oauth cap-zero-stale-reason closed once cap is raised"
+unset GH_OPEN_ISSUES
+
+# --- 18d. observe-to-close: xai-oauth cap-zero-stale-reason kept when cap=0 + stale reason ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps
+jq '.providers["xai-oauth"] = {
+  "cap": 0,
+  "class": "prepaid-quota",
+  "reason": "parked 2026-08-20 before the revival",
+  "models": {}
+}' "$scratch/seat-caps.json" >"$scratch/seat-caps.tmp" \
+  && mv "$scratch/seat-caps.tmp" "$scratch/seat-caps.json"
+# models.json still has xai-oauth so the detector would re-file; for
+# observe-to-close we only care that the open ticket stays open.
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: xai-oauth cap-zero-stale-reason\n' \
+  '[{number: 1301, title: "volume lane order: xai-oauth cap=0 needs a fresh dated reason", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+# Detector will also file (or dedup) on this tick; exit must stay 0.
+[[ "$env_rc" == "0" ]] || fail "scenario18d: detector tick must stay green, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: keep #1301' <<<"$env_out" \
+  || fail "scenario18d: must keep #1301 while cap=0 + stale reason ($env_out)"
+if [[ -s "$GH_CLOSE_LOG" ]] && grep -q '1301' "$GH_CLOSE_LOG"; then
+    fail "scenario18d: must NOT close #1301 while signal active (log=$(cat "$GH_CLOSE_LOG"))"
+fi
+ok "scenario18d: xai-oauth cap-zero-stale-reason kept while cap=0 + stale reason"
 unset GH_OPEN_ISSUES
 
 # --- 19. observe-to-close: issue without the marker is ignored ---
