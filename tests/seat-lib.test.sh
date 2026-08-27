@@ -1919,3 +1919,14 @@ bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed
 # host for the new detector drill.
 bash "$here/cancelled-while-queued-detector.test.sh" || fail "cancelled-while-queued-detector tests failed"
 
+# fleet-ops#1061: compound bash chain (`;`-separated) where earlier
+# commands succeed and a downstream `ls <path>` fails Permission
+# denied with a silenced last command — bash exits 1 (not 2), the
+# visible `ls: cannot access '<path>': Permission denied` line is in
+# REAL_ERR_RE so no `LS_BENIGN_RE` / `BENIGN_STAGE_RE` short-circuit
+# applies, and a thinking-only next turn plus a recovery toolCall is
+# not a user-facing flag. Workers cannot add a P14 line in
+# .github/workflows/ci.yml; this file is the listed CI host for the
+# new drill.
+bash "$here/fleet-failed-command-compound-ls-permission-denied.test.sh" || fail "fleet-failed-command-compound-ls-permission-denied tests failed"
+
