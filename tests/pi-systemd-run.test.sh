@@ -134,7 +134,9 @@ fi
 
 unit="issue26-survive-$$"
 # Parent starts the unit and exits. The child sleep must still be running.
-bash -c "$bin --unit $unit -- /bin/sleep 20"
+# Suppress the dispatch ledger write so the live test does not pollute the
+# real agent-state ledger with a test sleep unit (fleet-ops#1009).
+bash -c "FLEET_DISPATCH_LEDGER_NO_WRITE=1 $bin --unit $unit -- /bin/sleep 20"
 # Parent is gone. Give systemd a moment to register the unit.
 sleep 0.4
 state="$(systemctl --user is-active "${unit}.service" 2>/dev/null || true)"

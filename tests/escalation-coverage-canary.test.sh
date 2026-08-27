@@ -1026,3 +1026,8 @@ bash "$here/fleet-seat-live-validate.test.sh"
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/credential-expiry-canary.test.sh"
 
+# fleet-ops#1009: packet dispatch ledger canary. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens cannot
+# push .github/workflows/**).
+bash "$here/fleet-dispatch-canary.test.sh"
+

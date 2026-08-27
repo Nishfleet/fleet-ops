@@ -202,9 +202,13 @@ is_escalation_excluded() {
 
 # Sanctioned bin wrappers that are allowed to invoke the pi binary directly.
 # New runners must be added here AND wired to a systemd unit template.
+# fleet-dispatch-canary (fleet-ops#1009) re-dispatches orphaned packets via
+# pi-systemd-run with a `pi --print` command; it is a sanctioned pi-runner
+# path, not a hand-built dispatcher.
 SANCTIONED_PI_RUNNERS=(
     agent-cron-run
     fleet-blind-audit
+    fleet-dispatch-canary
     fleet-heartbeat-tier2
     fleet-researcher-run
     pi-audit-run

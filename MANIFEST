@@ -402,4 +402,10 @@ systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-reco
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
 bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
+# fleet-ops#1009: every pi-systemd-run dispatch is a canary-tracked chain.
+# Closes completed entries (journal verdict), re-dispatches orphans past
+# deadline (SAME packet file on the next healthy seat), escalates to the
+# SENIOR AUDITOR via STOP-REASON after 2 failed re-dispatches. Wired into
+# fleet-heartbeat-tier1 block 32.
+bin/fleet-dispatch-canary /home/nish/.local/bin/fleet-dispatch-canary
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
