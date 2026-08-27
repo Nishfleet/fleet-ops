@@ -1219,6 +1219,12 @@ bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-
 # branch` (exit 128). The next assistant turn is a recovery toolCall
 # with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-git-branch-cannot-force-update.test.sh" || fail "fleet-failed-command-git-branch-cannot-force-update tests failed"
+# fleet-ops#949: `cd <already-checked-out-wt> && git fetch origin` is
+# refused with `fatal: 'main' is already used by worktree at '<path>'`
+# (exit 128). The next assistant turn is a recovery toolCall against
+# the right path, with no user-facing flag. Same CI constraint
+# (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-fetch-main-worktree-busy.test.sh" || fail "fleet-failed-command-fetch-main-worktree-busy tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
