@@ -1184,6 +1184,11 @@ bash "$here/fleet-failed-command-systemctl-status-failed.test.sh" || fail "fleet
 # recovery turn is a toolCall (`bash -x ... | tail ...`) with no
 # user-facing text. Same CI constraint.
 bash "$here/fleet-failed-command-fresh-debug-script.test.sh" || fail "fleet-failed-command-fresh-debug-script tests failed"
+# fleet-ops#765: `cd <path>; git status; git log` against a path that
+# is not a git checkout (or does not exist) emits `fatal: not a git
+# repository` and exit 128. The next assistant turn is a recovery
+# toolCall with no user-facing flag. Same CI constraint.
+bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-command-cd-non-git-repo tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
