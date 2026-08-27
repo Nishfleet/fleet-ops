@@ -412,6 +412,19 @@ packet_difficulty() {
     task_weight "$pkt"
 }
 
+# fleet-ops#1133: JSONL ledger the metrics exporter heartbeats on.
+# Fail-open: a write error must never brick pick_seat.
+keystone_record_event() {
+    local event="${1:-}" p="${2:-}" m="${3:-}"
+    local ledger="${KEYSTONE_LEDGER:-$STATE_DIR/keystone-routing.jsonl}"
+    event="${event//[^A-Za-z0-9._-]/}"
+    p="${p//[^A-Za-z0-9._/-]/}"
+    m="${m//[^A-Za-z0-9._/-]/}"
+    mkdir -p "$(dirname "$ledger")" 2>/dev/null || return 0
+    printf '{"ts":"%s","event":"%s","provider":"%s","model":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$p" "$m" >>"$ledger" 2>/dev/null || true
+}
+
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
 # ids containing '/' (e.g. deepseek/deepseek-v4-flash) survive on disk.
 seat_ledger_path() {
@@ -1188,6 +1201,7 @@ pick_seat() {
     # so 0 = first attempt, 1 = one retry left, >=2 = escalate.
     if [[ "$difficulty" == "keystone" ]] && (( tried_count >= 2 )); then
         seat_log "pick_seat: KEYSTONE ESCALATION — ${tried_count} strikes; refusing further cheap retries (senior conference via OnFailure)"
+        keystone_record_event escalated
         return 1
     fi
 
@@ -1379,6 +1393,9 @@ pick_seat() {
         chosen="${metered_seats[0]}"
     fi
     if [[ -n "$chosen" ]]; then
+        if [[ "$difficulty" == "keystone" ]]; then
+            keystone_record_event routed "${chosen%%$'\t'*}" "${chosen#*$'\t'}"
+        fi
         printf '%s\n' "$chosen"
         return 0
     fi

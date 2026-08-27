@@ -33,7 +33,7 @@ make_clone() {
     local name="$1"
     local bare="$scratch/${name}.git"
     local clone="$scratch/${name}"
-    git init --bare -q "$bare"
+    git -c init.defaultBranch=main init -q --bare "$bare"
     git clone -q "$bare" "$clone"
     git_ident "$clone"
     printf 'base\n' >"$clone/README"
