@@ -152,7 +152,12 @@ export_last_run() {
             repo=$(basename "$file" .state)
             valid_repo "$repo" || continue
             epoch=$(read_field "$file" last_run_epoch)
+            # 0 / missing = begin never succeeded. Exporting 0 makes
+            # (time()-last_run)>28800 true immediately and re-fires
+            # FleetScoutStale on an ExecCondition rest skip (fleet-ops
+            # 2026-08-27T19:41Z). Omit instead; absent() covers none-begun.
             is_uint "$epoch" || continue
+            [[ "$epoch" -gt 0 ]] || continue
             printf 'fleet_scout_last_run_seconds{repo="%s"} %s\n' "$repo" "$epoch"
         done
         shopt -u nullglob
