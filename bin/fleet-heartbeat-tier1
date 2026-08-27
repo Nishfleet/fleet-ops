@@ -1700,7 +1700,12 @@ FREE_ROSTER_CANARY_BIN="${FLEET_FREE_ROSTER_CANARY:-/home/nish/.local/bin/fleet-
 free_roster_canary_rc=0
 if [ -x "$FREE_ROSTER_CANARY_BIN" ]; then
     log "21. free-model roster canary starting"
-    if "$FREE_ROSTER_CANARY_BIN"; then
+    # The production heartbeat is the only place that opts the canary
+    # into auto-closing stale auto-filed detector findings (fleet-ops#995
+    # class). Without this opt-in, a worker that runs the canary from a
+    # worktree inherits the worker's gh credentials and could close real
+    # issues. The opt-in is read by observe_to_close inside the canary.
+    if FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 "$FREE_ROSTER_CANARY_BIN"; then
         log "21. free-model roster canary complete"
     else
         free_roster_canary_rc=$?

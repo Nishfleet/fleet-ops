@@ -60,6 +60,15 @@ case "$*" in
     echo "https://github.com/Nishfleet/fleet-ops/issues/999"
     exit 0
     ;;
+  *"issue close"*)
+    # observe-to-close path. Record the issue number (2nd arg) so the
+    # test can assert a close was issued.
+    num=$(printf '%s\n' "$*" | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }')
+    if [[ -n "$num" && -n "${GH_CLOSED_ISSUES:-}" ]]; then
+      printf '%s\n' "$num" >>"$GH_CLOSED_ISSUES"
+    fi
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
@@ -79,6 +88,7 @@ run_canary() {
     SEAT_CAPS_JSON="$scratch/seat-caps.json" \
     FLEET_FREE_ROSTER_CATALOG_JSON="$scratch/catalog.tsv" \
     FLEET_OPS_REPO="$scratch" \
+    FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 \
     "$bin" 2>&1
   )
   env_rc=$?
@@ -453,4 +463,334 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario16: production seat-caps keep nemotron-3-ultra-free and no billing sibling"
 
-ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
+# --- 17. observe-to-close: free-slug-available clears when wired ----------
+# The canary auto-filed #995 when opencode/nemotron-3.5-lightning-free was
+# free-form in the catalog but not in the allowlist. The fix wired it
+# (cap=1, dated reason). On the next tick, observe-to-close must detect
+# the slug is now allowlisted and close the stale issue (fleet-ops#995).
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+export GH_CLOSED_ISSUES="$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:nemotron-3.5-lightning-free free-slug-available\n' \
+  '[{number: 995, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1, "nemotron-3.5-lightning-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+opencode	nemotron-3.5-lightning-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario17: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #995' <<<"$env_out" \
+  || fail "scenario17: must close #995 (the wired free case), env_out=$env_out"
+grep -q 'issue close 995' "$gh_log" \
+  || fail "scenario17: gh must receive close 995, gh_log=$gh_log"
+grep -q '^995$' "$scratch/closed.log" \
+  || fail "scenario17: closed issue ledger must record 995 (got $(cat "$scratch/closed.log"))"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario17: must not re-file while signal cleared"
+ok "scenario17: free-slug-available clears when wired, closes the stale issue"
+
+# --- 18. observe-to-close: free-slug-available clears at cap=0 bench ------
+# The production lock requires a cap=0 row (fleet-ops#811, #640, #910,
+# #911). When the worker benches a failed live spawn at cap=0 with a
+# dated reason, the original free-slug-available issue must observe-to-
+# close — the cap=0 row IS the wired answer. Without this, the canary
+# would re-open a free-slug-available ticket once the original issue
+# closes via the merged PR, and the worker would loop.
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:x-preview-f-free free-slug-available\n' \
+  '[{number: 811, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1, "x-preview-f-free": 0 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+opencode	x-preview-f-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #811' <<<"$env_out" \
+  || fail "scenario18: cap=0 bench must close the stale free-slug-available issue, env_out=$env_out"
+grep -q '^811$' "$scratch/closed.log" \
+  || fail "scenario18: closed issue ledger must record 811"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario18: must not re-file a free-slug-available for a benched cap=0 slug"
+ok "scenario18: cap=0 bench clears the free-slug-available issue"
+
+# --- 19. observe-to-close: free-slug-available clears when slug leaves catalog
+# A free slug that was in the catalog and unwired is no longer a candidate
+# if the provider pulled it. The original ticket must close.
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:ghost-free free-slug-available\n' \
+  '[{number: 920, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario19: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #920' <<<"$env_out" \
+  || fail "scenario19: slug-left-catalog must close the stale issue, env_out=$env_out"
+grep -q '^920$' "$scratch/closed.log" \
+  || fail "scenario19: closed issue ledger must record 920"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario19: must not re-file; the slug is no longer in the catalog"
+ok "scenario19: free-slug-available clears when slug leaves the catalog"
+
+# --- 20. observe-to-close: signal STILL active -> keep the issue open ----
+# A free-slug-available issue is still in the catalog AND not wired. The
+# canary must NOT close it; the discover path also re-fires the loud (no
+# new file because dedup).
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:muse-spark-1.2-contributor-free free-slug-available\n' \
+  '[{number: 930, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+opencode	muse-spark-1.2-contributor-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario20: discovery tick must stay rc=0, got $env_rc ($env_out)"
+! grep -q 'observe-to-close: CLOSED issue #930' <<<"$env_out" \
+  || fail "scenario20: must NOT close #930 while the signal is still active"
+! grep -q '^930$' "$scratch/closed.log" \
+  || fail "scenario20: must not record 930 in the close ledger"
+grep -q 'FREE-ROSTER-AVAILABLE' "$triage" \
+  || fail "scenario20: must still LOUD the unwired free slug"
+ok "scenario20: signal-still-active issue is kept open (no false close)"
+
+# --- 21. observe-to-close: stale-slug clears when slug back in catalog ----
+# A stale-slug ticket was filed because a wired free slug was missing
+# from the catalog. The provider re-published it. observe-to-close
+# detects the slug is back in the catalog and closes the stale ticket.
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:comeback-free stale-slug\n' \
+  '[{number: 940, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1, "comeback-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+opencode	comeback-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario21: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #940' <<<"$env_out" \
+  || fail "scenario21: stale-slug clears when slug reappears in catalog, env_out=$env_out"
+grep -q '^940$' "$scratch/closed.log" \
+  || fail "scenario21: closed issue ledger must record 940"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario21: must not re-file a stale-slug for a slug back in the catalog"
+ok "scenario21: stale-slug clears when the slug reappears in the catalog"
+
+# --- 22. observe-to-close: stale-slug clears when slug removed from allowlist
+# A stale-slug ticket was filed. The fix removed the slug from the
+# allowlist. observe-to-close detects the slug is no longer allowlisted
+# and closes the stale ticket.
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:retired-free stale-slug\n' \
+  '[{number: 950, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario22: clean tick must stay rc=0, got $env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #950' <<<"$env_out" \
+  || fail "scenario22: stale-slug clears when slug removed from allowlist, env_out=$env_out"
+grep -q '^950$' "$scratch/closed.log" \
+  || fail "scenario22: closed issue ledger must record 950"
+ok "scenario22: stale-slug clears when slug is removed from the allowlist"
+
+# --- 23. observe-to-close: gate findings are NOT auto-closed -------------
+# The canary auto-files gate findings (Ollama carve-out, penny-for-speed).
+# These are class violations — the merged PR that fixed the gate is the
+# close path. observe-to-close must NEVER close them, even if the live
+# state no longer reports the violation. Otherwise a transient canary
+# blip could close a real class violation, and a later PR that
+# re-introduces the violation would re-open it with no audit trail.
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: ollama carve-out-violation\n' \
+  '[{number: 960, body: $b}]' >"$GH_OPEN_ISSUES"
+jq -n --arg b $'body\nfree-roster-canary: opencode missing-from-free-order\n' \
+  '[{number: 961, body: $b}]' >"$scratch/open2.json"
+jq -s 'add' "$GH_OPEN_ISSUES" "$scratch/open2.json" >"$scratch/open-merged.json"
+mv "$scratch/open-merged.json" "$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1 } },
+    "ollama": { "cap": 4, "class": "prepaid-quota",
+      "models": { "deepseek-v4-flash:0731": 4 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario23: clean tick must stay rc=0, got $env_rc ($env_out)"
+! grep -q 'observe-to-close: CLOSED issue #960' <<<"$env_out" \
+  || fail "scenario23: must NOT close gate finding #960 (carve-out)"
+! grep -q 'observe-to-close: CLOSED issue #961' <<<"$env_out" \
+  || fail "scenario23: must NOT close gate finding #961 (penny-for-speed)"
+! grep -q '^960$' "$scratch/closed.log" \
+  || fail "scenario23: must not record 960 in the close ledger"
+! grep -q '^961$' "$scratch/closed.log" \
+  || fail "scenario23: must not record 961 in the close ledger"
+ok "scenario23: gate findings (carve-out, penny-for-speed) are never auto-closed"
+
+# --- 24. observe-to-close: production seat-caps closes the live #995 ------
+# The live-shaped scenario. Issue #995 (opencode/nemotron-3.5-lightning-
+# free, free-slug-available) is still open. Production seat-caps already
+# wires the slug (cap=1, dated reason). On the next canary tick,
+# observe-to-close must close #995.
+prod_open="$scratch/prod-open.json"
+prod_catalog="$scratch/catalog-prod-2.tsv"
+jq -r '.providers | to_entries[] | select((.value|type)=="object") | select(.value.class=="free") | .key as $k | (.value.models // {}) | keys[] | "\($k)\t\(.)"' \
+  "$repo_root/config/seat-caps.json" > "$prod_catalog"
+# Add nemotron-3.5-lightning-free to the production catalog fixture (it
+# IS in the live catalog; production seat-caps wired it).
+if ! grep -q '^opencode\tnemotron-3.5-lightning-free$' "$prod_catalog"; then
+  printf 'opencode\tnemotron-3.5-lightning-free\n' >>"$prod_catalog"
+fi
+jq -n --arg b $'body\nfree-roster-canary: opencode:nemotron-3.5-lightning-free free-slug-available\n' \
+  '[{number: 995, body: $b}]' >"$prod_open"
+: >"$scratch/closed.log"
+set +e
+prod_obs_out=$(
+  FLEET_ENTITLED_SEATS_JSON="$repo_root/config/entitled-seats.json" \
+  SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" \
+  FLEET_FREE_ROSTER_CATALOG_JSON="$prod_catalog" \
+  FLEET_OPS_REPO="$repo_root" \
+  FLEET_FREE_ROSTER_FILE=1 \
+  FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 \
+  GH_OPEN_ISSUES="$prod_open" \
+  GH_CLOSED_ISSUES="$scratch/closed.log" \
+  GH="$gh_fake" \
+  "$bin" 2>&1
+)
+prod_obs_rc=$?
+set -e
+[[ "$prod_obs_rc" == "0" ]] || fail "scenario24: production observe-to-close tick must exit 0, got $prod_obs_rc ($prod_obs_out)"
+grep -q 'observe-to-close: CLOSED issue #995' <<<"$prod_obs_out" \
+  || fail "scenario24: production tick must close #995 ($prod_obs_out)"
+grep -q '^995$' "$scratch/closed.log" \
+  || fail "scenario24: closed issue ledger must record 995"
+unset GH_OPEN_ISSUES GH_CLOSED_ISSUES
+ok "scenario24: production seat-caps closes the stale #995 via observe-to-close"
+
+# --- 25. observe-to-close opt-in guard: default off -----------------------
+# The production canary must NOT auto-close from a worker run (fleet-ops#995
+# class: the in-flight worker run against a real gh closed 13 stale
+# duplicates because the canary's `export PATH` bypassed the test stub
+# and reached real gh). The opt-in is FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1,
+# which only the production heartbeat sets. Without the env var set, the
+# canary MUST log "observe-to-close: skipped" and MUST NOT call gh.
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+export GH_OPEN_ISSUES="$scratch/open.json"
+export GH_CLOSED_ISSUES="$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:nemotron-3.5-lightning-free free-slug-available\n' \
+  '[{number: 995, body: $b}]' >"$GH_OPEN_ISSUES"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free",
+    "models": { "hy3-free": 1, "nemotron-3.5-lightning-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+opencode	nemotron-3.5-lightning-free
+TSV
+# Crucially: NO FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE in the env.
+set +e
+guard_out=$(
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_FREE_ROSTER_CATALOG_JSON="$scratch/catalog.tsv" \
+  FLEET_OPS_REPO="$scratch" \
+  FLEET_FREE_ROSTER_FILE=1 \
+  "$bin" 2>&1
+)
+guard_rc=$?
+set -e
+[[ "$guard_rc" == "0" ]] || fail "scenario25: tick must stay rc=0, got $guard_rc ($guard_out)"
+grep -q 'observe-to-close: skipped' <<<"$guard_out" \
+  || fail "scenario25: must log observe-to-close: skipped (FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE != 1), env_out=$guard_out"
+! grep -q 'issue close' "$gh_log" \
+  || fail "scenario25: must NOT call gh issue close without the opt-in, gh_log=$gh_log"
+! grep -q '^995$' "$scratch/closed.log" \
+  || fail "scenario25: must NOT record 995 in the close ledger"
+ok "scenario25: opt-in guard: FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE default off; worker run never closes"
+
+# --- 26. observe-to-close opt-in guard: env=1 enables it ------------------
+# Same shape, with the opt-in set, the canary MUST close #995. This is the
+# mirror of scenario 17: the same fixture proves the canary closes when the
+# env is set, and refuses to close when it is not (scenarios 17+25 are
+# the canary on / canary off pair, with the same inputs).
+: >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
+jq -n --arg b $'body\nfree-roster-canary: opencode:nemotron-3.5-lightning-free free-slug-available\n' \
+  '[{number: 995, body: $b}]' >"$GH_OPEN_ISSUES"
+set +e
+optin_out=$(
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_FREE_ROSTER_CATALOG_JSON="$scratch/catalog.tsv" \
+  FLEET_OPS_REPO="$scratch" \
+  FLEET_FREE_ROSTER_FILE=1 \
+  FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 \
+  "$bin" 2>&1
+)
+optin_rc=$?
+set -e
+[[ "$optin_rc" == "0" ]] || fail "scenario26: tick must stay rc=0, got $optin_rc ($optin_out)"
+grep -q 'observe-to-close: CLOSED issue #995' <<<"$optin_out" \
+  || fail "scenario26: must close #995 when opt-in is set, env_out=$optin_out"
+grep -q '^995$' "$scratch/closed.log" \
+  || fail "scenario26: closed issue ledger must record 995"
+unset GH_OPEN_ISSUES GH_CLOSED_ISSUES
+ok "scenario26: opt-in env=1 enables the close; same fixture, different rc only when opt-in is set"
+
+# --- 27. heartbeat-tier1 wires FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 --------
+# The production heartbeat is the only caller that opts the canary into
+# auto-closing (fleet-ops#995). A worker run from a worktree must NEVER
+# set this; the canary's own opt-in guard is the second layer. The
+# production lock here catches a future PR that drops the env export
+# from the heartbeat block (or silently comments it out).
+grep -F 'FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 "$FREE_ROSTER_CANARY_BIN"' \
+    "$tier1" >/dev/null \
+  || fail "scenario27: heartbeat-tier1 must export FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 when calling the canary"
+# Also: the env must NOT be exported globally — that would let a worker
+# inherit it via the shell and accidentally close issues.
+if grep -nE '^[[:space:]]*export[[:space:]]+FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE' \
+    "$tier1" >/dev/null; then
+  fail "scenario27: FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE must be a per-call env, not an exported global"
+fi
+ok "scenario27: heartbeat wires FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 per-call, not exported globally"
+
+ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean, observe-to-close, opt-in guard"
