@@ -1,0 +1,12 @@
+{
+  "description": "Ledger 2026-08-27 GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish. Brand gate is preview-then-autonomous. llms.txt is developer-docs-only. grants[] and approved_surfaces[] stay empty until Nish writes a row.",
+  "ledger": "2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish",
+  "allowed_tactics": ["measurement", "owned-content"],
+  "parked_tactics": ["reddit-community", "digital-pr"],
+  "brand_gate": "preview-then-autonomous",
+  "llms_txt": "developer-docs-only",
+  "measurement_issues": [1236],
+  "owned_content_issues": [1237, 1238],
+  "approved_surfaces": [],
+  "grants": []
+}

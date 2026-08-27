@@ -152,3 +152,7 @@ fi
 # (nishfleet-worker cannot push .github/workflows/**). Hermetic cases do not
 # need user systemd; the nested file skips its own live SIGTERM drill.
 bash "$here/pi-salvage-worktree.test.sh" || fail "pi-salvage-worktree tests failed"
+
+# fleet-ops#1213: nested so hosted CI runs git-mirror-update tests without
+# a workflow edit (nishfleet-worker cannot push .github/workflows/**).
+bash "$here/git-mirror-update.test.sh" || fail "git-mirror-update tests failed"
