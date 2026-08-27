@@ -651,10 +651,9 @@
     {
       "id": "led-straitly-ds4-pro-workers",
       "source": "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers",
-      "mechanism": "straitly ds4-pro approved for worker use per dated decision; metered spend for auditing approved; seat routing updated",
-      "proof": "Nishfleet/fleet-ops#546",
-      "status": "queued(#546)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat straitly ds4-pro canary: providers.straitly must be class=metered with cap<=2; only deepseek/deepseek-v4-pro may be allowlisted on straitly with cap<=2; gpt-5.6-sol and qwen/qwen3.8-max are not approved; the ds4-pro slug must not be double-wired on any other provider; the slug must be present in models.json and `pi --list-models`; an active straitly/ds4-pro worker auto-files a meter-check ticket until a dated meter-check evidence file is written within minutes of the worker's started_at",
+      "proof": "bin/fleet-straitly-ds4-pro-canary; tests/fleet-straitly-ds4-pro-canary.test.sh; fleet-heartbeat-tier1 block 25; fleet-ops#546",
+      "status": "enforced"
     },
     {
       "id": "led-top-gear-everywhere",

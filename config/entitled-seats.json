@@ -45,6 +45,11 @@
       "note": "Free lanes AND credits. class=metered. Model allowlist owned by fleet-ops#384."
     },
     {
+      "id": "straitly",
+      "class": "metered",
+      "note": "Straitly deepseek-v4-pro for worker rotation. Approved 2026-08-27 (fleet-ops#546); cap=2, AIMD only with evidence, metered spend for auditing."
+    },
+    {
       "id": "hetzner",
       "class": "free",
       "note": "Hetzner inference free experimental. Allowlist is Qwen/Qwen3.6-35B-A3B-FP8 (fleet-ops#437)."
