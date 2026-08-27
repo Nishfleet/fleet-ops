@@ -39,6 +39,24 @@ RATCHET_PATHS = json.loads(os.environ["RATCHET_PATHS"])
 # Shorthands the fixture expressions below refer to by name.
 ADMIN = {"nish3451": "admin"}
 ATTEST = [{"user": "nish3451", "sha": HEAD}]
+# A multi-line attest comment body in the real-world #1273 shape: the marker
+# line first, then verifier-attest, then review prose. Built with Python
+# string concatenation so HEAD (a Python variable in this eval context) is
+# interpolated, not bash-expanded into broken quoting.
+MULTILINE_ATTEST_BODY = (
+    "gate-integrity-attest: " + HEAD + "\n"
+    "verifier-attest: " + HEAD + "\n\n"
+    "Orchestrator attestation after diff review: SHA-pinned codecov action "
+    "(v7), per-shard tokenless uploads, non-fatal during evaluate phase (a "
+    "Codecov outage cannot block PRs), no check weakened, no required context "
+    "altered. Promotion to required stays gated on 3 consecutive reliable "
+    "reports per the PR body's plan."
+)
+# A comment whose body merely mentions the marker in prose — must NOT attest.
+PROSE_MENTION_BODY = (
+    "I would post gate-integrity-attest: " + HEAD + " here but this sentence "
+    "is prose, not the marker line itself."
+)
 # Deterministic fixture data; eval is safe here (no untrusted input).
 bundle = eval(os.environ["FIXTURE_SRC"])
 bundle.setdefault("head_sha", HEAD)
@@ -180,6 +198,66 @@ fixture workflow_attested_maintainer '{
   "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
   "attestations": [{"user": "m", "sha": HEAD}], "permissions": {"m": "maintain"}}'
 run_fixture workflow_attested_maintainer FAIL "not admin"
+
+# --- #1273 regression: multi-line attest comment (fleet-ops#828) -------------
+# The real-world attest shape: the marker line is the FIRST line of a
+# multi-line comment that also carries `verifier-attest:` and review prose.
+# The workflow's old whole-body exact-match jq filter rejected this comment
+# entirely, so the decision script saw an empty attestations array and failed
+# with "no current gate-integrity-attest: <head sha> comment from a repository
+# admin" against a comment whose first line matched the head sha exactly.
+#
+# These fixtures exercise the line-anchored extraction path: the bundle ships
+# raw `comments` (the shape the fixed workflow delivers), and the decision
+# script extracts the attest line itself. The shorthands MULTILINE_ATTEST_BODY
+# and PROSE_MENTION_BODY are built in the build_bundle Python context with
+# string concatenation against the HEAD variable.
+
+fixture p1273_multiline_attest '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+        uses: codecov/codecov-action@v7"}],
+  "comments": [{"body": MULTILINE_ATTEST_BODY, "user": "nish3451"}],
+  "permissions": ADMIN}'
+run_fixture p1273_multiline_attest PASS "gate-path waived"
+
+# Same shape but the attest line is NOT the first line — extraction must find
+# it anywhere in the body, not only at the top.
+fixture multiline_attest_not_first_line '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": "Reviewing this PR now.\n\ngate-integrity-attest: " + HEAD + "\n\nLooks good.", "user": "nish3451"}],
+  "permissions": ADMIN}'
+run_fixture multiline_attest_not_first_line PASS "gate-path waived"
+
+# Prose that merely MENTIONS the marker does not attest: the line must be the
+# marker and nothing else. This is the security property the line-anchored
+# match preserves.
+fixture prose_mention_does_not_attest '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": PROSE_MENTION_BODY, "user": "nish3451"}],
+  "permissions": ADMIN}'
+run_fixture prose_mention_does_not_attest FAIL "no current \`gate-integrity-attest:"
+
+# A multi-line attest whose sha is stale (does not match head) is rejected,
+# exactly like the pre-extracted shape.
+fixture multiline_attest_stale '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": "gate-integrity-attest: " + OLD + "\n\nprose", "user": "nish3451"}],
+  "permissions": ADMIN}'
+run_fixture multiline_attest_stale FAIL "stale: a newer commit was pushed after it"
+
+# A multi-line attest by a non-admin is rejected.
+fixture multiline_attest_nonadmin '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": "gate-integrity-attest: " + HEAD + "\n\nprose", "user": "worker"}],
+  "permissions": {"worker": "write"}}'
+run_fixture multiline_attest_nonadmin FAIL "not admin"
+
+# CR characters in a multi-line attest body (Windows-style line endings) must
+# not break extraction.
+fixture multiline_attest_crlf '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": "gate-integrity-attest: " + HEAD + "\r\nverifier-attest: " + HEAD + "\r\n\r\nprose", "user": "nish3451"}],
+  "permissions": ADMIN}'
+run_fixture multiline_attest_crlf PASS "gate-path waived"
 
 fixture workflow_deleted '{"files": [
   {"filename": ".github/workflows/gate-integrity.yml", "status": "removed", "patch": "-name: gate-integrity"}]}'
@@ -496,6 +574,24 @@ fixture custom_admin_marker_pass '{
   "permissions": ADMIN,
   "admin_attestation_marker": "custom-attest"}'
 run_fixture custom_admin_marker_pass PASS "admin nish3451 attested"
+
+# A multi-line attest comment with a CUSTOM marker must still be extracted
+# line-anchored against that marker.
+fixture custom_admin_marker_multiline '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": "custom-attest: " + HEAD + "\n\nprose", "user": "nish3451"}],
+  "permissions": ADMIN,
+  "admin_attestation_marker": "custom-attest"}'
+run_fixture custom_admin_marker_multiline PASS "gate-path waived"
+
+# A comment carrying the DEFAULT marker must NOT attest when the configured
+# marker is different.
+fixture default_marker_does_not_attest_custom '{
+  "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
+  "comments": [{"body": "gate-integrity-attest: " + HEAD + "\n\nprose", "user": "nish3451"}],
+  "permissions": ADMIN,
+  "admin_attestation_marker": "custom-attest"}'
+run_fixture default_marker_does_not_attest_custom FAIL "no current \`custom-attest:"
 
 fixture custom_globs_ignore_workflow '{
   "files": [{"filename": ".github/workflows/ci.yml", "status": "modified", "patch": "+  timeout-minutes: 30"}],
