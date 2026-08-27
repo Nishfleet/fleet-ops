@@ -568,6 +568,26 @@ rc=$(run_bin 0)
 ok "live #848: bash git log with 'Command timed out' as commit body is not a swallowed timeout"
 rm -f "$sessions/bash-timeout-git-log.jsonl"
 
+# --- 6i. live #953: read tool ENOENT, no exit code, no later user-facing flag -
+# The session 2026-08-26T14-02-29-714Z ran `read` on a file that did not
+# exist. The toolResult had isError=true, details={}, and the text
+# "ENOENT: no such file or directory, access '<path>'" with no
+# "Command exited with code" line. The assistant's next turn was a
+# `thinking` block plus a follow-up toolCall, with no user-facing text.
+# The detector must flag this as a swallowed failure and not let a
+# `thinking` block or a subsequent toolCall count as a flag.
+write_session "read-enoent" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me read the context files first."},{"type":"toolCall","id":"call_r","name":"read","arguments":{"file_path":"/home/nish/workspaces/agent-state/OVERNIGHT.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_r","toolName":"read","content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/agent-state/OVERNIGHT.md'"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me look elsewhere."},{"type":"toolCall","id":"call_b","name":"bash","arguments":{"command":"ls /home/nish/workspaces/agent-state"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "read ENOENT with no user-facing flag should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "read ENOENT must be flagged as swallowed"
+ok "live #953: read ENOENT with no exit code and only thinking in next turn is flagged"
+rm -f "$sessions/read-enoent.jsonl"
+
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}

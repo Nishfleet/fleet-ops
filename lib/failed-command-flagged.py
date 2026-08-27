@@ -18,8 +18,11 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-spawn-guard or harness block (SPAWN_BLOCKED / "Dangerous command
-blocked") is not a ran-and-failed command: the call never executed.
+`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953) is a
+real swallowed failure: it is not a probe like ls no-match or read
+offset beyond end. A spawn-guard or harness block (SPAWN_BLOCKED
+/ "Dangerous command blocked") is not a ran-and-failed command: the call
+never executed.
 
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
