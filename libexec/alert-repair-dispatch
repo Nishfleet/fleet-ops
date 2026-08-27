@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""alert-repair-dispatch — receiver for prometheus-am-executor.
+
+Reads AMX_* env vars (per the upstream README), writes a self-contained
+repair packet, and hands it to `pi-systemd-run` so a worker outlives
+this script. No retries, no state. Alertmanager already dedupes
+(group_interval 1m) and throttles (repeat_interval 6h).
+
+Skip: Watchdog (heartbeat) and FleetTestAlert (synthetic) — both go to
+Telegram but must NOT spawn a repair worker.
+
+Alert-repair mutex (fleet-ops#1199):
+Before spawning, acquire an atomic claim branch (claim/<alert-scope>-<repo>)
+on the target repo. If the branch already exists (someone else owns the
+fix — heartbeat re-dispatch, prior alert, or a parallel webhook 10s apart
+for the same alert), log `skipped-claimed` to actions.log and spawn
+NOTHING. The same primitive intake uses (create-only push, server-refereed)
+is what makes this safe across hosts. Generalizes the red-main guard to
+every alert-repair dispatch targeting a repo.
+
+Exit 0 on skip/dispatch, non-zero on genuine script error.
+"""
+import calendar
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+PACKET_DIR = Path(os.environ.get(
+    "ALERT_REPAIR_PACKET_DIR",
+    "/home/nish/workspaces/agent-state/alert-repair",
+))
+LOG = PACKET_DIR / "actions.log"
+# LoadStorm is handled deterministically by load-storm-brake (wired in
+# prometheus-am-executor config.yml via match_labels). The LLM root-cause
+# worker for that class comes AFTER, via the STOP-REASON.json the brake
+# writes — never a direct dispatch. Listed here as defense in depth: even
+# if a LoadStorm alert reaches this command, it must not spawn an LLM worker.
+# CanaryDrill is the synthetic stalled-chain probe used by
+# fleet-completion-canary (packet 11, fleet-ops#468) — also must not
+# spawn a real repair worker; the canary drives the drill by faking a
+# DISPATCH line + a transient unit and watching the ladder.
+SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill"}
+
+# Seat selection — pick a healthy lane instead of hardcoding one. The
+# recorded seat in pi-seat-health.json wins if it is healthy AND observed
+# within 30 min; otherwise fall back through the canonical free/prepaid
+# ladder (fleet-ops prompts/heartbeat.md). Known-walled providers are
+# never used. SEAT_HEALTH_FILE override exists for self-tests only.
+SEAT_HEALTH_FILE = os.environ.get(
+    "SEAT_HEALTH_FILE",
+    "/home/nish/workspaces/agent-state/lanes/pi-seat-health.json",
+)
+FALLBACK_LADDER = [
+    ("devin", "glm-5-2"),
+    ("minimax", "MiniMax-M3"),
+]
+WALLED_PROVIDERS = {"grok", "cursor"}
+
+# Path to the alert-repair claim helper. Lives next to this script in
+# /home/nish/.local/libexec/ after install.sh runs (MANIFEST entry).
+# Overridable via ALERT_REPAIR_CLAIM_BIN for tests.
+ALERT_REPAIR_CLAIM_BIN = os.environ.get(
+    "ALERT_REPAIR_CLAIM_BIN",
+    str(Path(__file__).resolve().parent / "alert-repair-claim"),
+)
+
+
+def _target_repo(alertnames, common_labels, alerts):
+    """Return the repo this dispatch targets, or "" for fleet-internal alerts.
+
+    Priority: per-alert `repo` label (AMX_ALERT_<i>_LABEL_repo) > common
+    `repo` label (AMX_LABEL_repo) > first non-empty per-alert label > "".
+    Empty means no repo, so no claim needed — the dispatch is for the
+    fleet itself (heartbeat, watchdog, etc.), not a per-repo fix.
+    """
+    for a in alerts:
+        repo = a.get("labels", {}).get("repo", "")
+        if repo:
+            return repo
+    repo = common_labels.get("repo", "")
+    return repo or ""
+
+
+def _acquire_alert_repair_claim(alertnames, repo, log):
+    """Try to acquire the atomic claim branch. Returns True iff acquired.
+
+    On rc=1 (already claimed), the dispatcher MUST spawn NOTHING and log
+    `skipped-claimed`. On rc=0, the dispatcher may spawn. On rc=2 (script
+    error: missing checkout, no remote, no AMX env, etc.) we log and let
+    the dispatch proceed — a flaky mutex must not block every dispatch.
+    """
+    if not repo:
+        # No target repo: fleet-internal alert, no claim branch to acquire.
+        return True
+    # The claim branch is scoped to the first (most-specific) alert name so
+    # two different alerts on the same repo do NOT collide.
+    scope_alert = alertnames[0] if alertnames else ""
+    if not scope_alert:
+        return True
+    bin_path = ALERT_REPAIR_CLAIM_BIN
+    if not Path(bin_path).exists():
+        # Tests install the helper to a tmp path; in production install.sh
+        # places it next to this script. Missing is a script error, not a
+        # collision — log loud and let the dispatch proceed (same posture
+        # as rc=2 below).
+        log(f"WARN: alert-repair-claim helper missing at {bin_path}; "
+            "dispatch proceeding without atomic mutex (this is a deploy bug)")
+        return True
+    try:
+        r = subprocess.run(
+            [bin_path, repo, scope_alert],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"WARN: alert-repair-claim {repo}/{scope_alert} timed out; "
+            "dispatch proceeding without mutex")
+        return True
+    if r.returncode == 0:
+        log(f"acquired claim: {r.stdout.strip()}")
+        return True
+    if r.returncode == 1:
+        # Already claimed — the canonical skip path. The caller writes the
+        # `skipped-claimed` line.
+        log(f"claim held by other: {r.stdout.strip()}")
+        return False
+    # Script error: log loud but proceed. A flaky mutex is preferable to
+    # dropping every alert.
+    log(f"WARN: alert-repair-claim {repo}/{scope_alert} exited "
+        f"{r.returncode}: {r.stderr.strip()}; dispatch proceeding")
+    return True
+
+
+def _pick_seat():
+    """Return (provider, model, reason). No probing, no retries."""
+    try:
+        d = json.loads(Path(SEAT_HEALTH_FILE).read_text())
+        obs = d.get("observed_at")
+        fresh = False
+        if isinstance(obs, str):
+            try:
+                fresh = 0 <= time.time() - calendar.timegm(
+                    time.strptime(obs[:19], "%Y-%m-%dT%H:%M:%S")) <= 1800
+            except ValueError:
+                fresh = False
+        p, m = d.get("provider"), d.get("model")
+        if (d.get("health_class") == "healthy" and fresh and p and m
+                and p not in WALLED_PROVIDERS):
+            return p, m, "healthy"
+    except (OSError, json.JSONDecodeError):
+        pass
+    for p, m in FALLBACK_LADDER:
+        if p not in WALLED_PROVIDERS:
+            return p, m, "fallback"
+    return FALLBACK_LADDER[0][0], FALLBACK_LADDER[0][1], "fallback"
+
+
+def utcnow():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def utcstamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def main():
+    # --print-seat (no AMX env): emit a single "<provider>\t<model>\t<reason>"
+    # line on stdout and exit 0. Used by fleet-completion-canary when it
+    # needs a fresh seat for a re-dispatch without duplicating the seat
+    # selection logic. An optional --exclude=prov1,prov2 removes providers
+    # from the fallback ladder (the canary passes the original seat here so
+    # a re-dispatch lands on a different lane).
+    if "--print-seat" in sys.argv[1:]:
+        excl = set()
+        try:
+            i = sys.argv.index("--exclude")
+            if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+                excl = {p for p in sys.argv[i + 1].split(",") if p}
+        except ValueError:
+            pass
+        prov, mod, reason = _pick_seat()
+        if prov in excl:
+            # Recorded seat is on an excluded provider (the canary's typical
+            # case: the original dispatch landed here; the canary asks for
+            # a different lane). Walk the fallback ladder.
+            for fp, fm in FALLBACK_LADDER:
+                if fp not in WALLED_PROVIDERS and fp not in excl:
+                    print(f"{fp}\t{fm}\tfallback-excluded")
+                    return 0
+            # No seat available in the requested exclusions — exit 2 so the
+            # caller can decide (the canary falls back to a STOP-REASON
+            # write rather than dispatching into a wall).
+            print("WALLED\t-\tall-fallback-seats-excluded", file=sys.stderr)
+            return 2
+        print(f"{prov}\t{mod}\t{reason}")
+        return 0
+
+    PACKET_DIR.mkdir(parents=True, exist_ok=True)
+    status = os.environ.get("AMX_STATUS", "")
+    receiver = os.environ.get("AMX_RECEIVER", "?")
+
+    if status == "resolved":
+        with LOG.open("a") as f:
+            f.write(f"[{utcnow()}] SKIP resolved notification receiver={receiver}\n")
+        print(f"[{utcnow()}] SKIP resolved (receiver={receiver})", file=sys.stderr)
+        return 0
+
+    # AMX_ALERT_<i>_LABEL_alertname — find unique alertnames (1-indexed).
+    alertnames = []
+    for i in range(1, 65):
+        v = os.environ.get(f"AMX_ALERT_{i}_LABEL_alertname")
+        if v and v not in alertnames:
+            alertnames.append(v)
+    if not alertnames:
+        print(f"[{utcnow()}] ERROR: no AMX_ALERT_<n>_LABEL_alertname env vars",
+              file=sys.stderr)
+        return 2
+
+    # Skip synthetic/heartbeat alerts.
+    for name in alertnames:
+        if name in SKIP_SET:
+            with LOG.open("a") as f:
+                f.write(
+                    f"[{utcnow()}] SKIP alertname={name} receiver={receiver} "
+                    f"reason=skip-list\n"
+                )
+            print(f"[{utcnow()}] SKIP alertname={name} (in skip-list)", file=sys.stderr)
+            return 0
+
+    # Common (group) labels.
+    common_labels = {
+        k[len("AMX_LABEL_"):]: v
+        for k, v in os.environ.items()
+        if k.startswith("AMX_LABEL_") and not k.startswith("AMX_ALERT_")
+    }
+    common_annotations = {
+        k[len("AMX_ANNOTATION_"):]: v
+        for k, v in os.environ.items()
+        if k.startswith("AMX_ANNOTATION_") and not k.startswith("AMX_ALERT_")
+    }
+
+    # Per-alert labels/annotations (n=1..N).
+    alerts = []
+    for i in range(1, 65):
+        alertname = os.environ.get(f"AMX_ALERT_{i}_LABEL_alertname")
+        if not alertname:
+            break
+        labels = {
+            k[len(f"AMX_ALERT_{i}_LABEL_"):]: v
+            for k, v in os.environ.items()
+            if k.startswith(f"AMX_ALERT_{i}_LABEL_")
+        }
+        annotations = {
+            k[len(f"AMX_ALERT_{i}_ANNOTATION_"):]: v
+            for k, v in os.environ.items()
+            if k.startswith(f"AMX_ALERT_{i}_ANNOTATION_")
+        }
+        alerts.append({
+            "status": os.environ.get(f"AMX_ALERT_{i}_STATUS", ""),
+            "starts_at": os.environ.get(f"AMX_ALERT_{i}_START", ""),
+            "ends_at": os.environ.get(f"AMX_ALERT_{i}_END", ""),
+            "url": os.environ.get(f"AMX_ALERT_{i}_URL", ""),
+            "fingerprint": os.environ.get(f"AMX_ALERT_{i}_FINGERPRINT", ""),
+            "labels": labels,
+            "annotations": annotations,
+        })
+
+    stamp = utcstamp()
+    joined = "+".join(alertnames)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", joined)
+    packet = PACKET_DIR / f"packet-{safe}-{stamp}.md"
+    unit = f"alert-repair-{safe}-{stamp}"
+
+    # Render the packet.
+    lines = [
+        "# Alert repair packet",
+        "",
+        f"- Generated: {utcnow()}",
+        f"- Receiver:  {receiver}",
+        f"- Status:    {status}",
+        f"- AMX URL:   {os.environ.get('AMX_EXTERNAL_URL', '?')}",
+        "",
+        "## Alertnames",
+        "",
+    ]
+    for n in alertnames:
+        lines.append(f"- {n}")
+    lines += ["", "## Common labels", ""]
+    for k, v in sorted(common_labels.items()):
+        lines.append(f"- {k}={v}")
+    lines += ["", "## Common annotations", ""]
+    for k, v in sorted(common_annotations.items()):
+        lines.append(f"- {k}={v}")
+    lines += ["", "## Per-alert details", ""]
+    for idx, a in enumerate(alerts, 1):
+        lines.append(f"### Alert {idx} (fingerprint {a['fingerprint']})")
+        lines.append("")
+        lines.append(f"- status: {a['status']}")
+        lines.append(f"- starts_at: {a['starts_at']}")
+        lines.append(f"- ends_at:   {a['ends_at']}")
+        lines.append(f"- url:       {a['url']}")
+        lines.append("- labels:")
+        for k, v in sorted(a["labels"].items()):
+            lines.append(f"  - {k}={v}")
+        lines.append("- annotations:")
+        for k, v in sorted(a["annotations"].items()):
+            lines.append(f"  - {k}={v}")
+        lines.append("")
+    lines += [
+        "## Worker instructions",
+        "",
+        "You are a repair worker on netcup-rs2000. Diagnose this Prometheus",
+        "alert's root cause on this host, FIX it, verify the alert resolves",
+        "via `curl -s 127.0.0.1:9090/api/v1/alerts`, and append a one-line",
+        "result to /home/nish/workspaces/agent-state/alert-repair/actions.log.",
+        "Fix same-turn; fail loud only if genuinely unrepairable.",
+        "",
+        "EXIT CONTRACT: after your fix, re-check `curl -s 127.0.0.1:9090/api/v1/alerts`. If the alert you were dispatched for is no longer firing, exit 0. If it still fires, or you could not repair it, append your full diagnosis to your packet file under '## FAILED-REPAIR CONTEXT' and EXIT NON-ZERO — your unit's failure mechanically escalates to the senior-auditor pipeline, which needs that context. Never exit 0 on an unresolved alert.",
+        "",
+    ]
+    packet.write_text("\n".join(lines))
+
+    # fleet-ops#1199: acquire the alert-repair mutex BEFORE spawning. A
+    # claimed-by-other result means another dispatch already owns this
+    # (alert, repo) pair — heartbeat re-dispatch, prior alert, or a
+    # parallel webhook 10s apart. Log `skipped-claimed` and spawn NOTHING.
+    def _log(msg):
+        print(f"[{utcnow()}] {msg}", file=sys.stderr)
+
+    target_repo = _target_repo(alertnames, common_labels, alerts)
+    if not _acquire_alert_repair_claim(alertnames, target_repo, _log):
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIPPED-CLAIMED alertname={joined} "
+                f"repo={target_repo} reason=alert-repair-claim-already-held "
+                f"receiver={receiver}\n"
+            )
+        print(f"[{utcnow()}] SKIPPED-CLAIMED alertname={joined} "
+              f"repo={target_repo} reason=alert-repair-claim-already-held "
+              f"receiver={receiver}", file=sys.stderr)
+        return 0
+
+    # Dispatch — pick a healthy lane (no hardcoded seat).
+    provider, model, seat_reason = _pick_seat()
+    env = os.environ.copy()
+    env["PATH"] = f"{os.environ.get('HOME', '/home/nish')}/.local/bin:" + env.get("PATH", "")
+    env["XDG_RUNTIME_DIR"] = "/run/user/1000"
+    argv = [
+        "pi-systemd-run",
+        "--unit", unit,
+        "--stdin", str(packet),
+        "--",
+        "pi", "--print",
+        "--provider", provider,
+        "--model", model,
+    ]
+    try:
+        r = subprocess.run(argv, env=env, check=False)
+    except FileNotFoundError as exc:
+        print(f"[{utcnow()}] ERROR: dispatcher not found: {exc}", file=sys.stderr)
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] ERROR alertname={joined} dispatch_failed={exc}\n"
+            )
+        return 1
+    rc = r.returncode
+    with LOG.open("a") as f:
+        f.write(
+            f"[{utcnow()}] DISPATCH alertname={joined} unit={unit} "
+            f"seat={provider}/{model} reason={seat_reason} "
+            f"packet={packet} rc={rc}\n"
+        )
+    print(f"[{utcnow()}] DISPATCH alertname={joined} unit={unit} "
+          f"seat={provider}/{model} reason={seat_reason} rc={rc}",
+          file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

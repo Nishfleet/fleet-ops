@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# alert-repair-claim — atomic alert-repair claim-branch mutex (fleet-ops#1199).
+#
+# Create-only push of refs/heads/claim/<alert-scope>-<repo> from origin/main.
+# If the branch already exists (someone else owns the fix), exit 1.
+# Otherwise the caller has the exclusive right to spawn a repair worker for
+# that (alert, repo) pair.
+#
+# Generalizes the red-main guard: this mutex applies to EVERY alert-repair
+# dispatch that targets a repo, not just FleetMainRed. A red-main claim is
+# "claim/fleet-main-red-<repo>"; a fleet-escalation-storm claim is
+# "claim/fleet-escalation-storm-<repo>"; and so on. Two AlertManager webhooks
+# 10s apart for the same alert cannot both spawn a worker — exactly one
+# acquires the claim and dispatches, the other logs `skipped-claimed` and
+# spawns nothing.
+#
+# The branch is the same primitive intake uses (claim/issue-<N>) — a
+# server-refereed, atomic, create-only push. The local flock serialises
+# concurrent processes on the SAME host so the ls-remote + push window is
+# short; the server-side atomicity is what makes it safe across hosts.
+#
+# Usage:
+#   alert-repair-claim <repo> <alert-name>
+#
+#   <repo>   short name (e.g. fleet-ops) or full owner/name
+#   <alert>  Prometheus alert name (e.g. FleetMainRed)
+#
+# Environment overrides (tests):
+#   FLEET_CLAIM_CHECKOUT_ROOT  default /home/nish/workspaces/products
+#   FLEET_CLAIM_REMOTE         default origin
+#   FLEET_CLAIM_MAIN_BRANCH    default main
+#   ALERT_REPAIR_STATE_DIR     default /home/nish/.local/state/fleet-alert-repair
+#   XDG_RUNTIME_DIR            default /run/user/$(id -u)
+#
+# Exit:
+#   0  acquired (caller may now spawn a worker for this alert+repo)
+#   1  already claimed (caller MUST spawn NOTHING and log `skipped-claimed`)
+#   2  usage / bad arguments / no checkout / push error
+#
+# Stale-claim handling: the claim-reconcile + fleet-wipe-lessons-check pair
+# reaps claims >2h old that never spawned a PR (per existing claim-branch
+# conventions). The state file under $ALERT_REPAIR_STATE_DIR records the
+# acquisition time so the reaper can identify staleness without re-fetching
+# every branch.
+
+set -euo pipefail
+
+CHECKOUT_ROOT="${FLEET_CLAIM_CHECKOUT_ROOT:-/home/nish/workspaces/products}"
+REMOTE="${FLEET_CLAIM_REMOTE:-origin}"
+MAIN_BRANCH="${FLEET_CLAIM_MAIN_BRANCH:-main}"
+STATE_DIR="${ALERT_REPAIR_STATE_DIR:-/home/nish/.local/state/fleet-alert-repair}"
+XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+LOCKDIR="${XDG_RUNTIME_DIR}/fleet-claim-alert"
+
+log() {
+    printf '[%s] alert-repair-claim: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+usage() {
+    cat <<'EOF' >&2
+usage: alert-repair-claim <repo> <alert-name>
+
+<repo>   short repo name (fleet-ops) or full owner/name
+<alert>  Prometheus alert name (e.g. FleetMainRed, FleetEscalationStorm)
+EOF
+    exit 2
+}
+
+[[ $# -ge 2 ]] || usage
+repo_raw="$1"; shift
+alert_raw="$1"; shift
+
+# --- sanitise repo -----------------------------------------------------------
+repo="${repo_raw#Nishfleet/}"
+repo="${repo%/}"
+[[ -n "$repo" ]] || { log "repo is empty after sanitise: '$repo_raw'"; exit 2; }
+
+# --- sanitise alert name into a hyphenated scope fragment ------------------
+# CamelCase -> kebab-case, then strip to branch-safe. FleetMainRed ->
+# fleet-main-red; FleetEscalationStorm -> fleet-escalation-storm; WFR-led
+# -> wfr-led.
+sanitize_alert() {
+    local s="$1"
+    s=$(printf '%s' "$s" | sed -E 's/([a-z0-9])([A-Z])/\1-\2/g; s/([A-Z]+)([A-Z][a-z])/\1-\2/g')
+    s=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+    s="${s//[^a-z0-9._-]/_}"
+    s=$(printf '%s\n' "$s" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')
+    printf '%s' "$s"
+}
+
+scope=$(sanitize_alert "$alert_raw")
+[[ -n "$scope" ]] || { log "alert sanitised to empty scope: '$alert_raw'"; exit 2; }
+
+branch_name="claim/${scope}-${repo}"
+
+# --- validate repo checkout --------------------------------------------------
+repo_path="${CHECKOUT_ROOT}/${repo}"
+[[ -d "$repo_path" ]] || { log "checkout not found: $repo_path"; exit 1; }
+if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+    log "not a git repo: $repo_path"
+    exit 1
+fi
+if ! git -C "$repo_path" config "remote.${REMOTE}.url" >/dev/null 2>&1; then
+    log "remote '$REMOTE' not found in $repo_path"
+    exit 1
+fi
+
+# --- acquire local flock so concurrent processes serialise ------------------
+# flock prevents two local processes from racing through the same ls-remote
+# + push window. The server-side atomicity (push refusing to overwrite) is
+# what makes it safe across hosts.
+mkdir -p "$LOCKDIR"
+lock="$LOCKDIR/${repo}-${scope}.lock"
+exec 9>"$lock"
+if ! flock -w 30 9; then
+    log "could not acquire local flock for $repo/$scope"
+    exit 2
+fi
+
+# --- check branch already exists on origin ----------------------------------
+branch_tip() {
+    git -C "$repo_path" ls-remote "$REMOTE" "refs/heads/$branch_name" 2>/dev/null | awk '{print $1}'
+}
+
+if [[ -n "$(branch_tip)" ]]; then
+    printf 'claimed-by-other: Nishfleet/%s %s\n' "$repo" "$branch_name"
+    exit 1
+fi
+
+# --- fetch main so refs/remotes/origin/main is fresh ------------------------
+if ! git -C "$repo_path" fetch -q "$REMOTE" "$MAIN_BRANCH"; then
+    log "fetch $REMOTE/$MAIN_BRANCH failed for $repo"
+    exit 2
+fi
+src="refs/remotes/${REMOTE}/${MAIN_BRANCH}"
+if ! git -C "$repo_path" rev-parse "$src" >/dev/null 2>&1; then
+    log "remote-tracking ref $src missing after fetch"
+    exit 2
+fi
+
+# --- create-only push (server refuses if branch already exists) -------------
+# --force-with-lease="<ref>:" makes this a strict create-only push: if the
+# remote already has <ref>, the push fails. The remote is the source of truth.
+if ! git -C "$repo_path" push \
+    --force-with-lease="refs/heads/${branch_name}:" \
+    "$REMOTE" "${src}:refs/heads/${branch_name}"; then
+    # Race: another agent on another host may have pushed between our
+    # ls-remote and our push. Re-check and report.
+    tip=$(branch_tip)
+    if [[ -n "$tip" ]]; then
+        printf 'claimed-by-other: Nishfleet/%s %s (lost-race)\n' "$repo" "$branch_name"
+        exit 1
+    fi
+    log "push failed for Nishfleet/$repo $branch_name (no race; remote error)"
+    exit 2
+fi
+
+# Confirm visibility (push returned 0 but the ref might still not be there
+# if the remote rejects it silently — defence in depth).
+if [[ -z "$(branch_tip)" ]]; then
+    log "push reported success but $branch_name is not on $REMOTE"
+    exit 2
+fi
+
+# --- write state file (stale-claim reaper reads this) -----------------------
+mkdir -p "$STATE_DIR"
+state_file="$STATE_DIR/${repo}-${scope}.json"
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat > "${state_file}.tmp.$$" <<EOF
+{"repo":"$repo","alert":"$alert_raw","scope":"$scope","branch":"$branch_name","acquired_at":"$ts"}
+EOF
+mv "${state_file}.tmp.$$" "$state_file"
+
+printf 'claimed: Nishfleet/%s %s\n' "$repo" "$branch_name"
+exit 0
