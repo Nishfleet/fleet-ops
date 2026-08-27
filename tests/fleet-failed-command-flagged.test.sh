@@ -230,6 +230,52 @@ rc=$(run_bin 0)
 ok "ls no-match (exit 2) is treated as a probe, not a swallowed failure"
 rm -f "$sessions/ls-nomatch.jsonl"
 
+# --- 4b-prime. live #794: ls canonical "cannot access" probe is benign -----
+# Real live shape from the session that auto-filed the issue:
+#   `ls ... 2>&1; echo "---"; ls app/lib/change-criticality.server.ts 2>&1`
+# exits 2 with the canonical GNU `ls: cannot access '...': No such file or
+# directory` line plus a successful listing from the earlier ls in the same
+# command. The detector must treat this as a deliberate probe, not a
+# swallowed failure.
+write_session "ls-canonical" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_canon","name":"bash","arguments":{"command":"cd /home/nish/workspaces/products/0509 2>/dev/null && ls app/lib/aggression-score.ts app/lib/digest-rerank.ts app/lib/watch-period-triage.ts app/lib/digest-email.server.ts docs/noise-triage-competitors-2026-08-21.md docs/customer-readiness-remediation.md 2>&1; echo \"---\"; ls app/lib/change-criticality.server.ts 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_canon","toolName":"bash","isError":true,"content":[{"type":"text","text":"app/lib/aggression-score.ts\napp/lib/digest-email.server.ts\napp/lib/digest-rerank.ts\napp/lib/watch-period-triage.ts\ndocs/customer-readiness-remediation.md\ndocs/noise-triage-competitors-2026-08-21.md\n---\nls: cannot access 'app/lib/change-criticality.server.ts': No such file or directory\n\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"PASS — no duplicate, north-star fit, research-delta well-formed."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "ls canonical 'cannot access' probe should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "ls canonical 'cannot access' probe (live #794) is treated as a probe"
+rm -f "$sessions/ls-canonical.jsonl"
+
+# --- 4b-bsd. live #794 BSD/macOS ls shape is also a probe ------------------
+write_session "ls-bsd" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bsd","name":"bash","arguments":{"command":"ls /nonexistent/path"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bsd","toolName":"bash","isError":true,"content":[{"type":"text","text":"ls: /nonexistent/path: No such file or directory\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No such file. Continuing."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "BSD/macOS ls no-match should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "BSD/macOS ls no-match (live #794) is treated as a probe"
+rm -f "$sessions/ls-bsd.jsonl"
+
+# --- 4b-perm. real ls error (Permission denied) stays a swallowed failure --
+# The canonical no-match exemption must NOT swallow real ls errors. A probe
+# that tries to read /etc/shadow and gets "Permission denied" is a real
+# failure the assistant did not name, and the detector must still flag it.
+write_session "ls-perm" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_perm","name":"bash","arguments":{"command":"ls -l /etc/shadow"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_perm","toolName":"bash","isError":true,"content":[{"type":"text","text":"ls: cannot open directory '/etc/shadow': Permission denied\n\nCommand exited with code 2"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "ls Permission denied should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "ls Permission denied must be flagged as swallowed"
+ok "ls Permission denied (live #794) is still flagged as swallowed"
+rm -f "$sessions/ls-perm.jsonl"
+
 # --- 4c. which no-match (exit 1) is a probe, not a swallowed failure --------
 write_session "which-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_which","name":"bash","arguments":{"command":"which nonexistent-binary 2>&1"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_which","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
