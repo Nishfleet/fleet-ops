@@ -21,6 +21,15 @@
 #       out' as commit body text (isError=false) -> exit 0. The 6f/6g
 #       tests cover `read` and `bash grep`; this one covers a successful
 #       git log whose multi-commit body embeds the literal string.
+#   6h2. Live #943: bash `git log`+`git show` whose stdout contains
+#       'Command exited with code 1' as commit body text (isError=false)
+#       -> exit 0. Same principle as 6h (a bare failure-string in the
+#       content of a successful call is content), extended to the
+#       exit-code literal. This issue's own origin session was auto-filed
+#       as #943 because the #899 commit body quotes the phrase.
+#   6h3. Live #943 positive control: a REAL isError=true trailing
+#       `Command exited with code N` (Pi's genuine failure shape) is
+#       still flagged -> exit 1. Proves 6h2 is not "always flag".
 #   6i. Live #953: `read` ENOENT (isError=true, no exit code) with only a
 #       `thinking` block in the next turn -> exit 1. Thinking is not a
 #       user-facing flag.
@@ -670,6 +679,55 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "bash git log with 'Command timed out' as commit body should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "live #848: bash git log with 'Command timed out' as commit body is not a swallowed timeout"
 rm -f "$sessions/bash-timeout-git-log.jsonl"
+
+# --- 6h2. live #943: bash `git log`+`git show` with 'Command exited with
+#         code N' in commit body text (isError=false) -> exit 0. ---
+# The session 2026-08-27T04-02-24-751Z (this issue's own origin session)
+# ran
+#   `git log --oneline a8e7a3e~..a8e7a3e | head -5`
+#   `git show a8e7a3e --stat | head -20`
+# and got a successful log back (isError=false, no exit trailer). The
+# body of commit a8e7a3e (the #899 fresh-debug-script fix) quotes the
+# literal `Command exited with code 1` while describing the #793
+# incident. Pre-this-fix, the detector matched EXIT_RE against that
+# quoted prose and auto-filed the session as #943 even though no
+# command failed. The fix extends the #821/#848 principle — a bare
+# failure-string in the content of a successful call (isError=false)
+# is content, not a swallowed failure — to the exit-code literal.
+# Locks the `git log`/`git show` shape so a future refactor cannot
+# reintroduce the false positive on a successful git command whose
+# output happens to quote the phrase.
+write_session "bash-exitcode-git-log" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-777 && git log --oneline a8e7a3e~..a8e7a3e | head -5"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","toolName":"bash","isError":false,"content":[{"type":"text","text":"a8e7a3e fix(failed-command): lock the live #793 fresh-debug-script exit-1 walked-past shape (#899)\ncommit a8e7a3e3838d33ececf28825498940943b41e199\nAuthor: nishfleet-worker[bot] <321485391+nishfleet-worker[bot]@users.noreply.github.com>\nDate:   Thu Aug 27 04:07:49 2026 +0000\n\n    The harness reported\n    '(no output)  Command exited with code 1', and the agent continued\n    with 'bash -x /tmp/fsr-debug.sh 2>&1 | tail -20' (a toolCall, no\n    user-facing text) without naming the failure."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Confirmed the prior fix is on the branch."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "bash git log with 'Command exited with code 1' as commit body should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #943: bash git log with 'Command exited with code 1' as commit body is not a swallowed failure"
+rm -f "$sessions/bash-exitcode-git-log.jsonl"
+
+# --- 6h3. live #943 positive control: a REAL isError=true exit-code
+#         trailer is still flagged. ---
+# Same "content quotes the literal" test, but the toolResult now carries
+# isError=true and a genuine trailing `Command exited with code 1` (the
+# shape Pi emits when a real command fails). The isError=false guard
+# must NOT weaken the genuine-failure path: a swallowed real failure is
+# still flagged. This proves 6h2 is not "always flag": only successful
+# calls whose content quotes the literal are exempt. A non-git command
+# is used so the git ref-probe exemption (live #822) cannot mask it.
+write_session "bash-exitcode-real" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real isError=true exit-code trailer must still be flagged (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "real isError=true exit-code trailer must be flagged as swallowed"
+ok "live #943 positive: real isError=true exit-code trailer is still flagged"
+rm -f "$sessions/bash-exitcode-real.jsonl"
 
 # --- 6i. live #953: read tool ENOENT, no exit code, no later user-facing flag -
 # The session 2026-08-26T14-02-29-714Z ran `read` on a file that did not
