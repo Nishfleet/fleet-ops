@@ -2082,6 +2082,17 @@ bash "$here/fleet-failed-command-clone-race-cd.test.sh" || fail "fleet-failed-co
 # 1) and #822 (git-ref probe, GIT_BENIGN_RE). Same CI constraint
 # (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-clone-ssh-publickey.test.sh" || fail "fleet-failed-command-clone-ssh-publickey tests failed"
+# fleet-ops#1242: a malformed Pi toolCall with an empty name
+# (id "", name "", arguments the non-JSON string "command") returns
+# `Tool  not found` (two spaces, isError=true, details={}, no
+# exit-code line). The live next turn was an empty assistant
+# message with an HTTP 400 `Tool name must be nonempty` errorMessage,
+# which is harness metadata not a user-facing flag. Distinct from
+# #937 (python3 ModuleNotFoundError on a named bash probe) and
+# #698 (`gh: Not Found (HTTP 404)`). Same CI constraint (worker
+# token cannot add a P14 line).
+bash "$here/fleet-failed-command-empty-tool-name.test.sh" || fail "fleet-failed-command-empty-tool-name tests failed"
+
 # fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main`
 # (or `git push --force-with-lease`) on the very branch the worktree
 # has checked out is refused with `fatal: cannot force update the
