@@ -1709,6 +1709,13 @@ bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-
 # walked past, with a silent read/grep recovery and a later thinking-only
 # note that the file was different, is the same class. Same CI constraint.
 bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-command-edit-unmatch tests failed"
+# fleet-ops#957: a `python3 -c` / `python3 << 'EOF'` probe that crashes
+# with a Python traceback (KeyError, NameError, etc.) and
+# `Command exited with code 1`, walked past with a silent re-probe, a
+# thinking block, or later "Now I have everything I need" prose. The
+# command is not grep/rg/diff/ls/which so it is not a no-match probe.
+# Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed-command-python-traceback tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
