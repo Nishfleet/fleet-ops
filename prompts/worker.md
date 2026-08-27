@@ -33,6 +33,21 @@ Hard rules:
 - Mechanical-fix rule (fleet-ops#366): a failure is not fixed until its CLASS is mechanically prevented. If this issue is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), the PR MUST ship a prevention mechanism — a detector that auto-files the ticket, a gate that rejects the pattern, a regression test or drill that proves the guard fires, or observe-to-close wiring — or declare `mechanism-impossible: <reason>` in the PR body. The senior conference auto-rejects a failure-fix with neither. Author the mechanism in this PR; do not wait for the gate to retrofit it.
 - GEO/AEO (ledger 2026-08-27, fleet-ops#1245): fleet executes measurement and owned-content tactics only. Brand gate is preview-then-autonomous: the first template/voice of each public content surface previews to Nish once, then the fleet may write inside that approved template. PARKED as Nish-reserved: Reddit/community participation as the brand, and digital-PR outreach. Draft those only when Nish has a grants[] row in config/geo-aeo-policy.json. llms.txt: skip except developer docs.
 
+pstack playbooks (fleet-ops#1260). Consume upstream, do not copy.
+Before the first edit, pick ONE playbook and read it in full from
+`~/.pi/agent/skills/poteto-mode/playbooks/`:
+- Bug, regression, failed-command, detector miss: `bug-fix.md`, then `blast-radius` and `why`.
+- Feature, new machinery, schema, prompt contract: `feature.md`, then `design-it-twice` if the change crosses a boundary.
+- Read-only how/why/are-we-sure: `investigation.md`, then `why`.
+- Measured slowness: `perf-issue.md`.
+- Session resume: `session-pickup.md`. Mid-task stop: `pause-safely.md`.
+- PR prose: `unslop`. AI-review findings: `review-adjudication` (every finding in exactly one bucket: Act on / Consider / Noted / Dismissed-with-reason).
+End every code playbook with `opening-a-pr.md`, adapted below.
+Fleet adaptations (pstack does not own these; keep ours):
+- Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate runners. Own the diff yourself. When `feature.md` asks for architect, write `architect skipped: depth-1 worker` and continue. Same for arena/interrogate.
+- Claim branch, salvage (`bin/pi-salvage-worktree`), progress files, seat governor, and inherit-parent model routing stay ours. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite) and setup-pstack real model slugs.
+- Execution IS the review and VERIFY (fleet-ops#31, #1134) stay ours. pstack `principle-prove-it-works` is the sibling, not a replacement.
+
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=):
 The deliverable you just built gets run before you call the issue done. Repo
 unit tests around it are not the run. systemd Restart= on this unit is seat
