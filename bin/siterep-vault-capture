@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# siterep-vault-capture — one-command vault note with auto-provenance.
+#
+# Reads the note body on stdin, fills in the frontmatter, runs the vault
+# snapshot lint, and writes to the drop-zone (or a --direct path).
+#
+# Usage:
+#   siterep-vault-capture --topic <slug> \
+#     [--class <class>] [--evidence <path|url>] [--surface <surface>] \
+#     [--check-command <cmd>] [--direct <path>] [--vault <vault>]
+#
+# Exit:
+#   0  note written and lint passed; one-line receipt on stdout
+#   1  usage / vault missing / lint missing / write failed
+#   2  lint refused the note; violation report on stderr; no file written
+#
+# The one-line receipt is:
+#   wrote <rel-path>; observed=<iso8601>; class=<class>; check-command=<cmd>
+#
+# Environment overrides:
+#   FLEET_VAULT            vault root (default: /home/nish/workspaces/tooling/nish-vault)
+#   SITEREP_VAULT_SURFACE  agent surface (default: terminal-agent)
+#   SITEREP_VAULT_LINT     override path to vault-lint
+#
+# fleet-ops#1265: paved-road vault capture (slice 4 of #1145).
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+
+BIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+REPO_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+
+VAULT="${FLEET_VAULT:-/home/nish/workspaces/tooling/nish-vault}"
+SURFACE="${SITEREP_VAULT_SURFACE:-terminal-agent}"
+CLASS=""
+TOPIC=""
+EVIDENCE=""
+CHECK_COMMAND=""
+DIRECT=""
+
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+NOW_FILE="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+HOSTNAME="$(hostname)"
+
+usage() {
+    cat <<'EOF' >&2
+usage: siterep-vault-capture --topic <slug> [options]
+
+Required:
+  --topic <slug>        short descriptive slug for the filename
+
+Options:
+  --class <class>       vault class (default: procedure)
+  --evidence <path|url> evidence path or URL (default: stdin)
+  --surface <surface>   agent surface (default: terminal-agent)
+  --check-command <cmd> check command to pair with live-state claims
+  --direct <path>       write to an explicit path instead of the drop-zone
+  --vault <vault>       override vault root
+  --help                show this help
+
+Body is read from stdin. The note is linted before it is committed.
+EOF
+    exit 1
+}
+
+die() {
+    printf '[siterep-vault-capture] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+# --- argument parse ---------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --class)
+            [[ $# -ge 2 ]] || usage
+            CLASS="$2"
+            shift 2
+            ;;
+        --topic)
+            [[ $# -ge 2 ]] || usage
+            TOPIC="$2"
+            shift 2
+            ;;
+        --evidence)
+            [[ $# -ge 2 ]] || usage
+            EVIDENCE="$2"
+            shift 2
+            ;;
+        --surface)
+            [[ $# -ge 2 ]] || usage
+            SURFACE="$2"
+            shift 2
+            ;;
+        --check-command)
+            [[ $# -ge 2 ]] || usage
+            CHECK_COMMAND="$2"
+            shift 2
+            ;;
+        --direct)
+            [[ $# -ge 2 ]] || usage
+            DIRECT="$2"
+            shift 2
+            ;;
+        --vault)
+            [[ $# -ge 2 ]] || usage
+            VAULT="$2"
+            shift 2
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            die "unknown argument: $1"
+            ;;
+    esac
+done
+
+[[ -n "${TOPIC}" ]] || usage
+
+# --- normalize paths --------------------------------------------------------
+VAULT="$(cd "$VAULT" 2>/dev/null && pwd)" || die "vault not found: $VAULT"
+
+safe_slug() {
+    local s="$1"
+    # allow alphanumerics, '.', '_', '-'; replace everything else with '-'
+    s="${s//[^A-Za-z0-9._-]/-}"
+    # collapse repeated dashes and trim leading/trailing dashes
+    s=$(printf '%s' "$s" | sed -E 's/-+/-/g; s/^-+//; s/-+$//')
+    [[ -n "$s" ]] || s="note"
+    printf '%s' "$s"
+}
+
+TOPIC_SAFE=$(safe_slug "$TOPIC")
+CLASS="${CLASS:-procedure}"
+EVIDENCE="${EVIDENCE:-stdin}"
+
+if [[ -n "$DIRECT" ]]; then
+    # explicit path: resolve relative to vault if not absolute
+    if [[ "$DIRECT" != /* ]]; then
+        DEST="$VAULT/$DIRECT"
+    else
+        DEST="$DIRECT"
+    fi
+    MODE="direct"
+else
+    # drop-zone path: canonical per fleet-ops#1265
+    DEST="$VAULT/00 Inbox/agent-drop/$SURFACE/${NOW_FILE}-${TOPIC_SAFE}.md"
+    MODE="drop"
+fi
+
+# dirname may contain spaces; quote
+mkdir -p "$(dirname "$DEST")"
+
+# evidence defaults to the final relative path once we know it
+if [[ "$EVIDENCE" == "stdin" ]]; then
+    EVIDENCE="${DEST#"$VAULT"/}"
+fi
+
+# --- lint command -----------------------------------------------------------
+VAULT_LINT="${SITEREP_VAULT_LINT:-}"
+if [[ -z "$VAULT_LINT" ]]; then
+    if command -v vault-lint >/dev/null 2>&1; then
+        VAULT_LINT="$(command -v vault-lint)"
+    elif [[ -f "$REPO_ROOT/lib/vault-lint.py" ]]; then
+        VAULT_LINT="$REPO_ROOT/lib/vault-lint.py"
+    else
+        die "vault-lint not found; set SITEREP_VAULT_LINT"
+    fi
+fi
+
+# --- build note in a temp file ----------------------------------------------
+TMPNOTE=$(mktemp -t siterep-vault-capture.XXXXXX)
+trap 'rm -f "$TMPNOTE"' EXIT INT TERM
+
+{
+    printf -- '---\n'
+    printf 'observed: %s\n' "$NOW"
+    printf 'host: %s\n' "$HOSTNAME"
+    printf 'evidence: %s\n' "$EVIDENCE"
+    printf 'class: %s\n' "$CLASS"
+    if [[ -n "$CHECK_COMMAND" ]]; then
+        printf 'check-command: %s\n' "$CHECK_COMMAND"
+    fi
+    printf -- '---\n\n'
+    cat
+} >"$TMPNOTE"
+
+# --- lint pre-write ---------------------------------------------------------
+LINT_OUT=""
+LINT_RC=0
+set +e
+LINT_OUT=$(python3 "$VAULT_LINT" --now "$NOW" --pre-write "$TMPNOTE" 2>&1)
+LINT_RC=$?
+set -e
+
+if [[ "$LINT_RC" -ne 0 ]]; then
+    printf '%s\n' "$LINT_OUT" >&2
+    exit 2
+fi
+
+# --- move into place --------------------------------------------------------
+if [[ -e "$DEST" ]]; then
+    # refuse accidental overwrite unless --direct names an existing file
+    if [[ -z "$DIRECT" ]]; then
+        die "refusing to overwrite existing note: $DEST"
+    fi
+fi
+
+mv "$TMPNOTE" "$DEST"
+trap - EXIT INT TERM
+
+# --- audit log --------------------------------------------------------------
+AUDIT_LOG="$VAULT/_system/logs/vault-capture.log"
+mkdir -p "$(dirname "$AUDIT_LOG")"
+REL_PATH="${DEST#"$VAULT"/}"
+{
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$NOW" "$HOSTNAME" "$SURFACE" "$MODE" "$CLASS" "$TOPIC_SAFE" "$REL_PATH"
+} >>"$AUDIT_LOG"
+
+# --- receipt ----------------------------------------------------------------
+printf 'wrote %s; observed=%s; class=%s; check-command=%s\n' \
+    "$REL_PATH" "$NOW" "$CLASS" "${CHECK_COMMAND:-none}"
+
+exit 0

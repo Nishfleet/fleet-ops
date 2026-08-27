@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# siterep-vault-capture-ratio — adoption metric for vault capture.
+#
+# Reads the vault capture audit log and computes the drops-vs-direct ratio.
+# Drop-zone captures (mode=drop) are the paved road; direct edits through the
+# wrapper (mode=direct) are the second-best path; both are recorded by
+# siterep-vault-capture. Manual direct edits are not in the log and are not
+# counted here.
+#
+# Usage:
+#   siterep-vault-capture-ratio [--vault <vault>] [--window <hours>] [--alert]
+#
+# Exit:
+#   0  ratio computed; no alert threshold breach
+#   1  --alert and ratio below 50% (or audit log missing and --alert)
+#
+# Output:
+#   ratio=<f>; drops=<N>; direct=<N>; total=<N>; window=<H>h
+#
+# Environment:
+#   FLEET_VAULT            vault root
+#   SITEREP_CAPTURE_WINDOW hours to look back (default: 168 = 1 week)
+#
+# fleet-ops#1265: adoption metric for paved-road vault capture.
+set -euo pipefail
+
+VAULT="${FLEET_VAULT:-/home/nish/workspaces/tooling/nish-vault}"
+WINDOW_HOURS="${SITEREP_CAPTURE_WINDOW:-168}"
+ALERT=0
+
+usage() {
+    cat <<'EOF' >&2
+usage: siterep-vault-capture-ratio [--vault <vault>] [--window <hours>] [--alert]
+
+  --vault <vault>     vault root
+  --window <hours>    lookback window (default: 168)
+  --alert             exit 1 if drop ratio is below 50%
+  --help              show this help
+EOF
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --vault)
+            [[ $# -ge 2 ]] || usage
+            VAULT="$2"
+            shift 2
+            ;;
+        --window)
+            [[ $# -ge 2 ]] || usage
+            WINDOW_HOURS="$2"
+            shift 2
+            ;;
+        --alert)
+            ALERT=1
+            shift
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+VAULT="$(cd "$VAULT" 2>/dev/null && pwd)" || {
+    printf 'siterep-vault-capture-ratio: vault not found: %s\n' "$VAULT" >&2
+    exit 1
+}
+
+AUDIT_LOG="$VAULT/_system/logs/vault-capture.log"
+if [[ ! -f "$AUDIT_LOG" ]]; then
+    if [[ "$ALERT" -eq 1 ]]; then
+        printf 'ALERT: no vault-capture audit log at %s\n' "$AUDIT_LOG" >&2
+        exit 1
+    fi
+    printf 'ratio=1.000; drops=0; direct=0; total=0; window=%sh\n' "$WINDOW_HOURS"
+    exit 0
+fi
+
+# shellcheck disable=SC2086
+cutoff=$(date -u -d "-${WINDOW_HOURS} hours" +%s)
+
+drops=0
+direct=0
+
+while IFS=$'\t' read -r ts _ _ mode _ _ _; do
+    [[ -n "$ts" ]] || continue
+    # ignore unparseable timestamps
+    if ! ts_epoch=$(date -d "$ts" +%s 2>/dev/null); then
+        continue
+    fi
+    [[ "$ts_epoch" -ge "$cutoff" ]] || continue
+    case "$mode" in
+        drop)   drops=$((drops + 1)) ;;
+        direct) direct=$((direct + 1)) ;;
+    esac
+done < "$AUDIT_LOG"
+
+total=$((drops + direct))
+
+if [[ "$total" -eq 0 ]]; then
+    ratio="1.000"
+else
+    ratio=$(awk "BEGIN {printf \"%.3f\", $drops / $total}")
+fi
+
+printf 'ratio=%s; drops=%s; direct=%s; total=%s; window=%sh\n' \
+    "$ratio" "$drops" "$direct" "$total" "$WINDOW_HOURS"
+
+if [[ "$ALERT" -eq 1 ]]; then
+    below=$(awk "BEGIN {print ($ratio < 0.5) ? 1 : 0}")
+    if [[ "$below" -eq 1 ]]; then
+        printf 'ALERT: capture ratio %s below 50%% (drops=%s, direct=%s, total=%s)\n' \
+            "$ratio" "$drops" "$direct" "$total" >&2
+        exit 1
+    fi
+fi
+
+exit 0
