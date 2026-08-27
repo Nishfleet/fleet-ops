@@ -92,12 +92,14 @@
     "opencode": {
       "cap": 1,
       "class": "free",
+      "quota_bench_default_s": 900,
       "models": {
         "hy3-free": 1,
         "mimo-v2.5-free": 1,
         "deepseek-v4-flash-free": 0
       },
       "_comment_mimo": "2026-08-27 fleet-ops#640: OpenCode mimo-v2.5-free. Catalog cost 0/0. Live pi spawn returned PONG; tool packet PACKET-VERDICT tools=1 class=worked; zen/v1 meter cost=0. Beats incumbent hy3-free (thinking, 200k context, images, heavy-capable). cap=1 shares the provider cap. Do not allowlist a billing slug.",
+      "_comment_quota_bench": "2026-08-27 fleet-ops#650/661: mimo-v2.5-free returned FreeUsageLimitError (HTTP 429, no reset window in body) on 2026-08-27T02:17Z + 2026-08-27T02:37Z, summoning the auditor twice in 20 minutes. Without quota_bench_default_s the mark_seat_quota_bench writer fails open (no marker), so the seat-health extension's reactive rate_limited marker (usable_at = observed+15min) was the only protection — and the mimo wall lasts longer than 15min, so the seat was re-picked before the rate-limit actually reset. 900s matches devin's default and gives the reactive ledger time to land its 30min-fresh marker before the bench expires. Raise / lower per observed reset behaviour.",
       "_comment_m3": "2026-08-27: OpenCode catalog has minimax-m3 (CreditsError / bills) and no minimax-m3-free. Do not allowlist the billing slug. bin/opencode-m3-catalog-canary (fleet-ops#435) auto-files when a -free or *-pass/ MiniMax M3 slug appears.",
       "_deepseek_v4_flash_free": "2026-08-27: OpenCode catalog lists deepseek-v4-flash-free, but a direct `pi --print --provider opencode --model deepseek-v4-flash-free` spawn failed with 'Model is unavailable'. Benched at cap=0 pending a passing re-audition (fleet-ops#639, capacity-is-measured). Do not wire the billing slug `deepseek-v4-flash`."
     },

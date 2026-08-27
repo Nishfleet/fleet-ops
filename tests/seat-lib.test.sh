@@ -86,6 +86,11 @@ cat >"$scratch/models.json" <<'JSON'
       "models": [
         { "id": "MiniMax-M3", "cost": { "input": 0 } }
       ]
+    },
+    "opencode": {
+      "models": [
+        { "id": "mimo-v2.5-free", "cost": { "input": 0 } }
+      ]
     }
   }
 }
@@ -670,6 +675,65 @@ set -e
 grep -q "quota-bench: cursor/composer-2.5 NOT benched" "$PI_PACKET_STATE/watch.log" \
   || fail "default: cursor fail-open must log the NOT-benched line"
 
+# 9f-mimo: fleet-ops#650 / #661 — mimo-v2.5-free FreeUsageLimitError (HTTP 429,
+# no reset window in body). With quota_bench_default_s=900 on the opencode
+# provider, mark_seat_quota_bench must write a 900s bench marker (rc=0) so
+# pick_seat skips the seat instead of fail-opening and re-picking it 20 min
+# later (the summoning trip). The live text matches is_quota_cap_error's
+# 'rate limit exceeded' branch.
+mimo_ledger="$scratch/ledger-mimo"
+mkdir -p "$mimo_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$mimo_ledger"
+# Scratch cap map variant that mirrors the production opencode entry with
+# the new quota_bench_default_s. We source seat-lib fresh against it so the
+# load_seat_caps cache picks it up.
+cat >"$scratch/seat-caps-mimo.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["opencode"],
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "quota_bench_default_s": 900, "models": { "mimo-v2.5-free": 1 } }
+  }
+}
+JSON
+SEAT_CAPS_JSON_MIMO="$scratch/seat-caps-mimo.json"
+export PI_PACKET_STATE="$scratch/state-bench-mimo"
+set +e
+SEAT_CAPS_JSON="$SEAT_CAPS_JSON_MIMO" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' \
+    "$lib" "opencode" "mimo-v2.5-free" \
+    '429: {"type":"FreeUsageLimitError","message":"Error from provider (Console): Rate limit exceeded. Please try again later."}' \
+    >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "mimo-bench: opencode (has default 900) expected rc=0, got $rc"
+# Marker must exist with health_class=quota_bench and bench_window_s=900
+# (not the 0/fail-open path). The summoning trip is the writer that did NOT
+# write this file before fleet-ops#650/661.
+[[ -f "$mimo_ledger/opencode__mimo-v2.5-free.json" ]] \
+  || fail "mimo-bench: opencode/mimo-v2.5-free marker MUST be written (the summoning trip was the missing marker)"
+bw=$(jq -r '.bench_window_s' "$mimo_ledger/opencode__mimo-v2.5-free.json" 2>/dev/null)
+hc=$(jq -r '.health_class' "$mimo_ledger/opencode__mimo-v2.5-free.json" 2>/dev/null)
+[[ "$bw" == "900" ]] || fail "mimo-bench: opencode bench_window_s expected 900, got '$bw'"
+[[ "$hc" == "quota_bench" ]] || fail "mimo-bench: opencode health_class expected quota_bench, got '$hc'"
+# pick_seat must now skip the seat (rc=1 NO USABLE SEAT) — this is what was
+# MISSING on 2026-08-27 02:17Z + 02:37Z: the writer failed open so the seat
+# was re-picked, hit the same 429, and summoned the auditor twice in 20 min.
+export PI_PACKET_STATE="$scratch/state-bench-mimo-pick"
+rm -f "$scratch/tried-mimo.txt"
+set +e
+out=$(SEAT_CAPS_JSON="$SEAT_CAPS_JSON_MIMO" \
+      PI_SEAT_HEALTH_LEDGER_DIR="$mimo_ledger" \
+      PI_PACKET_STATE="$scratch/state-bench-mimo-pick" \
+      PI_MODELS_JSON="$scratch/models.json" \
+  bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/tried-mimo.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "mimo-bench: pick_seat after bench must rc=1 (NO USABLE SEAT), got rc=$rc out='$out"
+grep -q "opencode/mimo-v2.5-free: benched until" "$PI_PACKET_STATE/watch.log" \
+  || fail "mimo-bench: pick_seat must log 'opencode/mimo-v2.5-free: benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+# Restore the canonical scratch ledger for any later sections.
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+
 # 9g: bench_until outlives STALE_SECS. A weekly cap's observed_at goes stale
 # after 6h, but pick_seat must still skip until bench_until (the advertised
 # reset). This is the ClinePass 1d 11h case: without this, the seat is
@@ -709,6 +773,7 @@ ok "enumerate_seats: cursor composer excluded from heavy; cursor-grok-4.6-high r
 ok "quota_bench: writer parses window -> bench_until future -> seat_usable skips with 'benched until' log"
 ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SEAT (no attempt consumed); expired bench_until -> fail-open pick"
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"
+ok "quota_bench: opencode/mimo-v2.5-free FreeUsageLimitError (no window) benches 900s via provider default; pick_seat skips (fleet-ops#650/661)"
 
 # --- P15 wedge-age liveness probe ----------------------------------------
 # A unit stuck in `activating` past PI_SEAT_ACTIVATING_MAX_S is a wedged pi
