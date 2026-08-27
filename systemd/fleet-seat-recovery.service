@@ -1,5 +1,10 @@
 [Unit]
 Description=Fleet seat-recovery trigger (fire intake on NO-USABLE-SEAT -> usable, fleet-ops#468)
+# systemd.path: a StartLimit hit on THIS oneshot is propagated to
+# fleet-seat-recovery.path and takes the watcher down (fleet-ops#617).
+# The bin always exits 0; ledger writes are the expected trigger rate.
+# Disable the default 5/10s burst so a chatty seats/ dir cannot wedge TOP GEAR.
+StartLimitIntervalSec=0
 
 # Event-driven: any write to the per-seat health ledger (a seat-health
 # extension update) wakes this service. It compares the current "any seat

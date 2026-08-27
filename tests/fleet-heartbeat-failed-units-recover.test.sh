@@ -67,7 +67,9 @@ for u in \
     pi-issue-failed@fleet-ops-28.service \
     pi-packet@p42.service \
     pi-packet-failed@p42.service \
-    fable-p123.service
+    fable-p123.service \
+    fleet-seat-recovery.path \
+    fleet-seat-recovery.service
 do
     matches "$u" || fail "matcher must admit fleet unit: $u (regex: $matcher_re)"
 done
@@ -105,7 +107,9 @@ for u in \
     pi-intake@0509.service \
     pi-intake-repair@0509.service \
     pi-scout@0509.service \
-    pi-scout-repair@0509.service
+    pi-scout-repair@0509.service \
+    fleet-seat-recovery.path \
+    fleet-seat-recovery.service
 do
     [[ "$(unit_recovery_class "$u")" == "recover" ]] \
         || fail "unit_recovery_class($u) must be recover (supply/repair, safe to restart)"
