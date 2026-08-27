@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Host is the literal api.github.com; target is only GET /app or GET /user.
+# Semgrep sees the Request object and flags dynamic urllib; audit-confirmed
+# safe (same suppression as lib/verify-fleet-sync-pat.py).
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
 """Canary for credential/token expiry through the vacation window end.
 
 fleet-ops#938 (led-2026-08-27-vacation-window-corrected).
@@ -156,10 +160,19 @@ def _status_from_headers(raw_headers: str) -> int:
 
 
 def _api_get(
-    auth: str, path: str
+    auth: str, which: str
 ) -> tuple[int, dict[str, Any] | list[Any] | str, str]:
-    """GET api.github.com<path>. Returns (status, parsed_body, raw_headers)."""
-    url = "https://api.github.com" + path
+    """GET a fixed GitHub App/user URL. Returns (status, parsed_body, raw_headers).
+
+    `which` is only 'app' or 'user'. Host and path are literals so urllib
+    cannot be pointed at file:// (sgscan dynamic-urllib-use-detected).
+    """
+    if which == "app":
+        url = "https://api.github.com/app"
+    elif which == "user":
+        url = "https://api.github.com/user"
+    else:
+        raise ValueError("unsupported GitHub API target: %s" % which)
     req = Request(
         url,
         headers={
@@ -171,7 +184,7 @@ def _api_get(
     )
     raw_headers = ""
     try:
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urlopen(req, timeout=20, context=ssl.create_default_context()) as resp:
             status = resp.status
             body = resp.read().decode("utf-8", "replace")
@@ -371,7 +384,7 @@ def _online(
         try:
             app_id, pem = _pem_from_env(creds_path)
             jwt = _mint_jwt(app_id, pem)
-            app_status, _body, _hdrs = _api_get(jwt, "/app")
+            app_status, _body, _hdrs = _api_get(jwt, "app")
         except URLError:
             app_status = 0
         except (ValueError, RuntimeError):
@@ -380,7 +393,7 @@ def _online(
     pat_raw: str | None = None
     if pat_token:
         try:
-            _st, _body, raw_headers = _api_get(pat_token, "/user")
+            _st, _body, raw_headers = _api_get(pat_token, "user")
             headers = _header_lookup(raw_headers)
             if "github-authentication-token-expiration" in headers:
                 pat_raw = headers["github-authentication-token-expiration"]
