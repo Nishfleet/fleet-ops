@@ -86,6 +86,13 @@ declare -A SEAT_PROVIDER_CAP=()
 declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_PROVIDER_CLASS=()
 declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
+# fleet-ops 2026-08-27 #652 hot-patch: 503-overload bench defaults per provider.
+# Distinct from SEAT_PROVIDER_BENCH_DEFAULT (quota/cap wall): overload is a
+# transient "upstream provider is temporarily unavailable" that the existing
+# is_quota_cap_error matcher does NOT catch. Without a default, the writer
+# fails open and pick_seat re-offers the same seat to the next worker, which
+# then hits the same 503 storm (the 2026-08-27 fleet-ops#652 root cause).
+declare -A SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT=()
 declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
 declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 SEAT_FREE_ORDER=""
@@ -125,6 +132,7 @@ load_seat_caps() {
     SEAT_MODEL_CAP=()
     SEAT_PROVIDER_CLASS=()
     SEAT_PROVIDER_BENCH_DEFAULT=()
+    SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT=()
     SEAT_PROVIDER_QUOTA_WINDOW=()
     SEAT_PROVIDER_WEEKLY_BUDGET=()
     SEAT_FREE_ORDER=""
@@ -180,6 +188,14 @@ load_seat_caps() {
         [[ "$budget" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_WEEKLY_BUDGET["$p"]="$budget"
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.quota_window // ""), ($v.weekly_budget // "")] else [$k, "", ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
+    # fleet-ops 2026-08-27 #652 hot-patch: 503-overload bench default per provider.
+    # Same shape as the quota_bench_default_s read above — bare numbers are
+    # allowed for legacy providers (e.g. zenmux: 2) and yield a missing default.
+    while IFS=$'\t' read -r p obench; do
+        [[ -n "$p" ]] || continue
+        [[ "$obench" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT["$p"]="$obench"
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.overload_bench_default_s // $v["503_bench_default_s"] // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
     _seat_caps_loaded=1
     return 0
 }
@@ -226,6 +242,17 @@ provider_quota_bench_default() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
+}
+
+# Default bench window (seconds) for a provider's 503/upstream-overload storm
+# when the error text carries no Retry-After / reset window (fleet-ops #652
+# 2026-08-27 hot-patch). Mirrors provider_quota_bench_default: 0 = no default
+# configured; the writer then fails open (no marker) and pick_seat re-offers
+# the same seat, which immediately hits the same 503 storm again.
+provider_overload_bench_default() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT[$p]:-0}"
 }
 
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
@@ -439,6 +466,26 @@ seat_usable() {
             return 0
         fi
         seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
+        return 1
+    fi
+    # fleet-ops #652 hot-patch: overload_bench (503 / upstream-overload) is
+    # the transient sibling of quota_bench. Same fail-open semantics, same
+    # observed_at-vs-bench_until ordering — the 503 storm can outlive the
+    # 6h stale window, so bench_until wins. Without this branch the seat
+    # would fall through to the backoff / usable_at path with a less
+    # informative log line and pick_seat would still skip it (usable_at
+    # == bench_until), but the auditor's post-mortem rollup loses the
+    # overload_bench distinction.
+    if [[ "$hc" == "overload_bench" ]]; then
+        if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
+            seat_log "seat $p/$m: benched until $bench_until (overload_bench)"
+            return 1
+        fi
+        if [[ -n "$bench_until" ]]; then
+            seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
+            return 0
+        fi
+        seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
         return 1
     fi
     if ! _seat_observed_fresh "$observed"; then
@@ -1460,6 +1507,145 @@ mark_seat_quota_bench() {
         return 0
     fi
     seat_log "quota-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- 503 / upstream-overload bench (fleet-ops #652, 2026-08-27 hot-patch) ----
+# A provider that returns 503 "Upstream model provider is temporarily unavailable"
+# mid-session is NOT a quota wall (is_quota_cap_error does not match) and NOT a
+# spawn-time ETIMEDOUT (is_spawn_etimeout does not match). Live failure mode
+# observed in fleet-ops#652: commandcode/minimax-m3-free returned 35 of 200+ tool
+# calls as 503 in the first 20 minutes of a worker run, destabilising the model
+# for the rest of the session. Without this writer, the seat was never benched
+# and pick_seat kept routing fresh workers to a still-storming seat. The 2026-08-27
+# root-cause block: is_quota_cap_error matches "quota/cap/limit" words; "temporarily
+# unavailable" is a different shape, so the wrapper never wrote a marker and the
+# seat stayed pickable.
+#
+# Distinction from the quota/cap path:
+#   - quota/cap: hard wall, seat is walled until advertised reset (ClinePass weekly,
+#     devin 15-min message rate limit). bench_until from the error text or the
+#     provider's quota_bench_default_s.
+#   - 503 overload: transient, the provider's upstream is up but overloaded; the
+#     standard mitigation is a short backoff (5-10 min) so the next worker lands
+#     after the burst clears, NOT after a full reset window. bench_until from
+#     any Retry-After / retry-after in the error text, else the provider's
+#     overload_bench_default_s (alias 503_bench_default_s) from seat-caps.json.
+#     No default -> writer fails open (reactive seat-health ledger remains the
+#     backstop, just like the quota path).
+
+# True if the captured output looks like a 503 / upstream-overload storm.
+# Distinct from is_quota_cap_error: the quota path requires a quota/cap keyword
+# (weekly limit, INFERENCE_CAP_ERROR, plan limit, out of credits, etc.) — the
+# 503 path requires an upstream-availability keyword. They MUST NOT overlap:
+# 503 + "temporarily unavailable" is overload, NOT a quota cap; a 429 with
+# "quota exceeded" is a cap, NOT overload.
+is_overload_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    # Three ACCEPT shapes, each independently sufficient (any one of):
+    #   (a) the commandcode-specific 503 "Upstream model provider is
+    #       temporarily unavailable" — the live fleet-ops#652 body.
+    #   (b) an HTTP 503 status with a Retry-After / "try again" hint.
+    #   (c) a generic "upstream ... overloaded" (e.g. OpenAI/Anthropic
+    #       502/503 wording).
+    # Bare "503" or bare "temporarily unavailable" WITHOUT any of the
+    # above co-occurring context is NOT a match (avoid false positives on
+    # log lines that mention 503 in passing, or a flaky network call).
+    if grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable|upstream[[:space:]]+(is[[:space:]]+)?overloaded|overloaded[[:space:]]+upstream' <<<"$combined"; then
+        return 0
+    fi
+    if grep -qiE '503[[:space:]]+(service[[:space:]]+unavailable|backend|upstream|bad[[:space:]]+gateway|gateway[[:space:]]+timeout)|http[[:space:]]*503|status[[:space:]]*:[[:space:]]*503|"status":[[:space:]]*503' <<<"$combined"; then
+        # 503 status code present — also require a "please try again" /
+        # Retry-After signal, otherwise a passing 200 log mentioning 503
+        # (e.g. server access log) would false-positive.
+        if grep -qiE 'retry[[:space:]_-]?after|try[[:space:]]+again[[:space:]]+later|please[[:space:]]+try[[:space:]]+again|temporarily[[:space:]]+unavailable|upstream' <<<"$combined"; then
+            return 0
+        fi
+        return 1
+    fi
+    return 1
+}
+
+# Bench a seat for a 503 / upstream-overload storm. Args: provider model [error_text]
+#   error_text defaults to "" — when empty, no Retry-After can be parsed and the
+#   provider default is used (or, with no default, the writer fails open and
+#   writes nothing; the reactive seat-health ledger's transient_fault /
+#   rate_limited blocks remain the backstop).
+# Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json atomically with
+# health_class="overload_bench" and bench_until=<ISO>. Distinct failure_mode
+# ("overload_503") so the auditor / post-mortem tooling can tell overload
+# benches apart from quota/cap benches. Best-effort: any failure is logged but
+# does NOT fail the worker's own exit. Returns 0 if the marker was written, 1
+# if it was not (no Retry-After AND no provider default -> fail open, or
+# jq/rename failure).
+mark_seat_overload_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    # Re-use _parse_reset_window_s — it already handles "retry-after: N" and
+    # the other delta-seconds forms observed in HTTP error bodies.
+    local window_s=0 parsed
+    parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
+    [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    if (( window_s <= 0 )); then
+        local def
+        def=$(provider_overload_bench_default "$p")
+        [[ "$def" =~ ^[0-9]+$ ]] && window_s="$def"
+    fi
+
+    if (( window_s <= 0 )); then
+        seat_log "overload-bench: $p/$m NOT benched — no Retry-After parsed and no overload_bench_default_s in seat-caps.json (fail-open; reactive ledger remains the backstop)"
+        return 1
+    fi
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.overload.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 503 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"overload_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"overload_bench",
+          failure_mode:"overload_503",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "overload-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "overload-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        return 0
+    fi
+    seat_log "overload-bench: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }
