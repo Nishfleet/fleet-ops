@@ -175,12 +175,21 @@ loud() {
 
 # Anti-recursion exclusion list for services. These are part of the escalation
 # pipeline itself and must not trigger their own escalation.
+#
+# resilience-drill-stub*.service: the #455 resurrection plane's throwaway
+# test stubs. The drill DELIBERATELY SIGKILLs the stub to prove
+# Restart=always brings it back; that intentional kill marks the unit
+# Result=signal and fires the global OnFailure=unit-escalation@%n.service
+# drop-in. The kill is the drill WORKING, not a real fault — a real
+# escalation would be the drill itself failing (exit 1), which still
+# escalates normally.
 is_escalation_excluded() {
     case "$1" in
         unit-escalation@*)         return 0 ;;
         stop-escalation.*)         return 0 ;;
         ready-work*)               return 0 ;;
         escalation-daily-sweep.*)  return 0 ;;
+        resilience-drill-stub*)    return 0 ;;
     esac
     return 1
 }

@@ -361,6 +361,7 @@ exclude "unit-escalation@foo.service"
 exclude "stop-escalation.service"
 exclude "ready-work.service"
 exclude "escalation-daily-sweep.service"
+exclude "resilience-drill-stub-restart.service"
 sanctioned_wrapper "pi-issue-run"
 sanctioned_wrapper "pi-packet-run"
 write_intake "0509" "fleet-ops" "siterep-public"
@@ -375,6 +376,29 @@ grep -q 'ESCALATION-CANARY-PENDING' "$triage" || fail "scenario1: triage missing
 grep -q 'ESCALATION-CANARY-EXCLUDED' "$triage" || fail "scenario1: triage missing EXCLUDED"
 ! grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario1: triage must not contain VIOLATION"
 ok "scenario1: both planes covered -> exit 0 with OK, PENDING, EXCLUDED"
+
+# ============================================================================
+# Scenario 1b (regression, 2026-08-27): the #455 resilience drill's throwaway
+# stub must be in the anti-recursion exclusion set. The drill DELIBERATELY
+# SIGKILLs the stub to prove Restart=always; that intentional kill marks the
+# unit Result=signal and fires the global OnFailure=unit-escalation@%n.service
+# drop-in, which used to summon a false SENIOR AUDITOR. The exclusion means
+# the canary treats a loaded stub as EXCLUDED, not as a missing-escalation
+# VIOLATION. A REAL drill failure still escalates via the drill unit itself.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "resilience-drill-stub-restart.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario1b: must exit 0, got $env_rc ($env_out)"
+grep -q 'ESCALATION-CANARY-EXCLUDED' "$triage" || fail "scenario1b: triage missing EXCLUDED"
+! grep -q 'ESCALATION-CANARY-VIOLATION' "$triage" || fail "scenario1b: stub must not be a VIOLATION"
+ok "scenario1b: resilience-drill-stub-restart.service is excluded (false-summons regression, fleet-ops#455)"
 
 # ============================================================================
 # Scenario 2: VPS plane — one loaded service missing its escalation drop-in
