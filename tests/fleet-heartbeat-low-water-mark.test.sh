@@ -137,6 +137,10 @@ export FLEET_HEARTBEAT_LOG_DIR="$log_dir"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export FLEET_LOW_WATER_STAMP_DIR="$stamp_dir"
 export FLEET_LOW_WATER_MIN_INTERVAL_S=2   # 2s — fresh = now, stale = 60s ago
+# Generate-zone hours so existing lane-count scenarios stay independent of
+# the #540 go-ham path (hours < 12). Override per-scenario when testing that path.
+export FLEET_WORK_SUPPLY_HOURS=15
+export FLEET_WORK_SUPPLY_LIB="$repo_root/lib/work-supply.sh"
 export CALLS="$calls"
 export WORK_READY="$scratch/work_ready"
 SCOUT_ACTIVE_UNITS="$scratch/scout_active"
@@ -317,4 +321,32 @@ if grep -qE '^start ' "$calls"; then
 fi
 ok "scenario6: seat-lib lane_ceiling=$real_lanes drives the decision (ready<ceiling dispatches, ready=ceiling does not)"
 
-ok "low-water-mark: dispatch only on ready<lanes + stale stamp + idle scout; skip otherwise"
+# ============================================================================
+# Scenario 7: hours < 12 (go-ham) dispatches even when ready >= lanes
+# ============================================================================
+reset_state
+printf '30\n' >"$scratch/work_ready"
+: >"$SCOUT_ACTIVE_UNITS"
+date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ > "$stamp_dir/demo.stamp"
+run_helper FLEET_LOW_WATER_LANE_CEILING=9 FLEET_WORK_SUPPLY_HOURS=5
+[[ "$env_rc" == 0 ]] || fail "scenario7: must exit 0, got $env_rc ($env_out)"
+grep -qx 'start pi-scout@demo.service' "$calls" \
+    || fail "scenario7: hours=5 must dispatch even when ready>=lanes ($(cat "$calls"))"
+grep -q 'hours=5' "$triage" || fail "scenario7: triage missing hours=5 ($triage=$(cat "$triage"))"
+ok "scenario7: hours<12 go-ham dispatches when ready>=lanes"
+
+# ============================================================================
+# Scenario 8: hours >= 12 and ready >= lanes -> no dispatch
+# ============================================================================
+reset_state
+printf '30\n' >"$scratch/work_ready"
+: >"$SCOUT_ACTIVE_UNITS"
+date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ > "$stamp_dir/demo.stamp"
+run_helper FLEET_LOW_WATER_LANE_CEILING=9 FLEET_WORK_SUPPLY_HOURS=20
+[[ "$env_rc" == 0 ]] || fail "scenario8: must exit 0, got $env_rc ($env_out)"
+if grep -qE '^start ' "$calls"; then
+    fail "scenario8: generate-zone + ready>=lanes must not dispatch, but calls=($(cat "$calls"))"
+fi
+ok "scenario8: hours>=12 and ready>=lanes -> no dispatch"
+
+ok "low-water-mark: dispatch on ready<lanes or hours<12; skip otherwise"

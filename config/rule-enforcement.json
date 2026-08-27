@@ -458,10 +458,9 @@
     {
       "id": "led-work-supply-24h",
       "source": "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)",
-      "mechanism": "Scout buffer + auditor panel are specified; 24h/12h drain trigger is not a live canary",
-      "proof": "Nishfleet/fleet-ops#540",
-      "status": "queued(#540)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat work-supply canary: remaining hours = ceil(agent-ready / measured drain) over a 6h close window; pi-scout ExecCondition rests at >=24h; low-water-mark go-hams at <12h; workers stay ungated; senior panel stays 2-of-3. Idle scout under 12h fail-loud and auto-files.",
+      "proof": "bin/fleet-work-supply-canary; lib/work-supply.sh; tests/fleet-work-supply-canary.test.sh; systemd/pi-scout@.service ExecCondition; fleet-heartbeat-tier1 block 27; fleet-ops#540",
+      "status": "enforced"
     },
     {
       "id": "led-fleet-ops-enrolment",

@@ -11,14 +11,13 @@ Hard rules:
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
 - **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
 
-## Capacity gate (already enforced by systemd, but respect it)
+## Capacity gate (already enforced by systemd)
 
-```bash
-gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number
-```
+systemd `ExecCondition` skips this run when remaining work is >= 24 hours at the measured drain rate (closes per hour over the last 6 hours). Do not rest on a hardcoded issue count. The 2026-08-26 rule is hours, not heads: rest at 24h of ready work, go ham below 12h. This run only happens below the 24h rest cap.
 
-Let `ready_count` = length of that list. If `ready_count >= 12`, print "supply full (agent-ready >= 12)", exit 0.
-Let `label_budget = 12 - ready_count`. You may apply `scout-candidate` (or `agent-ready` on fleet-ops only) to at most `label_budget` issues this run (new or relabeled).
+Workers stay at max always. Never idle a worker because the buffer is high.
+
+Let `label_budget = 8`. You may apply `scout-candidate` (or `agent-ready` on fleet-ops only) to at most `label_budget` issues this run (new or relabeled).
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 
