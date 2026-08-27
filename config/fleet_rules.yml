@@ -268,6 +268,37 @@ groups:
           summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
           description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
 
+  - name: fleet_waste
+    rules:
+      # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is
+      # ALWAYS emitted by a live waste-ledger export (zeros on a quiet
+      # window), so absent() fires only when the #1211 path is dead — not
+      # on a no-dispatch day. The ratio gauge itself is omitted when
+      # total spend is 0.
+      - alert: FleetWasteLedgerAbsent
+        expr: absent(fleet_waste_runs{kind="total"})
+        for: 3h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "waste-ledger metrics absent — the #1211 loss-accounting exporter path is missing or dead"
+          description: "Repair: fleet-waste-export.py must emit fleet_waste_runs{kind=\"total\"}. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/waste-ledger.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
+
+      # TREND alert, not a level, not a page. WasteRatioRising feeds the
+      # Weekly Fleet Review (L3 machinery health + cost). severity=none so
+      # alert-repair does not dispatch. offset 24h cannot fire on the first
+      # day after deploy (no false alarm during warmup).
+      - alert: WasteRatioRising
+        expr: (fleet_waste_ratio - fleet_waste_ratio offset 24h) > 0.15
+        for: 6h
+        labels:
+          severity: none
+          service: fleet
+        annotations:
+          summary: "fleet waste ratio rose 15+ points versus yesterday's 24h window"
+          description: "fleet_waste_ratio rose by more than 0.15 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level, not a page — Weekly Fleet Review owns the response. Inspect fleet_waste_empty_runs_24h (the #902 empty-run class) and fleet_waste_retries_24h (the #1204 salvage-bleed class) per lane."
+
   - name: fleet_console_truth
     rules:
       # fleet-ops#1157: a tile whose independent truth-check disagrees with

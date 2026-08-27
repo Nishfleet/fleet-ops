@@ -177,3 +177,7 @@ bash "$here/same-repo-closes-gate.test.sh"
 # fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/console-tile-verify.test.sh"
+
+# fleet-ops#1211: waste ledger (empty-run + salvage-bleed spikes).
+# Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/fleet-waste-ledger.test.sh"

@@ -450,3 +450,7 @@ lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.py
+# fleet-ops#1211: loss-accounting metric family. Piggybacks the existing
+# fleet-metrics-export oneshot (second ExecStart). No new timer.
+libexec/fleet-waste-export.py /home/nish/.local/libexec/fleet-waste-export.py
+systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/waste-ledger.conf

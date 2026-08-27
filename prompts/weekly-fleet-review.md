@@ -59,6 +59,11 @@ five lenses:
   (Claude/Devin/Cursor/xAI), what the heartbeat canaries said. Read
   `/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md` and the
   recent cron-output. Identify any unit that ran but produced no value.
+  Read `fleet_waste_ratio` and per-lane `fleet_lane_efficiency` (query
+  Prometheus, or `/var/lib/prometheus/node-exporter/fleet-waste.prom`).
+  A rising waste ratio is the salvage-bleed / empty-run class — file
+  work against the losing lane. Do not page; WasteRatioRising is
+  severity=none on purpose.
 - **L4 truth/docs integrity** — pick THREE claims the fleet or 0509
   product makes in their docs or READMEs and verify each against the
   code/CLI/state. Flag drift, staleness, or ungrounded claims. (The
