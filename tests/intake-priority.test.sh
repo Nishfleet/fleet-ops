@@ -75,7 +75,9 @@ num="${out%%$'\t'*}"
 [[ "$num" == "10" ]] || fail "crit-only must still claim #10, got: $out"
 ok "ratio guard does not starve when no tail exists"
 
-# --- escalate-senior implies critical-path ----------------------------------
+# --- escalate-senior is senior-panel-owned, excluded from regular claim --
+# (fleet-ops#234: intake routes escalate-senior to the pi-audit@ panel, so a
+# regular lane must never claim it — that defeats the panel.)
 issues_esc="$scratch/esc.json"
 cat >"$issues_esc" <<'JSON'
 [
@@ -85,11 +87,8 @@ cat >"$issues_esc" <<'JSON'
 JSON
 out="$("$bin" order --repo fleet-ops --issues-file "$issues_esc" --ratio-file "$scratch/empty2.ratio" --pick-one)"
 num="${out%%$'\t'*}"
-rest="${out#*$'\t'}"
-kind="${rest%%$'\t'*}"
-[[ "$num" == "9" ]] || fail "escalate-senior should claim before tail, got: $out"
-[[ "$kind" == "escalate-senior" ]] || fail "expected kind=escalate-senior, got: $out"
-ok "escalate-senior implies critical-path in the orderer"
+[[ "$num" == "5" ]] || fail "escalate-senior must be excluded from regular claim, got: $out"
+ok "escalate-senior is excluded from the regular-worker claim order (senior panel owns it)"
 
 # --- record persists for the next tick --------------------------------------
 "$bin" record --ratio-file "$scratch/rec.ratio" 223 critical-path

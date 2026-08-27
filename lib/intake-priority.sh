@@ -9,11 +9,11 @@
 # agent-ready issues in ascending issue-number order. This lib is the orderer.
 #
 # Rules:
-#   1. A ready issue is critical if it carries `critical-path` OR
-#      `escalate-senior` (escalate-senior implies critical-path). The
-#      detector→queue reconciler (fleet-ops#362) should add `critical-path`
-#      when it files a keystone-signal issue; the orderer already honours
-#      that label.
+#   1. A ready issue is critical if it carries `critical-path` (the
+#      detector→queue reconciler, fleet-ops#362, adds it when it files a
+#      keystone-signal issue). `escalate-senior` issues are NOT critical
+#      work for a regular lane: they are routed to the senior-auditor panel
+#      (fleet-ops#234) and excluded from the regular-worker claim order.
 #   2. Critical issues are claimed before the agent-ready tail.
 #   3. Anti-starvation: if the last INTAKE_PRIORITY_MAX_CRITICAL records
 #      are all critical AND a tail issue is waiting, the next pick is the
@@ -42,10 +42,13 @@ intake_priority_classify() {
       map({
         number: .number,
         title: (.title // ""),
-        critical: (has($label) or has($escalate)),
+        # fleet-ops#234: escalate-senior is senior-panel-owned, never a
+        # regular-worker claim. Mark it escalation so the walk can exclude it.
+        escalation: has($escalate),
+        critical: has($label),
         display_kind: (
-          if has($label) then $label
-          elif has($escalate) then $escalate
+          if has($escalate) then $escalate
+          elif has($label) then $label
           else "tail"
           end
         )
@@ -115,6 +118,9 @@ intake_priority_walk() {
     local pick_one="${3:-0}"
     local sim
     sim="$(mktemp)"
+    # fleet-ops#234: escalate-senior issues never enter the regular-worker
+    # claim order; the senior-auditor panel owns them. Drop them up front.
+    remaining="$(jq -c '[.[] | select(.escalation != true)]' <<<"$remaining")"
     intake_priority_recent_kinds "$state_file" 20 >"$sim" || true
 
     while jq -e 'length > 0' <<<"$remaining" >/dev/null; do

@@ -1,0 +1,20 @@
+[Unit]
+Description=Senior escalation panel intake (fleet-ops#234)
+# Routes open `escalate-senior` issues to the three-senior panel. A
+# StartLimitBurst-exhausted failure reaches the stop-escalation auditor path
+# via the global service.d/10-escalate.conf drop-in.
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-escalation-audit'
+TimeoutStartSec=5min
+Restart=on-failure
+RestartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
