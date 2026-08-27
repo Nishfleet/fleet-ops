@@ -129,12 +129,20 @@ grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || fail "deploy spy not invoked"
 grep -q "deploy completed rc=0" "$scratch/err.log" || fail "missing deploy-completed log"
 ok "moved origin/main -> deploy invoked, exit 0"
 
-# --- 5. deploy rc=1 -> LOUD FAILED, exit 1 -----------------------------------
+# --- 5. deploy rc=1 -> LOUD FAILED, exit 0 (soft) ---------------------------
+# fleet-ops#768 (auditor trip 2026-08-27T01:54Z): the prior behavior exited
+# 1 on deploy failure, which tripped the systemd unit, fired OnFailure=,
+# and summoned the auditor every tick a worker transiently dirtied the
+# deploy-clone (the inner fleet-ops-deploy already auto-files the only
+# actionable signal via auto_file_off_main). The check now treats
+# deploy-blocked as soft: it logs the LOUD line for visibility and
+# returns 0 so the next tick can retry. A hard internal error in the
+# deploy binary is still surfaced via the LOUD line.
 advance_origin "remote-four"
 rc=$(run_bin 0 1)
-[[ "$rc" == "1" ]] || fail "deploy rc=1 should exit 1 (got $rc)"
+[[ "$rc" == "0" ]] || fail "deploy rc=1 should be soft (exit 0), got $rc"
 grep -q "DEPLOY-CHECK-FAILED" "$scratch/err.log" || fail "missing DEPLOY-CHECK-FAILED loud line"
-ok "deploy failure louds DEPLOY-CHECK-FAILED, exit 1"
+ok "deploy failure louds DEPLOY-CHECK-FAILED, exit 0 (soft, was: hard-fail-tripped auditor)"
 
 # --- 6. deploy already in flight -> yields -----------------------------------
 advance_origin "remote-five"
