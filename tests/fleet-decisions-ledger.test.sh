@@ -219,7 +219,34 @@ ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/reask.jsonl"
 
 # --- 9. missing helper / missing ledger fails loud --------------------------
+# Harden the drill (fleet-ops#707): install a WORKING fake helper at the
+# fallback dest under a scratch HOME so the drill proves the guard (env-var
+# pin wins over the installed copy) regardless of whether the real machine
+# already has ~/.local/lib/pi-packet/decisions-ledger.py. Without the guard
+# the bin would fall back to the fake helper, scan clean, and exit 0 — the
+# drill would fail. With the guard the pin wins, LIB stays missing, exit 1.
+fake_home="$scratch/home"
+mkdir -p "$fake_home/.local/lib/pi-packet"
+cat >"$fake_home/.local/lib/pi-packet/decisions-ledger.py" <<'FAKE_HELPER'
+#!/usr/bin/env python3
+import argparse, json, sys
+p = argparse.ArgumentParser()
+sub = p.add_subparsers(dest="cmd", required=True)
+s = sub.add_parser("scan")
+s.add_argument("--root", required=True)
+s.add_argument("--ledger", required=True)
+s.add_argument("--now", default="")
+s.add_argument("--window-hours", type=float, default=24.0)
+s.add_argument("--grace-minutes", type=float, default=20.0)
+a = p.parse_args()
+json.dump({"findings": [], "scanned": 0, "skipped_old": 0,
+           "skipped_grace": 0, "skipped_unreadable": 0,
+           "ledger_lines": 0, "root": a.root}, sys.stdout)
+sys.stdout.write("\n")
+FAKE_HELPER
+chmod +x "$fake_home/.local/lib/pi-packet/decisions-ledger.py"
 set +e
+HOME="$fake_home" \
 FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/sessions" \
 FLEET_DECISIONS_LEDGER="$scratch/ledger.md" \
 FLEET_DECISIONS_LEDGER_LIB="$scratch/no-such.py" \
@@ -228,9 +255,9 @@ FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
   "$bin" >/dev/null 2>"$scratch/err4.log"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc)"
+[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc) — guard did not win over installed fallback"
 grep -q "DECISIONS-LEDGER-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
-ok "missing helper fails loud"
+ok "missing helper fails loud (guard wins over installed fallback)"
 
 set +e
 FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/sessions" \
