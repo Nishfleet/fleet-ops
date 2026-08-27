@@ -881,4 +881,11 @@ ok "rule-enforcement: paid-flash canary drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
+# fleet-ops#1152: standing-rules drift gate. The generator that renders the
+# canonical standing rules into CLAUDE.md/AGENTS.md is only a gate if its
+# drift test actually runs; nested host so the worker token does not need
+# to edit .github/workflows/**.
+bash "$here/standing-rules-drift.test.sh" || fail "standing-rules drift drill failed"
+ok "rule-enforcement: standing-rules drift drill"
+
 ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, and vault-capture drills"

@@ -165,6 +165,21 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-packet-verdict\.test\.sh"?' \
   || fail "pi-packet-verdict.test.sh must not be a known orphan (fleet-ops#1200)"
 ok "pi-packet-verdict.test.sh is pinned in the P14 reachable set (fleet-ops#1200)"
 
+# fleet-ops#1152: hard-pin the host line for standing-rules-drift. The test
+# landed on main as `test_standing_rules_drift.sh` — a name this gate does
+# not scan (`*.test.sh` only), so it ran nowhere in CI while looking like a
+# gate. Renamed into the suite and hosted from rule-enforcement.test.sh;
+# this named pin is the class-prevention so the host line cannot be dropped
+# and the test cannot be parked on known_orphans to silence $bad[].
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/standing-rules-drift\.test\.sh"?' \
+  "$here/rule-enforcement.test.sh" \
+  || fail "rule-enforcement.test.sh must bash-invoke standing-rules-drift.test.sh (fleet-ops#1152)"
+[[ -n "${reachable[standing-rules-drift.test.sh]:-}" ]] \
+  || fail "standing-rules-drift.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1152)"
+[[ -z "${known_orphan_set[standing-rules-drift.test.sh]:-}" ]] \
+  || fail "standing-rules-drift.test.sh must not be a known orphan (fleet-ops#1152)"
+ok "standing-rules-drift.test.sh is pinned in the P14 reachable set (fleet-ops#1152)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
