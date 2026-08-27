@@ -71,7 +71,7 @@ cat >"$gh_fake" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_CALLS:-/dev/null}"
 case "$*" in
-  *"label list"*)
+  *"api repos/Nishfleet/"*"/labels?per_page=100"*)
     if [[ "${GH_AUTH_FAIL:-0}" == "1" ]]; then
       printf 'HTTP 401: Bad credentials\n' >&2
       exit 1
@@ -601,8 +601,13 @@ ok "scenario10: MANIFEST + README + description all reference the reconciler"
 
 # ============================================================================
 # Scenario 11: gh label check fails (network/auth/transient) → keep state,
-#              log loud, exit non-zero.  This was the fail-closed defect that
+#              log loud, exit clean.  This was the fail-closed defect that
 #              disabled every enrolled repo on the reconciler's first run.
+#              fleet-ops#1127: an UNDER-threshold transient blip must NOT
+#              FATAL (it used to set RECONCILE_ERRORS=1 and fire OnFailure →
+#              auditor summon). The under-threshold skip exits clean so the
+#              timer can retry next tick; a SUSTAINED blip (n >= threshold)
+#              is the fail[] path that exits non-zero.
 # ============================================================================
 reset_world
 cat >"$intake_json" <<JSON
@@ -624,7 +629,10 @@ GH_FAIL=1
 run_reconcile "$intake_json"
 GH_FAIL=0
 
-[[ "$env_rc" != 0 ]] || fail "scenario11: transient gh failure must exit non-zero, got $env_rc"
+# fleet-ops#1127: a single under-threshold transient blip exits CLEAN (0) so
+# the timer can retry next tick — it must NOT FATAL and summon the auditor.
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario11: under-threshold transient gh blip must exit clean (0), got $env_rc ($env_out)"
 # A check error is NOT a verified precondition failure — the repo must stay
 # in its current state, not be converged to OFF.
 grep -q 'disable pi-intake@demo.timer' "$CALLS" \
@@ -659,7 +667,10 @@ printf 'pi-intake@demo.timer\npi-scout@demo.timer\n' >"$UNIT_ACTIVE"
 
 GH_FAIL=1
 run_reconcile "$intake_json"
-[[ "$env_rc" != 0 ]] || fail "scenario12 tick1: single transient must exit non-zero, got $env_rc"
+# fleet-ops#1127: a single under-threshold transient blip exits CLEAN (0) so
+# the timer can retry next tick — it must NOT FATAL and summon the auditor.
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario12 tick1: single transient must exit clean (0), got $env_rc ($env_out)"
 grep -q 'disable pi-intake@demo.timer' "$CALLS" \
     && fail "scenario12 tick1: must NOT disable on a single blip: $(cat "$CALLS")"
 grep -q 'INTAKE-PRECOND-CHECK-ERROR' "$triage" \
