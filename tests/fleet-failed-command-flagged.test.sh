@@ -99,22 +99,53 @@ case "$cmd" in
         echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#issuecomment-1"
         ;;
       list)
+        state_filter="open"
+        search_query=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --state) state_filter="$2"; shift 2 ;;
+            --search) search_query="$2"; shift 2 ;;
+            --limit|--json|--repo|-R) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        # Strip surrounding quotes from the search phrase.
+        search_query="${search_query#\"}"
+        search_query="${search_query%\"}"
         printf '[\n'
         first=1
         for f in "$store"/issue-*.body; do
           [ -f "$f" ] || continue
           num=$(basename "$f" .body)
           num=${num#issue-}
-          [ -f "$store/issue-${num}.closed" ] && continue
+          is_closed=""
+          [ -f "$store/issue-${num}.closed" ] && is_closed="1"
+          if [ "$state_filter" = "open" ] && [ -n "$is_closed" ]; then
+            continue
+          fi
+          if [ "$state_filter" = "closed" ] && [ -z "$is_closed" ]; then
+            continue
+          fi
           body=$(tail -n +2 "$f")
           comments_file="$store/issue-${num}.comments"
           if [ -f "$comments_file" ]; then
             comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
+            all_text="$body $(cat "$comments_file")"
           else
             comments_json='[]'
+            all_text="$body"
+          fi
+          if [ -n "$search_query" ] && ! printf '%s' "$all_text" | grep -Fq -- "$search_query"; then
+            continue
           fi
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s,"comments":%s}' "$num" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
+          if [ -n "$is_closed" ]; then
+            issue_state="CLOSED"
+          else
+            issue_state="OPEN"
+          fi
+          printf '{"number":%s,"state":"%s","title":"","body":%s,"comments":%s}' \
+            "$num" "$issue_state" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
         done
         printf '\n]\n'
         ;;
@@ -133,6 +164,22 @@ case "$cmd" in
         : > "$store/issue-${num}.closed"
         printf '%s\n' "$num" >>"$store/closed"
         echo "Closed issue #$num"
+        ;;
+      reopen)
+        num=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --repo|-R) shift 2 ;;
+            *)
+              if [ -z "$num" ]; then num="$1"; fi
+              shift
+              ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        rm -f "$store/issue-${num}.closed"
+        printf '%s\n' "$num" >>"$store/reopened"
+        echo "Reopened issue #$num"
         ;;
       *) exit 1 ;;
     esac
@@ -689,6 +736,102 @@ fi
 ok "observe-to-close: still-dirty slug is neither commented nor closed"
 rm -f "$sessions/${slug650}.jsonl"
 
+# --- 7d. closed-dedup: do not re-file a worker-PR-closed issue; reopen it (#933)
+# Live #933: #765 was closed by a worker PR (#925) while the session was still
+# a finding in the 24h window. The detector re-filed #933 because it only
+# searched open issues. It must now search all issues and, when it finds a
+# closed issue without a resolved-at marker, reopen it instead of filing new.
+rm -f "$gh_store"/issue-* "$gh_store/commented" "$gh_store/closed" "$gh_store/reopened"
+write_session "closed-dedup" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-closed-dedup.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "closed-dedup first run should exit 1 (got $rc)"
+grep -q "FILED" "$scratch/err-closed-dedup.log" || fail "closed-dedup first run did not file"
+issue_count=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$issue_count" == "1" ]] || fail "closed-dedup first run should create exactly one issue (got $issue_count)"
+cnum=$(basename $(ls "$gh_store"/issue-*.body | head -1) .body | sed 's/issue-//')
+
+# Close the issue as if a worker PR had closed it (no resolved-at marker).
+GH_MOCK_STORE="$gh_store" "$scratch/gh" issue close "$cnum" >/dev/null
+
+# Same finding in the next tick. The detector must reopen, not file a new issue.
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-closed-dedup2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "closed-dedup second run should exit 1 (got $rc)"
+grep -q "REOPENED" "$scratch/err-closed-dedup2.log" || fail "closed-dedup second run did not reopen the closed issue: $(cat "$scratch/err-closed-dedup2.log")"
+issue_count=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$issue_count" == "1" ]] || fail "closed-dedup second run must not create a new issue (got $issue_count)"
+[ -f "$gh_store/issue-${cnum}.closed" ] && fail "closed-dedup reopen must remove the closed marker"
+ok "closed-dedup: worker-PR-closed issue is reopened, not duplicated (#933)"
+rm -f "$sessions/closed-dedup.jsonl"
+
+# --- 7e. in-flight grace: do not resolve an open issue for a skipped session
+# Live #765: a session file was still being written (mtime within grace) when
+# the heartbeat ran. The detector skipped it, saw no finding for the slug,
+# and posted a resolved-at comment, leading to a premature close and #933.
+# With skipped_grace_slugs, observe-to-close must not touch an open issue
+# whose session is still within the grace window.
+rm -f "$gh_store"/issue-* "$gh_store/commented" "$gh_store/closed" "$gh_store/reopened"
+slug_grace="2026-08-27t00-05-00-000z-grace-test"
+printf '%s\n' "fix(failed-command): $slug_grace" >"$gh_store/issue-750.body"
+printf '\nDo not close until the detector reports this clean.\n\nsignal: failed-command-flagged/%s\n' "$slug_grace" >>"$gh_store/issue-750.body"
+write_session "$slug_grace" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+touch -d "2026-08-27T00:05:00Z" "$sessions/${slug_grace}.jsonl"
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="10" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-grace.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "in-flight grace tick should exit 0 (got $rc) $(cat "$scratch/err-grace.log")"
+grep -q "skipped due to in-flight grace" "$scratch/err-grace.log" || fail "in-flight grace tick did not skip resolving the open issue: $(cat "$scratch/err-grace.log")"
+[ -s "$gh_store/commented" ] && fail "in-flight grace tick must not comment resolved-at"
+[ -s "$gh_store/closed" ] && fail "in-flight grace tick must not close the open issue"
+# Also lock the skipped_grace_slugs contract in the helper report.
+grace_report=$(python3 "$lib" scan --root "$sessions" --window-hours 24 --grace-minutes 10 --now "2026-08-27T00:10:00Z")
+[[ $(jq '.skipped_grace' <<<"$grace_report") == "1" ]] || fail "grace report should show skipped_grace=1"
+jq -e --arg s "$slug_grace" '.skipped_grace_slugs | contains([$s])' <<<"$grace_report" >/dev/null \
+  || fail "grace report should list the skipped slug"
+ok "in-flight grace: open issue is not resolved while session is still within grace"
+rm -f "$sessions/${slug_grace}.jsonl"
+
 # --- 8. missing helper fails loud -------------------------------------------
 set +e
 FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
@@ -718,4 +861,4 @@ jq -e '.rules[] | select(.id == "sr-failed-command-flagged" and .status == "enfo
   || fail "sr-failed-command-flagged must be status=enforced in the matrix"
 ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, matrix enforced"
 
-echo "OK: fleet-failed-command-flagged: rc canary, grep/ls/which/git no-match exemption, auto-file dedupe, observe-to-close"
+echo "OK: fleet-failed-command-flagged: rc canary, grep/ls/which/git no-match exemption, auto-file dedupe, closed-dedup reopen, in-flight grace guard, observe-to-close"
