@@ -152,6 +152,12 @@ bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # overwrite from silently dropping a reserved token.
 bin/nish-boundary-notify /home/nish/.local/bin/nish-boundary-notify
 bin/fleet-claim /home/nish/.local/bin/fleet-claim
+# fleet-ops#1199: atomic alert-repair claim mutex. Lives next to
+# alert-repair-dispatch under /home/nish/.local/libexec/ so the dispatch
+# script can resolve it via ALERT_REPAIR_CLAIM_BIN default. install.sh
+# honours the libexec/ -> /home/nish/.local/libexec/ prefix.
+libexec/alert-repair-claim /home/nish/.local/libexec/alert-repair-claim
+libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
