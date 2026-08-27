@@ -24,6 +24,17 @@ write_fake() {
 shift  # --user
 case "\$1" in
   is-active) echo ${active}; exit 0 ;;
+  stop)
+    # Reaper now cancels the pending restart ladder before archiving packets
+    # (fleet-ops#638 follow-up, senior auditor 2026-08-27). Record the call
+    # for the regression assertions and report success.
+    echo stopped >>"\${FAKE_SYSTEMCTL_LOG:-/dev/null}"
+    exit 0
+    ;;
+  reset-failed)
+    echo reset-failed >>"\${FAKE_SYSTEMCTL_LOG:-/dev/null}"
+    exit 0
+    ;;
   show)
     # systemctl --user show -p ActiveState --value UNIT
     # systemctl --user show -p MainPID --value UNIT
@@ -282,6 +293,39 @@ shopt -u nullglob
 [[ "${#archived_c[@]}" -ge 1 ]] || fail "branch_deleted reap must create ARCHIVED- files, got: ${archived_c[*]}"
 grep -q 'PACKETS-ARCHIVED' "$triage" || fail "triage missing PACKETS-ARCHIVED: $(cat "$triage")"
 ok "branch_deleted reap archives packets (OPEN issue re-claim)"
+
+# --- Test C2: a real (non-dry) reap must CANCEL the unit's restart ladder
+# before archiving (fleet-ops#638 follow-up, senior auditor 2026-08-27). The
+# reaper runs on OnFailure= at the FIRST failure; systemd's Restart=on-failure
+# ladder is still armed, and the unit got 3 more chances after OnFailure fired.
+# If the .in is archived while the ladder is pending, the next ladder restart
+# fails 208/STDIN (missing StandardInput=file) -> another OnFailure -> another
+# STOP-REASON -> another auditor summon per ladder step (live: pi-issue@
+# fleet-ops-938 2026-08-27 07:16Z, archived .in at 07:16:49Z, restart 208/STDIN
+# at 07:20:44Z). The reaper must stop + reset-failed the unit so the ladder is
+# cancelled BEFORE the packets move.
+state_638c2="$fake/state-638c2"
+mkdir -p "$state_638c2/attempts"
+issues_dir_c2="$fake/issues-638c2"
+mkdir -p "$issues_dir_c2"
+sysctl_log="$fake/systemctl-ops.log"
+printf 'open-packet-c2\n' >"$issues_dir_c2/fleet-ops-641.in"
+printf 'open-out-c2\n' >"$issues_dir_c2/fleet-ops-641.out"
+: >"$triage"
+write_gh_fake '{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}' 0  # branch exists, DELETE ok
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_638c2" PI_ISSUES_DIR="$issues_dir_c2" \
+    FAKE_SYSTEMCTL_LOG="$sysctl_log" "$bin" fleet-ops-641 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "ladder-cancel reap must exit 0, got $rc ($out)"
+grep -q 'stopped' "$sysctl_log" || fail "reap must stop the unit before archiving (ladder cancel), ops log: $(cat "$sysctl_log" 2>/dev/null)"
+grep -q 'reset-failed' "$sysctl_log" || fail "reap must reset-failed the unit before archiving, ops log: $(cat "$sysctl_log" 2>/dev/null)"
+[[ ! -f "$issues_dir_c2/fleet-ops-641.in" ]] || fail "ladder-cancel reap must archive .in (still present)"
+grep -q 'PACKETS-ARCHIVED' "$triage" || fail "triage missing PACKETS-ARCHIVED: $(cat "$triage")"
+ok "reap stops + reset-failed the unit before archiving (cancels 208/STDIN ladder re-fire)"
 
 # --- Test D: dry-run must NOT archive (no mutating gh, no mv) ---------------
 state_638d="$fake/state-638d"
