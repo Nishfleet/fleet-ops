@@ -57,9 +57,11 @@
       "cap": 2,
       "class": "free",
       "models": {
-        "deepseek/deepseek-v4-flash": 2
+        "deepseek/deepseek-v4-flash": 2,
+        "minimax/minimax-m3-free": 1
       },
-      "_comment_m3": "2026-08-27: MiniMax M3 on CommandCode (fleet-ops#545). Live models.json lists minimax/minimax-m3-free at cost 0. Do not allowlist a billing slug (minimax-m3 / minimax/minimax-m3). bin/opencode-m3-catalog-canary fail-louds a billing allowlist and a free-form slug whose models.json cost is non-zero, and auto-files when a -free or *-pass/ MiniMax M3 slug appears in Pi's commandcode catalog. Wiring requires a live spawn + meter check (fail closed if it bills) plus a dated seat-caps row (capacity-is-measured)."
+      "_comment_m3": "2026-08-27: MiniMax M3 on CommandCode (fleet-ops#545). Live models.json lists minimax/minimax-m3-free at cost 0. Do not allowlist a billing slug (minimax-m3 / minimax/minimax-m3). bin/opencode-m3-catalog-canary fail-louds a billing allowlist and a free-form slug whose models.json cost is non-zero, and auto-files when a -free or *-pass/ MiniMax M3 slug appears in Pi's commandcode catalog. Wiring requires a live spawn + meter check (fail closed if it bills) plus a dated seat-caps row (capacity-is-measured).",
+      "_comment_minimax_m3_free": "2026-08-27 07:17 UTC: live spawn on commandcode/minimax/minimax-m3-free returned HTTP 200, seat-health healthy, models.json cost input/output/cache 0, no prepaid-usage/commandcode.json. Cap 1 for measured admission; raise after league mean beats worst incumbent."
     },
     "hetzner": {
       "cap": 2,
