@@ -96,7 +96,7 @@ that. The auto-filed issue closes via observe-to-close when the session
 mtime ages out of the 24h window. An `edit`
 tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
-(fleet-ops#956, #965) — or the variant
+(fleet-ops#956, #965, #1186) — or the variant
 "Found N occurrences of the text in <path>. The text must be unique."
 (fleet-ops#1053, same class: oldText matched multiple locations, not zero)
 — or the multi-edit array variant
@@ -110,8 +110,22 @@ existing as expected." (fleet-ops#1139, same class: the edit matched but
 the intended change did NOT land) —
 is also a real swallowed
 failure: a silent `read` recovery, a later thinking-only note that the
-file was different, or unrelated prose that moves on, is not a
-user-facing flag. For the #1139 no-op shape the live recovery was
+file was different, unrelated prose that moves on, or a successful
+bash `cp` of a rewritten file over the same path, is not a
+user-facing flag. fleet-ops#1186 is a fresh occurrence of the
+exact-text class on a DIFFERENT session slug (the 01a04398
+never-say-next auditor session, where the worker edited
+`/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1`,
+got the live exact-text message, and walked past it with same-turn
+action-prose "Now I'll apply the fix" spoken BEFORE the toolResult,
+thinking-only recovery, a `sed | cat -A` whitespace inspect, and a
+`cp` of a rewritten file over the original with `echo FILE REPLACED`
+inside the recovery command). Same-turn prose spoken before the
+result cannot name a failure that has not happened yet. A successful
+bash rewrite of the same path, or an echo inside the recovery
+command, does not discharge the unmatch. Do NOT add a
+"deploy-clone is scratch" or "successful cp of the same path"
+exemption. For the #1139 no-op shape the live recovery was
 cause-explaining prose — "The text is already the same. Let me check
 what's actually there:" — followed by two `grep` probes and four empty
 assistant turns. That names the CAUSE (the file already held that text),
@@ -121,7 +135,8 @@ failure. Do NOT add a READ_OFFSET_RE-style exemption for the no-op
 wording on the theory that "nothing broke": the worker believed it had
 edited the file and it had not, which is the whole point of the rule.
 tests/fleet-failed-command-edit-unmatch.test.sh pins the single-edit,
-multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
+multi-match, no-op, and bash-cp-rewrite (#1186) shapes;
+tests/fleet-failed-command-edit-array-
 unmatch.test.sh pins the multi-edit array `edits[0]` shape
 (fleet-ops#1173). #970 is the same session shape as #956 / #965 (the
 01a03dee edit-unmatch session); it is a leftover open duplicate filed
@@ -456,14 +471,16 @@ HARNESS_BLOCK_RE = re.compile(
 # on a directory, read" (fleet-ops#1170 / #1243: the path is a
 # directory, not a missing file and not an overshot offset).
 # Do NOT add a similar exemption for `edit` "Could not find the exact
-# text" (fleet-ops#956, #965, #970, #975, #980), "Found N occurrences"
+# text" (fleet-ops#956, #965, #970, #975, #980, #1186), "Found N occurrences"
 # (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
 # locations, not zero), or "No changes made ... The replacement produced
 # identical content" (fleet-ops#1139, same class: the edit matched but the
 # intended change never landed). Those are real swallowed failures: the
-# worker's oldText or newText was stale. A silent read/grep recovery, and
-# cause-explaining prose ("The text is already the same"), do not
-# discharge it.
+# worker's oldText or newText was stale. A silent read/grep recovery,
+# cause-explaining prose ("The text is already the same"), and a
+# successful bash `cp` of the same path (#1186, live path
+# fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1, recovery echo
+# FILE REPLACED) do not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
@@ -642,11 +659,15 @@ def result_failed(
     # No sibling exemption belongs here for the `edit` tool. All three
     # edit-unmatch shapes are real swallowed failures, not negative
     # results: "Could not find the exact text" (0 matches, fleet-ops#956
-    # / #965), "Found N occurrences" (many matches, fleet-ops#1053), and
+    # / #965 / #1186), "Found N occurrences" (many matches, fleet-ops#1053), and
     # "No changes made ... The replacement produced identical content"
     # (matched, but the intended change never landed, fleet-ops#1139).
     # The no-op shape is the tempting one — it reads as harmless — but the
-    # worker believed the file changed and it did not.
+    # worker believed the file changed and it did not. #1186's bash
+    # rewrite of the same path (sed inspect + cp, live path
+    # fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1) is the other
+    # tempting one — the file did get rewritten — but the unmatch was
+    # still walked past with no user-facing flag.
     # tests/fleet-failed-command-edit-unmatch.test.sh goes red if an
     # exemption is added here.
     is_error = bool(msg.get("isError"))

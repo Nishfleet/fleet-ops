@@ -2138,10 +2138,12 @@ bash "$here/fleet-failed-command-dedup-open-list.test.sh" || fail "fleet-failed-
 # when the slug stops being a finding. Same CI constraint (worker
 # token cannot add a new workflow line in ci.yml).
 bash "$here/fleet-failed-command-ledger-dedup.test.sh" || fail "fleet-failed-command-ledger-dedup tests failed"
-# fleet-ops#956 / #1053: `edit` 'Could not find the exact text' (stale
-# oldText, 0 matches) OR 'Found N occurrences of the text' (oldText
-# matched multiple locations; live #1053, AUDITOR-LOG.md, 42 hits)
-# walked past. Same class; same CI constraint.
+# fleet-ops#956 / #1053 / #1186: `edit` 'Could not find the exact text'
+# (stale oldText, 0 matches) including the live #1186 bash-cp rewrite of
+# fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1, OR 'Found N
+# occurrences of the text' (oldText matched multiple locations; live
+# #1053, AUDITOR-LOG.md, 42 hits) walked past. Same class; same CI
+# constraint.
 bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-command-edit-unmatch tests failed"
 # fleet-ops#1173: `edit` with a multi-edit array returning 'Could not
 # find edits[0] in <path>' (stale oldText on the first array element)

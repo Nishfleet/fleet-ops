@@ -103,6 +103,38 @@
 #      (prompt-side lock).
 #  14. lib/failed-command-flagged.py cites fleet-ops#1139
 #      (detector-side lock).
+#
+# fleet-ops#1186: a later live session of the exact-text unmatch class
+# (after #956/#965 01a03dee and #1079 01a04262). Same wording:
+#   "Could not find the exact text in <path>. The old text must match
+#    exactly including all whitespace and newlines."
+# Unique recovery: same-turn action-prose BEFORE the toolResult
+# ("Now I'll apply the fix") plus thinking-only recovery plus a
+# `sed | cat -A` whitespace inspect plus a `cp` of a rewritten file
+# over the original with `echo FILE REPLACED` inside the recovery
+# command. Same-turn prose spoken before the result cannot name a
+# failure that has not happened yet. A successful bash rewrite of
+# the same path, or an echo inside the recovery command, is not a
+# flag (same rule as #1059 / #1139 cause-prose and #1218 write
+# recovery). A future "successful cp of the same path discharges
+# the unmatch" or "deploy-clone is scratch" exemption would silence
+# this. Live session:
+# 2026-08-27T14-21-33-364Z_01a04398-f734-7df5-9429-b6be2f3ecf17.jsonl
+# Path: /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1
+# observe-to-close: ages out at 2026-08-28T14:21:33Z.
+#
+#  15. live #1186 shape: same-turn "Now I'll apply the fix" prose +
+#      exact-text unmatch + thinking + sed inspect + bash cp rewrite
+#      of the same deploy-clone path -> finding. Snippet must carry
+#      the live path.
+#  16. same plus later unrelated "Let me test the new tier1 script"
+#      -> still a finding.
+#  17. same plus a later "the edit call failed" user-facing flag ->
+#      clean.
+#  18. worker.md cites fleet-ops#1186, fleet-ops-deploy-clone/bin/
+#      fleet-heartbeat-tier1, and FILE REPLACED (prompt-side lock).
+#  19. lib/failed-command-flagged.py docstring cites fleet-ops#1186
+#      (detector-side lock).
 
 set -euo pipefail
 
@@ -370,4 +402,79 @@ grep -q 'The replacement produced identical content' "$lib" \
   || fail "lib/failed-command-flagged.py must name the live #1139 no-op wording"
 ok "lib/failed-command-flagged.py cites fleet-ops#1139 and the no-op wording"
 
-echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053/#1139 edit unmatch drills"
+# --- 15. live #1186 shape: exact-text unmatch + bash cp rewrite ------------
+# Exact replay of session 01a04398: the `edit` of
+# fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1 returned isError=true
+# with the exact-text message. Same-turn action-prose ("Now I'll apply
+# the fix") was spoken BEFORE the toolResult. Recovery was thinking-
+# only, a sed | cat -A inspect, then `cp` of a rewritten file over the
+# original with `echo FILE REPLACED` in the recovery command. The
+# snippet must match the live detector finding on #1186.
+write_session "edit-unmatch-bash-cp-rewrite" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The full block from `if [ \"$deploy_rc\" -ne 0 ]; then` to the final `exit 0` needs to be replaced."},{"type":"text","text":"Now I'll apply the fix. The spec says: rc=1 = alarm (detectors found items), rc>=2 = crash. Replace the entire rc propagation block:\n\n"},{"type":"toolCall","id":"call_edit10","name":"edit","arguments":{"path":"/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1","edits":[{"oldText":"if [ \"$deploy_rc\" -ne 0 ]; then\n    exit \"$deploy_rc\"\nfi"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit10","toolName":"edit","content":[{"type":"text","text":"Could not find the exact text in /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1. The old text must match exactly including all whitespace and newlines."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me check the exact content - maybe there's an extra space or different line ending."},{"type":"toolCall","id":"call_sed10","name":"bash","arguments":{"command":"sed -n '1955,2058p' /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1 | cat -A | head -50"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_sed10","toolName":"bash","isError":false,"content":[{"type":"text","text":"if [ \"$deploy_rc\" -ne 0 ]; then$"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Good. New file is shorter. Let me copy it into place."},{"type":"toolCall","id":"call_cp10","name":"bash","arguments":{"command":"cp /tmp/tier1_new.sh /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1\nchmod +x /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1\necho \"FILE REPLACED\""}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp10","toolName":"bash","isError":false,"content":[{"type":"text","text":"FILE REPLACED"}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1186 edit unmatch with bash cp rewrite should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Could not find the exact text' <<<"$snippet" \
+  || fail "finding snippet should mention Could not find the exact text (got $snippet)"
+grep -q 'fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1' <<<"$snippet" \
+  || fail "finding snippet should mention fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1 (got $snippet)"
+ok "live #1186: edit 'Could not find the exact text' with silent bash cp rewrite is flagged"
+rm -f "$sessions/edit-unmatch-bash-cp-rewrite.jsonl"
+
+# --- 16. #1186 shape plus later unrelated prose is still a finding --------
+# Live next turn after the cp was a thinking-only "Now let me test the
+# new tier1 script" plus a bash run. That moves on without naming the
+# edit failure.
+write_session "edit-unmatch-bash-cp-unrelated-prose" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now I'll apply the fix. Replace the entire rc propagation block:\n\n"},{"type":"toolCall","id":"call_edit11","name":"edit","arguments":{"path":"/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1","edits":[{"oldText":"if [ \"$deploy_rc\" -ne 0 ]; then\n    exit \"$deploy_rc\"\nfi"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit11","toolName":"edit","content":[{"type":"text","text":"Could not find the exact text in /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1. The old text must match exactly including all whitespace and newlines."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp11","name":"bash","arguments":{"command":"cp /tmp/tier1_new.sh /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1 && echo FILE REPLACED"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_cp11","toolName":"bash","isError":false,"content":[{"type":"text","text":"FILE REPLACED"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Let me test the new tier1 script"},{"type":"toolCall","id":"call_bash11","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && bash bin/fleet-heartbeat-tier1 2>&1 | tail -10"}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1186 bash cp rewrite plus unrelated prose should be a finding (got $count) $report"
+ok "live #1186: edit unmatch with bash cp rewrite and later unrelated prose is still flagged"
+rm -f "$sessions/edit-unmatch-bash-cp-unrelated-prose.jsonl"
+
+# --- 17. #1186 shape plus a later user-facing flag is clean ---------------
+write_session "edit-unmatch-bash-cp-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit12","name":"edit","arguments":{"path":"/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1","edits":[{"oldText":"if [ \"$deploy_rc\" -ne 0 ]; then\n    exit \"$deploy_rc\"\nfi"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit12","toolName":"edit","content":[{"type":"text","text":"Could not find the exact text in /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1. The old text must match exactly including all whitespace and newlines."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the edit call failed with Could not find the exact text — oldText was stale on the deploy-clone, rewriting the file via bash cp."},{"type":"toolCall","id":"call_cp12","name":"bash","arguments":{"command":"cp /tmp/tier1_new.sh /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1 && echo FILE REPLACED"}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "live #1186 bash cp rewrite with later user-facing flag should be clean (got $count) $report"
+ok "live #1186: edit unmatch plus later user-facing flag is clean"
+rm -f "$sessions/edit-unmatch-bash-cp-flagged.jsonl"
+
+# --- 18. worker.md cites fleet-ops#1186 (prompt-side lock) ----------------
+grep -q 'fleet-ops#1186' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1186 (prompt-side lock for the bash-cp exact-text shape)"
+grep -q 'fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1' "$worker" \
+  || fail "prompts/worker.md must name fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1 as the live #1186 path"
+grep -q 'FILE REPLACED' "$worker" \
+  || fail "prompts/worker.md must name the live #1186 FILE REPLACED recovery echo so workers know it is not a flag"
+ok "worker.md cites fleet-ops#1186, the live path, and the FILE REPLACED recovery echo"
+
+# --- 19. lib/failed-command-flagged.py cites fleet-ops#1186 ---------------
+grep -q 'fleet-ops#1186' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#1186 (detector-side lock)"
+grep -q 'fleet-ops-deploy-clone/bin/fleet-heartbeat-tier1' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the live #1186 fleet-heartbeat-tier1 path"
+ok "lib/failed-command-flagged.py cites fleet-ops#1186 and the live path"
+
+echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053/#1139/#1186 edit unmatch drills"
