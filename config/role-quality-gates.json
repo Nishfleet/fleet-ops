@@ -49,9 +49,9 @@
     {
       "id": "senior-auditor",
       "gate": "overturn-rate on the scoreboard; panel is 2-of-3 and cannot self-admit",
-      "proof": ["prompts/auditor.md", "prompts/senior-conference.md", "bin/pi-audit-tally"],
-      "units": ["pi-audit@.service"],
-      "prompts": ["auditor.md", "senior-conference.md"],
+      "proof": ["prompts/auditor.md", "prompts/escalation-auditor.md", "prompts/senior-conference.md", "bin/pi-audit-tally", "bin/pi-escalation-audit", "bin/pi-escalation-audit-tally"],
+      "units": ["pi-audit@.service", "pi-escalation-audit.service", "pi-escalation-audit@.service"],
+      "prompts": ["auditor.md", "escalation-auditor.md", "senior-conference.md"],
       "bypass_checks": ["senior_cannot_self_admit"]
     },
     {
