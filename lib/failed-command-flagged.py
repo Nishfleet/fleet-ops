@@ -36,7 +36,7 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001) is a
+`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
@@ -62,7 +62,26 @@ filed by the same detector as the 01a03e61 pile, so the citation
 chain must carry it. The leftover-duplicate observe-to-close
 drain for the 01a03e61 pile (#662, #953, #958, #972, #967, #977, #982)
 is locked under
-tests/fleet-failed-command-observe-duplicate-enoent.test.sh. An `edit`
+tests/fleet-failed-command-observe-duplicate-enoent.test.sh. #1059 is
+the same read-ENOENT shape as #953 / #1001 but on a DIFFERENT session
+slug (the 01a04220 archived-packet session, where the worker `read`
+`/home/nish/.local/state/pi-issues/fleet-ops-938.in` — a Pi issue packet
+the reap ladder had archived to `ARCHIVED-fleet-ops-938.in-<ts>` before
+the session started — got the live `ENOENT: no such file or directory,
+access '<path>'` shape, and walked past it with cause-explaining prose
+"The file was archived. Let me read it." that names the CAUSE (the file
+was archived) but NOT the FAILURE (the read returned ENOENT), followed
+by a `cat` of the archived copy). Cause-explaining prose that names why
+the file is missing is the same swallowed-failure class as the #953
+thinking-only recovery and the #1001 "clear picture" prose: the user is
+told a story about why the file is absent, never that the command
+failed. A future detector refactor must not treat "The file was
+archived" as naming the failure, and must not treat a successful `cat`
+of the archived copy as discharging the read-ENOENT of the original
+path. The dedicated regression test
+tests/fleet-failed-command-read-enoent-archived-packet.test.sh pins
+that. The auto-filed issue closes via observe-to-close when the session
+mtime ages out of the 24h window. An `edit`
 tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) is also a real swallowed
