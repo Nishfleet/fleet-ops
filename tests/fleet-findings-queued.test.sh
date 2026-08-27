@@ -9,6 +9,9 @@
 #   4. Offer only in the user prompt (quoted failure-mode docs) -> exit 0.
 #   5. Quoted offer in assistant text (PR naming the failure mode) -> exit 0.
 #   6. Auto-file with signal key, deduped on a second run.
+#   6b. Observe-to-close: a clean tick closes the filed issue.
+#   6c. Observe-to-close leaves a still-active slug open.
+#   6d. Incident #724 snippet ("say the word" + deck kicker) is clean (non-filing).
 #   7. Missing helper fails loud.
 #   8. Contracts: heartbeat wiring, MANIFEST, nested CI host.
 
@@ -67,11 +70,29 @@ case "$cmd" in
         for f in "$store"/*.body; do
           [ -f "$f" ] || continue
           n=$((n+1))
+          # Skip closed issues (issue-N.closed marker exists)
+          [ -f "$store/issue-$n.closed" ] && continue
           body=$(tail -n +2 "$f")
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
           printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
         done
         printf '\n]\n'
+        ;;
+      close)
+        num=""; comment=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            [0-9]*) num="$1"; shift ;;
+            --comment) comment="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            --reason) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        : > "$store/issue-$num.closed"
+        [ -n "$comment" ] && printf '%s\n' "$comment" > "$store/issue-$num.close-comment"
+        echo "Closed issue #$num"
         ;;
       *) exit 1 ;;
     esac
@@ -208,6 +229,70 @@ grep -rl "signal: findings-queued/" "$scratch/gh-issues" | wc -l | grep -q "^1$"
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/ask-nofile.jsonl"
+
+# --- 6b. observe-to-close: clean tick closes the filed issue ----------------
+# The auto-file run above filed one issue (issue-1.body) with a signal key.
+# A clean tick (no findings) must close it via observe-to-close.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-close.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "clean tick should exit 0 (got $rc) $(cat "$scratch/err-close.log")"
+grep -q "observe-to-close: CLOSED" "$scratch/err-close.log" \
+  || fail "clean tick did not close the filed issue $(cat "$scratch/err-close.log")"
+[ -f "$gh_store/issue-1.closed" ] \
+  || fail "issue-1 was not marked closed by observe-to-close"
+grep -q "observe-to-close" "$gh_store/issue-1.close-comment" \
+  || fail "close comment missing observe-to-close evidence"
+ok "observe-to-close closes a filed issue on a clean tick"
+
+# --- 6c. observe-to-close: still-active slug is NOT closed ------------------
+write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-noclose.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "active slug should exit 1 (got $rc)"
+new_issue=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[ -f "$gh_store/issue-$new_issue.closed" ] \
+  && fail "active slug issue #$new_issue was closed (should stay open)" || true
+ok "observe-to-close leaves an active slug open"
+rm -f "$sessions/ask-nofile.jsonl"
+
+# --- 6d. incident #724 snippet is clean (non-filing "say the word") ---------
+# Exact offer from the auto-filed session: putting a line back as a deck
+# kicker is implementation, not "file/queue it". After fleet-ops#815 this
+# must stay FINDINGS-QUEUED-OK so observe-to-close can close #724.
+write_session "deck-kicker" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The deck still says saves the screenshots, and files the brief — but say the word and I will put the line back as a deck kicker."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "incident #724 snippet should exit 0 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-QUEUED-OK" "$scratch/err.log" || fail "incident #724 snippet missing OK line"
+ok "incident #724 deck-kicker snippet is clean (non-filing)"
+rm -f "$sessions/deck-kicker.jsonl"
 
 # --- 7. missing helper fails loud -------------------------------------------
 # Harden the drill (fleet-ops#612): install a WORKING fake helper at the
@@ -391,6 +476,8 @@ grep -q 'lib/findings-queued.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/findings-queued.py"
 grep -Fq 'bash "$here/fleet-findings-queued.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "contracts: heartbeat-tier1, MANIFEST, nested CI host"
+grep -q 'observe-to-close' "$bin" \
+  || fail "fleet-findings-queued must observe-to-close auto-filed findings (fleet-ops#724)"
+ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, observe-to-close"
 
-echo "OK: fleet-findings-queued: offer lint, queue evidence, auto-file dedupe"
+echo "OK: fleet-findings-queued: offer lint, queue evidence, auto-file dedupe, observe-to-close"
