@@ -1810,6 +1810,19 @@ bash "$here/fleet-failed-command-git-checkout-worktree-conflict.test.sh" || fail
 # (NOT a `From https://github.com` line, which lives in the OTHER
 # toolResult of the same session). Same CI constraint.
 bash "$here/fleet-failed-command-git-checkout-worktree-conflict-968.test.sh" || fail "fleet-failed-command-git-checkout-worktree-conflict-968 tests failed"
+# fleet-ops#1065: `git cherry-pick <sha>` that exits 1 with isError=true
+# because the cherry-pick resulted in an empty commit (the change is
+# already on the target). git prints "Auto-merging <path>" + "The
+# previous cherry-pick is now empty, possibly due to conflict
+# resolution." + "Command exited with code 1", and the next turn is a
+# thinking-only recovery toolCall with no user-facing flag. The class is
+# distinct from #954/#962/#968 (exit 128, fatal: already used by
+# worktree) and #849/#985 (exit 128, fatal: cannot force update the
+# branch): the cherry-pick empty shape is exit 1 with NO fatal line, and
+# `git cherry-pick` is NOT in the git-ref probe family so the failure
+# must be flagged. Same CI constraint (worker token cannot add a P14
+# line).
+bash "$here/fleet-failed-command-git-cherry-pick-empty.test.sh" || fail "fleet-failed-command-git-cherry-pick-empty tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
