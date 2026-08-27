@@ -15,3 +15,19 @@ Callers use `pull_request_target` plus `merge_group`. Fork PRs are refused
 inside the reusable workflow. Empty `ratchet-paths` is correct for repos
 without a ceiling file; 0509 should pass its design-system ratchet path
 as an input in a separate follow-up.
+
+## Attestation contract (fleet-ops#828)
+
+A comment attests when ANY of its lines (CR-stripped, whitespace-trimmed)
+equals `{marker}: {40-hex}` — not when the comment's entire body equals
+that string. The previous whole-body exact match dropped every multi-line
+attest comment (the real-world shape, where the marker line is followed
+by `verifier-attest:` and review prose) and blocked every 0509 merge for
+hours (repro: 0509#1273). The reusable now ships raw `comments` and the
+decision script's `extract_attestations_from_comments` runs the
+line-anchored scan. A prose sentence that merely mentions the marker
+still does NOT attest: the line must be the marker and nothing else.
+
+Inline workflow callers (e.g. 0509's own `.github/workflows/gate-integrity.yml`,
+which pre-dates the reusable) have the same bug and need a matching fix
+in their own repo; that is not the fleet-ops scope of this issue.
