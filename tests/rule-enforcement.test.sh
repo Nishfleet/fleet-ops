@@ -46,6 +46,11 @@ jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforc
   || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
 ok "matrix row led-worker-lane-refresh is enforced"
 
+jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
+  "$matrix" >/dev/null \
+  || fail "sr-verify-harness must be status=enforced (fleet-ops#524)"
+ok "matrix row sr-verify-harness is enforced"
+
 # fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
 # rows even when the live vault is absent (CI skips the live join).
 for src in \
@@ -96,6 +101,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report Tailscale ACL lockdown as enforced covered_rows (fleet-ops#544): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Per-repo verification harness (Nish, 2026-08-20, adopted from Cursor pstack)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report sr-verify-harness as enforced covered_rows (fleet-ops#524): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -110,6 +117,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
   ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
+  ok "live join: per-repo verification harness source is enforced (observe-to-close for #524)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -740,4 +748,9 @@ ok "rule-enforcement: quality-research-weekly drill"
 bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"
 ok "rule-enforcement: Tailscale ACL lockdown canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, and tailscale-acl drills"
+# fleet-ops#524: per-repo verification harness canary. Nested host so the
+# worker token does not need to edit .github/workflows/**.
+bash "$here/fleet-verify-harness-canary.test.sh" || fail "verify-harness canary drill failed"
+ok "rule-enforcement: verify-harness canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, and verify-harness drills"

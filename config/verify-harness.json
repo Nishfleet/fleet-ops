@@ -1,0 +1,36 @@
+{
+  "description": "Product repos that must ship one checked-in verification skill at .claude/skills/verify-<app>/SKILL.md (standing rule Per-repo verification harness, fleet-ops#524). The canary joins intake-repos.json repos[] + deferred[] against this skip list. Enrolled products fail-loud when the harness is missing or incomplete; deferred products auto-file (observe-to-open). skip[] is the non-product set: control plane, private sinks, utilities, mirrors, archived, forbidden second dispatcher.",
+  "required_headings": [
+    "LAUNCH",
+    "DOCTOR",
+    "DRIVE",
+    "EVIDENCE",
+    "CLEANUP"
+  ],
+  "skip": [
+    {
+      "name": "fleet-ops",
+      "reason": "Control plane, not a customer-facing product repo."
+    },
+    {
+      "name": "0509-telemetry",
+      "reason": "Private telemetry/PII sink. Not a product."
+    },
+    {
+      "name": "egress-probe",
+      "reason": "Non-product private utility (Actions egress probe only)."
+    },
+    {
+      "name": "TinyStudio.io-public",
+      "reason": "Legacy mirror, not a product checkout to drive."
+    },
+    {
+      "name": "fleet2",
+      "reason": "Forbidden second dispatcher (standing rule One fleet). Not a product."
+    },
+    {
+      "name": "siterep",
+      "reason": "Archived repo. No intake, no harness duty."
+    }
+  ]
+}

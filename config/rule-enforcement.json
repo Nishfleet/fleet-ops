@@ -138,10 +138,9 @@
     {
       "id": "sr-verify-harness",
       "source": "global-standing-rules.md: Per-repo verification harness (Nish, 2026-08-20, adopted from Cursor pstack)",
-      "mechanism": "Not every product repo has .claude/skills/verify-<app>/SKILL.md",
-      "proof": "Nishfleet/fleet-ops#524",
-      "status": "queued(#524)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat canary: enrolled intake product repos must have .claude/skills/verify-<app>/SKILL.md on HEAD with LAUNCH/DOCTOR/DRIVE/EVIDENCE/CLEANUP plus a features/ map (fail-loud). Deferred products missing the same skill auto-file (observe-to-open). skip[] in config/verify-harness.json is the non-product set.",
+      "proof": "bin/fleet-verify-harness-canary; config/verify-harness.json; tests/fleet-verify-harness-canary.test.sh; fleet-heartbeat-tier1 block 29; fleet-ops#524",
+      "status": "enforced"
     },
     {
       "id": "sr-pstack-review",
