@@ -21,7 +21,9 @@
 #   7. Tailscaled Restart=on-failure (not always) -> exit 1, LOUD.
 #   8. Missing blueprint heading -> exit 1, LOUD.
 #   9. Unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass.
-#  10. --check reports ready/missing without system calls.
+#  10. Shared keystone URLs (with each other or the heartbeat dead-man)
+#      are FAIL + LOUD.
+#  11. --check reports ready/missing without system calls.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -281,6 +283,8 @@ export AGENT_STATE="$state"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export FLEET_RESILIENCE_DRILL_OFFLINE=1
 export KEYSTONE_HC_ENV="$scratch/keystone-green.env"
+export HEARTBEAT_HC_ENV="$scratch/heartbeat-hc.env"
+printf 'HC_URL=https://example.invalid/ping/heartbeat-uuid\n' >"$HEARTBEAT_HC_ENV"
 
 write_blueprint() {
   cat >"$repo/docs/resilience-blueprint.md" <<'MD'
@@ -405,6 +409,32 @@ skips = [r for r in data["results"] if r.get("name") == "keystone_deadman" and r
 assert skips, data
 PY
 ok "unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass"
+
+# Shared keystone URLs (two keystones, same check) are FAIL + LOUD.
+reset_all
+printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  >"$KEYSTONE_HC_ENV"
+run_drill
+[[ "$drill_rc" -eq 1 ]] || fail "shared keystone URL should fail, rc=$drill_rc out=$drill_out"
+grep -q 'KEYSTONE-HC-SHARED' "$triage" \
+  || fail "shared keystone URL must LOUD KEYSTONE-HC-SHARED, triage=$(cat "$triage")"
+python3 - "$last" <<'PY' || fail "shared keystone URL must record fail"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+fails = [r for r in data["results"] if r.get("name") == "keystone_deadman" and r.get("status") == "fail"]
+assert fails, data
+PY
+ok "shared keystone HC URLs are FAIL + LOUD"
+
+# Reusing the heartbeat dead-man URL is FAIL + LOUD.
+reset_all
+printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  >"$KEYSTONE_HC_ENV"
+run_drill
+[[ "$drill_rc" -eq 1 ]] || fail "heartbeat reuse should fail, rc=$drill_rc out=$drill_out"
+grep -q 'KEYSTONE-HC-SHARED' "$triage" \
+  || fail "heartbeat reuse must LOUD KEYSTONE-HC-SHARED, triage=$(cat "$triage")"
+ok "keystone URL equal to heartbeat dead-man is FAIL + LOUD"
 
 # --check
 reset_all

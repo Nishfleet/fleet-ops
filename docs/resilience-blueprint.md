@@ -79,10 +79,11 @@ box. GitHub-hosted runners already provide off-box compute for CI.
 adopting X means Z. Extend the external dead-man to intake, scout,
 intake-reconcile, and restore-drill with *separate* checks (sharing the
 heartbeat URL would mask a dead heartbeat). Wire pings on success only.
-Until the free-tier UUIDs land in `~/.config/fleet-ops/keystone-hc.env`,
-the drill LOUDs `KEYSTONE-HC-UNCONFIGURED` as a SKIP (not a silent pass).
-Document GitHub-hosted runners as the compute break-glass. Do not build a
-second fleet.
+The four ping URLs live in `~/.config/fleet-ops/keystone-hc.env` (not
+in git). Missing or unset URLs are a LOUD SKIP. A URL shared with
+another keystone or with the heartbeat dead-man is a LOUD FAIL
+(`KEYSTONE-HC-SHARED`). Document GitHub-hosted runners as the compute
+break-glass. Do not build a second fleet.
 
 ## Rejected
 
