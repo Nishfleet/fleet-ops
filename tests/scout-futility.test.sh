@@ -25,6 +25,8 @@
 #  14. export_last_run writes fleet-scout.prom mode 0644 (node_exporter
 #      is a different uid; mktemp is 0600 and would make the metric
 #      absent — FleetScoutStale 2026-08-27T19:41Z).
+#  15. last_run_epoch 0 / missing is omitted (a rest-skip end must not
+#      export 0 and re-fire FleetScoutStale).
 #
 # The live pi-scout@ oneshot is the outermost edge (it would run a real
 # LLM). The detector decision is exercised through the real helper.
@@ -426,5 +428,19 @@ mode=$(stat -c '%a' "$scratch/fleet-scout.prom")
 [[ "$mode" == "644" ]] \
   || fail "scenario14: end must rewrite fleet-scout.prom mode 0644, got '$mode'"
 ok "scenario14: fleet-scout.prom is 0644 after begin and after end"
+
+# --- 15. rest-skip end must not export last_run=0 ---------------------------
+unset SERVICE_RESULT EXIT_STATUS || true
+rm -f "$state/0509.state" "$state/fleet-ops.state" "$scratch/fleet-scout.prom"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+epoch1=$(state_field last_run_epoch)
+"$bin" end fleet-ops 0 >/dev/null
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
+  || fail "scenario15: 0509 last_run must survive a fleet-ops rest-skip end"
+if grep -E 'fleet_scout_last_run_seconds\{repo="fleet-ops"\} 0$' "$scratch/fleet-scout.prom"; then
+  fail "scenario15: rest-skip must not export fleet-ops last_run=0 (prom=$(cat "$scratch/fleet-scout.prom"))"
+fi
+ok "scenario15: rest-skip end omits last_run=0"
 
 echo "OK: scout-futility: green-and-empty scout escalates after N dry runs, never loops quietly"
