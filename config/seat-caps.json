@@ -111,11 +111,9 @@
       "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane."
     },
     "orcarouter": {
-      "cap": 1,
+      "cap": 0,
       "class": "free",
-      "models": {
-        "orcarouter/free": 1
-      }
+      "reason": "2026-08-27 03:37Z live probe of orcarouter/orcarouter/free returned HTTP 402 free_quota_exhausted (err_free_used, request id 202608270337137174342448268d9d6NtxJZ3Nx); n=3/3 quota_exhausted (request ids 202608270337137174342448268d9d6NtxJZ3Nx, 202608270337145520025038268d9d6EV3OKGsF, 202608270337154337369828268d9d6MN1cjTJY). Seat-health ledger ~/.local/state/.../seats/orcarouter__orcarouter_free.json: health_class=quota_exhausted, http_status=402, consecutive_failure_count=8, usable_at=2026-08-27T04:37:15Z, source=provider_fetch. watch.log history (n=4046 lines 2026-08-25 to 2026-08-27): 2515 NO HEALTH DATA assumed usable (never proven), 754 not capable for heavy task, 753 provider cap=0, 72 UNUSABLE quota_exhausted. The seat is the free-rotation 'orcarouter/free' slug only; no billing sibling to keep warm. cap=0 keeps pick_seat off the lane; re-audition with `pi --print --provider orcarouter --model orcarouter/free PONG` after usable_at passes — if a spawn returns content (not 402), wire cap=1 with a fresh dated citation and re-add orcarouter to free_providers_in_order. sr-never-vibes: measurement n=3, date 2026-08-27, observed provider signal HTTP 402 quota_exhausted."
     },
     "grok": {
       "cap": 0,
@@ -134,8 +132,7 @@
   "free_providers_in_order": [
     "commandcode",
     "hetzner",
-    "opencode",
-    "orcarouter"
+    "opencode"
   ],
   "prepaid_providers_in_order": [
     "devin",

@@ -1187,3 +1187,8 @@ bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests 
 # fleet-ops#497: gate-integrity reusable shape. Same CI constraint.
 bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"
 
+# fleet-ops#703: lock the orcarouter sr-never-vibes citation. Workers
+# cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host.
+bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed"
+
