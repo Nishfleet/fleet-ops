@@ -43,6 +43,16 @@ source "$SEAT_LIB"
 
 slug="${1:?agent-cron-run: need <slug>}"
 WORKDIR="${WORKDIR:-$HOME}"
+# fleet-ops#366 auditor-finding-B (2026-08-26T02:57Z): a product cron must
+# never run against $HOME. The unit sets WORKDIR explicitly; a manual
+# invocation that inherits $HOME is a misconfiguration, not a silent default.
+# Fail loud with the named slug so the fault is visible, unless an operator
+# explicitly allows HOME-based workdirs (AGENT_CRON_ALLOW_HOME_WORKDIR=1).
+if [[ "$WORKDIR" == "$HOME" ]] && [[ "${AGENT_CRON_ALLOW_HOME_WORKDIR:-}" != "1" ]]; then
+    echo "FATAL: agent-cron-run: $slug has no explicit WORKDIR (would run against \$HOME) — set Environment=WORKDIR in the unit or AGENT_CRON_ALLOW_HOME_WORKDIR=1 to allow" >&2
+    exit 1
+fi
+[[ -d "$WORKDIR" ]] || { echo "FATAL: agent-cron-run: $slug WORKDIR does not exist: $WORKDIR" >&2; exit 1; }
 LOG_DIR="${LOG_DIR:-$HOME/workspaces/agent-state/cron-output}"
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/workspaces/agent-state/cron-prompts}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
