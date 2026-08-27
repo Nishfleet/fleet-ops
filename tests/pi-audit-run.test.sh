@@ -232,7 +232,80 @@ PI_RESPONSE=$'some random text\nwith no verdict' \
   bash "$bin" 'demo--45--devin' >"$scratch/scenario4.out" 2>"$scratch/scenario4.err" || rc=$?
 [[ "${rc:-0}" == "1" ]] || fail "scenario4: missing verdict must exit 1, got rc=${rc:-0}"
 [[ ! -f "$state_dir/demo/45/devin.vote" ]] \
-  || fail "scenario4: vote must not be written when verdict is missing"
+    || fail "scenario4: vote must not be written when verdict is missing"
 ok "scenario4: missing verdict still exits 1"
+
+# -----------------------------------------------------------------------------
+# Scenario 5: seat-health preflight refuses a transient_fault seat
+#              (fleet-ops#146 storm-tolerant panel).
+# The per-seat ledger file names the provider+model; a transient_fault
+# marker tells the runner to write a SKIP vote (exit 0) and not call
+# pi. The preflight fires BEFORE the packet build, so the SKIP vote
+# has the same shape as a real vote and the panel can tally on it.
+# -----------------------------------------------------------------------------
+reset_state
+seat_health_dir="$scratch/seat-health"
+mkdir -p "$seat_health_dir"
+# devin/glm-5-2 is in transient_fault.
+cat >"$seat_health_dir/devin__glm-5-2.json" <<'LEDGER'
+{
+  "health_class":"transient_fault",
+  "seat_dead":false,
+  "observed_at":"2026-08-27T05:55:00Z",
+  "poison_ladder":false
+}
+LEDGER
+# Free seat is healthy.
+cat >"$seat_health_dir/commandcode__minimax-minimax-m3-free.json" <<'LEDGER'
+{
+  "health_class":"healthy",
+  "seat_dead":false,
+  "observed_at":"2026-08-27T05:55:00Z",
+  "poison_ladder":false
+}
+LEDGER
+
+export PI_SEAT_HEALTH_LEDGER_DIR="$seat_health_dir"
+set +e
+PI_RESPONSE=$'PASS\nthis should never be called' \
+  bash "$bin" 'demo--46--devin' >"$scratch/scenario5.out" 2>"$scratch/scenario5.err"
+rc5=$?
+set -e
+unset PI_SEAT_HEALTH_LEDGER_DIR
+
+[[ "$rc5" == 0 ]] || fail "scenario5: preflight SKIP must exit 0, got $rc5 ($(cat "$scratch/scenario5.err"))"
+[[ -f "$state_dir/demo/46/devin.vote" ]] \
+    || fail "scenario5: SKIP vote must be written ($(cat "$scratch/scenario5.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/46/devin.vote") == "SKIP" ]] \
+    || fail "scenario5: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/46/devin.vote")"
+# pi should NOT have been called.
+[[ ! -s "$calls" ]] || fail "scenario5: preflight refused call; pi should not run (calls=$(cat "$calls"))"
+ok "scenario5: seat-health preflight writes SKIP vote and skips pi for transient_fault seat"
+
+# -----------------------------------------------------------------------------
+# Scenario 6: provider wall during the call -> SKIP vote (not exit 1).
+# On 2026-08-27 the live pi-audit-run exited 1 on a commandcode wall,
+# which tripped Restart=on-failure and exhausted StartLimitBurst=2 in
+# two ticks. The runner now writes SKIP and exits 0 so the unit does
+# not auto-restart, and the heartbeat retries the next tick when the
+# seat is healthy.
+# -----------------------------------------------------------------------------
+reset_state
+export PI_FAIL=1
+set +e
+bash "$bin" 'demo--47--free-glm-5-3' >"$scratch/scenario6.out" 2>"$scratch/scenario6.err"
+rc6=$?
+set -e
+unset PI_FAIL
+
+[[ "$rc6" == 0 ]] || fail "scenario6: provider wall must exit 0 (SKIP path), got $rc6"
+[[ -f "$state_dir/demo/47/free-glm-5-3.vote" ]] \
+    || fail "scenario6: SKIP vote must be written ($(cat "$scratch/scenario6.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/47/free-glm-5-3.vote") == "SKIP" ]] \
+    || fail "scenario6: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/47/free-glm-5-3.vote")"
+reason6=$(jq -r '.reason' "$state_dir/demo/47/free-glm-5-3.vote")
+[[ "$reason6" == *"transient failure"* ]] \
+    || fail "scenario6: reason should mention transient failure, got: $reason6"
+ok "scenario6: provider wall writes SKIP vote, exit 0 (no auto-restart, no StartLimit burn)"
 
 ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails"

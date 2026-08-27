@@ -76,6 +76,57 @@ log() {
 # True when the seat ledger marks the seat poison_ladder (a poison-ladder
 # seat is never picked by pick_seat either; mirror that here so the auditor
 # does not route onto a seat the fleet deliberately avoids).
+# fleet-ops#146 (storm-tolerant panel): consult the per-lane seat-health
+# marker before calling pi. The marker is the same file alert-repair-
+# dispatch reads; its health_class is updated by the pi response hook.
+# A transient_fault class is the early warning that the next pi call will
+# wall (429 / 503 / credentials_bad) — exactly the shape that exhausted
+# StartLimitBurst on 2026-08-27. Refuse the call (SKIP vote, exit 0)
+# rather than spend 60s and burn the next burst slot. A stale or missing
+# marker is treated as unknown / assume-healthy: better to try and write
+# a real SKIP from the call-result branch than to wall the panel.
+#
+# Args: $1=provider  $2=model
+# Returns 0 if the call should proceed, 1 if the runner should SKIP.
+seat_health_ok_for_call() {
+    local p="$1" m="$2" marker="${PI_SEAT_HEALTH_MARKER:-$HOME/../workspaces/agent-state/lanes/pi-seat-health.json}"
+    local lp="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
+    local f
+
+    # Prefer the per-seat ledger (set by find_free_seat / find_any_capable_seat
+    # upstream); the global lanes marker is the alert-repair-dispatch fallback.
+    if [ -n "$lp" ] && [ -n "$p" ] && [ -n "$m" ]; then
+        f="$lp/${p}__${m}.json"
+        if [ -f "$f" ]; then
+            local hc
+            hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
+            case "$hc" in
+                transient_fault|rate_limited)
+                    log "seat_health preflight: $p/$m class=$hc -> SKIP"
+                    return 1
+                    ;;
+            esac
+            # credentials_bad / quota_exhausted are already caught by
+            # seat_usable upstream; if the runner got here the seat was
+            # considered usable. Do not double-skip.
+            return 0
+        fi
+    fi
+
+    [ -f "$marker" ] || return 0
+    local hc rec_p rec_m
+    hc=$(jq -r '.health_class // ""' "$marker" 2>/dev/null || printf '')
+    rec_p=$(jq -r '.provider // ""' "$marker" 2>/dev/null || printf '')
+    rec_m=$(jq -r '.model // ""' "$marker" 2>/dev/null || printf '')
+    # Only treat the global marker as authoritative when it names THIS
+    # provider+model. A different recorded seat is no signal here.
+    [ "$rec_p" = "$p" ] && [ "$rec_m" = "$m" ] || return 0
+    case "$hc" in
+        transient_fault|rate_limited) return 1 ;;
+    esac
+    return 0
+}
+
 seat_is_poison() {
     local p="$1" m="$2" f pl
     f=$(seat_ledger_path "$p" "$m" 2>/dev/null) || return 1
@@ -365,15 +416,35 @@ main() {
 
     build_packet "$repo" "$candidate" "$role" > "$packet" || exit 1
 
+    # fleet-ops#146 (storm-tolerant panel): seat-health preflight. The
+    # global seat-health marker (alert-repair-dispatch reads the same
+    # file) is the cheapest signal that a provider is currently
+    # transient_fault — and a transient wall that 60s later would
+    # recover is exactly what triggers StartLimitBurst exhaustion on the
+    # pi-audit@ unit. Skip the call (write a SKIP vote, exit 0) so the
+    # unit does not auto-restart, the slot is left for the seat to
+    # recover, and the heartbeat can re-try the panel on the next tick.
+    if ! seat_health_ok_for_call "$provider" "$model"; then
+        write_vote "$repo" "$candidate" "$role" "SKIP" "seat-health preflight refused $provider/$model (transient_fault or stale observed_at); retry next tick"
+        log "skipped $repo/#$candidate/$role: seat-health preflight (provider=$provider model=$model)"
+        exit 0
+    fi
+
     set +e
     "$PI_BIN" --print --provider "$provider" --model "$model" < "$packet" > "$out" 2> "$err"
     pi_rc=$?
     set -e
 
     if [ "$pi_rc" -ne 0 ]; then
-        log "pi --provider $provider --model $model exited $pi_rc"
-        { printf '## stderr\n'; cat "$err"; } >> "$out" 2>/dev/null || true
-        exit 1
+        log "pi --provider $provider --model $model exited $pi_rc; writing SKIP to break escalation chain"
+        { printf '## stderr (provider returned exit %d)\n' "$pi_rc"; cat "$err"; } >> "$out" 2>/dev/null || true
+        # Write a SKIP vote instead of failing — the escalation path treats exit 1
+        # as a real failure and writes to STOP-REASON. A provider wall (429, 503,
+        # credentials_bad) is transient and should not trigger escalation. The
+        # panel needs all three votes; SKIP lets the panel see the failure without
+        # cascading into new audit unit failures and new escalation trips.
+        write_vote "$repo" "$candidate" "$role" "SKIP" "provider returned exit $pi_rc: $provider/$model transient failure"
+        exit 0
     fi
 
     combined="$out"
