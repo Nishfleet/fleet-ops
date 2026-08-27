@@ -395,4 +395,35 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario14: production seat-caps keep x-preview-f-free benched at cap=0 with dated reason and no billing sibling"
 
+# --- 15. production lock: nemotron-3.5-lightning-free stay-wired (fleet-ops#911)
+# The class prevention for "auditioned free slug silently dropped": a later
+# PR that removes nemotron-3.5-lightning-free from the allowlist without a
+# dated bench reason fails this lock. Billing slugs (nemotron-3.5-lightning,
+# nvidia/nemotron-3.5-lightning) must not ride in on the free row.
+jq -e '.providers.opencode.models["nemotron-3.5-lightning-free"] > 0' \
+    "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "scenario15: production seat-caps must allowlist opencode/nemotron-3.5-lightning-free (fleet-ops#911)"
+reason=$(jq -r '.providers.opencode._comment_nemotron // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario15: production seat-caps must carry _comment_nemotron dated reason (fleet-ops#911)"
+fi
+if ! grep -qE 'fleet-ops#911' <<<"$reason"; then
+  fail "scenario15: _comment_nemotron must cite fleet-ops#911 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario15: _comment_nemotron must start with an ISO date (got: $reason)"
+fi
+# No billing sibling on the opencode allowlist: free-form is the only path.
+# Exclude the free-form slug itself and any other free-form variant.
+while IFS= read -r k; do
+  lk="${k,,}"
+  case "$lk" in
+    nemotron-3.5-lightning-free|nemotron-*-free|nemotron-*/*) : ;;  # free-form variants allowed
+    nemotron-3.5-lightning|nemotron-*|*/nemotron|*/nemotron-*)
+      fail "scenario15: production opencode allowlists a non-free nemotron slug: $k" ;;
+  esac
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario15: production seat-caps keep nemotron-3.5-lightning-free wired with dated reason and no billing sibling"
+
 ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
