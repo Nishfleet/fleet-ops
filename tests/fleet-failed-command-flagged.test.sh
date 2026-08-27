@@ -19,6 +19,13 @@
 #   7c. Same snippet plus a later flag -> exit 0.
 #   8. Missing helper fails loud.
 #   9. Contracts: heartbeat wiring, MANIFEST, nested CI host, matrix enforced.
+#   4d. git log|rev-parse|show|diff|cat-file <bad-ref> exit 128 with
+#       `2>/dev/null` is a deliberate existence probe, not a swallowed
+#       command failure (live #822). Canonical "fatal: ambiguous
+#       argument" / "fatal: bad revision" lines are probes; other
+#       `fatal:` lines (not a git repository, unable to access,
+#       repository not found, bad object, Permission denied, etc.) are
+#       real failures and must still be flagged.
 #  10. Observe-to-close: a green tick comments resolved-at on an aged-out
 #      signal; a later tick with that marker closes; a still-dirty slug is
 #      neither commented nor closed (fleet-ops#650).
@@ -280,12 +287,90 @@ rm -f "$sessions/ls-perm.jsonl"
 
 # --- 4c. which no-match (exit 1) is a probe, not a swallowed failure --------
 write_session "which-nomatch" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_which","name":"bash","arguments":{"command":"which nonexistent-binary 2>&1"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_which","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_which","name":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
 {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Binary not in PATH. Need to install or use full path."}]}}'
 rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "which no-match exit 1 should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "which no-match (exit 1) is treated as a probe, not a swallowed failure"
 rm -f "$sessions/which-nomatch.jsonl"
+
+# --- 4d. live #822: git log <bad-ref> 2>/dev/null probe, silenced stderr ----
+# The session `2026-08-27T02-16-50-035Z_01a04101-7673-7b5e-8dc0-2f96d562b234`
+# ran `git log --oneline -10 origin/claim/issue-634 2>/dev/null; echo "---";
+# git log --oneline -10 origin/claim/issue-518 2>/dev/null`. The first
+# git log succeeded (showing 10 commits), the second failed with exit
+# 128 (unknown ref), and the agent's next turn said "The branch is
+# empty. Let me create a worktree." without naming the 128. The agent
+# silenced stderr on purpose to probe for ref existence. The detector
+# must treat exit 128 with no `fatal:` line in the text (silenced
+# stderr) as a deliberate probe, not a swallowed failure.
+write_session "git-probe-silenced" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"git log --oneline -10 origin/claim/issue-634 2>/dev/null; echo \"---\"; git log --oneline -10 origin/claim/issue-518 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","name":"bash","isError":true,"content":[{"type":"text","text":"f572426 fix(failed-command): exempt 127 ENOENT downstream of a harness block (#797)\n1a59f2e fix(failed-command): worker prompt requires user-facing failure flag (#789)\na2ab4f8 fix(failed-command): treat ls and which no-match probes as benign (fleet-ops#663) (#788)\n3869f36 fix(prompt-assembly): uncap the decisions ledger and put volatile prompt values last (#795)\n21d184d fix(deploy-check): soft-fail on deploy-blocked so workers don't loop-summon auditor (#780)\n475b2a6 feat(seats): allowlist proven-free opencode mimo-v2.5-free (#779)\naaa3b86 config: bench opencode deepseek-v4-flash-free after failed live spawn (fleet-ops#639) (#775)\n4aee173 fix: strengthen auditor prompt to mandate duplicate/north-star keywords (#773)\nc5c6ec4 fix(failed-command): treat read tool offset beyond end as a negative result (#772)\nee72f89 fix(quality): observe-to-close role-gate findings and pin vault-conflict skip (#771)\n---\n\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"claim/issue-634 only has the main branch commits. The branch is empty. Let me create a worktree."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "git log bad-ref 2>/dev/null probe (silenced stderr) should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "git log bad-ref 2>/dev/null (live #822, silenced stderr) is treated as a probe"
+rm -f "$sessions/git-probe-silenced.jsonl"
+
+# --- 4d-modern. live #822: git rev-parse --verify <bad-ref> canonical fatal -
+# Modern git prints `fatal: ambiguous argument '<ref>': ...` on stderr
+# (not silenced). When the agent does not silence stderr the canonical
+# probe line is visible. The detector must treat that line as a probe.
+write_session "git-probe-canonical" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_revparse","name":"bash","arguments":{"command":"git rev-parse --verify origin/claim/issue-518 2>&1; echo done"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_revparse","name":"bash","isError":true,"content":[{"type":"text","text":"fatal: ambiguous argument 'origin/claim/issue-518': unknown revision or path not in the working tree.\ndone\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"origin/claim/issue-518 does not exist on origin. Continuing."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "git rev-parse 'ambiguous argument' probe should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "git rev-parse 'fatal: ambiguous argument' (live #822) is a probe"
+rm -f "$sessions/git-probe-canonical.jsonl"
+
+# --- 4d-old. live #822: older git shape `fatal: bad revision '<ref>'` -------
+write_session "git-probe-old" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_show","name":"bash","arguments":{"command":"git show origin/claim/issue-518 2>&1 | head -3"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_show","name":"bash","isError":true,"content":[{"type":"text","text":"fatal: bad revision 'origin/claim/issue-518'\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"No such ref. Continuing."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "git show 'bad revision' probe should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "git show 'fatal: bad revision' (older git, live #822) is a probe"
+rm -f "$sessions/git-probe-old.jsonl"
+
+# --- 4d-not-repo. real failure: not a git repository stays swallowed -------
+# The git-probe exemption must NOT swallow real git errors. A `git log`
+# in a non-repo directory is a real failure, even if exit code is 128.
+write_session "git-not-repo" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"cd /tmp/not-a-repo && git log -1 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","name":"bash","isError":true,"content":[{"type":"text","text":"fatal: not a git repository (or any of the parent directories): .git\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "git log in non-repo should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "git not-a-repo must be flagged as swallowed"
+ok "git log in non-repo (live #822) is still flagged as swallowed"
+rm -f "$sessions/git-not-repo.jsonl"
+
+# --- 4d-noaccess. real failure: unable to access (auth/network) stays found -
+# `fatal: unable to access ... 403 Forbidden` is a real swallowed
+# failure, not a ref probe. The detector must keep flagging it.
+write_session "git-noaccess" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"git log origin/private 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","name":"bash","isError":true,"content":[{"type":"text","text":"fatal: unable to access 'https://x.example/private/': 403 Forbidden\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Trying the public mirror."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "git log 403 forbidden should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "git 403 forbidden must be flagged as swallowed"
+ok "git log 403 forbidden (live #822) is still flagged as swallowed"
+rm -f "$sessions/git-noaccess.jsonl"
 
 # --- 5. origin case: 404 walked past ----------------------------------------
 write_session "origin-404" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_gh","name":"bash","arguments":{"command":"gh api -X PATCH /repos/Nishfleet/0509/branches/main/protection"}}]}}
@@ -606,4 +691,4 @@ jq -e '.rules[] | select(.id == "sr-failed-command-flagged" and .status == "enfo
   || fail "sr-failed-command-flagged must be status=enforced in the matrix"
 ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, matrix enforced"
 
-echo "OK: fleet-failed-command-flagged: rc canary, grep/ls/which no-match exemption, auto-file dedupe, observe-to-close"
+echo "OK: fleet-failed-command-flagged: rc canary, grep/ls/which/git no-match exemption, auto-file dedupe, observe-to-close"
