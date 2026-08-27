@@ -19,11 +19,15 @@
 #   4. seat-lib.sh must load SEAT_VOLUME_ORDER and prefer the volume bucket
 #      before leftover free / leftover prepaid / metered (the runtime wire).
 #
-# Detectors (observe-to-open, tick stays green):
+# Detectors (observe-to-open, tick stays green; observe-to-close drains):
 #   - xai-oauth present in models.json / pi catalog but missing from
 #     seat-caps providers (or cap=0 without a dated reason that cites
-#     2026-08-27+) auto-files a wire ticket so #1163 cannot silently stall
-#     the "then xai-oauth (alternate)" half of the ledger line.
+#     2026-08-27+) auto-files a wire ticket so the "then xai-oauth
+#     (alternate)" half of the ledger line cannot silently stall. Once
+#     the seat-caps row lands with cap>0 (or cap=0 + a fresh dated
+#     reason), observe-to-close drains the canary-filed ticket
+#     (fleet-ops#1268). Hand-filed wire tickets without the marker
+#     (e.g. #1163) stay on their own close path.
 #
 # Exit codes:
 #   0  gates clean (detectors may have filed)
@@ -177,8 +181,18 @@ parse_marker() {
 #       violation = volume-prefix provider has no row / cap=0 / models={}
 #       clean     = provider has a row, cap>0, models map is non-empty
 #   xai-oauth                 unwired|cap-zero-stale-reason
-#       always active (out of scope; #1163 owns the wire; the canary
-#       preserves the open issue so the wire ticket stays tracked)
+#       violation = models.json has xai-oauth but seat-caps is missing
+#                   the row (unwired), OR the row is present at cap=0
+#                   without a post-2026-08-27 dated .reason
+#                   (cap-zero-stale-reason)
+#       clean     = seat-caps has providers.xai-oauth with cap>0, OR
+#                   cap=0 with a 2026-08-27+ dated reason (the
+#                   deliberate-dark case). Mirror of the detector below
+#                   so observe-to-close can drain canary-filed tickets
+#                   once the wire lands (live #1268: PR #1257 wired
+#                   the seat, but this canary kept the auto-filed
+#                   ticket open forever because the xai-oauth arm was
+#                   hard-coded to always-active).
 signal_still_active() {
     local id="$1" kind="$2"
     case "$id" in
@@ -222,9 +236,50 @@ signal_still_active() {
             esac
             ;;
         xai-oauth)
-            # Wire is owned by fleet-ops#1163. Do not auto-close from this
-            # canary; the wire ticket must drain on the #1163 close path.
-            return 0
+            # Mirror the detector below. Canary-filed tickets (#1268
+            # shape) carry the marker and must drain here once the wire
+            # lands. Hand-filed wire tickets without the marker (#1163
+            # shape) are ignored by observe_to_close (parse_marker
+            # fails) so they stay on their own close path.
+            case "$kind" in
+                unwired)
+                    # Still active while the providers.xai-oauth row is
+                    # missing. Presence of the row (any cap) clears the
+                    # "unwired" signal — a cap=0 row would be a different
+                    # kind (cap-zero-stale-reason).
+                    if ! jq -e '.providers["xai-oauth"] != null' \
+                        "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+                        return 0  # still missing -> still active
+                    fi
+                    return 1  # row present -> clean
+                    ;;
+                cap-zero-stale-reason)
+                    # Still active while cap=0 AND the reason lacks a
+                    # post-2026-08-27 date. Cap>0, or cap=0 with a fresh
+                    # dated reason, clears the signal.
+                    if ! jq -e '.providers["xai-oauth"] != null' \
+                        "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+                        return 0  # row gone -> still the violation class
+                    fi
+                    local xai_cap xai_reason
+                    xai_cap=$(jq -r '
+                      .providers["xai-oauth"] as $v
+                      | if ($v|type)=="number" then $v else ($v.cap // 0) end
+                    ' "$SEAT_CAPS_JSON")
+                    if [[ "$xai_cap" =~ ^[1-9][0-9]*$ ]]; then
+                        return 1  # cap > 0 -> clean
+                    fi
+                    xai_reason=$(jq -r '
+                      .providers["xai-oauth"] as $v
+                      | if ($v|type)=="object" then ($v.reason // "") else "" end
+                    ' "$SEAT_CAPS_JSON")
+                    if [[ "$xai_reason" =~ 2026-08-2[7-9]|2026-09 ]]; then
+                        return 1  # deliberate dark with fresh reason -> clean
+                    fi
+                    return 0  # cap=0, stale/missing reason -> still active
+                    ;;
+                *) return 0 ;;
+            esac
             ;;
         *)
             # Volume-prefix provider: ollama, devin, commandcode, cline.
