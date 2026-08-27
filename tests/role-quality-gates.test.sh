@@ -63,10 +63,11 @@ if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
 PY
 ok "catalog: researcher role is gated (fleet-ops#592)"
 
-# fleet-ops#592 / #636: session-reap, vault-conflict-resolver, and the
-# vault knowledge-format lint timer are plumbing, not work-producing roles.
-# Dropping any prefix re-reds the audit (the live catalog test is not enough
-# if the unit file is also gone).
+# fleet-ops#592 / #636 / #1180: session-reap, vault-conflict-resolver, the
+# vault knowledge-format lint timer, and the fleet-metrics-export Prometheus
+# textfile exporter are plumbing, not work-producing roles. Dropping any
+# prefix re-reds the audit (the live catalog test is not enough if the
+# unit file is also gone).
 python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
 import importlib.util
 import sys
@@ -75,7 +76,12 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("role_quality_gates", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-required = ("interactive-session-reap", "vault-knowledge-format", "vault-conflict")
+required = (
+    "interactive-session-reap",
+    "vault-knowledge-format",
+    "vault-conflict",
+    "fleet-metrics-export",
+)
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
     raise SystemExit("NON_ROLE_UNIT_PREFIXES missing " + ", ".join(missing))
@@ -87,13 +93,14 @@ leaked = [
         "interactive-session-reap.service",
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
+        "fleet-metrics-export.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format (fleet-ops#636)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export (fleet-ops#1180)"
 
 # fleet-ops#709: behaviour-locked. Build a scratch repo with a real
 # vault-knowledge-format.service on disk and prove the audit emits no
@@ -124,6 +131,37 @@ if [[ "$detail_hit" == "yes" ]]; then
   fail "fleet-ops#709 regression: exact issue symptom re-appeared: $(echo "$audit709_out" | jq -c '.findings')"
 fi
 ok "behaviour lock: vault-knowledge-format.service is not flagged (fleet-ops#709)"
+
+# fleet-ops#1180: behaviour-locked. Build a scratch repo with a real
+# fleet-metrics-export.service on disk (the Prometheus textfile exporter
+# the auditor flagged in #1180) and prove the audit emits no
+# `unit:fleet-metrics-export.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1180=$(mktemp -d -t role-gates-1180.XXXXXX)
+trap 'rm -rf "$scratch1180"' EXIT INT TERM
+mkdir -p "$scratch1180/systemd" "$scratch1180/prompts" "$scratch1180/bin" "$scratch1180/config" "$scratch1180/tests"
+cat >"$scratch1180/systemd/fleet-metrics-export.service" <<'UNIT'
+[Unit]
+Description=Fleet Prometheus metrics exporter (fixture for fleet-ops#1180)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-metrics-export.py
+UNIT
+# Minimal catalog so the auditor can parse it.
+cp "$catalog" "$scratch1180/config/role-quality-gates.json"
+audit1180_out=$(python3 "$lib" audit --repo-root "$scratch1180" --catalog "$scratch1180/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1180_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1180_out"
+if echo "$audit1180_out" | jq -e '.findings[] | select(.id == "unit:fleet-metrics-export.service")' >/dev/null; then
+  fail "fleet-ops#1180 regression: fleet-metrics-export.service leaked into ungated-role findings: $(echo "$audit1180_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line the issue reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit1180_out" | jq -e '.findings[] | select(.detail | test("fleet-metrics-export.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1180 regression: exact issue symptom re-appeared: $(echo "$audit1180_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: fleet-metrics-export.service is not flagged (fleet-ops#1180)"
 
 scratch=$(mktemp -d -t role-gates.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
@@ -247,6 +285,29 @@ grep -q 'issue close 636' "$scratch/closed.txt" \
 grep -q 'observe-to-close:' "$scratch/closed.txt" \
   || fail "close comment must name observe-to-close (closed=$(cat "$scratch/closed.txt"))"
 ok "observe-to-close closes stale vault-conflict-resolver finding (fleet-ops#636)"
+
+# Observe-to-close (fleet-ops#1180): a stale unit finding for the
+# fleet-metrics-export Prometheus exporter is closed on a clean tick.
+# This is the exact issue the prefix added in this PR opened; the
+# auditor must close it once the unit is skipped.
+: >"$scratch/closed.txt"
+: >"$scratch/triage.md"
+unset EXTRA_PROMPT || true
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'The per-role quality-gate auditor (fleet-ops#457) found a bypass.\n\nunit fleet-metrics-export.service is not in the role-quality-gates catalog\n\nsignal: role-quality-gate/unit:fleet-metrics-export.service\n' \
+  '[{number: 1180, body: $b}]' >"$GH_OPEN_ISSUES"
+run_audit
+[[ "$env_rc" == "0" ]] || fail "observe-to-close (1180) expected rc=0, got $env_rc ($env_out)"
+if grep -q create "$scratch/created.txt"; then
+  fail "observe-to-close (1180) must not file: $(cat "$scratch/created.txt")"
+fi
+grep -q 'observe-to-close: CLOSED issue #1180' <<<"$env_out" \
+  || fail "clean tick must close stale fleet-metrics-export finding (out=$env_out)"
+grep -q 'issue close 1180' "$scratch/closed.txt" \
+  || fail "gh issue close 1180 must be invoked (closed=$(cat "$scratch/closed.txt"))"
+grep -q 'observe-to-close:' "$scratch/closed.txt" \
+  || fail "close comment must name observe-to-close (closed=$(cat "$scratch/closed.txt"))"
+ok "observe-to-close closes stale fleet-metrics-export finding (fleet-ops#1180)"
 
 # Observe-to-close leaves an active finding open
 : >"$scratch/closed.txt"
