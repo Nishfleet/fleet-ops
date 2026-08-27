@@ -60,6 +60,14 @@
 #      same as #957 (python3 -c walked past); the live wording is
 #      distinct and a future refactor must not let a `KeyError: 'comments'`
 #      string get treated as a benign no-match probe.
+#   5b. live #1036 shape: `python3 -c` opening `/home/nish/.grok/auth.json`
+#      crashes with `FileNotFoundError: [Errno 2] No such file or
+#      directory: '/home/nish/.grok/auth.json'` and the next turn is a
+#      toolCall whose *command comment* names the missing file
+#      (`# Hmm, auth.json doesn't exist now?`). A comment inside the
+#      next toolCall's command is not a user-facing flag (fleet-ops#535).
+#      The class is the same as #957; the wording and the command-comment
+#      recovery are the live #1036 fingerprint (session 01a041b4).
 #   6. worker.md cites fleet-ops#957 (prompt-side lock).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#957
 #      (detector-side lock).
@@ -214,6 +222,44 @@ grep -q "KeyError: 'comments'" <<<"$snippet" \
 ok "live #1003: gh --json + python3 KeyError: 'comments' walked past is flagged"
 rm -f "$sessions/python-traceback-gh-json-comments.jsonl"
 
+# --- 5b. live #1036: python3 -c FileNotFoundError on auth.json, walked
+#         past via a comment inside the next toolCall's command. ---
+# Live session: 2026-08-27T05-32-15-405Z_01a041b4-60ad-7838-8996-4cb088d1d923
+# (filed fleet-ops#1036; the issue snippet at filing time was a
+# cat-source false positive of tests/seat-lib.test.sh mixedcap `|| fail`
+# lines, already locked by live #1075 / the isError=false guard). The
+# live remaining finding on a current scan is this python3 -c probe:
+#   python3 -c "with open('/home/nish/.grok/auth.json') as f: ..."
+# crashed with FileNotFoundError, isError=true, and
+# "Command exited with code 1". The next assistant turn was a toolCall
+# only whose command started `# Hmm, auth.json doesn't exist now? Let
+# me check what happened` plus `ls`/`cat` recovery. That comment is
+# buried in the command; it is not user-facing text (fleet-ops#535).
+# The class is the same as #957 (python3 -c walked past); the live
+# wording `FileNotFoundError` on `/home/nish/.grok/auth.json` is
+# distinct and a future refactor must not:
+#   - treat FileNotFoundError as a grep/rg/diff/ls/which no-match probe
+#   - let FLAG_RE scan toolCall command comments and false-clear
+# Replay that exact shape.
+write_session "python-traceback-auth-json-fnf" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_auth1","name":"bash","arguments":{"command":"# Let's check if the grok CLI has a way to refresh tokens non-interactively using the stored refresh_token\npython3 -c \"\nimport json\nwith open('/home/nish/.grok/auth.json') as f:\n    data = json.load(f)\nfor key in data:\n    entry = data[key]\n    print('Provider entry:', key)\n    print('  auth_mode:', entry.get('auth_mode'))\n    print('  expires_at:', entry.get('expires_at'))\n    print('  has refresh_token:', 'refresh_token' in entry)\n\" 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_auth1","toolName":"bash","isError":true,"content":[{"type":"text","text":"Traceback (most recent call last):\n  File \"<string>\", line 3, in <module>\nFileNotFoundError: [Errno 2] No such file or directory: '/home/nish/.grok/auth.json'\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_retry_auth","name":"bash","arguments":{"command":"# Hmm, auth.json doesn't exist now? Let me check what happened\nls -la /home/nish/.grok/auth.json* 2>&1; echo \"---\"; cat /home/nish/.grok/auth.json 2>&1 | head -5"}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1036 FileNotFoundError on auth.json walked past via command comment should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Traceback' <<<"$snippet" \
+  || fail "finding snippet should mention Traceback (got $snippet)"
+grep -q 'FileNotFoundError' <<<"$snippet" \
+  || fail "finding snippet should mention FileNotFoundError (got $snippet)"
+grep -q '/home/nish/.grok/auth.json' <<<"$snippet" \
+  || fail "finding snippet should mention /home/nish/.grok/auth.json (got $snippet)"
+ok "live #1036: python3 -c FileNotFoundError on auth.json with command-comment recovery is flagged"
+rm -f "$sessions/python-traceback-auth-json-fnf.jsonl"
+
 # --- 6. worker.md cites fleet-ops#957 (prompt-side lock) ----------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
@@ -232,7 +278,20 @@ grep -q 'fleet-ops#1003' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1003 (prompt-side lock for the gh--json+python3 KeyError sibling shape)"
 grep -q "KeyError: 'comments'" "$worker" \
   || fail "prompts/worker.md must name the live #1003 KeyError: 'comments' wording so workers flag it"
-ok "worker.md cites fleet-ops#957, fleet-ops#1003 and the live KeyError wordings"
+# #1036 is a sibling python-traceback shape on a DIFFERENT session
+# (the 01a041b4 SuperGrok worker). The class is the same as #957
+# (python3 -c walked past); the live wording is FileNotFoundError on
+# /home/nish/.grok/auth.json, and the recovery is a comment inside the
+# next toolCall's command. Dropping the #1036 citation from the prompt
+# is a regression even if the #957 lock and the live #1036 drill still
+# pass.
+grep -q 'fleet-ops#1036' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1036 (prompt-side lock for the auth.json FileNotFoundError sibling shape)"
+grep -q 'FileNotFoundError' "$worker" \
+  || fail "prompts/worker.md must name the live #1036 FileNotFoundError wording so workers flag it"
+grep -q '/home/nish/.grok/auth.json' "$worker" \
+  || fail "prompts/worker.md must name the live #1036 /home/nish/.grok/auth.json path"
+ok "worker.md cites fleet-ops#957, fleet-ops#1003, fleet-ops#1036 and the live traceback wordings"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#957 ----
 # (detector-side lock). The docstring is the standing-rule contract
@@ -253,7 +312,17 @@ grep -q 'fleet-ops#957, #966, #1003' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #1003 next to #957 / #966"
 grep -q 'gh issue view' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live #1003 gh issue view --json shape"
-ok "lib/failed-command-flagged.py docstring cites fleet-ops#957, fleet-ops#1003 and the python traceback family"
+# #1036 is the FileNotFoundError-on-auth.json sibling of #957. The
+# class is the same (python3 -c walked past); the session slug is
+# different (01a041b4 vs 01a03e38 / 01a041a5), so the citation chain
+# must carry it.
+grep -q 'fleet-ops#1036' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#1036 (detector-side lock)"
+grep -q 'FileNotFoundError' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the live #1036 FileNotFoundError wording"
+grep -q '/home/nish/.grok/auth.json' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the live #1036 /home/nish/.grok/auth.json path"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#957, fleet-ops#1003, fleet-ops#1036 and the python traceback family"
 
 # --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
 grep -Fq 'bash "$here/fleet-failed-command-python-traceback.test.sh"' \

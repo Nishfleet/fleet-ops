@@ -1830,12 +1830,15 @@ bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-com
 # (index-delay filings #956/#965/#970/#975/#980) must ALL drain via
 # observe-to-close, not just the first match. Same CI constraint.
 bash "$here/fleet-failed-command-observe-duplicate-open.test.sh" || fail "fleet-failed-command-observe-duplicate-open tests failed"
-# fleet-ops#957: a `python3 -c` / `python3 << 'EOF'` probe that crashes
-# with a Python traceback (KeyError, NameError, etc.) and
-# `Command exited with code 1`, walked past with a silent re-probe, a
-# thinking block, or later "Now I have everything I need" prose. The
-# command is not grep/rg/diff/ls/which so it is not a no-match probe.
-# Same CI constraint (worker token cannot add a P14 line).
+# fleet-ops#957 / #1003 / #1036: a `python3 -c` / `python3 << 'EOF'`
+# probe that crashes with a Python traceback (KeyError, NameError,
+# FileNotFoundError, etc.) and `Command exited with code 1`, walked
+# past with a silent re-probe, a thinking block, a comment inside the
+# next toolCall's command (#1036: FileNotFoundError on
+# /home/nish/.grok/auth.json, session 01a041b4), or later "Now I have
+# everything I need" prose. The command is not grep/rg/diff/ls/which
+# so it is not a no-match probe. Same CI constraint (worker token
+# cannot add a P14 line).
 bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed-command-python-traceback tests failed"
 # fleet-ops#937: a `python3 -c "from <hyphenated_name> import ..."`
 # probe against a sibling file whose actual filename has hyphens

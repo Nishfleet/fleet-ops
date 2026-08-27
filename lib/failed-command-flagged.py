@@ -82,18 +82,28 @@ citation chain must carry it. The leftover-duplicate observe-to-close
 drain for the 01a03dee pile (#956, #965, #970, #975, #980) is locked
 under tests/fleet-failed-command-observe-duplicate-open.test.sh.
 A `python3 -c` / `python3 << 'EOF'` probe that crashes
-with a Python traceback (KeyError, NameError, etc.) and
-'Command exited with code 1' (fleet-ops#957, #966, #1003) is also a real
+with a Python traceback (KeyError, NameError, FileNotFoundError, etc.) and
+'Command exited with code 1' (fleet-ops#957, #966, #1003, #1036) is also a real
 swallowed failure: the command is not grep/rg/diff/ls/which so it is
-not a no-match probe, and a silent re-probe, a thinking block, or
-later prose that moves on is not a user-facing flag. The live #1003
+not a no-match probe, and a silent re-probe, a thinking block, a
+comment inside the next toolCall's command, or later prose that moves
+on is not a user-facing flag. The live #1003
 shape is the same class as #957 (python3 -c walked past) but the
 wording and the `gh | python3 -c` pipe are distinct: a
 `gh issue view <N> --comments --json <fields> | python3 -c "...d['comments']..."`
 probe whose --json filter omitted the field the probe tried to read
 hits `KeyError: 'comments'` with isError=true and
 `Command exited with code 1`; the next turn is a toolCall-only re-probe
-that hits the same KeyError. #966 is the same session shape as
+that hits the same KeyError. fleet-ops#1036 is the same class as #957
+(python3 -c walked past) on a DIFFERENT session slug (the 01a041b4
+SuperGrok worker). The live wording is
+`FileNotFoundError: [Errno 2] No such file or directory: '/home/nish/.grok/auth.json'`
+with isError=true and `Command exited with code 1`; the next turn is a
+toolCall-only recovery whose command comment names the missing file
+(`# Hmm, auth.json doesn't exist now?`). A comment inside the command
+is not a user-facing flag. It is a singleton (no leftover-duplicate
+pile), so the citation chain must carry it. The shape lock lives under
+tests/fleet-failed-command-python-traceback.test.sh. #966 is the same session shape as
 #957 (the 01a03e38 python-traceback session); it is a leftover open
 duplicate filed by the same GitHub-search-index-delay that produced
 #951 / #965, so the citation chain must carry it. The leftover-duplicate
