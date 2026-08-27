@@ -84,7 +84,10 @@ that. The auto-filed issue closes via observe-to-close when the session
 mtime ages out of the 24h window. An `edit`
 tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
-(fleet-ops#956, #965) is also a real swallowed
+(fleet-ops#956, #965) — or the variant
+"Found N occurrences of the text in <path>. The text must be unique."
+(fleet-ops#1053, same class: oldText matched multiple locations, not zero)
+is also a real swallowed
 failure: a silent `read` recovery, a later thinking-only note that the
 file was different, or unrelated prose that moves on, is not a
 user-facing flag. #970 is the same session shape as #956 / #965 (the
@@ -360,7 +363,9 @@ HARNESS_BLOCK_RE = re.compile(
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
 # Do NOT add a similar exemption for `edit` "Could not find the exact
-# text" (fleet-ops#956, #965, #970, #975, #980). That is a real swallowed failure: the worker's
+# text" (fleet-ops#956, #965, #970, #975, #980) or "Found N occurrences"
+# (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
+# locations, not zero). That is a real swallowed failure: the worker's
 # oldText was stale. A silent read recovery does not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I

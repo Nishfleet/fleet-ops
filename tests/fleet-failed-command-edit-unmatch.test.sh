@@ -19,7 +19,20 @@
 # (fleet-ops#758) when the session mtime ages out of the 24h window after
 # 2026-08-27T11:57:42Z.
 #
-# Live session: 2026-08-26T11-57-42-915Z_01a03dee-ea83-759b-8044-ba3adddcbe8b.jsonl
+# fleet-ops#1053: the same edit-unmatch class but with the
+#   "Found N occurrences of the text in <path>. The text must be unique."
+# shape — the edit tool's oldText matched MULTIPLE locations in the file
+# (not zero, as in #956/#965) — is also a real swallowed failure. The
+# detector already catches it (isError=true on the `edit` tool), so this
+# test pins that the "Found N occurrences" variant cannot be silently
+# dropped by a future refactor that only checks for "Could not find".
+# Live session: 2026-08-27T06:52:12-544Z_01a041fd-9380-77aa-adf8-f535436833e9.jsonl
+# The auditor edited AUDITOR-LOG.md with oldText matching 42 occurrences;
+# the edit tool returned isError=true with "Found 42 occurrences"; the
+# next 4 assistant turns were empty and the session ended without naming
+# the failure. The snippet is identical to the live detector finding.
+#
+# Live session: 2026-08-26T11-57:42-915Z_01a03dee-ea83-759b-8044-ba3adddcbe8b.jsonl
 # The same session was also auto-filed as leftover duplicates #965,
 # #970, #975, #980 (search-index delay, fleet-ops#951). The shape lock
 # lives here; leftover-duplicate observe-to-close drain lives in
@@ -51,11 +64,25 @@
 #      name the failure -> still a finding.
 #   4. same shape plus a later "the edit call failed" user-facing flag
 #      -> clean.
+#   5. live #1053 shape: edit "Found N occurrences" (multiple matches)
+#      + empty assistant turns walking past -> finding. The detector must
+#      flag this variant even when a refactor only pattern-matches the
+#      0-match wording "Could not find". Live fingerprint: 4 empty
+#      assistant turns with stopReason=error (503 overloaded).
+#   6. same #1053 shape plus a later "the edit call failed" user-facing
+#      flag -> clean.
+#   7. worker.md cites fleet-ops#1053 and "Found N occurrences"
+#      (prompt-side lock).
+#   8. lib/failed-command-flagged.py docstring cites fleet-ops#1053
+#      (detector-side lock).
+#   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 lib="$here/../lib/failed-command-flagged.py"
+repo_root="$(cd "$here/.." && pwd)"
+worker="$repo_root/prompts/worker.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -161,4 +188,76 @@ count=$(jq '.findings | length' <<<"$report")
 ok "edit 'Could not find the exact text' plus later user-facing flag is clean"
 rm -f "$sessions/edit-unmatch-flagged.jsonl"
 
-echo "OK: fleet-failed-command-edit-unmatch: live #956 / #1079 edit 'Could not find the exact text' drills"
+# --- 5. live #1053 shape: edit "Found N occurrences" + walked past ---------
+# The live session slug 01a041fd was filed because an `edit` of
+# AUDITOR-LOG.md returned isError=true with
+# "Found 42 occurrences of the text in <path>. The text must be unique."
+# (oldText matched multiple locations). The next 4 assistant turns were
+# empty and the session ended without a user-facing flag. Replay that
+# exact shape — the snippet must match the live detector finding.
+write_session "edit-unmatch-found-occurrences" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit5","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-state/AUDITOR-LOG.md","edits":[{"oldText":"If ALL five are clean, say so explicitly in your AUDITOR-LOG.md block\n(\"catch-all sweep: quiet on all 5 channels\") — quiet IS a valid outcome."}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit5","toolName":"edit","content":[{"type":"text","text":"Found 42 occurrences of the text in /home/nish/workspaces/agent-state/AUDITOR-LOG.md. The text must be unique. Please provide more context to make it unique."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "edit 'Found N occurrences' walked past should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Found 42 occurrences' <<<"$snippet" \
+  || fail "finding snippet should mention 'Found 42 occurrences' (got $snippet)"
+grep -q 'AUDITOR-LOG.md' <<<"$snippet" \
+  || fail "finding snippet should mention AUDITOR-LOG.md (got $snippet)"
+ok "edit 'Found N occurrences' (multiple-match) unmatch with empty recovery turns is flagged"
+rm -f "$sessions/edit-unmatch-found-occurrences.jsonl"
+
+# --- 6. #1053 shape plus a later user-facing flag is clean -----------------
+# Same discharge rule as scenario 4: naming the failure in user-facing
+# text satisfies fleet-ops#535. Pin that FLAG_RE still matches this
+# wording so a future FLAG_RE tighten cannot leave the 42-occurrence
+# variant permanently pending.
+write_session "edit-unmatch-found-occurrences-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit6","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-state/AUDITOR-LOG.md","edits":[{"oldText":"If ALL five are clean, say so explicitly in your AUDITOR-LOG.md block\n(\"catch-all sweep: quiet on all 5 channels\") — quiet IS a valid outcome."}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit6","toolName":"edit","content":[{"type":"text","text":"Found 42 occurrences of the text in /home/nish/workspaces/agent-state/AUDITOR-LOG.md. The text must be unique. Please provide more context to make it unique."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the edit call failed with Found 42 occurrences — oldText matched multiple locations in AUDITOR-LOG.md, reading more context to make it unique."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "edit 'Found N occurrences' with later user-facing flag should be clean (got $count) $report"
+ok "edit 'Found N occurrences' plus later user-facing flag is clean"
+rm -f "$sessions/edit-unmatch-found-occurrences-flagged.jsonl"
+
+# --- 7. worker.md cites fleet-ops#1053 (prompt-side lock) ------------------
+# Dropping the #1053 citation or the live wording from the standing-rule
+# paragraph is a regression even if the drill still passes: workers read
+# worker.md, not this test.
+grep -q 'fleet-ops#1053' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1053 (prompt-side lock for the Found N occurrences sibling shape)"
+grep -q 'Found N occurrences' "$worker" \
+  || fail "prompts/worker.md must name the live #1053 'Found N occurrences' wording so workers flag it"
+grep -q 'AUDITOR-LOG.md' "$worker" \
+  || fail "prompts/worker.md must name AUDITOR-LOG.md as the live #1053 path"
+ok "worker.md cites fleet-ops#1053 and the live Found N occurrences wording"
+
+# --- 8. lib/failed-command-flagged.py docstring cites fleet-ops#1053 ------
+# The docstring is the standing-rule contract for the next detector
+# maintainer. A future exemption for "Found N occurrences" (mirroring
+# READ_OFFSET_RE) would silence this class; the docstring forbids it.
+grep -q 'fleet-ops#1053' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#1053 (detector-side lock)"
+grep -q 'Found N occurrences' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the live #1053 'Found N occurrences' wording"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#1053 and Found N occurrences"
+
+# --- 9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ------
+grep -Fq 'bash "$here/fleet-failed-command-edit-unmatch.test.sh"' \
+  "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat-lib.test.sh hosts this file"
+
+echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053 edit unmatch drills"
