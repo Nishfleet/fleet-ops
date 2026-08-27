@@ -211,22 +211,77 @@ run_install() {
 }
 
 run_install "install.sh"
+
+# fleet-ops#1235: --storage.tsdb.retention.time is a start-time flag, so a
+# changed /etc/default/prometheus (the prometheus.service EnvironmentFile)
+# needs `systemctl restart`, not a HUP. Snapshot the live env file BEFORE
+# install.sh --system so we can detect the change and pick restart vs reload.
+PROM_ENV_FILE="${PROM_ENV_FILE:-/etc/default/prometheus}"
+prom_env_before=""
+if [ -f "$PROM_ENV_FILE" ]; then
+    prom_env_before=$(sha256sum "$PROM_ENV_FILE" 2>/dev/null | awk '{print $1}')
+fi
+
 run_install "install.sh --system" --system
 deploy_audit "fleet-ops" "install" "ok"
+
+prom_env_after=""
+if [ -f "$PROM_ENV_FILE" ]; then
+    prom_env_after=$(sha256sum "$PROM_ENV_FILE" 2>/dev/null | awk '{print $1}')
+fi
+prom_env_changed=0
+if [ -n "$prom_env_before" ] && [ "$prom_env_before" != "$prom_env_after" ]; then
+    prom_env_changed=1
+elif [ -z "$prom_env_before" ] && [ -n "$prom_env_after" ]; then
+    prom_env_changed=1
+fi
 
 # Prometheus reads rule_files into RAM; install -D does not HUP it.
 # Skip when the unit is not active (CI, the offline deploy test — a live
 # `sudo -n systemctl reload` would ignore PATH and HUP the real daemon).
 prom_state=$(systemctl is-active prometheus 2>/dev/null || true)
 if [ "$prom_state" = "active" ]; then
-    if ! sudo -n systemctl reload prometheus; then
-        loud "DEPLOY-PROMETHEUS-RELOAD" \
-            "systemctl reload prometheus failed after install.sh --system"
-        deploy_audit "fleet-ops" "prometheus-reload-failed" "reload"
-        exit 1
+    if [ "$prom_env_changed" = 1 ]; then
+        # fleet-ops#1235: a start-time flag changed. Check disk headroom on
+        # the TSDB filesystem before restarting — a longer retention with no
+        # free space would fill the disk and crash prometheus. Fail loud and
+        # leave the unit running on its old (already-loaded) config rather
+        # than restarting into a full disk.
+        headroom_gb="${PROM_RETENTION_HEADROOM_GB:-2}"
+        tsdb_fs="${PROM_TSDB_FS:-/var/lib/prometheus}"
+        free_kb=$(df -P --output=avail "$tsdb_fs" 2>/dev/null | awk 'NR==2{print $1}')
+        if [ -z "$free_kb" ]; then
+            loud "DEPLOY-PROMETHEUS-HEADROOM" \
+                "could not read free space on $tsdb_fs; refusing to restart prometheus with a changed retention"
+            deploy_audit "fleet-ops" "prometheus-headroom-unknown" "df failed"
+            exit 1
+        fi
+        free_gb=$(( free_kb / 1024 / 1024 ))
+        if [ "$free_gb" -lt "$headroom_gb" ]; then
+            loud "DEPLOY-PROMETHEUS-HEADROOM" \
+                "only ${free_gb}G free on $tsdb_fs (threshold ${headroom_gb}G); refusing to restart prometheus with a longer retention"
+            deploy_audit "fleet-ops" "prometheus-headroom-low" "${free_gb}G < ${headroom_gb}G"
+            exit 1
+        fi
+        log "prometheus env file changed; headroom OK (${free_gb}G >= ${headroom_gb}G); restarting"
+        if ! sudo -n systemctl restart prometheus; then
+            loud "DEPLOY-PROMETHEUS-RESTART" \
+                "systemctl restart prometheus failed after /etc/default/prometheus change"
+            deploy_audit "fleet-ops" "prometheus-restart-failed" "restart"
+            exit 1
+        fi
+        log "prometheus restarted (retention flag applied)"
+        deploy_audit "fleet-ops" "prometheus-restart" "ok env-changed"
+    else
+        if ! sudo -n systemctl reload prometheus; then
+            loud "DEPLOY-PROMETHEUS-RELOAD" \
+                "systemctl reload prometheus failed after install.sh --system"
+            deploy_audit "fleet-ops" "prometheus-reload-failed" "reload"
+            exit 1
+        fi
+        log "prometheus reloaded"
+        deploy_audit "fleet-ops" "prometheus-reload" "ok"
     fi
-    log "prometheus reloaded"
-    deploy_audit "fleet-ops" "prometheus-reload" "ok"
 fi
 
 recon="$DEPLOY_CHECKOUT/bin/intake-reconcile"

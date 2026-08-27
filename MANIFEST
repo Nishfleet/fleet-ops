@@ -522,3 +522,10 @@ bin/fleet-precedence-band-canary /home/nish/.local/bin/fleet-precedence-band-can
 lib/pi-packet/precedence-band-canary.py /home/nish/.local/lib/pi-packet/precedence-band-canary.py
 lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
 config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.json
+# fleet-ops#1235: /etc/default/prometheus. The Debian package owns this
+# path; the fleet-ops MANIFEST re-installs it so the retention value is
+# repo-tracked and survives `apt upgrade`. install.sh --system is required
+# to apply. bin/fleet-ops-deploy restarts prometheus (not just HUP) when
+# this file changes, because --storage.tsdb.retention.time is a start-time
+# flag.
+config/etc-default-prometheus /etc/default/prometheus
