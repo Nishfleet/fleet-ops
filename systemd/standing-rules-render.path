@@ -1,0 +1,21 @@
+[Unit]
+Description=Watch standing-rules canonical for changes (event-driven)
+Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/systemd/standing-rules-render.path
+# Path-changed, not polling. The fleet burned money polling; per
+# vault global-standing-rules.md "Everything runs through Pi,
+# directly. No launchers." the path unit is the right shape here.
+# systemd reloads this path unit on any canonical change, fires
+# standing-rules-render.service once, and goes back to sleep.
+
+[Path]
+# The canonical file lives in the vault. Two files matter for a
+# full regeneration: the canonical itself AND the generator script
+# (in case the generator's templating changes).
+PathChanged=/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.canonical.md
+PathChanged=/home/nish/workspaces/fleet-ops/bin/render-standing-rules
+# Do not poll, do not trickle, do not keep state across reboots.
+# MakeOnBoot=off is the default; PathChanged= fires the unit
+# every time the file is closed-after-write.
+
+[Install]
+WantedBy=default.target

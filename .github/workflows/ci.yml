@@ -241,3 +241,8 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        # fleet-ops#1145 slice 1: prove the standing-rules generator
+        # catches drift, renders cleanly, applies per-surface templating,
+        # persists markers across renders, and errors on orphan markers
+        # and unused sections. Eight assertions, byte-exact.
+        bash tests/test_standing_rules_drift.sh
