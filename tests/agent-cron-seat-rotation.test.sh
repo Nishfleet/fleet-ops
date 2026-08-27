@@ -459,3 +459,9 @@ fi
 # fails if this P14 test (or any other) re-introduces a live verify call.
 
 ok "agent-cron seat rotation: gate replaced by pick_seat, transient 429 routes to alt, fully-walled fails loud"
+
+# fleet-ops#366 / auditor-finding-B: the WORKDIR fail-closed guard test lives
+# in this file's P14 family (agent-cron-run). Same CI constraint as the
+# siblings above: workers cannot edit .github/workflows/ci.yml, so the
+# listed agent-cron-seat-rotation.test.sh hosts the sibling guard test.
+bash "$here/agent-cron-workdir-guard.test.sh" || fail "agent-cron-workdir-guard tests failed"
