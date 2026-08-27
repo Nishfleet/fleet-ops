@@ -453,4 +453,44 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario16: production seat-caps keep nemotron-3-ultra-free and no billing sibling"
 
+# --- 17. production lock: muse-spark-1.2-contributor-free stay-benched (fleet-ops#1224) --
+# The class prevention for "auditioned free slug silently unwired after a
+# failed live spawn": a later PR that removes the cap=0 row or the dated
+# reason without a passing re-audition fails this lock. The cap=0 row is
+# required so the canary stops re-filing "free-slug-available" on every
+# tick while the slug sits in the catalog but the API returns HTTP 500.
+msf_cap=$(jq -r '.providers.opencode.models["muse-spark-1.2-contributor-free"] // "missing"' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$msf_cap" == "missing" ]]; then
+  fail "scenario17: production seat-caps must keep a muse-spark-1.2-contributor-free row (cap=0 bench, fleet-ops#1224)"
+fi
+if [[ "$msf_cap" != "0" ]]; then
+  fail "scenario17: production muse-spark-1.2-contributor-free must be capped 0 while the API returns HTTP 500 (got $msf_cap, fleet-ops#1224)"
+fi
+# Dated reason field required: the cap=0 row is the bench, the dated reason
+# is the audit trail. The reason must cite fleet-ops#1224 and the date.
+reason=$(jq -r '.providers.opencode._muse_spark_contributor_free // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario17: production seat-caps must carry _muse_spark_contributor_free dated reason (fleet-ops#1224)"
+fi
+if ! grep -qE 'fleet-ops#1224' <<<"$reason"; then
+  fail "scenario17: _muse_spark_contributor_free must cite fleet-ops#1224 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario17: _muse_spark_contributor_free must start with an ISO date (got: $reason)"
+fi
+# No billing sibling (muse-spark-1.2) on the opencode allowlist: free-form
+# is the only path; a billing row would be a money lane on a free-class
+# provider. Exclude the free-form slug itself and any other free-form variant.
+while IFS= read -r k; do
+  lk="${k,,}"
+  case "$lk" in
+    muse-spark-1.2-contributor-free|muse-spark-*-free|muse-spark-*/*) : ;;  # free-form variants allowed
+    muse-spark-*|*/muse-spark|*/muse-spark-*)
+      fail "scenario17: production opencode allowlists a non-free muse-spark slug: $k" ;;
+  esac
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario17: production seat-caps keep muse-spark-1.2-contributor-free benched at cap=0 with dated reason and no billing sibling"
+
 ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
