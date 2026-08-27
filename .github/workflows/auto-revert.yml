@@ -14,12 +14,18 @@ name: Auto revert
 # commit and now, the freshness guard files a halt issue naming both SHAs and
 # stops: that is a human-order problem.
 #
-# The PR is opened with the workflow's GITHUB_TOKEN. NOTE: a PR opened by
-# GITHUB_TOKEN does not itself trigger `pull_request` workflows, so the four
-# required checks will not report on the revert PR and armed auto-merge will
-# not fire until a PAT (secret AUTO_REVERT_PAT) is wired in. Until then the
-# PR sits open and loud — the mechanism still builds and opens the correct
-# revert; a human (or the PAT) lands it. This is flagged, not silent.
+# The PR is opened with an installation token minted from the nishfleet-worker
+# GitHub App (org-wide install, contents/issues/pull-requests:write). A PR
+# opened by GITHUB_TOKEN would not itself trigger `pull_request` workflows, so
+# the four required checks would not report on the revert PR and armed
+# auto-merge would not fire. The App token (a real actor, not GITHUB_TOKEN)
+# makes the revert PR trigger its own checks and lets armed auto-merge land it.
+# The App also carries issues:write, which the old AUTO_REVERT_PAT lacked —
+# without it the halt path could not post comments (403 addComment, run
+# 33043774694). If the App secrets are missing the job falls back to
+# GITHUB_TOKEN: the mechanism still builds and opens the correct revert, but
+# halt comments and self-triggered checks will not fire. That is flagged, not
+# silent.
 
 on:
   workflow_run:
@@ -52,9 +58,25 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Mint nishfleet-worker App installation token
+        id: app-token
+        # Mints a ≤1h installation token for the nishfleet-worker GitHub App
+        # (app id 4728578, org-wide install under Nishfleet). The App carries
+        # contents/issues/pull-requests:write — the scopes the old
+        # AUTO_REVERT_PAT lacked (issues:write), which broke halt comments
+        # (403 addComment, run 33043774694). continue-on-error lets a missing
+        # or expired App secret degrade to GITHUB_TOKEN below (the old
+        # loud-but-no-comment shape) instead of crashing the whole job.
+        continue-on-error: true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Revert or halt
         env:
-          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_NAME: ${{ github.event.workflow_run.name }}
