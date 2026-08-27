@@ -47,8 +47,12 @@
 #   2. later tick with the marker already on all seven: closes all
 #      seven, still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. three-place citation lock (prompt, detector, CI host) for #972
-#      and #967.
+#   4. prompt-side citation lock: prompts/worker.md cites #972, #967
+#      and #977 (the 01a03e61 leftover-duplicate pile).
+#   5. detector-side citation lock: lib/failed-command-flagged.py
+#      docstring cites #972, #967 and #977.
+#   6. CI host: seat-lib.test.sh nests this file so the drain
+#      drill cannot be skipped by a fresh CI line.
 
 set -euo pipefail
 
@@ -315,13 +319,14 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "live #972: still-dirty slug leaves all seven leftover duplicates open"
 
-# --- 4. three-place citation lock (prompt, detector, CI host) for #972 / #967 -----
-# Same pin as #937 / #957 / #966 / #970: dropping the #972 or #967
-# citation from any one of these three places is a regression even if
-# the drain drill still passes. The existing read-ENOENT skip-then-todos
-# test (fleet-ops#958) already pins #958; this file adds the #972
-# citation next to it, and the #967 citation next to #972 — both are
-# siblings in the 01a03e61 leftover-duplicate pile (fleet-ops#951).
+# --- 4. prompt-side citation lock for #972 / #967 / #977 ----------------
+# Same pin as #937 / #957 / #966: dropping the #972, #967 or #977
+# citation from the prompt is a regression even if the drain drill
+# still passes. The existing read-ENOENT skip-then-todos test
+# (fleet-ops#958) already pins #958; this file adds the #972 citation
+# next to it, the #967 citation next to #972, and the #977 citation
+# next to #967 — all are siblings in the 01a03e61 leftover-duplicate
+# pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
 grep -q '#972' "$worker" \
   || fail "prompts/worker.md must carry the #972 citation next to the #958 read-ENOENT citation"
@@ -331,15 +336,36 @@ ok "worker.md cites #972"
 grep -q '#972, #967' "$worker" \
   || fail "prompts/worker.md must carry the #967 citation next to the #972 leftover-duplicate citation"
 ok "worker.md cites #967"
+grep -q '#967, #977' "$worker" \
+  || fail "prompts/worker.md must carry the #977 citation next to the #967 leftover-duplicate citation"
+ok "worker.md cites #977"
+
+# --- 5. detector-side citation lock for #972 / #967 / #977 ----------------
+# The lib docstring is the standing-rule contract for the next
+# detector maintainer. The sibling #937 / #957 / #966 tests already
+# use the same three-place pattern: prompt + detector docstring +
+# CI host. Dropping the #972, #967 or #977 citation from the lib
+# docstring is a regression even if the prompt lock and the drill
+# still pass. Future detectors refactor the lib freely; this scenario
+# is the regression fence.
 grep -q 'fleet-ops#958, #972' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #972 next to #958"
 ok "lib/failed-command-flagged.py docstring cites #972"
 grep -q '#972, #967' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #967 next to #972"
 ok "lib/failed-command-flagged.py docstring cites #967"
+grep -q '#967, #977' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #977 next to #967"
+ok "lib/failed-command-flagged.py docstring cites #977"
+
+# --- 6. CI host: seat-lib.test.sh nests this file -------------------------
+# A fresh PR cannot add a workflow line on this repo (worker token has
+# no Workflows permission). The drain drill has to run through the
+# nested seat-lib host so removing the test file (or moving the
+# citation check out) is caught by the seat-lib listing test.
 grep -F -q 'fleet-failed-command-observe-duplicate-enoent.test.sh' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-observe-duplicate-enoent: live #972 / #967 leftover-duplicate drain"
+echo "OK: fleet-failed-command-observe-duplicate-enoent: live #972 / #967 / #977 leftover-duplicate drain"
