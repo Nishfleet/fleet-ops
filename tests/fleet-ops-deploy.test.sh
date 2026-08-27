@@ -43,6 +43,8 @@
 #      from a leftover service) is still red (fleet-ops#774). The class is
 #      binary — branch is main or not — so the `resolved-at:` comment must
 #      not wait for the whole canary to be green.
+#  18. fleet-ops-deploy invokes install.sh --system after the user-scope
+#      install (fleet-ops#1247). A --system failure fails the deploy.
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -131,6 +133,10 @@ grep -A3 'if \[ -f "$here/systemd/intake-reconcile.path" \]' "$repo_root/install
 grep -A3 'if \[ -f "$here/systemd/intake-reconcile.timer" \]' "$repo_root/install.sh" \
     | grep -q 'enable --now intake-reconcile.timer' \
     || fail "install.sh must enable intake-reconcile.timer only when the unit file exists in the checkout (fleet-ops#559)"
+grep -q 'run_install "install.sh --system" --system' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must run install.sh --system (fleet-ops#1247)"
+grep -q 'sudo -n systemctl reload prometheus' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must HUP prometheus after --system so fleet_rules.yml loads (fleet-ops#1247)"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -307,6 +313,11 @@ case "$cmd" in
     ;;
   start)
     exit 0
+    ;;
+  is-active)
+    # Deploy probes prometheus before HUPing it. Tests have no prometheus.
+    printf 'inactive\n'
+    exit 3
     ;;
   *)
     printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
@@ -1254,6 +1265,49 @@ grep -q '^774$' "$off_comment_log" \
   || fail "scenario17f: must comment on #774 (commented=$(cat "$off_comment_log"))"
 ok "scenario17f: off-main observe-to-close fires despite a later red check (fleet-ops#774)"
 rm -f "$HOME/.config/systemd/user/leftover-774.service"
+
+# --- scenario 18: deploy runs install.sh --system (fleet-ops#1247) ----------
+# Do not rewrite checkout/install.sh here: that dirties a tracked file and
+# DEPLOY-BLOCKs before either install runs. The deploy log names both.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+if ! out=$(run_deploy); then
+    fail "scenario18: deploy should succeed and run --system, got: $out"
+fi
+[[ "$out" == *"ran install.sh (rc=0)"* ]] \
+    || fail "scenario18: expected user-scope install.sh (got: $out)"
+[[ "$out" == *"ran install.sh --system (rc=0)"* ]] \
+    || fail "scenario18: expected install.sh --system (got: $out)"
+ok "scenario18: deploy invokes install.sh then install.sh --system"
+
+# --- scenario 18b: --system failure fails the deploy -----------------------
+# Push the stub to origin/main and leave the checkout behind so deploy
+# fast-forwards onto it. Rewriting install.sh in place would DEPLOY-BLOCK.
+behind18=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b fail-system-1247
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--system" ]; then
+  echo "simulated --system failure" >&2
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "stub install.sh --system failure"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q "$behind18"
+if out=$(run_deploy); then
+    fail "scenario18b: deploy should fail when install.sh --system fails, got: $out"
+fi
+[[ "$out" == *"DEPLOY-INSTALL"* ]] \
+    || fail "scenario18b: expected DEPLOY-INSTALL (got: $out)"
+[[ "$out" == *"install.sh --system failed"* ]] \
+    || fail "scenario18b: expected --system in the LOUD line (got: $out)"
+ok "scenario18b: install.sh --system failure fails deploy"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 

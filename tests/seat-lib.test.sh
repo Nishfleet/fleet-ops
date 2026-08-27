@@ -2044,6 +2044,10 @@ bash "$here/fleet-failed-command-typo-est-sh.test.sh" || fail "fleet-failed-comm
 # fleet-ops#698: `gh api` 4xx/5xx walked past is a real swallowed failure.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-command-gh-api-404 tests failed"
+# fleet-ops#1253: `gh api /user` App-token 403
+# (`Resource not accessible by integration`) walked past is a real
+# swallowed failure. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-gh-api-403-integration.test.sh" || fail "fleet-failed-command-gh-api-403-integration tests failed"
 # fleet-ops#727: a verification canary script (e.g. `npm run canary:*`,
 # `node scripts/*-verification.mjs`) that legitimately exits 1 on a
 # failed gate walked past is the same class. Same CI constraint

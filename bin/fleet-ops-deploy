@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # fleet-ops-deploy — merge-to-live install for fleet-ops (fleet-ops#149).
 #
-# Pulls origin/main into the deploy checkout, runs install.sh, converges
-# the declared per-repo set, then runs the drift canary. Dirty tracked
-# files or a non-fast-forward checkout block the update (no reset, no
+# Pulls origin/main into the deploy checkout, runs install.sh (user-scope)
+# then install.sh --system (fleet-ops#1247: /etc/prometheus/fleet_rules.yml
+# and the other /etc/... MANIFEST entries), reloads prometheus when it is
+# active, converges the declared per-repo set, then runs the drift canary.
+# Dirty tracked files or a non-fast-forward checkout block the update (no reset, no
 # stash). A named non-main branch also blocks (fleet-ops#477): merge
 # --ff-only would rewind that auditor/hotfix branch onto origin/main.
 # Any remaining divergence fails loud (exit 1).
@@ -187,20 +189,45 @@ else
     log "checkout up to date"
 fi
 
-install_out=""
-install_rc=0
-if install_out=$("$DEPLOY_CHECKOUT/install.sh" 2>&1); then
-    install_rc=0
-else
-    install_rc=$?
-    loud "DEPLOY-INSTALL" "install.sh failed (rc=$install_rc): $install_out"
-    deploy_audit "fleet-ops" "install-failed" "rc=$install_rc"
-    exit 1
-fi
-if [ -n "$install_out" ]; then
-    log "install.sh output: $install_out"
-fi
+# fleet-ops#1247: default install.sh skips /etc/... MANIFEST entries
+# (config/fleet_rules.yml -> /etc/prometheus/fleet_rules.yml). Without
+# --system, ConsoleLying sits in git and never loads.
+run_install() {
+    local label="$1"
+    shift
+    local out rc=0
+    if out=$("$DEPLOY_CHECKOUT/install.sh" "$@" 2>&1); then
+        rc=0
+    else
+        rc=$?
+        loud "DEPLOY-INSTALL" "$label failed (rc=$rc): $out"
+        deploy_audit "fleet-ops" "install-failed" "$label rc=$rc"
+        exit 1
+    fi
+    log "ran $label (rc=$rc)"
+    if [ -n "$out" ]; then
+        log "$label output: $out"
+    fi
+}
+
+run_install "install.sh"
+run_install "install.sh --system" --system
 deploy_audit "fleet-ops" "install" "ok"
+
+# Prometheus reads rule_files into RAM; install -D does not HUP it.
+# Skip when the unit is not active (CI, the offline deploy test — a live
+# `sudo -n systemctl reload` would ignore PATH and HUP the real daemon).
+prom_state=$(systemctl is-active prometheus 2>/dev/null || true)
+if [ "$prom_state" = "active" ]; then
+    if ! sudo -n systemctl reload prometheus; then
+        loud "DEPLOY-PROMETHEUS-RELOAD" \
+            "systemctl reload prometheus failed after install.sh --system"
+        deploy_audit "fleet-ops" "prometheus-reload-failed" "reload"
+        exit 1
+    fi
+    log "prometheus reloaded"
+    deploy_audit "fleet-ops" "prometheus-reload" "ok"
+fi
 
 recon="$DEPLOY_CHECKOUT/bin/intake-reconcile"
 if [ ! -x "$recon" ]; then
