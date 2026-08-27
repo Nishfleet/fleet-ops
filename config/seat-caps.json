@@ -120,6 +120,15 @@
       "class": "metered",
       "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane."
     },
+    "bai": {
+      "cap": 2,
+      "class": "free",
+      "models": {
+        "deepseek-v4-flash": 1,
+        "deepseek-v4-flash-vision-exp": 1
+      },
+      "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) — OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image — relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct — 2,3,5,7,11,13,17,19 are exactly 8 primes ≤ 20). Cap 2 split 1+1 (capacity-is-measured) per conservative cap-2 for new free lanes; raise after a league mean beats the worst incumbent on the ladder. Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) — only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm."
+    },
     "orcarouter": {
       "cap": 0,
       "class": "free",
@@ -157,6 +166,7 @@
     "cline"
   ],
   "free_providers_in_order": [
+    "bai",
     "commandcode",
     "hetzner",
     "opencode"
