@@ -1026,3 +1026,9 @@ bash "$here/fleet-seat-live-validate.test.sh"
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/credential-expiry-canary.test.sh"
 
+# fleet-ops#468 packet 11: alert-repair completion canary. Nested from this
+# CI-listed file so hosted runners run it without a workflow edit (worker
+# tokens cannot push .github/workflows/**). Direct ci.yml entry is also
+# added; this nest is defence in depth.
+bash "$here/fleet-completion-canary.test.sh"
+

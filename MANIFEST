@@ -402,4 +402,11 @@ systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-reco
 # fleet-heartbeat-tier1 block 15; fail-loud on violation -> unit-escalation).
 bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
+# fleet-ops#468 packet 11: every alert-repair chain must TERMINATE. Named
+# 15-min timer because hop clocks are 10/30/60 min and "nothing happened"
+# is not an event PathChanged can see. Unit-escalation plane stays with
+# fleet-escalation-completion (sibling; do not fork).
+bin/fleet-completion-canary /home/nish/.local/bin/fleet-completion-canary
+systemd/fleet-completion-canary.service /home/nish/.config/systemd/user/fleet-completion-canary.service
+systemd/fleet-completion-canary.timer /home/nish/.config/systemd/user/fleet-completion-canary.timer
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh

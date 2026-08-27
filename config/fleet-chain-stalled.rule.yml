@@ -1,0 +1,14 @@
+# Fragment applied to /etc/prometheus/fleet_rules.yml (live source of truth).
+# Provenance for fleet-ops#468 packet 11 — FleetChainStalled.
+# The organ-absence rule FleetCompletionCanaryAbsent (absent(fleet_chain_open)
+# for 3h) already lives in fleet_watchdog; this is the stall rail.
+
+      - alert: FleetChainStalled
+        expr: max(fleet_chain_stalled) > 0
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "Alert-repair chain stalled past its hop clock for 15+ minutes"
+          description: "The completion canary is climbing the ladder; check /home/nish/workspaces/agent-state/alert-repair/completion-canary-build-20260827.md and fleet-completion-canary/chains.terminated.jsonl."

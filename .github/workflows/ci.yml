@@ -117,6 +117,7 @@ jobs:
             /home/nish/.local/bin/fleet-seat-recovery \
             /home/nish/.local/bin/fleet-unjustified-wait \
             /home/nish/.local/bin/fleet-escalation-completion \
+            /home/nish/.local/bin/fleet-completion-canary \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -226,6 +227,7 @@ jobs:
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
         bash tests/fleet-escalation-completion.test.sh
+        bash tests/fleet-completion-canary.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
