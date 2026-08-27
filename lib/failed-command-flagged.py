@@ -390,6 +390,30 @@ integration` in later assistant text is. The dedicated regression test
 tests/fleet-failed-command-gh-api-403-integration.test.sh pins that.
 Live session
 2026-08-27T16-15-45-417Z_01a04401-8509-7e94-8611-0fc81a5d1b85.jsonl.
+A malformed Pi toolCall with an empty name (id "", name "",
+arguments the non-JSON string "command") that returns `Tool  not
+found` (two spaces because the name is empty; isError=true,
+details={}, no `Command exited with code` line) is a real swallowed
+failure (fleet-ops#1242): the live next turn was an empty assistant
+message with stopReason=error and an HTTP 400 `Tool name must be
+nonempty` errorMessage. errorMessage is harness metadata, not
+user-facing text (`_text_chunks` only reads type=="text"), so it
+does not discharge the pending failure. The detector already flags
+this class via the generic isError path. Empty toolName / empty
+toolCallId is not a harness block: the call was issued and Pi
+answered. `Tool  not found` is not a grep/rg/which no-match probe.
+A future refactor that treats empty toolName as "the command never
+ran", treats `Tool  not found` as a probe because the snippet
+contains "not found", treats errorMessage as a user-facing flag, or
+collapses internal double-spaces in snippets would silently
+suppress this real signal. Distinct from #937 (python3
+ModuleNotFoundError + exit 1 on a named bash probe) and #698
+(`gh: Not Found (HTTP 404)` on a named bash call). The dedicated
+regression test tests/fleet-failed-command-empty-tool-name.test.sh
+pins that. The auto-filed issue closes via observe-to-close when
+the session mtime ages out of the 24h window. Live session
+2026-08-27T15-50-45-409Z_01a043ea-a1a1-79d2-b579-ef094ed1e3aa.jsonl:
+empty-name toolCall on fleet-ops#1009, snippet `Tool  not found`.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
