@@ -344,6 +344,53 @@ integration` in later assistant text is. The dedicated regression test
 tests/fleet-failed-command-gh-api-403-integration.test.sh pins that.
 Live session
 2026-08-27T16-15-45-417Z_01a04401-8509-7e94-8611-0fc81a5d1b85.jsonl.
+A `python3 -c "..."` whose multi-line script text contains a Python
+single-quoted string (e.g. `print('Scout JSON:', ...)` or any
+`r'...'` raw-string with a backslash-quote sequence like
+`r'\\\\\"scout...'`) and whose harness-side `bash -c` quoting makes
+bash open a shell single-quote on the inner `'` is a real swallowed
+failure (fleet-ops#1141): bash fails with
+`/bin/bash: -c: line N: unexpected EOF while looking for matching `''`
++ `Command exited with code 2`, isError=true, the python script never
+runs, and the next assistant turn is a same-turn sibling toolCall
+(e.g. `grep -oP` or another `python3 -c`) that succeeded with no
+user-facing text naming the failure. The class is distinct from
+#957 / #1003 (Python traceback + `Command exited with code 1`: the
+python actually ran, the traceback is a Python-level error, the
+snippet carries `Traceback ... KeyError: '...'`, exit 1), from #793
+(fresh debug script with `set -e` killed it, exit 1, empty snippet),
+from #1217 (racing `cd /tmp/<fresh-clone> 2>/dev/null` with empty
+snippet, exit 1, the `cd` command is the failing one), and from #1061
+(compound chain with `ls ... Permission denied`, exit 1, real `ls:`
+line). The live #1141 is a BASH parse error before python even
+starts, with exit 2, a non-empty snippet that carries the
+`unexpected EOF while looking for matching` line, and a same-turn
+sibling success that must not mask the failure. The detector already
+flags this class via the generic `isError or code != 0` path. A
+future refactor that treats `python3 -c` as a probe (it is not in
+BENIGN_STAGE_RE / LS_BENIGN_RE / GIT_BENIGN_RE / XARGS_BENIGN_RE),
+treats a bash parse error + exit 2 as benign whenever the snippet
+carries `unexpected EOF while looking for matching`, or lets a
+same-turn sibling success mask a sibling bash-parse failure would
+silently suppress this real signal. The dedicated regression test
+tests/fleet-failed-command-python-c-shell-unterminated-quote.test.sh
+pins that. The auto-filed issue closes via observe-to-close when
+the session mtime ages out of the 24h window. Live session
+2026-08-27T12-14-06-249Z_01a04324-47a9-7f32-9e76-2d25b1b903d4.jsonl:
+`curl -sS 'https://0509.io/pricing' 2>&1 | python3 -c "
+import sys, re
+html = sys.stdin.read()
+...
+if json_data:
+    print('Scout JSON:', json_data[0][:1000])
+"` with a same-turn sibling `curl ... | grep -oP '...scout_monthly_v1...'
+| head -1 | python3 -c "import sys; line = sys.stdin.read(); ..."` that
+succeeded. The snippet carries
+`/bin/bash: -c: line 12: unexpected EOF while looking for matching `''
++ `Command exited with code 2`. The python-script line that trips
+bash is the `print('Scout JSON:', ...)` line — the inner `'` in the
+Python single-quoted string is what the harness's bash quoting
+treats as the open of a shell single-quote.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
