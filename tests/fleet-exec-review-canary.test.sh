@@ -149,6 +149,53 @@ fi
 grep -q 'REJECT:' "$scratch/body.err" || fail "4: REJECT missing from stderr"
 ok "4: --body with no receipt rejected (the skip drill)"
 
+# --- 4a. --body with `## Verification` (no colon) is rejected ---------------
+# Locks the canary's strict colon requirement (fleet-ops#731): a markdown
+# heading without the trailing colon must not be accepted even when the
+# body has a fenced block, so PR #630's pre-fix shape stays a skip.
+printf '%s\n' 'Heartbeat canary.
+
+## Verification
+- exit 0
+
+```
+[2026-08-26T22:49:01Z] [canary] LOUD rc=0
+```
+' >"$scratch/body.md"
+if run_body "$scratch/body.md"; then
+  fail "4a: `## Verification` (no colon) must reject even with a fenced block"
+fi
+ok "4a: --body with `## Verification` (no colon) rejected (the #631 shape)"
+
+# --- 4b. --body with `## Verification:` (colon) + fenced block accepted ----
+# PR #630's post-fix shape (fleet-ops#731): colon + fenced block + exit N
+# is the loudest receipt. Locks the remediation so the canary cannot
+# silently drop the colon form in a future regex edit.
+printf '%s\n' 'Heartbeat canary.
+
+## Verification:
+- exit 0
+
+```
+[2026-08-26T22:49:01Z] [canary] LOUD rc=0
+```
+' >"$scratch/body.md"
+run_body "$scratch/body.md" || fail "4b: `## Verification:` + fenced block must accept ($(cat "$scratch/body.err"))"
+ok "4b: --body with `## Verification:` + fenced block accepted (the #630 post-fix shape)"
+
+# --- 4c. --body with run-proof: + `## Verification` (no colon) accepted ----
+# The run-proof: line is a louder, regex-orthogonal signal. Even when the
+# heading lacks a colon, a run-proof: line carries the receipt.
+printf '%s\n' 'Heartbeat canary.
+
+run-proof: journal fleet-prepaid-util-canary exit 0
+
+## Verification
+- exit 0
+' >"$scratch/body.md"
+run_body "$scratch/body.md" || fail "4c: run-proof: must accept even without colon heading"
+ok "4c: --body with run-proof: (no colon heading) accepted (the louder signal)"
+
 run_scan() {
   local fixture="$1"
   set +e
@@ -267,6 +314,61 @@ grep -q 'deduped' "$scratch/scan.err" || fail "9b: second run did not dedupe ($(
 grep -rl "signal: exec-review-receipt/" "$gh_store" | wc -l | grep -q "^1$" \
   || fail "9: signal key filed more than once"
 ok "9: auto-file dedupes the signal key"
+
+# --- 9a. PR #630 pre-fix shape: `## Verification` (no colon) -> skip --------
+# Regression lock (fleet-ops#731). The canary must flag PR #630's pre-fix
+# shape (heading without colon, even with a fenced block) so the same
+# markdown typo cannot silently re-pass after the regex is touched.
+cat >"$scratch/prs-630-pre.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/fleet-ops",
+    "number": 630,
+    "title": "feat(enforcement): prepaid utilization canary for sr-prepaid-max-util",
+    "body": "Heartbeat canary.\n\n## Verification\n- exit 0\n\n```\n[2026-08-26T22:49:01Z] [canary] LOUD rc=0\n```\n",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/fleet-ops/pull/630",
+    "headRefName": "claim/issue-531",
+    "author": {"login": "app/nishfleet-worker", "is_bot": true}
+  }
+]
+JSON
+rm -f "$gh_store"/*.body
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-630-pre.json" \
+  || fail "9a1: pre-fix scan must exit 0"
+grep -q 'EXEC-REVIEW-SKIP' "$scratch/scan.err" \
+  || fail "9a1: pre-fix PR #630 must be SKIP-flagged ($(cat "$scratch/scan.err"))"
+grep -q 'Nishfleet/fleet-ops#630' "$scratch/scan.err" \
+  || fail "9a1: pre-fix PR #630 must be named in the finding"
+ok "9a1: PR #630 pre-fix shape (`## Verification`, no colon) is SKIP-flagged"
+
+# --- 9a. PR #630 post-fix shape: `## Verification:` + run-proof: -> OK ------
+# Regression lock (fleet-ops#731). Once the worker adds the colon and a
+# run-proof: line, the canary must classify the same PR as a receipt.
+cat >"$scratch/prs-630-post.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/fleet-ops",
+    "number": 630,
+    "title": "feat(enforcement): prepaid utilization canary for sr-prepaid-max-util",
+    "body": "Heartbeat canary.\n\nrun-proof: journal fleet-prepaid-util-canary exit 0\n\n## Verification:\n- exit 0\n\n```\n[2026-08-26T22:49:01Z] [canary] LOUD rc=0\n```\n",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/fleet-ops/pull/630",
+    "headRefName": "claim/issue-531",
+    "author": {"login": "app/nishfleet-worker", "is_bot": true}
+  }
+]
+JSON
+rm -f "$gh_store"/*.body
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-630-post.json" \
+  || fail "9a2: post-fix scan must exit 0"
+grep -q 'EXEC-REVIEW-OK' "$scratch/scan.err" \
+  || fail "9a2: post-fix PR #630 must be receipt-OK ($(cat "$scratch/scan.err"))"
+[[ -z "$(ls -A "$gh_store" 2>/dev/null | grep issue || true)" ]] \
+  || fail "9a2: must not file on post-fix PR #630"
+ok "9a2: PR #630 post-fix shape (`## Verification:` + run-proof:) is receipt-OK"
 
 # --- 10. broken watch fails loud -------------------------------------------
 set +e
