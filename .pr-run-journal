@@ -1,0 +1,97 @@
+# Real end-to-end invocations of bin/fleet-precedence-band-canary
+# Captured during this PR's verification. Each block: env, command, exit code, journal line.
+
+## 1. Surge phase, non-leverage fleet-ops claim — DRIFT (rc=1)
+
+env: FLEET_PRECEDENCE_BAND_POLICY=/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1223/config/precedence-band.json
+     FLEET_PRECEDENCE_UNITS_FILE=/tmp/units-test3.txt
+     FLEET_HEARTBEAT_TRIAGE=/tmp/triage.md
+     FLEET_OPS_REPO=/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1223
+
+units file:
+  pi-issue@0509-1299.service
+  pi-issue@0509-1302.service
+  pi-issue@0509-9999.service
+  pi-issue@fleet-ops-1223.service
+  pi-issue@fleet-ops-9999.service
+
+command: bin/fleet-precedence-band-canary
+
+stderr:
+  [2026-08-27T19:30:53Z] [fleet-precedence-band-canary] LOUD [PRECEDENCE-BAND-REJECT] surge-phase non-leverage fleet-ops claim: pi-issue@fleet-ops-9999 (leverage set: [1010, 1133, 1134, 1135, 1146, 1149, 1155, 1157, 1163, 1167, 1204, 1223])
+
+exit: 1
+
+
+## 2. Band phase, machinery share at 30% cap — CLEAN (rc=0)
+
+env: same as #1
+     PRECEDENCE_BAND_NOW=2026-08-28T03:30:00Z
+
+units file:
+  pi-issue@0509-1299.service
+  pi-issue@0509-1302.service
+  pi-issue@0509-9999.service
+  pi-issue@0509-8888.service
+  pi-issue@0509-7777.service
+  pi-issue@0509-6666.service
+  pi-issue@0509-5555.service
+  pi-issue@fleet-ops-1223.service
+  pi-issue@fleet-ops-101.service
+  pi-issue@fleet-ops-102.service
+
+command: bin/fleet-precedence-band-canary
+
+stderr:
+  [2026-08-27T19:31:09Z] [fleet-precedence-band-canary] LOUD [PRECEDENCE-BAND-OK] phase=band machinery_max_pct=30 product_min_pct=70 cutoff_utc=2026-08-28T02:30:00Z machinery=3 product=7 total=10 share=30%
+
+exit: 0
+
+
+## 3. Ratchet — loosening without wfr_waiver_on — DRIFT (rc=1)
+
+env: FLEET_PRECEDENCE_BAND_POLICY=/tmp/policy.json
+     FLEET_PRECEDENCE_BAND_PRIOR=/tmp/prior.json
+     FLEET_PRECEDENCE_UNITS_FILE=/dev/null
+     FLEET_HEARTBEAT_TRIAGE=/tmp/triage.md
+
+/tmp/policy.json:
+  {"cutoff_utc":"2026-08-28T02:30:00Z","machinery_max_pct":30,"product_min_pct":70,
+   "machinery_repo":"fleet-ops","owner":"weekly-fleet-review",
+   "product_front":["0509#1299","0509#1302","fleet-ops#1198"],
+   "surge_leverage_issues":[1204,1134,1010,1149,1155,1157,1133,1167,1163,1146,1135,1223]}
+
+/tmp/prior.json:
+  {"machinery_max_pct":20,"product_min_pct":80,"wfr_waiver_on":"2026-08-26T18:00:00Z"}
+
+command: bin/fleet-precedence-band-canary
+
+stderr:
+  [2026-08-27T19:24:09Z] [fleet-precedence-band-canary] LOUD [PRECEDENCE-BAND-REJECT] dial loosened (machinery 20->30, product 80->70) but wfr_waiver_on is missing
+
+exit: 1
+
+
+## 4. Production default — surge phase, 0 units — CLEAN (rc=0)
+
+env: FLEET_PRECEDENCE_BAND_POLICY=/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1223/config/precedence-band.json
+     FLEET_PRECEDENCE_UNITS_FILE=/dev/null
+     FLEET_HEARTBEAT_TRIAGE=/tmp/triage.md
+     FLEET_OPS_REPO=/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1223
+
+command: bin/fleet-precedence-band-canary
+
+stderr:
+  [2026-08-27T19:29:59Z] [fleet-precedence-band-canary] LOUD [PRECEDENCE-BAND-OK] phase=surge machinery_max_pct=30 product_min_pct=70 cutoff_utc=2026-08-28T02:30:00Z machinery=0 product=0 total=0 share=0%
+
+exit: 0
+
+
+## 5. Test drill — all 15 scenarios green (rc=0)
+
+command: bash tests/fleet-precedence-band.test.sh
+
+scenarios 1-15 all OK; final line:
+  precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix
+
+exit: 0
