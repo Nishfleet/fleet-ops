@@ -417,6 +417,67 @@ grep -q 'fleet-ops#587' "$tier1" \
     || fail "tier1 must name fleet-ops#587 (standing path is the heartbeat tick, not the researcher-run nudge)"
 ok "scenario10: tier1 block 4b invokes fleet-heartbeat-auditor and fails the tick on helper FATAL (not-called + swallowed-rc class locked)"
 
+# ============================================================================
+# Scenario 11: per-tick spawn cap (fleet-ops#146 storm-tolerant panel)
+# ============================================================================
+# The 2026-08-27 incident: an intake burst enqueued 14 scout-candidate
+# issues; the heartbeat tick fired 14 * 3 = 42 pi-audit@ units --no-block;
+# load climbed to 49 on 8 cores and starved the intake loop's agent-
+# ready lane. The fix caps the number of NEW starts per tick (default
+# 4 = half of 8 cores). A 6-issue burst with no votes on disk and no
+# active units will START 4*3 = 12 units in this tick; the remaining
+# 4*3 = 12 are deferred ("deferred (tick cap N/M)" log line) and the
+# next tick walks them.
+reset_state
+printf '101\n102\n103\n104\n105\n106\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+
+# Default cap is 4 starts per tick. With 6 candidates * 3 roles = 18
+# units to start, the cap is hit after the first 4 (3 for #101 plus
+# 1 for #102/devin). 14 are deferred.
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario11: must exit 0, got $env_rc ($env_out)"
+
+n_starts=$(grep -c '^start ' "$calls" || true)
+n_deferred=$(printf '%s\n' "$env_out" | grep -c 'deferred (tick cap' || true)
+[[ "$n_starts" -eq 4 ]] \
+    || fail "scenario11: expected 4 starts (cap=4), got $n_starts (calls=$(cat "$calls"))"
+[[ "$n_deferred" -eq 14 ]] \
+    || fail "scenario11: expected 14 deferred units (18 - 4), got $n_deferred (env_out=$env_out)"
+ok "scenario11: per-tick spawn cap = 4 (4 units started, 14 deferred)"
+
+# ============================================================================
+# Scenario 12: failed-unit recovery does NOT count against the per-tick cap
+# ============================================================================
+# The carve-out: a failed unit (StartLimitBurst exhausted) gets reset-
+# failed + start. Resetting an already-wedged unit is a single new
+# process, not a fan-out. Without the carve-out, a wedged candidate
+# could be starved for an hour while the cap absorbs starts for
+# fresher units.
+reset_state
+printf '201\n202\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+printf 'pi-audit@demo--201--devin.service\n' >"$FAILED_UNITS"
+printf 'pi-audit@demo--201--free-glm-5-3.service\n' >>"$FAILED_UNITS"
+# Lower the cap so the missing units (6 of them) cannot all start.
+export AUDIT_TICK_MAX_START=1
+run_auditor
+unset AUDIT_TICK_MAX_START
+
+# devin + free-glm-5-3 for 201 are RECOVERED (not counted against cap).
+# 201 straitly + 202 devin + 202 free-glm-5-3 + 202 straitly are
+# MISSING and subject to the cap of 1: only one of those 4 starts.
+# Total: 2 (recovered) + 1 (capped) = 3 starts.
+n_starts=$(grep -c '^start ' "$calls" || true)
+[[ "$n_starts" -eq 3 ]] \
+    || fail "scenario12: expected 3 starts (2 recovered + 1 cap), got $n_starts (calls=$(cat "$calls"))"
+grep -qx 'start pi-audit@demo--201--devin.service' "$calls" \
+    || fail "scenario12: 201 devin should be reset-failed + start (no cap hit)"
+grep -qx 'start pi-audit@demo--201--free-glm-5-3.service' "$calls" \
+    || fail "scenario12: 201 free-glm-5-3 should be reset-failed + start (no cap hit)"
+ok "scenario12: failed-unit recovery bypasses the per-tick cap (no wedge starvation)"
+
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \
     || fail "fleet-heartbeat-low-water-mark.test.sh must host this file (CI cannot gain a new workflow line)"

@@ -140,6 +140,13 @@ bin/pi-audit-run /home/nish/.local/bin/pi-audit-run
 bin/pi-audit-tally /home/nish/.local/bin/pi-audit-tally
 prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 systemd/pi-audit@.service /home/nish/.config/systemd/user/pi-audit@.service
+# fleet-ops#146 (storm-tolerant panel): concurrency cap. Slice is the
+# aggregate CPU/Memory ceiling for the audit cohort (300% CPU / 4G
+# RAM on a 8-vCPU host); the drop-in routes every pi-audit@* instance
+# into that slice. Per-tick spawn cap lives in bin/fleet-heartbeat-
+# auditor; the slice is the second guard, not a replacement.
+systemd/pi-audit.slice /home/nish/.config/systemd/user/pi-audit.slice
+systemd/pi-audit@.service.d/10-concurrency.conf /home/nish/.config/systemd/user/pi-audit@.service.d/10-concurrency.conf
 bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair
 # fleet-ops#349: close stale auto-revert PRs before the queue pass can
 # auto-merge them. Heartbeat queues revert/ heads; a revert opened when
