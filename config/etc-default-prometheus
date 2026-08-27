@@ -1,0 +1,22 @@
+# /etc/default/prometheus — systemd EnvironmentFile for the prometheus.service
+# unit (Debian package owns this path; we re-install it from the fleet-ops
+# MANIFEST so the retention value is version-controlled and survives apt
+# upgrades).
+#
+# fleet-ops#1235: extend the live retention to 40d so the fleet-ops#1151
+# baseline-delta job can pull a trailing 4-week window (this week + 4 prior
+# weeks ≈ 35d of samples). 40d is 35d + 5d of safety margin so a one-day
+# hiccup in the deploy loop does not push the baseline window off the end.
+#
+# Disk headroom: as of 2026-08-27 the TSDB is ~61M for 15d, so 40d projects
+# to <200M. The / partition has >200G free. The headroom guard lives in
+# bin/fleet-ops-deploy: before it restarts prometheus to apply a changed
+# retention it checks free space on the TSDB filesystem and fails loud
+# below the PROM_RETENTION_HEADROOM_GB threshold (default 2G).
+#
+# Restart required: --storage.tsdb.retention.time is a start-time flag and
+# is not picked up on HUP. bin/fleet-ops-deploy detects when this file
+# changed and runs `systemctl restart prometheus` instead of a reload;
+# unchanged deploys still HUP for rule_files / config reloads. AM and
+# node-exporter are independent units and keep scraping across the restart.
+ARGS="--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=40d --web.listen-address=127.0.0.1:9090"
