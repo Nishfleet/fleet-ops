@@ -12,6 +12,9 @@
 #   6. Timeout unflagged -> exit 1.
 #   6d. Bash [N/M] progress + timeout, flag only in toolCall comment (live #686) -> exit 1.
 #   6e. Bash [N/M] progress + timeout, real user-facing flag -> exit 0.
+#   6f. &&-chained probe where `cat X 2>/dev/null` short-circuits the chain
+#       to exit 1 with no output (live #685) -> exit 1.
+#   6g. Same &&-chain shape with a real user-facing flag in the next turn -> exit 0.
 #   7. Auto-file with signal key, deduped on a second run.
 #   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
 #   7c. Same snippet plus a later flag -> exit 0.
@@ -371,6 +374,54 @@ grep -rl "signal: failed-command-flagged/" "$scratch/gh-issues" | wc -l | grep -
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/swallowed.jsonl"
+
+# --- 6f. &&-chained probe where `cat X 2>/dev/null` short-circuits the chain ---
+# Live #685 (2026-08-26T16:08:44Z, slug 01a03ed4-...): the worker
+# (working on issue-fleet-ops-378) ran
+#   cd <wt> && cat .gitignore 2>/dev/null && echo "---" && find . -maxdepth 3 -name ".github" -type d && echo "---" && ls -la .github/workflows/ | head -20
+# `.gitignore` did not exist in that worktree, so `cat .gitignore 2>/dev/null`
+# returned exit 1 with stderr discarded -> the `&&` chain short-circuited
+# and the `find` / `ls` stages never ran. The shell reported
+#   (no output)
+#   Command exited with code 1
+# The next assistant turn was another toolCall (no user-facing text), so the
+# failure was walked past. Lock the shape so a future detector refactor that
+# loosens the `&&`-chain short-circuit class cannot regress it. The class is
+# real because (a) the worker intended to inspect the .github/workflows
+# directory and never did, and (b) the silence in the snippet is the failure
+# signal — there is no other text for the worker to see.
+write_session "chain-cat-2devnull" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_chain","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-378 && cat .gitignore 2>/dev/null && echo \"---\" && find . -maxdepth 3 -name \".github\" -type d && echo \"---\" && ls -la .github/workflows/ | head -20"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_chain","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_chain2","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-378 && ls -la .github/workflows/ && echo \"---\" && cat .github/workflows/auto-merge-arm.yml | head -50"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "&&-chain cat 2>/dev/null short-circuit with no flag should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" \
+  || fail "&&-chain cat 2>/dev/null short-circuit must be flagged as swallowed"
+grep -q "(no output)" "$scratch/err.log" \
+  || fail "the (no output) snippet must be in the loud line (live #685 shape)"
+ok "&&-chained cat 2>/dev/null short-circuit with no user-facing flag is swallowed (fleet-ops#685 shape locked)"
+rm -f "$sessions/chain-cat-2devnull.jsonl"
+
+# --- 6g. same &&-chain shape with a real user-facing flag -> clean ---------
+# Same shape as 6f, but the next assistant turn has a real user-facing
+# text flag ("the cat 2>/dev/null call failed with 1, the rest of the chain
+# did not run, switching to direct ls"). The detector must not flag this.
+# This is the proof the standing rule still works on the &&-chain silent
+# short-circuit class: a worker that names the gap in user-facing text
+# passes, a worker that only moves on (live #685) is filed.
+write_session "chain-cat-2devnull-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_chain3","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-378 && cat .gitignore 2>/dev/null && echo \"---\" && find . -maxdepth 3 -name \".github\" -type d && echo \"---\" && ls -la .github/workflows/ | head -20"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_chain3","toolName":"bash","isError":true,"content":[{"type":"text","text":"(no output)\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the cat .gitignore 2>/dev/null call failed with 1 — the &&-chain short-circuited and the find/ls stages never ran, switching to a direct ls."},{"type":"toolCall","id":"call_chain4","name":"bash","arguments":{"command":"ls -la .github/workflows/"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "&&-chain cat 2>/dev/null with explicit flag should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "&&-chained cat 2>/dev/null short-circuit with explicit user-facing flag is clean"
+rm -f "$sessions/chain-cat-2devnull-flagged.jsonl"
 
 # --- 7b. origin #650: cp /tmp/install.sh cannot-stat walked past -------------
 write_session "install-cp" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/agent-cron-seat.6nGbWr/install.sh"}}]}}
