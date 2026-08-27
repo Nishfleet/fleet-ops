@@ -771,6 +771,35 @@
       "mechanism": "fleet-geo-aeo-canary enforces GEO plan: measurement issues [1236], owned-content issues [1237, 1238], brand gate preview-then-autonomous, parked tactics reddit-community/digital-pr; run by heartbeat-tier1 block 34",
       "proof": "bin/fleet-geo-aeo-canary; lib/geo-aeo.py; config/geo-aeo-policy.json; tests/geo-aeo-canary.test.sh",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-free-lanes-auto-retry-after-cooldowns",
+      "source": "decisions-ledger.md: 2026-08-27 | Free lanes auto-retry after cooldowns (Nish: \"since they're free, we can keep trying\")",
+      "mechanism": "Walled free seats are never permanently excluded: class-based comeback clocks (429->15min, daily->hourly near reset, monthly->daily, free-402->daily, auth-dead->weekly+issue), polite 1-token probes (max 1/15min/seat), automatic re-entry to the ladder on pass.",
+      "proof": "lib/seat-lib.sh walled_comeback (rate_limit_s/daily_quota_s/monthly_quota_s/free_balance_exhausted_s/credentials_bad_s); config/seat-caps.json; fleet-ops#1167",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-opus-duty-officer-heartbeat-hourly",
+      "source": "decisions-ledger.md: 2026-08-27 | Opus duty-officer heartbeat: HOURLY (Nish, via Telegram)",
+      "mechanism": "fleet-heartbeat.timer OnCalendar=*:17/30 runs the orchestrator every 30min (>= hourly cadence) through the vacation window, token-lean per run, Pi-lane fallback on any Claude wall; freshness gate skips redundant sub-20m ticks.",
+      "proof": "systemd/fleet-heartbeat.timer; bin/fleet-heartbeat freshness gate; bin/fleet-heartbeat-tier1",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-heartbeat-made-exhaustive",
+      "source": "decisions-ledger.md: 2026-08-27 | Heartbeat made exhaustive (Nish)",
+      "mechanism": "fleet-heartbeat-tier1 runs ~48 canaries/checks per tick spanning the whole estate (deploys, red-PR, escalations+completion, decisions-ledger, failed-command, unjustified, free roster, credentials expiry, CF token, volume lane order, GEO/AEO, quality ratchet, seat live-validate, repo visibility, straitly, cline/glm, work-supply, tailscale, verify-harness, ...).",
+      "proof": "bin/fleet-heartbeat-tier1 (48 checks); bin/fleet-heartbeat",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-relic-pager-masked-emergency",
+      "source": "decisions-ledger.md: 2026-08-28 | Relic pager masked (emergency, 01:05 IST)",
+      "mechanism": "fleet-heartbeat-failed-notify.service must not text-storm Nish during a failure cascade; proper 3-consecutive-failures demotion (rate-limited page) is the durable fix, with the escalation matrix + Prometheus last-resort as failure coverage. Current naive every-failure page is not durably masked (deploy re-links it from MANIFEST).",
+      "proof": "systemd/fleet-heartbeat-failed-notify.service; MANIFEST:303; fleet-ops#1399 (durable demotion)",
+      "status": "queued(#1399)",
+      "queued_since": "2026-08-28"
     }
   ]
 }
