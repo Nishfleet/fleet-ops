@@ -812,4 +812,9 @@ ok "rule-enforcement: verify-harness canary drill"
 bash "$here/paid-flash-canary.test.sh" || fail "paid-flash-canary drill failed"
 ok "rule-enforcement: paid-flash canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, and paid-flash drills"
+# fleet-ops#1176: token economy rebalance seat-cap drill. Nested host so
+# the worker token does not need to edit .github/workflows/**.
+bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
+ok "rule-enforcement: token economy canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, and token-economy drills"
