@@ -1,0 +1,30 @@
+[Unit]
+Description=Regenerate standing-rules regions in CLAUDE.md and AGENTS.md
+Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/bin/render-standing-rules.py
+# Binds every agent on every machine (vault global-standing-rules.md,
+# "Everything runs through Pi, directly. No launchers."). This unit
+# is the only mechanism allowed to rewrite the marked regions of
+# ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md; nothing else may touch
+# them, so a hand-edit is provably the only way to introduce drift.
+After=default.target
+
+[Service]
+Type=oneshot
+# The generator's --render mode is the workhorse. A canonical change
+# fires PathChanged= -> this unit -> --render rewrites the targets
+# from the canonical file.
+#
+# --check is the workhorse for CI; this unit does not gate on it
+# because a half-migrated file should still be updated when the
+# canonical changes, and the upstream CI check is the authority for
+# blocking a divergent commit.
+#
+# Stdout/stderr go to the journal under the unit name so a failed
+# render is searchable.
+ExecStart=/usr/bin/python3 /home/nish/.local/bin/render-standing-rules.py --render
+# Defensive: never rewrite a file that lacks both markers. The
+# generator errors before writing, so a half-migrated target stays
+# half-migrated and we see the error in the journal.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
