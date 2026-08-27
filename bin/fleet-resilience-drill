@@ -15,7 +15,9 @@
 #   4. state_restore            — fleet-restore-drill timer armed + last Result
 #   5. compute_breakglass       — CI workflows run on GitHub-hosted runners
 #   6. keystone_deadman         — HC_URL_* for intake/scout/reconcile/restore
-#                                 (unset = SKIP + LOUD, not a silent pass)
+#                                 (unset = SKIP + LOUD, not a silent pass;
+#                                 a URL shared with another keystone or the
+#                                 heartbeat dead-man is FAIL + LOUD)
 #
 # Result JSON: $AGENT_STATE/fleet-resilience-drill/last-run.json
 # LOUD lines go to the heartbeat triage file. Any FAIL exits 1 (the global
@@ -26,7 +28,8 @@
 #
 # Env (tests):
 #   SYSTEMCTL SYSTEMD_RUN SS CURL FLEET_OPS_REPO AGENT_STATE
-#   FLEET_HEARTBEAT_TRIAGE KEYSTONE_HC_ENV FLEET_RESILIENCE_DRILL_OFFLINE
+#   FLEET_HEARTBEAT_TRIAGE KEYSTONE_HC_ENV HEARTBEAT_HC_ENV
+#   FLEET_RESILIENCE_DRILL_OFFLINE
 #
 # Proven-thing check (standing rule, 2026-08-23):
 #   0. Read systemd Restart=/RestartSec=/StartLimitIntervalSec, healthchecks.io
@@ -58,6 +61,7 @@ TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
 STATE_DIR="$AGENT_STATE/fleet-resilience-drill"
 RESULTS="$STATE_DIR/last-run.json"
 KEYSTONE_HC_ENV="${KEYSTONE_HC_ENV:-$HOME/.config/fleet-ops/keystone-hc.env}"
+HEARTBEAT_HC_ENV="${HEARTBEAT_HC_ENV:-$HOME/.config/fleet-heartbeat/hc.env}"
 OFFLINE="${FLEET_RESILIENCE_DRILL_OFFLINE:-0}"
 STUB_UNIT="resilience-drill-stub.service"
 
@@ -317,14 +321,35 @@ plane_compute() {
 plane_keystone_hc() {
   local name="keystone_deadman"
   local missing=() key
+  local -a urls=()
+  local url token hb hb_token
+  declare -A seen=()
+
+  hc_env_value() {
+    local file="$1" var="$2" line val=""
+    [[ -f "$file" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        "${var}="*) val="${line#*=}" ;;
+      esac
+    done <"$file"
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%/}"
+    [[ -n "$val" ]] || return 1
+    printf '%s' "$val"
+  }
+
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
     loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"
     return 0
   fi
   for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE; do
-    if ! grep -q "^${key}=.\+" "$KEYSTONE_HC_ENV"; then
+    if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")
+    else
+      urls+=("$url")
     fi
   done
   if (( ${#missing[@]} > 0 )); then
@@ -332,7 +357,27 @@ plane_keystone_hc() {
     record "$name" "skip" "unset: ${missing[*]}"
     return 0
   fi
-  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE all set"
+
+  for url in "${urls[@]}"; do
+    token="${url##*/}"
+    if [[ -n "${seen[$token]+x}" ]]; then
+      loud "KEYSTONE-HC-SHARED" "two keystone HC_URL_* values are the same check. Sharing a URL would keep the other keystone green while it is dead."
+      record "$name" "fail" "duplicate keystone URL"
+      return 1
+    fi
+    seen[$token]=1
+  done
+
+  if hb="$(hc_env_value "$HEARTBEAT_HC_ENV" "HC_URL")"; then
+    hb_token="${hb##*/}"
+    if [[ -n "${seen[$hb_token]+x}" ]]; then
+      loud "KEYSTONE-HC-SHARED" "a keystone HC_URL_* reuses the heartbeat dead-man. Sharing it would keep that watch green while the heartbeat is dead."
+      record "$name" "fail" "keystone URL equals heartbeat"
+      return 1
+    fi
+  fi
+
+  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE all set and distinct from heartbeat"
   return 0
 }
 
