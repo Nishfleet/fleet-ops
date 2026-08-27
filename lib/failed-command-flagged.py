@@ -160,6 +160,15 @@ filed by the same GitHub-search-index-delay that produced
 leftover-duplicate observe-to-close drain for the 01a041a5 pile
 (#1003, #1019) is locked under
 tests/fleet-failed-command-observe-duplicate-1003.test.sh.
+fleet-ops#1142 is the same `gh --comments --json author,body,createdAt |
+python3 -c ... d['comments']` KeyError as #1003, on a DIFFERENT
+session (01a04326, the worker claiming #1003). The next turn was a
+thinking block ("the same bug") plus a successful `gh api graphql`
+comments query — not a user-facing flag. A future detector refactor
+must not treat GraphQL success as discharging the KeyError, and must
+not treat thinking "the same bug" as naming the failure. The dedicated
+regression test locks the live fleet-ops#1142 shape under
+tests/fleet-failed-command-gh-json-graphql-recovery.test.sh.
 A `gh issue view <N> -R ... --body` command is not valid: `gh issue view`
 has no `--body` flag, so it exits 1 with `unknown flag: --body` and the
 full usage help (fleet-ops#1055, session

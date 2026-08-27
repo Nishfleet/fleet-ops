@@ -2144,6 +2144,12 @@ bash "$here/fleet-failed-command-observe-duplicate-open.test.sh" || fail "fleet-
 # command is not grep/rg/diff/ls/which so it is not a no-match probe.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed-command-python-traceback tests failed"
+# fleet-ops#1142: same gh --json + python3 KeyError: 'comments' pipe as
+# #1003, on session 01a04326, recovered via a successful `gh api graphql`
+# comments query with only a thinking-block note ("the same bug").
+# GraphQL success does not name the failed command. Same CI constraint
+# (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-gh-json-graphql-recovery.test.sh" || fail "fleet-failed-command-gh-json-graphql-recovery tests failed"
 # fleet-ops#937: a `python3 -c "from <hyphenated_name> import ..."`
 # probe against a sibling file whose actual filename has hyphens
 # (e.g. `failed-command-flagged.py` vs `failed_command_flagged`) fails
