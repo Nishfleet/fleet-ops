@@ -36,6 +36,16 @@
 # (stopReason=error, HTTP 400 Tool name must be nonempty). Detector
 # snippet: `Tool  not found`.
 #
+# Sibling session (fleet-ops#1252, same class):
+#   2026-08-27T16-08-10-764Z_01a043fa-950c-7868-a55d-d650753255c2.jsonl
+# A worker on fleet-ops#1204 ran several SUCCESSFUL bash calls, THEN
+# emitted the same empty-name toolCall (id="" name="" arguments="command"),
+# got `Tool  not found` (isError=true), and ended on an empty assistant
+# turn. The mid-session placement (after green calls) is the only
+# difference from #1242; the detector must still flag it. Scenario 10
+# pins that a future refactor which treats a mid-session empty-name
+# blip as a "transient harness blip" exempt from flagging is wrong.
+#
 # Distinct from:
 #   - #937: python3 `ModuleNotFoundError: No module named '...'` +
 #     `Command exited with code 1` — a bash probe, not an empty
@@ -59,6 +69,9 @@
 #   7. worker.md cites fleet-ops#1242 and the live empty-name wording.
 #   8. lib/failed-command-flagged.py docstring cites fleet-ops#1242.
 #   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#  10. live #1252 sibling: empty-name toolCall AFTER successful bash
+#      calls (mid-session blip) + empty next turn -> finding. A
+#      mid-session placement must not exempt the empty-name class.
 
 set -euo pipefail
 
@@ -209,5 +222,31 @@ grep -Fq 'bash "$here/fleet-failed-command-empty-tool-name.test.sh"' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
+
+# --- 10. live #1252 sibling: mid-session empty-name blip after green calls -
+# Replay slug 01a043fa: the worker ran several SUCCESSFUL bash calls, THEN
+# emitted the empty-name toolCall mid-session, got `Tool  not found`, and
+# ended on an empty assistant turn. The mid-session placement (after green
+# calls) must NOT exempt the empty-name class — a future refactor that
+# treats a transient mid-session empty-name blip as "the command never
+# ran, harness-block, not a real failure" would silently close #1252.
+write_session "empty-tool-name-midsession" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ok1","name":"bash","arguments":{"command":"ls -la /home/nish/workspaces/"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ok1","toolName":"bash","isError":false,"content":[{"type":"text","text":"total 4\ndrwxr-xr-x 2 nish nish 4096 Aug 27 21:25 agent-state\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ok2","name":"bash","arguments":{"command":"git log --oneline -3"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ok2","toolName":"bash","isError":false,"content":[{"type":"text","text":"c4f3d6c P14: GitHub App fleet identity\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"","name":"","arguments":"command"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"","toolName":"","content":[{"type":"text","text":"Tool  not found"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1252 mid-session empty-name Tool  not found should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Tool  not found' <<<"$snippet" \
+  || fail "mid-session fixture snippet must be 'Tool  not found' (got $snippet)"
+ok "live #1252: mid-session empty-name blip after green calls is still flagged"
+rm -f "$sessions/empty-tool-name-midsession.jsonl"
 
 echo "OK: fleet-failed-command-empty-tool-name: live #1242 empty-name Tool  not found drills"
