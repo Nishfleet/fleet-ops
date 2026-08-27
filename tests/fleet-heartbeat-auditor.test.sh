@@ -429,4 +429,9 @@ grep -Fq 'fleet-heartbeat-auditor.test.sh must be listed in ci.yml or hosted' \
     || fail "p14-test-listing-gate.test.sh must lock this file as P14-reachable (fleet-ops#619)"
 ok "listing gate refuses to orphan this file (fleet-ops#619)"
 
+# fleet-ops#776: the pi-audit-run binary is the source of the senior-auditor
+# unit failures; it has its own regression test and must stay in P14.
+bash "$here/pi-audit-run.test.sh" || fail "pi-audit-run regression test failed"
+ok "pi-audit-run regression test hosted (fleet-ops#776)"
+
 ok "fleet-heartbeat-auditor: starts missing pi-audit units, recovers failed ones, tallies 2-of-3, fails closed, raises stale-pending alarm"

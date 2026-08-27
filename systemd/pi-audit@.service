@@ -13,9 +13,10 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PI_UNIT_INSTANCE=%i
 WorkingDirectory=/home/nish
-# Retry once if the auditor output is malformed (missing PASS/FAIL, no
-# duplicates/north-star mention). After the second failure the unit enters
-# failed and the inherited OnFailure ladder takes over.
+# Retry once if the auditor output is malformed (missing PASS/FAIL or an
+# empty reason). Keyword gaps are padded by the runner, not treated as a
+# unit failure. After the second failure the unit enters failed and the
+# inherited OnFailure ladder takes over.
 Restart=on-failure
 RestartSec=60
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-audit-run %i'
