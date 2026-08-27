@@ -12,6 +12,8 @@
 #   6. Timeout unflagged -> exit 1.
 #   6d. Bash [N/M] progress + timeout, flag only in toolCall comment (live #686) -> exit 1.
 #   6e. Bash [N/M] progress + timeout, real user-facing flag -> exit 0.
+#   6f. Live #821: read of source with 'Command timed out' regex text -> exit 0.
+#   6g. Live #821: bash grep with 'Command timed out' in doc body -> exit 0.
 #   7. Auto-file with signal key, deduped on a second run.
 #   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
 #   7c. Same snippet plus a later flag -> exit 0.
@@ -373,6 +375,39 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "bash progress + timeout with explicit flag should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "bash [N/M] progress + timeout with explicit user-facing flag is clean"
 rm -f "$sessions/bash-progress-flagged.jsonl"
+
+# --- 6f. live #821: read of source code with 'Command timed out' as regex text -
+# The session was reading lib/failed-command-flagged.py to debug it. The
+# file's own TIMEOUT_RE regex definition contains the literal string
+# "Command timed out" — but the read succeeded (isError=false, no exit
+# code). The detector must not flag this as a swallowed timeout; the text
+# is content, not a timeout error.
+write_session "read-timeout-source" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_r","name":"read","arguments":{"path":"/home/nish/workspaces/agent-worktrees/issue-fleet-ops-664/lib/failed-command-flagged.py","offset":0,"limit":400}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_r","toolName":"read","isError":false,"content":[{"type":"text","text":"#!/usr/bin/env python3\n\"\"\"Session-close lint for 'a failed command is ALWAYS flagged' (fleet-ops#535).\n\nEXIT_RE = re.compile(r\"Command exited with code (\\d+)\")\nTIMEOUT_RE = re.compile(r\"Command timed out\", re.I)\n# Pipeline stage that is a search/diff whose exit 1 means 'no match'.\nBENIGN_STAGE_RE = re.compile(\n    r\"(?:^|[;&|\\n]|&&|\\|\\|)\\s*(?:sudo\\s+)?\"\n    r\"(?:grep|egrep|fgrep|rg|ripgrep|diff|git\\s+grep|git\\s+diff|which)\\b\",\n    re.I,\n)\n# Real errors that must not hide behind a grep in the same script.\nREAL_ERR_RE = re.compile(\n    r\"(Not Found|Permission denied|HTTP\\s*[45]\\d\\d|error TS\\d+|API rate limit)\",\n    re.I,\n)\n# Unquoted assistant report. Tight on the standing-rule verbs.\nFLAG_RE = re.compile(\n    r\"(failed|fails|failing|failure|\\berror\\b|non-zero|exited with|\"\n    r\"timed out|timeout|blocker|not found|\\b404\\b|\\b50[0-9]\\b|\"\n    r\"unexpected failing command|it is now the blocker)\",\n    re.I,\n)\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Looking at the regex."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "read with 'Command timed out' as source text should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #821: read of source with 'Command timed out' regex text is not a swallowed timeout"
+rm -f "$sessions/read-timeout-source.jsonl"
+
+# --- 6g. live #821: bash grep on worker.md with 'Command timed out' in body --
+# The session was reading prompts/worker.md to debug the standing rule. The
+# file's own standing-rule paragraph contains the literal string
+# "Command timed out" — but the bash grep succeeded (isError=false, no
+# exit code). The detector must not flag this as a swallowed timeout.
+write_session "bash-timeout-doc" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_g","name":"bash","arguments":{"command":"grep -A2 'Any unexpected failing command' /home/nish/workspaces/agent-worktrees/issue-fleet-ops-664/prompts/worker.md 2>&1 | head -5"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_g","toolName":"bash","isError":false,"content":[{"type":"text","text":"- Any unexpected failing command: say so in your output; if it blocks the work, exit nonzero. This covers every toolResult shape: `read` returning ENOENT/EACCES/`Offset N is beyond end of file` (fleet-ops#651, #664), `bash` exit != 0, `Command timed out`, gh 4xx/5xx, etc. The standing rule (fleet-ops#535) is that a failed tool call is ALWAYS named in the very next assistant turn."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Found the rule."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "bash grep with 'Command timed out' in doc text should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #821: bash output with 'Command timed out' as doc text is not a swallowed timeout"
+rm -f "$sessions/bash-timeout-doc.jsonl"
 
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
