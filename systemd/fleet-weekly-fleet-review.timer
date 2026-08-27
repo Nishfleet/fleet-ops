@@ -1,0 +1,22 @@
+[Unit]
+Description=Weekly Fleet Review (WFR) — Sun 04:30 IST, post-vps-weekly-update (fleet-ops#1146)
+# Named reason: fleet-ops#1146 mandates a weekly (Sun post-maintenance)
+# senior review per the WBR/kaizen pattern. 04:30 IST sits AFTER
+# vps-weekly-update (Sun 03:30 IST + drain, 15min quiesce) and
+# quality-research-weekly (Sun 03:00 IST, fleet-ops#541) so the chain is:
+#   03:00 quality delta sweep -> 03:30 VPS maintenance -> 04:30 WFR.
+# Output is claimed work only (no Nish report): at most 5 specced
+# agent-ready issues or decisions-ledger discards. agent-cron-run already
+# owns seat rotation + pi --print + hermes DIGEST:: dispatch; this unit
+# is that runner with the weekly-fleet-review slug. Restart=on-failure
+# re-seats a transient 429 instead of waiting until next Sunday.
+# Persistent so a missed Sunday (VPS down, agent-cron wall) still fires
+# on next boot.
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00 Asia/Kolkata
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
