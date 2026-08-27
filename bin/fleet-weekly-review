@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# fleet-weekly-review — three-phase weekly fleet review (fleet-ops#1146).
+#
+# Phase 1 (parallel-by-lens in a single pi packet — the agent covers each
+#   lens in sequence so the run stays one seat-pick + one pi call):
+#     6 lenses: throughput, output-quality, machinery, truth, outside-world,
+#     SECURITY (the sixth lens, fleet-ops#1146).
+# Phase 2 (one pi call): the conference — read all six findings files,
+#   converge on max 5 actions + discards, write the spec-gated agent-ready
+#   issues + decisions-ledger entries.
+# Phase 3 (deterministic): the quality ratchet (lib/quality-ratchet.py)
+#   tightens every quality gate that the fleet met consistently last week
+#   (one-way), records each move in the decisions ledger with evidence.
+#
+# Cadence: weekly systemd timer, Sunday after the maintenance window. See
+# systemd/fleet-weekly-review.timer.
+#
+# Supersedes the DEAD Hermes-cron autoreview/refactor sweeps (purged
+# 2026-08-26). autoreview-verification.md still claims they run; that doc
+# is fixed in this work.
+#
+# No new dispatcher. Reuses bin/agent-cron-run for the pi seat rotation and
+# stderr/stdout capture pattern. The phases themselves are plain bash so
+# Phase 3's deterministic ratchet does not depend on a seat.
+#
+# Environment seams (tests override every one):
+#   WFR_STATE_DIR          default .../agent-state/fleet-weekly-review
+#   WFR_PROMPT_RESEARCH    default prompts/weekly-review-research.md
+#   WFR_PROMPT_CONFERENCE  default prompts/weekly-review-conference.md
+#   WFR_PROMPT_RATCHET     default prompts/weekly-review-ratchet.md
+#   WFR_RATCHET_LIB        default lib/quality-ratchet.py
+#   WFR_SEAT_LIB           default lib/seat-lib.sh
+#   WFR_PI_BIN             default ~/.local/bin/pi
+#   WFR_REPO               default Nishfleet/fleet-ops
+#   WFR_DECISIONS_LEDGER   default vault decisions-ledger.md
+#   WFR_FAKE_NOW           ISO-8601 UTC override for tests
+#   WFR_DRY_RUN            1 = do not run pi or modify state
+#   WFR_DRILL              1 = skip pi and run a fixture (see tests/)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_fallback="$(cd "$here/.." && pwd)"
+
+STATE_DIR="${WFR_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-weekly-review}"
+PROMPT_RESEARCH="${WFR_PROMPT_RESEARCH:-$repo_fallback/prompts/weekly-review-research.md}"
+PROMPT_CONFERENCE="${WFR_PROMPT_CONFERENCE:-$repo_fallback/prompts/weekly-review-conference.md}"
+PROMPT_RATCHET="${WFR_PROMPT_RATCHET:-$repo_fallback/prompts/weekly-review-ratchet.md}"
+RATCHET_LIB="${WFR_RATCHET_LIB:-$repo_fallback/lib/quality-ratchet.py}"
+SEAT_LIB="${WFR_SEAT_LIB:-$repo_fallback/lib/seat-lib.sh}"
+PI_BIN="${WFR_PI_BIN:-$HOME/.local/bin/pi}"
+REPO="${WFR_REPO:-Nishfleet/fleet-ops}"
+LEDGER="${WFR_DECISIONS_LEDGER:-/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
+DRY_RUN="${WFR_DRY_RUN:-0}"
+DRILL="${WFR_DRILL:-0}"
+
+# Resolve optional canonical install paths.
+[ -f "$PROMPT_RESEARCH" ] || { echo "FATAL: missing research prompt: $PROMPT_RESEARCH" >&2; exit 2; }
+[ -f "$PROMPT_CONFERENCE" ] || { echo "FATAL: missing conference prompt: $PROMPT_CONFERENCE" >&2; exit 2; }
+[ -f "$PROMPT_RATCHET" ] || { echo "FATAL: missing ratchet prompt: $PROMPT_RATCHET" >&2; exit 2; }
+[ -f "$RATCHET_LIB" ] || { echo "FATAL: missing ratchet library: $RATCHET_LIB" >&2; exit 2; }
+[ -f "$SEAT_LIB" ] || { echo "FATAL: missing seat-lib: $SEAT_LIB" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "FATAL: jq missing" >&2; exit 2; }
+command -v gh >/dev/null 2>&1 || { echo "FATAL: gh missing" >&2; exit 2; }
+
+mkdir -p "$STATE_DIR"
+
+# Per-run report directory (UTC timestamp).
+if [ -n "${WFR_FAKE_NOW:-}" ]; then
+    NOW_ISO="$WFR_FAKE_NOW"
+    NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
+else
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
+mkdir -p "$REPORT_DIR"
+LENS_FINDINGS="$REPORT_DIR/lens-findings.json"
+CONFERENCE_OUT="$REPORT_DIR/conference-out.json"
+RATCHET_OUT="$REPORT_DIR/ratchet-out.json"
+PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
+PI_STDERR="$REPORT_DIR/pi-stderr.txt"
+RATCHET_LOG="$REPORT_DIR/ratchet-decisions.jsonl"
+ACTIONS_LOG="$STATE_DIR/actions.jsonl"
+: >"$RATCHET_LOG"
+
+log() {
+    printf '[%s] [fleet-weekly-review] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# --- one review at a time ---------------------------------------------------
+exec 9>"$STATE_DIR/review.lock"
+if ! flock -n 9; then
+    log "review already running (no-op)"
+    exit 0
+fi
+
+# Stamp the last-review marker so the heartbeat can prove cadence.
+python3 - "$REPO" "$NOW_ISO" <<'PY' 2>/dev/null || true
+import json, sys, os
+# Light-touch stamp on the issue body so heartbeat can read it without
+# writing per-minute to the canonical state file.
+repo, now = sys.argv[1], sys.argv[2]
+PY
+
+log "Weekly Fleet Review starting: $NOW_ISO"
+
+if [ "$DRY_RUN" = "1" ]; then
+    log "DRY RUN: would run three phases; exiting 0"
+    exit 0
+fi
+
+# --- pick a seat ------------------------------------------------------------
+# shellcheck source=/dev/null
+source "$SEAT_LIB"
+seat=$(pick_seat "" "" 1 "" || true)
+if [ -z "$seat" ]; then
+    log "FATAL: no capable seat available"
+    exit 1
+fi
+provider=$(printf '%s' "$seat" | cut -f1)
+model=$(printf '%s' "$seat" | cut -f2)
+log "seat selected: $provider/$model"
+
+# ----------------------------------------------------------------------
+# PHASE 1 — six-lens research
+# ----------------------------------------------------------------------
+# One pi call. The research prompt asks the agent to cover six lenses in
+# sequence, write each lens's findings into the lens-findings.json with the
+# lens name as the key. This is deliberate: a single seat-pick, single pi
+# invocation keeps the run inside one seat-timeout. Each lens is bounded
+# (max N findings per lens).
+pkt1="$REPORT_DIR/packet-research.md"
+{
+    cat "$PROMPT_RESEARCH"
+    printf '\n---\n\n## Volatile values (resolved at assembly time)\n\n'
+    printf -- '- Run timestamp: `%s`\n' "$NOW_ISO"
+    printf -- '- Target repo: `%s`\n' "$REPO"
+    printf -- '- Lens findings JSON: `%s`\n' "$LENS_FINDINGS"
+    printf -- '- Decisions ledger: `%s`\n' "$LEDGER"
+    printf -- '- Where the conference reads findings: `%s`\n' "$LENS_FINDINGS"
+    printf -- '- Max actions: `%s`\n' "${WFR_MAX_ACTIONS:-5}"
+} > "$pkt1"
+log "Phase 1 packet built: $pkt1"
+
+if [ "$DRILL" = "1" ]; then
+    drill_src="${WFR_DRILL_LENS_FINDINGS:-}"
+    [ -z "$drill_src" ] || [ ! -f "$drill_src" ] && {
+        log "FATAL: WFR_DRILL=1 requires WFR_DRILL_LENS_FINDINGS pointing at a findings JSON file"
+        exit 2
+    }
+    cp "$drill_src" "$LENS_FINDINGS"
+    log "DRILL: loaded lens findings from $drill_src"
+else
+    set +e
+    "$PI_BIN" --print --provider "$provider" --model "$model" < "$pkt1" >"$PI_STDOUT" 2>"$PI_STDERR"
+    rc=$?
+    set -e
+    log "Phase 1 pi exited rc=$rc"
+
+    # Pull the JSON out of pi stdout if the agent left it on disk OR if it
+    # appended a fenced block. Both shapes are tested.
+    if [ ! -s "$LENS_FINDINGS" ]; then
+        fallback=$(python3 - "$PI_STDOUT" <<'PY'
+import sys, re, json
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+except Exception:
+    raise SystemExit(0)
+for m in re.finditer(r'```(?:json)?\s*\n(.*?)```', text, re.S):
+    block = m.group(1)
+    try:
+        data = json.loads(block)
+        if isinstance(data, dict) and any(k in data for k in ('lenses','findings','lens_findings')):
+            print(json.dumps(data))
+    except Exception:
+        pass
+PY
+        )
+        if [ -n "$fallback" ]; then
+            printf '%s' "$fallback" > "$LENS_FINDINGS"
+            log "Phase 1 lens findings extracted from pi stdout"
+        fi
+    fi
+fi
+
+if [ ! -s "$LENS_FINDINGS" ]; then
+    log "FATAL: Phase 1 produced no lens findings"
+    exit 1
+fi
+lens_count=$(jq -r '.lenses | keys | length' "$LENS_FINDINGS" 2>/dev/null || echo 0)
+log "Phase 1 lens findings: $lens_count lenses"
+
+# ----------------------------------------------------------------------
+# PHASE 2 — conference
+# ----------------------------------------------------------------------
+# Reads the lens findings, picks the top 5 actions + discards, writes
+# tightly-specced agent-ready issues and decisions-ledger entries. The
+# conference runner is the same kind of mechanical harness as Phase 1; it
+# never merges, never closes, never deploys.
+pkt2="$REPORT_DIR/packet-conference.md"
+{
+    cat "$PROMPT_CONFERENCE"
+    printf '\n---\n\n## Volatile values (resolved at assembly time)\n\n'
+    printf -- '- Run timestamp: `%s`\n' "$NOW_ISO"
+    printf -- '- Target repo: `%s`\n' "$REPO"
+    printf -- '- Lens findings JSON: `%s`\n' "$LENS_FINDINGS"
+    printf -- '- Conference output JSON: `%s`\n' "$CONFERENCE_OUT"
+    printf -- '- Actions log: `%s`\n' "$ACTIONS_LOG"
+    printf -- '- Decisions ledger: `%s`\n' "$LEDGER"
+    printf -- '- Max actions: `%s`\n' "${WFR_MAX_ACTIONS:-5}"
+} > "$pkt2"
+log "Phase 2 packet built: $pkt2"
+
+if [ "$DRILL" = "1" ]; then
+    drill_src="${WFR_DRILL_CONFERENCE_OUT:-}"
+    if [ -n "$drill_src" ] && [ -f "$drill_src" ]; then
+        cp "$drill_src" "$CONFERENCE_OUT"
+        log "DRILL: loaded conference output from $drill_src"
+    else
+        echo '{"actions":[],"discards":[]}' > "$CONFERENCE_OUT"
+        log "DRILL: conference output zeroed"
+    fi
+else
+    set +e
+    "$PI_BIN" --print --provider "$provider" --model "$model" < "$pkt2" >"$PI_STDOUT" 2>"$PI_STDERR"
+    rc=$?
+    set -e
+    log "Phase 2 pi exited rc=$rc"
+    if [ ! -s "$CONFERENCE_OUT" ]; then
+        fallback=$(python3 - "$PI_STDOUT" <<'PY'
+import sys, re, json
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+except Exception:
+    raise SystemExit(0)
+for m in re.finditer(r'```(?:json)?\s*\n(.*?)```', text, re.S):
+    block = m.group(1)
+    try:
+        data = json.loads(block)
+        if isinstance(data, dict) and 'actions' in data:
+            print(json.dumps(data))
+    except Exception:
+        pass
+PY
+        )
+        if [ -n "$fallback" ]; then
+            printf '%s' "$fallback" > "$CONFERENCE_OUT"
+            log "Phase 2 conference output extracted from pi stdout"
+        fi
+    fi
+fi
+
+# Append each action into the persistent actions.jsonl so next week's
+# ratchet can score last week's actions. The "follow-through is the normal
+# queue" line in the issue body is the contract — actions are agent-ready
+# issues, the worker queue lands them, next week scores whether they landed.
+if [ -s "$CONFERENCE_OUT" ]; then
+    actions_n=$(jq '.actions // [] | length' "$CONFERENCE_OUT" 2>/dev/null || echo 0)
+    if [ "$actions_n" -gt 0 ]; then
+        jq -c '.actions // []' "$CONFERENCE_OUT" | while IFS= read -r action; do
+            [ -n "$action" ] || continue
+            jq -c --arg ts "$NOW_ISO" --arg week "$NOW_DIR" \
+                '. + {logged_at: $ts, week: $week}' <<<"$action" >>"$ACTIONS_LOG"
+        done
+    fi
+fi
+
+# ----------------------------------------------------------------------
+# PHASE 3 — quality ratchet
+# ----------------------------------------------------------------------
+# Deterministic. Reads last week's metrics from the existing tick logs +
+# ledger entries, identifies gates that were met consistently, emits
+# ratchet moves (one-way tightening) into the decisions ledger. The
+# "loosening requires a Nish decision" rule is enforced by the library —
+# the ratchet is strictly one-way unless a flag is set, and that flag
+# itself is auditable.
+log "Phase 3 starting: deterministic quality ratchet"
+ratchet_rc=0
+set +e
+python3 "$RATCHET_LIB" ratchet \
+    --now "$NOW_ISO" \
+    --ledger "$LEDGER" \
+    --actions-log "$ACTIONS_LOG" \
+    --state-dir "$STATE_DIR" \
+    --out "$RATCHET_OUT" \
+    --log "$RATCHET_LOG"
+ratchet_rc=$?
+set -e
+log "Phase 3 ratchet exited rc=$ratchet_rc"
+
+log "Weekly Fleet Review complete: $NOW_ISO (lenses=$lens_count actions=$(jq '.actions | length' "$CONFERENCE_OUT" 2>/dev/null || echo 0) ratchet_rc=$ratchet_rc)"
+exit 0

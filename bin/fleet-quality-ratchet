@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# fleet-quality-ratchet — explicit-ratchet CLI (fleet-ops#1146 Phase 3).
+#
+# Wraps lib/quality-ratchet.py for the "operator proposes a tightening
+# with live evidence" path. The Weekly Review orchestrator calls the
+# library directly each Sunday. This wrapper is for the heartbeat
+# canary path AND for operator ad-hoc moves (e.g. when a fresh drill
+# proves a gate has been met consistently for 4 weeks straight and the
+# operator wants to tighten NOW instead of waiting for next Sunday).
+#
+# The ratchet is one-way (tightens-only) unless --loosen-with-decision
+# is supplied with a Nish-recorded decision sha. The library checks
+# the ledger for the sha; a missing sha is a hard reject.
+#
+# Usage:
+#   fleet-quality-ratchet ratchet --now ISO --ledger FILE --state-dir DIR \
+#                            --out FILE --log FILE
+#   fleet-quality-ratchet propose --gate NAME --new-value V --ledger FILE \
+#                            [--evidence TEXT] [--loosen-with-decision SHA]
+#   fleet-quality-ratchet score --now ISO --actions-log FILE --out FILE
+#
+# Exit codes mirror the library:
+#   0 = success
+#   1 = reject (loosening without decision, or unknown gate)
+#   2 = bad arguments / missing input
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_fallback="$(cd "$here/.." && pwd)"
+
+LIB="${WFR_RATCHET_LIB:-$repo_fallback/lib/quality-ratchet.py}"
+[ -f "$LIB" ] || { echo "fleet-quality-ratchet: missing library: $LIB" >&2; exit 2; }
+
+exec python3 "$LIB" "$@"
