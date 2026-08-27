@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/fleet-failed-command-observe-duplicate-enoent.test.sh
 #
-# fleet-ops#972: leftover duplicate open issues for the SAME read-ENOENT
-# session signal must ALL drain via observe-to-close, not just the first
-# match.
+# fleet-ops#972 / #967: leftover duplicate open issues for the SAME
+# read-ENOENT session signal must ALL drain via observe-to-close, not
+# just the first match.
 #
 # GitHub's search-index delay (fleet-ops#951) filed 7 copies of
 #   signal: failed-command-flagged/2026-08-26t14-02-29-714z-01a03e61-27d2-7c3f-9101-da19c90f6ba5
@@ -19,8 +19,9 @@
 # the copies already sitting on the desk. Those close only when the
 # detector is green for the slug AND observe-to-close walks every
 # matching open issue (fleet-ops#650 / #758). A `first`-only close, or
-# a CAP that silently drops the rest forever, would leave #972 (and its
-# siblings) dispatching workers after the session has aged out.
+# a CAP that silently drops the rest forever, would leave #972 / #967
+# (and their siblings) dispatching workers after the session has aged
+# out.
 #
 # The read-ENOENT skip-then-todos shape itself is locked under #958
 # (tests/fleet-failed-command-read-enoent-skip-todos.test.sh). The
@@ -31,7 +32,7 @@
 # This file locks the leftover-duplicate DRAIN for the read-ENOENT pile
 # so a future observe-to-close refactor cannot resolve only issue 0 of
 # the 01a03e61 pile, and so the citation chain (worker.md + detector
-# docstring + seat-lib.test.sh host) for #972 is verified.
+# docstring + seat-lib.test.sh host) for #972 and #967 is verified.
 #
 # Live session: 2026-08-26T14-02-29-714Z_01a03e61-27d2-7c3f-9101-da19c90f6ba5.jsonl
 # Live signal:  failed-command-flagged/2026-08-26t14-02-29-714z-01a03e61-27d2-7c3f-9101-da19c90f6ba5
@@ -46,7 +47,8 @@
 #   2. later tick with the marker already on all seven: closes all
 #      seven, still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. three-place citation lock (prompt, detector, CI host) for #972.
+#   4. three-place citation lock (prompt, detector, CI host) for #972
+#      and #967.
 
 set -euo pipefail
 
@@ -313,24 +315,31 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "live #972: still-dirty slug leaves all seven leftover duplicates open"
 
-# --- 4. three-place citation lock (prompt, detector, CI host) for #972 -----
-# Same pin as #937 / #957 / #966: dropping the #972 citation from any
-# one of these three places is a regression even if the drain drill
-# still passes. The existing read-ENOENT skip-then-todos test
-# (fleet-ops#958) already pins #958; this file adds the #972 citation
-# next to it.
+# --- 4. three-place citation lock (prompt, detector, CI host) for #972 / #967 -----
+# Same pin as #937 / #957 / #966 / #970: dropping the #972 or #967
+# citation from any one of these three places is a regression even if
+# the drain drill still passes. The existing read-ENOENT skip-then-todos
+# test (fleet-ops#958) already pins #958; this file adds the #972
+# citation next to it, and the #967 citation next to #972 — both are
+# siblings in the 01a03e61 leftover-duplicate pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
 grep -q '#972' "$worker" \
   || fail "prompts/worker.md must carry the #972 citation next to the #958 read-ENOENT citation"
 grep -q 'fleet-ops#958, #972' "$worker" \
   || fail "prompts/worker.md must cite #972 next to the #958 read-ENOENT citation"
 ok "worker.md cites #972"
+grep -q '#972, #967' "$worker" \
+  || fail "prompts/worker.md must carry the #967 citation next to the #972 leftover-duplicate citation"
+ok "worker.md cites #967"
 grep -q 'fleet-ops#958, #972' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #972 next to #958"
 ok "lib/failed-command-flagged.py docstring cites #972"
+grep -q '#972, #967' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #967 next to #972"
+ok "lib/failed-command-flagged.py docstring cites #967"
 grep -F -q 'fleet-failed-command-observe-duplicate-enoent.test.sh' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-observe-duplicate-enoent: live #972 leftover-duplicate drain"
+echo "OK: fleet-failed-command-observe-duplicate-enoent: live #972 / #967 leftover-duplicate drain"

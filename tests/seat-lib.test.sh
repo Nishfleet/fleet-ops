@@ -1845,12 +1845,13 @@ bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh" || fail
 # 6-leftover exhaustion under the live 01a03e38 signal. Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-observe-duplicate-python-traceback.test.sh" || fail "fleet-failed-command-observe-duplicate-python-traceback tests failed"
-# fleet-ops#972: leftover-duplicate observe-to-close drain for the
-# 01a03e61 read-ENOENT pile. The drain mechanism is the same as #965
-# (edit-unmatch pile) and #966 (python-traceback pile); this test pins
-# the citation chain and the 7-leftover exhaustion under the live
-# 01a03e61 signal. Same CI constraint (worker token cannot add a P14
-# line).
+# fleet-ops#972 / #967: leftover-duplicate observe-to-close drain for the
+# 01a03e61 read-ENOENT pile (index-delay filings
+# #662/#953/#958/#967/#972/#977/#982). The drain mechanism is the same
+# as #965 (edit-unmatch pile) and #966 (python-traceback pile); this
+# test pins the citation chain and the 7-leftover exhaustion under the
+# live 01a03e61 signal. Same CI constraint (worker token cannot add a
+# P14 line).
 bash "$here/fleet-failed-command-observe-duplicate-enoent.test.sh" || fail "fleet-failed-command-observe-duplicate-enoent tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
