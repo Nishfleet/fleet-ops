@@ -36,6 +36,15 @@ echo "$live" | jq -e . >/dev/null || fail "live audit did not emit JSON: $live"
 [[ "$live_rc" == "0" ]] || fail "live catalog has findings: $(echo "$live" | jq -c '.findings')"
 ok "live catalog: every named role is gated ($(echo "$live" | jq -r .role_count) roles)"
 
+# fleet-ops#710: pin the live-audit negative for vault-knowledge-format.
+# The unit file is real (added in #699) and was red-flagged until #716
+# added it to NON_ROLE_UNIT_PREFIXES. This explicit signal-key check
+# makes the regression findable in the test output if it ever returns.
+if echo "$live" | jq -e '.findings[] | select(.id == "unit:vault-knowledge-format.service")' >/dev/null; then
+  fail "live audit re-flagged vault-knowledge-format.service (regression of #710)"
+fi
+ok "live audit does not flag vault-knowledge-format.service (fleet-ops#710)"
+
 # fleet-ops#592: researcher is a standing role — dropping the catalog row
 # must fail even if the live scan happens to be empty for other reasons.
 python3 - "$catalog" <<'PY' || fail "researcher catalog row missing or incomplete"
