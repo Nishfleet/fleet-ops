@@ -2020,6 +2020,16 @@ bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh" || fail "fleet-
 # names the CAUSE (the packet was archived), not the FAILURE (the read
 # returned ENOENT). Cause prose is not a flag. Same CI constraint.
 bash "$here/fleet-failed-command-read-enoent-archived-packet.test.sh" || fail "fleet-failed-command-read-enoent-archived-packet tests failed"
+# fleet-ops#1170: a `read` tool result with "EISDIR: illegal operation on a
+# directory, read" (isError=true, no exit code) is a real swallowed
+# failure — the read tool was pointed at a directory path, and the
+# assistant walked it past with thinking-only recovery or unrelated
+# prose. Distinct from the #651 offset-beyond-end negative result and
+# the #953/#1001 read-ENOENT class: EISDIR has its own live wording
+# and must not be suppressed by a "directory read is benign" exemption
+# a future refactor might add. Same CI constraint (worker token cannot
+# add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-read-eisdir.test.sh" || fail "fleet-failed-command-read-eisdir tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
