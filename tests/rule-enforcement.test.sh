@@ -192,10 +192,28 @@ issues = [
 targets = m.observe_targets(report, issues)
 assert [t["number"] for t in targets] == [479], targets
 assert targets[0]["marker"] == f"canary-covered: {src}", targets
+
+# close_targets: only issues that carry the canary-covered marker AND match an
+# enforced row are closeable. #481 has the marker -> closeable. #479 has no
+# marker yet (canary has not reported green) -> NOT closeable. #480 is an
+# unrelated signal -> NOT closeable.
+close_targets = m.close_targets(report, issues)
+assert [t["number"] for t in close_targets] == [481], close_targets
+assert close_targets[0]["marker"] == f"canary-covered: {src}", close_targets
+assert close_targets[0]["id"] == row["id"], close_targets
+
+# A non-enforced row must never produce a close target even with the marker.
+queued_row = dict(row, status="queued", issue=362)
+queued_report = {"covered_rows": [queued_row], "auto_file_cap_per_tick": 5}
+queued_issues = [
+    {"number": 482, "body": body_fallback, "comments": [{"body": f"canary-covered: {src}\n"}]},
+]
+assert m.close_targets(queued_report, queued_issues) == [], "queued row must not close"
 print("parser-ok")
 PY
 ok "parser: ## headings counted, ### ignored, FLAG ledger lines skipped"
 ok "observe-to-close: fallback id, source backtick, and already-commented issues"
+ok "observe-to-close close_targets: marker+enforced closes, no-marker and queued do not"
 
 # --- fixture join: complete coverage ----------------------------------------
 cat >"$scratch/covered-rules.md" <<'EOF'
@@ -558,6 +576,17 @@ case "$subcmd" in
         fi
         echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#comment"
         ;;
+      close)
+        num=""
+        for arg in "$@"; do
+          case "$arg" in
+            [0-9]*) num="$arg"; break ;;
+          esac
+        done
+        if [[ -n "${GH_CLOSED:-}" && "${GH_CLOSED}" != "/dev/null" ]]; then
+          printf '%s\n' "$num" >>"$GH_CLOSED"
+        fi
+        ;;
     esac
     ;;
 esac
@@ -596,6 +625,7 @@ run_drill() {
     GH_LOG="$glog" \
     GH_CREATED="$created" \
     GH_COMMENTED="${GH_COMMENTED:-/dev/null}" \
+    GH_CLOSED="${GH_CLOSED:-/dev/null}" \
     GH_OPEN_ISSUES="${GH_OPEN_ISSUES:-}" \
     FLEET_ESCALATION_CANARY_SKIP_BACKUP="${FLEET_ESCALATION_CANARY_SKIP_BACKUP:-0}" \
     FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT="${FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT:-0}" \
@@ -667,6 +697,9 @@ ok "drill: enforced coverage comments on the fallback-signal mechanism issue"
 
 : >"$commented"
 : >"$drill/triage.md"
+closed="$drill/closed.txt"
+: >"$closed"
+export GH_CLOSED="$closed"
 printf '%s\n' '[{"number":479,"title":"mechanism for TOP GEAR","body":"- source: `decisions-ledger.md: 2026-08-26 | covered ledger rule`\n\nsignal: rule-enforcement/led-2026-08-26-covered-ledger-rule","comments":[{"body":"canary-covered: decisions-ledger.md: 2026-08-26 | covered ledger rule\n"}]},{"number":78,"title":"queued","body":"signal: rule-enforcement/sr-queued-fixture"}]' \
   >"$drill/open.json"
 run_drill
@@ -677,7 +710,14 @@ fi
 if grep -q . "$commented"; then
   fail "observe replay: must not comment again (commented=$(cat "$commented") out=$env_out)"
 fi
+# Observe-to-close close step (fleet-ops#521): #479 carries the canary-covered
+# marker AND its rule is enforced -> the canary closes it as completed. #78 is
+# a queued row (no enforced coverage) -> must NOT be closed.
+grep -q '^479$' "$closed" || fail "observe-to-close close: must close #479 (closed=$(cat "$closed") out=$env_out)"
+! grep -q '^78$' "$closed" || fail "observe-to-close close: must NOT close queued #78 (closed=$(cat "$closed"))"
+grep -q 'OBSERVE-CLOSED' <<<"$env_out" || fail "observe-to-close close: must log OBSERVE-CLOSED (out=$env_out)"
 ok "drill: canary-covered marker is not posted twice"
+ok "drill: observe-to-close closes #479 (marker + enforced); queued #78 stays open"
 
 # fleet-ops#519: run the no-agent-names gate drill as part of the
 # rule-enforcement suite so it is exercised in CI without a workflow edit.

@@ -87,6 +87,9 @@
 #   FLEET_RULE_ENFORCEMENT_JSON       config/rule-enforcement.json
 #   FLEET_RULE_ENFORCEMENT_LIB        lib/rule-enforcement.py
 #   FLEET_RULE_ENFORCEMENT_FILE_ISSUES  1 (default) auto-file uncovered rules; 0 skips
+#   FLEET_RULE_ENFORCEMENT_CLOSE_ISSUES 1 (default) close mechanism issues once the
+#                                       canary has reported them covered (observe-
+#                                       to-close); 0 skips the close step.
 #   FLEET_RULE_ENFORCEMENT_ISSUE_REPO   Nishfleet/fleet-ops
 #   FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES comma-separated issue numbers that are
 #                                       umbrella trackers (e.g. 416). The canary
@@ -130,6 +133,7 @@ if [[ ! -f "$RULE_LIB" && -f "${HOME}/.local/lib/pi-packet/rule-enforcement.py" 
     RULE_LIB="${HOME}/.local/lib/pi-packet/rule-enforcement.py"
 fi
 FILE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_FILE_ISSUES:-1}"
+CLOSE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_CLOSE_ISSUES:-1}"
 RULE_ISSUE_REPO="${FLEET_RULE_ENFORCEMENT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 RULE_NOW="${FLEET_RULE_ENFORCEMENT_NOW:-}"
 UMBRELLA_ISSUES_RAW="${FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES:-}"
@@ -647,6 +651,59 @@ else
                 fi
             fi
             log "9.  observe-to-close: commented=$observed already-observed=$skipped_obs"
+
+            # Observe-to-close close step (fleet-ops#362/#521): once a
+            # mechanism issue carries the `canary-covered:` marker from a
+            # prior tick AND its rule is `enforced`, close it as completed.
+            # The marker-from-a-prior-tick requirement makes the close
+            # evidence-backed — the canary reported green on a real tick, and
+            # this observing tick closes. Without this, a mechanism PR whose
+            # body missed `Closes #N` leaves a covered issue stuck open
+            # forever (the #521 gap).
+            closed=0
+            close_skipped=0
+            if [[ "$CLOSE_RULE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+                _crep="/tmp/rule-enforcement-report-close.$$.json"
+                _ciss="/tmp/rule-enforcement-open-close.$$.json"
+                printf '%s\n' "$rule_report" >"$_crep"
+                set +e
+                # `comments` is a supported gh issue list field; one call
+                # carries both body (for the signal match) and comments
+                # (for the canary-covered marker).
+                close_json=$("$GH" issue list -R "$RULE_ISSUE_REPO" --state open --limit 200 --json number,body,title,comments 2>/dev/null)
+                close_list_rc=$?
+                set -e
+                if [[ "$close_list_rc" -ne 0 ]] || [[ -z "$close_json" ]]; then
+                    close_json="[]"
+                    log "9.  WARN: could not list open issues for close (gh rc=$close_list_rc)"
+                fi
+                printf '%s\n' "$close_json" >"$_ciss"
+                set +e
+                close_targets=$(python3 "$RULE_LIB" close-targets --report "$_crep" --issues "$_ciss")
+                close_rc=$?
+                set -e
+                rm -f "$_crep" "$_ciss"
+                if [[ "$close_rc" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"${close_targets:-}"; then
+                    while IFS= read -r ct; do
+                        [[ -n "$ct" ]] || continue
+                        ct_num=$(jq -r '.number' <<<"$ct")
+                        ct_id=$(jq -r '.id' <<<"$ct")
+                        [[ -n "$ct_num" && "$ct_num" != "null" ]] || continue
+                        set +e
+                        "$GH" issue close "$ct_num" -R "$RULE_ISSUE_REPO" --reason completed >/tmp/rule-enforcement-close.err 2>&1
+                        close_issue_rc=$?
+                        set -e
+                        if [[ "$close_issue_rc" -eq 0 ]]; then
+                            closed=$((closed + 1))
+                            log "9.  OBSERVE-CLOSED $ct_id -> #$ct_num (canary-covered + enforced)"
+                        else
+                            close_skipped=$((close_skipped + 1))
+                            log "9.  WARN: failed to close #$ct_num (rc=$close_issue_rc) $(tr '\n' ' ' </tmp/rule-enforcement-close.err 2>/dev/null)"
+                        fi
+                    done < <(jq -c '.[]' <<<"$close_targets")
+                fi
+            fi
+            log "9.  observe-to-close: closed=$closed skipped=$close_skipped"
         fi
 
         log "9.  - covered=$covered_n / vault=$vault_n uncovered=$uncovered_n queued=$queued_n stale_queued=$stale_n malformed=$malformed_n extra=$extra_n"
