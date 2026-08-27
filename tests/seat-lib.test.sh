@@ -1034,6 +1034,10 @@ bash "$here/fleet-failed-command-read.test.sh" || fail "fleet-failed-command-rea
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
+# fleet-ops#652: edit tool 'Could not find the exact text' walked past is a
+# real failure; the detector must still flag it. Lock the shape so a
+# future detector refactor cannot drop it via a generic isError exemption.
+bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-command-edit-unmatch tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
