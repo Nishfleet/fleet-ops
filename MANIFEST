@@ -324,6 +324,11 @@ config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-a
 # Deferred products auto-file. Heartbeat-tier1 block 29.
 bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
 config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
+# fleet-ops#917: SuperGrok live-validate canary. Runs `grok models` (CLI
+# silent refresh) every heartbeat tick; writes credentials_bad when the
+# live CLI is unauthenticated; auto-files `grok login --device-auth` when
+# refresh is impossible. Heartbeat-tier1 block 30.
+bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

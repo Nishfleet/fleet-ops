@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+# fleet-seat-live-validate — SuperGrok credential liveness (fleet-ops#917).
+#
+# Class this prevents: a prepaid SuperGrok seat that LOOKS ready because a
+# key file / `pi auth check` only tests presence, while the live grok CLI
+# is unauthenticated (403 OAuth-invalid, missing ~/.grok/auth.json, or a
+# refresh token that no longer mints). The sub then sits at 100% unused.
+#
+# Official grok CLI docs (user-guide/02-authentication.md): credentials live
+# in $GROK_HOME/auth.json; the CLI refreshes silently when it runs; when
+# refresh fails, a human must `grok login --device-auth` on this headless
+# box. `pi auth check --provider grok` is presence/invalid_state only
+# (pi-ai checkProviderAuth returns source=OAuth without a live call).
+# `grok models` exits 0 even when unauthenticated and still prints the
+# local default catalog — so this canary parses the auth-status line and
+# tests auth.json existence, never the exit code alone, and never prints
+# credential contents.
+#
+# Running `grok models` every heartbeat tick IS the refresh wiring: if a
+# refresh_token is still stored, the CLI mints a new access token into
+# auth.json before we classify. No stored credentials → cannot refresh;
+# observe-to-open a Nish login ticket.
+#
+# Layers:
+#   1. GATE (fail-loud, exit 1): grok binary missing — the watch is broken.
+#   2. DETECTOR (observe-to-open, exit 0): live-dead SuperGrok writes
+#      credentials_bad onto the seat ledger (so pick_seat skips it) and
+#      auto-files a `grok login --device-auth` ticket (deduped).
+#
+# Environment seams (tests):
+#   GROK / FLEET_GROK_BIN          grok binary (default: grok)
+#   GROK_HOME                      grok config dir (default: $HOME/.grok)
+#   PI / FLEET_PI_BIN              pi binary (optional class-check)
+#   PI_SEAT_HEALTH_LEDGER_DIR      per-seat ledger dir
+#   FLEET_HEARTBEAT_TRIAGE         triage file
+#   FLEET_SEAT_LIVE_VALIDATE_REPO  default Nishfleet/fleet-ops
+#   FLEET_SEAT_LIVE_VALIDATE_FILE  1 (default) file issues; 0 skip gh
+#   FLEET_GROK_MODELS_TIMEOUT      seconds (default 30)
+#   GH                             gh binary (tests stub this)
+#   FLEET_PI_AUTH_CHECK_JSON       fixture replacing `pi auth check --json`
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+GROK="${FLEET_GROK_BIN:-${GROK:-grok}}"
+PI="${FLEET_PI_BIN:-${PI:-pi}}"
+GROK_HOME="${GROK_HOME:-$HOME/.grok}"
+AUTH_JSON="$GROK_HOME/auth.json"
+LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_SEAT_LIVE_VALIDATE_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_SEAT_LIVE_VALIDATE_FILE:-1}"
+MODELS_TIMEOUT="${FLEET_GROK_MODELS_TIMEOUT:-30}"
+MARKER="seat-live-validate: grok needs-interactive"
+
+log() {
+    printf '[%s] [fleet-seat-live-validate] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >>"$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# File one issue. Dedup: open issue whose body contains the marker, or
+# whose title still names the live SuperGrok-dead class (fleet-ops#917).
+file_finding() {
+    local title="$1" body="$2"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_SEAT_LIVE_VALIDATE_FILE=$FILE_ISSUES) marker=$MARKER"
+        return 0
+    fi
+    local existing
+    # Search, do not scan the newest-50: #917 sat outside that window and
+    # the first live run double-filed as #1032 (fleet-ops#917).
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 20 \
+        --search "seat-live-validate OR \"SuperGrok pi seat dead\" OR \"grok login --device-auth\"" \
+        --json number,title,body 2>/dev/null \
+        | jq -r --arg m "$MARKER" '
+            .[] | select(
+                (.body | type=="string" and contains($m))
+                or (.title | type=="string" and test("SuperGrok"; "i") and test("dead"; "i"))
+            ) | .number
+          ' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $MARKER or SuperGrok-dead title"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${MARKER}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $MARKER"
+    fi
+}
+
+seat_ledger_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# Write one per-seat ledger record. Never includes credential material.
+write_ledger() {
+    local model="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    local path tmp observed retryable
+    mkdir -p "$LEDGER_DIR"
+    observed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [[ "$health_class" == "healthy" ]]; then
+        retryable=true
+    else
+        retryable=false
+    fi
+    path=$(seat_ledger_path grok "$model")
+    tmp="${path}.$$.tmp"
+    jq -n \
+        --arg provider grok \
+        --arg model "$model" \
+        --argjson http_status "$http_status" \
+        --arg health_class "$health_class" \
+        --argjson retryable "$retryable" \
+        --argjson seat_dead "$seat_dead" \
+        --arg observed_at "$observed" \
+        --arg failure_mode "$failure_mode" \
+        '{
+            provider: $provider,
+            model: $model,
+            http_status: $http_status,
+            retry_after: null,
+            health_class: $health_class,
+            retryable: $retryable,
+            seat_dead: $seat_dead,
+            poison_ladder: false,
+            observed_at: $observed_at,
+            source: "cli_spawn",
+            failure_mode: $failure_mode,
+            usable_at: null,
+            consecutive_failure_count: (if $health_class == "healthy" then 0 else 1 end)
+        }' >"$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$path"
+    chmod 600 "$path" 2>/dev/null || true
+}
+
+write_both_models() {
+    local http_status="$1" health_class="$2" seat_dead="$3" failure_mode="$4"
+    write_ledger "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
+    write_ledger "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
+}
+
+auth_present() {
+    [[ -s "$AUTH_JSON" ]]
+}
+
+# Optional class-check. Presence-ready while grok CLI is dead is the
+# original #917 bug. Never pass --credentials. Never log the JSON if it
+# might contain a token; only the status field is kept.
+pi_auth_status() {
+    local raw status
+    if [[ -n "${FLEET_PI_AUTH_CHECK_JSON:-}" ]]; then
+        if [[ -f "$FLEET_PI_AUTH_CHECK_JSON" ]]; then
+            raw=$(cat "$FLEET_PI_AUTH_CHECK_JSON" 2>/dev/null || true)
+        else
+            raw="$FLEET_PI_AUTH_CHECK_JSON"
+        fi
+    elif command -v "$PI" >/dev/null 2>&1; then
+        raw=$("$PI" auth check --provider grok --json --no-refresh 2>/dev/null || true)
+    else
+        echo "skipped"
+        return 0
+    fi
+    status=$(printf '%s' "$raw" | jq -r '.status // empty' 2>/dev/null || true)
+    printf '%s\n' "${status:-unknown}"
+}
+
+if ! command -v "$GROK" >/dev/null 2>&1; then
+    loud "SEAT-LIVE-VALIDATE-WATCHER-BROKEN" "grok binary missing: $GROK"
+    file_finding \
+        "SuperGrok live-validate watcher broken (grok binary missing)" \
+        "fleet-seat-live-validate cannot run: \`$GROK\` is not on PATH.
+
+Without this watch, a dead SuperGrok credential looks ready again (fleet-ops#917). Restore the grok CLI.
+
+signal: rule-enforcement/sr-prepaid-max-util"
+    exit 1
+fi
+
+scratch=$(mktemp -d -t seat-live-validate.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+models_out="$scratch/models.out"
+
+# Trigger the CLI's own silent refresh (OIDC refresh_token → new access
+# token in auth.json) then classify. timeout so a TUI login prompt cannot
+# wedge the heartbeat. Do not pass the output through anything that might
+# retain tokens; grok models does not print them.
+set +e
+timeout "$MODELS_TIMEOUT" "$GROK" models >"$models_out" 2>&1
+models_rc=$?
+set -e
+
+not_auth=0
+logged_in=0
+if grep -qi 'not authenticated' "$models_out"; then
+    not_auth=1
+fi
+if grep -qi 'logged in' "$models_out"; then
+    logged_in=1
+fi
+
+classify="dead"
+reason=""
+
+if (( models_rc == 124 )); then
+    classify="dead"
+    reason="grok models timed out after ${MODELS_TIMEOUT}s (likely an interactive login prompt)"
+elif (( logged_in == 1 )) && auth_present; then
+    classify="healthy"
+    reason="grok models reported logged in and auth.json is present"
+elif (( not_auth == 1 )) && ! auth_present; then
+    classify="dead"
+    reason="grok models reported not authenticated and auth.json is missing — cannot refresh"
+elif (( not_auth == 1 )) && auth_present; then
+    classify="dead"
+    reason="grok models reported not authenticated after the CLI refresh attempt — refresh token is dead"
+elif auth_present && (( models_rc == 0 )) && (( not_auth == 0 )); then
+    classify="healthy"
+    reason="auth.json present and grok models did not report not authenticated"
+else
+    classify="dead"
+    reason="no usable SuperGrok credential (auth.json missing or grok models rc=$models_rc)"
+fi
+
+pi_status=$(pi_auth_status)
+
+if [[ "$classify" == "healthy" ]]; then
+    write_both_models 200 healthy false none
+    log "OK grok live-valid ($reason) pi_auth_status=$pi_status"
+    {
+        printf '\n[%s] [SEAT-LIVE-VALIDATE-OK] grok healthy (%s)\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason"
+    } >>"$TRIAGE" 2>/dev/null || true
+    exit 0
+fi
+
+write_both_models 401 credentials_bad true credentials_bad
+
+class_note=""
+if [[ "$pi_status" == "ready" ]]; then
+    class_note=" pi auth check reported status=ready (presence only) while the live grok CLI is dead — the fleet-ops#917 class."
+fi
+
+loud "SEAT-LIVE-VALIDATE-GROK-DEAD" "$reason.$class_note Nish must run: grok login --device-auth"
+
+file_finding \
+    "SuperGrok seat dead: grok CLI unauthenticated; needs grok login --device-auth" \
+    "SuperGrok live-validate (fleet-ops#917) found a dead grok CLI seat.
+
+Reason: ${reason}.${class_note}
+
+\`pi auth check --provider grok\` only tests that a credential is present (or returns invalid_state when the file is missing). It does not call x.ai. A dead OAuth token therefore looks ready and the prepaid SuperGrok week expires unused.
+
+Refresh was attempted by running \`grok models\` (the CLI's own silent OIDC refresh). There is nothing left to mint from: either \`~/.grok/auth.json\` is missing, or the stored refresh token was rejected.
+
+Nish must sign in TODAY on netcup-rs2000 (he leaves tomorrow for 11 days):
+
+    grok login --device-auth
+
+That is the headless device-code flow from \`grok login --help\`. Browser \`grok login --oauth\` will not work on this VPS. Do not export an x.ai API key — SuperGrok is the subscription path, and api.x.ai credits are a money line (fleet-ops#41).
+
+Until then the canary writes credentials_bad on grok/grok-4.6 and grok/grok-4.5 so pick_seat will not route to a corpse.
+
+signal: rule-enforcement/sr-prepaid-max-util"
+
+exit 0
