@@ -465,6 +465,13 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now agent-cron-0509-daily-market-signal.timer
     fi
   fi
+  # fleet-ops#541: weekly continuous-research sweep. Same #183 class as the
+  # 0509 timer: [Install] in MANIFEST is not enough; install.sh must enable.
+  if [ -f "$here/systemd/quality-research-weekly.timer" ]; then
+    if ! is_unit_enabled quality-research-weekly.timer; then
+      "$SYSTEMCTL" --user enable --now quality-research-weekly.timer
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

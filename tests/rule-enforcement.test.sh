@@ -92,6 +92,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | continuous research" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -104,6 +106,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: execution-is-review source is enforced (observe-to-close for #537)"
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
+  ok "live join: continuous research source is enforced (observe-to-close for #541)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -724,4 +727,9 @@ ok "rule-enforcement: work-supply 24h/12h drain canary drill"
 bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3 catalog canary drill failed"
 ok "rule-enforcement: opencode/commandcode MiniMax M3 catalog canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, and opencode-m3 catalog drills"
+# fleet-ops#541: weekly continuous-research sweep. Nested host so the
+# worker token does not need to edit .github/workflows/**.
+bash "$here/quality-research-weekly.test.sh" || fail "quality-research-weekly drill failed"
+ok "rule-enforcement: quality-research-weekly drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, and quality-research-weekly drills"

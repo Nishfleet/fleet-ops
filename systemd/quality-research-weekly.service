@@ -1,0 +1,22 @@
+[Unit]
+Description=Weekly quality>speed>efficiency research sweep (fleet-ops#541)
+# Named reason: the 2026-08-25 "continuous research" ledger line is a
+# recurring delta sweep. agent-cron-run already owns seat rotation and
+# pi --print; this unit is that runner with a weekly slug. Restart=on-failure
+# re-seats a transient 429 instead of waiting until next Sunday.
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WORKDIR=/home/nish
+Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
+Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
+Environment=PI_BIN=/home/nish/.local/bin/pi
+ExecStart=/home/nish/.local/bin/agent-cron-run quality-research-weekly
+Restart=on-failure
+RestartSec=900
+TimeoutStartSec=45min

@@ -479,10 +479,9 @@
     {
       "id": "led-continuous-research",
       "source": "decisions-ledger.md: 2026-08-25 | continuous research",
-      "mechanism": "No recurring research sweep unit remains after the fleet wipe",
-      "proof": "Nishfleet/fleet-ops#541",
-      "status": "queued(#541)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Weekly systemd timer fires agent-cron-run quality-research-weekly (Sun 03:00 IST). Delta sweep appends quality-first-recos.md and files cap-bound 0509 issues. CI drill rejects a missing unit, a non-agent-cron ExecStart, or a matrix row that drops back to queued.",
+      "proof": "systemd/quality-research-weekly.timer; systemd/quality-research-weekly.service; prompts/quality-research-weekly.md; tests/quality-research-weekly.test.sh; bin/agent-cron-run",
+      "status": "enforced"
     },
     {
       "id": "led-portable-standards",

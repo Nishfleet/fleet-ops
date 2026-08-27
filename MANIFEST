@@ -109,6 +109,12 @@ systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/use
 # installed by MANIFEST, otherwise a missing untracked prompt causes every
 # scheduled timer fire to FATAL immediately.
 prompts/0509-daily-market-signal.md /home/nish/.pi/agent/prompts/0509-daily-market-signal.md
+# fleet-ops#541: weekly quality>speed>efficiency research sweep. Reuses
+# agent-cron-run (need <slug>) instead of a second wrapper. Same live unit
+# names as the 2026-08-26 drop-in so install overwrites that unmanaged pair.
+systemd/quality-research-weekly.service /home/nish/.config/systemd/user/quality-research-weekly.service
+systemd/quality-research-weekly.timer /home/nish/.config/systemd/user/quality-research-weekly.timer
+prompts/quality-research-weekly.md /home/nish/.pi/agent/prompts/quality-research-weekly.md
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
