@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Shared state for the weekly maintenance window. Sourced, not executed.
+export PATH="${MAINT_PATH_PREPEND:+$MAINT_PATH_PREPEND:}/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DEBIAN_FRONTEND=noninteractive
+
+STATE="${STATE:-/home/nish/.local/state/vps-maintenance}"
+FLAG=/home/nish/workspaces/agent-state/maintenance.json
+SELF_TIMERS="vps-maintenance-quiesce.timer vps-weekly-update.timer"
+# Long-lived helpers that hold node/chrome/port locks; stopped last, restarted first.
+HOLD_SERVICES=(browser-harness-chrome.service camofox-browser.service crawl4ai.service)
+
+mkdir -p "$STATE"
+
+say()  { printf '\n=== %s === %s\n' "$1" "$(date -Is)"; }
+note() { printf '   %s\n' "$*"; }
+
+# status reason expected_clear_at
+set_flag() {
+  python3 - "$FLAG" "$1" "$2" "$3" <<'PY'
+import json,sys,datetime,os,tempfile
+path,status,reason,clear_at=sys.argv[1:5]
+d={"status":status,"reason":reason,"host":os.uname().nodename,
+   "opened_at":datetime.datetime.now().astimezone().isoformat(),
+   "expected_clear_at":clear_at,
+   "contract":"exit-10 from `agent-maintenance-status` means: do not START new work. Finish and commit what is already running."}
+if status=="clear": d={"status":"clear","host":os.uname().nodename,
+   "cleared_at":datetime.datetime.now().astimezone().isoformat()}
+fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
+os.replace(tmp,path)
+PY
+}
+
+# Tell every live agent, whatever product it is: tmux panes, then every tty.
+broadcast() {
+  local msg="$1"
+  if command -v tmux >/dev/null; then
+    for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+      tmux display-message -t "$s" "$msg" 2>/dev/null || true
+    done
+  fi
+  wall -n "$msg" 2>/dev/null || true
+  logger -t vps-maintenance "$msg" 2>/dev/null || true
+}
+
+# Restart a snapshotted set one unit at a time. A unit whose trigger service no
+# longer exists is a pre-existing orphan, not a window failure — say so and move on.
+# Sets START_FAILED / START_ORPHANED for the caller.
+start_units() {
+  START_FAILED=(); START_ORPHANED=()
+  local u out
+  for u in "$@"; do
+    [ -n "$u" ] || continue
+    out=$(systemctl --user start "$u" 2>&1) && continue
+    if journalctl --user -u "$u" -n 3 --no-pager -o cat 2>/dev/null \
+         | grep -qE 'to trigger not loaded|not found|Refusing to start'; then
+      START_ORPHANED+=("$u")
+    else
+      START_FAILED+=("$u")
+    fi
+  done
+  [ ${#START_ORPHANED[@]} -gt 0 ] && note "ORPHANED (trigger unit missing, skipped): ${START_ORPHANED[*]}"
+  [ ${#START_FAILED[@]}   -eq 0 ]
+}
+
+notify() {  # notify <urgent|routine> <message>
+  local mode=$1; shift
+  if [ "$mode" = urgent ]; then
+    hermes send -t telegram --urgent "$*" && return 0
+  else
+    hermes send -t telegram "$*" && return 0
+  fi
+  printf '%s\n' "$*" >> "$STATE/undelivered.log"
+  return 1
+}
+
+# Write $STATE/sudo-probe.txt via the privileged path. Empty file means
+# passwordless sudo is dead — callers must fail-fast before QUIESCE.
+# Returns 0 if the probe is non-empty, 1 if empty.
+probe_privileged_path() {
+  local probe="${STATE:?}/sudo-probe.txt"
+  : > "$probe"
+  sudo -n systemctl is-active systemd-journald >"$probe" 2>/dev/null || true
+  [ -s "$probe" ]
+}
+
+# Bring tailscaled back if `tailscale status` is down. SSH on this box is
+# Tailscale-only; announce-only is a lockout (fleet-ops#1160).
+# Returns 0 if up (already or after recover), 1 if still down.
+recover_tailscale() {
+  if sudo -n tailscale status >/dev/null 2>&1; then
+    note "tailscale up"
+    return 0
+  fi
+  note "tailscale DOWN — re-enable/restart tailscaled"
+  sudo -n systemctl enable --now tailscaled.service >/dev/null 2>&1 || true
+  sudo -n systemctl restart tailscaled.service >/dev/null 2>&1 || true
+  sleep "${TAILSCALE_RECOVER_SLEEP:-8}"
+  if sudo -n tailscale status >/dev/null 2>&1; then
+    note "tailscale recovered after restart"
+    return 0
+  fi
+  note "tailscale still down — tailscale up"
+  sudo -n tailscale up >/dev/null 2>&1 || true
+  sleep "${TAILSCALE_UP_SLEEP:-5}"
+  if sudo -n tailscale status >/dev/null 2>&1; then
+    note "tailscale recovered after up"
+    return 0
+  fi
+  return 1
+}

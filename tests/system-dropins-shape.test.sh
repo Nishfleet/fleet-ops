@@ -142,3 +142,7 @@ bash "$here/oomd-drill.test.sh"
 # fleet-ops#92: slice syntax. Same CI-list constraint; the dedicated
 # unit-verify job cannot gain systemd/*.slice without a workflow push.
 bash "$here/systemd-analyze-slices.test.sh"
+
+# fleet-ops#1160: post-reboot Tailscale recover + Persistent retry timer.
+# Same CI-list constraint.
+bash "$here/vps-post-reboot-verify.test.sh"

@@ -480,11 +480,39 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now fleet-weekly-fleet-review.timer
     fi
   fi
+  # fleet-ops#1160: the post-reboot retry timer is system-scope
+  # (After=tailscaled at boot). Default install.sh skips /etc/, and
+  # fleet-ops-deploy never passes --system, so merge-to-live would leave
+  # the vacation SSH recover unarmed. When passwordless sudo works,
+  # install the two system units and enable the timer here.
+  if [ -f "$here/systemd/system/vps-post-reboot-verify.timer" ]; then
+    if sudo -n true 2>/dev/null; then
+      sudo install -D -m 0644 -o root -g root \
+        "$here/systemd/system/vps-post-reboot-verify.service" \
+        /etc/systemd/system/vps-post-reboot-verify.service
+      sudo install -D -m 0644 -o root -g root \
+        "$here/systemd/system/vps-post-reboot-verify.timer" \
+        /etc/systemd/system/vps-post-reboot-verify.timer
+      sudo -n systemctl daemon-reload
+      sudo -n systemctl enable vps-post-reboot-verify.service
+      sudo -n systemctl enable --now vps-post-reboot-verify.timer
+      echo "enabled (system): vps-post-reboot-verify.timer"
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.
   if [ "$system_unit_changed" = 1 ]; then
     sudo systemctl daemon-reload
+  fi
+  # fleet-ops#1160: post-reboot Tailscale recover retry. System timer;
+  # install.sh --system must enable it (same class as #183 user timers).
+  if [ -f "$here/systemd/system/vps-post-reboot-verify.timer" ]; then
+    if sudo -n true 2>/dev/null; then
+      sudo -n systemctl enable vps-post-reboot-verify.service
+      sudo -n systemctl enable --now vps-post-reboot-verify.timer
+      echo "enabled (system): vps-post-reboot-verify.timer"
+    fi
   fi
 fi
 exit "$rc"

@@ -1,0 +1,16 @@
+[Unit]
+Description=Retry post-reboot verify if resume-after-boot is still set
+# Named reason: weekly-update reboot (Sun ~03:30 IST) can leave Tailscale
+# down; the boot-time oneshot may miss a still-coming-up tailscaled.
+# Persistent calendar + OnBootSec=30min re-run verify ~30 min after the
+# expected reboot so vacation SSH is not a 10-day outage (fleet-ops#1160).
+
+[Timer]
+OnBootSec=30min
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+AccuracySec=1min
+Unit=vps-post-reboot-verify.service
+
+[Install]
+WantedBy=timers.target

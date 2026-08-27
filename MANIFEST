@@ -250,6 +250,14 @@ systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user
 systemd/pi-scout@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-scout@.service.d/10-keystone-hc.conf
 systemd/intake-reconcile.service.d/20-keystone-hc.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/20-keystone-hc.conf
 systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/tailscaled.service.d/50-restart-always.conf
+# fleet-ops#1160: weekly-update reboot must recover Tailscale/SSH, not
+# announce-only. Scripts live in ~/.local/bin; the Persistent retry timer
+# is system-scope so it fires even if the user instance is slow.
+bin/vps-maintenance-lib /home/nish/.local/bin/vps-maintenance-lib
+bin/vps-post-reboot-verify /home/nish/.local/bin/vps-post-reboot-verify
+bin/vps-weekly-update /home/nish/.local/bin/vps-weekly-update
+systemd/system/vps-post-reboot-verify.service /etc/systemd/system/vps-post-reboot-verify.service
+systemd/system/vps-post-reboot-verify.timer /etc/systemd/system/vps-post-reboot-verify.timer
 # fleet-ops#32: declared-set reconciler. Closes the loop between the
 # declared repo set in config/intake-repos.json and the live pi-intake /
 # pi-scout systemd state — the four silent reversions on 2026-08-25/26

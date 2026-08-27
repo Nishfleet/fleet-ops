@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -uo pipefail
+. /home/nish/.local/bin/vps-maintenance-lib
+exec > >(tee "$STATE/post-reboot.log") 2>&1
+
+[ -f "$STATE/resume-after-boot" ] || { note "no resume marker; nothing to do"; exit 0; }
+
+say "POST-REBOOT RESUME"
+FAIL=()
+
+# Enabled timers return on their own at boot. Only the active-but-disabled ones need a nudge.
+if [ -s "$STATE/paused-timers-not-enabled" ]; then
+  mapfile -t T < "$STATE/paused-timers-not-enabled"
+  start_units "${T[@]}" || FAIL+=("timers that would not restart: ${START_FAILED[*]}")
+fi
+if [ -s "$STATE/paused-paths" ]; then
+  mapfile -t P < "$STATE/paused-paths"
+  start_units "${P[@]}" || FAIL+=("path units that would not restart: ${START_FAILED[*]}")
+fi
+start_units "${HOLD_SERVICES[@]}" || FAIL+=("hold services that would not restart: ${START_FAILED[*]}")
+
+# Recover before judging. Announce-only here is a 10-day SSH lockout.
+recover_tailscale || FAIL+=("tailscale DOWN after recover — SSH path at risk")
+
+sleep 30  # let boot-time units settle before judging them
+UF=$(systemctl --user list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
+SF=$(systemctl        list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
+[ -n "$UF" ] && FAIL+=("failed user units: $UF")
+[ -n "$SF" ] && FAIL+=("failed system units: $SF")
+
+if [ ${#FAIL[@]} -gt 0 ]; then
+  # Keep resume-after-boot so the Persistent retry timer can re-run verify.
+  notify urgent "VPS REBOOT RECOVERY FAILED on $(hostname): $(printf '%s; ' "${FAIL[@]}") — log: $STATE/post-reboot.log"
+  exit 1
+fi
+set_flag clear '' ''
+rm -f "$STATE/resume-after-boot"
+notify routine "VPS rebooted cleanly after weekly update. kernel=$(uname -r), agents resumed, 0 failed units."
