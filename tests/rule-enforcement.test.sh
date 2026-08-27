@@ -79,6 +79,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report GLM 5.3 flash ClinePass as enforced covered_rows (fleet-ops#462): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | repo visibility" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report repo visibility as enforced covered_rows (fleet-ops#542): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report Tailscale ACL lockdown as enforced covered_rows (fleet-ops#544): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -87,6 +89,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: NORTH STAR quality source is enforced (observe-to-close for #459)"
   ok "live join: GLM 5.3 flash ClinePass source is enforced (observe-to-close for #462)"
   ok "live join: repo visibility source is enforced (observe-to-close for #542)"
+  ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -679,4 +682,9 @@ ok "rule-enforcement: ClinePass GLM 5.3 flash canary drill"
 bash "$here/fleet-repo-visibility-canary.test.sh" || fail "repo-visibility canary drill failed"
 ok "rule-enforcement: repo-visibility canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, and repo-visibility drills"
+# fleet-ops#544: VPS→Mac Tailscale lockdown canary. Same nested-CI host so
+# this token does not need a workflow edit.
+bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"
+ok "rule-enforcement: Tailscale ACL lockdown canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, and tailscale-acl drills"

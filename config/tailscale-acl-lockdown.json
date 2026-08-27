@@ -1,0 +1,5 @@
+{
+  "description": "Compiled Tailscale PacketFilter on the VPS must not allow this node to the Mac. Ledger 2026-08-24: live grants already lockdown; do not paste acl-draft.json (it would loosen).",
+  "self_name_needles": ["netcup"],
+  "mac_name_needles": ["macbook"]
+}

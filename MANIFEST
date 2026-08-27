@@ -269,6 +269,12 @@ bin/fleet-cline-glm53-canary /home/nish/.local/bin/fleet-cline-glm53-canary
 # Heartbeat-tier1 block 24.
 bin/fleet-repo-visibility-canary /home/nish/.local/bin/fleet-repo-visibility-canary
 config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.json
+# fleet-ops#544: VPS→Mac Tailscale grants lockdown canary (led-tailscale).
+# Fail-loud if compiled PacketFilter (`tailscale debug netmap`) allows this
+# VPS as src toward the Mac. Heartbeat-tier1 block 25.
+bin/fleet-tailscale-acl-canary /home/nish/.local/bin/fleet-tailscale-acl-canary
+lib/tailscale-acl-lockdown.py /home/nish/.local/bin/tailscale-acl-lockdown.py
+config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
