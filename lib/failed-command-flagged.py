@@ -7,10 +7,12 @@ with isError / 'Command exited with code N' / timeout, and no later
 assistant text that names the failure. Burying it in the tool result the
 user may not read does not count.
 
-grep/rg/diff exit 1 (POSIX no-match) is not a failure. Exit >= 2,
-timeouts, and non-grep exit 1 (the 404 origin case) are. A spawn-guard
-or harness block (SPAWN_BLOCKED / "Dangerous command blocked") is not a
-ran-and-failed command: the call never executed.
+grep/rg/diff exit 1 (POSIX no-match) is not a failure. ls no-match
+(exit 2) and which no-match (exit 1) are also treated as probes when
+no real error text is present. Exit >= 2, timeouts, and non-probe
+exit 1 (the 404 origin case) are. A spawn-guard or harness block
+(SPAWN_BLOCKED / "Dangerous command blocked") is not a ran-and-failed
+command: the call never executed.
 
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
@@ -31,13 +33,24 @@ TIMEOUT_RE = re.compile(r"Command timed out", re.I)
 # Pipeline stage that is a search/diff whose exit 1 means "no match".
 BENIGN_STAGE_RE = re.compile(
     r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
-    r"(?:grep|egrep|fgrep|rg|ripgrep|diff|git\s+grep|git\s+diff)\b",
+    r"(?:grep|egrep|fgrep|rg|ripgrep|diff|git\s+grep|git\s+diff|which)\b",
     re.I,
 )
 # Real errors that must not hide behind a grep in the same script.
 REAL_ERR_RE = re.compile(
     r"(Not Found|Permission denied|HTTP\s*[45]\d\d|"
     r"error TS\d+|API rate limit)",
+    re.I,
+)
+# ls(1) exits 2 when a path or glob does not match. Agents use this as a probe,
+# so treat it like grep no-match unless the output shows a real ls error.
+LS_BENIGN_RE = re.compile(
+    r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?(?:ls|ll)\b",
+    re.I,
+)
+# ls error text that must not be treated as a no-match probe.
+LS_ERR_RE = re.compile(
+    r"(?:ls:|cannot access|No such file or directory|Permission denied)",
     re.I,
 )
 # Unquoted assistant report. Tight on the standing-rule verbs.
@@ -110,11 +123,16 @@ def _exit_code(text: str) -> int | None:
 
 
 def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
-    if code != 1:
+    if code is None:
         return False
     if TIMEOUT_RE.search(text):
         return False
     if REAL_ERR_RE.search(text):
+        return False
+    # ls(1) exits 2 when a path or glob does not match; agents use this as a probe.
+    if LS_BENIGN_RE.search(command) and code == 2 and not LS_ERR_RE.search(text):
+        return True
+    if code != 1:
         return False
     return BENIGN_STAGE_RE.search(command) is not None
 
