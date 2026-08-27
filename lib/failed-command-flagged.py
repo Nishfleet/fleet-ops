@@ -237,6 +237,32 @@ the dedicated regression test
 tests/fleet-failed-command-compound-ls-permission-denied.test.sh
 pins that it does not. The auto-filed issue closes via
 observe-to-close when the session mtime ages out of the 24h window.
+A same-turn sibling of a `git clone` into `/tmp/<fresh-clone>` that
+races with `cd /tmp/<fresh-clone> 2>/dev/null && ls ...` and returns
+`(no output)  Command exited with code 1` is a real swallowed failure
+(fleet-ops#1217): the clone is still in flight, `cd` fails, stderr is
+silenced so the snippet is empty, and the next assistant turn is a
+silent `cd && ls` recovery with no user-facing text naming the failure.
+The detector already flags this class via the generic
+`isError or code != 0` path. `cd` is not in BENIGN_STAGE_RE.
+`LS_BENIGN_RE` matches the command text because it contains `ls`, but
+that short-circuit only applies on exit 2; the live shape is exit 1.
+A future refactor that treats `cd ... 2>/dev/null` as a probe, treats
+`(no output)` + exit 1 as benign whenever stderr is silenced, broadens
+`LS_BENIGN_RE` to code==1, or lets a same-turn sibling success mask a
+sibling failure would silently suppress this real signal. The class is
+distinct from #793 (`bash /tmp/<fresh-script>` exit 1 with the same
+empty snippet, different command), #765 (`cd ... 2>/dev/null && git
+status` exit 128 with `fatal: not a git repository`), and grep/rg
+POSIX no-match (BENIGN_STAGE_RE; the live session also carried a later
+`grep -nF` with the same empty snippet, which must stay a probe). The
+dedicated regression test
+tests/fleet-failed-command-clone-race-cd.test.sh pins that. The
+auto-filed issue closes via observe-to-close when the session mtime
+ages out of the 24h window. Live session
+2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
+`cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
+head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
