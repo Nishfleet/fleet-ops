@@ -607,7 +607,7 @@
     {
       "id": "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou",
       "source": "decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: \"can't stress enough\")",
-      "mechanism": "Heartbeat volume-lane-order canary: volume_providers_in_order must equal ollama,devin,commandcode,cline exactly; every volume provider must be live (cap>0 + models); cursor must not appear in the volume prefix; seat-lib pick_seat must load SEAT_VOLUME_ORDER and prefer the volume_seats bucket before leftover free / leftover prepaid / metered. Observe-to-open when xai-oauth is in models.json but unwired (coordinates #1163).",
+      "mechanism": "Heartbeat volume-lane-order canary: volume_providers_in_order must equal ollama,devin,commandcode,cline exactly; every volume provider must be live (cap>0 + models); cursor must not appear in the volume prefix; seat-lib pick_seat must load SEAT_VOLUME_ORDER and prefer the volume_seats bucket before leftover free / leftover prepaid / metered. Observe-to-open when xai-oauth is in models.json but unwired (coordinates #1163). Observe-to-close: any open issue carrying a `volume-lane-order-canary: <id> <kind>` marker is re-evaluated on every tick; once the underlying signal clears (volume prefix, volume provider cap/models, cursor exclusion, seat-lib wire), the canary drains the issue with an evidence comment. xai-oauth stays out of scope (wire owned by #1163).",
       "proof": "bin/fleet-volume-lane-order-canary; tests/fleet-volume-lane-order-canary.test.sh; config/seat-caps.json volume_providers_in_order; lib/seat-lib.sh SEAT_VOLUME_ORDER + volume_seats; fleet-heartbeat-tier1 block 33; fleet-ops#1178",
       "status": "enforced"
     },
