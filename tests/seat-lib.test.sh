@@ -2102,6 +2102,14 @@ bash "$here/fleet-failed-command-git-cherry-pick-empty.test.sh" || fail "fleet-f
 # is an invalid `gh` flag and is a real swallowed failure. Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-body.test.sh" || fail "fleet-failed-command-gh-issue-view-body tests failed"
+# fleet-ops#1219: `gh issue view <N> -R ... --json body,title,comments,label`
+# (singular `label` instead of `labels`) is not a valid `--json` filter —
+# `gh` exits 1 with `Unknown JSON field: "label"` and the available-fields
+# list. The next assistant turn is thinking-only plus follow-up toolCalls,
+# so the failure is never named. Distinct from #1055 (`unknown flag:
+# --body`) and #1003 (python `KeyError` after a valid `--json` filter).
+# Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-gh-issue-view-unknown-field.test.sh" || fail "fleet-failed-command-gh-issue-view-unknown-field tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
