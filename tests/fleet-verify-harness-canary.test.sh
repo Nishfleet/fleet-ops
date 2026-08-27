@@ -19,6 +19,17 @@
 #      local HEAD was behind origin/main).
 #  14. ORIGIN_FALLBACK=0 re-asserts the local-only missing path (the pre-#927
 #      behavior), proving the seam is real and the fallback is opt-out.
+#  18. Leftover-duplicate drain (fleet-ops#812 / #999): tinystudio-in is
+#      ok via origin/main, two leftover open issues with the same marker
+#      (#812 and #999) plus one unrelated issue. Both leftovers close on
+#      this tick; the unrelated issue is not touched; nothing new is filed.
+#  19. Still-gap: leftover open issue is NOT closed when the harness is
+#      still missing.
+#  20. FILE=0 skips observe-to-close (live probes must not close).
+#  21. Open-list --limit 50 class (fleet-ops#999): 60 dummy issues sit
+#      ahead of the marker. Dedup must still see #812 and not file a
+#      second copy. The live desk had 200+ open issues; --limit 50 missed
+#      #812 and filed leftover #999.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,8 +64,12 @@ cat >"$gh_fake" <<'FAKE'
 printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
 case "$*" in
   *"issue list"*)
+    limit=30
+    if [[ "$*" =~ --limit[[:space:]]+([0-9]+) ]]; then
+      limit="${BASH_REMATCH[1]}"
+    fi
     if [[ -f "${GH_OPEN_ISSUES:-/dev/null}" ]]; then
-      cat "${GH_OPEN_ISSUES}"
+      jq --argjson n "$limit" '.[0:$n]' "${GH_OPEN_ISSUES}"
     else
       echo '[]'
     fi
@@ -64,12 +79,19 @@ case "$*" in
     echo "https://github.com/Nishfleet/fleet-ops/issues/999"
     exit 0
     ;;
+  *"issue close"*)
+    printf '%s\n' "$*" >>"${GH_CLOSED:-/dev/null}"
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
 chmod +x "$gh_fake"
 export GH="$gh_fake"
 export GH_LOG="$gh_log"
+closed_log="$scratch/closed.log"
+: >"$closed_log"
+export GH_CLOSED="$closed_log"
 export PATH="$scratch:$PATH"
 
 products="$scratch/products"
@@ -236,6 +258,9 @@ if grep -q 'issue create' "$gh_log"; then
   fail "scenario6: must not create again (gh=$(cat "$gh_log"))"
 fi
 grep -q 'dedup:' <<<"$env_out" || fail "scenario6: must log dedup ($env_out)"
+if grep -q 'issue close' "$gh_log"; then
+  fail "scenario6: still-gap must not observe-to-close (gh=$(cat "$gh_log"))"
+fi
 unset GH_OPEN_ISSUES
 ok "scenario6: open marker is not filed twice"
 
@@ -539,4 +564,168 @@ grep -q 'VERIFY-HARNESS-VIOLATION' <<<"$env_out" || fail "scenario17: must LOUD 
 grep -q 'issue create' "$gh_log" || fail "scenario17: must auto-file (gh=$(cat "$gh_log"))"
 ok "scenario17: fallback is not a free pass — both remotes no-harness is a real violation"
 
-ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty"
+# --- 18. leftover-duplicate drain (fleet-ops#812 / #999) -------------------
+# Live class: tinystudio-in origin/main already has the harness (PR #281)
+# but local HEAD is a gate branch without it. Leftover #812 was still
+# open; --limit 50 missed it and a later tick filed #999. When inspect
+# returns ok via origin fallback, BOTH leftovers must close; an unrelated
+# issue must stay open; nothing new is filed.
+: >"$gh_log"; : >"$triage"; : >"$closed_log"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+make_valid_harness "$products/0509" 0509
+origin_bare="$scratch/origin-tinystudio-18.git"
+git -c init.defaultBranch=main init -q --bare "$origin_bare"
+work_clone="$scratch/origin-tinystudio-work-18"
+git init -q -b main "$work_clone"
+git -C "$work_clone" config user.email t@t
+git -C "$work_clone" config user.name t
+make_valid_harness "$work_clone" tinystudio-in
+git -C "$work_clone" remote add origin "$origin_bare"
+git -C "$work_clone" push -q origin main
+git clone -q "$origin_bare" "$products/tinystudio-in"
+git -C "$products/tinystudio-in" config user.email t@t
+git -C "$products/tinystudio-in" config user.name t
+git -C "$products/tinystudio-in" checkout -q --orphan stale-local
+git -C "$products/tinystudio-in" rm -rf --quiet .claude 2>/dev/null || true
+rm -rf "$products/tinystudio-in/.claude"
+echo "no harness here" >"$products/tinystudio-in/README"
+git -C "$products/tinystudio-in" add README
+git -C "$products/tinystudio-in" commit -q -m "stale local HEAD without harness"
+git -C "$products/tinystudio-in" rev-parse --verify --quiet origin/main >/dev/null \
+  || fail "scenario18: fixture must have origin/main ref"
+jq -n \
+  --arg b812 $'body\nfleet-verify-harness-canary: missing-harness tinystudio-in\n' \
+  --arg b999 $'body\nfleet-verify-harness-canary: missing-harness tinystudio-in\n' \
+  --arg b42 $'unrelated body, no verify-harness marker\n' \
+  '[{number: 812, body: $b812}, {number: 999, body: $b999}, {number: 42, body: $b42}]' \
+  >"$scratch/open.json"
+export GH_OPEN_ISSUES="$scratch/open.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18: leftover drain must stay exit 0, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-OK' <<<"$env_out" || fail "scenario18: must log OK ($env_out)"
+grep -q 'stale-local: tinystudio-in' <<<"$env_out" || fail "scenario18: must log stale-local ($env_out)"
+grep -q 'OBSERVE-CLOSED tinystudio-in -> #812' <<<"$env_out" \
+  || fail "scenario18: must close leftover #812 ($env_out)"
+grep -q 'OBSERVE-CLOSED tinystudio-in -> #999' <<<"$env_out" \
+  || fail "scenario18: must close leftover #999 ($env_out)"
+if grep -q 'OBSERVE-CLOSED .* -> #42' <<<"$env_out"; then
+  fail "scenario18: must not close unrelated #42 ($env_out)"
+fi
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario18: must not file (gh=$(cat "$gh_log"))"
+fi
+grep -q 'issue close 812 ' "$closed_log" || fail "scenario18: gh must close 812 (closed=$(cat "$closed_log"))"
+grep -q 'issue close 999 ' "$closed_log" || fail "scenario18: gh must close 999 (closed=$(cat "$closed_log"))"
+if grep -q 'issue close 42 ' "$closed_log"; then
+  fail "scenario18: gh must not close 42 (closed=$(cat "$closed_log"))"
+fi
+unset GH_OPEN_ISSUES
+ok "scenario18: leftover #812 and #999 both close; unrelated #42 stays (fleet-ops#999)"
+
+# --- 19. still-gap leftover is not closed ---------------------------------
+: >"$gh_log"; : >"$triage"; : >"$closed_log"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+make_valid_harness "$products/0509" 0509
+mkdir -p "$products/tinystudio-in"
+git init -q -b main "$products/tinystudio-in"
+git -C "$products/tinystudio-in" config user.email t@t
+git -C "$products/tinystudio-in" config user.name t
+echo x >"$products/tinystudio-in/README"
+git -C "$products/tinystudio-in" add README
+git -C "$products/tinystudio-in" commit -q -m "no harness"
+jq -n --arg b $'body\nfleet-verify-harness-canary: missing-harness tinystudio-in\n' \
+  '[{number: 812, body: $b}]' >"$scratch/open.json"
+export GH_OPEN_ISSUES="$scratch/open.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario19: still-gap must stay exit 0, got rc=$env_rc ($env_out)"
+grep -q 'deferred gap: tinystudio-in' <<<"$env_out" || fail "scenario19: must name deferred ($env_out)"
+if grep -q 'OBSERVE-CLOSED' <<<"$env_out"; then
+  fail "scenario19: still-gap must not close ($env_out)"
+fi
+if grep -q 'issue close' "$closed_log"; then
+  fail "scenario19: gh must not close (closed=$(cat "$closed_log"))"
+fi
+unset GH_OPEN_ISSUES
+ok "scenario19: still-gap leftover is not closed"
+
+# --- 20. FILE=0 skips observe-to-close -------------------------------------
+: >"$gh_log"; : >"$triage"; : >"$closed_log"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+make_valid_harness "$products/0509" 0509
+origin_bare="$scratch/origin-tinystudio-20.git"
+git -c init.defaultBranch=main init -q --bare "$origin_bare"
+work_clone="$scratch/origin-tinystudio-work-20"
+git init -q -b main "$work_clone"
+git -C "$work_clone" config user.email t@t
+git -C "$work_clone" config user.name t
+make_valid_harness "$work_clone" tinystudio-in
+git -C "$work_clone" remote add origin "$origin_bare"
+git -C "$work_clone" push -q origin main
+git clone -q "$origin_bare" "$products/tinystudio-in"
+git -C "$products/tinystudio-in" config user.email t@t
+git -C "$products/tinystudio-in" config user.name t
+git -C "$products/tinystudio-in" checkout -q --orphan stale-local
+git -C "$products/tinystudio-in" rm -rf --quiet .claude 2>/dev/null || true
+rm -rf "$products/tinystudio-in/.claude"
+echo "no harness here" >"$products/tinystudio-in/README"
+git -C "$products/tinystudio-in" add README
+git -C "$products/tinystudio-in" commit -q -m "stale local HEAD without harness"
+jq -n --arg b $'body\nfleet-verify-harness-canary: missing-harness tinystudio-in\n' \
+  '[{number: 999, body: $b}]' >"$scratch/open.json"
+export GH_OPEN_ISSUES="$scratch/open.json"
+set +e
+env_out=$(
+  FLEET_VERIFY_HARNESS_JSON="$scratch/verify-harness.json" \
+  FLEET_VERIFY_HARNESS_INTAKE="$scratch/intake-repos.json" \
+  FLEET_VERIFY_HARNESS_CHECKOUT_ROOT="$products" \
+  FLEET_VERIFY_HARNESS_FILE=0 \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+env_rc=$?
+set -e
+[[ "$env_rc" == "0" ]] || fail "scenario20: FILE=0 must stay exit 0, got rc=$env_rc ($env_out)"
+if grep -q 'OBSERVE-CLOSED' <<<"$env_out"; then
+  fail "scenario20: FILE=0 must not close ($env_out)"
+fi
+if grep -q 'issue close' "$closed_log"; then
+  fail "scenario20: FILE=0 gh must not close (closed=$(cat "$closed_log"))"
+fi
+unset GH_OPEN_ISSUES
+ok "scenario20: FILE=0 skips observe-to-close"
+
+# --- 21. --limit 50 class: 60 dummies ahead of the marker (fleet-ops#999) -
+# The live desk had 200+ open issues. file_finding used --limit 50, missed
+# #812, and filed leftover #999. Dedup must walk far enough to see the
+# marker sitting past index 50.
+: >"$gh_log"; : >"$triage"; : >"$closed_log"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+make_valid_harness "$products/0509" 0509
+mkdir -p "$products/tinystudio-in"
+git init -q -b main "$products/tinystudio-in"
+git -C "$products/tinystudio-in" config user.email t@t
+git -C "$products/tinystudio-in" config user.name t
+echo x >"$products/tinystudio-in/README"
+git -C "$products/tinystudio-in" add README
+git -C "$products/tinystudio-in" commit -q -m "no harness"
+jq -n --arg b $'body\nfleet-verify-harness-canary: missing-harness tinystudio-in\n' \
+  '[range(1;61) | {number: ., body: "unrelated"}] + [{number: 812, body: $b}]' \
+  >"$scratch/open.json"
+export GH_OPEN_ISSUES="$scratch/open.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario21: deep-list dedup must stay exit 0, got rc=$env_rc ($env_out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario21: must not file leftover when marker sits past index 50 (gh=$(cat "$gh_log"))"
+fi
+grep -q 'dedup:' <<<"$env_out" || fail "scenario21: must log dedup ($env_out)"
+if grep -nE '^[^#]*--limit[[:space:]]+50' "$bin"; then
+  fail "scenario21: canary must not hardcode --limit 50 (fleet-ops#999 leftover filing)"
+fi
+unset GH_OPEN_ISSUES
+ok "scenario21: marker past index 50 still dedups; --limit 50 is gone (fleet-ops#999)"
+
+ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty, leftover-drain, still-gap-no-close, file0-no-close, deep-list-dedup"

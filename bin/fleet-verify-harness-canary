@@ -7,31 +7,43 @@
 # LAUNCH / DOCTOR / DRIVE / EVIDENCE / CLEANUP plus a features/ map.
 #
 # STEP 0: ran `gh api --help`, `gh search code --help`,
+# `gh issue list --help`, `gh issue close --help`,
 # `fleet-exec-review-canary --help`, `research-before-build-check --help`.
 # gh api can GET a single contents path; gh search code can find
-# SKILL.md files (default --limit 30). Neither joins intake, checks the
-# five required headings, requires a features/ map, fail-louds enrolled
-# products, or auto-files. fleet-repo-visibility-canary classifies
-# product vs sink for *visibility*, not harness files. pstack
+# SKILL.md files (default --limit 30). gh issue list default --limit is
+# 30 (max 1000); gh issue close has --comment and --reason. Neither gh
+# primitive joins intake, checks the five required headings, requires a
+# features/ map, fail-louds enrolled products, auto-files, or
+# observe-to-closes leftover missing-harness tickets. fleet-repo-visibility-canary
+# classifies product vs sink for *visibility*, not harness files. pstack
 # create-verification-skill *generates* a skill; it does not watch that
-# every product repo still has one. This canary is that missing watch:
+# every product repo still has one. opencode-m3-catalog-canary
+# observe-to-closes a different marker. This canary is that missing watch:
 #   1. GATE (fail-loud, exit 1): an enrolled intake product whose HEAD
 #      lacks a valid verify-* skill.
 #   2. DETECTOR (auto-file, tick stays green): a deferred product with
 #      the same gap. Cap per tick. Deduped on the marker.
 #   3. FAIL-LOUD on a broken watch: intake/config missing or unparseable,
 #      enrolled checkout missing / not a git repo.
+#   4. OBSERVE-TO-CLOSE: when inspect_product returns ok, close EVERY
+#      open issue carrying `fleet-verify-harness-canary: missing-harness
+#      <name>` (leftover-duplicate drain for fleet-ops#812 / #999).
+#      Open-list uses --limit 1000; --limit 50 missed #812 on a 200-issue
+#      desk and filed leftover #999.
 #
 # Why not wrap an existing tool:
-#   0. Read gh api --help, gh search code --help, fleet-exec-review-canary
-#      --help, research-before-build-check --help. fleet-repo-visibility-canary
+#   0. Read gh api --help, gh search code --help, gh issue list --help,
+#      gh issue close --help, fleet-exec-review-canary --help,
+#      research-before-build-check --help. fleet-repo-visibility-canary
 #      has no --help (running it performs the visibility watch).
 #   1. Those flags do not already do this (no intake join, no heading
-#      check, no auto-file, no enrolled fail-loud).
+#      check, no auto-file, no enrolled fail-loud, no leftover drain).
 #   2. pstack create-verification-skill is a generator, not a fleet watch.
 #      repo-standards-sync / semgrep would need a workflow or .semgrep.yml
 #      edit this token cannot push.
 #   3. No managed GitHub setting watches a skill path per product repo.
+#   4. opencode-m3-catalog-canary observe-to-closes a different marker;
+#      it does not walk missing-harness tickets.
 #
 # No new scheduler. Run by fleet-heartbeat-tier1 block 29.
 #
@@ -41,8 +53,14 @@
 #   FLEET_VERIFY_HARNESS_CHECKOUT_ROOT  checkout root override
 #   FLEET_HEARTBEAT_TRIAGE
 #   FLEET_VERIFY_HARNESS_REPO     default Nishfleet/fleet-ops
-#   FLEET_VERIFY_HARNESS_FILE     1 (default) file issues; 0 skip create
-#   FLEET_VERIFY_HARNESS_CAP      per-tick file cap (default 5)
+#   FLEET_VERIFY_HARNESS_FILE     1 (default) file issues AND
+#                                 observe-to-close leftovers; 0 skip both
+#   FLEET_VERIFY_HARNESS_CAP      per-tick file cap (default 5). Does not
+#                                 cap observe-to-close: leftover piles
+#                                 (#812 + #999) must all drain same tick.
+#   FLEET_VERIFY_HARNESS_LIST_LIMIT  open-issue list cap (default 1000).
+#                                 Was hardcoded 50; that missed #812 on a
+#                                 200-issue desk and filed leftover #999.
 #   FLEET_VERIFY_HARNESS_ORIGIN_FALLBACK  1 (default) re-check against
 #                                 origin's default-branch HEAD before filing
 #                                 when the local checkout is stale; 0 disables
@@ -87,6 +105,7 @@ TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTB
 REPO="${FLEET_VERIFY_HARNESS_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_VERIFY_HARNESS_FILE:-1}"
 FILE_CAP="${FLEET_VERIFY_HARNESS_CAP:-5}"
+LIST_LIMIT="${FLEET_VERIFY_HARNESS_LIST_LIMIT:-1000}"
 # Re-check against origin's default-branch HEAD before filing when the local
 # checkout is stale (fleet-ops#927: canary filed 7s after the harness PR merged
 # because the local HEAD was behind origin/main). 1 = on (default), 0 = off.
@@ -121,7 +140,7 @@ file_finding() {
         return 0
     fi
     local existing
-    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+    existing=$("$GH" issue list -R "$REPO" --state open --limit "$LIST_LIMIT" \
         --json number,body 2>/dev/null \
         | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
         | head -n 1 || true)
@@ -140,6 +159,66 @@ ${marker}
     else
         log "WARN: gh issue create failed for $marker"
     fi
+}
+
+# observe_to_close — drain leftover missing-harness tickets when the
+# product is now ok (fleet-ops#812 / #999). GitHub's --limit 50 open-list
+# plus no close path left #812 sitting while a later tick filed #999 for
+# the same marker, even though tinystudio-in origin/main already had the
+# harness (Nishfleet/tinystudio-in#281). Walk every matching open issue;
+# do not first-only close; do not apply FILE_CAP (that cap is for filing).
+# Wired only when FLEET_VERIFY_HARNESS_FILE=1; FILE=0 live probes stay
+# read-only. Closes only on a positive inspect_product=ok — a still-missing
+# leftover stays open.
+observe_to_close() {
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "observe-to-close skipped (FLEET_VERIFY_HARNESS_FILE=$FILE_ISSUES)"
+        return 0
+    fi
+    local open_json="" list_rc=0
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit "$LIST_LIMIT" \
+        --json number,body 2>/dev/null)
+    list_rc=$?
+    set -e
+    if [[ "$list_rc" -ne 0 || -z "$open_json" ]]; then
+        log "observe-to-close: gh issue list failed (rc=$list_rc), skip"
+        return 0
+    fi
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "observe-to-close: gh issue list returned non-JSON, skip"
+        return 0
+    fi
+    local closed=0 num body marker name state ts comment close_rc
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row")
+        body=$(jq -r '.body // ""' <<<"$row")
+        [[ -n "$num" && "$num" != "null" ]] || continue
+        marker=$(grep -oE 'fleet-verify-harness-canary: missing-harness [^[:space:]]+' \
+            <<<"$body" | head -n 1 || true)
+        [[ -n "$marker" ]] || continue
+        name="${marker#fleet-verify-harness-canary: missing-harness }"
+        [[ -n "$name" ]] || continue
+        state="${product_state[$name]:-}"
+        if [[ "$state" != "ok" ]]; then
+            log "observe-to-close: keep #$num (name=$name state=${state:-unknown})"
+            continue
+        fi
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        comment="observe-to-close: fleet-verify-harness-canary missing-harness ${name} is no longer a gap on heartbeat tick at ${ts}. HEAD on the default branch has a valid verify skill (LAUNCH/DOCTOR/DRIVE/EVIDENCE/CLEANUP + features/). Leftover-duplicate drain (fleet-ops#812, fleet-ops#999)."
+        set +e
+        "$GH" issue close "$num" -R "$REPO" --reason completed --comment "$comment" >/dev/null 2>&1
+        close_rc=$?
+        set -e
+        if [[ "$close_rc" -eq 0 ]]; then
+            closed=$((closed + 1))
+            log "OBSERVE-CLOSED $name -> #$num (inspect_product=ok)"
+        else
+            log "observe-to-close: failed to close #$num (rc=$close_rc)"
+        fi
+    done < <(jq -c '.[]' <<<"$open_json")
+    log "observe-to-close: closed=$closed"
 }
 
 if [[ ! -f "$CONFIG" ]]; then
@@ -188,6 +267,7 @@ fi
 
 # Collect unique product names: enrolled + deferred, skip[] removed.
 declare -A seen_names=()
+declare -A product_state=()
 product_names=()
 while IFS= read -r name; do
     [[ -n "$name" ]] || continue
@@ -346,6 +426,7 @@ else
             enrolled=1
         fi
         state=$(inspect_product "$name")
+        product_state["$name"]="$state"
         case "$state" in
             ok)
                 log "ok: $name"
@@ -384,6 +465,8 @@ else
         esac
     done
 fi
+
+observe_to_close
 
 if (( violations > 0 )); then
     log "FAIL: $violations enrolled product harness gap(s); deferred_gaps=$deferred_gaps"
