@@ -44,6 +44,11 @@ bin/fleet-no-agent-names-check /home/nish/.local/bin/fleet-no-agent-names-check
 lib/fleet-wipe-lessons.py /home/nish/.local/lib/pi-packet/fleet-wipe-lessons.py
 bin/fleet-wipe-lessons-check /home/nish/.local/bin/fleet-wipe-lessons-check
 lib/guard_pi_packet.py /home/nish/.local/lib/pi-packet/guard_pi_packet.py
+# fleet-ops#539: shared-file collision PreToolUse guard for the "check other
+# agents before touching shared files" standing rule.
+lib/guard_shared_file_collision.py /home/nish/.local/lib/pi-packet/guard_shared_file_collision.py
+bin/guard_shared_file_collision /home/nish/.local/bin/guard_shared_file_collision
+bin/guard_shared_file_collision_hook.py /home/nish/.claude/hooks/guard_shared_file_collision.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 # fleet-ops#383: join helper for the rule-enforcement canary step.

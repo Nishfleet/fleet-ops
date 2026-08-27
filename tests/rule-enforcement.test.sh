@@ -691,4 +691,9 @@ ok "rule-enforcement: straitly ds4-pro canary drill"
 bash "$here/fleet-vault-knowledge-format.test.sh" || fail "vault knowledge-format drill failed"
 ok "rule-enforcement: vault knowledge-format drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, and vault-knowledge-format drills"
+# fleet-ops#539: shared-file collision PreToolUse guard. Nested host so the
+# worker token does not need to edit .github/workflows/**.
+bash "$here/guard-shared-file-collision.test.sh" || fail "shared-file collision guard drill failed"
+ok "rule-enforcement: shared-file collision guard drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, vault-knowledge-format, and shared-file-collision drills"
