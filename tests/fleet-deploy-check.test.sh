@@ -43,10 +43,16 @@ git -C "$checkout" commit -qm one
 head_before=$(git -C "$checkout" rev-parse HEAD)
 
 # A fake origin that we can advance.
+# fleet-ops#598: pin defaultBranch AND retarget HEAD after the first push.
+# GitHub-hosted git 2.55 still has init.defaultBranch=master, so an unpinned
+# `git init --bare` leaves HEAD at refs/heads/master. After pushing main,
+# `git clone` warns "remote HEAD refers to nonexistent ref" and has no local
+# main, so `git push origin main` dies (P14 run 33015880096).
 origin="$scratch/origin"
-git init -q --bare "$origin"
+git -c init.defaultBranch=main init -q --bare "$origin"
 git -C "$checkout" remote add origin "$origin"
 git -C "$checkout" push -q origin main
+git -C "$origin" symbolic-ref HEAD refs/heads/main
 
 # Deploy spy: logs invocations, returns configurable rc.
 deploy_spy="$scratch/deploy-spy.sh"
@@ -180,4 +186,84 @@ n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
 [[ "$n_after" == "$n_before" ]] || fail "deploy must not be invoked when lock held"
 ok "lock held -> yields, no deploy"
 
-echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock"
+# --- 8. fleet-ops#598: unpinned defaultBranch=master is the CI failure ------
+# Drill: a bare origin whose HEAD stays on master after a main push makes
+# clone + `git push origin main` fail with `src refspec main does not match
+# any`. Retargeting HEAD to refs/heads/main is the guard.
+repro_origin="$scratch/repro-origin"
+git -c init.defaultBranch=master init -q --bare "$repro_origin"
+[[ "$(git -C "$repro_origin" symbolic-ref HEAD)" == "refs/heads/master" ]] \
+  || fail "repro origin HEAD should be master"
+repro_co="$scratch/repro-co"
+git init -q -b main "$repro_co"
+git -C "$repro_co" config user.email t@t
+git -C "$repro_co" config user.name t
+echo one >"$repro_co/f"
+git -C "$repro_co" add f
+git -C "$repro_co" commit -qm one
+git -C "$repro_co" remote add origin "$repro_origin"
+git -C "$repro_co" push -q origin main
+[[ "$(git -C "$repro_origin" symbolic-ref HEAD)" == "refs/heads/master" ]] \
+  || fail "pushing main must not retarget unpinned origin HEAD"
+repro_tmp="$scratch/repro-tmp"
+git clone -q "$repro_origin" "$repro_tmp" 2>/dev/null || true
+git -C "$repro_tmp" config user.email t@t
+git -C "$repro_tmp" config user.name t
+echo two >"$repro_tmp/x"
+git -C "$repro_tmp" add x
+git -C "$repro_tmp" commit -qm two
+set +e
+git -C "$repro_tmp" push -q origin main 2>"$scratch/repro-push.err"
+repro_push_rc=$?
+set -e
+[[ "$repro_push_rc" != "0" ]] || fail "unpinned origin HEAD=master must make push origin main fail"
+grep -q "src refspec main does not match any" "$scratch/repro-push.err" \
+  || fail "unpinned clone must fail with src refspec main (got $(cat "$scratch/repro-push.err"))"
+ok "unpinned defaultBranch=master + clone + push origin main fails as on CI"
+
+git -C "$repro_origin" symbolic-ref HEAD refs/heads/main
+repro_tmp2="$scratch/repro-tmp2"
+git clone -q "$repro_origin" "$repro_tmp2"
+[[ "$(git -C "$repro_tmp2" branch --show-current)" == "main" ]] \
+  || fail "after symbolic-ref, clone must check out main"
+git -C "$repro_tmp2" config user.email t@t
+git -C "$repro_tmp2" config user.name t
+echo three >"$repro_tmp2/y"
+git -C "$repro_tmp2" add y
+git -C "$repro_tmp2" commit -qm three
+git -C "$repro_tmp2" push -q origin main
+ok "symbolic-ref HEAD refs/heads/main makes clone + push origin main work"
+
+# Live fixture this file uses must stay pinned.
+[[ "$(git -C "$origin" symbolic-ref HEAD)" == "refs/heads/main" ]] \
+  || fail "fixture origin HEAD must be refs/heads/main (got $(git -C "$origin" symbolic-ref HEAD))"
+
+# Class gate: every tests/*.test.sh `git init --bare` pins init.defaultBranch
+# on the same line (`=main` in fixtures, `=master` only in this CI repro).
+unpinned=""
+for f in "$here"/*.test.sh; do
+  lineno=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lineno=$((lineno + 1))
+    stripped="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$stripped" || "$stripped" == \#* ]] && continue
+    [[ "$stripped" == git* && "$stripped" == *--bare* ]] || continue
+    [[ "$stripped" =~ [[:space:]]init[[:space:]] ]] || continue
+    if [[ "$stripped" != *init.defaultBranch=* ]]; then
+      unpinned+="$(basename "$f"):${lineno}:${stripped}"$'\n'
+    fi
+  done <"$f"
+done
+[[ -z "$unpinned" ]] || fail "git init --bare must pin init.defaultBranch on the same line (fleet-ops#598):"$'\n'"$unpinned"
+ok "every tests/ git init --bare pins init.defaultBranch"
+
+# Prove the class gate REJECTS an unpinned line (empty allowlist).
+gate_hit=0
+gate_line='git init -q --bare "$origin"'
+if [[ "$gate_line" == git* && "$gate_line" == *--bare* && "$gate_line" =~ [[:space:]]init[[:space:]] && "$gate_line" != *init.defaultBranch=* ]]; then
+  gate_hit=1
+fi
+[[ "$gate_hit" -eq 1 ]] || fail "class gate must reject unpinned git init --bare"
+ok "class gate rejects unpinned git init --bare"
+
+echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch"

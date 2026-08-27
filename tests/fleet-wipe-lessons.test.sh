@@ -155,7 +155,7 @@ ok "5c: count-argv matches identity plus adjacent FLAG VALUE"
 # 7. push-before-delete
 # ============================================================================
 origin="$scratch/origin.git"
-git init -q --bare "$origin"
+git -c init.defaultBranch=main init -q --bare "$origin"
 main="$scratch/main"
 git clone -q "$origin" "$main"
 git -C "$main" config user.email t@t
