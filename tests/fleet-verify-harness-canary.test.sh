@@ -343,7 +343,12 @@ rm -rf "$products"; mkdir -p "$products"
 base_cfg; base_intake
 # Build a bare "origin" whose default branch (main) carries a valid harness.
 origin_bare="$scratch/origin-0509.git"
-git init -q --bare -b main "$origin_bare"
+# fleet-ops#598: pin init.defaultBranch on the same line as `git init --bare`
+# (hosted runner's global config is master, not main, so an unpinned bare
+# init lands on master and the harness canary mis-fires). The class gate in
+# tests/fleet-deploy-check.test.sh scans for the `-c init.defaultBranch=`
+# token on the init line.
+git -c init.defaultBranch=main init -q --bare "$origin_bare"
 work_clone="$scratch/origin-work"
 git init -q -b main "$work_clone"
 git -C "$work_clone" config user.email t@t
