@@ -243,6 +243,13 @@ case "$cmd" in
     ;;
   start|stop|reset-failed|kill|daemon-reload)
     echo "ok $cmd $*" >>"${SYS_STATE_DIR:-}/actions.log"
+    # start must bring the stub alive (MainPID non-zero) so the drill's
+    # kill + wait sees it restart.
+    if [[ "$cmd" == "start" ]]; then
+      printf 'active\n' >"${SYS_STATE_DIR}/active.resilience-drill-stub-restart.service"
+      printf '424242\n' >"${SYS_STATE_DIR}/resilience-drill-stub-restart.service.MainPID"
+      printf 'active\n' >"${SYS_STATE_DIR}/resilience-drill-stub-restart.service.ActiveState"
+    fi
     exit 0
     ;;
   *)
@@ -265,9 +272,12 @@ systemd_run_fake="$scratch/systemd-run"
 cat >"$systemd_run_fake" <<'SR'
 #!/usr/bin/env bash
 echo "systemd-run $*" >>"${SYS_STATE_DIR:-}/actions.log"
-# Pretend the stub started; the drill then kill+is-active.
-printf 'active\n' >"${SYS_STATE_DIR}/active.resilience-drill-stub.service"
-printf 'active\n' >"${SYS_STATE_DIR}/resilience-drill-stub.service.ActiveState"
+# Offline (FLEET_RESILIENCE_DRILL_OFFLINE=1) still starts the stub through
+# this fake and then checks is-active; mark it alive so the offline green
+# run passes.
+printf 'active\n' >"${SYS_STATE_DIR}/active.resilience-drill-stub-restart.service"
+printf '424242\n' >"${SYS_STATE_DIR}/resilience-drill-stub-restart.service.MainPID"
+printf 'active\n' >"${SYS_STATE_DIR}/resilience-drill-stub-restart.service.ActiveState"
 exit 0
 SR
 chmod +x "$systemd_run_fake"

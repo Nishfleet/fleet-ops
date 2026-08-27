@@ -9,6 +9,10 @@
 #
 # Planes:
 #   1. supervision_resurrection — Restart=always stub is killed and comes back
+#      (persistent unit resilience-drill-stub-restart.service under
+#      resilience-drill.slice; never enabled; stop+reset-failed after the
+#      intentional kill so no failed-state residue trips the global OnFailure
+#      escalation — 2026-08-27 false-summons fix)
 #   2. access_policy            — tailscaled active + Restart=always, no
 #                                 public SSH
 #   3. access_runbook           — break-glass VNC runbook + blueprint headings
@@ -63,7 +67,7 @@ RESULTS="$STATE_DIR/last-run.json"
 KEYSTONE_HC_ENV="${KEYSTONE_HC_ENV:-$HOME/.config/fleet-ops/keystone-hc.env}"
 HEARTBEAT_HC_ENV="${HEARTBEAT_HC_ENV:-$HOME/.config/fleet-heartbeat/hc.env}"
 OFFLINE="${FLEET_RESILIENCE_DRILL_OFFLINE:-0}"
-STUB_UNIT="resilience-drill-stub.service"
+STUB_UNIT="resilience-drill-stub-restart.service"
 
 BLUEPRINT="$FLEET_OPS_REPO/docs/resilience-blueprint.md"
 RUNBOOK="$FLEET_OPS_REPO/docs/break-glass-access.md"
@@ -156,12 +160,15 @@ plane_resurrection() {
 
   "$SYSTEMCTL" --user stop "$STUB_UNIT" >/dev/null 2>&1 || true
   "$SYSTEMCTL" --user reset-failed "$STUB_UNIT" >/dev/null 2>&1 || true
-  # --collect is -G (unload after stop). Do not pass --collect=no; that flag
-  # does not exist and makes systemd-run fail closed.
-  if ! "$SYSTEMD_RUN" --user --unit="${STUB_UNIT%.service}" \
-      --property=Restart=always --property=RestartSec=1s \
-      /bin/sleep 3600 >/dev/null 2>&1; then
-    record "$name" "fail" "systemd-run failed to start $STUB_UNIT"
+  # Start the PERSISTENT stub unit (systemd/resilience-drill-stub-restart.service,
+  # installed by MANIFEST, Slice=resilience-drill.slice, never enabled) rather
+  # than a transient. A persistent unit can be stopped + reset-failed cleanly
+  # after the kill, so the intentional SIGKILL leaves no failed-state residue
+  # behind (the transient path left Result=signal + fired the global OnFailure
+  # -> false auditor summon 2026-08-27). The unit's own Restart=always is the
+  # resurrection proof.
+  if ! "$SYSTEMCTL" --user start "$STUB_UNIT" >/dev/null 2>&1; then
+    record "$name" "fail" "could not start $STUB_UNIT (persistent stub)"
     loud "RESURRECTION-FAIL" "could not start isolated Restart=always stub"
     return 1
   fi
