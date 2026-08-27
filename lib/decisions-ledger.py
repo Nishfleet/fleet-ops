@@ -27,8 +27,16 @@ FENCE_RE = re.compile(r"```[\s\S]*?```")
 INLINE_RE = re.compile(r"`[^`]*`")
 DQUOTE_RE = re.compile(r'"[^"\n]{0,240}"')
 
+# Sentence terminators: a . ! or ? followed by whitespace/end, or a blank
+# line. Used to bound the sentence an ask phrase sits in so a "?" from a
+# LATER sentence cannot be mistaken for the ask's own question mark
+# (fleet-ops#846: "ask Nish to land this." is a directive; a "?" in the
+# next sentence is not the ask).
+SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?])(?:\s|$)|\n\n")
+
 # Tight on purpose: "confirm that" in implementation prose is not an ask.
-# Prose asks also require a '?' in the window (see ask_blobs).
+# Prose asks also require a '?' in the SAME SENTENCE as the ask phrase
+# (see ask_blobs + _question_in_same_sentence).
 ASK_RE = re.compile(
     r"(ask(?:ing)?\s+nish"
     r"|nish[,:]?\s+(?:should|do you|can we|is this|what)"
@@ -175,15 +183,28 @@ def snippet_for(text: str, width: int = 200) -> str:
     return chunk[:width]
 
 
+def _question_in_same_sentence(text: str, match_start: int, match_end: int) -> bool:
+    # The sentence containing the ask phrase must itself carry a "?". A "?"
+    # in a later sentence (e.g. "ask Nish to land this.  What about using a
+    # fork?") is not the ask's own question — fleet-ops#846.
+    after = text[match_end:]
+    m_after = SENTENCE_BOUNDARY_RE.search(after)
+    sent_end = match_end + (m_after.end() if m_after else len(after))
+    before = text[:match_start]
+    prev = list(SENTENCE_BOUNDARY_RE.finditer(before))
+    sent_start = prev[-1].end() if prev else 0
+    return "?" in text[sent_start:sent_end]
+
+
 def ask_blobs(assistant_text: str, tools: list[tuple[str, str]]) -> list[str]:
     blobs: list[str] = []
     stripped = strip_quoted(assistant_text)
     for match in ASK_RE.finditer(stripped):
+        if not _question_in_same_sentence(stripped, match.start(), match.end()):
+            continue
         start = max(0, match.start() - 80)
         end = min(len(stripped), match.end() + 240)
         window = stripped[start:end]
-        if "?" not in window:
-            continue
         blobs.append(window)
     for name, payload in tools:
         if name.lower() in ASK_TOOL_NAMES:
