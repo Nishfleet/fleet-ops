@@ -7,7 +7,7 @@
 #      reports mismatch=1 and those p95s. Does not edit ram_gb_per_worker.
 #   2. Equal metrics report mismatch=0.
 #   3. Zero units still exit 0 and write a state file.
-#   4. Admission formula uses memory.current p95*3 clamped to 1.5 GB (fleet-ops#489).
+#   4. Admission uses ram_gb_per_worker from the cap map (0.6 as of #1168), no self-calibrate.
 #   5. Comments that cite 35 MB must label it as process VmRSS and must
 #      also cite memory.current + fleet-ops#202 (so the class cannot
 #      silently return as "RSS means cgroup").
@@ -93,7 +93,7 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission formula uses memory.current p95*3, no self-calibrate
+# 4. admission uses cap-map ram_gb_per_worker (0.6), no self-calibrate
 # =========================================================================
 [[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.6" ]] \
     || fail "ram_gb_per_worker must be 0.6 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
