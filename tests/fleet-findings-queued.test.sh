@@ -9,8 +9,9 @@
 #   4. Offer only in the user prompt (quoted failure-mode docs) -> exit 0.
 #   5. Quoted offer in assistant text (PR naming the failure mode) -> exit 0.
 #   6. Auto-file with signal key, deduped on a second run.
-#   7. Missing helper fails loud.
-#   8. Contracts: heartbeat wiring, MANIFEST, nested CI host.
+#   7. Missing helper fails loud even when an installed fallback exists
+#      (fleet-ops#609: explicit FLEET_FINDINGS_QUEUED_LIB must win).
+#   8. Contracts: heartbeat wiring, MANIFEST, nested CI host, #609 gate.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -187,8 +188,17 @@ grep -rl "signal: findings-queued/" "$scratch/gh-issues" | wc -l | grep -q "^1$"
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/ask-nofile.jsonl"
 
-# --- 7. missing helper fails loud -------------------------------------------
+# --- 7. missing helper fails loud (fleet-ops#609) ---------------------------
+# Plant a succeeding installed copy. GitHub runners have no
+# ~/.local/lib/pi-packet/findings-queued.py, so a bare missing-path
+# check is a no-op there: the wrapper never takes the fallback and
+# exits 1 for the wrong reason. HOME + a real helper at the install
+# dest makes a fallback-override fail this case with exit 0.
+fake_home="$scratch/fake-home"
+mkdir -p "$fake_home/.local/lib/pi-packet"
+cp "$lib" "$fake_home/.local/lib/pi-packet/findings-queued.py"
 set +e
+HOME="$fake_home" \
 FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
 FLEET_FINDINGS_QUEUED_LIB="$scratch/no-such.py" \
 FLEET_FINDINGS_QUEUED_FILE_ISSUES=0 \
@@ -196,9 +206,11 @@ FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
   "$bin" >/dev/null 2>"$scratch/err4.log"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc)"
+[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc) $(cat "$scratch/err4.log")"
 grep -q "FINDINGS-QUEUED-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
-ok "missing helper fails loud"
+grep -Fq "$scratch/no-such.py" "$scratch/err4.log" \
+  || fail "LOUD line must name the explicit missing helper, not the installed fallback"
+ok "missing helper fails loud even with installed fallback present"
 
 # --- 8. contracts -----------------------------------------------------------
 grep -q 'fleet-findings-queued' "$tier1" \
@@ -211,6 +223,9 @@ grep -q 'lib/findings-queued.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/findings-queued.py"
 grep -Fq 'bash "$here/fleet-findings-queued.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "contracts: heartbeat-tier1, MANIFEST, nested CI host"
+# fleet-ops#609: fallback must not override an explicit missing helper.
+grep -Fq '[[ -z "${FLEET_FINDINGS_QUEUED_LIB:-}" && ! -f "$LIB"' "$bin" \
+  || fail "installed-lib fallback must be gated on unset FLEET_FINDINGS_QUEUED_LIB"
+ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, #609 fallback gate"
 
 echo "OK: fleet-findings-queued: offer lint, queue evidence, auto-file dedupe"
