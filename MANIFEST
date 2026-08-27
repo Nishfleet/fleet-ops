@@ -329,6 +329,12 @@ config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
 # live CLI is unauthenticated; auto-files `grok login --device-auth` when
 # refresh is impossible. Heartbeat-tier1 block 30.
 bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
+# fleet-ops#938: credential/token expiry coverage through 2026-09-08.
+# GET /app App-JWT liveness (GitHub App keys do not expire) plus
+# FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon.
+# Heartbeat-tier1 block 31.
+bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary
+lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

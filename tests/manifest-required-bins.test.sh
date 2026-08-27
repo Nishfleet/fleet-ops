@@ -43,11 +43,13 @@ required=(
   "bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary"
   "bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary"
   "bin/worker-app-canary /home/nish/.local/bin/worker-app-canary"
+  "bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary"
+  "lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py"
 )
 for entry in "${required[@]}"; do
   grep -Fxq "$entry" "$manifest" || fail "MANIFEST missing required dest: $entry"
 done
-ok "MANIFEST still declares the fourteen #175/#485 dests"
+ok "MANIFEST still declares the #175/#485 dests plus credential-expiry canary"
 
 # --- 2. wiring: all MANIFEST heartbeat helpers use require_manifest_helper -
 grep -q '^require_manifest_helper()' "$tier1" \
@@ -70,6 +72,7 @@ helpers = {
     "CANARY_BIN=": "escalation-coverage canary",
     "ENTITLED_CANARY_BIN=": "entitled-vs-wired canary",
     "WORKER_APP_CANARY_BIN=": "worker-app identity canary",
+    "CRED_EXPIRY_CANARY_BIN=": "credential-expiry canary",
 }
 rc = 0
 for needle, label in helpers.items():
@@ -91,7 +94,7 @@ PY
 wiring_rc=$?
 set -e
 [[ "$wiring_rc" -eq 0 ]] || fail "one or more heartbeat helpers do not call require_manifest_helper or loud HELPER-MISSING"
-ok "all eleven MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
+ok "all twelve MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
 
 # --- 3-5. extract the real function and prove the three outcomes -----------
 extract_fn() {

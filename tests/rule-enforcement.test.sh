@@ -55,7 +55,8 @@ ok "matrix row sr-verify-harness is enforced"
 # rows even when the live vault is absent (CI skips the live join).
 for src in \
   "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" \
-  "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes"
+  "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes" \
+  "decisions-ledger.md: 2026-08-27 | Vacation window corrected"
 do
   status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
   [[ "$status" == "enforced" ]] || fail "matrix must have $src as enforced, got ${status:-missing}"
