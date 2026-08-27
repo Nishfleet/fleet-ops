@@ -316,14 +316,14 @@ cmd_salvage() {
     if [[ "$secret" -eq 1 ]]; then
         salvage_status="quarantined"
     elif git -C "$workdir" remote get-url "$REMOTE" >/dev/null 2>&1; then
-        GIT_TERMINAL_PROMPT=0 git -C "$workdir" push \
+        if GIT_TERMINAL_PROMPT=0 git -C "$workdir" push \
             --force-with-lease="refs/heads/${branch}:" \
-            "$REMOTE" "HEAD:refs/heads/${branch}" >/dev/null 2>&1 \
-            && salvage_status="pushed" \
-            || {
-                log "push failed unit=$unit branch=$branch — work is banked locally"
-                salvage_status="local"
-            }
+            "$REMOTE" "HEAD:refs/heads/${branch}" >/dev/null 2>&1; then
+            salvage_status="pushed"
+        else
+            log "push failed unit=$unit branch=$branch — work is banked locally"
+            salvage_status="local"
+        fi
     fi
 
     append_ledger "$unit" "$branch" "$salvage_status" "$packet" "$workdir"
@@ -394,7 +394,7 @@ gc_one_repo() {
     now_s="$(date -u +%s)"
 
     git -C "$repo" fetch -q "$REMOTE" "+refs/heads/wip/*:refs/remotes/${REMOTE}/wip/*" 2>/dev/null || true
-    git -C "$repo" fetch -q "$REMOTE" main:refs/remotes/${REMOTE}/main 2>/dev/null || true
+    git -C "$repo" fetch -q "$REMOTE" "main:refs/remotes/${REMOTE}/main" 2>/dev/null || true
 
     local main_ref="refs/remotes/${REMOTE}/main"
     if ! git -C "$repo" rev-parse "$main_ref" >/dev/null 2>&1; then
@@ -409,15 +409,15 @@ gc_one_repo() {
     open_refs="$(open_ledger_branches | sort -u)"
     all_refs="$(any_ledger_branches | sort -u)"
 
-    local ref name ahead cherry age keep reason
+    local ref name ahead cherry age reason
+    local remote_prefix="refs/remotes/${REMOTE}/"
     while read -r ref; do
         [[ -n "$ref" ]] || continue
-        name="${ref#refs/remotes/${REMOTE}/}"
+        name="${ref#"$remote_prefix"}"
         case "$name" in
             wip/*) ;;
             *) continue ;;
         esac
-        keep=0
         reason=""
         if printf '%s\n' "$open_refs" | grep -Fxq "$name"; then
             log "GC keep $name (open ledger)"
@@ -446,7 +446,7 @@ gc_one_repo() {
             prefix="$(branch_unit_prefix "$name")"
             newer="$(git -C "$repo" for-each-ref --format='%(refname:short)' "refs/remotes/${REMOTE}/wip/${prefix}-*" \
                 | sort | tail -n 1)"
-            newer="${newer#${REMOTE}/}"
+            newer="${newer#"${REMOTE}/"}"
             if [[ -n "$newer" && "$newer" != "$name" && "$newer" > "$name" ]]; then
                 reason="superseded-by-${newer}"
             fi
