@@ -104,6 +104,8 @@ termination: <one exact verification command whose exit 0 means done; must be ru
 
 **Mechanical-fix rule (fleet-ops#366):** if the candidate is a failure-fix (incident, detector/canary/postmortem bug, revert follow-up), `accept:` MUST require a prevention mechanism (detector that auto-files the ticket, gate that rejects the pattern, regression test/drill that proves the guard fires, observe-to-close) or an explicit `mechanism-impossible: <reason>` the conference will judge. Do not file a fix-shaped issue whose acceptance is "change the code and merge".
 
+**Prior-art rule (fleet-ops#1250):** if the candidate instructs building a tool, service, or pipeline (`build a`, `write a script`, `create a service`), the body MUST include a `Prior art` section naming what already exists, what was tested, and why it was rejected. Intake bounces spec-incomplete build issues before a worker can inherit "build it" as spec.
+
 **D1 schema gate (expand/contract):** if a candidate would make a worker touch `migrations/**`, do NOT file it as one issue. Rollback rolls back code, never data — D1, KV, R2 and Durable Objects sit outside the Worker version and D1 has no down-migrations — so a migration that breaks the previous code makes auto-revert silently impossible. File **one issue per phase**, in this order, each naming its phase in the title:
 
 1. add nullable column (or new table)

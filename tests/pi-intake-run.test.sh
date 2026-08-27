@@ -92,3 +92,6 @@ bash "$here/intake-priority.test.sh"
 # (workers cannot edit .github/workflows/ci.yml). Same bash "$here/..."
 # host pattern as the priority drill above.
 bash "$here/pi-intake-tick-seat-gate.test.sh"
+# fleet-ops#1250: claim-step prior-art bounce (CI hook; keep this call).
+# ci.yml lists this file; workers cannot add a new verify-command line.
+bash "$here/prior-art-claim-check.test.sh"
