@@ -1828,6 +1828,12 @@ bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed
 # constraint (worker token cannot add a P14 line in
 # `.github/workflows/ci.yml`).
 bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh" || fail "fleet-failed-command-python-module-not-found-hyphen tests failed"
+# fleet-ops#966: leftover-duplicate observe-to-close drain for the
+# 01a03e38 python-traceback pile. The drain mechanism is the same as
+# #965 (edit-unmatch pile); this test pins the citation chain and the
+# 6-leftover exhaustion under the live 01a03e38 signal. Same CI
+# constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-observe-duplicate-python-traceback.test.sh" || fail "fleet-failed-command-observe-duplicate-python-traceback tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
