@@ -1016,3 +1016,8 @@ bash "$here/fleet-pi-extensions-canary.test.sh"
 # is the same shape as the sibling canaries above.
 bash "$here/fleet-free-roster-canary.test.sh"
 
+# fleet-ops#917: SuperGrok live-validate canary. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens cannot
+# push .github/workflows/**).
+bash "$here/fleet-seat-live-validate.test.sh"
+
