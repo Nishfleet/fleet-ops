@@ -251,6 +251,18 @@ trap 'rm -rf "$run_tmp"' EXIT INT TERM
 out="$run_tmp/auditor.out"
 err="$run_tmp/auditor.err"
 
+# A seat that returns rc=0 with no diagnosis block has not done the job --
+# a small free model answering an auditor packet in prose is the usual cause
+# (2026-08-27: hetzner/Qwen3.6-35B twice in a row). That is a LANE fault, so
+# it reroutes to the next seat in the same run instead of failing the unit
+# and waiting for the next trip. Kills and timeouts keep their own retry
+# path below; only the empty-run case reroutes.
+SEAT_ATTEMPTS=${STOP_ESCALATION_SEAT_ATTEMPTS:-3}
+attempt=0
+
+while : ; do
+attempt=$((attempt+1))
+
 pi_rc=0
 # timeout returns 124 if the command had to be killed.  We capture pi_rc BEFORE
 # the `if !` test because inside `if !` $? is the test result (0), not the
@@ -312,12 +324,31 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
         printf '%s\n' "$combined"
       } >> "$LOG"
     fi
+    if [ "$attempt" -lt "$SEAT_ATTEMPTS" ]; then
+      next_seat=$(pick_seat_with_retry "$TRIED_FILE")
+      if [ -n "$next_seat" ]; then
+        PROVIDER=$(printf '%s' "$next_seat" | cut -f1)
+        MODEL=$(printf '%s' "$next_seat" | cut -f2)
+        printf '%s/%s\n' "$PROVIDER" "$MODEL" >> "$TRIED_FILE"
+        printf '%s REROUTE hash=%s attempt=%s provider=%s model=%s (previous seat returned no diagnosis block)\n' \
+          "$(ts)" "$hash" "$((attempt+1))" "$PROVIDER" "$MODEL" >> "$LOG"
+        {
+          printf '\n%s DISPATCH hash=%s count=%s provider=%s model=%s timeout=%ss\n' "$(ts)" "$hash" "$((count+1))" "$PROVIDER" "$MODEL" "$AUDITOR_TIMEOUT_SEC"
+          printf '%s\n' "$packet"
+        } >> "$LOG"
+        continue
+      fi
+      printf '%s REROUTE-EXHAUSTED hash=%s attempt=%s (no untried seat left)\n' "$(ts)" "$hash" "$attempt" >> "$LOG"
+    fi
     echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block)" >&2
     # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
     # unchanged, so the next STOP-REASON change or daily sweep re-tries.
     exit 1
   fi
 fi
+
+break
+done
 
 # Real dispatch produced a diagnosis block.  Append it and consume one dispatch.
 {

@@ -1,0 +1,6 @@
+{
+  "description": "Repos that count as fleet self-maintenance (the fleet working on itself) versus product work. Used by fleet-metrics-export to compute fleet_self_maintenance_ratio (fleet-ops#1136). A merge whose repo is in this set counts as 'self'; every other Nishfleet repo counts as 'product'. Add a repo here when it becomes fleet-infra; remove it when it becomes product. PR-tunable so the ratio tracks policy without an exporter code change. There is no separate 'tooling' repo in Nishfleet — fleet-ops IS the tooling/control-plane repo, so it is the sole self-maintenance repo today. The 2026-08-14 baseline (2/29/49% upgrade/repair/churn) and the fleet2 64% self-maintenance death are the tripwires this list feeds.",
+  "repos": [
+    "fleet-ops"
+  ]
+}

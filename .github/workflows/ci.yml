@@ -239,3 +239,6 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        # fleet-ops#1136: pin the self-maintenance ratio + upgrade/repair/churn
+        # classification in the metrics exporter, and the absent/trend rules.
+        bash tests/fleet-metrics-export.test.sh

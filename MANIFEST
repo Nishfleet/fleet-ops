@@ -234,6 +234,19 @@ systemd/intake-reconcile.timer /home/nish/.config/systemd/user/intake-reconcile.
 systemd/intake-reconcile.service.d/10-deploy-checkout.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/10-deploy-checkout.conf
 systemd/fleet-heartbeat.service /home/nish/.config/systemd/user/fleet-heartbeat.service
 systemd/fleet-heartbeat.timer /home/nish/.config/systemd/user/fleet-heartbeat.timer
+# fleet-ops#1136: Prometheus metrics exporter (self-maintenance ratio +
+# upgrade/repair/churn classification). Source moved into fleet-ops from the
+# deprecated control-plane workspace so the #1136 metric families are version
+# controlled and drift-detected. The exporter writes
+# /var/lib/prometheus/node-exporter/fleet.prom (node_exporter textfile collector).
+systemd/fleet-metrics-export.service /home/nish/.config/systemd/user/fleet-metrics-export.service
+systemd/fleet-metrics-export.timer /home/nish/.config/systemd/user/fleet-metrics-export.timer
+libexec/fleet-metrics-export.py /home/nish/.local/libexec/fleet-metrics-export.py
+# fleet-ops#1136: Prometheus alert rules. System scope — install.sh --system
+# deploys to /etc/prometheus/fleet_rules.yml (sudo install -D). The exporter's
+# organ heartbeat (FleetSelfMaintenanceAbsent) + regression-trend alerts live
+# in the fleet_self_maintenance group here.
+config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
 # fleet-ops#368: OnFailure page must resolve hostname at send time.
 systemd/fleet-heartbeat-failed-notify.service /home/nish/.config/systemd/user/fleet-heartbeat-failed-notify.service
 systemd/stop-escalation.path /home/nish/.config/systemd/user/stop-escalation.path
