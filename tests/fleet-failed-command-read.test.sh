@@ -75,4 +75,44 @@ count=$(jq '.findings | length' <<<"$report")
 [[ "$count" == "0" ]] || fail "flagged read offset beyond end should be clean (got $count) $report"
 ok "flagged read offset beyond end is clean"
 
-echo "OK: fleet-failed-command-read: offset negative result, real read failure still flagged"
+# --- 4. live #664 shape: ENOENT 'access <path>' on a read tool --------------
+# The pi-issue-fleet-ops-239 worker hit this exact text and walked past it
+# without naming the failure in later text. The detector must still flag it.
+# Without this drill a future change to the detector could drop the
+# 'access <path>' shape (e.g. by adding a generic ENOENT exemption) and
+# silently regress the class fleet-ops#664 is filed for.
+write_session "read-enoent-access" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_read4","name":"read","arguments":{"path":"/home/nish/workspaces/products/fleet-ops/tests/fleet-heartbeat-verify-timers.test.sh"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_read4","toolName":"read","isError":true,"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/products/fleet-ops/tests/fleet-heartbeat-verify-timers.test.sh'"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now let me check the diff."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "ENOENT 'access <path>' should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+[[ "$snippet" == "ENOENT: no such file or directory, access '/home/nish/workspaces/products/fleet-ops/tests/fleet-heartbeat-verify-timers.test.sh'" ]] \
+    || fail "unexpected snippet: $snippet"
+ok "ENOENT 'access <path>' on read is a finding (fleet-ops#664 shape locked)"
+rm -f "$sessions/read-enoent-access.jsonl"
+
+# --- 5. ENOENT 'access <path>' + later flag is clean (proves the rule) ------
+# Same shape as #664 but the assistant names the failure in the very next
+# turn. The standing rule says: a failed command is ALWAYS flagged. The
+# detector must clear on a named failure, so the worker can recover without
+# being told to repeat the call. This is the proof that the rule still works
+# on the #664 shape — a worker that names the failure passes; a worker that
+# walks past it (the live #664 case) fails.
+write_session "read-enoent-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_read5","name":"read","arguments":{"path":"/home/nish/workspaces/products/fleet-ops/tests/fleet-heartbeat-verify-timers.test.sh"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_read5","toolName":"read","isError":true,"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/products/fleet-ops/tests/fleet-heartbeat-verify-timers.test.sh'"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the read call failed with ENOENT — the test file is not on this local checkout. Continuing from the diff in PR #166."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "flagged ENOENT 'access <path>' should be clean (got $count) $report"
+ok "flagged ENOENT 'access <path>' is clean"
+rm -f "$sessions/read-enoent-flagged.jsonl"
+
+echo "OK: fleet-failed-command-read: offset negative result, real read failure still flagged, ENOENT access-path class locked"
