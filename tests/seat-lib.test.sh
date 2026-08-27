@@ -2118,6 +2118,14 @@ bash "$here/fleet-failed-command-git-cherry-pick-empty.test.sh" || fail "fleet-f
 # is an invalid `gh` flag and is a real swallowed failure. Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-body.test.sh" || fail "fleet-failed-command-gh-issue-view-body tests failed"
+# fleet-ops#1107: a compound `echo "=== MERGED RECENT ==="` +
+# `gh pr list --sort -mergedAt ... 2>/dev/null` chain exits 1 with only
+# the echo marker visible (stderr silenced). Thinking-only recovery plus
+# later "Now I have the full picture" prose is not a flag. Distinct from
+# #1055 (visible `unknown flag: --body`) and grep POSIX no-match with
+# the same marker. Same CI constraint (worker token cannot add a P14
+# line).
+bash "$here/fleet-failed-command-gh-pr-list-invalid-sort.test.sh" || fail "fleet-failed-command-gh-pr-list-invalid-sort tests failed"
 # fleet-ops#1219: `gh issue view <N> -R ... --json body,title,comments,label`
 # (singular `label` instead of `labels`) is not a valid `--json` filter —
 # `gh` exits 1 with `Unknown JSON field: "label"` and the available-fields
