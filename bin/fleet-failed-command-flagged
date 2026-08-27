@@ -12,6 +12,8 @@
 # Exit 0: no swallowed failures in the window. Exit 1: at least one
 # (LOUD + auto-filed, deduped by signal: failed-command-flagged/<slug>).
 # Exit 1 also if the helper itself is broken (missing python/lib).
+# Observe-to-close (fleet-ops#649): auto-filed issues whose slug is no
+# longer a finding are closed with evidence on the same tick.
 #
 # Environment seams (tests override all of these):
 #   FLEET_FAILED_COMMAND_SESSIONS   default ~/.pi/agent/sessions
@@ -91,10 +93,8 @@ finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
 
-if [[ "$finding_count" == "0" ]]; then
-    loud "FAILED-COMMAND-OK" "no swallowed failures in window (scanned=$scanned)"
-    exit 0
-fi
+# Current finding slugs — used for both dedup and observe-to-close.
+current_slugs=$(jq -r '.findings[].slug' <<<"$report" | sort -u)
 
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
@@ -102,6 +102,41 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
     set -e
     open_json="${open_json:-[]}"
+fi
+
+# Observe-to-close (fleet-ops#649): close auto-filed issues whose slug is no
+# longer a finding. The detector filed these; it closes them when the signal
+# is clean on a real heartbeat tick — the session aged out of the window or
+# was resolved. Without this, auto-filed issues pile up with no close path.
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    while IFS=$'\t' read -r num slug; do
+        [[ -n "$num" && -n "$slug" ]] || continue
+        if ! grep -qxF "$slug" <<<"$current_slugs"; then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: signal failed-command-flagged/${slug} no longer reported as a finding on heartbeat tick at $ts."
+            set +e
+            "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" 2>/dev/null
+            close_rc=$?
+            set -e
+            if [[ "$close_rc" -eq 0 ]]; then
+                log "observe-to-close: CLOSED issue #$num (slug=$slug no longer in findings)"
+                closed=$((closed + 1))
+            else
+                log "observe-to-close: failed to close issue #$num (rc=$close_rc)"
+            fi
+        fi
+    done < <(printf '%s' "$open_json" | jq -r '
+        .[] | .number as $n | (.body // "") as $b |
+        select($b | contains("signal: failed-command-flagged/")) |
+        ($b | capture("signal: failed-command-flagged/(?<slug>[^\\s]+)") | .slug) as $slug |
+        "\($n)\t\($slug)"
+    ' 2>/dev/null)
+fi
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "FAILED-COMMAND-OK" "no swallowed failures in window (scanned=$scanned closed=$closed)"
+    exit 0
 fi
 
 filed=0
