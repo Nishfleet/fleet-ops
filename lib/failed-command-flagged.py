@@ -203,6 +203,29 @@ succeeded). It is not a GraphQL transient error (fleet-ops#678) or a
 no-match probe; it is a real swallowed failure and must be flagged. The
 dedicated regression test locks it under
 tests/fleet-failed-command-gh-issue-view-unknown-field.test.sh.
+A `gh pr view <N> -R ... --json <fields>` command whose filter names
+an unknown field (e.g. `merged` instead of `mergedAt`) is the same
+invalid-field class, but a trailing pipe (`2>&1 | head`) masks gh's
+non-zero exit: bash's exit code is `head`'s (0), so the toolResult
+carries `isError: false` and no `Command exited with code 1` trailer
+(fleet-ops#1193, session
+2026-08-27T08-16-44-255Z_01a0424a-f6df-7cc2-b1c3-f5db8df57d11, e.g.
+`gh pr view 1026 -R Nishfleet/fleet-ops --json
+number,title,state,body,url,headRefName,merged 2>&1 | head -40`).
+The a5022b8 / #1048 / #1122 isError=false guard returns early in
+`result_failed` BEFORE any regex is consulted, so the detector cannot
+catch this real failure without re-introducing the false-positive
+class (successful `gh pr view` / `git show` output that quotes
+`Unknown JSON field` is content). Do not add `Unknown JSON field` to
+`REAL_ERR_RE`. The un-piped version of the same command (no pipe, no
+redirect) returns the same body AND `isError=true` AND `Command
+exited with code 1`, which the generic isError path already flags.
+The mechanism is worker-side (`prompts/worker.md` cites fleet-ops#1193
+and requires the worker to name `Unknown JSON field: "<field>"` in
+user-facing text in the same turn even when `isError` is false). The
+dedicated regression test
+tests/fleet-worker-prompt-gh-pr-view-unknown-field.test.sh asserts 0
+findings for the masked shape and 1 finding for the unpiped contrast.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
