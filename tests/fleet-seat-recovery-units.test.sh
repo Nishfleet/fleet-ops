@@ -72,13 +72,33 @@ ok "StartLimit* confined to [Unit] (not in [Service])"
 # Same convention as tests/escalation-units-shape.test.sh. The CI unit-verify
 # job already verifies systemd/*.service, but it does NOT verify .path files
 # directly — this does.
+#
+# fleet-ops#622: the service's ExecStart points at a VPS-only binary path
+# (/home/nish/.local/bin/fleet-seat-recovery). The dedicated `systemd-analyze`
+# job in .github/workflows/ci.yml stubs that path before verify, but P14 has
+# no such stubs and re-adding that pattern trips the #154 class lock. So this
+# test creates its OWN stub, scoped to its own scratch dir, by copying the
+# service with the ExecStart retargeted at /bin/true, and verifies the copy
+# (real syntax + directives) plus the untouched .path (no ExecStart to fail
+# on). The shipped unit files are never modified.
 if command -v systemd-analyze >/dev/null 2>&1; then
-  for f in "$svc_unit" "$path_unit"; do
+  verify_scratch="$(mktemp -d -t fleet-seat-recovery-verify.XXXXXX)"
+  # shellcheck disable=SC2064  # we WANT verify_scratch to expand now; the
+  # trap fires on EXIT from THIS test process, not the caller's.
+  trap "rm -rf '$verify_scratch'" EXIT INT TERM
+  verify_svc="$verify_scratch/fleet-seat-recovery.service"
+  verify_path="$verify_scratch/fleet-seat-recovery.path"
+  # Retarget ExecStart to /bin/true so the VPS binary is not required.
+  # Keep everything else (StartLimit* guards, [Install], comments) byte-identical
+  # so the verify proves what the shipped unit proves.
+  sed 's|^ExecStart=.*|ExecStart=/bin/true|' "$svc_unit" > "$verify_svc"
+  cp "$path_unit" "$verify_path"
+  for f in "$verify_svc" "$verify_path"; do
     if ! out=$(systemd-analyze verify --man=no "$f" 2>&1); then
       fail "systemd-analyze verify failed for $(basename "$f"): $out"
     fi
   done
-  ok "systemd-analyze verify accepts fleet-seat-recovery.{service,path}"
+  ok "systemd-analyze verify accepts fleet-seat-recovery.{service,path} (with ExecStart retargeted for P14)"
 else
   echo "SKIP: systemd-analyze not on PATH (unit verify)"
 fi
@@ -89,7 +109,17 @@ fi
 # default limit (5/10s), and assert the path unit stays active (waiting) —
 # i.e. the storm no longer wedges it. Skipped outside the VPS (no user systemd
 # session) so CI hosted runners don't false-positive.
+#
+# fleet-ops#622: the original gate only checked for an XDG_RUNTIME_DIR socket
+# and a systemctl binary. GitHub-hosted runners (Ubuntu 24.04 image) provide
+# BOTH, and HOME has no `~/.config/systemd/user/` directory by default — so
+# the test's `sed > "$drill_svc"` opened a non-existent path and red'd P14 on
+# a runner that has no user-systemd-managed services to actually wedge.
+# Gate on the existence of the per-user unit dir (the VPS has it; CI does
+# not) so the drill only runs where it can actually exercise the real
+# path-watcher storm.
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
+   && [[ -d "$HOME/.config/systemd/user" ]] \
    && command -v systemctl >/dev/null 2>&1; then
   drill_unit="fleet-seat-recovery-drill"
   drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
