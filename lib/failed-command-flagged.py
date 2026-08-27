@@ -162,7 +162,29 @@ BENIGN_STAGE_RE) would silently suppress this real signal; the
 dedicated regression test
 tests/fleet-failed-command-git-cherry-pick-empty.test.sh pins that it
 does not. The auto-filed issue closes via observe-to-close when the
-session mtime ages out of the 24h window.
+session mtime ages out of the 24h window. A compound bash chain
+(`;`-separated) where earlier commands succeed and a downstream
+`ls <path>` fails with `ls: cannot access '<path>': Permission denied`
+AND the chain's last command is silenced (`2>/dev/null`) is a real
+swallowed failure (fleet-ops#1061): bash exits 1 (the silenced last
+command's exit), the visible `Permission denied` line is in
+`REAL_ERR_RE` so no `LS_BENIGN_RE` (requires code==2) /
+`BENIGN_STAGE_RE` short-circuit applies, and a thinking-only next
+turn plus a recovery toolCall (no user-facing text naming the
+failure) is not a flag. The class is distinct from the live #794
+single-command `ls -l /etc/shadow` exit 2 (no compound chain, no
+silenced tail) and the live #794 ls no-match exemption (canonical
+`No such file or directory` line, NOT `Permission denied`): the
+compound-chain shape has a `Permission denied` line visible AND a
+silenced tail, so bash exits 1 (not 2) and `Permission denied`
+keeps the toolResult as a real failure. A future refactor that
+broadens the ls exemption to `Permission denied`, drops
+`Permission denied` from REAL_ERR_RE, or stops walking past
+compound-chain failures would silently suppress this real signal;
+the dedicated regression test
+tests/fleet-failed-command-compound-ls-permission-denied.test.sh
+pins that it does not. The auto-filed issue closes via
+observe-to-close when the session mtime ages out of the 24h window.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
