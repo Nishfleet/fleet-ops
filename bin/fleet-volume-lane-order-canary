@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# fleet-volume-lane-order-canary — volume front-of-ladder (fleet-ops#1178).
+#
+# Ledger: 2026-08-27 | Worker lane order (Nish, emphatic: "can't stress enough")
+#   Volume selection order: ollamacloud -> devin -> commandcode -> cline FIRST,
+#   before everything else. Then xai-oauth (alternate), free tier; cursor
+#   keystone-only at ~$16/day target. Ollama stays DeepSeek-flash-only.
+#
+# This canary is the class prevention for that rule. No new scheduler; run by
+# fleet-heartbeat-tier1. Gates fail the tick; detectors stay green.
+#
+# Gates (fail-loud, exit 1):
+#   1. volume_providers_in_order must exist and equal the locked ledger
+#      prefix exactly: ollama,devin,commandcode,cline (ollamacloud == ollama
+#      provider id in seat-caps / models.json).
+#   2. Every provider in that prefix must have a seat-caps row with cap>0 and
+#      a non-empty .models map (otherwise "FIRST" is a paper claim).
+#   3. cursor must NOT appear in volume_providers_in_order (keystone-only).
+#   4. seat-lib.sh must load SEAT_VOLUME_ORDER and prefer the volume bucket
+#      before leftover free / leftover prepaid / metered (the runtime wire).
+#
+# Detectors (observe-to-open, tick stays green):
+#   - xai-oauth present in models.json / pi catalog but missing from
+#     seat-caps providers (or cap=0 without a dated reason that cites
+#     2026-08-27+) auto-files a wire ticket so #1163 cannot silently stall
+#     the "then xai-oauth (alternate)" half of the ledger line.
+#
+# Exit codes:
+#   0  gates clean (detectors may have filed)
+#   1  a gate violation, or the canary itself is broken (seat-caps unreadable)
+#
+# Environment seams (tests):
+#   SEAT_CAPS_JSON                 cap map
+#   FLEET_VOLUME_ORDER_MODELS_JSON models.json (default ~/.pi/agent/models.json)
+#   FLEET_HEARTBEAT_TRIAGE         triage file
+#   FLEET_VOLUME_ORDER_REPO        default Nishfleet/fleet-ops
+#   FLEET_VOLUME_ORDER_FILE        1 (default) file issues; 0 skip gh
+#   FLEET_VOLUME_ORDER_SEAT_LIB    seat-lib.sh path (default repo lib/)
+#   GH                             gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+MODELS_JSON="${FLEET_VOLUME_ORDER_MODELS_JSON:-${HOME}/.pi/agent/models.json}"
+# When the binary is installed at ~/.local/bin, _canon_repo is ~/.local and
+# lib/seat-lib.sh is not there — MANIFEST lands it at ~/.local/lib/pi-packet/.
+SEAT_LIB="${FLEET_VOLUME_ORDER_SEAT_LIB:-}"
+if [[ -z "$SEAT_LIB" ]]; then
+    if [[ -f "$FLEET_OPS_REPO/lib/seat-lib.sh" ]]; then
+        SEAT_LIB="$FLEET_OPS_REPO/lib/seat-lib.sh"
+    elif [[ -f "${HOME}/.local/lib/pi-packet/seat-lib.sh" ]]; then
+        SEAT_LIB="${HOME}/.local/lib/pi-packet/seat-lib.sh"
+    else
+        SEAT_LIB="$FLEET_OPS_REPO/lib/seat-lib.sh"
+    fi
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_VOLUME_ORDER_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_VOLUME_ORDER_FILE:-1}"
+
+# Locked ledger prefix. Provider id `ollama` is Ollama Cloud (ledger
+# "ollamacloud"); seat-caps / models.json never use the word ollamacloud.
+EXPECTED_VOLUME_CSV="ollama,devin,commandcode,cline"
+
+log() {
+    printf '[%s] [fleet-volume-lane-order-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local id="$1" kind="$2" title="$3" body="$4"
+    local marker="volume-lane-order-canary: ${id} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_VOLUME_ORDER_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing search_q
+    # Prefer --search so older open tickets (e.g. #1163) are not buried past
+    # the default newest-50 window on a busy board.
+    search_q="$marker"
+    if [[ "$id" == "xai-oauth" ]]; then
+        search_q="xai-oauth OR SuperGrok"
+    fi
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 20 \
+        --search "$search_q" \
+        --json number,body,title 2>/dev/null \
+        | jq -r --arg m "$marker" --arg id "$id" '
+            .[]
+            | select(
+                (.body | contains($m))
+                or (
+                  ($id == "xai-oauth")
+                  and (
+                    ((.title // "") | test("xai-oauth|SuperGrok"; "i"))
+                    and ((.body // "") | test("xai-oauth|seat-caps|alternat|roster"; "i"))
+                  )
+                )
+              )
+            | .number
+          ' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already covers $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "VOLUME-ORDER-VIOLATION" "seat-caps missing: $SEAT_CAPS_JSON"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "VOLUME-ORDER-VIOLATION" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+violations=0
+
+# ---- GATE 1: locked ledger prefix ------------------------------------------
+got_csv=$(jq -r '
+  (.volume_providers_in_order // []) | join(",")
+' "$SEAT_CAPS_JSON" 2>/dev/null || echo "")
+
+if [[ -z "$got_csv" ]]; then
+    loud "VOLUME-ORDER-VIOLATION" \
+        "volume_providers_in_order missing or empty; expected $EXPECTED_VOLUME_CSV"
+    file_finding "volume_providers_in_order" "missing" \
+        "volume lane order: volume_providers_in_order missing" \
+        "decisions-ledger 2026-08-27 Worker lane order (Nish, emphatic) requires a cross-class front-of-ladder. Add \`volume_providers_in_order: [\"ollama\",\"devin\",\"commandcode\",\"cline\"]\` to config/seat-caps.json and wire pick_seat to prefer it (fleet-ops#1178)."
+    violations=$((violations + 1))
+elif [[ "$got_csv" != "$EXPECTED_VOLUME_CSV" ]]; then
+    loud "VOLUME-ORDER-VIOLATION" \
+        "volume_providers_in_order=$got_csv; expected $EXPECTED_VOLUME_CSV"
+    file_finding "volume_providers_in_order" "mismatch" \
+        "volume lane order: prefix mismatch ($got_csv)" \
+        "config/seat-caps.json has \`volume_providers_in_order\` = [${got_csv}] but the locked ledger prefix is [${EXPECTED_VOLUME_CSV}] (ollamacloud==ollama). Restore the exact order; do not silently reorder (fleet-ops#1178)."
+    violations=$((violations + 1))
+fi
+
+# ---- GATE 2: every volume provider is live-wired ---------------------------
+IFS=',' read -r -a expected_arr <<< "$EXPECTED_VOLUME_CSV"
+for pid in "${expected_arr[@]}"; do
+    [[ -n "$pid" ]] || continue
+    if ! jq -e --arg id "$pid" '.providers[$id] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+        loud "VOLUME-ORDER-VIOLATION" "volume provider $pid has no seat-caps row"
+        file_finding "$pid" "missing-row" \
+            "volume lane order: $pid missing from seat-caps" \
+            "\`volume_providers_in_order\` names \`${pid}\` but providers.${pid} is absent. The emphatic volume order cannot lead with a ghost seat (fleet-ops#1178)."
+        violations=$((violations + 1))
+        continue
+    fi
+    cap=$(jq -r --arg id "$pid" '
+      .providers[$id] as $v
+      | if ($v|type)=="number" then $v else ($v.cap // 0) end
+    ' "$SEAT_CAPS_JSON")
+    mcount=$(jq -r --arg id "$pid" '
+      .providers[$id] as $v
+      | if ($v|type)=="object" and ($v.models|type)=="object" then ($v.models|length) else 0 end
+    ' "$SEAT_CAPS_JSON")
+    if ! [[ "$cap" =~ ^[1-9][0-9]*$ ]]; then
+        loud "VOLUME-ORDER-VIOLATION" \
+            "volume provider $pid has cap=$cap (must be >0 to lead the ladder)"
+        file_finding "$pid" "cap-zero" \
+            "volume lane order: $pid cap=$cap (cannot lead)" \
+            "\`volume_providers_in_order\` names \`${pid}\` but providers.${pid}.cap=${cap}. A volume-FIRST seat with cap=0 is a paper claim — raise the cap or remove it from the volume prefix (fleet-ops#1178)."
+        violations=$((violations + 1))
+    fi
+    if ! [[ "$mcount" =~ ^[1-9][0-9]*$ ]]; then
+        loud "VOLUME-ORDER-VIOLATION" \
+            "volume provider $pid has empty models map (mcount=$mcount)"
+        file_finding "$pid" "empty-models" \
+            "volume lane order: $pid has no allowlisted models" \
+            "\`volume_providers_in_order\` names \`${pid}\` but providers.${pid}.models is empty. pick_seat skips providers with no model allowlist entry — the volume prefix would silently fall through (fleet-ops#1178 / #437)."
+        violations=$((violations + 1))
+    fi
+done
+
+# ---- GATE 3: cursor never in the volume prefix -----------------------------
+if jq -e --arg c cursor '
+  (.volume_providers_in_order // []) | index($c) != null
+' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "VOLUME-ORDER-VIOLATION" \
+        "cursor appears in volume_providers_in_order (keystone-only)"
+    file_finding "cursor" "in-volume-prefix" \
+        "volume lane order: cursor must not be in the volume prefix" \
+        "decisions-ledger 2026-08-27 Worker lane order: cursor is keystone-only at ~\$16/day, never volume. Remove cursor from volume_providers_in_order (fleet-ops#1178 / #1133 / #1167)."
+    violations=$((violations + 1))
+fi
+
+# ---- GATE 4: seat-lib runtime wire -----------------------------------------
+if [[ ! -f "$SEAT_LIB" ]]; then
+    loud "VOLUME-ORDER-VIOLATION" "seat-lib missing: $SEAT_LIB"
+    violations=$((violations + 1))
+else
+    if ! grep -q 'SEAT_VOLUME_ORDER' "$SEAT_LIB"; then
+        loud "VOLUME-ORDER-VIOLATION" \
+            "seat-lib.sh does not load SEAT_VOLUME_ORDER (runtime wire missing)"
+        file_finding "seat-lib" "no-volume-order-load" \
+            "volume lane order: seat-lib missing SEAT_VOLUME_ORDER" \
+            "config/seat-caps.json declares volume_providers_in_order but lib/seat-lib.sh never loads SEAT_VOLUME_ORDER. The canary alone cannot enforce the ladder — wire pick_seat (fleet-ops#1178)."
+        violations=$((violations + 1))
+    fi
+    if ! grep -q 'volume_seats' "$SEAT_LIB"; then
+        loud "VOLUME-ORDER-VIOLATION" \
+            "seat-lib.sh pick_seat has no volume_seats bucket"
+        file_finding "seat-lib" "no-volume-bucket" \
+            "volume lane order: pick_seat missing volume_seats bucket" \
+            "lib/seat-lib.sh must prefer a volume_seats bucket (strict order from volume_providers_in_order) before leftover free / leftover prepaid / metered (fleet-ops#1178)."
+        violations=$((violations + 1))
+    fi
+    if ! grep -q 'volume_providers_in_order' "$SEAT_LIB"; then
+        loud "VOLUME-ORDER-VIOLATION" \
+            "seat-lib.sh never reads volume_providers_in_order from seat-caps"
+        file_finding "seat-lib" "no-jq-volume-order" \
+            "volume lane order: seat-lib never reads volume_providers_in_order" \
+            "load_seat_caps must jq-read .volume_providers_in_order into SEAT_VOLUME_ORDER (fleet-ops#1178)."
+        violations=$((violations + 1))
+    fi
+fi
+
+if (( violations > 0 )); then
+    log "FAIL: $violations volume-lane-order gate violation(s)"
+    exit 1
+fi
+
+# ---- DETECTOR: xai-oauth entitled but unwired ------------------------------
+# The ledger's "then xai-oauth (alternate)" half. Wiring is owned by #1163;
+# this detector only screams if the catalog knows the provider and seat-caps
+# still has no live row (or only the stale grok:0 placeholder without a
+# 2026-08-27+ dated reason that names xai-oauth).
+xai_in_models=0
+if [[ -f "$MODELS_JSON" ]] && jq -e '.providers["xai-oauth"] != null' "$MODELS_JSON" >/dev/null 2>&1; then
+    xai_in_models=1
+fi
+
+if (( xai_in_models )); then
+    if ! jq -e '.providers["xai-oauth"] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+        # Stale `grok` placeholder does not count as the revived seat.
+        loud "VOLUME-ORDER-AVAILABLE" \
+            "xai-oauth present in models.json but missing from seat-caps — filing wire ticket"
+        file_finding "xai-oauth" "unwired" \
+            "volume lane order: wire xai-oauth into seat-caps (ledger then-alternate)" \
+            "decisions-ledger 2026-08-27 Worker lane order puts xai-oauth in the post-volume alternation. models.json already has providers.xai-oauth, but config/seat-caps.json has no providers.xai-oauth row. Coordinate with fleet-ops#1163: add class=prepaid-quota, conservative cap 1-2, alternate never-stack, and meter-check within minutes of first draw."
+    else
+        xai_cap=$(jq -r '
+          .providers["xai-oauth"] as $v
+          | if ($v|type)=="number" then $v else ($v.cap // 0) end
+        ' "$SEAT_CAPS_JSON")
+        if [[ "$xai_cap" == "0" ]]; then
+            reason=$(jq -r '
+              .providers["xai-oauth"] as $v
+              | if ($v|type)=="object" then ($v.reason // "") else "" end
+            ' "$SEAT_CAPS_JSON")
+            if ! [[ "$reason" =~ 2026-08-2[7-9]|2026-09 ]]; then
+                loud "VOLUME-ORDER-AVAILABLE" \
+                    "xai-oauth cap=0 without a post-2026-08-27 dated reason — filing"
+                file_finding "xai-oauth" "cap-zero-stale-reason" \
+                    "volume lane order: xai-oauth cap=0 needs a fresh dated reason or a live cap" \
+                    "providers.xai-oauth exists but cap=0. The 2026-08-27 ledger revived the seat for alternation after the volume prefix. Either raise the cap (coordinate #1163) or refresh .reason with a 2026-08-27+ date explaining why it stays dark."
+            fi
+        fi
+    fi
+fi
+
+loud "VOLUME-ORDER-OK" \
+    "volume front-of-ladder locked: $EXPECTED_VOLUME_CSV; cursor excluded; seat-lib volume bucket wired"
+exit 0

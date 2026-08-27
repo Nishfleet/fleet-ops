@@ -97,6 +97,7 @@ declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
 declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
+SEAT_VOLUME_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
 # Org/repair packets charge at most this many seats against the intake
 # cap (fleet-ops 2026-08-27 seat-cap un-strangle). Extra org units keep
@@ -141,6 +142,7 @@ load_seat_caps() {
     SEAT_PROVIDER_WEEKLY_BUDGET=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
+    SEAT_VOLUME_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
 
@@ -188,6 +190,9 @@ load_seat_caps() {
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # fleet-ops#1178: cross-class volume front-of-ladder (ollama -> devin ->
+    # commandcode -> cline FIRST). Empty means legacy free-then-prepaid behaviour.
+    SEAT_VOLUME_ORDER=$(jq -r '.volume_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p window budget; do
         [[ -n "$p" ]] || continue
@@ -1258,9 +1263,54 @@ pick_seat() {
         fi
     fi
 
-    # Free first, then prepaid (alternate), then metered.
+    # fleet-ops#1178: volume front-of-ladder. Pull volume-order providers out
+    # of free+prepaid into a strict-priority volume bucket (first live wins),
+    # then leftover free, then leftover prepaid (alternate), then metered.
+    # Empty SEAT_VOLUME_ORDER preserves the legacy free-then-prepaid ladder.
+    local -a volume_seats=() leftover_free=() leftover_prepaid=()
+    if [[ -n "$SEAT_VOLUME_ORDER" ]]; then
+        declare -A _vol_seen=()
+        local _vp _fm
+        for _vp in $SEAT_VOLUME_ORDER; do
+            _vol_seen["$_vp"]=1
+        done
+        for _fm in "${free_seats[@]:-}" "${prepaid_seats[@]:-}"; do
+            [[ -n "$_fm" ]] || continue
+            p="${_fm%%$'\t'*}"
+            if [[ -n "${_vol_seen[$p]:-}" ]]; then
+                volume_seats+=("$_fm")
+            fi
+        done
+        if (( ${#volume_seats[@]} > 0 )); then
+            mapfile -t volume_seats < <(_order_seats_by "$SEAT_VOLUME_ORDER" "${volume_seats[@]}")
+        fi
+        for _fm in "${free_seats[@]:-}"; do
+            [[ -n "$_fm" ]] || continue
+            p="${_fm%%$'\t'*}"
+            [[ -n "${_vol_seen[$p]:-}" ]] && continue
+            leftover_free+=("$_fm")
+        done
+        for _fm in "${prepaid_seats[@]:-}"; do
+            [[ -n "$_fm" ]] || continue
+            p="${_fm%%$'\t'*}"
+            [[ -n "${_vol_seen[$p]:-}" ]] && continue
+            leftover_prepaid+=("$_fm")
+        done
+        free_seats=("${leftover_free[@]:-}")
+        prepaid_seats=("${leftover_prepaid[@]:-}")
+    fi
+
+    # Volume first (strict), then leftover free, then leftover prepaid
+    # (alternate), then metered.
     local chosen="" chosen_p=""
-    if (( ${#free_seats[@]} > 0 )); then
+    if (( ${#volume_seats[@]} > 0 )); then
+        chosen="${volume_seats[0]}"
+        chosen_p="${chosen%%$'\t'*}"
+        # Prepaid members of the volume set still burn weekly pacing.
+        if [[ "$(class_of "$chosen_p")" == "prepaid-quota" ]]; then
+            _record_prepaid_pick "$chosen_p"
+        fi
+    elif (( ${#free_seats[@]} > 0 )); then
         chosen="${free_seats[0]}"
     elif (( ${#prepaid_seats[@]} > 0 )); then
         chosen=$(_rr_pick "$STATE_DIR/prepaid-rr.idx" "${prepaid_seats[@]}")

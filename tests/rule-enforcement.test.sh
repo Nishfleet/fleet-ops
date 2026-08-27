@@ -46,6 +46,11 @@ jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforc
   || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
 ok "matrix row led-worker-lane-refresh is enforced"
 
+jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou" and .status == "enforced")' \
+  "$matrix" >/dev/null \
+  || fail "led-2026-08-27-worker-lane-order must be status=enforced (fleet-ops#1178)"
+ok "matrix row led-2026-08-27-worker-lane-order is enforced"
+
 jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
   "$matrix" >/dev/null \
   || fail "sr-verify-harness must be status=enforced (fleet-ops#524)"
@@ -62,6 +67,17 @@ do
   [[ "$status" == "enforced" ]] || fail "matrix must have $src as enforced, got ${status:-missing}"
   ok "matrix row for $src is enforced"
 done
+# fleet-ops#1178: apostrophe in "can't" — assert via --arg, not a double-quoted for-loop entry.
+src_1178='decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")'
+status=$(jq -r --arg src "$src_1178" '.rules[] | select(.source == $src) | .status' "$matrix")
+[[ "$status" == "enforced" ]] || fail "matrix must have $src_1178 as enforced, got ${status:-missing}"
+ok "matrix row for worker lane order (fleet-ops#1178) is enforced"
+
+# fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
+# vault join so a busy board of other uncovered sibling ledger lines
+# cannot skip this drill (the live join still asserts our covered_rows).
+bash "$here/fleet-volume-lane-order-canary.test.sh" || fail "volume-lane-order canary drill failed"
+ok "rule-enforcement: volume-lane-order canary drill"
 
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
@@ -98,6 +114,9 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
+    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report worker lane order as enforced covered_rows (fleet-ops#1178): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | continuous research" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
@@ -116,6 +135,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: execution-is-review source is enforced (observe-to-close for #537)"
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
+  ok "live join: worker lane order source is enforced (observe-to-close for #1178)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
   ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
   ok "live join: per-repo verification harness source is enforced (observe-to-close for #524)"
@@ -817,4 +837,4 @@ ok "rule-enforcement: paid-flash canary drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, and token-economy drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, and volume-lane-order drills"

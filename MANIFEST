@@ -321,6 +321,12 @@ config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.js
 # meter-check evidence within minutes of first active draw. Heartbeat-tier1
 # block 25.
 bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
+# fleet-ops#1178: volume front-of-ladder canary (led-2026-08-27-worker-lane-order).
+# Fail-loud if volume_providers_in_order is missing/wrong, a volume provider
+# is dark, cursor sneaks into the volume prefix, or seat-lib lacks the
+# volume_seats bucket. Observe-to-open when xai-oauth is in models.json but
+# unwired. Heartbeat-tier1 block 33.
+bin/fleet-volume-lane-order-canary /home/nish/.local/bin/fleet-volume-lane-order-canary
 # fleet-ops#537: Execution IS the review receipt canary. Worker prompt
 # inner loop stays agentic (no bin/exec-review dispatcher). This canary
 # detects a worker PR that skipped the run (no Verification: run-cue /
