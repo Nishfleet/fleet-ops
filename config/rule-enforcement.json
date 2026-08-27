@@ -706,6 +706,13 @@
       "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire — official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted — worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness.",
       "proof": "bin/fleet-credential-expiry-canary; lib/credential-expiry-canary.py; tests/credential-expiry-canary.test.sh; bin/fleet-heartbeat-tier1 block 31; fleet-ops#938",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-27-token-economy-rebalance-nish-from-live-meters",
+      "source": "decisions-ledger.md: 2026-08-27 | Token economy rebalance (Nish, from live meters)",
+      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus config/seat-caps.json and lib/seat-lib.sh pick_seat enforce the 2026-08-27 rebalance: devin cap 4 and first in the prepaid alternation, cursor cap 1 and excluded from free lanes, free lanes (commandcode/hetzner/opencode) before prepaid and metered (minimax/straitly) last, grok/SuperGrok and opencode-anthropic (Claude) cap 0 with dated reasons. Refinements such as xai-oauth wiring and cursor overage pacing are tracked in Nishfleet/fleet-ops#1167.",
+      "proof": "config/seat-caps.json; lib/seat-lib.sh; tests/fleet-token-economy.test.sh; tests/seat-lib.test.sh; Nishfleet/fleet-ops#1167",
+      "status": "enforced"
     }
   ]
 }
