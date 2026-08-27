@@ -309,6 +309,12 @@ bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
 bin/fleet-tailscale-acl-canary /home/nish/.local/bin/fleet-tailscale-acl-canary
 lib/tailscale-acl-lockdown.py /home/nish/.local/bin/tailscale-acl-lockdown.py
 config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
+# fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
+# Fail-loud if an enrolled product repo HEAD is missing
+# .claude/skills/verify-<app>/SKILL.md with required sections + features/.
+# Deferred products auto-file. Heartbeat-tier1 block 29.
+bin/fleet-verify-harness-canary /home/nish/.local/bin/fleet-verify-harness-canary
+config/verify-harness.json /home/nish/.local/state/pi-packet/verify-harness.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

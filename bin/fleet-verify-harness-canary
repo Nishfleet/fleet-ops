@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+# fleet-verify-harness-canary — product repos must ship a verify skill
+# (fleet-ops#524).
+#
+# Standing rule (Nish, 2026-08-20): every product repo gets ONE checked-in
+# verification skill at `.claude/skills/verify-<app>/SKILL.md` with
+# LAUNCH / DOCTOR / DRIVE / EVIDENCE / CLEANUP plus a features/ map.
+#
+# STEP 0: ran `gh api --help`, `gh search code --help`,
+# `fleet-exec-review-canary --help`, `research-before-build-check --help`.
+# gh api can GET a single contents path; gh search code can find
+# SKILL.md files (default --limit 30). Neither joins intake, checks the
+# five required headings, requires a features/ map, fail-louds enrolled
+# products, or auto-files. fleet-repo-visibility-canary classifies
+# product vs sink for *visibility*, not harness files. pstack
+# create-verification-skill *generates* a skill; it does not watch that
+# every product repo still has one. This canary is that missing watch:
+#   1. GATE (fail-loud, exit 1): an enrolled intake product whose HEAD
+#      lacks a valid verify-* skill.
+#   2. DETECTOR (auto-file, tick stays green): a deferred product with
+#      the same gap. Cap per tick. Deduped on the marker.
+#   3. FAIL-LOUD on a broken watch: intake/config missing or unparseable,
+#      enrolled checkout missing / not a git repo.
+#
+# Why not wrap an existing tool:
+#   0. Read gh api --help, gh search code --help, fleet-exec-review-canary
+#      --help, research-before-build-check --help. fleet-repo-visibility-canary
+#      has no --help (running it performs the visibility watch).
+#   1. Those flags do not already do this (no intake join, no heading
+#      check, no auto-file, no enrolled fail-loud).
+#   2. pstack create-verification-skill is a generator, not a fleet watch.
+#      repo-standards-sync / semgrep would need a workflow or .semgrep.yml
+#      edit this token cannot push.
+#   3. No managed GitHub setting watches a skill path per product repo.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 29.
+#
+# Environment seams (tests):
+#   FLEET_VERIFY_HARNESS_JSON     skip + required_headings config
+#   FLEET_VERIFY_HARNESS_INTAKE   intake-repos.json override
+#   FLEET_VERIFY_HARNESS_CHECKOUT_ROOT  checkout root override
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_VERIFY_HARNESS_REPO     default Nishfleet/fleet-ops
+#   FLEET_VERIFY_HARNESS_FILE     1 (default) file issues; 0 skip create
+#   FLEET_VERIFY_HARNESS_CAP      per-tick file cap (default 5)
+#   FLEET_OPS_REPO
+#   GH                            gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+usage() {
+    printf 'usage: fleet-verify-harness-canary [-h|--help]\n' >&2
+    printf '  Heartbeat canary: enrolled product repos must have\n' >&2
+    printf '  .claude/skills/verify-<app>/SKILL.md with required sections.\n' >&2
+    exit 0
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+fi
+
+CONFIG="${FLEET_VERIFY_HARNESS_JSON:-$FLEET_OPS_REPO/config/verify-harness.json}"
+if [[ ! -f "$CONFIG" ]]; then
+    CONFIG="${HOME}/.local/state/pi-packet/verify-harness.json"
+fi
+
+INTAKE="${FLEET_VERIFY_HARNESS_INTAKE:-$FLEET_OPS_REPO/config/intake-repos.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_VERIFY_HARNESS_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_VERIFY_HARNESS_FILE:-1}"
+FILE_CAP="${FLEET_VERIFY_HARNESS_CAP:-5}"
+
+log() {
+    printf '[%s] [fleet-verify-harness-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+filed_this_tick=0
+
+file_finding() {
+    local name="$1" title="$2" body="$3"
+    local marker="fleet-verify-harness-canary: missing-harness ${name}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_VERIFY_HARNESS_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    if (( filed_this_tick >= FILE_CAP )); then
+        log "file cap reached ($FILE_CAP); skipping $marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+        filed_this_tick=$((filed_this_tick + 1))
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+if [[ ! -f "$CONFIG" ]]; then
+    loud "VERIFY-HARNESS-WATCHER-BROKEN" "config missing: $CONFIG"
+    exit 1
+fi
+if ! jq -e . "$CONFIG" >/dev/null 2>&1; then
+    loud "VERIFY-HARNESS-WATCHER-BROKEN" "config unparseable: $CONFIG"
+    exit 1
+fi
+if [[ ! -f "$INTAKE" ]]; then
+    loud "VERIFY-HARNESS-WATCHER-BROKEN" "intake missing: $INTAKE"
+    exit 1
+fi
+if ! jq -e . "$INTAKE" >/dev/null 2>&1; then
+    loud "VERIFY-HARNESS-WATCHER-BROKEN" "intake unparseable: $INTAKE"
+    exit 1
+fi
+
+mapfile -t required_headings < <(jq -r '.required_headings[]? // empty' "$CONFIG")
+if (( ${#required_headings[@]} < 1 )); then
+    loud "VERIFY-HARNESS-WATCHER-BROKEN" "config missing required_headings: $CONFIG"
+    exit 1
+fi
+
+declare -A skip_set=()
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    skip_set["$name"]=1
+done < <(jq -r '.skip[]?.name // empty' "$CONFIG")
+
+declare -A enrolled_set=()
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    enrolled_set["$name"]=1
+done < <(jq -r '.repos[]?.name // empty' "$INTAKE")
+
+checkout_root="${FLEET_VERIFY_HARNESS_CHECKOUT_ROOT:-}"
+if [[ -z "$checkout_root" ]]; then
+    checkout_root=$(jq -r '.checkout_root // empty' "$INTAKE")
+fi
+if [[ -z "$checkout_root" ]]; then
+    loud "VERIFY-HARNESS-WATCHER-BROKEN" "intake missing checkout_root: $INTAKE"
+    exit 1
+fi
+
+# Collect unique product names: enrolled + deferred, skip[] removed.
+declare -A seen_names=()
+product_names=()
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if [[ -n "${skip_set[$name]:-}" ]]; then
+        log "skip non-product: $name"
+        continue
+    fi
+    if [[ -n "${seen_names[$name]:-}" ]]; then
+        continue
+    fi
+    seen_names["$name"]=1
+    product_names+=("$name")
+done < <(jq -r '.repos[]?.name, .deferred[]?.name | select(. != null)' "$INTAKE")
+
+skill_paths_on_head() {
+    local checkout="$1"
+    git -C "$checkout" ls-tree -r --name-only HEAD -- .claude/skills 2>/dev/null \
+        | grep -E '^\.claude/skills/verify-[^/]+/SKILL.md$' || true
+}
+
+features_on_head() {
+    local checkout="$1" skill_dir="$2"
+    git -C "$checkout" ls-tree -r --name-only HEAD -- "$skill_dir/features" 2>/dev/null \
+        | grep -E "^${skill_dir}/features/[^/]+\.md$" || true
+}
+
+harness_ok() {
+    local checkout="$1" skill_path="$2"
+    local skill_dir content heading
+    skill_dir=$(dirname "$skill_path")
+    if ! content=$(git -C "$checkout" show "HEAD:$skill_path" 2>/dev/null); then
+        return 1
+    fi
+    for heading in "${required_headings[@]}"; do
+        if ! grep -qiE "^##[[:space:]]*${heading}([[:space:]]|$)" <<<"$content"; then
+            return 1
+        fi
+    done
+    local feats
+    feats=$(features_on_head "$checkout" "$skill_dir")
+    [[ -n "$feats" ]]
+}
+
+inspect_product() {
+    # Prints one token: ok | missing | invalid | no-checkout | not-git
+    local name="$1"
+    local checkout="$checkout_root/$name"
+    if [[ ! -d "$checkout" ]]; then
+        printf 'no-checkout\n'
+        return 0
+    fi
+    if ! git -C "$checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf 'not-git\n'
+        return 0
+    fi
+    local paths path
+    paths=$(skill_paths_on_head "$checkout")
+    if [[ -z "$paths" ]]; then
+        printf 'missing\n'
+        return 0
+    fi
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        if harness_ok "$checkout" "$path"; then
+            printf 'ok\n'
+            return 0
+        fi
+    done <<<"$paths"
+    printf 'invalid\n'
+}
+
+issue_body_for() {
+    local name="$1" kind="$2"
+    printf '%s\n' \
+        "Standing rule: every product repo gets ONE checked-in verification skill at \`.claude/skills/verify-<app>/SKILL.md\` (LAUNCH, DOCTOR, DRIVE, EVIDENCE, CLEANUP, plus a features/ map)." \
+        "" \
+        "- repo: \`Nishfleet/${name}\`" \
+        "- finding: \`${kind}\`" \
+        "- checkout: \`${checkout_root}/${name}\`" \
+        "" \
+        "Implement the harness in Nishfleet/${name}. Do not close this until HEAD on the default branch has a valid skill. fleet-ops#524."
+}
+
+violations=0
+deferred_gaps=0
+
+if (( ${#product_names[@]} == 0 )); then
+    log "no product names after skip[] — nothing to inspect"
+else
+    for name in "${product_names[@]}"; do
+        enrolled=0
+        if [[ -n "${enrolled_set[$name]:-}" ]]; then
+            enrolled=1
+        fi
+        state=$(inspect_product "$name")
+        case "$state" in
+            ok)
+                log "ok: $name"
+                ;;
+            no-checkout|not-git)
+                if (( enrolled )); then
+                    loud "VERIFY-HARNESS-WATCHER-BROKEN" \
+                        "enrolled product $name checkout is ${state} at $checkout_root/$name"
+                    violations=$((violations + 1))
+                else
+                    log "deferred ${state}: $name"
+                fi
+                ;;
+            missing|invalid)
+                kind="HEAD ${state} verify harness"
+                if (( enrolled )); then
+                    loud "VERIFY-HARNESS-VIOLATION" \
+                        "enrolled product $name: $kind"
+                    file_finding "$name" \
+                        "feat(${name}): add .claude/skills/verify-<app> harness" \
+                        "$(issue_body_for "$name" "$kind")"
+                    violations=$((violations + 1))
+                else
+                    log "deferred gap: $name ($kind)"
+                    file_finding "$name" \
+                        "feat(${name}): add .claude/skills/verify-<app> harness" \
+                        "$(issue_body_for "$name" "$kind")"
+                    deferred_gaps=$((deferred_gaps + 1))
+                fi
+                ;;
+            *)
+                loud "VERIFY-HARNESS-WATCHER-BROKEN" \
+                    "inspect_product returned unknown state '$state' for $name"
+                violations=$((violations + 1))
+                ;;
+        esac
+    done
+fi
+
+if (( violations > 0 )); then
+    log "FAIL: $violations enrolled product harness gap(s); deferred_gaps=$deferred_gaps"
+    exit 1
+fi
+
+loud "VERIFY-HARNESS-OK" \
+    "enrolled product harnesses present; deferred_gaps=$deferred_gaps"
+exit 0
