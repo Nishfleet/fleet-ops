@@ -180,6 +180,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/standing-rules-drift\.test\.sh"?
   || fail "standing-rules-drift.test.sh must not be a known orphan (fleet-ops#1152)"
 ok "standing-rules-drift.test.sh is pinned in the P14 reachable set (fleet-ops#1152)"
 
+# fleet-ops#1211: hard-pin the host line for fleet-waste-ledger. Nested
+# host from ci-standards-audit.test.sh (already in P14). Named pin so a
+# future drop of the host line cannot park the test on known_orphans.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-waste-ledger\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-waste-ledger.test.sh (fleet-ops#1211)"
+[[ -n "${reachable[fleet-waste-ledger.test.sh]:-}" ]] \
+  || fail "fleet-waste-ledger.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1211)"
+[[ -z "${known_orphan_set[fleet-waste-ledger.test.sh]:-}" ]] \
+  || fail "fleet-waste-ledger.test.sh must not be a known orphan (fleet-ops#1211)"
+ok "fleet-waste-ledger.test.sh is pinned in the P14 reachable set (fleet-ops#1211)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob

@@ -103,6 +103,11 @@ systemd/vps-weekly-update.service.d/20-wip-gc.conf /home/nish/.config/systemd/us
 # Updated on the existing 5-min fleet-metrics-export tick (no new timer).
 bin/git-mirror-update /home/nish/.local/bin/git-mirror-update
 systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/10-git-mirrors.conf
+# fleet-ops#1211: loss-accounting family. Piggybacks the existing 5-min
+# fleet-metrics-export tick (no new timer). Leading '-' so a waste-ledger
+# fault cannot fail Prometheus export.
+libexec/fleet-waste-export.py /home/nish/.local/libexec/fleet-waste-export.py
+systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/waste-ledger.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;

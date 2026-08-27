@@ -59,6 +59,9 @@ five lenses:
   (Claude/Devin/Cursor/xAI), what the heartbeat canaries said. Read
   `/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md` and the
   recent cron-output. Identify any unit that ran but produced no value.
+  Read `fleet_waste_ratio` and the per-lane `fleet_waste_empty_runs_24h`
+  / `fleet_waste_retries_24h` families (fleet-ops#1211 waste ledger).
+  WasteRatioRising is a trend alert that feeds this lens; it does not page.
 - **L4 truth/docs integrity** — pick THREE claims the fleet or 0509
   product makes in their docs or READMEs and verify each against the
   code/CLI/state. Flag drift, staleness, or ungrounded claims. (The
