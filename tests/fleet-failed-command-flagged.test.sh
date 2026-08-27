@@ -20,6 +20,9 @@
 #  10. Observe-to-close: a green tick comments resolved-at on an aged-out
 #      signal; a later tick with that marker closes; a still-dirty slug is
 #      neither commented nor closed (fleet-ops#650).
+#  11. Observe-to-close lifecycle for the live #791 canary exit-1
+#      walked-past shape: in-window is still-dirty, aged-out comments
+#      resolved-at, next tick closes (fleet-ops#791).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -495,6 +498,126 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "observe-to-close: still-dirty slug is neither commented nor closed"
 rm -f "$sessions/${slug650}.jsonl"
+
+# --- 11. observe-to-close lifecycle for the live #791 canary exit-1 shape ---
+# fleet-ops#791: the 2026-08-27T00-01:33 session (slug 01a04085) is the
+# canary exit-1 walked-past class. While the session mtime is in the 24h
+# window the detector keeps flagging the slug, and the auto-file dedup
+# leaves the open issue untouched. Once the session ages out of the
+# window the slug drops off the findings list, the same-tick
+# observe-to-close comments resolved-at, and the next tick closes the
+# issue. This drills the full lifecycle on the live slug so a future
+# detector refactor cannot regress the canary class to a never-closes
+# state — the canary exit-1 is real, the issue must still close when
+# the session ages out (no stuck-open auto-files).
+rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+slug791="2026-08-27t00-01-33-243z-01a04085-9c3b-7194-a332-20e86c213e81"
+printf '%s\n' "fix(failed-command): $slug791" >"$gh_store/issue-791.body"
+printf '%s\n' "Do not close until the detector reports this clean.
+
+signal: failed-command-flagged/${slug791}" >>"$gh_store/issue-791.body"
+
+# Replay the live #727/#791 canary exit-1 walked-past shape and pin the
+# session mtime to T0 (2026-08-27T00:01:00Z) so window/grace math is
+# deterministic across ticks.
+cat >"$sessions/${slug791}.jsonl" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_canary","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-0509-973 && timeout 1800 npm run canary:bet2 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_canary","toolName":"bash","isError":true,"content":[{"type":"text","text":"{\n  \"termination\": {\n    \"pass\": false,\n    \"checks\": [\n      {\"name\": \"zero_dead_ends\", \"ok\": false, \"observed\": 2, \"threshold\": 0, \"detail\": \"dead-end empty states: 2\"}\n    ]\n  }\n}\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The canary ran and shows current state. Let me triage the results."}]}}
+{"type":"message","message":{"role":"toolCall","id":"call_probe","name":"bash","arguments":{"command":"for domain in salesforce.com shopify.com; do\n  echo -n \"$domain: \"\n  curl -s --max-time 10 \"https://0509.io/search?website=$domain\" 2>&1 | grep -oE '\"rowCount\":[0-9]+' | head -1\ndone"}}]}}
+JSONL
+touch -d "2026-08-27T00:01:00Z" "$sessions/${slug791}.jsonl"
+
+# Tick A: in-window, slug is a finding, auto-file deduped on open #791.
+# Observe-to-close is skipped (still-dirty). Exit 1. No comment, no close.
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-791a.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "live #791 in-window tick should exit 1 (got $rc) $(cat "$scratch/err-791a.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err-791a.log" \
+  || fail "in-window tick must log the slug as swallowed (live #791 shape)"
+if [ -s "$gh_store/commented" ]; then
+  fail "in-window tick must not comment (still-dirty, commented=$(cat "$gh_store/commented"))"
+fi
+if [ -s "$gh_store/closed" ]; then
+  fail "in-window tick must not close (still-dirty, closed=$(cat "$gh_store/closed"))"
+fi
+ok "live #791: in-window tick leaves the open issue untouched (still-dirty)"
+
+# Tick B: 24h+1min past session mtime, session is skipped_old, slug is
+# not a finding. Auto-file deduped (signal in open). Observe-to-close
+# comments resolved-at. Exit 0. Same-tick must NOT close.
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-28T00:02:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-791b.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live #791 aged-out tick should exit 0 (got $rc) $(cat "$scratch/err-791b.log")"
+grep -q "OBSERVED-RESOLVED" "$scratch/err-791b.log" \
+  || fail "aged-out tick must log OBSERVED-RESOLVED (got $(cat "$scratch/err-791b.log"))"
+grep -q '^791$' "$gh_store/commented" \
+  || fail "aged-out tick must comment on #791 (commented=$(cat "$gh_store/commented"))"
+grep -q "resolved-at: signal: failed-command-flagged/${slug791}" "$gh_store/issue-791.comments" \
+  || fail "comment missing resolved-at marker"
+if [ -s "$gh_store/closed" ]; then
+  fail "aged-out tick must not close (same-tick, closed=$(cat "$gh_store/closed"))"
+fi
+ok "live #791: aged-out tick comments resolved-at, does not close same tick"
+
+# Tick C: marker already present, slug still absent -> close. Exit 0.
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-28T00:02:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CLOSE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-791c.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live #791 close tick should exit 0 (got $rc) $(cat "$scratch/err-791c.log")"
+grep -q "OBSERVE-CLOSED" "$scratch/err-791c.log" \
+  || fail "close tick must log OBSERVE-CLOSED (got $(cat "$scratch/err-791c.log"))"
+grep -q '^791$' "$gh_store/closed" \
+  || fail "close tick must close #791 (closed=$(cat "$gh_store/closed"))"
+if [ -s "$gh_store/commented" ]; then
+  fail "close tick must not comment again (commented=$(cat "$gh_store/commented"))"
+fi
+ok "live #791: later tick with resolved-at marker closes"
+rm -f "$sessions/${slug791}.jsonl"
 
 # --- 8. missing helper fails loud -------------------------------------------
 set +e
