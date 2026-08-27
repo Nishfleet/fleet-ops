@@ -920,6 +920,70 @@ set -e
   || fail "437-listed: expected hetzner/Qwen slug, got: $out"
 ok "437-listed: allowlisted Qwen/Qwen3.6-35B-A3B-FP8 is pickable"
 
+# fleet-ops#640: allowlisted opencode/mimo-v2.5-free is pickable, including
+# as failover when hy3-free is already tried. Isolated fixture so live
+# seat-caps cannot leak.
+mkdir -p "$scratch/640"
+cat >"$scratch/640/models.json" <<'JSON'
+{
+  "providers": {
+    "opencode": {
+      "models": [
+        { "id": "hy3-free", "cost": { "input": 0 }, "contextWindow": 131072 },
+        { "id": "mimo-v2.5-free", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/640/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["opencode"],
+  "providers": {
+    "opencode": {
+      "cap": 1,
+      "class": "free",
+      "models": { "hy3-free": 1, "mimo-v2.5-free": 1 }
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/640/models.json"
+export SEAT_CAPS_JSON="$scratch/640/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/640/ledger"
+export PI_PACKET_STATE="$scratch/640/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "640-first: expected a pick, got rc=$rc"
+[[ "$out" == "opencode	hy3-free" ]] \
+  || fail "640-first: expected hy3-free first (models.json order), got: $out"
+ok "640-first: hy3-free stays the first opencode pick"
+
+printf 'opencode/hy3-free\n' >"$scratch/640/tried"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/640/tried" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "640-failover: expected a pick, got rc=$rc"
+[[ "$out" == "opencode	mimo-v2.5-free" ]] \
+  || fail "640-failover: expected mimo-v2.5-free when hy3-free is tried, got: $out"
+ok "640-failover: allowlisted mimo-v2.5-free is pickable"
+
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1 "$1"' "$lib" "$scratch/640/tried" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "640-heavy: expected a heavy pick, got rc=$rc"
+[[ "$out" == "opencode	mimo-v2.5-free" ]] \
+  || fail "640-heavy: mimo-v2.5-free must be heavy-capable, got: $out"
+ok "640-heavy: mimo-v2.5-free is pickable for heavy work"
+
+unset PI_SEAT_CREDENTIAL_PRECHECK
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
