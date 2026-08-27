@@ -172,5 +172,23 @@ echo "$out" | grep -q 'rss_p95_mb=35.0' || fail "must read VmRSS from MainPID; g
 echo "$out" | grep -q 'mismatch=1' || fail "live walk of #202 shape must mismatch; got: $out"
 ok "7. activating oneshot + named properties (not --value order)"
 
+# =========================================================================
+# 8. ram_governor_cap sanity assertion: fail loud if cap >= 64
+# =========================================================================
+# A MB-vs-GB slip (or a bogus tiny per-worker budget) can make the governor
+# claim thousands of workers. It must refuse to emit a cap >= 64.
+sanity_caps="$scratch/caps-sanity.json"
+jq '.ram_gb_per_worker = 0.0001' "$caps" > "$sanity_caps"
+set +e
+out=$(PI_PACKET_STATE="$scratch/pi-packet-sanity" SEAT_CAPS_JSON="$sanity_caps" \
+    bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_governor_cap 2>/dev/null' "$lib")
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] \
+    || fail "ram_governor_cap must fail loud when computed cap >= 64 (rc=$rc)"
+[[ -z "$out" ]] \
+    || fail "ram_governor_cap must not emit a huge cap on sanity fail (got '$out')"
+ok "8. ram_governor_cap fails loud when a unit slip yields cap >= 64"
+
 echo
 echo "ALL OK"
