@@ -39,7 +39,18 @@ grep -qE "Co-Authored-By|Co-authored-by" "$worker" \
     || fail "worker.md must forbid Co-Authored-By trailers"
 grep -qE "Generated with|Generated with" "$worker" \
     || fail "worker.md must forbid Generated-with footers"
+grep -qF -- 'fleet-no-agent-names-check --pr-body <pr-body-file> --commit-range origin/main..HEAD' "$worker" \
+    || fail "worker.md must pass origin/main..HEAD (asymmetric) to fleet-no-agent-names-check (fleet-ops#944)"
+if grep -qE 'fleet-no-agent-names-check.*origin/main\.\.\.HEAD' "$worker"; then
+    fail "worker.md must not pass three-dot origin/main...HEAD to fleet-no-agent-names-check (fleet-ops#944)"
+fi
+if grep -qF 'e.g. origin/main...HEAD' "$lib"; then
+    fail "lib help must not advertise three-dot as the commit-range example (fleet-ops#944)"
+fi
+grep -qF 'origin/main..HEAD' "$lib" \
+    || fail "lib help/docs must example origin/main..HEAD (fleet-ops#944)"
 ok "A: worker.md carries the no-agent-names gate"
+ok "A2: worker.md and lib advertise two-dot, never three-dot, for commit-range (fleet-ops#944)"
 
 # ============================================================================
 # Helpers
@@ -203,8 +214,10 @@ cd "$here"
 # the worker never wrote. The correct range for "my PR's commits" is
 # `origin/main..HEAD` (asymmetric: commits in HEAD not in origin/main).
 #
-# This test locks the contrast so a future worker.md that reverts to `...`
-# is caught by CI, and so the check's own test suite proves the distinction.
+# PR #1031 instructed worker.md to use two-dot. That is not enough: workers
+# still copy three-dot from `git diff --name-status origin/main...HEAD`
+# (correct for file diffs). The checker itself must rewrite A...B -> A..B
+# so the class cannot recur. This phase locks that rewrite.
 
 git_repo3="$scratch/repo3"
 mkdir -p "$git_repo3"
@@ -236,19 +249,17 @@ Co-Authored-By: nishfleet-worker[bot] <bot@example.com>"
 git -c "user.email=agent@example.com" -c "user.name=Test Agent" \
   commit -q -F - <<<"$commit_args"
 
-# --- E1. `main...feature` (symmetric) is a FALSE POSITIVE on diverged main --
-# The symmetric difference includes the main commit (which has a
-# Co-Authored-By trailer from a prior PR). The check REJECTs — but that
-# commit was not written by the current worker, so this is a false alarm.
-# This reproduces the #944 incident: the worker got a REJECT on commits
-# it did not author.
+# --- E1. `main...feature` (three-dot) is rewritten to two-dot and PASSES --
+# Without the rewrite, the symmetric difference includes the main commit
+# (Co-Authored-By from a prior PR) and false-REJECTS. Live #944.
 set +e
 out=$("$bin" --pr-body "$scratch/body.md" --commit-range main...feature 2>&1)
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "symmetric diff should REJECT (got rc=$rc out=$out) — the main commit's trailer leaks in"
-[[ "$out" == *"Co-Authored-By"* ]] || fail "symmetric diff must surface the unrelated main commit's trailer"
-ok "E1: origin/main...HEAD (symmetric) is a false positive when main diverged (#944 reproduced)"
+[[ "$rc" == "0" ]] || fail "three-dot range should be rewritten and pass (got rc=$rc out=$out)"
+[[ "$out" == *"rewriting"* ]] || fail "three-dot rewrite must be logged (out=$out)"
+[[ "$out" != *"REJECT"* ]] || fail "rewritten three-dot must not REJECT (out=$out)"
+ok "E1: origin/main...HEAD is rewritten to origin/main..HEAD and does not false-positive (#944 class lock)"
 
 # --- E2. `main..feature` (asymmetric) checks only the worker's own commits --
 # The asymmetric range lists only commits in feature not in main — i.e.,
@@ -275,6 +286,14 @@ rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "asymmetric diff must REJECT when worker's own commit has a trailer (rc=$rc out=$out)"
 ok "E3: origin/main..HEAD still catches the worker's own Co-Authored-By trailer (no suppression of real hits)"
+
+# --- E4. rewritten three-dot still REJECTS the worker's own trailer ------
+set +e
+out=$("$bin" --pr-body "$scratch/body.md" --commit-range main...feature 2>&1)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "rewritten three-dot must still REJECT own trailer (rc=$rc out=$out)"
+ok "E4: rewritten three-dot still catches the worker's own Co-Authored-By trailer"
 
 cd "$here"
 

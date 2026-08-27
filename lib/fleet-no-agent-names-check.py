@@ -14,7 +14,9 @@ Usage:
   fleet-no-agent-names-check --commit-range RANGE
 
 The commit-range form runs `git log --no-merges --format=%B RANGE` in the
-current repo (or the repo given by --repo).
+current repo (or the repo given by --repo). Three-dot `A...B` is rewritten
+to two-dot `A..B` before `git log` (fleet-ops#944): `git log` three-dot is
+the symmetric difference and pulls unrelated main commits into the scan.
 
 Exit codes:
   0 — no agent attribution detected (or nothing to check)
@@ -117,6 +119,29 @@ def read_text(path: str | None) -> str:
         sys.exit(2)
 
 
+def normalize_commit_range(rev_range: str) -> str:
+    """Rewrite git-log three-dot (symmetric) to two-dot (asymmetric).
+
+    `git log A...B` is the symmetric difference and includes commits on
+    A that are not in B. When A is origin/main and other PRs have landed
+    with Co-Authored-By trailers, that is a false REJECT (fleet-ops#944).
+    `git log A..B` is commits reachable from B but not A, i.e. the PR's
+    own commits. Three-dot remains correct for `git diff --name-status`.
+    Four-or-more dots are left alone so we do not invent a range.
+    """
+    stripped = rev_range.strip()
+    idx = stripped.find("...")
+    if idx <= 0 or idx + 3 >= len(stripped):
+        return rev_range
+    if stripped[idx + 3] == ".":
+        return rev_range
+    left = stripped[:idx]
+    right = stripped[idx + 3 :]
+    if not left or not right or left.endswith(".") or right.startswith("."):
+        return rev_range
+    return f"{left}..{right}"
+
+
 def git_log_messages(repo: Path, rev_range: str) -> str:
     """Return the concatenated commit messages for a range."""
     try:
@@ -177,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pr-body", help="PR body file (or '-' for stdin)")
     parser.add_argument(
         "--commit-range",
-        help="Git revision range whose commit messages are checked (e.g. origin/main...HEAD)",
+        help="Git revision range whose commit messages are checked (e.g. origin/main..HEAD). Three-dot A...B is rewritten to A..B (fleet-ops#944).",
     )
     parser.add_argument(
         "--repo",
@@ -203,7 +228,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.commit_range:
         repo = Path(args.repo).resolve()
-        messages = git_log_messages(repo, args.commit_range)
+        rev_range = normalize_commit_range(args.commit_range)
+        if rev_range != args.commit_range:
+            print(
+                f"note: rewriting --commit-range {args.commit_range!r} -> {rev_range!r} "
+                "(git log three-dot is symmetric and includes unrelated main commits; fleet-ops#944)",
+                file=sys.stderr,
+            )
+        messages = git_log_messages(repo, rev_range)
         if messages.strip():
             findings.extend(check_text(messages, "commit message"))
 
