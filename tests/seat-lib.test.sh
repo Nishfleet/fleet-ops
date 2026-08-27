@@ -1072,6 +1072,65 @@ set -e
   || fail "640-heavy: mimo-v2.5-free must be heavy-capable, got: $out"
 ok "640-heavy: mimo-v2.5-free is pickable for heavy work"
 
+# fleet-ops#910: allowlisted opencode/nemotron-3-ultra-free is pickable as
+# failover when hy3-free and mimo-v2.5-free are already tried, and is
+# heavy-capable (reasoning + 1M context). Isolated fixture.
+mkdir -p "$scratch/910"
+cat >"$scratch/910/models.json" <<'JSON'
+{
+  "providers": {
+    "opencode": {
+      "models": [
+        { "id": "hy3-free", "cost": { "input": 0 }, "contextWindow": 131072 },
+        { "id": "mimo-v2.5-free", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 },
+        { "id": "nemotron-3-ultra-free", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 1000000 },
+        { "id": "nemotron-3-ultra", "cost": { "input": 0.4 }, "reasoning": true, "contextWindow": 1000000 }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/910/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["opencode"],
+  "providers": {
+    "opencode": {
+      "cap": 1,
+      "class": "free",
+      "models": { "hy3-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1 }
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/910/models.json"
+export SEAT_CAPS_JSON="$scratch/910/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/910/ledger"
+export PI_PACKET_STATE="$scratch/910/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+printf 'opencode/hy3-free\nopencode/mimo-v2.5-free\n' >"$scratch/910/tried"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/910/tried" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "910-failover: expected a pick, got rc=$rc"
+[[ "$out" == "opencode	nemotron-3-ultra-free" ]] \
+  || fail "910-failover: expected nemotron-3-ultra-free when hy3 and mimo are tried, got: $out"
+if echo "$out" | grep -qxF 'opencode	nemotron-3-ultra'; then
+  fail "910-failover: billing sibling nemotron-3-ultra must not be picked"
+fi
+ok "910-failover: allowlisted nemotron-3-ultra-free is pickable; billing sibling is not"
+
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1 "$1"' "$lib" "$scratch/910/tried" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "910-heavy: expected a heavy pick, got rc=$rc"
+[[ "$out" == "opencode	nemotron-3-ultra-free" ]] \
+  || fail "910-heavy: nemotron-3-ultra-free must be heavy-capable, got: $out"
+ok "910-heavy: nemotron-3-ultra-free is pickable for heavy work"
+
 unset PI_SEAT_CREDENTIAL_PRECHECK
 
 # fleet-ops#911: allowlisted opencode/nemotron-3.5-lightning-free is pickable,

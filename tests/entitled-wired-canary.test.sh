@@ -235,4 +235,15 @@ if jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-
   fail "production lock: commandcode must not allowlist billing slug poolside/laguna-s-2.1"
 fi
 
+# Production lock (fleet-ops#910): the auditioned OpenCode Nemotron free
+# slug stays wired so the free-roster canary does not re-file, and a
+# billing sibling without -free never joins the allowlist.
+jq -e '.providers.opencode.cap > 0 and (.providers.opencode.models["nemotron-3-ultra-free"] // 0) > 0' \
+  "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "production lock: opencode must allowlist nemotron-3-ultra-free (fleet-ops#910)"
+if jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json" \
+    | grep -qxE 'nemotron-3-ultra|nvidia/nemotron-3-ultra'; then
+  fail "production lock: opencode must not allowlist a billing nemotron-3-ultra slug"
+fi
+
 ok "entitled-wired-canary: missing row, undated cap=0, class mismatch, empty-models, dedup, production clean"

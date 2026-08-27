@@ -426,4 +426,31 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario15: production seat-caps keep nemotron-3.5-lightning-free wired with dated reason and no billing sibling"
 
+# --- 16. production lock: nemotron-3-ultra-free stay-wired (fleet-ops#910) --
+# The class prevention for "auditioned free slug silently dropped": a later
+# PR that removes nemotron-3-ultra-free from the allowlist without a dated
+# bench reason fails this lock. Billing slugs (nemotron-3-ultra,
+# nvidia/nemotron-3-ultra) must not ride in on the free row.
+jq -e '.providers.opencode.models["nemotron-3-ultra-free"] > 0' \
+    "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "scenario16: production seat-caps must allowlist opencode/nemotron-3-ultra-free (fleet-ops#910)"
+reason=$(jq -r '.providers.opencode._comment_nemotron_ultra // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario16: production seat-caps must carry _comment_nemotron_ultra dated reason (fleet-ops#910)"
+fi
+if ! grep -qE 'fleet-ops#910' <<<"$reason"; then
+  fail "scenario16: _comment_nemotron_ultra must cite fleet-ops#910 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario16: _comment_nemotron_ultra must start with an ISO date (got: $reason)"
+fi
+while IFS= read -r k; do
+  lk="${k,,}"
+  if [[ "$lk" == *nemotron-3-ultra* ]] && [[ "$lk" != "nemotron-3-ultra-free" ]]; then
+    fail "scenario16: production opencode allowlists a non-free nemotron-3-ultra slug: $k"
+  fi
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario16: production seat-caps keep nemotron-3-ultra-free and no billing sibling"
+
 ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
