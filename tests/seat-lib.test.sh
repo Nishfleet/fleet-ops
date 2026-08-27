@@ -2176,6 +2176,16 @@ bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed
 # constraint (worker token cannot add a P14 line in
 # `.github/workflows/ci.yml`).
 bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh" || fail "fleet-failed-command-python-module-not-found-hyphen tests failed"
+# fleet-ops#1174: a `python3 - <<'PY'` stdin script that calls
+# cryptography `load_pem_private_key` on the raw quoted
+# `NISHFLEET_WORKER_PRIVATE_KEY` env value (an env-via-heredoc, not
+# the PEM) crashes with File "<stdin>" + load_pem_private_key +
+# `ValueError: Could not deserialize key data` and
+# `Command exited with code 1`. Cause-prose ("malformed",
+# `NISHFLEET_PEM_EOF` heredoc) plus a successful re-extract is not
+# a user-facing flag. Same family as #957 (python traceback walked
+# past); same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-pem-deserialize.test.sh" || fail "fleet-failed-command-pem-deserialize tests failed"
 # fleet-ops#966: leftover-duplicate observe-to-close drain for the
 # 01a03e38 python-traceback pile. The drain mechanism is the same as
 # #965 (edit-unmatch pile); this test pins the citation chain and the

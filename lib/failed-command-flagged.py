@@ -213,7 +213,31 @@ two failed probes are walked past with no user-facing flag before the
 worker notices the hyphens. The class is the same as #957 (python3
 traceback walked past); the dedicated regression test pins it so a
 future refactor that drops the #937 citation from the docstring, the
-prompt, or the test host list is caught. A `git checkout <branch>` (or a
+prompt, or the test host list is caught.
+A `python3 - <<'PY'` stdin script that calls
+`serialization.load_pem_private_key` on the raw quoted
+`NISHFLEET_WORKER_PRIVATE_KEY` value from the worker env file
+(fleet-ops#1174, session
+2026-08-27T13-43-46-261Z_01a04376-5f55-7726-9184-4e31bb7e54f2)
+crashes with `File "<stdin>", line 28, in <module>` then
+`load_pem_private_key` then `ValueError: Could not
+deserialize key data` and `Command exited with code 1`.
+The env value is an env-via-heredoc, not the PEM itself.
+Cause-explaining prose ("The PEM in the env may be
+malformed", "stored inside a `cat <<'NISHFLEET_PEM_EOF'`
+heredoc") names the CAUSE, not the FAILURE; a later
+successful extract-and-mint is not a user-facing flag.
+The class is the same as #957 (python traceback walked
+past); the wording (`load_pem_private_key`,
+`Could not deserialize key data`, File `"<stdin>"`) is
+the live #1174 fingerprint. A future refactor that treats
+cryptography / PEM / JWT mint as a benign probe, treats
+File `"<stdin>"` as distinct from File `"<string>"` and
+therefore suppressible, or lets cause-prose discharge
+FLAG_RE would silently suppress this real signal. The
+dedicated regression test
+tests/fleet-failed-command-pem-deserialize.test.sh pins it.
+A `git checkout <branch>` (or a
 compound `&&` chain whose tail is `git checkout <branch>`) inside a
 worktree whose target branch is checked out in another worktree is a
 real swallowed failure (fleet-ops#954, #962, #968): git refuses with
