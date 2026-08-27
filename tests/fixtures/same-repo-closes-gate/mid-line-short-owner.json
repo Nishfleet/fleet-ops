@@ -1,0 +1,7 @@
+{
+  "title": "fix(deploy-check): soft-fail on deploy-blocked (fleet-ops#768)",
+  "body": "## What\n\nfleet-deploy-check is the 2-min tight-cadence merge-to-live gate (fleet-ops#468).\n\n## Fix\n\nWrapper now logs LOUD DEPLOY-CHECK-FAILED for visibility and returns 0 on deploy-blocked.\n\nCloses the loop. Closes fleet-ops#768.",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": []
+}

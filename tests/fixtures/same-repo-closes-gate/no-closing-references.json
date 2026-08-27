@@ -1,0 +1,7 @@
+{
+  "title": "feat(heartbeat): new audit path with no closes",
+  "body": "## Why\n\nA new heartbeat audit path. No issues closed by this change.\n\n## Proof\n\n```\n$ bash tests/heartbeat-audit.test.sh\nOK: ...\n```",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": []
+}

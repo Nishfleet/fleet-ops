@@ -1,0 +1,9 @@
+{
+  "title": "fix(intake): fully-qualified same-repo Closes is also valid",
+  "body": "Closes Nishfleet/fleet-ops#567",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": [
+    {"number": 567, "repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"}}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "title": "Close fleet-ops#480 now that the canary reports the ledger source covered",
+  "body": "## Goal\n\nClose fleet-ops#480 now that the canary reports the ledger source covered. #583 already shipped `bin/fleet-escalation-completion` and flipped `led-escalation-matrix-fixes` to `enforced`. This PR keeps that from silently rotting.\n\nCloses #480.\n\n## Verification\n\n- bash tests/escalation-coverage-canary.test.sh — PASS\n",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": [
+    {"number": 480, "repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"}}
+  ]
+}

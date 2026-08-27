@@ -1,0 +1,7 @@
+{
+  "title": "fix(pi-issue-run): claimed App identity for tests",
+  "body": "The body claims to close #567 but the platform returned no closingIssuesReferences — the auto-close did not fire.\n\nCloses #567",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": []
+}

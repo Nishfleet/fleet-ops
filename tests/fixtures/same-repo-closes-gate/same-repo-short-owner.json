@@ -1,0 +1,7 @@
+{
+  "title": "test(pi-issue-run): stub a working App identity in the offline seat-bench tests",
+  "body": "## Why\n\nfleet-ops#549 made the nishfleet-worker App creds file a **hard gate** in `pi-issue-run`...\n\n## Proof\n\n```\n$ bash tests/pi-issue-run-mid-session-bench.test.sh\nOK: ...\n```\n\nCloses fleet-ops#567\nCloses fleet-ops#568",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": []
+}

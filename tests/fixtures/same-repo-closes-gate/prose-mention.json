@@ -1,0 +1,9 @@
+{
+  "title": "feat(heartbeat): re-architect the observer",
+  "body": "## What\n\nThe new observer path. Note: a previous patch `closes fleet-ops#100` (in commit abc123) addressed a related slot-allocation bug; that fix is in main and the new observer does not regress it.\n\nCloses #200",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": [
+    {"number": 200, "repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"}}
+  ]
+}

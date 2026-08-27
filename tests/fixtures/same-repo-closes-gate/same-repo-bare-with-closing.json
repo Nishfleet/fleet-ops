@@ -1,0 +1,10 @@
+{
+  "title": "fix(intake): use the same-repo `Closes #N` form so GitHub auto-closes",
+  "body": "## Why\n\nThe same-repo short form (`Closes fleet-ops#N`) does not auto-close.\n\n## Fix\n\nSwitch the body to the same-repo bare form so the platform parses the close.\n\nCloses #567\nCloses #568",
+  "head_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "base_repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"},
+  "closingIssuesReferences": [
+    {"number": 567, "repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"}},
+    {"number": 568, "repository": {"owner": {"login": "Nishfleet"}, "name": "fleet-ops"}}
+  ]
+}
