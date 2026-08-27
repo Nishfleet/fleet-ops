@@ -43,6 +43,11 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # probe below turns this back on with a stubbed systemctl.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 
+# fleet-ops#1179: isolate from a live cursor-overage meter so production
+# included_exhausted=true cannot skip composer-2.5 in these allowlist tests.
+export CURSOR_OVERAGE_POLICY_JSON="$scratch/no-cursor-overage-policy.json"
+export CURSOR_OVERAGE_METER_JSON="$scratch/no-cursor-overage-meter.json"
+
 # A models.json with a deliberately non-allowlisted provider (groq) and a
 # non-allowlisted model on an allowlisted provider (ollama/gpt-oss:20b).
 cat >"$scratch/models.json" <<'JSON'
@@ -770,6 +775,40 @@ ok "credential precheck: empty !cmd / unset \$VAR rejected; set var / literal / 
 ok "quota_bench: parser handles 'resets in Nd Nh' / 'retry after N' / no-window; is_quota_cap_error matches hard caps, rejects transient 429"
 ok "quota_bench: Devin 'message rate limit' / 'reset in 35 minutes' benches swe-1-7 for 2100s (fleet-ops#381)"
 ok "enumerate_seats: cursor composer excluded from heavy; cursor-grok-4.6-high re-admitted (fleet-ops#381)"
+
+# fleet-ops#1179: included exhausted -> pick_seat skips composer-2.5.
+# Cursor-only cap map so a free lane cannot hide a missed lock.
+overage_state="$scratch/overage-lock"
+mkdir -p "$overage_state" "$scratch/overage-ledger"
+cat >"$scratch/overage-policy.json" <<'JSON'
+{"included_exhaust_first": true, "overage_model": "cursor-grok-4.6-high"}
+JSON
+cat >"$scratch/overage-meter.json" <<'JSON'
+{"included_exhausted": true, "overage_open": true, "overage_spend_usd_today": 1, "observed_at": "2026-08-27T16:50:00Z"}
+JSON
+cat >"$scratch/overage-caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "cursor": { "cap": 1, "class": "subscription", "models": { "composer-2.5": 1, "cursor-grok-4.6-high": 1 } }
+  }
+}
+JSON
+export CURSOR_OVERAGE_POLICY_JSON="$scratch/overage-policy.json"
+export CURSOR_OVERAGE_METER_JSON="$scratch/overage-meter.json"
+export PI_PACKET_STATE="$overage_state"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/overage-ledger"
+export SEAT_CAPS_JSON="$scratch/overage-caps.json"
+export PI_MODELS_JSON="$scratch/models.json"
+overage_out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null || true)
+[[ "$overage_out" == $'cursor\tcursor-grok-4.6-high' ]] \
+  || fail "overage lock: expected cursor/cursor-grok-4.6-high, got: '$overage_out'"
+# Restore isolation so later cases are unaffected.
+export CURSOR_OVERAGE_POLICY_JSON="$scratch/no-cursor-overage-policy.json"
+export CURSOR_OVERAGE_METER_JSON="$scratch/no-cursor-overage-meter.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+ok "cursor overage lock: included exhausted skips composer-2.5 (fleet-ops#1179)"
+
 ok "quota_bench: writer parses window -> bench_until future -> seat_usable skips with 'benched until' log"
 ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SEAT (no attempt consumed); expired bench_until -> fail-open pick"
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"

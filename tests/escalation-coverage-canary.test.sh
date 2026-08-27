@@ -1031,3 +1031,8 @@ bash "$here/credential-expiry-canary.test.sh"
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/cf-token-canary.test.sh"
 
+# fleet-ops#1179: Cursor $400 extra-usage sequencing + overage-model canary.
+# Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/cursor-overage-canary.test.sh"
+

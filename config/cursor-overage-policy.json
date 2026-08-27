@@ -1,0 +1,9 @@
+{
+  "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
+  "included_exhaust_first": true,
+  "overage_provider": "cursor",
+  "overage_model": "cursor-grok-4.6-high",
+  "daily_target_usd": 16,
+  "meter_stale_minutes": 1440,
+  "_comment": "Ledger 2026-08-27: $400 extra-usage (Cursor on-demand) opens ONLY after included usage is exhausted; on overage use Grok 4.6. Official docs (cursor.com/docs/models-and-pricing): Cursor Models pool is Grok 4.6 / Grok 4.5 / Composer 2.5; Other Models can add on-demand after included is consumed. cursor-agent about has no usage fields (--help 2026-08-27). Meter file is ~/.local/state/pi-packet/cursor-overage-meter.json; stale after meter_stale_minutes. $16/day spend floor is ledger sibling led-2026-08-27-cursor-400-correction-nish (fleet-ops#1177) — this file only names it."
+}

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# fleet-cursor-overage-canary — Cursor $400 extra-usage sequencing + model
+# (fleet-ops#1179, led-2026-08-27-cursor-400-sequencing-model-nish).
+#
+# Ledger: extra-usage opens ONLY after included usage is exhausted; on
+# overage use Grok 4.6 (cursor-grok-4.6-high).
+#
+# help-first (2026-08-27):
+#   cursor-agent about --help — no usage/spend fields (JSON has
+#   subscriptionTier + model only).
+#   fleet-seat-live-validate — no --help; live run is SuperGrok `grok
+#   models` auth, not Cursor included-vs-on-demand.
+#   fleet-entitled-wired-canary — seat-caps wiring, not billing pools.
+#   pick_seat prepaid-usage — weekly pick-count, not Cursor spend.
+# Official docs: cursor.com/docs/models-and-pricing (on-demand after
+# included; Cursor Models pool is Grok 4.6 / Grok 4.5 / Composer 2.5).
+# Dashboard usage page has no public API. No managed meter exists.
+#
+# Fail-loud: policy/model lock wrong, sequencing (overage open or spend
+# while included remains), overage workers not Grok 4.6, missing/stale
+# meter. No SKIP for a missing meter — meter-checked is the rule.
+#
+# The implementation lives in lib/cursor-overage-canary.py.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_CURSOR_OVERAGE_CANARY_LIB:-$here/../lib/pi-packet/cursor-overage-canary.py}"
+[ -f "$lib" ] || lib="$here/../lib/cursor-overage-canary.py"
+[ -f "$lib" ] || { echo "fleet-cursor-overage-canary: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

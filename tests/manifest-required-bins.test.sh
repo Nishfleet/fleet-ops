@@ -47,6 +47,9 @@ required=(
   "lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py"
   "bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary"
   "lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py"
+  "bin/fleet-cursor-overage-canary /home/nish/.local/bin/fleet-cursor-overage-canary"
+  "lib/cursor-overage-canary.py /home/nish/.local/lib/pi-packet/cursor-overage-canary.py"
+  "config/cursor-overage-policy.json /home/nish/.local/state/pi-packet/cursor-overage-policy.json"
 )
 for entry in "${required[@]}"; do
   grep -Fxq "$entry" "$manifest" || fail "MANIFEST missing required dest: $entry"
@@ -76,6 +79,7 @@ helpers = {
     "WORKER_APP_CANARY_BIN=": "worker-app identity canary",
     "CRED_EXPIRY_CANARY_BIN=": "credential-expiry canary",
     "CF_TOKEN_CANARY_BIN=": "cf-token liveness canary",
+    "CURSOR_OVERAGE_CANARY_BIN=": "cursor overage sequencing canary",
 }
 rc = 0
 for needle, label in helpers.items():

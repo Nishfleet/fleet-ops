@@ -1111,6 +1111,25 @@ _rr_pick() {
     echo $(( idx + 1 )) >"$idx_file"
 }
 
+# fleet-ops#1179: when the Cursor included pool is exhausted, only
+# cursor-grok-4.6-high may be picked (the $400 extra-usage / on-demand
+# model). Missing meter or included_exhausted!=true does not block —
+# the heartbeat canary fails loud on a missing meter instead of
+# bricking pick_seat.
+_cursor_overage_lock_blocks() {
+    local model="$1"
+    local policy="${CURSOR_OVERAGE_POLICY_JSON:-$HOME/.local/state/pi-packet/cursor-overage-policy.json}"
+    local meter="${CURSOR_OVERAGE_METER_JSON:-$HOME/.local/state/pi-packet/cursor-overage-meter.json}"
+    [[ -f "$policy" && -f "$meter" ]] || return 1
+    local exhausted overage_model
+    exhausted=$(jq -r '.included_exhausted // false' "$meter" 2>/dev/null || echo false)
+    [[ "$exhausted" == "true" ]] || return 1
+    overage_model=$(jq -r '.overage_model // empty' "$policy" 2>/dev/null || true)
+    [[ -n "$overage_model" ]] || overage_model="cursor-grok-4.6-high"
+    [[ "$model" == "$overage_model" ]] && return 1
+    return 0
+}
+
 # Pick a different seat than the failed one(s).
 # Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
@@ -1187,6 +1206,10 @@ pick_seat() {
         if (( m_cap == 0 )); then
             # Model explicitly capped at 0 in the map (e.g. devin/glm-5-2:0).
             seat_log "seat $p/$m skipped (model cap=0)"
+            continue
+        fi
+        if [[ "$p" == "cursor" ]] && _cursor_overage_lock_blocks "$m"; then
+            seat_log "seat $p/$m skipped (cursor overage lock: included exhausted, only grok-4.6)"
             continue
         fi
         if ! provider_has_credential "$p"; then

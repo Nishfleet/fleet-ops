@@ -360,6 +360,12 @@ lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expir
 # Heartbeat-tier1 block 32.
 bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary
 lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py
+# fleet-ops#1179: Cursor $400 extra-usage sequencing + overage model.
+# Extra-usage opens only after included is exhausted; on overage use
+# cursor-grok-4.6-high. Heartbeat-tier1 block 33.
+bin/fleet-cursor-overage-canary /home/nish/.local/bin/fleet-cursor-overage-canary
+lib/cursor-overage-canary.py /home/nish/.local/lib/pi-packet/cursor-overage-canary.py
+config/cursor-overage-policy.json /home/nish/.local/state/pi-packet/cursor-overage-policy.json
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

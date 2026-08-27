@@ -742,10 +742,9 @@
     {
       "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)",
-      "mechanism": "Cursor $400 extra-usage opens only after included usage is exhausted; on overage use cursor-grok-4.6-high for keystone/senior-review, ~$16/day target, meter-checked. Mechanism issue open.",
-      "proof": "fleet-ops#1179",
-      "status": "queued(#1179)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat-tier1 block 33 canary fleet-cursor-overage-canary: extra-usage (Cursor on-demand) must stay closed while included remains; on overage only cursor-grok-4.6-high may run. Policy lock in config/cursor-overage-policy.json; pick_seat skips other cursor models when the meter says included is exhausted. Missing/stale meter fails loud (meter-checked). Official docs: cursor.com/docs/models-and-pricing (on-demand after included).",
+      "proof": "bin/fleet-cursor-overage-canary; lib/cursor-overage-canary.py; config/cursor-overage-policy.json; lib/seat-lib.sh _cursor_overage_lock_blocks; tests/cursor-overage-canary.test.sh; tests/seat-lib.test.sh; bin/fleet-heartbeat-tier1 block 33; fleet-ops#1179",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-quality-ratchet-nish",
