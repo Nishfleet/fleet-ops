@@ -1050,6 +1050,12 @@ case "$*" in
     echo "https://github.com/Nishfleet/fleet-ops/issues/4770"
     exit 0
     ;;
+  *"issue comment"*)
+    if [ -n "${GH_COMMENTED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_COMMENTED"
+    fi
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
@@ -1144,6 +1150,64 @@ fi
     || fail "scenario17d: deploy fast-forwarded the auditor branch onto origin/main"
 ok "scenario17d: ancestor auditor branch is not fast-forwarded onto origin/main"
 git -C "$checkout" checkout -q -B main origin/main
+
+# --- scenario 17e: green canary observes-to-close an open off-main issue (#620)
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+off_comment_log="$scratch/gh-off-main-commented.log"
+: >"$off_comment_log"
+: >"$off_gh_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: []}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"OBSERVED-RESOLVED"* ]] \
+  || fail "scenario17e: expected OBSERVED-RESOLVED (got: $out)"
+[[ "$out" == *"off-main deploy-clone"* ]] \
+  || fail "scenario17e: expected off-main deploy-clone in log (got: $out)"
+grep -q 'issue comment' "$off_gh_log" \
+  || fail "scenario17e: must call gh issue comment (log=$(cat "$off_gh_log"))"
+grep -q '^477$' "$off_comment_log" \
+  || fail "scenario17e: must comment on #477 (commented=$(cat "$off_comment_log"))"
+ok "scenario17e: green canary observes-to-close on open off-main issue (fleet-ops#620)"
+
+# Replay: canary must not comment twice. The open issue now carries the
+# resolved-at comment, so the canary dedups instead of re-posting.
+: >"$off_gh_log"
+: >"$off_comment_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e replay: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"dedup observe"* ]] \
+  || fail "scenario17e replay: expected dedup observe (got: $out)"
+grep -q 'issue comment' "$off_gh_log" \
+  && fail "scenario17e replay: must not call gh issue comment again (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_comment_log" ]] \
+  || fail "scenario17e replay: must not record a second comment (commented=$(cat "$off_comment_log"))"
+ok "scenario17e replay: off-main observe-to-close does not repeat"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
