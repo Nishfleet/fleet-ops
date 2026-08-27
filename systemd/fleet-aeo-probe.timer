@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly AEO visibility probe — Sun 03:30 IST (fleet-ops#1236)
+# Named reason: the probe has to land before Weekly Fleet Review
+# (Sun 04:30 IST) so WFR can read fleet_aeo_cited. Sunday 03:30 IST is
+# after quality-research-weekly (03:00) and still off-peak. Cadence is
+# weekly because that is the issue's measurement window, not because a
+# timer existed and wanted filling.
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00 Asia/Kolkata
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

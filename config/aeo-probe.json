@@ -1,0 +1,59 @@
+{
+  "_comment": "fleet-ops#1236 weekly AEO probe. Phase A (docs/aeo-visibility-eval.md) found no free tool that does custom-prompt weekly tracking at $0. This config is the residue: 15 money-queries, three engines, skip when the seat is missing. Do not put secrets here.",
+  "query_class": "sneaker_money",
+  "brand": {
+    "hosts": ["0509.io"],
+    "mention_patterns": [
+      "(?<![0-9])0509(?![0-9])",
+      "five\\s*to\\s*nine",
+      "five-to-nine"
+    ]
+  },
+  "competitors": ["StockX", "SneakerPing", "Flight Club", "GOAT.com"],
+  "queries": [
+    "best sneaker price tracker",
+    "sneaker resale data site",
+    "StockX alternatives",
+    "best sneaker resale tracker",
+    "sneaker price comparison site",
+    "stockx alternative for sneaker data",
+    "best site to track sneaker prices",
+    "sneaker market data platform",
+    "goat vs stockx alternative",
+    "sneaker resale analytics",
+    "best sneaker deal tracker",
+    "sneaker price history site",
+    "where to track sneaker resale prices",
+    "sneaker inventory tracker",
+    "best alternative to stockx for data"
+  ],
+  "engines": [
+    {
+      "id": "chatgpt",
+      "kind": "openai_chat",
+      "model": "gpt-4o-mini",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "env_file": "/home/nish/fleet2/etc/openai.env",
+      "metered": false
+    },
+    {
+      "id": "perplexity",
+      "kind": "openai_chat",
+      "model": "sonar",
+      "base_url": "https://api.perplexity.ai",
+      "api_key_env": "PERPLEXITY_API_KEY",
+      "env_file": "/home/nish/fleet2/etc/perplexity.env",
+      "metered": false
+    },
+    {
+      "id": "claude",
+      "kind": "anthropic_messages",
+      "model": "claude-sonnet-5",
+      "base_url": "https://api.anthropic.com",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "env_file": "/home/nish/fleet2/etc/anthropic.env",
+      "metered": false
+    }
+  ]
+}
