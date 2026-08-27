@@ -1759,6 +1759,11 @@ bash "$here/fleet-failed-command-read-enoent-thinking.test.sh" || fail "fleet-fa
 # then "Now I have the full picture. Let me plan and execute." bundled
 # with todo toolCalls. Same CI constraint.
 bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh" || fail "fleet-failed-command-read-enoent-skip-todos tests failed"
+# fleet-ops#1059: same read-ENOENT class as #953 / #1001 but the recovery
+# is cause-explaining prose "The file was archived. Let me read it." that
+# names the CAUSE (the packet was archived), not the FAILURE (the read
+# returned ENOENT). Cause prose is not a flag. Same CI constraint.
+bash "$here/fleet-failed-command-read-enoent-archived-packet.test.sh" || fail "fleet-failed-command-read-enoent-archived-packet tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
