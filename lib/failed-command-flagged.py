@@ -21,13 +21,17 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972) is a
+`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
 the same GitHub-search-index-delay that produced #951 / #965 / #966, so
-the citation chain must carry it. The leftover-duplicate
-observe-to-close drain for the 01a03e61 pile is locked under
+the citation chain must carry it. #967 is the same session shape as
+#958 / #972 (the 01a03e61 read-ENOENT session); it is a leftover open
+duplicate filed by the same GitHub-search-index-delay that produced
+#951 / #965 / #966, so the citation chain must carry it. The leftover-duplicate
+observe-to-close drain for the 01a03e61 pile (#662, #953, #958, #972, #967,
+#977, #982) is locked under
 tests/fleet-failed-command-observe-duplicate-enoent.test.sh. An `edit`
 tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
