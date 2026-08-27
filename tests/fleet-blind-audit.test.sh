@@ -62,12 +62,18 @@ cat > "$scratch/deliberate-states.md" <<'EOF'
 EOF
 
 # Fake pi: writes a findings file and a report file using the paths in the packet.
+# fleet-ops#786: the assembler no longer in-place substitutes {{...}} placeholders
+# in the prompt; the resolved values live in the trailing "Volatile values"
+# section. The prompt body still has a schema line with the literal
+# `{{FINDINGS_JSON}}` / `{{REPORT_MD}}` placeholders, so the test must pick
+# the LAST matching "Where to save ..." line (the volatile value) rather
+# than the FIRST (the literal placeholder).
 mkdir -p "$scratch/fakebin"
 cat > "$scratch/fakebin/pi" <<'FAKE_PI'
 #!/usr/bin/env bash
 packet=$(cat)
-findings_json=$(printf '%s' "$packet" | sed -n 's/^- Where to save findings JSON: `\(.*\)`$/\1/p' | head -1)
-report_md=$(printf '%s' "$packet" | sed -n 's/^- Where to save the full report: `\(.*\)`$/\1/p' | head -1)
+findings_json=$(printf '%s' "$packet" | sed -n 's/^- Where to save findings JSON: `\(.*\)`$/\1/p' | tail -1)
+report_md=$(printf '%s' "$packet" | sed -n 's/^- Where to save the full report: `\(.*\)`$/\1/p' | tail -1)
 mkdir -p "$(dirname "$findings_json")"
 cat > "$findings_json" <<'JSON'
 {

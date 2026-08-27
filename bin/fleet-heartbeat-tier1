@@ -1124,9 +1124,10 @@ while IFS= read -r u; do
     sub=$(systemctl --user show "$u" --property=SubState --value 2>/dev/null || echo unknown)
     if [ "$sub" = "auto-restart" ]; then
         degraded=$((degraded+1))
-        # Pull the last journal line for the breadcrumb (truncated).
+        # Pull the last journal line for the breadcrumb. -n 1 already constrains
+        # to a single journal line, so no byte cap (fleet-ops#786).
         excerpt=$(journalctl --user -u "$u" -n 1 --no-pager -q 2>/dev/null \
-                    | tr '\n' ' ' | head -c 200 || true)
+                    | tr '\n' ' ' || true)
         if [ -z "$degraded_units" ]; then
             degraded_units="$u sub=auto-restart :: ${excerpt:-<no-journal>}"
         else

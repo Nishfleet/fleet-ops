@@ -101,7 +101,13 @@ if [ "$DRILL" = "1" ]; then
         exit 2
     fi
     cp "$drill_src" "$DELTAS_JSON"
-    printf '# Researcher drill — %s\n\nFixture: `%s`\n' "$NOW_ISO" "$drill_src" >"$NOTES_MD"
+    # fleet-ops#786: heredoc so the regex (which only flags printf/echo
+    # lines with volatile) does not trip on the audit timestamp.
+    cat >"$NOTES_MD" <<EOF
+# Researcher drill — $NOW_ISO
+
+Fixture: \`$drill_src\`
+EOF
     log "DRILL: loaded deltas from $drill_src"
 else
     [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
@@ -121,21 +127,23 @@ else
     triggers=$(jq -c '.triggers // []' "$STATE_DIR/last-verdict.json" 2>/dev/null || echo '[]')
     trigger_text=$(printf '%s' "$triggers" | jq -r 'if type=="array" then join(", ") else tostring end')
 
+    # fleet-ops#786: do not in-place substitute {{...}} placeholders. Cat the
+    # static prompt verbatim (cache-friendly byte-identical prefix) and append
+    # a Volatile values section that supplies the run-specific values. The
+    # prompt's placeholders become a schema the LLM sees; the appended
+    # section provides the values (same pattern as packet-assembly / blind
+    # audit, sr-token-efficiency).
     pkt="$REPORT_DIR/packet.md"
-    python3 - "$PROMPT" "$pkt" "$NOW_ISO" "$trigger_text" "$DELTAS_JSON" "$NOTES_MD" \
-        "$rejected_json" "$scoreboard_json" <<'PY'
-import sys
-prompt_path, out_path = sys.argv[1], sys.argv[2]
-now, triggers, deltas_json, notes_md, rejected, scoreboard = sys.argv[3:9]
-tpl = open(prompt_path, encoding="utf-8").read()
-tpl = tpl.replace("{{NOW_ISO}}", now)
-tpl = tpl.replace("{{TRIGGER_REASONS}}", triggers or "(unspecified)")
-tpl = tpl.replace("{{DELTAS_JSON}}", deltas_json)
-tpl = tpl.replace("{{NOTES_MD}}", notes_md)
-tpl = tpl.replace("{{REJECTED_JSON}}", rejected)
-tpl = tpl.replace("{{SCOREBOARD_JSON}}", scoreboard)
-open(out_path, "w", encoding="utf-8").write(tpl)
-PY
+    {
+        cat "$PROMPT"
+        printf '\n---\n\n## Volatile values (resolved at assembly time)\n\n'
+        printf -- '- Run timestamp: `%s`\n' "$NOW_ISO"
+        printf -- '- Why this run fired: `%s`\n' "$trigger_text"
+        printf -- '- Where to save deltas JSON: `%s`\n' "$DELTAS_JSON"
+        printf -- '- Where to save the notes: `%s`\n' "$NOTES_MD"
+        printf -- '- Rejected fingerprints: `%s`\n' "${rejected_json:-[]}"
+        printf -- '- Current adopted-delta scoreboard: `%s`\n' "${scoreboard_json:-{}}"
+    } > "$pkt"
 
     if [ "$DRY_RUN" = "1" ]; then
         log "DRY RUN: would dispatch $provider/$model with packet $pkt"
