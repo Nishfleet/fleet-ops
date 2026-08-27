@@ -227,8 +227,14 @@ repo_has_labels() {
     # The repo names in the config are short; gh requires OWNER/REPO.
     # The short form was the root cause of the first supervised run failing
     # every label check with quota healthy (fleet-ops#32, 2026-08-26).
+    # Auditor 2026-08-27T19:00Z: `gh label list --json name` routes through
+    # GitHub's GraphQL API which has its OWN rate-limit bucket (independent
+    # of REST). When the GraphQL bucket exhausted, this check failed for
+    # every repo in the same tick. Switch to `gh api` (REST) which has a
+    # different bucket, and to `gh api paginate` to handle repos with >100
+    # labels (the merge queue's label class can push past that).
     errfile="$(mktemp)"
-    if ! got=$("$GH" label list -R "Nishfleet/$repo" --json name --jq '.[].name' 2>"$errfile"); then
+    if ! got=$("$GH" api "repos/Nishfleet/$repo/labels?per_page=100" --jq '.[].name' 2>"$errfile"); then
         local gh_err
         gh_err="$(cat "$errfile" 2>/dev/null || true)"
         rm -f "$errfile"
