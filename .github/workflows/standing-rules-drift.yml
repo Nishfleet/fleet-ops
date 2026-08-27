@@ -12,7 +12,7 @@ on:
   pull_request:
     paths:
       - "lib/standing-rules/canonical.md"
-      - "bin/render-standing-rules"
+      - "bin/render-standing-rules.py"
       - "tests/test_standing_rules_drift.sh"
       - ".github/workflows/standing-rules-drift.yml"
   push:
@@ -20,7 +20,7 @@ on:
       - main
     paths:
       - "lib/standing-rules/canonical.md"
-      - "bin/render-standing-rules"
+      - "bin/render-standing-rules.py"
       - "tests/test_standing_rules_drift.sh"
       - ".github/workflows/standing-rules-drift.yml"
 
