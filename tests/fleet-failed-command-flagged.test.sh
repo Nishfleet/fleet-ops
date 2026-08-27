@@ -61,6 +61,23 @@
 #  10. Observe-to-close: a green tick comments resolved-at on an aged-out
 #      signal; a later tick with that marker closes; a still-dirty slug is
 #      neither commented nor closed (fleet-ops#650).
+#   7f. Live #945: chained cmd, successful prefix masks a real `cat` ENOENT
+#       tail, walked past with "PASS" -> exit 1.
+#   7g. Live #945 positive: same chain but the assistant NAMES the cat
+#       failure -> exit 0.
+#   7h. Live #954: `git checkout main` inside a worktree whose main is
+#       already checked out elsewhere exits 128 with `fatal: 'main' is
+#       already used by worktree`, and the next turn is a toolCall only
+#       (no user-facing text) -> exit 1. `git checkout` is NOT in the
+#       git-ref probe family (GIT_BENIGN_RE covers only log|rev-parse|
+#       show|diff|cat-file|shortlog), and `fatal: 'main' is already used
+#       by worktree` is NOT a canonical no-ref probe line, so it is a real
+#       swallowed failure. A successful `git fetch` prefix must NOT mask
+#       the failing `git checkout` tail.
+#   7i. Live #954 positive: same shape but the later user-facing text NAMES
+#       the checkout failure -> exit 0. Proves 7h is not "always flag":
+#       naming the failure in user-facing text is the standing rule's
+#       required discharge and must clear.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -894,6 +911,52 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "live #945 cat-chain with later failure-naming prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "live #945 positive: cat-chain ENOENT with later failure-naming prose clears (exit 0)"
 rm -f "$sessions/cat-chain-flagged.jsonl"
+
+# --- 7h. live #954: git checkout main in a worktree, main already checked ---
+# The session 2026-08-26T08-48-39-651Z ran a chained bash command inside a
+# worktree: `cd <worktree> && git fetch origin && git checkout main && ls
+# scripts/ 2>&1 | head -20`. The `git fetch` prefix succeeded (printing the
+# fetch progress), but `git checkout main` failed with exit 128 because
+# `main` was already checked out in the deploy-clone worktree at
+# /home/nish/workspaces/tooling/fleet-ops. Git's fatal line is
+#   fatal: 'main' is already used by worktree at '/home/nish/workspaces/tooling/fleet-ops'
+# The assistant's next turn was a toolCall only (cd to the deploy-clone and
+# ls scripts/) with NO user-facing text naming the failure. `git checkout`
+# is NOT in the git-ref probe family (GIT_BENIGN_RE covers only
+# log|rev-parse|show|diff|cat-file|shortlog), and `fatal: 'main' is already
+# used by worktree` is NOT a canonical no-ref probe line (GIT_CANONICAL_NO_REF_RE
+# matches only `ambiguous argument` / `bad revision`). The successful `git
+# fetch` prefix must NOT mask the failing `git checkout` tail. The detector
+# must flag this as a swallowed failure.
+write_session "git-checkout-worktree-conflict" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_fetch","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-54 && git fetch origin && git checkout main && ls scripts/ 2>&1 | head -20"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_fetch","toolName":"bash","isError":true,"content":[{"type":"text","text":"From https://github.com/Nishfleet/fleet-ops\n   ed0c3b1..013f8b7  main       -> origin/main\nfatal: 'main' is already used by worktree at '/home/nish/workspaces/tooling/fleet-ops'\n\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ls","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops && ls scripts/ 2>&1 | head -20"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "live #954 git-checkout worktree-conflict walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "live #954 missing SWALLOWED loud line"
+ok "live #954: git checkout main worktree-conflict (exit 128) walked past with toolCall-only next turn, is flagged"
+rm -f "$sessions/git-checkout-worktree-conflict.jsonl"
+
+# --- 7i. live #954 positive: same chain but the assistant NAMES the failure --
+# Same chained-command shape as 7h, but the later user-facing text names the
+# checkout failure ("the git checkout failed ... it is now the blocker").
+# FLAG_RE must match and clear the pending failure -> exit 0. Proves 7h is
+# not "always flag": naming the failure in user-facing text is the standing
+# rule's required discharge and must clear, even when a successful git fetch
+# prefix preceded the failing git checkout tail.
+write_session "git-checkout-worktree-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_fetch","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-54 && git fetch origin && git checkout main && ls scripts/ 2>&1 | head -20"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_fetch","toolName":"bash","isError":true,"content":[{"type":"text","text":"From https://github.com/Nishfleet/fleet-ops\n   ed0c3b1..013f8b7  main       -> origin/main\nfatal: 'main' is already used by worktree at '/home/nish/workspaces/tooling/fleet-ops'\n\n\nCommand exited with code 128"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the git checkout failed with 128 — main is already checked out in the deploy-clone, it is now the blocker. Using a temp branch instead."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #954 git-checkout worktree-conflict with later failure-naming prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #954 positive: git checkout worktree-conflict with later failure-naming prose clears (exit 0)"
+rm -f "$sessions/git-checkout-worktree-flagged.jsonl"
 
 # --- 10. observe-to-close (fleet-ops#650) -----------------------------------
 # Isolate the mock store from the auto-file test's leftover issue-1.body.
