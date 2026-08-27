@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# bin/pi-escalation-audit-tally
+#
+# Tallies the three senior-auditor votes for one `escalate-senior` issue
+# (fleet-ops#234) and applies the result to GitHub:
+#   - 2-of-3 PASS (admit) -> file a NEW `agent-ready` fix issue carrying the
+#     panel diagnosis, comment on the `escalate-senior` issue pointing at it,
+#     then close the `escalate-senior` wrapper.
+#   - 2-of-3 FAIL (dismiss) -> comment the fail reasons on the
+#     `escalate-senior` issue, then close it (justified dismissal).
+#   - otherwise -> no action (pending).
+#
+# An escalate-senior issue is closed on admit OR dismiss, so it drops off the
+# open list and the orchestrator never re-files it. A guard skips an already-
+# closed issue so a retried tally cannot double-file a fix issue.
+#
+# Args: <repo-slug> <candidate>    (repo-slug e.g. "fleet-ops")
+#
+# Environment seams:
+#   AUDIT_STATE_DIR        vote file tree
+#   AUDIT_ESCALATION_REPO  full repo (default Nishfleet/fleet-ops)
+#   AUDIT_GH               gh override
+#   AUDIT_DRY_RUN          1 = log, do not mutate GitHub
+#   AUDIT_ADMIT_LABEL      label on the fix issue (default agent-ready)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${AUDIT_GH:-gh}"
+REPO="${AUDIT_ESCALATION_REPO:-Nishfleet/fleet-ops}"
+REPO_SLUG="${REPO#Nishfleet/}"
+STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
+DRY_RUN="${AUDIT_DRY_RUN:-0}"
+ADMIT_LABEL="${AUDIT_ADMIT_LABEL:-agent-ready}"
+
+log() { printf '[%s] [pi-escalation-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+[ $# -eq 2 ] || { log "usage: pi-escalation-audit-tally <repo-slug> <candidate>"; exit 2; }
+repo_slug="$1"
+candidate="$2"
+[[ "$candidate" =~ ^[1-9][0-9]*$ ]] || { log "candidate must be a number (got $candidate)"; exit 2; }
+
+case_dir() { printf '%s/%s/%s\n' "$STATE_DIR" "$repo_slug" "$candidate"; }
+
+votes_json() {
+    local dir
+    dir=$(case_dir)
+    shopt -s nullglob
+    local files=("$dir"/*.vote)
+    shopt -u nullglob
+    if [ "${#files[@]}" -eq 0 ]; then
+        printf '[]\n'
+        return
+    fi
+    jq -s '.' "${files[@]}"
+}
+
+issue_is_open() {
+    # Guard against double-file: only act while the escalate-senior issue is
+    # still OPEN. A closed wrapper was already tallied.
+    local state
+    state=$("$GH" issue view "$candidate" -R "$REPO" --json state --jq '.state' 2>/dev/null || echo "")
+    [ "$state" = "OPEN" ]
+}
+
+admit() {
+    local reasons="$1" issue_json title body fix_body fix_num
+    issue_json=$("$GH" issue view "$candidate" -R "$REPO" --json title,body 2>/dev/null) || {
+        log "$repo_slug/#$candidate: cannot fetch issue; cannot file fix issue"
+        return 1
+    }
+    title=$(printf '%s\n' "$issue_json" | jq -r '.title // "<no title>"')
+    body=$(printf '%s\n' "$issue_json" | jq -r '.body // ""')
+    fix_body=$(printf 'Senior-auditor escalation panel admitted %s#%s (2-of-3 PASS).\n\n## Diagnosis\n\n%s\n\n## Original escalation\n\n%s\n\nSource: %s#%s\n' "$REPO_SLUG" "$candidate" "$reasons" "$body" "$REPO" "$candidate")
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY-RUN: would file agent-ready fix issue for $repo_slug/#$candidate"
+        return 0
+    fi
+    fix_num=$("$GH" issue create -R "$REPO" --title "$title" --body "$fix_body" --label "$ADMIT_LABEL" 2>/dev/null) || {
+        log "$repo_slug/#$candidate: issue create FAILED (admit)"
+        return 1
+    }
+    log "$repo_slug/#$candidate: filed fix issue $fix_num"
+
+    if ! "$GH" issue comment "$candidate" -R "$REPO" --body "Senior auditor panel (2-of-3) admitted this escalation. Fix issue filed: $fix_num" >/dev/null 2>&1; then
+        log "$repo_slug/#$candidate: comment FAILED (admit)"
+    fi
+    if ! "$GH" issue close "$candidate" -R "$REPO" >/dev/null 2>&1; then
+        log "$repo_slug/#$candidate: close FAILED (admit)"
+        return 1
+    fi
+    return 0
+}
+
+dismiss() {
+    local reasons="$1"
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY-RUN: would dismiss + close $repo_slug/#$candidate"
+        log "dismiss reasons:\n$reasons"
+        return 0
+    fi
+    if ! "$GH" issue comment "$candidate" -R "$REPO" --body "Senior auditor panel (2-of-3) dismissed this escalation (justified dismissal). Reasons:\n\n$reasons" >/dev/null 2>&1; then
+        log "$repo_slug/#$candidate: comment FAILED (dismiss)"
+    fi
+    if ! "$GH" issue close "$candidate" -R "$REPO" >/dev/null 2>&1; then
+        log "$repo_slug/#$candidate: close FAILED (dismiss)"
+        return 1
+    fi
+    return 0
+}
+
+main() {
+    local dir votes pass fail reasons
+    dir=$(case_dir)
+    if [ ! -d "$dir" ]; then
+        log "no votes yet for $repo_slug/#$candidate"
+        exit 0
+    fi
+
+    if ! issue_is_open; then
+        log "$repo_slug/#$candidate: issue not open; already tallied — skip"
+        exit 0
+    fi
+
+    votes=$(votes_json)
+    pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
+    fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
+    reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
+
+    log "$repo_slug/#$candidate votes: PASS=$pass FAIL=$fail"
+
+    if [ "$pass" -ge 2 ]; then
+        log "$repo_slug/#$candidate admitted (2-of-3 PASS)"
+        admit "$reasons"
+        exit $?
+    fi
+
+    if [ "$fail" -ge 2 ]; then
+        log "$repo_slug/#$candidate dismissed (2-of-3 FAIL)"
+        dismiss "$reasons"
+        exit $?
+    fi
+
+    log "$repo_slug/#$candidate remains PENDING (PASS=$pass FAIL=$fail)"
+    exit 0
+}
+
+main
