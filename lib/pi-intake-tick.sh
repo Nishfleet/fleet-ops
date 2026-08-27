@@ -57,9 +57,16 @@ WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
+# fleet-ops#1250: claim-step prior-art gate. Tests override the path.
+PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
 
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
 . "$SEAT_LIB"
+
+if [[ ! -x "$PRIOR_ART_BIN" ]]; then
+    echo "pi-intake-tick: prior-art-claim-check missing at $PRIOR_ART_BIN" >&2
+    exit 1
+fi
 
 # Step 1: list ready work
 issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 50 2>&1) || {
@@ -175,6 +182,22 @@ for i in "${!numbers[@]}"; do
     if blocked_filter "$N"; then
         echo "issue $N ($title): skipped-blocked-on"
         continue
+    fi
+
+    # fleet-ops#1250: build-shaped issues without a Prior art section bounce
+    # (agent-blocked) and must not push a claim branch. The checker fetches
+    # the body itself unless PRIOR_ART_CLAIM_CHECK is a stub.
+    set +e
+    bounce_out=$("$PRIOR_ART_BIN" bounce -R "$FULL" --issue "$N" 2>&1)
+    bounce_rc=$?
+    set -e
+    if (( bounce_rc == 1 )); then
+        echo "issue $N ($title): skipped-spec-incomplete"
+        continue
+    fi
+    if (( bounce_rc != 0 )); then
+        echo "prior-art-claim-check bounce failed for issue $N (rc=$bounce_rc): $bounce_out" >&2
+        exit 1
     fi
 
     # Atomic create-only claim push (claim branch IS the work branch)

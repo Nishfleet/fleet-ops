@@ -24,6 +24,14 @@ Steps:
    d. `slots = total_cap - active`. If slots <= 0, print "at capacity (total_cap=$total_cap, active=$active)", exit 0. If the cap map is missing, total_cap = ram_cap and the fleet still gets a sensible ceiling.
 3. For each TSV line from step 1c, while slots remain. `N` is field 1 and `kind` is field 2:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
+   a0. Prior-art gate (fleet-ops#1250) BEFORE any claim push. Build-shaped
+      issue bodies (`build a`, `write a script`, `create a service`) must
+      carry a `Prior art` section (what exists, what was tested, why
+      rejected). Run:
+      `/home/nish/.local/bin/prior-art-claim-check bounce -R Nishfleet/<repo> --issue N`
+      Exit 0 = claim-ok, continue. Exit 1 = bounced (the binary already
+      flipped agent-ready → agent-blocked and commented); skip issue N
+      and do NOT push `claim/issue-N`. Any other exit is fail-loud.
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.

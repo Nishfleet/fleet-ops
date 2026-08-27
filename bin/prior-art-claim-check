@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# prior-art-claim-check — bounce build-shaped issues with no Prior art section
+# (fleet-ops#1250).
+#
+# Standing rule (Nish, 2026-08-18): "Research before build — always."
+# PreToolUse hooks catch the orchestrator's own file writes. Issues filed
+# for workers bypass that and the worker inherits "build it" as spec.
+# The claim step is the choke: a build-shaped agent-ready issue
+# (heuristic: "build a", "write a script", "create a service") must carry
+# a Prior art section naming what exists, what was tested, and why it was
+# rejected, or intake bounces it with agent-blocked and does not push
+# the claim branch.
+#
+# Usage:
+#   prior-art-claim-check --body FILE|-
+#   prior-art-claim-check bounce -R OWNER/REPO --issue N [--body FILE|-]
+#
+# Exit 0: not build-shaped, or Prior art section is well-formed (CLAIM_OK).
+# Exit 1: build-shaped and missing Prior art (BOUNCE). bounce also flips
+#         agent-ready → agent-blocked and comments before returning 1.
+# Exit 2: usage error.
+#
+# Existing tools that lost for this job:
+#   research-before-build-check — PR-time gate after a new bin/ is already
+#     written; too late, the worker already inherited the build spec.
+#   GitHub issue templates / Danger / pr-template-enforcer — need a
+#     workflow this token cannot push.
+#   worker.md under-specified bounce — LLM, after the claim landed.
+# The proven claim-step body filter is lib/pi-intake-tick.sh's blocked-on
+# skip; this checker is the sibling predicate that tick calls before push.
+
+set -euo pipefail
+
+GH="${GH:-gh}"
+
+usage() {
+    printf 'usage: prior-art-claim-check --body FILE|-\n' >&2
+    printf '       prior-art-claim-check bounce -R OWNER/REPO --issue N [--body FILE|-]\n' >&2
+    exit 2
+}
+
+# --- predicate -------------------------------------------------------------
+# Build-shaped heuristic from fleet-ops#1250: those three phrases, case
+# insensitive, anywhere in the body. Title is not scanned; the issue
+# said "whose body instructs".
+is_build_shaped() {
+    local body="$1"
+    printf '%s\n' "$body" | grep -qiE 'build a|write a script|create a service'
+}
+
+# Extract the Prior art section: first matching heading / "Prior art:" line
+# through the next ATX heading. The heading line's trailing text counts.
+extract_prior_art() {
+    local body="$1"
+    printf '%s\n' "$body" | awk '
+        BEGIN { IGNORECASE = 1 }
+        /^#{1,6}[[:space:]]*prior[[:space:]]+art([[:space:]]|:|$)/ || /^prior[[:space:]]+art[[:space:]]*:/ {
+            if (found) next
+            found = 1
+            line = $0
+            sub(/^#{1,6}[[:space:]]*prior[[:space:]]+art[[:space:]]*:?[[:space:]]*/, "", line)
+            sub(/^prior[[:space:]]+art[[:space:]]*:[[:space:]]*/, "", line)
+            if (length(line)) print line
+            next
+        }
+        found && /^#{1,6}[[:space:]]+/ { exit }
+        found { print }
+    '
+}
+
+# Section must name the three things the issue asked for: what exists,
+# what was tested, why rejected. Empty / "n/a" / heading-only fails.
+prior_art_is_complete() {
+    local section="$1"
+    local compact
+    compact=$(printf '%s\n' "$section" | tr -s '[:space:]' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -n "$compact" ]] || return 1
+    printf '%s\n' "$compact" | grep -qiE 'n/a|^none$|^todo$' && return 1
+    printf '%s\n' "$section" | grep -qiE 'exist|already|commercial|vendor|product|tool|service|off-the-shelf|saas' || return 1
+    printf '%s\n' "$section" | grep -qiE 'tested|tried|checked|evaluated|compared' || return 1
+    printf '%s\n' "$section" | grep -qiE 'rejected|lost|because|unusable|cannot|does not|doesn.t|missing|no fleet' || return 1
+    return 0
+}
+
+read_body_file() {
+    local path="$1"
+    if [[ "$path" == "-" ]]; then
+        cat
+        return
+    fi
+    [[ -f "$path" ]] || {
+        printf 'prior-art-claim-check: body file not found: %s\n' "$path" >&2
+        exit 2
+    }
+    cat "$path"
+}
+
+evaluate_body() {
+    local body="$1"
+    if ! is_build_shaped "$body"; then
+        printf 'CLAIM_OK: not build-shaped\n'
+        return 0
+    fi
+    local section
+    section=$(extract_prior_art "$body")
+    if prior_art_is_complete "$section"; then
+        printf 'CLAIM_OK: build-shaped with Prior art section\n'
+        return 0
+    fi
+    printf 'BOUNCE: build-shaped issue with no Prior art section (what exists, what was tested, why rejected). fleet-ops#1250\n' >&2
+    printf 'BOUNCE: spec-incomplete\n'
+    return 1
+}
+
+bounce_comment() {
+    cat <<'EOF'
+bounced: spec-incomplete (fleet-ops#1250). This issue instructs building a tool/service/pipeline but has no Prior art section naming what exists, what was tested, and why it was rejected. Add that section and re-label agent-ready.
+EOF
+}
+
+cmd_check() {
+    local body_file=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --body)
+                [[ $# -ge 2 ]] || usage
+                body_file="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                ;;
+            *)
+                usage
+                ;;
+        esac
+    done
+    [[ -n "$body_file" ]] || usage
+    local body
+    body=$(read_body_file "$body_file")
+    evaluate_body "$body"
+}
+
+cmd_bounce() {
+    local repo="" issue="" body_file=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -R|--repo)
+                [[ $# -ge 2 ]] || usage
+                repo="$2"
+                shift 2
+                ;;
+            --issue)
+                [[ $# -ge 2 ]] || usage
+                issue="$2"
+                shift 2
+                ;;
+            --body)
+                [[ $# -ge 2 ]] || usage
+                body_file="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                ;;
+            *)
+                usage
+                ;;
+        esac
+    done
+    [[ -n "$repo" && -n "$issue" ]] || usage
+    [[ "$issue" =~ ^[1-9][0-9]*$ ]] || {
+        printf 'prior-art-claim-check: issue must be a positive integer, got %s\n' "$issue" >&2
+        exit 2
+    }
+
+    local body rc
+    if [[ -n "$body_file" ]]; then
+        body=$(read_body_file "$body_file")
+    else
+        body=$("$GH" issue view "$issue" -R "$repo" --json body --jq '.body // ""') || {
+            printf 'prior-art-claim-check: gh issue view failed for %s#%s\n' "$repo" "$issue" >&2
+            exit 1
+        }
+    fi
+
+    set +e
+    evaluate_body "$body"
+    rc=$?
+    set -e
+    if (( rc == 0 )); then
+        return 0
+    fi
+    if (( rc != 1 )); then
+        return "$rc"
+    fi
+
+    local edit_out comment_out
+    edit_out=$("$GH" issue edit "$issue" -R "$repo" --remove-label agent-ready --add-label agent-blocked 2>&1) || {
+        printf 'prior-art-claim-check: gh issue edit failed for %s#%s: %s\n' "$repo" "$issue" "$edit_out" >&2
+        exit 1
+    }
+    comment_out=$("$GH" issue comment "$issue" -R "$repo" --body "$(bounce_comment)" 2>&1) || {
+        printf 'prior-art-claim-check: gh issue comment failed for %s#%s: %s\n' "$repo" "$issue" "$comment_out" >&2
+        exit 1
+    }
+    return 1
+}
+
+[[ $# -ge 1 ]] || usage
+case "$1" in
+    bounce)
+        shift
+        cmd_bounce "$@"
+        ;;
+    --body|-h|--help)
+        cmd_check "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac
