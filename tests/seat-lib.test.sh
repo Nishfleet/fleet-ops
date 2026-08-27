@@ -1074,6 +1074,105 @@ ok "640-heavy: mimo-v2.5-free is pickable for heavy work"
 
 unset PI_SEAT_CREDENTIAL_PRECHECK
 
+# fleet-ops#911: allowlisted opencode/nemotron-3.5-lightning-free is pickable,
+# including as failover once hy3-free and mimo-v2.5-free are tried, and is
+# heavy-capable (reasoning=true). Isolated fixture so live seat-caps cannot
+# leak. The billing sibling nemotron-3.5-lightning (no -free) is never picked.
+mkdir -p "$scratch/911"
+cat >"$scratch/911/models.json" <<'JSON'
+{
+  "providers": {
+    "opencode": {
+      "models": [
+        { "id": "hy3-free", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 190000 },
+        { "id": "mimo-v2.5-free", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 },
+        { "id": "nemotron-3.5-lightning-free", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 262144 },
+        { "id": "nemotron-3.5-lightning", "cost": { "input": 0.1 }, "reasoning": true, "contextWindow": 262144 }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/911/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["opencode"],
+  "providers": {
+    "opencode": {
+      "cap": 1,
+      "class": "free",
+      "models": { "hy3-free": 1, "mimo-v2.5-free": 1, "nemotron-3.5-lightning-free": 1 }
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/911/models.json"
+export SEAT_CAPS_JSON="$scratch/911/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/911/ledger"
+export PI_PACKET_STATE="$scratch/911/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "911-first: expected a pick, got rc=$rc"
+[[ "$out" == "opencode	hy3-free" ]] \
+  || fail "911-first: expected hy3-free first (models.json order), got: $out"
+ok "911-first: hy3-free stays the first opencode pick"
+
+printf 'opencode/hy3-free\nopencode/mimo-v2.5-free\n' >"$scratch/911/tried"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/911/tried" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "911-failover: expected a pick, got rc=$rc"
+[[ "$out" == "opencode	nemotron-3.5-lightning-free" ]] \
+  || fail "911-failover: expected nemotron-3.5-lightning-free when hy3-free and mimo-v2.5-free are tried, got: $out"
+ok "911-failover: allowlisted nemotron-3.5-lightning-free is pickable"
+
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1 "$1"' "$lib" "$scratch/911/tried" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "911-heavy: expected a heavy pick, got rc=$rc"
+[[ "$out" == "opencode	nemotron-3.5-lightning-free" ]] \
+  || fail "911-heavy: nemotron-3.5-lightning-free must be heavy-capable, got: $out"
+ok "911-heavy: nemotron-3.5-lightning-free is pickable for heavy work"
+
+# The billing sibling nemotron-3.5-lightning (no -free) is in the catalog but
+# not in the allowlist, so it is never picked on the free row.
+cat >"$scratch/911/caps-free-only.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["opencode"],
+  "providers": {
+    "opencode": {
+      "cap": 1,
+      "class": "free",
+      "models": { "nemotron-3.5-lightning-free": 1 }
+    }
+  }
+}
+JSON
+export SEAT_CAPS_JSON="$scratch/911/caps-free-only.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/911/ledger-billing"
+export PI_PACKET_STATE="$scratch/911/state-billing"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "911-billing: expected a pick, got rc=$rc"
+[[ "$out" == "opencode	nemotron-3.5-lightning-free" ]] \
+  || fail "911-billing: expected the free slug, got: $out"
+if echo "$out" | grep -qxF 'opencode	nemotron-3.5-lightning'; then
+  fail "911-billing: billing sibling nemotron-3.5-lightning must not be picked, got: $out"
+fi
+ok "911-billing: billing sibling nemotron-3.5-lightning is not pickable on the free row"
+
+unset PI_SEAT_CREDENTIAL_PRECHECK
+
 # fleet-ops#638: commandcode Laguna free slug is skippable until listed;
 # the billing sibling without -free never joins the allowlist.
 mkdir -p "$scratch/638"
