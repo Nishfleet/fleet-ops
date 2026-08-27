@@ -499,6 +499,46 @@ fi
 ok "observe-to-close: still-dirty slug is neither commented nor closed"
 rm -f "$sessions/still-dirty.jsonl"
 
+# --- 14. live #1138 regression guard: actual session file -----------------
+# The fixture in test 11 covers the inline snippet. This one runs the
+# detector against the literal session JSONL the bug was auto-filed from
+# (the heartbeat signals `decisions-ledger/vacation-window-corrected` while
+# that session is in-window). If the live file is unavailable (CI without
+# the vault), skip. The git history of #1138 and the fixture together
+# pin the class; this test pins the literal session.
+live_session="$HOME/.pi/agent/sessions/--home-nish--/2026-08-27T12-01-31-411Z_01a04318-c313-774f-a8cb-cdf638b778f5.jsonl"
+if [[ -f "$live_session" ]]; then
+    live_root="$scratch/live-sessions/--home-nish--"
+    mkdir -p "$live_root"
+    cp "$live_session" "$live_root/$(basename "$live_session")"
+    # Preserve the source mtime so the window check sees the file as
+    # in-window for the heartbeat tick we are simulating. Without this,
+    # the cp mtime is "now" and the file lands in grace.
+    touch -r "$live_session" "$live_root/$(basename "$live_session")"
+    set +e
+    FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/live-sessions" \
+    FLEET_DECISIONS_LEDGER="$scratch/ledger.md" \
+    FLEET_DECISIONS_LEDGER_LIB="$lib" \
+    FLEET_DECISIONS_LEDGER_WINDOW_HOURS="24" \
+    FLEET_DECISIONS_LEDGER_GRACE_MINUTES="0" \
+    FLEET_DECISIONS_LEDGER_NOW="2026-08-27T18:05:00Z" \
+    FLEET_DECISIONS_LEDGER_FILE_ISSUES=0 \
+    FLEET_DECISIONS_LEDGER_ISSUE_REPO="Nishfleet/fleet-ops" \
+    GH="$scratch/gh" \
+    GH_MOCK_STORE="$gh_store" \
+    FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+      "$bin" >"$scratch/live.json" 2>"$scratch/live.err"
+    rc=$?
+    set -e
+    [[ "$rc" == "0" ]] || fail "live #1138 session should be clean (got $rc) $(cat "$scratch/live.err")"
+    findings=$(jq '.findings | length' "$scratch/live.json")
+    [[ "$findings" == "0" ]] || fail "live #1138 session must produce 0 findings (got $findings) $(jq -c '.findings' "$scratch/live.json")"
+    grep -q "DECISIONS-LEDGER-OK" "$scratch/live.err" || fail "live #1138 must log OK (got $(cat "$scratch/live.err"))"
+    ok "live #1138: actual session JSONL returns 0 findings (vacation-window-corrected is clean)"
+else
+    echo "SKIP: live #1138 session not present at $live_session (CI without vault) — fixture in test 11 still pins the class"
+fi
+
 # Three-place citation lock for #1138
 grep -q 'fleet-ops#1138' "$lib" \
   || fail "lib/decisions-ledger.py must cite fleet-ops#1138"
