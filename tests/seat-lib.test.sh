@@ -1178,6 +1178,12 @@ bash "$here/fleet-failed-command-canary-script-exit-1.test.sh" || fail "fleet-fa
 # walked past is the same class. Same CI constraint (worker token cannot
 # add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-systemctl-status-failed.test.sh" || fail "fleet-failed-command-systemctl-status-failed tests failed"
+# fleet-ops#793: a debug script just written with the `write` tool,
+# then invoked as `bash /tmp/<script>` (no flags, no pipe), that
+# exits 1 with `(no output)  Command exited with code 1`. The
+# recovery turn is a toolCall (`bash -x ... | tail ...`) with no
+# user-facing text. Same CI constraint.
+bash "$here/fleet-failed-command-fresh-debug-script.test.sh" || fail "fleet-failed-command-fresh-debug-script tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
