@@ -735,6 +735,12 @@ ok "rule-enforcement: vault-conflict-resolver drill"
 bash "$here/fleet-wipe-lessons.test.sh" || fail "fleet-wipe-lessons gate drill failed"
 ok "rule-enforcement: fleet-wipe-lessons gate drill"
 
+# fleet-ops#787: dirty-worktree-audit shares the "is HEAD on origin"
+# classification with fleet-wipe-lessons (see its docstring). Host it from
+# the same nested-CI file so P14 covers it without a workflow edit.
+bash "$here/dirty-worktree-audit.test.sh" || fail "dirty-worktree-audit drill failed"
+ok "rule-enforcement: dirty-worktree-audit drill"
+
 # fleet-ops#459: NORTH STAR quality guard. Nested host so the worker token
 # does not need to edit .github/workflows/**.
 bash "$here/north-star-quality.test.sh" || fail "north-star-quality gate drill failed"
@@ -800,4 +806,4 @@ ok "rule-enforcement: verify-harness canary drill"
 bash "$here/paid-flash-canary.test.sh" || fail "paid-flash-canary drill failed"
 ok "rule-enforcement: paid-flash canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, and paid-flash drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, and paid-flash drills"
