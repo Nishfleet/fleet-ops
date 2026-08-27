@@ -168,6 +168,33 @@ run-proof: journal fleet-heartbeat.service lines below
 run_body "$scratch/body.md" || fail "2: run-proof: must accept"
 ok "2: --body run-proof: accepted"
 
+# --- 2b. --body with `## Verification` heading (no colon) + fenced run-cue (fleet-ops#728) ---
+printf '%s\n' '## What changed
+- changed
+
+## Verification
+```
+npx vitest run --project node tests/foo.test.ts
+Test Files 2 passed (2), Tests 13 passed (13).
+```
+
+Closes #1198
+' >"$scratch/body.md"
+run_body "$scratch/body.md" || fail "2b: heading form (no colon) must accept ($(cat "$scratch/body.err"))"
+ok "2b: --body heading form (no colon) + fenced run-cue accepted"
+
+# --- 2c. --body with `## Verification` heading (no colon) but no run-cue -----
+printf '%s\n' '## Summary
+changed
+
+## Verification
+- I did the thing.
+' >"$scratch/body.md"
+if run_body "$scratch/body.md"; then
+  fail "2c: heading form (no colon) without a run-cue must reject"
+fi
+ok "2c: --body heading form (no colon) without run-cue rejected"
+
 # --- 3. --body Verification: without a run-cue ------------------------------
 printf '%s\n' '## Summary
 changed
@@ -230,6 +257,28 @@ FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-ok.json" || fail "5: receipt PR 
 grep -q 'EXEC-REVIEW-OK' "$scratch/scan.err" || fail "5: expected EXEC-REVIEW-OK ($(cat "$scratch/scan.err"))"
 [[ -z "$(ls -A "$gh_store" 2>/dev/null | grep issue || true)" ]] || fail "5: must not file on a receipt PR"
 ok "5: worker PR with receipt is OK, no file"
+
+# --- 5b. worker PR with `## Verification` heading (no colon) + fenced run-cue is OK (fleet-ops#728) ---
+cat >"$scratch/prs-ok-heading.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/0509",
+    "number": 1233,
+    "title": "fix(docs): heading-form Verification is also a receipt",
+    "body": "## What changed\nremoved stale comment\n\n## Verification\n```\nnpx vitest run --project node tests/foo.test.ts\nTest Files 2 passed (2), Tests 13 passed (13).\n```\n\nCloses #1198\n",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/0509/pull/1233",
+    "headRefName": "claim/issue-1198",
+    "author": {"login": "app/nishfleet-worker", "is_bot": true}
+  }
+]
+JSON
+rm -f "$gh_store"/*.body
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-ok-heading.json" || fail "5b: heading-form receipt PR must exit 0 ($(cat "$scratch/scan.err"))"
+grep -q 'EXEC-REVIEW-OK' "$scratch/scan.err" || fail "5b: expected EXEC-REVIEW-OK ($(cat "$scratch/scan.err"))"
+[[ -z "$(ls -A "$gh_store" 2>/dev/null | grep issue || true)" ]] || fail "5b: must not file on a heading-form receipt PR"
+ok "5b: worker PR with `## Verification` heading (no colon) + fenced run-cue is OK, no file"
 
 # --- 6. worker PR without receipt -> observe-to-open, files -----------------
 cat >"$scratch/prs-skip.json" <<'JSON'
