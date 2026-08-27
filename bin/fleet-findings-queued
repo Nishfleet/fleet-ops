@@ -124,10 +124,8 @@ finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
 
-if [[ "$finding_count" == "0" ]]; then
-    loud "FINDINGS-QUEUED-OK" "no unqueued offers in window (scanned=$scanned)"
-    exit 0
-fi
+# Current finding slugs — used for both dedup and observe-to-close.
+current_slugs=$(jq -r '.findings[].slug' <<<"$report" | sort -u)
 
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
@@ -135,6 +133,43 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
     set -e
     open_json="${open_json:-[]}"
+fi
+
+# Observe-to-close (fleet-ops#724): close auto-filed issues whose slug is no
+# longer a finding. The detector filed these; it closes them when the signal
+# is clean on a real heartbeat tick — the session aged out of the window or
+# was queued in-session. Without this, auto-filed issues pile up with no
+# close path (the #724 class: "Do not close until the detector reports this
+# clean on a real heartbeat tick").
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    while IFS=$'\t' read -r num slug; do
+        [[ -n "$num" && -n "$slug" ]] || continue
+        if ! grep -qxF "$slug" <<<"$current_slugs"; then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: signal findings-queued/${slug} no longer reported as a finding on heartbeat tick at $ts."
+            set +e
+            "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" 2>/dev/null
+            close_rc=$?
+            set -e
+            if [[ "$close_rc" -eq 0 ]]; then
+                log "observe-to-close: CLOSED issue #$num (slug=$slug no longer in findings)"
+                closed=$((closed + 1))
+            else
+                log "observe-to-close: failed to close issue #$num (rc=$close_rc)"
+            fi
+        fi
+    done < <(printf '%s' "$open_json" | jq -r '
+        .[] | .number as $n | (.body // "") as $b |
+        select($b | contains("signal: findings-queued/")) |
+        ($b | capture("signal: findings-queued/(?<slug>[^\\s]+)") | .slug) as $slug |
+        "\($n)\t\($slug)"
+    ' 2>/dev/null)
+fi
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "FINDINGS-QUEUED-OK" "no unqueued offers in window (scanned=$scanned closed=$closed)"
+    exit 0
 fi
 
 filed=0
