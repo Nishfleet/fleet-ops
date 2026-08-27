@@ -287,12 +287,19 @@ def _issue_blob(issue: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def observe_close_drift_issues(checkout: Path, head: str) -> None:
+def observe_close_drift_issues(
+    checkout: Path, head: str, only_marker: str | None = None
+) -> None:
     """Comment on open drift issues whose class is now green.
 
     Observe-to-close wiring (fleet-ops#620): when the canary is green, any
     open issue carrying a drift marker gets a `resolved-at:` comment. This
     makes the close evidence-backed rather than manual.
+
+    When ``only_marker`` is given, only that marker is considered. Per-check
+    callers use this so a class that is binary (e.g. off-main: branch is
+    main or not) can be observed-to-closed the moment its own check
+    passes, independent of later checks that may still be red (fleet-ops#774).
     """
     if not DRIFT_FILE:
         log("observe-to-close skipped (FLEET_OPS_DRIFT_FILE!=1)")
@@ -306,6 +313,8 @@ def observe_close_drift_issues(checkout: Path, head: str) -> None:
         OFF_MAIN_MARKER: "off-main deploy-clone",
         HOTPATCH_MARKER: "hot-patch",
     }
+
+    markers = (only_marker,) if only_marker else DRIFT_MARKERS
 
     try:
         proc = subprocess.run(
@@ -329,7 +338,7 @@ def observe_close_drift_issues(checkout: Path, head: str) -> None:
         if not isinstance(number, int):
             continue
         blob = _issue_blob(issue)
-        for marker in DRIFT_MARKERS:
+        for marker in markers:
             if marker not in blob:
                 continue
             resolved_marker = f"resolved-at: {marker}"
@@ -820,6 +829,13 @@ def check_checkout(checkout: Path) -> None:
         fail_loud("DRIFT-CHECKOUT", f"git status failed: {porcelain}")
     if porcelain.strip():
         fail_loud("DRIFT-CHECKOUT", f"checkout has uncommitted tracked changes:\n{porcelain.strip()}")
+
+    # Off-main class is binary: branch is main or not. Observe-to-close the
+    # matching open issue as soon as we know the branch is main, so the
+    # `resolved-at:` comment is not held hostage to a later check that may
+    # still be red (fleet-ops#774). The end-of-canary observe_close_drift_issues
+    # call dedups on the comment blob, so this is idempotent.
+    observe_close_drift_issues(checkout, head, only_marker=OFF_MAIN_MARKER)
 
     log(f"checkout {checkout} is at origin/main ({head[:12]}) and clean")
 
