@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test_standing_rules_drift.sh
+# tests/standing-rules-drift.test.sh
 #
 # Proves the standing-rules generator catches drift and rebuilds cleanly.
 # Runs in CI without the real CLAUDE.md / AGENTS.md present on the

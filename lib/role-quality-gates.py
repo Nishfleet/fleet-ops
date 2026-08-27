@@ -55,7 +55,7 @@ NON_ROLE_UNIT_PREFIXES = (
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no
     # role gate; its own gate is the drift --check plus
-    # tests/test_standing_rules_drift.sh.
+    # tests/standing-rules-drift.test.sh.
     "standing-rules-render",
 )
 
