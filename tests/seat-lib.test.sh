@@ -2145,6 +2145,13 @@ bash "$here/fleet-failed-command-gh-pr-list-invalid-sort.test.sh" || fail "fleet
 # --body`) and #1003 (python `KeyError` after a valid `--json` filter).
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-unknown-field.test.sh" || fail "fleet-failed-command-gh-issue-view-unknown-field tests failed"
+# fleet-ops#1193: `gh pr view <N> -R ... --json ...merged` (invalid field;
+# valid is `mergedAt`) piped through `2>&1 | head` masks gh's non-zero
+# exit (`head` exits 0, harness reports isError:false). Detector cannot
+# catch this without breaking the #1048/#1122 isError contract, so the
+# prevention is worker-side. Same CI constraint (worker token cannot
+# add a P14 line).
+bash "$here/fleet-worker-prompt-gh-pr-view-unknown-field.test.sh" || fail "fleet-worker-prompt-gh-pr-view-unknown-field tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
