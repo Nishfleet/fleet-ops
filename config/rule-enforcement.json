@@ -747,10 +747,9 @@
     {
       "id": "led-2026-08-27-quality-ratchet-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Quality ratchet (Nish)",
-      "mechanism": "Weekly Fleet Review raises the quality bar one notch per week, evidence-based; tightening only, never loosening without Nish. Mechanism issue open.",
-      "proof": "fleet-ops#1222",
-      "status": "queued(#1222)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Weekly Fleet Review quality-ratchet canary: committed floors in config/quality-ratchet.json must match live quality-routing.json cuts; a cut may drop one notch per week with evidence, never loosen without a Nish ledger waiver. Heartbeat-tier1 block 35 runs lib/quality-ratchet.py; after a WFR run, last-ratchet.json is required. Role-gate quality_ratchet_contract locks the prompt.",
+      "proof": "config/quality-ratchet.json; lib/quality-ratchet.py; lib/role-quality-gates.py (check_quality_ratchet_contract); prompts/weekly-fleet-review.md; tests/quality-ratchet.test.sh; bin/fleet-heartbeat-tier1 block 35; fleet-ops#1222",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-precedence-band-overnight-machinery-surge-nish",

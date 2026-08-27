@@ -127,6 +127,49 @@ Hard caps (NEVER exceed):
 - Each filed issue MUST carry: termination command, deterministic-
   required vs AI-advisory split, evidence link, role-gate catalog hit.
 
+## Quality ratchet (required every week)
+
+Ledger `2026-08-27 | Quality ratchet (Nish)`: raise the quality bar
+every week. Gates/thresholds that were consistently met get tightened
+**one notch**, evidence-based. Never loosen without a Nish
+`decisions-ledger` waiver. Quality above all; speed second.
+
+After conference, before filing, write
+`/home/nish/workspaces/agent-state/WFR/last-ratchet.json`.
+
+1. Read `config/quality-ratchet.json` (installed at
+   `~/.local/state/pi-packet/quality-ratchet.json`) and the live
+   scoreboard. A knob is "consistently met" when its metric has sat
+   at or inside the current cut for the lookback the evidence names
+   (default: 4 weeks).
+2. If one or more knobs qualify, pick the highest-leverage one and
+   **tighten exactly one notch** (the library
+   `lib/quality-ratchet.py evaluate-record` is the judge). File that
+   tighten as one of the ≤5 Adopt actions. `to` must equal
+   `from - notch`, and must not pass `stop_at`.
+3. If none qualify, `action` is `hold` with evidence naming the
+   closest miss. A hold does **not** count toward the 5.
+4. Never loosen. The only exception is `action: nish-waiver` with
+   `waiver_source` pointing at a dated ledger line.
+
+Record shape:
+
+```json
+{
+  "date": "<today YYYY-MM-DD>",
+  "action": "tighten|hold|nish-waiver",
+  "knob": "revert_rate_cut|defect_rate_cut|overturn_rate_cut",
+  "from": 0.04,
+  "to": 0.035,
+  "evidence": "specific ≥24-char claim with numbers and a date window",
+  "filed": 1222,
+  "waiver_source": null
+}
+```
+
+`hold` may omit `knob` / `from` / `to` / `filed`. Fail loud if the
+file is missing. The next heartbeat tick catches it.
+
 ## Phase 3 — follow-through (file the work, log the score)
 
 In a single sweep, with no further research:
