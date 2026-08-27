@@ -432,6 +432,11 @@ systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.confi
 lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/vault-conflict-resolver.service /home/nish/.config/systemd/user/vault-conflict-resolver.service
 systemd/vault-conflict-resolver.timer /home/nish/.config/systemd/user/vault-conflict-resolver.timer
+# fleet-ops#1264: vault snapshot lint. Flags live-state prose without a
+# check-command and a fresh observed timestamp. --check is the worker
+# pre-write gate; --report is the heartbeat drift surface; --pre-write
+# is the capture-wrapper refuse path (slice 4 / #1265 calls it).
+lib/vault-lint.py /home/nish/.local/bin/vault-lint
 # fleet-ops#525: daily vault knowledge-format lint. The script lives in
 # nish-vault because it writes the shared-memory report and 03 Knowledge hub
 # contents; the timer is the named, scheduled fleet-ops enforcer.
