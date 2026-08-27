@@ -84,7 +84,7 @@ bin/fleet-failed-command-flagged /home/nish/.local/bin/fleet-failed-command-flag
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
 # fleet-ops#1222: Weekly Fleet Review quality ratchet (one notch per week,
-# never loosen without Nish). Heartbeat-tier1 block 34.
+# never loosen without Nish). Heartbeat-tier1 block 35.
 config/quality-ratchet.json /home/nish/.local/state/pi-packet/quality-ratchet.json
 lib/quality-ratchet.py /home/nish/.local/lib/pi-packet/quality-ratchet.py
 lib/role-quality-gates.py /home/nish/.local/lib/pi-packet/role-quality-gates.py
@@ -99,6 +99,10 @@ bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 # worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
 bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree
 systemd/vps-weekly-update.service.d/20-wip-gc.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/20-wip-gc.conf
+# fleet-ops#1213: local bare mirrors + --reference-if-able clones.
+# Updated on the existing 5-min fleet-metrics-export tick (no new timer).
+bin/git-mirror-update /home/nish/.local/bin/git-mirror-update
+systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/10-git-mirrors.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;
@@ -344,6 +348,13 @@ bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-c
 # volume_seats bucket. Observe-to-open when xai-oauth is in models.json but
 # unwired. Heartbeat-tier1 block 33.
 bin/fleet-volume-lane-order-canary /home/nish/.local/bin/fleet-volume-lane-order-canary
+# fleet-ops#1245: GEO/AEO measurement + owned-content lock. Parks
+# Reddit/community and digital-PR as Nish-reserved, locks brand gate to
+# preview-then-autonomous, llms.txt to developer-docs-only. Heartbeat-tier1
+# block 34.
+bin/fleet-geo-aeo-canary /home/nish/.local/bin/fleet-geo-aeo-canary
+lib/geo-aeo.py /home/nish/.local/lib/pi-packet/geo-aeo.py
+config/geo-aeo-policy.json /home/nish/.local/state/pi-packet/geo-aeo-policy.json
 # fleet-ops#537: Execution IS the review receipt canary. Worker prompt
 # inner loop stays agentic (no bin/exec-review dispatcher). This canary
 # detects a worker PR that skipped the run (no Verification: run-cue /
@@ -454,3 +465,8 @@ lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.py
+# fleet-ops#1263: TTL + provenance on recorded facts (recall/compile layer).
+# Policy file stays in-repo (lib/shared-memory/ttl-policy.md); recall resolves
+# the symlink and reads it. Do not MANIFEST-install into nish-vault — that
+# dirties the vault git tree. Recall prefers the vault path when present.
+bin/memoryctl-recall.py /home/nish/.local/bin/memoryctl-recall
