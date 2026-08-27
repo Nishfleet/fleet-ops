@@ -263,6 +263,36 @@ ages out of the 24h window. Live session
 2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
 `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
 head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A compound `;`-separated `systemctl --user stop <unit> 2>&1;
+systemctl --user reset-failed <unit> 2>&1` (or the bare
+`systemctl --user stop <unit> 2>&1`) on a unit that is not currently
+loaded is a real swallowed failure (fleet-ops#1221): systemd prints
+`Failed to stop <unit>: Unit <unit> not loaded.` and
+`Failed to reset failed state of unit <unit>: Unit <unit> not loaded.`
+on stderr, exits 1, the harness sets isError=true, and
+`Command exited with code 1` lands in the toolResult. The next
+assistant turn is a thinking-only note ("The unit X doesn't exist
+anymore") plus a `gh issue view` recovery toolCall with no
+user-facing text naming the failure. The class is distinct from
+#784 (`systemctl --user status` of an Active: failed unit, exit 3,
+`× unit`, `Active: failed (Result: exit-code)`): the #1221 shape is
+exit 1 with the canonical `Unit <name> not loaded.` lines and a
+non-silenced compound `;`-separated chain (no `2>/dev/null` on the
+chain tail). `systemctl` is not in BENIGN_STAGE_RE / LS_BENIGN_RE /
+XARGS_BENIGN_RE so the failure must be flagged. A future refactor
+that adds `systemctl` to BENIGN_STAGE_RE, treats `Unit ... not loaded.`
+as a probe line, or lets a same-turn sibling `systemctl --user status`
+success mask the failing `systemctl --user stop` tail would silently
+suppress this real signal. The dedicated regression test
+tests/fleet-failed-command-systemctl-stop-not-loaded.test.sh pins
+that. The auto-filed issue closes via observe-to-close when the
+session mtime ages out of the 24h window. Live session
+2026-08-27T15-29-03-179Z_01a043d6-c2cb-76cd-90c3-e9d8499c113d.jsonl:
+the compound `;`-separated `systemctl --user stop 0509-devserver.service
+2>&1; systemctl --user reset-failed 0509-devserver.service 2>&1` call
+returned 1 because the unit was not loaded, and the assistant
+continued in thinking plus a `gh issue view` recovery without
+naming the failure in user-facing text.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.

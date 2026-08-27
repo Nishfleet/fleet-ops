@@ -2035,6 +2035,13 @@ bash "$here/fleet-failed-command-canary-script-exit-1.test.sh" || fail "fleet-fa
 # walked past is the same class. Same CI constraint (worker token cannot
 # add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-systemctl-status-failed.test.sh" || fail "fleet-failed-command-systemctl-status-failed tests failed"
+# fleet-ops#1221: `systemctl --user stop <unit>` (or
+# `systemctl --user reset-failed <unit>`) on a not-loaded unit
+# (exit 1, `Failed to stop <unit>: Unit <unit> not loaded.`,
+# `Failed to reset failed state of unit <unit>: Unit <unit> not
+# loaded.`) walked past is the same class. Same CI constraint
+# (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-systemctl-stop-not-loaded.test.sh" || fail "fleet-failed-command-systemctl-stop-not-loaded tests failed"
 # fleet-ops#793: a debug script just written with the `write` tool,
 # then invoked as `bash /tmp/<script>` (no flags, no pipe), that
 # exits 1 with `(no output)  Command exited with code 1`. The
