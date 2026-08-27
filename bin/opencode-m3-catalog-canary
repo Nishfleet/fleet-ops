@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-# opencode-m3-catalog-canary — OpenCode MiniMax M3 slug watch (fleet-ops#435).
+# opencode-m3-catalog-canary — MiniMax M3 slug watch on OpenCode and
+# CommandCode (fleet-ops#435, fleet-ops#545).
 #
 # OpenCode Zen's live catalog has `minimax-m3`, which bills credits, and no
 # `-free` / subscription-prefix MiniMax M3 slug. #384 fail-closed: do not
-# allowlist the billing slug. This canary is the class prevention:
-#   1. Gate: a billing MiniMax M3 id in seat-caps opencode.models is LOUD,
-#      auto-files, and fails the heartbeat tick.
-#   2. Detector: when the catalog grows a free-form MiniMax M3 slug that is
+# allowlist the billing slug. Ledger 2026-08-26 worker-lane refresh: MiniMax
+# M3 is FREE on commandcode/opencode — wire only a free-form slug after a
+# live spawn plus meter check; fail closed if it bills.
+#
+# This canary is the class prevention:
+#   1. Gate: a billing MiniMax M3 id in seat-caps opencode.models or
+#      commandcode.models is LOUD, auto-files, and fails the heartbeat tick.
+#   2. Gate: a free-form MiniMax M3 id allowlisted on either provider whose
+#      models.json cost is non-zero is LOUD (the name said free; the meter
+#      would not).
+#   3. Detector: when the catalog grows a free-form MiniMax M3 slug that is
 #      not yet allowlisted, auto-file (observe-to-open). Discovery does not
 #      fail the tick — a red heartbeat until someone wires it would starve
 #      the fleet.
-#   3. Never spawn the billing slug. Catalog read only.
+#   4. Never spawn the billing slug. Catalog + seat-caps + models.json only.
 #
 # No new scheduler. Run by fleet-heartbeat-tier1.
 #
-# Catalog source (first match):
-#   OPENCODE_CATALOG_JSON  fixture JSON (tests). Array of ids, or
-#                          {"data":[{"id":...}]} / {"models":[...]}
+# Catalog source (first match per provider):
+#   OPENCODE_CATALOG_JSON / COMMANDCODE_CATALOG_JSON  fixture JSON (tests).
+#                          Array of ids, or {"data":[{"id":...}]} /
+#                          {"models":[...]}. If either fixture is set, the
+#                          other provider with no fixture is treated as an
+#                          empty catalog (tests stay offline).
 #   `pi --list-models`     live Pi catalog (the fleet's actual view)
 #
 # Environment seams (tests):
@@ -24,10 +35,12 @@
 #   FLEET_HEARTBEAT_TRIAGE
 #   FLEET_OPENCODE_M3_CANARY_REPO   default Nishfleet/fleet-ops
 #   FLEET_OPENCODE_M3_CANARY_FILE   1 (default) file issues; 0 skip gh
-#   OPENCODE_CATALOG_JSON           skip pi
+#   OPENCODE_CATALOG_JSON           skip pi for opencode
+#   COMMANDCODE_CATALOG_JSON        skip pi for commandcode
+#   FLEET_M3_MODELS_JSON            models.json fixture (overrides live)
 #   PI                              pi binary (tests stub this)
 #   GH                              gh binary (tests stub this)
-#   OPENCODE_CATALOG_STRICT         1 → empty/failed catalog is exit 1
+#   OPENCODE_CATALOG_STRICT         1 → empty/failed live catalog is exit 1
 
 set -Eeuo pipefail
 
@@ -46,10 +59,14 @@ if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
     SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
 fi
 
+MODELS_JSON="${FLEET_M3_MODELS_JSON:-${HOME}/.pi/agent/models.json}"
+
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_OPENCODE_M3_CANARY_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_OPENCODE_M3_CANARY_FILE:-1}"
 STRICT="${OPENCODE_CATALOG_STRICT:-0}"
+
+M3_PROVIDERS=(opencode commandcode)
 
 log() {
     printf '[%s] [opencode-m3-catalog-canary] %s\n' \
@@ -66,8 +83,16 @@ loud() {
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
 
+provider_tag() {
+    case "$1" in
+        opencode) printf 'OPENCODE' ;;
+        commandcode) printf 'COMMANDCODE' ;;
+        *) printf '%s' "${1^^}" ;;
+    esac
+}
+
 # MiniMax M3, not M2.5 / M2.7. Matches minimax-m3, minimax-m3-free,
-# MiniMaxAI/MiniMax-M3.
+# MiniMaxAI/MiniMax-M3, minimax/minimax-m3-free.
 is_minimax_m3() {
     local id="${1,,}"
     [[ "$id" =~ (^|/)minimax-m3(-|$) ]]
@@ -80,6 +105,10 @@ is_free_form() {
     [[ "$id" == *-free ]] && return 0
     [[ "$id" == *"-pass/"* ]] && return 0
     return 1
+}
+
+fixture_mode() {
+    [[ -n "${OPENCODE_CATALOG_JSON:-}" || -n "${COMMANDCODE_CATALOG_JSON:-}" ]]
 }
 
 file_finding() {
@@ -110,26 +139,56 @@ ${marker}
     fi
 }
 
-emit_catalog_ids() {
-    if [[ -n "${OPENCODE_CATALOG_JSON:-}" ]]; then
-        if [[ ! -f "$OPENCODE_CATALOG_JSON" ]]; then
-            log "WARN: OPENCODE_CATALOG_JSON missing: $OPENCODE_CATALOG_JSON"
-            return 1
-        fi
-        jq -r '
-            if type == "array" then .[]
-            elif (.data | type) == "array" then .data[] | (.id // empty)
-            elif (.models | type) == "array" then
-                .models[] | if type == "string" then . else (.id // empty) end
-            else empty end
-        ' "$OPENCODE_CATALOG_JSON"
+ids_from_catalog_json() {
+    jq -r '
+        if type == "array" then .[]
+        elif (.data | type) == "array" then .data[] | (.id // empty)
+        elif (.models | type) == "array" then
+            .models[] | if type == "string" then . else (.id // empty) end
+        else empty end
+    ' "$1"
+}
+
+# Sum of models.json cost fields for provider/slug. Empty if the id is
+# absent or models.json is missing/unparseable.
+models_cost_sum() {
+    local provider="$1" slug="$2"
+    if [[ ! -f "$MODELS_JSON" ]] || ! jq -e . "$MODELS_JSON" >/dev/null 2>&1; then
         return 0
     fi
-    if ! command -v "$PI" >/dev/null 2>&1; then
-        log "WARN: pi not found ($PI); cannot read live OpenCode catalog"
+    jq -r --arg p "$provider" --arg s "$slug" '
+        [.providers[$p].models // [] | .[] | select(.id == $s) |
+         ((.cost.input // 0) + (.cost.output // 0) +
+          (.cost.cacheRead // 0) + (.cost.cacheWrite // 0))] | .[0] // empty
+    ' "$MODELS_JSON"
+}
+
+emit_catalog_ids_for() {
+    local provider="$1"
+    local fixture=""
+    case "$provider" in
+        opencode) fixture="${OPENCODE_CATALOG_JSON:-}" ;;
+        commandcode) fixture="${COMMANDCODE_CATALOG_JSON:-}" ;;
+    esac
+    if [[ -n "$fixture" ]]; then
+        if [[ ! -f "$fixture" ]]; then
+            log "WARN: $provider catalog fixture missing: $fixture"
+            return 1
+        fi
+        ids_from_catalog_json "$fixture"
+        return 0
+    fi
+    if fixture_mode; then
+        return 0
+    fi
+    if [[ -z "${LIVE_LIST_MODELS:-}" ]]; then
+        log "WARN: live Pi catalog unread; cannot list $provider"
         return 1
     fi
-    "$PI" --list-models 2>/dev/null | awk '$1 == "opencode" { print $2 }'
+    printf '%s\n' "$LIVE_LIST_MODELS" \
+        | grep -v '^EXTLOAD-OK' \
+        | grep -v '^provider ' \
+        | awk -v p="$provider" '$1 == p { print $2 }'
 }
 
 if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
@@ -141,61 +200,94 @@ if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
     exit 1
 fi
 
-mapfile -t allowlisted < <(jq -r '.providers.opencode.models // {} | keys[]' "$SEAT_CAPS_JSON")
+LIVE_LIST_MODELS=""
+live_catalog_rc=0
+if ! fixture_mode; then
+    if ! command -v "$PI" >/dev/null 2>&1; then
+        log "WARN: pi not found ($PI); cannot read live catalog"
+        live_catalog_rc=1
+    elif ! LIVE_LIST_MODELS=$("$PI" --list-models 2>/dev/null); then
+        log "WARN: pi --list-models exited non-zero"
+        live_catalog_rc=1
+        LIVE_LIST_MODELS=""
+    fi
+fi
 
 violations=0
-for slug in "${allowlisted[@]}"; do
-    [[ -n "$slug" ]] || continue
-    if is_minimax_m3 "$slug" && ! is_free_form "$slug"; then
-        loud "OPENCODE-M3-VIOLATION" "billing MiniMax M3 slug allowlisted on opencode: $slug"
-        file_finding "billing-wired" "$slug" \
-            "opencode allowlisted billing MiniMax M3 slug $slug" \
-            "config/seat-caps.json providers.opencode.models includes \`${slug}\`. Live OpenCode chat on that id returns CreditsError (fleet-ops#435). Remove it. Wire only a \`-free\` or \`*-pass/\` slug after a spawn plus meter check shows zero spend."
-        violations=$((violations + 1))
-    fi
-done
-
-catalog_rc=0
-catalog_out=""
-if ! catalog_out=$(emit_catalog_ids); then
-    catalog_rc=1
-fi
-
-if [[ "$catalog_rc" -ne 0 ]]; then
-    if [[ "$STRICT" == "1" ]]; then
-        loud "OPENCODE-M3-VIOLATION" "OpenCode catalog read failed (strict)"
-        exit 1
-    fi
-    log "WARN: OpenCode catalog unread; billing-allowlist gate still ran"
-    if (( violations > 0 )); then
-        log "FAIL: $violations billing MiniMax M3 allowlist violation(s)"
-        exit 1
-    fi
-    loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode (catalog unread)"
-    exit 0
-fi
-
-declare -A allow_set=()
-for slug in "${allowlisted[@]}"; do
-    [[ -n "$slug" ]] || continue
-    allow_set["$slug"]=1
-done
-
 discovered=0
-while IFS= read -r slug; do
-    [[ -n "$slug" ]] || continue
-    if is_minimax_m3 "$slug" && is_free_form "$slug"; then
-        if [[ -z "${allow_set[$slug]:-}" ]]; then
-            loud "OPENCODE-M3-FREE-AVAILABLE" "catalog has unwired free MiniMax M3 slug: $slug"
-            file_finding "free-slug-available" "$slug" \
-                "wire OpenCode free MiniMax M3 slug $slug" \
-                "Pi \`--list-models\` now lists OpenCode \`${slug}\` (free-form: \`-free\` or \`*-pass/\`). It is not in seat-caps providers.opencode.models. Prove with one live spawn plus a meter check that spend is zero, then allowlist only this slug. Do not wire \`minimax-m3\` (CreditsError / bills). Follow-up from fleet-ops#435."
-            discovered=$((discovered + 1))
-        else
-            log "free MiniMax M3 slug already allowlisted: $slug"
+catalog_failed=0
+
+for provider in "${M3_PROVIDERS[@]}"; do
+    tag=$(provider_tag "$provider")
+    mapfile -t allowlisted < <(jq -r --arg p "$provider" \
+        '.providers[$p].models // {} | keys[]' "$SEAT_CAPS_JSON")
+
+    for slug in "${allowlisted[@]+"${allowlisted[@]}"}"; do
+        [[ -n "$slug" ]] || continue
+        if is_minimax_m3 "$slug" && ! is_free_form "$slug"; then
+            loud "${tag}-M3-VIOLATION" "billing MiniMax M3 slug allowlisted on ${provider}: $slug"
+            kind="billing-wired"
+            [[ "$provider" == opencode ]] || kind="${provider}-billing-wired"
+            file_finding "$kind" "$slug" \
+                "${provider} allowlisted billing MiniMax M3 slug $slug" \
+                "config/seat-caps.json providers.${provider}.models includes \`${slug}\`. That form bills credits (OpenCode CreditsError on fleet-ops#435; CommandCode must fail closed per the 2026-08-26 worker-lane refresh). Remove it. Wire only a \`-free\` or \`*-pass/\` slug after a spawn plus meter check shows zero spend. fleet-ops#545."
+            violations=$((violations + 1))
+            continue
         fi
+        if is_minimax_m3 "$slug" && is_free_form "$slug"; then
+            cost=$(models_cost_sum "$provider" "$slug")
+            if [[ -n "$cost" ]] && awk -v c="$cost" 'BEGIN { exit !(c+0 > 0) }'; then
+                loud "${tag}-M3-VIOLATION" "free-form MiniMax M3 slug allowlisted on ${provider} but models.json cost is non-zero: $slug (cost_sum=$cost)"
+                kind="bills-wired"
+                [[ "$provider" == opencode ]] || kind="${provider}-bills-wired"
+                file_finding "$kind" "$slug" \
+                    "${provider} allowlisted MiniMax M3 slug $slug that bills" \
+                    "config/seat-caps.json providers.${provider}.models includes \`${slug}\` (free-form) but ~/.pi/agent/models.json cost fields sum to ${cost}. The 2026-08-26 worker-lane refresh says fail closed if MiniMax M3 bills. Remove the slug. fleet-ops#545."
+                violations=$((violations + 1))
+            fi
+        fi
+    done
+
+    catalog_out=""
+    if ! catalog_out=$(emit_catalog_ids_for "$provider"); then
+        catalog_failed=1
+        if [[ "$STRICT" == "1" ]]; then
+            loud "${tag}-M3-VIOLATION" "${provider} catalog read failed (strict)"
+            exit 1
+        fi
+        log "WARN: ${provider} catalog unread; billing-allowlist gate still ran"
+        continue
     fi
-done <<< "$catalog_out"
+
+    declare -A allow_set=()
+    for slug in "${allowlisted[@]+"${allowlisted[@]}"}"; do
+        [[ -n "$slug" ]] || continue
+        allow_set["$slug"]=1
+    done
+
+    while IFS= read -r slug; do
+        [[ -n "$slug" ]] || continue
+        if is_minimax_m3 "$slug" && is_free_form "$slug"; then
+            if [[ -z "${allow_set[$slug]:-}" ]]; then
+                loud "${tag}-M3-FREE-AVAILABLE" "catalog has unwired free MiniMax M3 slug on ${provider}: $slug"
+                kind="free-slug-available"
+                [[ "$provider" == opencode ]] || kind="${provider}-free-slug-available"
+                file_finding "$kind" "$slug" \
+                    "prove and wire ${provider} free MiniMax M3 slug $slug" \
+                    "Pi \`--list-models\` now lists ${provider} \`${slug}\` (free-form: \`-free\` or \`*-pass/\`). It is not in seat-caps providers.${provider}.models. Per the 2026-08-26 worker-lane refresh (fleet-ops#545): (1) one live spawn on this exact slug, (2) read the provider meter minutes after — fail closed if it bills, (3) matching models.json id with cost 0, (4) dated seat-caps row (capacity-is-measured). Do not wire a billing MiniMax M3 slug."
+                discovered=$((discovered + 1))
+            else
+                log "free MiniMax M3 slug already allowlisted on ${provider}: $slug"
+            fi
+        fi
+    done <<< "$catalog_out"
+    unset allow_set
+done
+
+if [[ "$live_catalog_rc" -ne 0 && "$STRICT" == "1" ]]; then
+    loud "OPENCODE-M3-VIOLATION" "pi --list-models unavailable (strict)"
+    exit 1
+fi
 
 if (( violations > 0 )); then
     log "FAIL: $violations billing MiniMax M3 allowlist violation(s)"
@@ -203,9 +295,15 @@ if (( violations > 0 )); then
 fi
 
 if (( discovered > 0 )); then
-    log "OPENCODE-M3-FREE-AVAILABLE: $discovered unwired free slug(s); issues filed; tick stays green"
+    log "M3-FREE-AVAILABLE: $discovered unwired free slug(s); issues filed; tick stays green"
     exit 0
 fi
 
-loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode; no unwired free MiniMax M3 slug in catalog"
+if [[ "$live_catalog_rc" -ne 0 || "$catalog_failed" -ne 0 ]]; then
+    log "WARN: catalog unread on at least one provider; billing-allowlist gate still ran"
+    loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode or commandcode (catalog unread)"
+    exit 0
+fi
+
+loud "OPENCODE-M3-OK" "no billing MiniMax M3 slug on opencode or commandcode; no unwired free MiniMax M3 slug in catalog"
 exit 0

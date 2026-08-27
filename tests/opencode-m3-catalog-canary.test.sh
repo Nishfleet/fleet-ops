@@ -217,4 +217,136 @@ grep -q 'bin/opencode-m3-catalog-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/opencode-m3-catalog-canary"
 ok "scenario8: heartbeat-tier1 wires the canary, fail-loud on billing, MANIFEST installs it"
 
-ok "opencode-m3-catalog-canary: billing gate, free-slug detector, m2.7 ignore, dedup, production clean"
+write_cc_catalog() {
+  cat >"$scratch/cc-catalog.json"
+}
+
+run_cc_canary() {
+  set +e
+  env_out=$(
+    SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+    OPENCODE_CATALOG_JSON="$scratch/catalog.json" \
+    COMMANDCODE_CATALOG_JSON="$scratch/cc-catalog.json" \
+    FLEET_M3_MODELS_JSON="${FLEET_M3_MODELS_JSON:-$scratch/models.json}" \
+    FLEET_OPS_REPO="$scratch" \
+    "$bin" 2>&1
+  )
+  env_rc=$?
+  set -e
+}
+
+# --- 9. CommandCode billing slug allowlisted -> scream + file --------------
+: >"$gh_log"
+: >"$triage"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "minimax/minimax-m3": 2 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["minimax/minimax-m3"]
+JSON
+: >"$scratch/models.json"
+run_cc_canary
+[[ "$env_rc" == "1" ]] || fail "scenario9: expected rc=1, got $env_rc ($env_out)"
+grep -q 'COMMANDCODE-M3-VIOLATION' "$triage" || fail "scenario9: missing COMMANDCODE violation"
+grep -q 'commandcode-billing-wired' "$gh_log" || fail "scenario9: filed body must carry commandcode billing marker"
+ok "scenario9: CommandCode billing MiniMax M3 allowlisted screams and auto-files"
+
+# --- 10. CommandCode free slug appears, not wired -> file, tick green ------
+: >"$gh_log"
+: >"$triage"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["deepseek/deepseek-v4-flash", "minimax/minimax-m3-free"]
+JSON
+run_cc_canary
+[[ "$env_rc" == "0" ]] || fail "scenario10: discovery must not fail the tick, got $env_rc ($env_out)"
+grep -q 'COMMANDCODE-M3-FREE-AVAILABLE' "$triage" || fail "scenario10: missing FREE-AVAILABLE"
+grep -q 'minimax/minimax-m3-free' "$triage" || fail "scenario10: must name the free slug"
+grep -q 'issue create' "$gh_log" || fail "scenario10: must auto-file"
+grep -q 'commandcode-free-slug-available' "$gh_log" || fail "scenario10: filed body must carry commandcode discovery marker"
+ok "scenario10: CommandCode free slug appearing auto-files and keeps the tick green"
+
+# --- 11. CommandCode free-form slug with non-zero models.json cost ----------
+: >"$gh_log"
+: >"$triage"
+write_caps <<'JSON'
+{
+  "providers": {
+    "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "minimax/minimax-m3-free": 2 } }
+  }
+}
+JSON
+write_catalog <<'JSON'
+["hy3-free"]
+JSON
+write_cc_catalog <<'JSON'
+["minimax/minimax-m3-free"]
+JSON
+cat >"$scratch/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": {
+      "models": [
+        { "id": "minimax/minimax-m3-free", "cost": { "input": 0.3, "output": 1.2 } }
+      ]
+    }
+  }
+}
+JSON
+run_cc_canary
+[[ "$env_rc" == "1" ]] || fail "scenario11: billed free-form slug must exit 1, got $env_rc ($env_out)"
+grep -q 'COMMANDCODE-M3-VIOLATION' "$triage" || fail "scenario11: missing COMMANDCODE violation"
+grep -q 'models.json cost is non-zero' "$triage" || fail "scenario11: must name the cost gate"
+grep -q 'commandcode-bills-wired' "$gh_log" || fail "scenario11: filed body must carry bills-wired marker"
+ok "scenario11: CommandCode free-form slug with non-zero cost fails closed"
+
+# --- 12. production seat-caps has no billing M3 on commandcode -------------
+: >"$gh_log"
+: >"$triage"
+if jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-caps.json" \
+    | grep -qiE '(^|/)minimax-m3(-|$)'; then
+  while IFS= read -r k; do
+    lk="${k,,}"
+    if [[ "$lk" =~ (^|/)minimax-m3(-|$) ]] && [[ "$lk" != *-free ]] && [[ "$lk" != *"-pass/"* ]]; then
+      fail "scenario12: production seat-caps allowlists billing MiniMax M3 on commandcode: $k"
+    fi
+  done < <(jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+fi
+printf '%s\n' '["deepseek/deepseek-v4-flash"]' >"$scratch/cc-prod.json"
+prod_cc_out=$(
+  SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" \
+  OPENCODE_CATALOG_JSON="$prod_catalog" \
+  COMMANDCODE_CATALOG_JSON="$scratch/cc-prod.json" \
+  FLEET_OPS_REPO="$repo_root" \
+  FLEET_OPENCODE_M3_CANARY_FILE=0 \
+  "$bin" 2>&1
+) || fail "scenario12: production commandcode parked state must exit 0 ($prod_cc_out)"
+grep -q 'OPENCODE-M3-OK' <<<"$prod_cc_out" || fail "scenario12: production must log OK ($prod_cc_out)"
+ok "scenario12: production seat-caps does not allowlist billing CommandCode MiniMax M3"
+
+# --- 13. matrix row is enforced --------------------------------------------
+jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforced")' \
+  "$repo_root/config/rule-enforcement.json" >/dev/null \
+  || fail "scenario13: led-worker-lane-refresh must be status=enforced"
+ok "scenario13: led-worker-lane-refresh is enforced in the rule matrix"
+
+ok "opencode-m3-catalog-canary: billing gate, free-slug detector, m2.7 ignore, dedup, production clean, commandcode fail-closed"

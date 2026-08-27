@@ -5,13 +5,19 @@
 #   1. List open scout-candidate issues per enrolled repo.
 #   2. For each candidate, ensure the three pi-audit@ units exist or start
 #      any missing one (devin, free-glm-5-3, straitly).
-#   3. If all three votes are present, call pi-audit-tally to admit/discard.
-#   4. If a candidate is pending for more than one tick with no active audit
+#   3. If a needed unit is failed (StartLimitBurst exhausted), reset-failed
+#      then start it so a recovered seat is not wedged for the remaining
+#      StartLimitIntervalSec (fleet-ops#616).
+#   4. If all three votes are present, call pi-audit-tally to admit/discard.
+#   5. If a candidate is pending for more than one tick with no active audit
 #      unit, write a loud AUDITOR-PANEL-PENDING finding.
 #
-# No hand-rolled polling. The heartbeat's 30-minute timer is the only
-# schedule; unit execution and retry are owned by systemd (Restart=, the
-# global OnFailure ladder). Votes are state files, not a queue daemon.
+# Invoked by fleet-heartbeat-tier1 block 4b. No hand-rolled polling. The
+# heartbeat's 30-minute timer is the only schedule; unit execution and
+# retry are owned by systemd (Restart=, the global OnFailure ladder).
+# Votes are state files, not a queue daemon. A failed unit with a missing
+# vote is retried every tick until the vote lands or the candidate closes;
+# AUDITOR-PANEL-PENDING is the alarm if the panel never convenes.
 #
 # Environment seams:
 #   FLEET_INTAKE_REPOS_JSON
@@ -115,6 +121,17 @@ start_audit() {
     return 0
 }
 
+# fleet-ops#616: StartLimitBurst=2 + StartLimitIntervalSec=1h leaves the
+# unit failed until the interval elapses. reset-failed clears the burst
+# so a recovered seat can be tried on this tick instead of sitting dead.
+recover_failed_audit() {
+    local repo="$1" candidate="$2" role="$3" unit
+    unit=$(unit_name "$repo" "$candidate" "$role")
+    log "$repo/#$candidate: $unit is failed — reset-failed + start (fleet-ops#616)"
+    "$SYSTEMCTL" --user reset-failed "$unit" >/dev/null 2>&1 || true
+    start_audit "$repo" "$candidate" "$role"
+}
+
 process_candidate() {
     local repo="$1" candidate="$2"
     local missing=0 active=0 failed=0
@@ -132,7 +149,11 @@ process_candidate() {
                 active=$((active + 1))
                 ;;
             failed)
-                failed=$((failed + 1))
+                if recover_failed_audit "$repo" "$candidate" "$role"; then
+                    active=$((active + 1))
+                else
+                    failed=$((failed + 1))
+                fi
                 ;;
             *)
                 missing=$((missing + 1))

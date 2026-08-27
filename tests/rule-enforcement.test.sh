@@ -41,6 +41,11 @@ count=$(jq '.rules | length' "$matrix")
 [[ "$count" -gt 0 ]] || fail "matrix.rules is empty"
 ok "committed matrix is valid ($count rules)"
 
+jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforced")' \
+  "$matrix" >/dev/null \
+  || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
+ok "matrix row led-worker-lane-refresh is enforced"
+
 # fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
 # rows even when the live vault is absent (CI skips the live join).
 for src in \
@@ -85,6 +90,10 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report sr-execution-is-review as enforced covered_rows (fleet-ops#537): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | continuous research" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report Tailscale ACL lockdown as enforced covered_rows (fleet-ops#544): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
@@ -98,6 +107,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: straitly ds4-pro source is enforced (observe-to-close for #546)"
   ok "live join: execution-is-review source is enforced (observe-to-close for #537)"
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
+  ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
+  ok "live join: continuous research source is enforced (observe-to-close for #541)"
   ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
@@ -714,9 +725,19 @@ ok "rule-enforcement: shared-file collision guard drill"
 bash "$here/fleet-work-supply-canary.test.sh" || fail "work-supply canary drill failed"
 ok "rule-enforcement: work-supply 24h/12h drain canary drill"
 
+# fleet-ops#545: CommandCode MiniMax M3 fail-closed catalog canary. Nested
+# host so the worker token does not need to edit .github/workflows/**.
+bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3 catalog canary drill failed"
+ok "rule-enforcement: opencode/commandcode MiniMax M3 catalog canary drill"
+
+# fleet-ops#541: weekly continuous-research sweep. Nested host so the
+# worker token does not need to edit .github/workflows/**.
+bash "$here/quality-research-weekly.test.sh" || fail "quality-research-weekly drill failed"
+ok "rule-enforcement: quality-research-weekly drill"
+
 # fleet-ops#544: VPS→Mac Tailscale lockdown canary. Same nested-CI host so
 # this token does not need a workflow edit.
 bash "$here/fleet-tailscale-acl-canary.test.sh" || fail "tailscale ACL lockdown canary drill failed"
 ok "rule-enforcement: Tailscale ACL lockdown canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, and tailscale-acl drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, and tailscale-acl drills"

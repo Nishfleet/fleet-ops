@@ -7,7 +7,7 @@
 # backstop; there is no researcher timer).
 #
 # Triggers:
-#   (a) quality-metric plateau or regression (#456 snapshot, if present)
+#   (a) quality-metric plateau or regression (#457 snapshot, if present)
 #   (b) seat-map hash change vs last research run
 #   (c) a plane with no research in N weeks (default 28d)
 #   (d) every Nth gap-closure cycle (default 4, cycle % 4 == 1)
@@ -16,7 +16,7 @@
 # Exit 0 = decision made (started, skipped, or cadence-cut).
 # Exit 1 = dispatcher broken (helper missing/unreadable in a hard way).
 # Missing optional snapshots (quality, gap) are not broken — those
-# triggers simply do not fire until #456/#180 land their files.
+# triggers simply do not fire until the #457 snapshot lands.
 #
 # Environment seams (tests):
 #   RESEARCHER_STATE_DIR RESEARCHER_QUALITY_JSON RESEARCHER_GAP_JSON
@@ -35,7 +35,7 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 STATE_DIR="${RESEARCHER_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-researcher}"
-QUALITY_JSON="${RESEARCHER_QUALITY_JSON:-$STATE_DIR/../quality-scoreboard.json}"
+QUALITY_JSON="${RESEARCHER_QUALITY_JSON:-${QUALITY_SCOREBOARD_JSON:-$STATE_DIR/../quality-scoreboard/snapshot.json}}"
 GAP_JSON="${RESEARCHER_GAP_JSON:-$STATE_DIR/../gap-closure/state.json}"
 SEAT_MAP="${RESEARCHER_SEAT_MAP:-$HOME/.local/state/pi-packet/entitled-seats.json}"
 UNIT="${RESEARCHER_UNIT:-fleet-researcher.service}"
