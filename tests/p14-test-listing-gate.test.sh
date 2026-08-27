@@ -119,6 +119,13 @@ done
 # ("1 test file(s) are neither ..."). This named check runs first so
 # the operator gets the issue number in the FAIL line.
 #
+# Provenance: fleet-ops#824 first observed dirty-worktree-audit as
+# unaccounted in the P14 reachable set; the immediate host landed in
+# tests/rule-enforcement.test.sh via fleet-ops#787 (PR #883) and this
+# named pin layered on top via fleet-ops#777 (PR #901). #824 stayed
+# open because neither fix PR included "Closes #824"; this comment
+# plus the closing PR is the receipt.
+#
 # class-prevention: the named FAIL is the loudest signal; a future
 # worker who sees "1 test file(s) are neither ..." and parks the
 # test on known_orphans to silence the message would now also fail
