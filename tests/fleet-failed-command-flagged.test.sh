@@ -229,6 +229,37 @@ rc=$(run_bin 0)
 ok "timeout without a later flag is swallowed"
 rm -f "$sessions/timeout.jsonl"
 
+# --- 6b. gh issue create GraphQL transient, retry with no flag --------------
+write_session "gh-graphql-retry" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The workers project passes. The node test failure is pre-existing. Let me file it as a new issue, then check sgscan.\n\n"}]}}
+{"type":"message","message":{"role":"toolCall","id":"call_gh1","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh1","toolName":"bash","isError":true,"content":[{"type":"text","text":"GraphQL: Something went wrong while executing your query. Please include 'TOKEN' when reporting this issue.\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"\n\n"},{"type":"toolCall","id":"call_gh2","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh2","toolName":"bash","isError":false,"content":[{"type":"text","text":"https://github.com/Nishfleet/0509/issues/1231"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now let me check sgscan.\n\n"}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "gh GraphQL retry with no flag should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "gh GraphQL retry must be flagged as swallowed"
+ok "gh issue create GraphQL failure + silent retry is swallowed"
+rm -f "$sessions/gh-graphql-retry.jsonl"
+
+# --- 6c. gh issue create GraphQL transient, explicit flag -> clean ----------
+write_session "gh-graphql-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The workers project passes. The node test failure is pre-existing. Let me file it as a new issue, then check sgscan.\n\n"}]}}
+{"type":"message","message":{"role":"toolCall","id":"call_gh1","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh1","toolName":"bash","isError":true,"content":[{"type":"text","text":"GraphQL: Something went wrong while executing your query. Please include 'TOKEN' when reporting this issue.\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the gh issue create call failed with a GraphQL error, retrying.\n\n"},{"type":"toolCall","id":"call_gh2","name":"bash","arguments":{"command":"cd /tmp && gh issue create -R Nishfleet/0509 --title \"Pre-existing timeout\" --body \"pre-existing\" 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gh2","toolName":"bash","isError":false,"content":[{"type":"text","text":"https://github.com/Nishfleet/0509/issues/1231"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now let me check sgscan.\n\n"}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "gh GraphQL retry with explicit flag should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "gh issue create GraphQL failure + explicit user-facing flag is clean"
+rm -f "$sessions/gh-graphql-flagged.jsonl"
+
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
