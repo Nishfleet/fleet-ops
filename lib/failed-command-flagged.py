@@ -33,7 +33,17 @@ with a Python traceback (KeyError, NameError, etc.) and
 'Command exited with code 1' (fleet-ops#957) is also a real swallowed
 failure: the command is not grep/rg/diff/ls/which so it is not a no-match
 probe, and a silent re-probe, a thinking block, or later prose that
-moves on is not a user-facing flag. A `git checkout <branch>` (or a
+moves on is not a user-facing flag. A `python3 -c "from <hyphenated_name>
+import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
+actual filename has hyphens (e.g. `failed-command-flagged.py` while
+importing `failed_command_flagged`) fails with `ModuleNotFoundError:
+No module named '<hyphenated_name>'` and `Command exited with code 1`
+(fleet-ops#937): the same hyphenated re-probe fails identically, and
+two failed probes are walked past with no user-facing flag before the
+worker notices the hyphens. The class is the same as #957 (python3
+traceback walked past); the dedicated regression test pins it so a
+future refactor that drops the #937 citation from the docstring, the
+prompt, or the test host list is caught. A `git checkout <branch>` (or a
 compound `&&` chain whose tail is `git checkout <branch>`) inside a
 worktree whose target branch is checked out in another worktree is a
 real swallowed failure (fleet-ops#954, #962): git refuses with

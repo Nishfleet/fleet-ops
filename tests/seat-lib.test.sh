@@ -1729,6 +1729,16 @@ bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-com
 # command is not grep/rg/diff/ls/which so it is not a no-match probe.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed-command-python-traceback tests failed"
+# fleet-ops#937: a `python3 -c "from <hyphenated_name> import ..."`
+# probe against a sibling file whose actual filename has hyphens
+# (e.g. `failed-command-flagged.py` vs `failed_command_flagged`) fails
+# with `ModuleNotFoundError: No module named '<hyphenated_name>'` and
+# `Command exited with code 1`, and the same `python3 << 'PYEOF'`
+# re-probe fails identically before the worker notices the hyphens.
+# Same family as #957 (python3 traceback walked past); same CI
+# constraint (worker token cannot add a P14 line in
+# `.github/workflows/ci.yml`).
+bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh" || fail "fleet-failed-command-python-module-not-found-hyphen tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
