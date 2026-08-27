@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/fleet-failed-command-observe-duplicate-open.test.sh
 #
-# fleet-ops#965 / #970: leftover duplicate open issues for the SAME
+# fleet-ops#965 / #970 / #975: leftover duplicate open issues for the SAME
 # session signal must ALL drain via observe-to-close, not just the
 # first match.
 #
@@ -13,7 +13,7 @@
 # Those close only when the detector is green for the slug and
 # observe-to-close walks every matching open issue (fleet-ops#650 /
 # #758). A `first`-only close, or a CAP that silently drops the rest
-# forever, would leave #965 / #970 (and their siblings) dispatching
+# forever, would leave #965 / #970 / #975 (and their siblings) dispatching
 # workers after the session has aged out.
 #
 # The edit-unmatch shape itself is locked under #956
@@ -21,7 +21,7 @@
 # the leftover-duplicate DRAIN so a future observe-to-close refactor
 # cannot resolve only issue 0 of a same-signal pile, and so the
 # citation chain (worker.md + detector docstring + seat-lib.test.sh
-# host) for #965 and #970 is verified.
+# host) for #965, #970 and #975 is verified.
 #
 # Live session: 2026-08-26T11-57-42-915Z_01a03dee-ea83-759b-8044-ba3adddcbe8b.jsonl
 #
@@ -33,8 +33,8 @@
 #   2. later tick with the marker already on all five: closes all five,
 #      still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. three-place citation lock (prompt, detector, CI host) for #965
-#      and #970.
+#   4. three-place citation lock (prompt, detector, CI host) for #965,
+#      #970 and #975.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -290,13 +290,13 @@ if [ -s "$gh_store/commented" ]; then
 fi
 ok "live #965: still-dirty slug leaves all leftover duplicates open"
 
-# --- 4. three-place citation lock (prompt, detector, CI host) for #965 / #970 -----
-# Same pin as #937 / #957 / #966: dropping the #965 or #970 citation
+# --- 4. three-place citation lock (prompt, detector, CI host) for #965 / #970 / #975 -----
+# Same pin as #937 / #957 / #966: dropping the #965, #970 or #975 citation
 # from any one of these three places is a regression even if the drain
 # drill still passes. The existing edit-unmatch test (fleet-ops#956)
-# already pins #956; this file adds the #965 citation next to it, and
-# the #970 citation next to #965 — both are siblings in the 01a03dee
-# leftover-duplicate pile (fleet-ops#951).
+# already pins #956; this file adds the #965 citation next to it, the
+# #970 citation next to #965, and the #975 citation next to #970 — all
+# are siblings in the 01a03dee leftover-duplicate pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
 grep -q 'fleet-ops#965' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#965 (prompt-side lock for the leftover 01a03dee duplicate)"
@@ -304,15 +304,21 @@ ok "worker.md cites fleet-ops#965"
 grep -q '#965, #970' "$worker" \
   || fail "prompts/worker.md must carry the #970 citation next to the #965 leftover-duplicate citation"
 ok "worker.md cites #970"
+grep -q '#970, #975' "$worker" \
+  || fail "prompts/worker.md must carry the #975 citation next to the #970 leftover-duplicate citation"
+ok "worker.md cites #975"
 grep -q 'fleet-ops#956, #965' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#965 next to #956"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#965"
 grep -q '#965, #970' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #970 next to #965"
 ok "lib/failed-command-flagged.py docstring cites #970"
+grep -q '#970, #975' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #975 next to #970"
+ok "lib/failed-command-flagged.py docstring cites #975"
 grep -F -q 'fleet-failed-command-observe-duplicate-open.test.sh' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-observe-duplicate-open: live #965 / #970 leftover-duplicate drain"
+echo "OK: fleet-failed-command-observe-duplicate-open: live #965 / #970 / #975 leftover-duplicate drain"
