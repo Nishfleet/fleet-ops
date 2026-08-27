@@ -252,9 +252,6 @@ remote_default_ref() {
     return 0
 }
 
-# Back-compat shim: same shape, defaults to the `origin` remote.
-origin_head_ref() { remote_default_ref "$1" origin; }
-
 inspect_product() {
     # Prints one token: ok | missing | invalid | no-checkout | not-git
     local name="$1"
