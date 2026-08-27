@@ -45,7 +45,7 @@ grep -q 'Do not file "test is not in the CI P14 list"' "$repo_root/prompts/blind
 # fleet-ops#402: panel-PASS findings must be filed with agent-ready or
 # intake/pi-issue never see them. This grep is the class guard — a create
 # that only stamps gap-audit is a failed run.
-grep -E 'gh issue create .*--label agent-ready' "$bin" \
+grep -E '"\$ISSUE_FILE" file .*--label agent-ready' "$bin" \
     || fail "fleet-blind-audit must file panel-PASS findings with --label agent-ready (fleet-ops#402)"
 
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)

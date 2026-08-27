@@ -131,7 +131,7 @@ Do not file candidates whose acceptance criteria ask a worker to bypass these ga
 
 For each chosen candidate (max 8):
 ```bash
-gh issue create -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
+fleet-issue-file file -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
 <full body>
 EOF
 )"

@@ -42,6 +42,7 @@ _canon_script=$(readlink -f "$0")
 _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 SESSIONS="${FLEET_DECISIONS_LEDGER_SESSIONS:-$HOME/.pi/agent/sessions}"
 LEDGER="${FLEET_DECISIONS_LEDGER:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
 LIB="${FLEET_DECISIONS_LEDGER_LIB:-$_canon_repo/lib/decisions-ledger.py}"
@@ -151,7 +152,7 @@ Do not close until the detector reports this clean on a real heartbeat tick (obs
 
 $signal"
         set +e
-        created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+        created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
         create_rc=$?
         set -e
         if [[ "$create_rc" -eq 0 && -n "$created" ]]; then

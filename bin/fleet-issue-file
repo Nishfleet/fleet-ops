@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# fleet-issue-file — filing-time same-problem dedupe (fleet-ops#1212).
+#
+# Drop-in for `gh issue create` that scores the candidate against open
+# issues (title+body token overlap + key-path/unit-name match) and either
+# comments on the existing issue, files with a possible-duplicate-of
+# marker, or files clean.
+#
+# Implementation: lib/issue-file.py
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_ISSUE_FILE_LIB:-$here/../lib/pi-packet/issue-file.py}"
+[ -f "$lib" ] || lib="$here/../lib/issue-file.py"
+[ -f "$lib" ] || { echo "fleet-issue-file: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"
