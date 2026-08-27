@@ -6,6 +6,14 @@
 # Right:  pi-systemd-run --unit mypacket --stdin packet.md -- \
 #           pi --print --provider minimax --model MiniMax-M3
 #
+# Clone convention (fleet-ops#1213): if the packet clones a repo, use
+#   git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git \
+#     https://github.com/Nishfleet/<repo>.git <dest>
+# Never --dissociate on throwaway worktrees. Never push to a mirror
+# (read-only fetch target). A missing or corrupt mirror degrades to a
+# plain clone (--reference-if-able). Mirrors are fetched on the existing
+# 5-min fleet-metrics-export tick by git-mirror-update.
+#
 # The launching shell can exit immediately. systemd owns the process.
 # Watch with: systemctl --user status <unit>.service
 #             journalctl --user -u <unit>.service -f

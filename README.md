@@ -102,6 +102,19 @@ That is `systemd-run --user --collect --no-block`. Not a dispatcher: no
 retry ladder, no seat rotation, no queue. Watch with
 `systemctl --user status mypacket.service`.
 
+If the packet clones a repo, use a reference clone against the local
+bare mirror (fleet-ops#1213), not a full GitHub copy:
+
+```
+git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git \
+  https://github.com/Nishfleet/<repo>.git <dest>
+```
+
+Never `--dissociate` on throwaway worktrees. Never push to a mirror
+(read-only fetch target). A missing or corrupt mirror degrades to a
+plain clone. `git-mirror-update` keeps the mirrors on the existing
+5-min `fleet-metrics-export` tick (no new timer).
+
 A short log with no verdict after `nohup` or `&` is a **launcher fault**
 (the session reaped the process). A log containing `rate_limit` /
 `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do not mix
@@ -307,7 +320,11 @@ before its unit is enabled:
 
 1. A git checkout at `/home/nish/workspaces/products/<name>` — intake does
    `git -C <checkout>/<name> fetch origin` and the worker creates its
-   worktree from it.
+   worktree from it. Packet clones (when a worker clones instead of
+   worktree-add) use `git clone --reference-if-able
+   /home/nish/workspaces/.mirrors/<name>.git
+   https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
+   Mirrors are read-only fetch targets; never push.
 2. The three labels `agent-ready`, `agent-in-progress`, `agent-blocked`
    present on the repo — the `ExecCondition` in `pi-intake@.service`
    silently no-ops without them, so an `agent-ready` issue on a label-less
