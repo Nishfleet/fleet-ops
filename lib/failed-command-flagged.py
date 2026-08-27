@@ -8,11 +8,13 @@ assistant text that names the failure. Burying it in the tool result the
 user may not read does not count.
 
 grep/rg/diff exit 1 (POSIX no-match) is not a failure. ls no-match
-(exit 2) and which no-match (exit 1) are also treated as probes when
-no real error text is present. Exit >= 2, timeouts, and non-probe
-exit 1 (the 404 origin case) are. A spawn-guard or harness block
-(SPAWN_BLOCKED / "Dangerous command blocked") is not a ran-and-failed
-command: the call never executed.
+(exit 2, the canonical "ls: cannot access '<path>': No such file or
+directory" line) and which no-match (exit 1) are also treated as probes.
+ls exit 2 with any other error (Permission denied, I/O error, Is a
+directory, etc.) is a real failure. Exit >= 2 (other than the canonical
+ls probe), timeouts, and non-probe exit 1 (the 404 origin case) are. A
+spawn-guard or harness block (SPAWN_BLOCKED / "Dangerous command
+blocked") is not a ran-and-failed command: the call never executed.
 
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
@@ -43,14 +45,38 @@ REAL_ERR_RE = re.compile(
     re.I,
 )
 # ls(1) exits 2 when a path or glob does not match. Agents use this as a probe,
-# so treat it like grep no-match unless the output shows a real ls error.
+# so treat it like grep no-match: the canonical output is a single line
+#   ls: cannot access '<path>': No such file or directory
+# (GNU ls also adds this with --color; busybox ls uses the same shape; macOS
+# ls prints `ls: <path>: No such file or directory` without the quotes). When
+# the toolResult text contains only that probe shape — and no other ls error
+# (permission denied, I/O, not-a-directory, etc.) — it is a probe, not a
+# swallowed failure (live #794).
 LS_BENIGN_RE = re.compile(
     r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?(?:ls|ll)\b",
     re.I,
 )
-# ls error text that must not be treated as a no-match probe.
-LS_ERR_RE = re.compile(
-    r"(?:ls:|cannot access|No such file or directory|Permission denied)",
+# Canonical "this path does not exist" probe line. Matches GNU coreutils ls
+# (single quotes), busybox ls (single quotes), and BSD/macOS ls (no quotes —
+# the path is bare). The path is intentionally permissive; we only need to
+# match the shape, not validate the path itself.
+LS_CANONICAL_NO_MATCH_RE = re.compile(
+    r"^ls(?:\(\d+\))?:\s+"
+    r"(?:cannot access '([^']+)'|([^\s:][^:]*?)):\s+No such file or directory\s*$",
+    re.M,
+)
+# Real ls(1) errors that must NOT be treated as no-match probes even when the
+# command is "ls". Permission denied / I/O error / not-a-directory / etc. are
+# genuine swallowed failures; only the canonical "No such file or directory"
+# line is benign for ls exit 2.
+LS_REAL_ERR_RE = re.compile(
+    r"(Permission denied|I/O error|Input/output error|"
+    r"Is a directory|Not a directory|cannot open directory|"
+    r"cannot read directory|operation not permitted|Operation not permitted|"
+    r"Read-only file system|Stale file handle|"
+    r"Too many levels of symbolic links|Structure needs cleaning|"
+    r"No space left on device|File name too long|"
+    r"Invalid argument|Text file busy)",
     re.I,
 )
 # Unquoted assistant report. Tight on the standing-rule verbs.
@@ -129,6 +155,37 @@ def _exit_code(text: str) -> int | None:
         return None
 
 
+def _ls_canonical_probe(text: str) -> bool:
+    """True iff an `ls` exit-2 toolResult text is a deliberate probe and
+    not a swallowed failure (live #794).
+
+    Two shapes count as a probe:
+
+    1. The canonical no-match line is present and the text shows no other
+       ls error. The canonical line is
+           ls: cannot access '<path>': No such file or directory
+       (GNU coreutils and busybox) or the BSD/macOS form without quotes
+       (ls: <path>: No such file or directory). Real ls errors
+       (Permission denied, I/O error, not-a-directory, etc.) keep the
+       toolResult as a finding.
+
+    2. The text shows no `ls:` error line at all. This is the
+       `ls X 2>/dev/null` shape — the agent explicitly silenced stderr
+       and is checking the exit code. It is also a deliberate probe.
+    """
+    if LS_REAL_ERR_RE.search(text):
+        return False
+    if LS_CANONICAL_NO_MATCH_RE.search(text):
+        return True
+    # No canonical probe line and no real ls error: was stderr silenced?
+    # If the text contains any `ls:` error line (other than the canonical
+    # one), it is a real error we did not pattern-match. Be conservative
+    # and keep the toolResult as a finding.
+    if re.search(r"\bls(?:\(\d+\))?:\s", text):
+        return False
+    return True
+
+
 def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     if code is None:
         return False
@@ -136,9 +193,12 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
         return False
     if REAL_ERR_RE.search(text):
         return False
-    # ls(1) exits 2 when a path or glob does not match; agents use this as a probe.
-    if LS_BENIGN_RE.search(command) and code == 2 and not LS_ERR_RE.search(text):
-        return True
+    # ls(1) exit 2 with the canonical "no such file or directory" probe
+    # line — or no ls error at all (e.g. `ls X 2>/dev/null`) — is a
+    # deliberate probe, not a swallowed failure (live #794). Real ls
+    # errors (permission, I/O, etc.) are still flagged.
+    if LS_BENIGN_RE.search(command) and code == 2:
+        return _ls_canonical_probe(text)
     if code != 1:
         return False
     return BENIGN_STAGE_RE.search(command) is not None
