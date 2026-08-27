@@ -250,7 +250,8 @@ rm -f "$sessions/ask-nofile.jsonl"
 
 # --- 6b. observe-to-close: clean tick closes the filed issue ----------------
 # The auto-file run above filed one issue (issue-1.body) with a signal key.
-# A clean tick (no findings) must close it via observe-to-close.
+# A clean tick (no findings) must close it via observe-to-close. OK_TO_CLOSE=1
+# is the opt-in gate (fleet-ops#820) — only the production heartbeat sets it.
 set +e
 FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
 FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
@@ -260,6 +261,7 @@ FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
 FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
 FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
 FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1 \
 FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -276,6 +278,42 @@ grep -q "observe-to-close" "$gh_store/issue-1.close-comment" \
   || fail "close comment missing observe-to-close evidence"
 ok "observe-to-close closes a filed issue on a clean tick"
 
+# --- 6b-bad. observe-to-close refused without OK_TO_CLOSE (fleet-ops#820) ---
+# Without FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1, observe-to-close is a no-op
+# even with FILE_ISSUES=1 and a stubbed gh — the gate is fail-closed so
+# a stray test invocation with empty/isolated session roots cannot close
+# live issues against the real repo. The 2026-08-27 incident closed
+# #721-#725 this way. Plant a fresh issue-1 with a real signal and prove
+# it is NOT closed across a clean tick; the log must record the SKIPPED
+# state so an operator can see why close did not fire.
+rm -f "$gh_store"/*.closed "$gh_store"/*.close-comment
+printf 'Title of a real auto-filed issue\n\nsignal: findings-queued/abcd-1234-efgh-5678\n' >"$gh_store/issue-1.body"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-gate.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "no-findings clean tick should exit 0 (got $rc) $(cat "$scratch/err-gate.log")"
+[ ! -f "$gh_store/issue-1.closed" ] \
+  || fail "issue-1 was closed without OK_TO_CLOSE=1 — fleet-ops#820 gate is broken"
+grep -q "observe-to-close: SKIPPED" "$scratch/err-gate.log" \
+  || fail "missing SKIPPED log line $(cat "$scratch/err-gate.log")"
+grep -q "fleet-ops#820" "$scratch/err-gate.log" \
+  || fail "gate log line must cite fleet-ops#820 $(cat "$scratch/err-gate.log")"
+ok "observe-to-close is a no-op without OK_TO_CLOSE=1 (fleet-ops#820 gate)"
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.close-comment
+
 # --- 6c. observe-to-close: still-active slug is NOT closed ------------------
 write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
 set +e
@@ -287,6 +325,7 @@ FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
 FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
 FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
 FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1 \
 FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -360,9 +399,9 @@ ok "missing helper fails loud (guard wins over installed fallback)"
 # is not closed as if it were a real auto-filed finding. Without the
 # backtick guard, the previous regex captured the backtick of the literal
 # `\`<slug>\`` and treated the example as a real signal, phantom-closing
-# the meta-issue. Start clean so prior tests' auto-filed issues do not
-# leak into this drill (issue-2 from case 6c carries a real signal and
-# would otherwise be closed here for the wrong reason).
+# the meta-issue. OK_TO_CLOSE=1 is set so the close path actually runs
+# (otherwise the gate from fleet-ops#820 would short-circuit the test —
+# the assertion here is about the regex, not the gate).
 rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.close-comment
 printf 'Title of a meta-issue\n\nSee `signal: findings-queued/<slug>` for the rule format.\n' >"$gh_store/issue-1.body"
 set +e
@@ -374,6 +413,7 @@ FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
 FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
 FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
 FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1 \
 FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -385,7 +425,9 @@ set -e
 # The meta-issue must NOT have been closed (backticked <slug> is prose).
 [ -f "$gh_store/issue-1.closed" ] \
   && fail "meta-issue was closed on a backtick slug match (should be left open) $(cat "$scratch/err-backtick.log")" || true
-grep -q "observe-to-close" "$scratch/err-backtick.log" \
+grep -q "observe-to-close: ENABLED" "$scratch/err-backtick.log" \
+  || fail "close path did not run (gate not set) — assertion invalid $(cat "$scratch/err-backtick.log")"
+grep -q "observe-to-close: CLOSED" "$scratch/err-backtick.log" \
   && fail "observe-to-close fired on a backtick example — should be skipped $(cat "$scratch/err-backtick.log")" || true
 ok "observe-to-close skips backticked <slug> placeholder (fleet-ops#820 regression)"
 rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.close-comment
@@ -525,6 +567,8 @@ grep -q 'fleet-findings-queued' "$tier1" \
   || fail "fleet-heartbeat-tier1 must invoke fleet-findings-queued"
 grep -q 'findings_queued_rc' "$tier1" \
   || fail "fleet-heartbeat-tier1 must propagate findings_queued_rc"
+grep -q 'FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1' "$tier1" \
+  || fail "fleet-heartbeat-tier1 must set FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1 (fleet-ops#820 gate — production is the only caller trusted to close)"
 grep -q 'bin/fleet-findings-queued' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-findings-queued"
 grep -q 'lib/findings-queued.py' "$repo_root/MANIFEST" \
@@ -533,6 +577,8 @@ grep -Fq 'bash "$here/fleet-findings-queued.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 grep -q 'observe-to-close' "$bin" \
   || fail "fleet-findings-queued must observe-to-close auto-filed findings (fleet-ops#724)"
-ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, observe-to-close"
+grep -q 'FLEET_FINDINGS_QUEUED_OK_TO_CLOSE' "$bin" \
+  || fail "fleet-findings-queued must gate close on FLEET_FINDINGS_QUEUED_OK_TO_CLOSE (fleet-ops#820)"
+ok "contracts: heartbeat-tier1 (incl. OK_TO_CLOSE=1), MANIFEST, nested CI host, observe-to-close, gate"
 
-echo "OK: fleet-findings-queued: offer lint, queue evidence, auto-file dedupe, observe-to-close"
+echo "OK: fleet-findings-queued: offer lint, queue evidence, auto-file dedupe, observe-to-close, gate"

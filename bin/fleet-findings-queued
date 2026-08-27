@@ -16,6 +16,13 @@
 # longer a finding are closed with evidence on the same tick — the
 # session either aged out of the 24h window or was resolved. Without
 # this, the auto-file half of the detector leaves issues open forever.
+# Observe-to-close is opt-in via FLEET_FINDINGS_QUEUED_OK_TO_CLOSE=1
+# (fleet-ops#820): the close path is destructive against the live repo
+# (gh issue close on every open signal-keyed issue whose slug is not in
+# this scan), so a test or one-off invocation with empty/isolated
+# session roots would phantom-close real issues. Only the production
+# heartbeat (which sets the env var) is trusted to close. The auto-file
+# half still defaults to on; only the close half is gated.
 #
 # The standing rule binds every agent on Mac and VPS, so every reachable
 # transcript root is scanned with the same predicates (fleet-ops#602):
@@ -35,6 +42,9 @@
 #   FLEET_FINDINGS_QUEUED_GRACE_MINUTES  default 20 (skip in-flight sessions)
 #   FLEET_FINDINGS_QUEUED_NOW        ISO timestamp
 #   FLEET_FINDINGS_QUEUED_FILE_ISSUES    1 (default) / 0
+#   FLEET_FINDINGS_QUEUED_OK_TO_CLOSE    0 (default — close is OFF) /
+#                                        1 (production heartbeat opts in;
+#                                        required to actually close issues)
 #   FLEET_FINDINGS_QUEUED_ISSUE_REPO     default Nishfleet/fleet-ops
 #   FLEET_FINDINGS_QUEUED_CAP            default 5
 #   FLEET_HEARTBEAT_TRIAGE
@@ -62,6 +72,7 @@ WINDOW_HOURS="${FLEET_FINDINGS_QUEUED_WINDOW_HOURS:-24}"
 GRACE_MINUTES="${FLEET_FINDINGS_QUEUED_GRACE_MINUTES:-20}"
 NOW_ISO="${FLEET_FINDINGS_QUEUED_NOW:-}"
 FILE_ISSUES="${FLEET_FINDINGS_QUEUED_FILE_ISSUES:-1}"
+OK_TO_CLOSE="${FLEET_FINDINGS_QUEUED_OK_TO_CLOSE:-0}"
 ISSUE_REPO="${FLEET_FINDINGS_QUEUED_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_FINDINGS_QUEUED_CAP:-5}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
@@ -146,8 +157,29 @@ fi
 # filed issues pile up with no close path (the #724 / #725 class: "Do
 # not close until the detector reports this clean on a real heartbeat
 # tick").
+#
+# OK_TO_CLOSE is the fail-closed gate (fleet-ops#820). The close path is
+# destructive against the live repo: with FILE_ISSUES=1 and live gh, an
+# invocation that lists zero slugs (empty/isolated session roots, or a
+# scan window with no in-window unqueued offers) closes every open issue
+# that carries a `signal: findings-queued/<slug>` key. The 2026-08-27
+# incident closed #721-#725 exactly that way — an in-progress
+# observe-to-close implementation on claim/issue-722 was run with empty
+# roots and live gh, and the detector phantom-closed five real findings.
+# Require the production heartbeat to set OK_TO_CLOSE=1 explicitly; any
+# other invocation (a one-off shell test, a CI probe, a future worker
+# hand-rolling a fix) gets a logged skip, not a close.
+if [[ "$OK_TO_CLOSE" != "1" ]]; then
+    if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: SKIPPED (FLEET_FINDINGS_QUEUED_OK_TO_CLOSE != 1; fleet-ops#820 — only the production heartbeat is trusted to close)"
+    fi
+else
+    if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: ENABLED (production heartbeat OK_TO_CLOSE=1)"
+    fi
+fi
 closed=0
-if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+if [[ "$OK_TO_CLOSE" == "1" ]] && [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     while IFS=$'\t' read -r num slug; do
         [[ -n "$num" && -n "$slug" ]] || continue
         if ! grep -qxF "$slug" <<<"$current_slugs"; then
