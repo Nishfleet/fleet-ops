@@ -56,6 +56,22 @@
 # block "Ah, the file is different from what I had in mind" — never a
 # user-facing flag.
 #
+# fleet-ops#1139: the third sibling of this class is the NO-OP edit:
+#   "No changes made to <path>. The replacement produced identical
+#    content. This might indicate an issue with special characters or
+#    the text not existing as expected."
+# The edit tool matched, but the replacement equalled what was already
+# there, so the intended change never landed. isError=true, details={},
+# no "Command exited with code" line — the same envelope as #956/#1053.
+# Live session: 2026-08-27T12-01-49-555Z_01a04319-09f3-7bed-ae2e-447e2307d778
+# The worker was editing prompts/worker.md inside the issue-fleet-ops-1001
+# worktree; the edit returned the no-op message; the next turn was
+# cause-explaining prose ("The text is already the same. Let me check
+# what's actually there:") plus a grep, then another grep, then four
+# empty assistant turns. Cause prose is not a flag (same rule as the
+# #1059 "The file was archived" shape). This is the shape most at risk
+# of a future "benign no-op" exemption; scenarios 10-12 forbid it.
+#
 # Scenarios:
 #   1. live #956 shape: edit unmatch + silent read/grep recovery -> finding.
 #   2. same shape plus a later thinking-only note that the file was
@@ -76,6 +92,17 @@
 #   8. lib/failed-command-flagged.py docstring cites fleet-ops#1053
 #      (detector-side lock).
 #   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#  10. live #1139 shape: edit "No changes made ... The replacement
+#      produced identical content" + cause-explaining prose ("The text
+#      is already the same") + grep probes + empty turns -> finding.
+#  11. same #1139 shape with only a silent grep recovery -> finding
+#      (guards against a READ_OFFSET_RE-style no-op exemption).
+#  12. same #1139 shape plus a later "the edit call failed" user-facing
+#      flag -> clean.
+#  13. worker.md cites fleet-ops#1139 and the no-op wording
+#      (prompt-side lock).
+#  14. lib/failed-command-flagged.py cites fleet-ops#1139
+#      (detector-side lock).
 
 set -euo pipefail
 
@@ -260,4 +287,87 @@ grep -Fq 'bash "$here/fleet-failed-command-edit-unmatch.test.sh"' \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053 edit unmatch drills"
+# --- 10. live #1139 shape: no-op edit + cause prose + empty turns ---------
+# Exact replay of session 01a04319: the `edit` of prompts/worker.md in the
+# issue-fleet-ops-1001 worktree returned isError=true with the no-op
+# message; the assistant answered with cause-explaining prose that names
+# WHY the file was unchanged, never that the call failed, then grepped
+# twice and emitted four empty turns. The snippet must match the live
+# detector finding on issue #1139.
+write_session "edit-noop-identical-content" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I need to change the second occurrence to use `fleet-ops#1001` form. Let me update:"},{"type":"toolCall","id":"call_edit7","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md","edits":[{"oldText":"fleet-ops#953, fleet-ops#958, #972, #967, #977, #1001","newText":"fleet-ops#953, fleet-ops#958, #972, #967, #977, #1001"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit7","toolName":"edit","content":[{"type":"text","text":"No changes made to /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The text is already the same. Let me check what's actually there:"},{"type":"toolCall","id":"call_grep7","name":"bash","arguments":{"command":"grep -o 'fleet-ops#953, fleet-ops#958, #972, #967, #977, #1001' /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_grep7","toolName":"bash","isError":false,"content":[{"type":"text","text":"fleet-ops#953, fleet-ops#958, #972, #967, #977, #1001"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The chain has `fleet-ops#953, fleet-ops#958, #972, #967, #977, #1001` in the prompt. Let me look at the line number:"},{"type":"toolCall","id":"call_grep8","name":"bash","arguments":{"command":"grep -n 'fleet-ops#953, fleet-ops#958, #972, #967, #977, #1001' /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_grep8","toolName":"bash","isError":false,"content":[{"type":"text","text":"28:- A failed command (non-zero exit, isError, timeout, GraphQL/HTTP error) is ALWAYS flagged"}]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1139 no-op edit walked past should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'The replacement produced identical content' <<<"$snippet" \
+  || fail "finding snippet should mention the no-op wording (got $snippet)"
+grep -q 'issue-fleet-ops-1001/prompts/worker.md' <<<"$snippet" \
+  || fail "finding snippet should mention the edited path (got $snippet)"
+ok "live #1139: no-op edit with cause-explaining prose recovery is flagged"
+rm -f "$sessions/edit-noop-identical-content.jsonl"
+
+# --- 11. #1139 shape with a silent grep recovery only ---------------------
+# The no-op wording is the shape most likely to attract a future
+# "nothing actually broke" exemption mirroring READ_OFFSET_RE. It is not
+# a negative-result probe: the worker asked for an edit and the edit did
+# not happen. Pin that the bare shape is still a finding.
+write_session "edit-noop-silent-recovery" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit8","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md","edits":[{"oldText":"#977, #1001","newText":"#977, #1001"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit8","toolName":"edit","content":[{"type":"text","text":"No changes made to /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_grep9","name":"bash","arguments":{"command":"grep -c 'fleet-ops#1001' /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_grep9","toolName":"bash","isError":false,"content":[{"type":"text","text":"2"}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "no-op edit with silent grep recovery should be a finding (got $count) $report"
+ok "#1139: no-op edit is not a benign probe — silent recovery still flagged"
+rm -f "$sessions/edit-noop-silent-recovery.jsonl"
+
+# --- 12. #1139 shape plus a later user-facing flag is clean ---------------
+# Same discharge rule as scenarios 4 and 6: naming the failure in
+# user-facing text satisfies fleet-ops#535, and FLAG_RE must keep
+# matching this wording so the class cannot go permanently pending.
+write_session "edit-noop-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit9","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md","edits":[{"oldText":"#977, #1001","newText":"#977, #1001"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit9","toolName":"edit","content":[{"type":"text","text":"No changes made to /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1001/prompts/worker.md. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the edit call failed with 'No changes made ... identical content' — my newText equalled the existing line, so nothing landed; rewriting the replacement."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "no-op edit with later user-facing flag should be clean (got $count) $report"
+ok "#1139: no-op edit plus later user-facing flag is clean"
+rm -f "$sessions/edit-noop-flagged.jsonl"
+
+# --- 13. worker.md cites fleet-ops#1139 (prompt-side lock) ----------------
+grep -q 'fleet-ops#1139' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1139 (prompt-side lock for the no-op edit shape)"
+grep -q 'The replacement produced identical content' "$worker" \
+  || fail "prompts/worker.md must name the live #1139 no-op wording so workers flag it"
+grep -q "The text is already the same" "$worker" \
+  || fail "prompts/worker.md must name the live #1139 cause-prose so workers know it is not a flag"
+ok "worker.md cites fleet-ops#1139, the no-op wording, and the cause-prose"
+
+# --- 14. lib/failed-command-flagged.py cites fleet-ops#1139 ---------------
+# The comment above READ_OFFSET_RE is where a future maintainer would add
+# a no-op exemption. It must name #1139 and forbid it.
+grep -q 'fleet-ops#1139' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1139 (detector-side lock)"
+grep -q 'The replacement produced identical content' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1139 no-op wording"
+ok "lib/failed-command-flagged.py cites fleet-ops#1139 and the no-op wording"
+
+echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053/#1139 edit unmatch drills"

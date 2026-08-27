@@ -87,10 +87,24 @@ must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) — or the variant
 "Found N occurrences of the text in <path>. The text must be unique."
 (fleet-ops#1053, same class: oldText matched multiple locations, not zero)
+— or the no-op variant
+"No changes made to <path>. The replacement produced identical content.
+This might indicate an issue with special characters or the text not
+existing as expected." (fleet-ops#1139, same class: the edit matched but
+the intended change did NOT land) —
 is also a real swallowed
 failure: a silent `read` recovery, a later thinking-only note that the
 file was different, or unrelated prose that moves on, is not a
-user-facing flag. #970 is the same session shape as #956 / #965 (the
+user-facing flag. For the #1139 no-op shape the live recovery was
+cause-explaining prose — "The text is already the same. Let me check
+what's actually there:" — followed by two `grep` probes and four empty
+assistant turns. That names the CAUSE (the file already held that text),
+not the FAILURE (the edit returned isError), exactly like the #1059
+"The file was archived" prose, so it does not discharge the pending
+failure. Do NOT add a READ_OFFSET_RE-style exemption for the no-op
+wording on the theory that "nothing broke": the worker believed it had
+edited the file and it had not, which is the whole point of the rule.
+tests/fleet-failed-command-edit-unmatch.test.sh pins all three shapes. #970 is the same session shape as #956 / #965 (the
 01a03dee edit-unmatch session); it is a leftover open duplicate filed
 by the same GitHub-search-index-delay that produced #951 / #965, so
 the citation chain must carry it. #975 is the same session shape as
@@ -363,10 +377,14 @@ HARNESS_BLOCK_RE = re.compile(
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
 # Do NOT add a similar exemption for `edit` "Could not find the exact
-# text" (fleet-ops#956, #965, #970, #975, #980) or "Found N occurrences"
+# text" (fleet-ops#956, #965, #970, #975, #980), "Found N occurrences"
 # (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
-# locations, not zero). That is a real swallowed failure: the worker's
-# oldText was stale. A silent read recovery does not discharge it.
+# locations, not zero), or "No changes made ... The replacement produced
+# identical content" (fleet-ops#1139, same class: the edit matched but the
+# intended change never landed). Those are real swallowed failures: the
+# worker's oldText or newText was stale. A silent read/grep recovery, and
+# cause-explaining prose ("The text is already the same"), do not
+# discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
@@ -537,6 +555,16 @@ def result_failed(
         return False, text
     if msg.get("toolName") == "read" and READ_OFFSET_RE.search(text):
         return False, text
+    # No sibling exemption belongs here for the `edit` tool. All three
+    # edit-unmatch shapes are real swallowed failures, not negative
+    # results: "Could not find the exact text" (0 matches, fleet-ops#956
+    # / #965), "Found N occurrences" (many matches, fleet-ops#1053), and
+    # "No changes made ... The replacement produced identical content"
+    # (matched, but the intended change never landed, fleet-ops#1139).
+    # The no-op shape is the tempting one — it reads as harmless — but the
+    # worker believed the file changed and it did not.
+    # tests/fleet-failed-command-edit-unmatch.test.sh goes red if an
+    # exemption is added here.
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
     code = _exit_code(text)
