@@ -76,6 +76,16 @@ live_skip[worker-token-live.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.
+#
+# fleet-ops#700: the following two tests USED to be in this list and were
+# removed when worker-token-fail-closed.test.sh (already listed in ci.yml
+# verify-command) began bash-invoking them:
+#   - pi-issue-run-failure-reason.test.sh (hosted for fleet-ops#568)
+#   - pi-issue-run-tried-reset.test.sh     (hosted for fleet-ops#567)
+# They must stay out of known_orphans, or this gate's stale-entry check
+# below fails. The "stale entries" check (further down in this file) is
+# the class-prevention mechanism — if a future change re-adds them, the
+# gate fails with their basenames in the FAIL message.
 known_orphans=(
   agent-cron-failure-reason.test.sh
   failure-mechanism-gate.test.sh
