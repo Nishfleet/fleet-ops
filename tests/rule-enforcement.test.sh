@@ -793,4 +793,11 @@ ok "rule-enforcement: Tailscale ACL lockdown canary drill"
 bash "$here/fleet-verify-harness-canary.test.sh" || fail "verify-harness canary drill failed"
 ok "rule-enforcement: verify-harness canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, and verify-harness drills"
+# fleet-ops#545: paid-flash watcher. Named in led-worker-lane-refresh
+# proof fields, hosted here so the worker token does not need a workflow
+# edit (fleet-ops#660 — fleet-free-roster-canary was already wired by
+# #800 under fleet-ops#634).
+bash "$here/paid-flash-canary.test.sh" || fail "paid-flash-canary drill failed"
+ok "rule-enforcement: paid-flash canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, and paid-flash drills"
