@@ -686,4 +686,9 @@ ok "rule-enforcement: repo-visibility canary drill"
 bash "$here/fleet-straitly-ds4-pro-canary.test.sh" || fail "straitly ds4-pro canary drill failed"
 ok "rule-enforcement: straitly ds4-pro canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, and straitly-ds4-pro drills"
+# fleet-ops#538: "never decide by vibes — always measure" canary. Same
+# nested-CI host so the worker token does not need a workflow edit.
+bash "$here/fleet-vibes-canary.test.sh" || fail "vibes canary drill failed"
+ok "rule-enforcement: vibes canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, and vibes drills"

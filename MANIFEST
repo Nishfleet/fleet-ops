@@ -275,6 +275,12 @@ config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.js
 # meter-check evidence within minutes of first active draw. Heartbeat-tier1
 # block 25.
 bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
+# fleet-ops#538: "never decide by vibes — always measure" canary. Enforces
+# sr-never-vibes: ram_gb_per_worker must carry a dated bin/... measurement
+# citation (GATE, fail-loud); every other behaviour-driving constant in
+# seat-caps.json either carries a measurement citation or has a filed
+# ticket (DETECTOR, observe-to-open). Heartbeat-tier1 block 26.
+bin/fleet-vibes-canary /home/nish/.local/bin/fleet-vibes-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

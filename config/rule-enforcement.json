@@ -364,10 +364,9 @@
     {
       "id": "sr-never-vibes",
       "source": "global-standing-rules.md: Never decide by vibes \u2014 always measure (Nish, 2026-08-26)",
-      "mechanism": "RAM and seat caps are measured; remaining hand-set constants still unmeasured",
-      "proof": "Nishfleet/fleet-ops#538",
-      "status": "queued(#538)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat vibes canary: ram_gb_per_worker (the rule's origin constant) must carry a top-level _comment_* citation with a date AND a bin/... measurement command (GATE, fail-loud); every other behaviour-driving constant in config/seat-caps.json (per-provider cap, quota_bench_default_s, cap=0 reason) either carries a dated measurement citation or has a filed ticket (DETECTOR, observe-to-open). A bare 'feels right' or a fleet-ops# ref alone is not a marker.",
+      "proof": "bin/fleet-vibes-canary; tests/fleet-vibes-canary.test.sh; fleet-heartbeat-tier1 block 26",
+      "status": "enforced"
     },
     {
       "id": "sr-check-other-agents",
