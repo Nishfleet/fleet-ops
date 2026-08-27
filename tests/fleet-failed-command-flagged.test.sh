@@ -30,6 +30,15 @@
 #   6h3. Live #943 positive control: a REAL isError=true trailing
 #       `Command exited with code N` (Pi's genuine failure shape) is
 #       still flagged -> exit 1. Proves 6h2 is not "always flag".
+#   6h4. Live #987: bash `git log --no-merges --format=%B` whose commit
+#       bodies quote BOTH 'Command timed out' AND 'Command exited with
+#       code 128' (isError=false) -> exit 0. The #821 timeout guard
+#       requires code is None; the #943 exit-code guard requires
+#       not timed_out; a body that quotes both strings falls through
+#       both and is flagged. This is that hole.
+#   6h5. Live #987 positive control: the same dual-literal body with
+#       isError=true (Pi's genuine failure shape) is still flagged
+#       -> exit 1. Proves 6h4 is not "always flag".
 #   6i. Live #953: `read` ENOENT (isError=true, no exit code) with only a
 #       `thinking` block in the next turn -> exit 1. Thinking is not a
 #       user-facing flag.
@@ -745,6 +754,51 @@ rc=$(run_bin 0)
 grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "real isError=true exit-code trailer must be flagged as swallowed"
 ok "live #943 positive: real isError=true exit-code trailer is still flagged"
 rm -f "$sessions/bash-exitcode-real.jsonl"
+
+# --- 6h4. live #987: bash `git log --format=%B` with BOTH timeout AND
+#         exit-code literals in commit body text (isError=false) ->
+#         exit 0. ---
+# The session 2026-08-27T04-45-48-858Z (slug 01a04189-dbba-..., this
+# issue's origin) ran
+#   `git log --no-merges --format=%B origin/main...HEAD 2>&1 | head -200`
+# and got a successful log back (isError=false). The range included
+# detector commits #929 (quotes 'Command timed out') and #931 (quotes
+# 'Command exited with code 128'), plus the worker's own #831
+# provenance subject. Pre-this-fix, TIMEOUT_RE and EXIT_RE both
+# matched; the #821 guard wants code is None, the #943 guard wants
+# not timed_out; both-present fell through to timed_out=True and
+# auto-filed the session as #987 even though git log succeeded.
+# Unify: no isError means content, not a swallowed failure. Locks
+# the dual-literal `git log --format=%B` shape so a future split of
+# the guards cannot re-open the hole.
+write_session "bash-dual-literal-git-log" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-831 && git log --no-merges --format=%B origin/main...HEAD 2>&1 | head -200"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","toolName":"bash","isError":false,"content":[{"type":"text","text":"test(p14-listing-gate): record #831 as duplicate-of-#824 closure (fleet-ops#831)\n\nThe P14 listing-leak fix for tests/dirty-worktree-audit.test.sh shipped\nvia PRs #883 (host line in tests/rule-enforcement.test.sh, fleet-ops#787)\nand #901 (named pin in tests/p14-test-listing-gate.test.sh, fleet-ops#777),\nwith #824 provenance re-anchored in PR #924.\n\nfix(failed-command): exempt git ref-existence probe (live #822) (#931)\n\nWhen stderr is silenced the toolResult shows only the successful stdout of any\npreceding command and a bare 'Command exited with code 128' trailer.\n\nExempt that exit-128 shape.\n\nfix(failed-command): require a real failure signal for 'Command timed out' text (fleet-ops#821) (#929)\n\nThe session-close lint was treating the literal string 'Command timed out'\nin any toolResult text as a swallowed timeout, regardless of whether the\ntool actually failed.\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Confirmed the prior detector commits are in the range."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "bash git log with BOTH 'Command timed out' and 'Command exited with code 128' as commit body should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #987: bash git log with both timeout and exit-code literals as commit body is not a swallowed failure"
+rm -f "$sessions/bash-dual-literal-git-log.jsonl"
+
+# --- 6h5. live #987 positive control: the same dual-literal body with
+#         isError=true is still flagged. ---
+# Same content as 6h4, but the toolResult now carries isError=true
+# (Pi's genuine failure shape). The unified isError=false guard must
+# NOT weaken the genuine-failure path. A non-git command is used so
+# the git ref-probe exemption (live #822) cannot mask it.
+write_session "bash-dual-literal-real" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"test(p14-listing-gate): record #831 as duplicate-of-#824 closure (fleet-ops#831)\nWhen stderr is silenced the toolResult shows a bare 'Command exited with code 128' trailer.\nThe session-close lint was treating the literal string 'Command timed out' as a swallowed timeout.\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real isError=true dual-literal body must still be flagged (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "real isError=true dual-literal body must be flagged as swallowed"
+ok "live #987 positive: real isError=true dual-literal body is still flagged"
+rm -f "$sessions/bash-dual-literal-real.jsonl"
 
 # --- 6i. live #953: read tool ENOENT, no exit code, no later user-facing flag -
 # The session 2026-08-26T14-02-29-714Z ran `read` on a file that did not

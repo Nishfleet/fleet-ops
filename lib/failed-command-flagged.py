@@ -423,25 +423,22 @@ def result_failed(
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
     code = _exit_code(text)
-    if not is_error and not timed_out and code is None:
-        return False, text
-    # Live #821: "Command timed out" appears as a literal string in source
-    # code (e.g. lib/failed-command-flagged.py's TIMEOUT_RE regex definition)
-    # and in doc text (e.g. prompts/worker.md's standing-rule paragraph).
-    # A real Pi timeout always has isError=True (the harness sets it on
-    # timeout) or a non-zero exit code. Bare text without a failure signal
-    # is content, not a swallowed timeout — treat it as not a failure.
-    if timed_out and not is_error and code is None:
-        return False, text
-    # Live #943: "Command exited with code N" appears as a literal string in
-    # the content of a toolResult whose call succeeded (isError=false) — a
-    # `git log` / `git show` whose commit body quotes the phrase, a `read` of
-    # a source or test file that contains it, an issue/PR body that quotes it.
-    # The genuine-failure contract is isError=true: the Pi harness sets it on
-    # a non-zero exit or a timeout. A bare exit-code string in the content of
-    # a successful call is content, not a swallowed failure (same principle as
-    # the #821 timeout guard above) — treat it as not a failure.
-    if code is not None and not is_error and not timed_out:
+    # Genuine Pi failure always has isError=True: the harness sets it on a
+    # non-zero exit or a timeout. Bare TIMEOUT_RE / EXIT_RE matches in
+    # successful content are content, not swallowed failures.
+    # Live #821 / #848: timeout literal alone (read of source, grep of
+    # worker.md, git log of a detector commit).
+    # Live #943: exit-code literal alone (git log / git show of a
+    # detector commit).
+    # Live #987: BOTH literals in one successful
+    # `git log --no-merges --format=%B origin/main...HEAD` of detector
+    # commits (#929 quotes 'Command timed out', #931 quotes 'Command
+    # exited with code 128', subject is the #831 provenance note).
+    # The previous guards were mutually exclusive (timeout-only when
+    # code is None; exit-code-only when not timed_out), so a body that
+    # quoted both strings fell through to timed_out=True and was
+    # flagged. Unify: no isError means content.
+    if not is_error:
         return False, text
     # Downstream of a harness block (fleet-ops#677): the spawn-guard refused
     # the heredoc/redirect that would have created the script, so invoking it
