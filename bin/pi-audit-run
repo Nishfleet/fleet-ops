@@ -371,9 +371,17 @@ main() {
     set -e
 
     if [ "$pi_rc" -ne 0 ]; then
-        log "pi --provider $provider --model $model exited $pi_rc"
-        { printf '## stderr\n'; cat "$err"; } >> "$out" 2>/dev/null || true
-        exit 1
+        log "pi --provider $provider --model $model exited $pi_rc; writing SKIP to break escalation chain"
+        # stderr may be missing/empty if pi was killed before flushing (SIGTERM, 429,
+        # 503, credentials_bad). Don't fail loud on those — write a SKIP vote and
+        # exit 0. The escalation path treats exit 1 as a REAL fleet fault and writes
+        # to STOP-REASON; a transient provider wall must not cascade into a new
+        # auditor summon or a new failed pi-audit@ unit. The panel still sees the
+        # failure (SKIP vote + reason) so the gated issue stays blocked on a real
+        # outcome, not silently dropped.
+        { printf '## stderr (provider returned exit %d)\n' "$pi_rc"; [ -s "$err" ] && cat "$err"; } >> "$out" 2>/dev/null || true
+        write_vote "$repo" "$candidate" "$role" "SKIP" "provider returned exit $pi_rc: $provider/$model transient failure"
+        exit 0
     fi
 
     combined="$out"
