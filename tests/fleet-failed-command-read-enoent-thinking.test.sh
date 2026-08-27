@@ -28,14 +28,38 @@
 #
 # Live session: 2026-08-26T14-02-29-714Z_01a03e61-27d2-7c3f-9101-da19c90f6ba5.jsonl
 #
+# fleet-ops#1001 is a sibling read-ENOENT shape on a DIFFERENT session
+# slug (2026-08-27T05-15-24-019Z_01a041a4-...). The worker was building
+# the completion-canary from a stale, non-canonical checkout
+# (`/home/nish/workspaces/fleet-ops-sync/`) that does not carry
+# `bin/fleet-escalation-canary`, and tried to read it. The live wording
+# is identical to #953, but the recovery pattern is different: a
+# `thinking`-only `ls ~/.local/bin/*canary*` (which DOES list the live
+# symlink that resolves to the canonical
+# `/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/...`) and
+# later "Now I have a clear picture" prose. A future detector refactor
+# must not:
+#   - treat the canonical `~/.local/bin/` symlink as a probe
+#     (the live `ls` returned real output, not a no-match)
+#   - treat a successful `ls` of the right file at the wrong path
+#     as discharging the read-ENOENT of the wrong file
+#   - let "Now I have a clear picture" prose clear a pending swallowed
+#     failure (same class as the #953 / #958 sibling shape)
+#
 # Scenarios:
 #   1. live #953 shape: parallel sibling calls + ENOENT + thinking-only
 #      recovery -> finding.
 #   2. same shape plus later unrelated user-facing prose ("Now I have the
 #      full picture") that does NOT name the failure -> still a finding.
 #   3. same shape plus a later "the OVERNIGHT.md read failed" flag -> clean.
-#   4. worker.md cites fleet-ops#953 (prompt-side lock).
-#   5. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   4. live #1001 shape: stale-checkout read ENOENT + ls ~/.local/bin
+#      finding the right file at the right symlink + later "clear
+#      picture" prose that does NOT name the failure -> finding.
+#   5. worker.md cites fleet-ops#953 (prompt-side lock).
+#   6. worker.md cites fleet-ops#1001 (prompt-side lock for the
+#      stale-checkout read-ENOENT class).
+#   7. lib/failed-command-flagged.py docstring cites fleet-ops#1001.
+#   8. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -127,7 +151,41 @@ count=$(jq '.findings | length' <<<"$report")
 ok "read ENOENT plus later user-facing flag is clean"
 rm -f "$sessions/read-enoent-flagged.jsonl"
 
-# --- 4. worker.md cites fleet-ops#953 (prompt-side lock) -------------------
+# --- 4. live #1001: stale-checkout read ENOENT + canonical ls + prose -----
+# The 01a041a4 completion-canary build session tried to read
+# `/home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary` —
+# a stale, non-canonical checkout that does not carry the file. It got
+# the live `ENOENT: no such file or directory, access '<path>'` shape.
+# Its next recovery turn was a thinking-only `ls ~/.local/bin/*canary*`
+# that DID return the canonical symlink (a successful ls is not a
+# discharge for a separate read-ENOENT), and later
+# "Now I have a clear picture of what already exists" prose that does
+# NOT name the failure. This must still be a finding: a successful
+# read of the right file at the right symlink in the SAME turn that
+# saw a read-ENOENT at the wrong file does not discharge the
+# read-ENOENT, and "clear picture" prose is the same unrelated-prose
+# class as the #953 / #958 sibling shape.
+write_session "read-enoent-stale-checkout" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me read the existing escalation canary to understand what's already been built."},{"type":"toolCall","id":"call_canary_read","name":"read","arguments":{"path":"/home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_canary_read","toolName":"read","content":[{"type":"text","text":"ENOENT: no such file or directory, access '/home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary'"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The stale checkout doesn't have the file. Let me find where it actually lives."},{"type":"toolCall","id":"call_ls_local","name":"bash","arguments":{"command":"ls -la /home/nish/.local/bin/*canary* /home/nish/.local/bin/*escalation* /home/nish/.local/bin/*completion* 2>/dev/null"}},{"type":"toolCall","id":"call_ls_systemd","name":"bash","arguments":{"command":"ls -la /home/nish/.config/systemd/user/*canary* /home/nish/.config/systemd/user/*escalation* /home/nish/.config/systemd/user/*completion* 2>/dev/null"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls_local","toolName":"bash","isError":false,"content":[{"type":"text","text":"lrwxrwxrwx 1 nish nish 80 Aug 27 10:47 /home/nish/.local/bin/fleet-escalation-canary -> /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-escalation-canary"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ls_systemd","toolName":"bash","isError":true,"content":[{"type":"text","text":""}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now I have a clear picture of what already exists. Let me plan and execute."},{"type":"toolCall","id":"call_todo1","name":"todo","arguments":{"action":"add","text":"Pin canary in stale-checkout map","id":1}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1001 read ENOENT with canonical ls + 'clear picture' prose should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'ENOENT: no such file or directory, access' <<<"$snippet" \
+  || fail "finding snippet should mention live ENOENT wording (got $snippet)"
+grep -q 'fleet-escalation-canary' <<<"$snippet" \
+  || fail "finding snippet should mention fleet-escalation-canary (got $snippet)"
+ok "live #1001: stale-checkout read ENOENT + canonical ls + 'clear picture' prose is flagged"
+rm -f "$sessions/read-enoent-stale-checkout.jsonl"
+
+# --- 5. worker.md cites fleet-ops#953 (prompt-side lock) -------------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#953' "$worker" \
@@ -136,10 +194,31 @@ grep -q "ENOENT: no such file or directory, access" "$worker" \
   || fail "prompts/worker.md must name the live ENOENT wording so workers flag it"
 ok "worker.md cites fleet-ops#953 and the live ENOENT wording"
 
-# --- 5. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 6. worker.md cites fleet-ops#1001 (prompt-side lock) ------------------
+# The 01a041a4 session's read-ENOENT is a sibling shape on a different
+# session slug (a stale, non-canonical checkout). Dropping the #1001
+# citation from the prompt is a regression even if the #953 lock and
+# the live #1001 drill still pass.
+grep -q 'fleet-ops#1001' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1001 (prompt-side lock for the stale-checkout read-ENOENT class)"
+grep -q 'fleet-escalation-canary' "$worker" \
+  || fail "prompts/worker.md must name the live #1001 path so workers flag the stale-checkout shape"
+ok "worker.md cites fleet-ops#1001 and the live stale-checkout path"
+
+# --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1001 -------
+# The lib docstring is the standing-rule contract for the next detector
+# maintainer. The same three-place pattern as the prompt + CI host:
+# prompt, lib docstring, and the test that runs in CI.
+lib="$repo_root/lib/failed-command-flagged.py"
+[[ -f "$lib" ]] || fail "missing $lib"
+grep -q 'fleet-ops#958, #972, #967, #977, #1001' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #1001 next to the read-ENOENT citation chain"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#1001"
+
+# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-thinking.test.sh"' \
   "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-read-enoent-thinking: live #953 read ENOENT + thinking-only recovery drills"
+echo "OK: fleet-failed-command-read-enoent-thinking: live #953 read ENOENT + thinking-only recovery + live #1001 stale-checkout drills"
