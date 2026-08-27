@@ -56,6 +56,11 @@ jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' 
   || fail "sr-verify-harness must be status=enforced (fleet-ops#524)"
 ok "matrix row sr-verify-harness is enforced"
 
+jq -e '.rules[] | select(.id == "sr-pstack-review" and .status == "enforced") | .proof | test("prompts/worker.md")' \
+  "$matrix" >/dev/null \
+  || fail "sr-pstack-review must be enforced and proof must name prompts/worker.md (fleet-ops#1260)"
+ok "matrix row sr-pstack-review is enforced via worker.md"
+
 # fleet-ops#552: the two 2026-08-27 ledger rules must have enforced matrix
 # rows even when the live vault is absent (CI skips the live join).
 for src in \
@@ -73,11 +78,27 @@ status=$(jq -r --arg src "$src_1178" '.rules[] | select(.source == $src) | .stat
 [[ "$status" == "enforced" ]] || fail "matrix must have $src_1178 as enforced, got ${status:-missing}"
 ok "matrix row for worker lane order (fleet-ops#1178) is enforced"
 
+src_1245='decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish'
+status=$(jq -r --arg src "$src_1245" '.rules[] | select(.source == $src) | .status' "$matrix")
+[[ "$status" == "enforced" ]] || fail "matrix must have $src_1245 as enforced, got ${status:-missing}"
+ok "matrix row for GEO/AEO parked tactics (fleet-ops#1245) is enforced"
+
 # fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
 # vault join so a busy board of other uncovered sibling ledger lines
 # cannot skip this drill (the live join still asserts our covered_rows).
 bash "$here/fleet-volume-lane-order-canary.test.sh" || fail "volume-lane-order canary drill failed"
 ok "rule-enforcement: volume-lane-order canary drill"
+
+# fleet-ops#1245: GEO/AEO parked-tactics + brand-gate canary. Hosted
+# BEFORE the live vault join for the same reason as #1178.
+bash "$here/fleet-geo-aeo.test.sh" || fail "geo-aeo canary drill failed"
+ok "rule-enforcement: geo-aeo canary drill"
+
+# fleet-ops#1222: Weekly Fleet Review quality ratchet. Nested host so this
+# token does not need a workflow edit. Before the live vault join so a busy
+# board of other uncovered sibling ledger lines cannot skip this drill.
+bash "$here/quality-ratchet.test.sh" || fail "quality-ratchet drill failed"
+ok "rule-enforcement: quality-ratchet drill"
 
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
@@ -117,6 +138,11 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
     '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report worker lane order as enforced covered_rows (fleet-ops#1178): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
+    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report GEO/AEO parked tactics as enforced covered_rows (fleet-ops#1245): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | Quality ratchet (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report Quality ratchet as enforced covered_rows (fleet-ops#1222): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | continuous research" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report continuous research as enforced covered_rows (fleet-ops#541): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-24 | Tailscale" and .status == "enforced")' <<<"$live" >/dev/null \
@@ -136,6 +162,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
   ok "live join: worker lane order source is enforced (observe-to-close for #1178)"
+  ok "live join: GEO/AEO parked tactics source is enforced (observe-to-close for #1245)"
+  ok "live join: Quality ratchet source is enforced (observe-to-close for #1222)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
   ok "live join: Tailscale ACL lockdown source is enforced (observe-to-close for #544)"
   ok "live join: per-repo verification harness source is enforced (observe-to-close for #524)"
@@ -843,4 +871,4 @@ ok "rule-enforcement: paid-flash canary drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, and volume-lane-order drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, and quality-ratchet drills"

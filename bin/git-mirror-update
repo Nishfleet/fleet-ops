@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# git-mirror-update — maintain local bare mirrors for packet clones
+# (fleet-ops#1213).
+#
+# Packets that clone a repo use:
+#   git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git \
+#     https://github.com/Nishfleet/<repo>.git <dest>
+# --reference-if-able degrades to a plain clone if the mirror path is
+# absent. --dissociate is NOT used: these worktrees are throwaway.
+#
+# Mirrors are read-only fetch targets. Never push to them. A corrupt
+# mirror is quarantined so the path is absent and the clone flag
+# degrades for free.
+#
+# Invoked as ExecStartPost=- of fleet-metrics-export.service (existing
+# 5-min tick). Named reason for piggybacking rather than a new timer:
+# heartbeat forbids new schedules; a fetch fault must not fail Prometheus
+# export (leading '-' on ExecStartPost).
+#
+# Usage:
+#   git-mirror-update
+#   git-mirror-update --help
+#
+# Environment (tests):
+#   GIT_MIRROR_ROOT            default /home/nish/workspaces/.mirrors
+#   GIT_MIRROR_INTAKE          default <repo>/config/intake-repos.json
+#   GIT_MIRROR_ORG             default Nishfleet
+#   GIT_MIRROR_ORIGIN_BASE     if set, origin is $BASE/<name>.git (tests)
+#   GIT_MIRROR_CHECKOUT_ROOT   default from intake checkout_root
+#   GIT_MIRROR_LOCK            default $GIT_MIRROR_ROOT/.lock
+#   FLEET_OPS_CANONICAL_CHECKOUT  fleet-ops seed path
+set -euo pipefail
+
+usage() {
+    cat <<'EOF' >&2
+usage: git-mirror-update [--help]
+
+Maintain local bare mirrors at $GIT_MIRROR_ROOT/<repo>.git for every
+repo enrolled in config/intake-repos.json. Lightweight fetch only.
+
+Packet clone convention:
+  git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git \
+    https://github.com/Nishfleet/<repo>.git <dest>
+Never --dissociate on throwaway worktrees. Mirrors are read-only fetch
+targets; never push. A missing or corrupt mirror degrades to a plain
+clone (--reference-if-able skips a non-existing directory).
+EOF
+    exit 2
+}
+
+[[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && usage
+[[ $# -eq 0 ]] || usage
+
+log() {
+    printf '[%s] git-mirror-update: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+
+root="${GIT_MIRROR_ROOT:-/home/nish/workspaces/.mirrors}"
+intake="${GIT_MIRROR_INTAKE:-$repo_root/config/intake-repos.json}"
+org="${GIT_MIRROR_ORG:-Nishfleet}"
+lock="${GIT_MIRROR_LOCK:-$root/.lock}"
+
+origin_url() {
+    local name="$1"
+    if [[ -n "${GIT_MIRROR_ORIGIN_BASE:-}" ]]; then
+        printf '%s/%s.git' "${GIT_MIRROR_ORIGIN_BASE%/}" "$name"
+        return
+    fi
+    printf 'https://github.com/%s/%s.git' "$org" "$name"
+}
+
+checkout_for() {
+    local name="$1"
+    local cr
+    cr="${GIT_MIRROR_CHECKOUT_ROOT:-}"
+    if [[ -z "$cr" && -f "$intake" ]]; then
+        cr="$(jq -r '.checkout_root // empty' "$intake" 2>/dev/null || true)"
+    fi
+    if [[ "$name" == "fleet-ops" ]]; then
+        local canon="${FLEET_OPS_CANONICAL_CHECKOUT:-${HOME:-/home/nish}/workspaces/tooling/fleet-ops-deploy-clone}"
+        if git -C "$canon" rev-parse --git-dir >/dev/null 2>&1; then
+            printf '%s' "$canon"
+            return
+        fi
+    fi
+    printf '%s/%s' "${cr:-/home/nish/workspaces/products}" "$name"
+}
+
+is_usable_mirror() {
+    local d="$1"
+    local bare shallow
+    [[ -d "$d" ]] || return 1
+    bare="$(git --git-dir="$d" rev-parse --is-bare-repository 2>/dev/null || true)"
+    [[ "$bare" == "true" ]] || return 1
+    git --git-dir="$d" cat-file -e "HEAD^{commit}" >/dev/null 2>&1 || return 1
+    # git clone --reference-if-able skips a shallow repo ("is shallow").
+    shallow="$(git --git-dir="$d" rev-parse --is-shallow-repository 2>/dev/null || echo false)"
+    [[ "$shallow" != "true" ]]
+}
+
+quarantine() {
+    local mirror="$1"
+    local name="$2"
+    local dest
+    dest="$root/.corrupt-${name}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    log "quarantining corrupt mirror $mirror -> $dest"
+    mv "$mirror" "$dest"
+}
+
+install_readonly_guards() {
+    local mirror="$1"
+    mkdir -p "$mirror/hooks"
+    cat >"$mirror/hooks/pre-receive" <<'HOOK'
+#!/bin/sh
+echo "git-mirror-update: this mirror is a read-only fetch target (fleet-ops#1213); never push" >&2
+exit 1
+HOOK
+    chmod +x "$mirror/hooks/pre-receive"
+    git --git-dir="$mirror" config --local receive.denyDeletes true
+    git --git-dir="$mirror" config --local receive.denyNonFastForwards true
+}
+
+create_mirror() {
+    local name="$1"
+    local mirror="$2"
+    local url checkout
+    url="$(origin_url "$name")"
+    checkout="$(checkout_for "$name")"
+    mkdir -p "$root"
+    if git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1; then
+        log "seeding $name from $checkout"
+        git clone --bare --quiet "$checkout" "$mirror"
+        git --git-dir="$mirror" remote remove origin >/dev/null 2>&1 || true
+        git --git-dir="$mirror" remote add origin "$url"
+        git --git-dir="$mirror" config remote.origin.fetch '+refs/heads/*:refs/heads/*'
+        git --git-dir="$mirror" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
+    else
+        log "cloning $name from origin"
+        git clone --bare --quiet "$url" "$mirror"
+        git --git-dir="$mirror" config remote.origin.fetch '+refs/heads/*:refs/heads/*'
+        git --git-dir="$mirror" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
+    fi
+}
+
+fetch_mirror() {
+    local mirror="$1"
+    git --git-dir="$mirror" fetch --prune --quiet origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+    if [[ "$(git --git-dir="$mirror" rev-parse --is-shallow-repository 2>/dev/null || echo false)" == "true" ]]; then
+        git --git-dir="$mirror" fetch --unshallow --prune --quiet origin
+    fi
+}
+
+update_one() {
+    local name="$1"
+    local mirror="$root/${name}.git"
+    if [[ -e "$mirror" ]] && ! is_usable_mirror "$mirror"; then
+        quarantine "$mirror" "$name"
+    fi
+    if [[ ! -e "$mirror" ]]; then
+        if ! create_mirror "$name" "$mirror"; then
+            log "create failed for $name (clone will degrade via --reference-if-able)"
+            return 0
+        fi
+    fi
+    if ! fetch_mirror "$mirror"; then
+        log "fetch failed for $name (will retry next tick)"
+    fi
+    if is_usable_mirror "$mirror"; then
+        install_readonly_guards "$mirror"
+    elif [[ -e "$mirror" ]]; then
+        log "mirror $name is not a usable reference (shallow or corrupt)"
+        quarantine "$mirror" "$name"
+    fi
+}
+
+[[ -f "$intake" ]] || { log "intake file missing: $intake"; exit 1; }
+
+mkdir -p "$root"
+exec 9>"$lock"
+if ! flock -n 9; then
+    log "another run holds $lock (no-op)"
+    exit 0
+fi
+
+mapfile -t names < <(jq -r '.repos[].name' "$intake")
+if [[ ${#names[@]} -eq 0 ]]; then
+    log "no enrolled repos"
+    exit 0
+fi
+
+for name in "${names[@]}"; do
+    [[ -n "$name" ]] || continue
+    update_one "$name"
+done
+
+log "updated ${#names[@]} mirror(s) under $root"
+exit 0

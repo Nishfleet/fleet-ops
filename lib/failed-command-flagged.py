@@ -36,9 +36,21 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES (fleet-ops#651, #664, #953, fleet-ops#958, #972, #967, #977, #1001, #1059) is a
+`read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, #953,
+fleet-ops#958, #972, #967, #977, #1001, #1059, #1170, #1243) is a
 real swallowed failure: it is not a probe like ls no-match or read
-offset beyond end. #972 is the same session shape as #958 (the
+offset beyond end. The EISDIR class (#1170 / #1243) is the `read` tool pointed at
+a directory path instead of a file — Pi returns `EISDIR: illegal operation
+on a directory, read` with isError=True and no exit-code line, and the
+assistant walked it past with thinking-only recovery turns; it is a
+real failure, never a negative result like the #651 offset-beyond-end
+exemption. The dedicated regression test
+tests/fleet-failed-command-read-eisdir.test.sh pins the live
+fleet-ops#1170 shape (01a04334 reading the sessions dir) and the
+fleet-ops#1243 sibling on a DIFFERENT session slug (01a043ee reading
+the 0509 e2e/fixtures dir, walked past with "Now let me also look at
+the printStackTrace threshold setting you mentioned:") so a future
+refactor that adds a "directory read is benign" exemption is caught. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
 the same GitHub-search-index-delay that produced #951 / #965 / #966, so
 the citation chain must carry it. #967 is the same session shape as
@@ -159,6 +171,38 @@ toolCalls did not name the failure. It is not a GraphQL transient error
 (fleet-ops#678) or a no-match probe; it is a real swallowed failure and
 must be flagged. The dedicated regression test locks it under
 tests/fleet-failed-command-gh-issue-view-body.test.sh.
+A compound `echo "=== MERGED RECENT ==="` +
+`gh pr list -R ... --state merged --sort -mergedAt ... 2>/dev/null`
+chain is a real swallowed failure (fleet-ops#1107, session
+2026-08-27T11-16-51-853Z_01a042ef-e00d-7ace-b43a-7e40a2623f48):
+`--sort -mergedAt` is not a valid `gh pr list` sort value, stderr is
+silenced, and the toolResult is only the echo marker plus
+`Command exited with code 1` (isError=true). The assistant walked
+past it with thinking-only recovery and later
+"Now I have the full picture. Let me fix and re-dispatch." prose,
+which does not name the failure. Distinct from #1055 (`gh issue view
+--body` with visible `unknown flag: --body`), #698 (`gh api` HTTP 404
+with visible `Not Found`), #1219 (`Unknown JSON field: "label"`), and
+grep POSIX no-match (BENIGN_STAGE_RE; a `; grep` sibling that prints
+the same `=== MERGED RECENT ===` marker must stay a probe). `gh pr list`
+is not a no-match probe, and silencing stderr does not make an invalid
+sort benign. The dedicated regression test locks it under
+tests/fleet-failed-command-gh-pr-list-invalid-sort.test.sh.
+A `gh issue view <N> -R ... --json <fields>` command whose filter names
+an unknown field (e.g. `label` instead of `labels`) is not valid: `gh`
+rejects it with `Unknown JSON field: "label"` and the list of available
+fields, then exits 1 (fleet-ops#1219, session
+2026-08-27T15-14-27-082Z_01a043c9-648a-75d9-add1-a7f78fe03f68). The
+assistant issued the invalid `--json` filter alongside a valid
+`gh issue view --json body` sibling in the same turn; the next turn was
+a thinking block plus follow-up toolCalls with no user-facing text
+naming the failure. Distinct from #1055 (`unknown flag: --body`, an
+invalid flag) and #1003 (`KeyError: 'comments'` from python parsing
+`--json` output that omitted a field the probe then read — gh itself
+succeeded). It is not a GraphQL transient error (fleet-ops#678) or a
+no-match probe; it is a real swallowed failure and must be flagged. The
+dedicated regression test locks it under
+tests/fleet-failed-command-gh-issue-view-unknown-field.test.sh.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
@@ -169,7 +213,31 @@ two failed probes are walked past with no user-facing flag before the
 worker notices the hyphens. The class is the same as #957 (python3
 traceback walked past); the dedicated regression test pins it so a
 future refactor that drops the #937 citation from the docstring, the
-prompt, or the test host list is caught. A `git checkout <branch>` (or a
+prompt, or the test host list is caught.
+A `python3 - <<'PY'` stdin script that calls
+`serialization.load_pem_private_key` on the raw quoted
+`NISHFLEET_WORKER_PRIVATE_KEY` value from the worker env file
+(fleet-ops#1174, session
+2026-08-27T13-43-46-261Z_01a04376-5f55-7726-9184-4e31bb7e54f2)
+crashes with `File "<stdin>", line 28, in <module>` then
+`load_pem_private_key` then `ValueError: Could not
+deserialize key data` and `Command exited with code 1`.
+The env value is an env-via-heredoc, not the PEM itself.
+Cause-explaining prose ("The PEM in the env may be
+malformed", "stored inside a `cat <<'NISHFLEET_PEM_EOF'`
+heredoc") names the CAUSE, not the FAILURE; a later
+successful extract-and-mint is not a user-facing flag.
+The class is the same as #957 (python traceback walked
+past); the wording (`load_pem_private_key`,
+`Could not deserialize key data`, File `"<stdin>"`) is
+the live #1174 fingerprint. A future refactor that treats
+cryptography / PEM / JWT mint as a benign probe, treats
+File `"<stdin>"` as distinct from File `"<string>"` and
+therefore suppressible, or lets cause-prose discharge
+FLAG_RE would silently suppress this real signal. The
+dedicated regression test
+tests/fleet-failed-command-pem-deserialize.test.sh pins it.
+A `git checkout <branch>` (or a
 compound `&&` chain whose tail is `git checkout <branch>`) inside a
 worktree whose target branch is checked out in another worktree is a
 real swallowed failure (fleet-ops#954, #962, #968): git refuses with
@@ -237,6 +305,68 @@ the dedicated regression test
 tests/fleet-failed-command-compound-ls-permission-denied.test.sh
 pins that it does not. The auto-filed issue closes via
 observe-to-close when the session mtime ages out of the 24h window.
+A same-turn sibling of a `git clone` into `/tmp/<fresh-clone>` that
+races with `cd /tmp/<fresh-clone> 2>/dev/null && ls ...` and returns
+`(no output)  Command exited with code 1` is a real swallowed failure
+(fleet-ops#1217): the clone is still in flight, `cd` fails, stderr is
+silenced so the snippet is empty, and the next assistant turn is a
+silent `cd && ls` recovery with no user-facing text naming the failure.
+The detector already flags this class via the generic
+`isError or code != 0` path. `cd` is not in BENIGN_STAGE_RE.
+`LS_BENIGN_RE` matches the command text because it contains `ls`, but
+that short-circuit only applies on exit 2; the live shape is exit 1.
+A future refactor that treats `cd ... 2>/dev/null` as a probe, treats
+`(no output)` + exit 1 as benign whenever stderr is silenced, broadens
+`LS_BENIGN_RE` to code==1, or lets a same-turn sibling success mask a
+sibling failure would silently suppress this real signal. The class is
+distinct from #793 (`bash /tmp/<fresh-script>` exit 1 with the same
+empty snippet, different command), #765 (`cd ... 2>/dev/null && git
+status` exit 128 with `fatal: not a git repository`), and grep/rg
+POSIX no-match (BENIGN_STAGE_RE; the live session also carried a later
+`grep -nF` with the same empty snippet, which must stay a probe). The
+dedicated regression test
+tests/fleet-failed-command-clone-race-cd.test.sh pins that. The
+auto-filed issue closes via observe-to-close when the session mtime
+ages out of the 24h window. Live session
+2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
+`cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
+head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A `git clone git@github.com:...` that returns
+`Permission denied (publickey)` +
+`fatal: Could not read from remote repository` +
+`Command exited with code 128` (isError=true) is a real swallowed
+failure (fleet-ops#1185). This host has no GitHub deploy SSH key.
+The live worker walked past it with a thinking-only
+"The SSH key doesn't have access. Let me try HTTPS" plus a silent
+HTTPS retry (harness-blocked) and then a successful `gh repo clone`.
+Thinking is not a user-facing flag. A later successful clone does
+not discharge the SSH failure. `git clone` is NOT in GIT_BENIGN_RE
+(log|rev-parse|show|diff|cat-file|shortlog only). REAL_ERR_RE
+matches `Permission denied`, so adding `git clone` to GIT_BENIGN_RE
+alone would not hide this — a future refactor would also have to
+drop `Permission denied` from REAL_ERR_RE, or start collecting
+`thinking` in `_text_chunks`. The class is distinct from #1217
+(HTTPS clone racing a silenced cd, empty snippet, exit 1), #765
+(`fatal: not a git repository`), #822 (git-ref probe), and #1061
+(compound-chain ls Permission denied). The dedicated regression
+test tests/fleet-failed-command-clone-ssh-publickey.test.sh pins
+that. The auto-filed issue closes via observe-to-close when the
+session mtime ages out of the 24h window. Live session
+2026-08-27T14-20-10-780Z_01a04397-b49c-7f5e-8b60-46b28e3bed5d.jsonl:
+`git clone git@github.com:Nishfleet/fleet-ops.git .`.
+A `gh api /user` (or `gh api user`) call under a GitHub App
+installation token that returns `Resource not accessible by
+integration` + `gh: Resource not accessible by integration (HTTP 403)`
++ `Command exited with code 1` (isError=true) is a real swallowed
+failure (fleet-ops#1253). App installation tokens cannot call the
+Users API. The live session probed identity with a compound
+`gh api /user` + `whoami` + `gh api /user --jq '.login'` chain and
+walked past both 403s. A successful `whoami` in the same compound
+command is not a user-facing flag. Naming `403` or `not accessible by
+integration` in later assistant text is. The dedicated regression test
+tests/fleet-failed-command-gh-api-403-integration.test.sh pins that.
+Live session
+2026-08-27T16-15-45-417Z_01a04401-8509-7e94-8611-0fc81a5d1b85.jsonl.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
@@ -368,9 +498,12 @@ GIT_REAL_ERR_RE = re.compile(
     re.I,
 )
 # Unquoted assistant report. Tight on the standing-rule verbs.
+# \b403\b and "not accessible by integration" are the live #1253
+# `gh api /user` App-token 403 class (parallel to \b404\b for #698).
 FLAG_RE = re.compile(
     r"(failed|fails|failing|failure|\berror\b|non-zero|exited with|"
-    r"timed out|timeout|blocker|not found|\b404\b|\b50[0-9]\b|"
+    r"timed out|timeout|blocker|not found|\b404\b|\b403\b|\b50[0-9]\b|"
+    r"not accessible by integration|"
     r"unexpected failing command|it is now the blocker)",
     re.I,
 )
@@ -383,6 +516,9 @@ HARNESS_BLOCK_RE = re.compile(
 )
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
+# Do NOT add a similar exemption for `read` "EISDIR: illegal operation
+# on a directory, read" (fleet-ops#1170 / #1243: the path is a
+# directory, not a missing file and not an overshot offset).
 # Do NOT add a similar exemption for `edit` "Could not find the exact
 # text" (fleet-ops#956, #965, #970, #975, #980), "Found N occurrences"
 # (fleet-ops#1053, same edit-unmatch class: oldText matched multiple
@@ -562,6 +698,11 @@ def result_failed(
         return False, text
     if msg.get("toolName") == "read" and READ_OFFSET_RE.search(text):
         return False, text
+    # No sibling exemption belongs here for `read` EISDIR
+    # (fleet-ops#1170 / #1243, "EISDIR: illegal operation on a
+    # directory, read"). That is a real swallowed failure: the path
+    # was a directory. tests/fleet-failed-command-read-eisdir.test.sh
+    # goes red if an exemption is added here.
     # No sibling exemption belongs here for the `edit` tool. All three
     # edit-unmatch shapes are real swallowed failures, not negative
     # results: "Could not find the exact text" (0 matches, fleet-ops#956

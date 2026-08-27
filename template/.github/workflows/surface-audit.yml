@@ -1,0 +1,38 @@
+name: Surface audit
+
+# Thin caller for the central reusable surface-audit workflow (fleet-ops#1198).
+# Adds two visual-quality axes — theme (light/dark) and auth state (plan tiers,
+# expired) — to whatever the wave-1 visual-check.yml already catches.
+#
+# Self-skip: if the repo root has no surface-audit.json, the reusable logs a
+# notice and exits clean. No Node install wasted. Required checks must never
+# silently disappear.
+#
+# Do not copy steps out of the reusable. Pass inputs instead.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# PR and ordinary push only. Never cancel deploy / release / migration.
+concurrency:
+  group: surface-audit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  surface-audit:
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-surface-audit.yml@v1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      config-path: surface-audit.json
+      audit-script: scripts/surface-audit.mjs
+      node-version: "24"
+      install-command: npm ci

@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "Copy this file to <repo-root>/surface-audit.json and trim to the matrix",
+    "this product actually exercises. The reusable workflow self-skips when",
+    "this file is absent — that is the safe default. See",
+    "docs/pending-surface-audit/README.md (Nishfleet/fleet-ops#1198) for the",
+    "design and Nishfleet/0509#1302 for the reference implementation.",
+    "",
+    "Keep the file small. The matrix is the audit's input, not its rule set."
+  ],
+  "matrix": {
+    "themes": ["light"],
+    "authStates": ["logged-out"],
+    "viewports": [
+      { "name": "desktop", "width": 1440, "height": 900 }
+    ],
+    "routes": ["/"]
+  }
+}

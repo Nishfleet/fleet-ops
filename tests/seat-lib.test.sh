@@ -311,12 +311,14 @@ grep -q "UNUSABLE (rate_limited until" "$PI_PACKET_STATE/watch.log" \
   || fail "rate-ledger: minimax fresh-RL must stay excluded"
 
 # --- invariant 6/7: dead / credentials_bad / stale-observed ----------------
-# (7) stale observed_at -> usable: cursor marker from yesterday
+# (7) stale observed_at -> usable: ollama marker from yesterday
+# (cursor is keystone-only — fleet-ops#1167 — so a volume pick never
+# consults it; prove the stale fail-open on a volume/free seat instead.)
 ledger="$scratch/ledger-stale"
 mkdir -p "$ledger"
 jq -n --arg obs "2026-08-24T00:00:00Z" \
   '{health_class:"healthy",seat_dead:false,observed_at:$obs}' \
-  > "$ledger/cursor__composer-2.5.json"
+  > "$ledger/ollama__deepseek-v4-flash_0731.json"
 export PI_PACKET_STATE="$scratch/state-stale"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 set +e
@@ -2020,12 +2022,28 @@ bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh" || fail "fleet-
 # names the CAUSE (the packet was archived), not the FAILURE (the read
 # returned ENOENT). Cause prose is not a flag. Same CI constraint.
 bash "$here/fleet-failed-command-read-enoent-archived-packet.test.sh" || fail "fleet-failed-command-read-enoent-archived-packet tests failed"
+# fleet-ops#1170 / #1243: a `read` tool result with "EISDIR: illegal
+# operation on a directory, read" (isError=true, no exit code) is a
+# real swallowed failure — the read tool was pointed at a directory
+# path, and the assistant walked it past with thinking-only recovery
+# or unrelated prose. #1243 is the same class on a DIFFERENT session
+# slug (01a043ee reading 0509 e2e/fixtures, walked past with
+# printStackTrace prose). Distinct from the #651 offset-beyond-end
+# negative result and the #953/#1001 read-ENOENT class: EISDIR has
+# its own live wording and must not be suppressed by a "directory
+# read is benign" exemption a future refactor might add. Same CI
+# constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-read-eisdir.test.sh" || fail "fleet-failed-command-read-eisdir tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
 # fleet-ops#698: `gh api` 4xx/5xx walked past is a real swallowed failure.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-command-gh-api-404 tests failed"
+# fleet-ops#1253: `gh api /user` App-token 403
+# (`Resource not accessible by integration`) walked past is a real
+# swallowed failure. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-gh-api-403-integration.test.sh" || fail "fleet-failed-command-gh-api-403-integration tests failed"
 # fleet-ops#727: a verification canary script (e.g. `npm run canary:*`,
 # `node scripts/*-verification.mjs`) that legitimately exits 1 on a
 # failed gate walked past is the same class. Same CI constraint
@@ -2046,6 +2064,24 @@ bash "$here/fleet-failed-command-fresh-debug-script.test.sh" || fail "fleet-fail
 # repository` and exit 128. The next assistant turn is a recovery
 # toolCall with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-command-cd-non-git-repo tests failed"
+# fleet-ops#1217: a same-turn sibling of a `git clone` into
+# `/tmp/<fresh-clone>` that races with
+# `cd /tmp/<fresh-clone> 2>/dev/null && ls ...` and returns
+# `(no output)  Command exited with code 1`. The next assistant turn
+# is a silent `cd && ls` recovery with no user-facing flag. Distinct
+# from #793 (same empty snippet, written debug script) and #765
+# (cd + git status, exit 128, fatal: not a git repository). Same CI
+# constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-clone-race-cd.test.sh" || fail "fleet-failed-command-clone-race-cd tests failed"
+# fleet-ops#1185: `git clone git@github.com:...` returns
+# `Permission denied (publickey)` + `fatal: Could not read from
+# remote repository` + exit 128. The next turn is thinking-only
+# "The SSH key doesn't have access. Let me try HTTPS" plus a silent
+# HTTPS / `gh repo clone` retry with no user-facing flag. Distinct
+# from #1217 (HTTPS clone racing a silenced cd, empty snippet, exit
+# 1) and #822 (git-ref probe, GIT_BENIGN_RE). Same CI constraint
+# (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-clone-ssh-publickey.test.sh" || fail "fleet-failed-command-clone-ssh-publickey tests failed"
 # fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main`
 # (or `git push --force-with-lease`) on the very branch the worktree
 # has checked out is refused with `fatal: cannot force update the
@@ -2093,6 +2129,22 @@ bash "$here/fleet-failed-command-git-cherry-pick-empty.test.sh" || fail "fleet-f
 # is an invalid `gh` flag and is a real swallowed failure. Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-body.test.sh" || fail "fleet-failed-command-gh-issue-view-body tests failed"
+# fleet-ops#1107: a compound `echo "=== MERGED RECENT ==="` +
+# `gh pr list --sort -mergedAt ... 2>/dev/null` chain exits 1 with only
+# the echo marker visible (stderr silenced). Thinking-only recovery plus
+# later "Now I have the full picture" prose is not a flag. Distinct from
+# #1055 (visible `unknown flag: --body`) and grep POSIX no-match with
+# the same marker. Same CI constraint (worker token cannot add a P14
+# line).
+bash "$here/fleet-failed-command-gh-pr-list-invalid-sort.test.sh" || fail "fleet-failed-command-gh-pr-list-invalid-sort tests failed"
+# fleet-ops#1219: `gh issue view <N> -R ... --json body,title,comments,label`
+# (singular `label` instead of `labels`) is not a valid `--json` filter —
+# `gh` exits 1 with `Unknown JSON field: "label"` and the available-fields
+# list. The next assistant turn is thinking-only plus follow-up toolCalls,
+# so the failure is never named. Distinct from #1055 (`unknown flag:
+# --body`) and #1003 (python `KeyError` after a valid `--json` filter).
+# Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-gh-issue-view-unknown-field.test.sh" || fail "fleet-failed-command-gh-issue-view-unknown-field tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
@@ -2135,6 +2187,16 @@ bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed
 # constraint (worker token cannot add a P14 line in
 # `.github/workflows/ci.yml`).
 bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh" || fail "fleet-failed-command-python-module-not-found-hyphen tests failed"
+# fleet-ops#1174: a `python3 - <<'PY'` stdin script that calls
+# cryptography `load_pem_private_key` on the raw quoted
+# `NISHFLEET_WORKER_PRIVATE_KEY` env value (an env-via-heredoc, not
+# the PEM) crashes with File "<stdin>" + load_pem_private_key +
+# `ValueError: Could not deserialize key data` and
+# `Command exited with code 1`. Cause-prose ("malformed",
+# `NISHFLEET_PEM_EOF` heredoc) plus a successful re-extract is not
+# a user-facing flag. Same family as #957 (python traceback walked
+# past); same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-pem-deserialize.test.sh" || fail "fleet-failed-command-pem-deserialize tests failed"
 # fleet-ops#966: leftover-duplicate observe-to-close drain for the
 # 01a03e38 python-traceback pile. The drain mechanism is the same as
 # #965 (edit-unmatch pile); this test pins the citation chain and the
@@ -2184,6 +2246,14 @@ bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable te
 # the whole body equals that string). Same CI constraint.
 bash "$here/gate-integrity-reusable-828.test.sh" || fail "gate-integrity reusable 828 tests failed"
 
+# fleet-ops#1198: reusable surface-audit (visual-quality matrix extension).
+# Same CI constraint as the gate-integrity reusable: workers cannot add
+# a P14 line in .github/workflows/ci.yml, so this file is the listed CI
+# host for the new shape-lock drill. The reusable is parked in
+# docs/pending-surface-audit/ until a token with Workflows scope lands
+# it at .github/workflows/reusable-surface-audit.yml.
+bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit tests failed"
+
 # fleet-ops#703: lock the orcarouter sr-never-vibes citation. Workers
 # cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host.
@@ -2213,9 +2283,17 @@ bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 # Leftovers on origin/main that would fail this PR's listing gate.
 bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
 bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
+# fleet-ops#1279 leftover: alert-repair-claim-mutex.test.sh landed on
+# main without a host. Hosting it here unblocks this PR's listing gate.
+# #1279 remains the ci.yml-line follow-up (needs workflow scope).
+bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex tests failed"
 
 # fleet-ops#1133: reliability-first routing for keystone packets.
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file
 # is the listed CI host.
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
+
+# fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
+# selection ledger. Hosted here (no workflow edit).
+bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
 

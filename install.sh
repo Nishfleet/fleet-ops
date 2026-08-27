@@ -150,17 +150,45 @@ live_target_file() {
     fi
 }
 
+# Returns 0 if $1 resolves under FLEET_OPS_WORKSPACES_ROOT but not under
+# the canonical deploy checkout. That class is a hijacked install source
+# (issue worktree, worktree-parent, leftover hotfix) — not a hot-patch.
+# The mtime guard must not block retargeting these, or a leftover worktree
+# symlink (e.g. fleet-failed-command-flagged pointing at issue-1136) stays
+# live forever (fleet-ops#1189).
+live_target_is_noncanonical() {
+  local live=$1
+  local ws_root canon live_r want root
+  ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+  canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+  live_r=$(readlink -f "$live" 2>/dev/null || printf '%s\n' "$live")
+  want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+  root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+  case "$live_r" in
+    "$want"|"$want"/*) return 1 ;;
+    "$root"|"$root"/*) return 0 ;;
+  esac
+  return 1
+}
+
 # Returns 0 if dest exists and its live target is a different file whose
 # mtime is newer than the repo copy AND whose content differs from the repo
 # copy. A newer, byte-identical file is not a hot-patch; it is only newer
 # because it has already been installed (#463). Re-sync its mtime so the
 # guard does not re-check, then allow the normal install to proceed.
+# A dest whose live target is in a non-canonical workspaces tree is a
+# hijacked symlink (issue worktree, worktree-parent, leftover hotfix), not
+# a hot-patch: retarget it to the canonical repo instead of refusing
+# (fleet-ops#1189).
 live_newer_than_repo() {
     local dest=$1 repo=$2
     local live live_m repo_m
     live=$(live_target_file "$dest")
     [ -n "$live" ] && [ -e "$live" ] || return 1
     [ "$live" = "$repo" ] && return 1
+    if live_target_is_noncanonical "$live"; then
+        return 1
+    fi
     live_m=$(stat -c %Y "$live" 2>/dev/null || echo 0)
     repo_m=$(stat -c %Y "$repo" 2>/dev/null || echo 0)
     [ "$live_m" -gt "$repo_m" ] || return 1

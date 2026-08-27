@@ -1,0 +1,30 @@
+{
+  "_comment": "fleet-ops#1222: Weekly Fleet Review quality ratchet (ledger 2026-08-27 | Quality ratchet). Cuts only tighten (down), one notch per week, evidence-based. Loosening requires a Nish ledger waiver. Each knob.cut must equal the live value in quality-routing.json.",
+  "stale_days": 8,
+  "knobs": {
+    "revert_rate_cut": {
+      "file": "config/quality-routing.json",
+      "key": "revert_rate_cut",
+      "direction": "down",
+      "notch": 0.005,
+      "stop_at": 0.02,
+      "cut": 0.04
+    },
+    "defect_rate_cut": {
+      "file": "config/quality-routing.json",
+      "key": "defect_rate_cut",
+      "direction": "down",
+      "notch": 0.02,
+      "stop_at": 0.29,
+      "cut": 0.40
+    },
+    "overturn_rate_cut": {
+      "file": "config/quality-routing.json",
+      "key": "overturn_rate_cut",
+      "direction": "down",
+      "notch": 0.02,
+      "stop_at": 0.0,
+      "cut": 0.25
+    }
+  }
+}

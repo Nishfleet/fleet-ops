@@ -1,0 +1,90 @@
+{
+  "description": "Live public Nishfleet product surfaces that must expose a privacy page, a terms page, and a reachable contact path. This is the required contract, not a live HTTP snapshot. Dated live evidence lives in reports/legal-basics-sweep-2026-08-27.md (fleet-ops#1233).",
+  "surfaces": [
+    {
+      "id": "0509",
+      "repo": "Nishfleet/0509",
+      "origin": "https://0509.io",
+      "privacy_path": "/privacy",
+      "terms_path": "/terms",
+      "contact": {
+        "kind": "mailto",
+        "value": "support@0509.io",
+        "also": "/help"
+      },
+      "stores_user_data": true
+    },
+    {
+      "id": "aiconverter",
+      "repo": "Nishfleet/aiconverter-app",
+      "origin": "https://aiconverter.app",
+      "privacy_path": "/privacy/",
+      "terms_path": "/terms/",
+      "contact": {
+        "kind": "page",
+        "value": "/support/"
+      },
+      "stores_user_data": true
+    },
+    {
+      "id": "inish",
+      "repo": "Nishfleet/inish-site",
+      "origin": "https://inish.in",
+      "privacy_path": "/privacy.html",
+      "terms_path": "/terms.html",
+      "contact": {
+        "kind": "page",
+        "value": "/contact.html"
+      },
+      "stores_user_data": false
+    },
+    {
+      "id": "seofixkit",
+      "repo": "nish3451/seo-fix-kit",
+      "origin": "https://seofixkit.com",
+      "privacy_path": "/privacy",
+      "terms_path": "/terms",
+      "contact": {
+        "kind": "mailto",
+        "value": "support@seofixkit.com"
+      },
+      "stores_user_data": true
+    },
+    {
+      "id": "siterep",
+      "repo": "Nishfleet/siterep-public",
+      "origin": "https://siterep.net",
+      "privacy_path": "/privacy",
+      "terms_path": "/terms",
+      "contact": {
+        "kind": "mailto",
+        "value": "hello@siterep.net"
+      },
+      "stores_user_data": true
+    },
+    {
+      "id": "tinystudio-in",
+      "repo": "Nishfleet/tinystudio-in",
+      "origin": "https://tinystudio.in",
+      "privacy_path": "/privacy/",
+      "terms_path": "/terms/",
+      "contact": {
+        "kind": "page",
+        "value": "/contact/"
+      },
+      "stores_user_data": false
+    },
+    {
+      "id": "tinystudio-io",
+      "repo": "Nishfleet/TinyStudio.io-public",
+      "origin": "https://tinystudio.io",
+      "privacy_path": "/privacy",
+      "terms_path": "/terms",
+      "contact": {
+        "kind": "page",
+        "value": "/contact"
+      },
+      "stores_user_data": true
+    }
+  ]
+}

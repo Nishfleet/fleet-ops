@@ -299,6 +299,26 @@ groups:
           summary: "console tile-verify organ absent — the self-audit pass is missing or dead"
           description: "Repair worker: fleet-console-pi/verify.py must write fleet_console_tile_verify_timestamp_seconds (and fleet_console_tile_mismatch). Check fleet-console-pi.timer is running and journalctl --user -u fleet-console-pi.service. No new timer was added; verify piggybacks the existing push cycle (fleet-ops#1157)."
 
+      # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
+      # out and scheduled refreshes did not recover. Honesty rendering
+      # (dash + stale marker) already works; this is the missing
+      # escalation. 45m = 1.5x the 30 min cache cadence (PR_CACHE_TTL)
+      # so a single missed tick never fires. severity=warning rides the
+      # existing repair rail (not in SKIP_SET).
+      # The exporter emits fleet_gh_cache_fresh=1 for a fresh family and
+      # OMITS the series when stale (never 0). min==0 is the named
+      # condition; absent() is the live omit-on-stale path that actually
+      # went dark.
+      - alert: FleetGhCacheStale
+        expr: min(fleet_gh_cache_fresh) == 0 or absent(fleet_gh_cache_fresh)
+        for: 45m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "gh-derived Prometheus families stale for 45+ minutes"
+          description: "Repair worker: run the exporter (`systemctl --user start fleet-metrics-export.service`), check gh auth/rate limit (`gh auth status`; `gh api rate_limit`), and fix the refresh path in fleet-metrics-export.py (`_cached_json` / PR_CACHE_TTL=30m). 45m is 1.5x the cache cadence so routine expiry never fires."
+
   - name: fleet_scout_supply
     rules:
       # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ

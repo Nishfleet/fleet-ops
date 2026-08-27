@@ -2,6 +2,11 @@
 # tests/nish-boundary-notify-classes.test.sh
 #
 # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
+# fleet-ops (auditor 2026-08-28): lock the no-seat abort class — a boundary
+# entry whose body names no provider seats must reach the send step, not die
+# under set -euo pipefail on the empty grep.
+#
+# fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
 #
 # nish-boundary-notify delivers the Nish-RESERVED escalation classes out of
 # NISH-ESCALATIONS.md and into an actual message. Its CLASSES regex is the
@@ -58,6 +63,28 @@ done
 
 # The script must be syntactically valid bash.
 bash -n "$script" || fail "bash syntax error in $script"
+
+# --- no-seat abort regression (auditor 2026-08-28) ---------------------------
+# A boundary entry with no provider seats in its body must not abort the
+# script at the seats= grep (grep exits 1 on no match; set -euo pipefail then
+# kills the whole run before the hermes send). The seats= line must tolerate
+# an empty grep with || true.
+seats_line="$(grep -E '^  seats=\$\(' "$script" | head -1)"
+[[ "$seats_line" == *'|| true'* ]] \
+    || fail "seats= must tolerate an empty grep (no-seat boundary entry would abort the send); got: $seats_line"
+ok "seats= grep is no-match safe (no-seat boundary entries reach the send step)"
+
+# Prove the pipeline class in isolation under the same shell flags the script
+# runs under: a no-seat body must not trip set -e.
+(
+  set -euo pipefail
+  body='2026-08-27T18:42:20Z LEGAL-BOUNDARY hash=legal-basics-sweep-1233 NISH DECISION NEEDED'
+  seats=$(printf '%s' "$body" \
+    | grep -oE '\b(devin|minimax|openrouter|cursor|deepseek|opencode-go)/[A-Za-z0-9._-]+' \
+    | sort -u || true)
+  [[ -z "$seats" ]] || { echo "FAIL: expected empty seats, got [$seats]"; exit 1; }
+) || fail "no-seat body aborted under set -euo pipefail"
+ok "no-seat body survives set -euo pipefail (empty seats, reaches send)"
 ok "nish-boundary-notify is syntactically valid bash"
 
 echo "OK: every Nish-reserved token is present in CLASSES (fleet-ops#1164)"

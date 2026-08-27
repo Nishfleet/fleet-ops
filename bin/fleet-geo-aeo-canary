@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# fleet-geo-aeo-canary — GEO/AEO parked-tactics + brand-gate lock (fleet-ops#1245).
+#
+# Ledger: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content
+# tactics; community/PR parked for Nish.
+#
+# STEP 0: ran `research-before-build-check --help` (the new-bin/ gate this
+# wrapper itself must satisfy). ran `fleet-escalation-canary` and
+# `fleet-volume-lane-order-canary`: neither has --help; both run the live
+# check immediately and neither encodes GEO/AEO policy, brand-gate rows, or
+# a Reddit/HARO deny-scan. `fleet-cf-token-canary` is the wrapper shape
+# adopted here (thin bash, logic in lib/). None of those tools already do
+# this check, so a dedicated canary is not a restic-forget clone.
+#
+# Implementation lives in lib/geo-aeo.py. Heartbeat-tier1 block 34.
+#
+# Exit 0: gates clean. Exit 1: policy/worker/scan reject. Exit 2: lib missing.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_GEO_AEO_LIB:-$here/../lib/pi-packet/geo-aeo.py}"
+[ -f "$lib" ] || lib="$here/../lib/geo-aeo.py"
+[ -f "$lib" ] || { echo "fleet-geo-aeo-canary: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

@@ -16,6 +16,11 @@
 # refuses a third cheap retry so systemd OnFailure can summon the senior
 # auditor. Unmarked packets keep the #387/#1178 order (volume first).
 #
+# fleet-ops#1167: cursor is keystone/senior-review only (never volume).
+# leftover prepaid after the volume prefix is xai-oauth (alternate).
+# Every pick appends seat-selection.jsonl and refreshes
+# fleet_seat_selection_24h{provider=} for the digest / Weekly Review.
+#
 # Survivors justified against systemd: systemd Restart= restarts the SAME
 # ExecStart — it cannot choose a different provider/model seat. Seat rotation
 # (pick a DIFFERENT seat on each retry) is real added value that systemd
@@ -103,6 +108,16 @@ declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 SEAT_VOLUME_ORDER=""
+declare -A SEAT_KEYSTONE_ONLY=()
+SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
+SEAT_CURSOR_INCLUDED_EXHAUSTED=0
+SEAT_CURSOR_DAILY_TARGET_USD=16
+SEAT_COMEBACK_MIN_PROBE_S=900
+SEAT_COMEBACK_RATE_LIMIT_S=900
+SEAT_COMEBACK_DAILY_QUOTA_S=3600
+SEAT_COMEBACK_MONTHLY_QUOTA_S=86400
+SEAT_COMEBACK_FREE_BALANCE_S=86400
+SEAT_COMEBACK_CREDENTIALS_BAD_S=604800
 SEAT_RAM_GB_PER_WORKER=1.5
 # Org/repair packets charge at most this many seats against the intake
 # cap (fleet-ops 2026-08-27 seat-cap un-strangle). Extra org units keep
@@ -148,6 +163,16 @@ load_seat_caps() {
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_VOLUME_ORDER=""
+    SEAT_KEYSTONE_ONLY=()
+    SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
+    SEAT_CURSOR_INCLUDED_EXHAUSTED=0
+    SEAT_CURSOR_DAILY_TARGET_USD=16
+    SEAT_COMEBACK_MIN_PROBE_S=900
+    SEAT_COMEBACK_RATE_LIMIT_S=900
+    SEAT_COMEBACK_DAILY_QUOTA_S=3600
+    SEAT_COMEBACK_MONTHLY_QUOTA_S=86400
+    SEAT_COMEBACK_FREE_BALANCE_S=86400
+    SEAT_COMEBACK_CREDENTIALS_BAD_S=604800
     SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
 
@@ -169,7 +194,7 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def window budget
+    local p m cap class bench_def window budget ko ov_model ov_ex ov_usd cb
     while IFS=$'\t' read -r p cap class bench_def; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
@@ -198,6 +223,30 @@ load_seat_caps() {
     # fleet-ops#1178: cross-class volume front-of-ladder (ollama -> devin ->
     # commandcode -> cline FIRST). Empty means legacy free-then-prepaid behaviour.
     SEAT_VOLUME_ORDER=$(jq -r '.volume_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # fleet-ops#1167: cursor (and any listed provider) is keystone/senior-review only.
+    while IFS= read -r ko; do
+        [[ -n "$ko" ]] || continue
+        SEAT_KEYSTONE_ONLY["$ko"]=1
+    done < <(jq -r '.keystone_only_providers // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    ov_model=$(jq -r '.cursor_overage.overage_model // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ -n "$ov_model" ]] && SEAT_CURSOR_OVERAGE_MODEL="$ov_model"
+    ov_ex=$(jq -r '.cursor_overage.included_exhausted // false' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$ov_ex" == "true" ]] && SEAT_CURSOR_INCLUDED_EXHAUSTED=1
+    ov_usd=$(jq -r '.cursor_overage.daily_spend_target_usd // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$ov_usd" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_CURSOR_DAILY_TARGET_USD="$ov_usd"
+    cb=$(jq -r '.walled_comeback.min_probe_interval_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$cb" =~ ^[0-9]+$ ]] && SEAT_COMEBACK_MIN_PROBE_S="$cb"
+    cb=$(jq -r '.walled_comeback.rate_limit_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$cb" =~ ^[0-9]+$ ]] && SEAT_COMEBACK_RATE_LIMIT_S="$cb"
+    cb=$(jq -r '.walled_comeback.daily_quota_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$cb" =~ ^[0-9]+$ ]] && SEAT_COMEBACK_DAILY_QUOTA_S="$cb"
+    cb=$(jq -r '.walled_comeback.monthly_quota_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$cb" =~ ^[0-9]+$ ]] && SEAT_COMEBACK_MONTHLY_QUOTA_S="$cb"
+    cb=$(jq -r '.walled_comeback.free_balance_exhausted_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$cb" =~ ^[0-9]+$ ]] && SEAT_COMEBACK_FREE_BALANCE_S="$cb"
+    cb=$(jq -r '.walled_comeback.credentials_bad_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$cb" =~ ^[0-9]+$ ]] && SEAT_COMEBACK_CREDENTIALS_BAD_S="$cb"
 
     while IFS=$'\t' read -r p window budget; do
         [[ -n "$p" ]] || continue
@@ -389,9 +438,9 @@ task_weight() {
 }
 
 # fleet-ops#1133: explicit difficulty marker on a packet.
-# Scans the packet for a `difficulty: keystone|heavy|light` line (or
-# `keystone: true`). First match wins. Falls back to task_weight() when
-# no marker is present. Missing file -> light.
+# Scans the packet for a `difficulty: keystone|senior-review|heavy|light` line
+# (or `keystone: true` / `senior-review: true`). First match wins. Falls
+# back to task_weight() when no marker is present. Missing file -> light.
 packet_difficulty() {
     local pkt="$1" line lowered
     if [[ ! -f "$pkt" ]]; then
@@ -400,7 +449,7 @@ packet_difficulty() {
     fi
     while IFS= read -r line || [[ -n "$line" ]]; do
         lowered="${line,,}"
-        if [[ "$lowered" =~ ^difficulty:[[:space:]]*(keystone|heavy|light)[[:space:]]*$ ]]; then
+        if [[ "$lowered" =~ ^difficulty:[[:space:]]*(keystone|senior-review|heavy|light)[[:space:]]*$ ]]; then
             echo "${BASH_REMATCH[1]}"
             return
         fi
@@ -408,8 +457,84 @@ packet_difficulty() {
             echo "keystone"
             return
         fi
+        if [[ "$lowered" =~ ^senior-review:[[:space:]]*(true|yes|1)[[:space:]]*$ ]]; then
+            echo "senior-review"
+            return
+        fi
     done < "$pkt"
     task_weight "$pkt"
+}
+
+# fleet-ops#1167: keystone and senior-review share the cursor gate and
+# reliability-first walk. Volume packets do not.
+_is_keystone_class() {
+    [[ "${1:-}" == "keystone" || "${1:-}" == "senior-review" ]]
+}
+
+# fleet-ops#1167: cursor is keystone-only even if the config list is omitted.
+_provider_is_keystone_only() {
+    local p="$1"
+    [[ "$p" == "cursor" ]] && return 0
+    [[ -n "${SEAT_KEYSTONE_ONLY[$p]:-}" ]] && return 0
+    return 1
+}
+
+# fleet-ops#1133: JSONL ledger the metrics exporter heartbeats on.
+# Fail-open: a write error must never brick pick_seat.
+keystone_record_event() {
+    local event="${1:-}" p="${2:-}" m="${3:-}"
+    local ledger="${KEYSTONE_LEDGER:-$STATE_DIR/keystone-routing.jsonl}"
+    event="${event//[^A-Za-z0-9._-]/}"
+    p="${p//[^A-Za-z0-9._/-]/}"
+    m="${m//[^A-Za-z0-9._/-]/}"
+    mkdir -p "$(dirname "$ledger")" 2>/dev/null || return 0
+    printf '{"ts":"%s","event":"%s","provider":"%s","model":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$p" "$m" >>"$ledger" 2>/dev/null || true
+}
+
+# fleet-ops#1167: every pick is a 24h selection event. Fail-open.
+# Also refreshes fleet_seat_selection_24h{provider=} via the node_exporter
+# textfile collector (same pattern as pi-packet-verdict writing fleet-verdict.prom).
+record_seat_selection() {
+    local p="${1:-}" m="${2:-}" difficulty="${3:-light}"
+    local ledger="${SEAT_SELECTION_LEDGER:-$STATE_DIR/seat-selection.jsonl}"
+    p="${p//[^A-Za-z0-9._/-]/}"
+    m="${m//[^A-Za-z0-9._/-]/}"
+    difficulty="${difficulty//[^A-Za-z0-9._-]/}"
+    mkdir -p "$(dirname "$ledger")" 2>/dev/null || return 0
+    printf '{"ts":"%s","provider":"%s","model":"%s","difficulty":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$p" "$m" "$difficulty" >>"$ledger" 2>/dev/null || true
+    export_seat_selection_prom
+}
+
+# Rewrite fleet_seat_selection_24h{provider=} from the JSONL ledger.
+# Fail-open: a missing dir or jq failure must never brick pick_seat.
+# Default file is under STATE_DIR so tests cannot poison the live
+# node_exporter dir. Production also copies there when that dir is writable
+# (same collector fleet-verdict.prom already uses).
+export_seat_selection_prom() {
+    local ledger="${SEAT_SELECTION_LEDGER:-$STATE_DIR/seat-selection.jsonl}"
+    local out="${SEAT_SELECTION_PROM:-$STATE_DIR/fleet-seat-selection.prom}"
+    local cutoff tmp dir pub
+    dir=$(dirname "$out")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
+    tmp="$out.$$.$RANDOM.tmp"
+    {
+        echo "# HELP fleet_seat_selection_24h pick_seat choices in the trailing 24h by provider (fleet-ops#1167)."
+        echo "# TYPE fleet_seat_selection_24h gauge"
+        if [[ -f "$ledger" ]]; then
+            jq -r --arg c "$cutoff" 'select(.ts >= $c) | .provider // empty' "$ledger" 2>/dev/null \
+              | awk 'NF {c[$0]++} END {for (p in c) printf "fleet_seat_selection_24h{provider=\"%s\"} %d\n", p, c[p]}'
+        fi
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    if [[ -z "${SEAT_SELECTION_PROM:-}" && "$STATE_DIR" == "${HOME}/.local/state/pi-packet" ]]; then
+        pub="/var/lib/prometheus/node-exporter/fleet-seat-selection.prom"
+        if [[ -d "$(dirname "$pub")" && -w "$(dirname "$pub")" ]]; then
+            cp "$out" "$pub" 2>/dev/null || true
+        fi
+    fi
 }
 
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
@@ -1162,7 +1287,7 @@ pick_seat() {
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
 
-    if [[ "$difficulty" == "keystone" ]]; then
+    if _is_keystone_class "$difficulty"; then
         need_capable=1
     fi
 
@@ -1186,8 +1311,9 @@ pick_seat() {
     # fleet-ops#1133: two strikes on a keystone packet end cheap retries.
     # tried_count is lines already recorded by the wrapper BEFORE this pick,
     # so 0 = first attempt, 1 = one retry left, >=2 = escalate.
-    if [[ "$difficulty" == "keystone" ]] && (( tried_count >= 2 )); then
+    if _is_keystone_class "$difficulty" && (( tried_count >= 2 )); then
         seat_log "pick_seat: KEYSTONE ESCALATION — ${tried_count} strikes; refusing further cheap retries (senior conference via OnFailure)"
+        keystone_record_event escalated
         return 1
     fi
 
@@ -1246,6 +1372,17 @@ pick_seat() {
             # allowlisted provider whose apiKey resolves to empty is never
             # a candidate, so a tick is not burned on a guaranteed 401/403.
             continue
+        fi
+        if _provider_is_keystone_only "$p"; then
+            if ! _is_keystone_class "$difficulty"; then
+                seat_log "seat $p/$m skipped (keystone/senior-review only — fleet-ops#1167)"
+                continue
+            fi
+            if [[ "$p" == "cursor" && "${SEAT_CURSOR_INCLUDED_EXHAUSTED:-0}" == "1" \
+                  && "$m" != "${SEAT_CURSOR_OVERAGE_MODEL:-cursor-grok-4.6-high}" ]]; then
+                seat_log "seat $p/$m skipped (cursor overage model is ${SEAT_CURSOR_OVERAGE_MODEL:-cursor-grok-4.6-high} — fleet-ops#1167)"
+                continue
+            fi
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
             seat_log "seat $p/$m skipped (not capable for heavy task)"
@@ -1316,7 +1453,7 @@ pick_seat() {
     # cheap. Unmarked packets keep volume-first, then leftover free,
     # leftover prepaid (alternate), then metered.
     local -a volume_seats=() leftover_free=() leftover_prepaid=()
-    if [[ "$difficulty" != "keystone" && -n "$SEAT_VOLUME_ORDER" ]]; then
+    if ! _is_keystone_class "$difficulty" && [[ -n "$SEAT_VOLUME_ORDER" ]]; then
         declare -A _vol_seen=()
         local _vp _fm
         for _vp in $SEAT_VOLUME_ORDER; do
@@ -1344,12 +1481,20 @@ pick_seat() {
             [[ -n "${_vol_seen[$p]:-}" ]] && continue
             leftover_prepaid+=("$_fm")
         done
-        free_seats=("${leftover_free[@]:-}")
-        prepaid_seats=("${leftover_prepaid[@]:-}")
+        if (( ${#leftover_free[@]} > 0 )); then
+            free_seats=("${leftover_free[@]}")
+        else
+            free_seats=()
+        fi
+        if (( ${#leftover_prepaid[@]} > 0 )); then
+            prepaid_seats=("${leftover_prepaid[@]}")
+        else
+            prepaid_seats=()
+        fi
     fi
 
     local chosen="" chosen_p=""
-    if [[ "$difficulty" == "keystone" ]]; then
+    if _is_keystone_class "$difficulty"; then
         if (( ${#prepaid_seats[@]} > 0 )); then
             chosen="${prepaid_seats[0]}"
             chosen_p="${chosen%%$'\t'*}"
@@ -1379,6 +1524,10 @@ pick_seat() {
         chosen="${metered_seats[0]}"
     fi
     if [[ -n "$chosen" ]]; then
+        record_seat_selection "${chosen%%$'\t'*}" "${chosen#*$'\t'}" "$difficulty"
+        if _is_keystone_class "$difficulty"; then
+            keystone_record_event routed "${chosen%%$'\t'*}" "${chosen#*$'\t'}"
+        fi
         printf '%s\n' "$chosen"
         return 0
     fi
