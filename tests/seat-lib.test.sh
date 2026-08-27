@@ -1201,6 +1201,11 @@ bash "$here/gate-integrity.test.sh" || fail "gate-integrity tests failed"
 bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests failed"
 # fleet-ops#497: gate-integrity reusable shape. Same CI constraint.
 bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"
+# fleet-ops#828: lock the parked reusable's raw-comments contract (the
+# 0509#1273 shape: a multi-line attest comment is honoured iff a
+# `{marker}: {40-hex}` line appears anywhere in its body, not only when
+# the whole body equals that string). Same CI constraint.
+bash "$here/gate-integrity-reusable-828.test.sh" || fail "gate-integrity reusable 828 tests failed"
 
 # fleet-ops#703: lock the orcarouter sr-never-vibes citation. Workers
 # cannot add a P14 line in .github/workflows/ci.yml; this file is the

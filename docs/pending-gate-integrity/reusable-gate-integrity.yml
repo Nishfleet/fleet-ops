@@ -252,47 +252,65 @@ jobs:
               for c in raw_comments
           ]
 
-          # Exact body match after trim, same contract as 0509: the entire
-          # comment is `{marker}: {40-hex}`. Prose mentioning the phrase
-          # cannot attest. Colon is required; whitespace around it is not
-          # accepted.
-          attestations = []
-          auto_revert_attestations = []
-          for c in comments:
-              body = c["body"].replace("\r", "").strip()
-              for marker, target in (
-                  (admin_marker, attestations),
-                  (auto_revert_marker, auto_revert_attestations),
-              ):
-                  pat = re.compile(rf"^{re.escape(marker)}: ([0-9a-fA-F]{{40}})$")
-                  m = pat.match(body)
-                  if m:
-                      target.append({"user": c["user"], "sha": m.group(1).lower()})
+          # Attestation extraction is delegated to the decision script so the
+          # line-anchored rule (any line of the comment equals
+          # `{marker}: {40-hex}`, not the comment's whole body) is the same
+          # code path on every caller. fleet-ops#828 / 0509#1273: the
+          # previous whole-body filter dropped every multi-line attest
+          # comment — the real-world shape, where the marker line is followed
+          # by verifier-attest: and review prose — so the gate reported
+          # "no current attest" against a comment whose first line matched
+          # the head sha exactly and blocked every 0509 merge for hours.
+          #
+          # We still need to pre-flight which users MAY have attested, so
+          # permission lookups are bounded to that set. A comment qualifies
+          # for permission prefetch when ANY of its lines is exactly
+          # `{marker}: {40-hex}` after CR-strip and trim — same rule the
+          # decision script applies, just executed here to bound the API
+          # call count. A qualifying user that the decision script later
+          # rejects as not-admin incurs one extra collaborator-permission
+          # call, which is cheap; a non-qualifying user is never looked up.
+          def line_has_attest(body, marker):
+              for raw in (body or "").replace("\r", "").split("\n"):
+                  if re.match(rf"^{re.escape(marker)}: [0-9a-fA-F]{{40}}$", raw.strip()):
+                      return True
+              return False
 
           perms = {}
-          for user in {a["user"] for a in attestations if a["user"]}:
-              result = subprocess.run(
-                  ["gh", "api", f"repos/{repo}/collaborators/{user}/permission"],
-                  capture_output=True,
-                  text=True,
-                  check=False,
-              )
-              perm = "none"
-              if result.returncode == 0 and result.stdout.strip():
-                  try:
-                      perm = json.loads(result.stdout).get("permission", "none")
-                  except json.JSONDecodeError:
-                      perm = "none"
-              perms[user] = perm
+          for c in comments:
+              user = c["user"]
+              if not user or user in perms:
+                  continue
+              if line_has_attest(c["body"], admin_marker) or line_has_attest(
+                  c["body"], auto_revert_marker
+              ):
+                  result = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/collaborators/{user}/permission"],
+                      capture_output=True,
+                      text=True,
+                      check=False,
+                  )
+                  perm = "none"
+                  if result.returncode == 0 and result.stdout.strip():
+                      try:
+                          perm = json.loads(result.stdout).get("permission", "none")
+                      except json.JSONDecodeError:
+                          perm = "none"
+                  perms[user] = perm
 
+          # Ship the raw `comments` array. The decision script's
+          # `extract_attestations_from_comments` runs a line-anchored scan
+          # against each comment body and produces the per-marker attestation
+          # arrays itself. Pre-extracted `attestations` /
+          # `auto_revert_attestations` are still honored when `comments` is
+          # absent, so fixtures that build bundles directly keep working.
           bundle = {
               "head_sha": head_sha,
               "pr_body": pr_body,
               "files": files,
               "commit_messages": commit_messages,
-              "attestations": attestations,
+              "comments": comments,
               "permissions": perms,
-              "auto_revert_attestations": auto_revert_attestations,
               "gate_globs": gate_globs,
               "ratchet_paths": ratchet_paths,
               "admin_attestation_marker": admin_marker,
