@@ -568,6 +568,25 @@ rc=$(run_bin 0)
 ok "live #848: bash git log with 'Command timed out' as commit body is not a swallowed timeout"
 rm -f "$sessions/bash-timeout-git-log.jsonl"
 
+# --- 6i. live #952: python heredoc script KeyError, only thinking + toolCall in next turn -
+# The session 2026-08-26T13-18-31-426Z ran a python heredoc script that crashed
+# with `KeyError: 'input_domain'`. The toolResult had isError=true, exit code 1.
+# The assistant's next turn was a `thinking` block plus a follow-up toolCall,
+# with NO user-facing text naming the failure. The detector must flag this as
+# a swallowed failure and not let a `thinking` block or a subsequent toolCall
+# count as a flag. This is the exact pattern from fleet-ops#952.
+write_session "python-heredoc-keyerror" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_py","name":"bash","arguments":{"command":"python3 << 'EOF'\nimport json\nv1 = json.load(open('/home/nish/workspaces/agent-state/0509-transformation/discovery-spike/results.json'))\nprint('Sample keys:', list(v1[0].keys()))\nEOF"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_py","toolName":"bash","isError":true,"content":[{"type":"text","text":"Sample keys: ['input_domain', 'brand', 'site_ok', 'site_title', 'site_keywords', 'wiki_brand_page', 'wiki_categories_explored', 'wiki_sibling_count', 'ddg_ia_hit', 'openalex_work_count', 'top8', 'signals_exercised', 'signals_skipped', 'eval']\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The script crashed on the last entry which has null input_domain. Let me fix the lookup."},{"type":"toolCall","id":"call_fix","name":"bash","arguments":{"command":"python3 << 'EOF'\nimport json\nv1 = json.load(open('/home/nish/workspaces/agent-state/0509-transformation/discovery-spike/results.json'))\nv1_lookup = {r['input_domain']: r for r in v1 if r.get('input_domain')}\nprint('Filtered keys:', list(v1_lookup.keys())[:5])\nEOF"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "python heredoc KeyError with only thinking+toolCall should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "python heredoc KeyError must be flagged as swallowed"
+ok "live #952: python heredoc KeyError with only thinking+toolCall in next turn is flagged"
+rm -f "$sessions/python-heredoc-keyerror.jsonl"
+
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
