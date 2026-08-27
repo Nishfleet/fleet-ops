@@ -18,8 +18,9 @@ Steps:
       `. /home/nish/.local/lib/pi-packet/seat-lib.sh`
    b. Read the configured ceiling (sum of provider caps) and the RAM governor (MemAvailable-based) — pick the smaller:
       `caps_sum=$(total_seat_cap); ram_cap=$(ram_governor_cap); if (( caps_sum > 0 && caps_sum < ram_cap )); then total_cap=$caps_sum; else total_cap=$ram_cap; fi`
-   c. Count currently active workers across the whole fleet (pi-issue-* and pi-packet-* — both consume seats):
-      `active=$(count_active_total)`
+   c. Count currently active workers. Issue-work units (pi-issue-*) consume the intake cap at full value. Long-running org/repair packets (pi-packet-*, alert-repair-*, ad-hoc pi-systemd-run units) charge against a separate reserve of 2 (`org_reserve` in seat-caps.json) so org work can never eat more than 2 of the fleet's seats:
+      `active=$(count_active_total)`  # issues + min(org, org_reserve)
+      `issue=$(count_active_issue); org=$(count_active_org)`
    d. `slots = total_cap - active`. If slots <= 0, print "at capacity (total_cap=$total_cap, active=$active)", exit 0. If the cap map is missing, total_cap = ram_cap and the fleet still gets a sensible ceiling.
 3. For each TSV line from step 1c, while slots remain. `N` is field 1 and `kind` is field 2:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`

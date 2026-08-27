@@ -98,6 +98,10 @@ declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 SEAT_RAM_GB_PER_WORKER=1.5
+# Org/repair packets charge at most this many seats against the intake
+# cap (fleet-ops 2026-08-27 seat-cap un-strangle). Extra org units keep
+# running; they just cannot fill the RAM ceiling and skip ready issues.
+SEAT_ORG_RESERVE=2
 SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
 
 # fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
@@ -138,6 +142,7 @@ load_seat_caps() {
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_RAM_GB_PER_WORKER=1.5
+    SEAT_ORG_RESERVE=2
 
     [[ -f "$SEAT_CAPS_JSON" ]] || { seat_log "seat-caps: NO CAPS FILE at $SEAT_CAPS_JSON — falling back to no-cap behaviour"; return 1; }
     if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
@@ -145,9 +150,11 @@ load_seat_caps() {
         return 1
     fi
 
-    local ram
+    local ram ores
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
+    ores=$(jq -r '.org_reserve // 2' "$SEAT_CAPS_JSON")
+    [[ "$ores" =~ ^[0-9]+$ ]] && SEAT_ORG_RESERVE="$ores"
 
     # fleet-ops#602: the read loops below must use LOCAL variables. bash's
     # `local` is DYNAMIC scoping, so a bare `p`/`m` here would write into the
@@ -665,6 +672,41 @@ _seat_list_unit() {
     done < <(systemctl --user list-units 'pi-issue@*.service' 'pi-packet@*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
 }
 
+# Org/repair units that must not starve issue intake. Name globs cover the
+# templates and the pi-systemd-run default (`pi-job-<ts>-<pid>`). Ad-hoc
+# `--unit` names are detected by the Description stamp pi-systemd-run
+# always writes: "Pi packet <unit> (session-independent)".
+_seat_list_org_unit() {
+    if (( ! ${PI_SEAT_LIB_CHECK_SYSTEMD:-1} )); then
+        return 0
+    fi
+    local line u desc
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        u="${line%% *}"
+        [[ "$u" == *.service ]] || continue
+        echo "$u"
+    done < <(systemctl --user list-units 'pi-packet@*.service' 'alert-repair-*.service' 'pi-job-*.service' --state=active,activating --no-legend --plain 2>/dev/null || true)
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        u="${line%% *}"
+        [[ "$u" == *.service ]] || continue
+        case "$u" in
+            pi-issue@*.service|pi-intake@*.service|pi-scout@*.service|pi-audit@*.service) continue ;;
+            pi-packet@*.service|alert-repair-*.service|pi-job-*.service) continue ;;
+        esac
+        desc=$(systemctl --user show "$u" --property=Description --value 2>/dev/null || true)
+        [[ "$desc" == *"(session-independent)"* ]] || continue
+        echo "$u"
+    done < <(systemctl --user list-units --type=service --state=active,activating --no-legend --plain 2>/dev/null || true)
+}
+
+org_reserve() {
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_ORG_RESERVE:-2}"
+}
+
 # --- stale active-seat registry self-healing (2026-08-25) -----------------
 # The active-seats registry is written by register_active_seat on start and
 # cleared by clear_active_seat via `trap EXIT INT TERM` in the wrapper. The
@@ -846,16 +888,26 @@ count_active_on_provider() {
     echo "$n"
 }
 
-# Total active workers across all seats.
-count_active_total() {
-    local n=0
-    local f
+# Issue-work units (pi-issue-*). These are what intake spends slots on.
+count_active_issue() {
+    local n=0 f base u cmd instance
     while IFS= read -r f; do
-        n=$((n+1))
+        base=$(basename "$f" .json)
+        case "$base" in
+            pi-packet-*) continue ;;
+            *) n=$((n+1)) ;;
+        esac
     done < <(_seat_live_registry_files)
-    local u cmd
     while IFS= read -r u; do
         [[ -n "$u" ]] || continue
+        case "$u" in
+            pi-issue@*.service)
+                instance="${u#pi-issue@}"
+                instance="${instance%.service}"
+                [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${instance}.json" ]] && continue
+                ;;
+            *) continue ;;
+        esac
         cmd=$(systemctl --user show "$u" --property=ExecStart --value 2>/dev/null || true)
         _parse_exec_provider_model "$cmd"
         if [[ -n "$_exec_p" && -n "$_exec_m" ]]; then
@@ -863,6 +915,50 @@ count_active_total() {
         fi
     done < <(_seat_list_unit)
     echo "$n"
+}
+
+# Org/repair packets: pi-packet registry, pi-packet@, alert-repair-*,
+# pi-job-*, and ad-hoc pi-systemd-run units (Description stamp).
+count_active_org() {
+    local n=0 f base u instance
+    declare -A seen=()
+    while IFS= read -r f; do
+        base=$(basename "$f" .json)
+        case "$base" in
+            pi-packet-*)
+                n=$((n+1))
+                seen["$base"]=1
+                ;;
+        esac
+    done < <(_seat_live_registry_files)
+    while IFS= read -r u; do
+        [[ -n "$u" ]] || continue
+        [[ -n "${seen[$u]:-}" ]] && continue
+        case "$u" in
+            pi-packet@*.service)
+                instance="${u#pi-packet@}"
+                instance="${instance%.service}"
+                [[ -n "${seen[pi-packet-${instance}]:-}" ]] && continue
+                [[ -f "$ACTIVE_SEATS_DIR/pi-packet-${instance}.json" ]] && continue
+                ;;
+        esac
+        seen["$u"]=1
+        n=$((n+1))
+    done < <(_seat_list_org_unit)
+    echo "$n"
+}
+
+# Intake capacity counter: issue workers at full value, org/repair
+# packets against org_reserve (default 2). Four org packets cannot
+# fill a 4-slot RAM cap and skip every ready issue.
+count_active_total() {
+    local issue org reserve charge
+    issue=$(count_active_issue)
+    org=$(count_active_org)
+    reserve=$(org_reserve)
+    charge=$org
+    (( charge > reserve )) && charge=$reserve
+    echo $(( issue + charge ))
 }
 
 # Count workers in `activating/auto-restart` across all fleet worker units.
