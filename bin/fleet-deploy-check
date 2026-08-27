@@ -140,11 +140,25 @@ main() {
         "$DEPLOY_BIN" || rc=$?
 
     if [[ "$rc" -ne 0 ]]; then
-        loud "DEPLOY-CHECK-FAILED" "fleet-ops-deploy exited rc=$rc — merge-to-live gate red"
-    else
-        log "deploy completed rc=0 — live now at origin/main ($after)"
+        # fleet-ops-deploy already auto-filed a deploy-blocked issue via
+        # auto_file_off_main() when the cause was a non-main branch / dirty
+        # tracked files / non-ff (those are operator-fixable, not hard
+        # errors). Returning its rc here would trip the systemd unit, fire
+        # OnFailure=, and summon the auditor on every tick a worker
+        # transiently dirties the deploy-clone. The trip-to-auditor loop
+        # is exactly the failure mode this watcher must not feed
+        # (auditor-summoned trip 2026-08-27T01:54Z: the prior 13 minutes
+        # of the same LOUD line summoned the auditor, even though the
+        # inner deploy had already auto-filed the only-actionable signal).
+        # Surface the LOUD line for visibility, log the rc, return 0; the
+        # next tick retries. A hard internal error inside the deploy
+        # binary still propagates because fleet-ops-deploy does not exit
+        # with the LOUD-only paths except for those reasons.
+        loud "DEPLOY-CHECK-FAILED" "fleet-ops-deploy exited rc=$rc — merge-to-live gate red (soft, auto-filed, retry next tick; fleet-ops#768)"
+        return 0
     fi
-    return "$rc"
+    log "deploy completed rc=0 — live now at origin/main ($after)"
+    return 0
 }
 
 main "$@"

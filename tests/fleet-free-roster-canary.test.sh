@@ -328,4 +328,20 @@ grep -q 'bin/fleet-free-roster-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-free-roster-canary"
 ok "scenario12: heartbeat-tier1 wires the canary, fail-loud on gate, MANIFEST installs it"
 
+# --- 13. production lock: mimo-v2.5-free stay-wired (fleet-ops#640) ---------
+# The class prevention for "auditioned free slug silently dropped": a later
+# PR that removes mimo-v2.5-free from the allowlist without a dated bench
+# reason fails this lock. Billing slugs (mimo-v2.5, xiaomi/mimo-v2.5) must
+# not ride in on the free row.
+jq -e '.providers.opencode.models["mimo-v2.5-free"] > 0' \
+    "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "scenario13: production seat-caps must allowlist opencode/mimo-v2.5-free (fleet-ops#640)"
+while IFS= read -r k; do
+  lk="${k,,}"
+  if [[ "$lk" == *mimo* ]] && [[ "$lk" != "mimo-v2.5-free" ]]; then
+    fail "scenario13: production opencode allowlists a non-free mimo slug: $k"
+  fi
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slug"
+
 ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
