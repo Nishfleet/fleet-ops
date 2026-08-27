@@ -1092,6 +1092,91 @@ ok "overload_bench: pick_seat skips a benched commandcode/minimax-m3-free; rc=1 
 ok "overload_bench: 503_bench_default_s AND overload_bench_default_s are both accepted as field names"
 ok "overload_bench: distinct from quota_bench (health_class / failure_mode) for post-mortem rollup (fleet-ops#652)"
 
+# 9h-hang: hang_bench (auditor 2026-08-27 14:12Z, pi-scout-repair@0509).
+# A seat whose model accepted the request (no 429, no 5xx, no quota wall) but
+# never sent a final response before systemd TimeoutStartSec / wrapper
+# PI_HANG_TIMEOUT_S killed it is a HUNG SEAT. The reactive seat-health
+# ledger only writes on a live-session response hook, so a hang never
+# records itself — without a dedicated bench class, pick_seat re-offers the
+# same hung seat to the next worker and stalls the same way. Distinct
+# failure_mode="hang_no_response" so the auditor / post-mortem tooling can
+# tell hang benches apart from quota/cap/overload.
+hang_ledger="$scratch/ledger-hang"
+mkdir -p "$hang_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$hang_ledger"
+export PI_PACKET_STATE="$scratch/state-hang"
+# Default 180s; no Retry-After in the body.
+set +e
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$hang_ledger" \
+PI_PACKET_STATE="$scratch/state-hang" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_hang_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    'pi hung at PI_HANG_TIMEOUT_S / unit TimeoutStartSec=1800; no 429, no 5xx' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "hang: mark_seat_hang_bench expected rc=0, got rc=$rc"
+[[ -f "$hang_ledger/commandcode__minimax_minimax-m3-free.json" ]] \
+  || fail "hang: marker MUST be written (auditor root cause: the live writer had no class for hangs)"
+hc=$(jq -r '.health_class' "$hang_ledger/commandcode__minimax_minimax-m3-free.json")
+fm=$(jq -r '.failure_mode' "$hang_ledger/commandcode__minimax_minimax-m3-free.json")
+ws=$(jq -r '.hang_window_s' "$hang_ledger/commandcode__minimax_minimax-m3-free.json")
+[[ "$hc" == "hang_bench" ]] || fail "hang: health_class expected hang_bench, got '$hc'"
+[[ "$fm" == "hang_no_response" ]] || fail "hang: failure_mode expected hang_no_response, got '$fm'"
+[[ "$ws" == "180" ]] || fail "hang: hang_window_s expected 180, got '$ws'"
+bu=$(jq -r '.bench_until' "$hang_ledger/commandcode__minimax_minimax-m3-free.json")
+bu_s=$(date -u -d "$bu" +%s 2>/dev/null || echo 0)
+now_s=$(date -u +%s)
+delta=$((bu_s - now_s))
+(( delta > 150 && delta < 210 )) || fail "hang: bench_until expected ~now+180s, got delta=${delta}s (now=$now_s bu=$bu)"
+
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$hang_ledger" \
+PI_PACKET_STATE="$scratch/state-hang-usable" \
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "commandcode" "minimax/minimax-m3-free" 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "hang: seat_usable must rc=1 (unusable) while hang_bench is fresh, got rc=$rc"
+grep -q "commandcode/minimax/minimax-m3-free: benched until.*(hang_bench)" "$scratch/state-hang-usable/watch.log" \
+  || fail "hang: seat_usable skip line must mention hang_bench class (auditor post-mortem rollup)"
+
+disjoint_ledger="$scratch/ledger-hang-disjoint"
+mkdir -p "$disjoint_ledger"
+hang_d="$disjoint_ledger/hang"
+quota_d="$disjoint_ledger/quota"
+ovl_d="$disjoint_ledger/overload"
+mkdir -p "$hang_d" "$quota_d" "$ovl_d"
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$hang_d" \
+PI_PACKET_STATE="$scratch/state-hang-d" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_hang_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" "hung" >/dev/null 2>&1 || true
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$quota_d" \
+PI_PACKET_STATE="$scratch/state-quota-d" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" "weekly Clinepass limit. Resets in 1d 11h" >/dev/null 2>&1 || true
+SEAT_CAPS_JSON="$scratch/seat-caps-cc.json" \
+PI_SEAT_HEALTH_LEDGER_DIR="$ovl_d" \
+PI_PACKET_STATE="$scratch/state-ovl-d" \
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench "$1" "$2" "$3"' \
+    "$lib" "commandcode" "minimax/minimax-m3-free" \
+    'errorMessage: 503: Upstream model provider is temporarily unavailable.' >/dev/null 2>&1 || true
+hang_hc=$(jq -r '.health_class' "$hang_d/commandcode__minimax_minimax-m3-free.json")
+quota_hc=$(jq -r '.health_class' "$quota_d/commandcode__minimax_minimax-m3-free.json")
+ovl_hc=$(jq -r '.health_class' "$ovl_d/commandcode__minimax_minimax-m3-free.json")
+[[ "$hang_hc" == "hang_bench" ]] || fail "hang-disjoint: hang must write hang_bench, got '$hang_hc'"
+[[ "$quota_hc" == "quota_bench" ]] || fail "hang-disjoint: quota must write quota_bench, got '$quota_hc'"
+[[ "$ovl_hc" == "overload_bench" ]] || fail "hang-disjoint: overload must write overload_bench, got '$ovl_hc'"
+
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+export PI_MODELS_JSON="$scratch/models.json"
+
+ok "hang_bench: writer uses 180s default; bench_until ~now+180s; health_class=hang_bench; failure_mode=hang_no_response (auditor 2026-08-27 14:12Z)"
+ok "hang_bench: seat_usable skips a fresh hang_bench seat; rc=1 with 'benched until ... (hang_bench)' skip line"
+ok "hang_bench: distinct from quota_bench + overload_bench (post-mortem rollup integrity)"
+
 # --- P15 wedge-age liveness probe ----------------------------------------
 # A unit stuck in `activating` past PI_SEAT_ACTIVATING_MAX_S is a wedged pi
 # (the fleet-ops#83 finalize-hang), not a live worker. The registry entry
