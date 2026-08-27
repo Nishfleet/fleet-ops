@@ -2213,4 +2213,8 @@ bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 # Leftovers on origin/main that would fail this PR's listing gate.
 bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
 bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
+# fleet-ops#1279 leftover: alert-repair-claim-mutex.test.sh landed on
+# main without a host. Hosting it here unblocks this PR's listing gate.
+# #1279 remains the ci.yml-line follow-up (needs workflow scope).
+bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex tests failed"
 
