@@ -78,6 +78,16 @@ PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
+
+DRIFT_MARKERS = (
+    SOURCE_MARKER,
+    ORPHAN_EXEC_MARKER,
+    PAPER_OVER_MARKER,
+    PRODUCTS_MARKER,
+    OFF_MAIN_MARKER,
+    HOTPATCH_MARKER,
+)
+
 PAPER_OVER_DROPIN = (
     HOME / ".config" / "systemd" / "user" / "fleet-heartbeat.service.d" / "10-deploy-checkout.conf"
 )
@@ -266,6 +276,89 @@ def auto_file_off_main(msg: str) -> None:
         extra,
         msg,
     )
+
+
+def _issue_blob(issue: dict[str, Any]) -> str:
+    """Body plus all comment bodies, for deduping observe-to-close posts."""
+    parts = [str(issue.get("body") or "")]
+    for comment in issue.get("comments") or []:
+        if isinstance(comment, dict):
+            parts.append(str(comment.get("body") or ""))
+    return "\n".join(parts)
+
+
+def observe_close_drift_issues(checkout: Path, head: str) -> None:
+    """Comment on open drift issues whose class is now green.
+
+    Observe-to-close wiring (fleet-ops#620): when the canary is green, any
+    open issue carrying a drift marker gets a `resolved-at:` comment. This
+    makes the close evidence-backed rather than manual.
+    """
+    if not DRIFT_FILE:
+        log("observe-to-close skipped (FLEET_OPS_DRIFT_FILE!=1)")
+        return
+
+    marker_names = {
+        SOURCE_MARKER: "canonical-checkout drift",
+        ORPHAN_EXEC_MARKER: "orphan ExecStart",
+        PAPER_OVER_MARKER: "paper-over drop-in",
+        PRODUCTS_MARKER: "products/fleet-ops symlink",
+        OFF_MAIN_MARKER: "off-main deploy-clone",
+        HOTPATCH_MARKER: "hot-patch",
+    }
+
+    try:
+        proc = subprocess.run(
+            [GH, "issue", "list", "-R", DRIFT_REPO, "--state", "open", "--limit", "50", "--json", "number,body,comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            log(f"WARN: gh issue list failed for observe-to-close: {proc.stderr.strip()}")
+            return
+        issues = json.loads(proc.stdout) if proc.stdout.strip() else []
+    except (OSError, json.JSONDecodeError) as e:
+        log(f"WARN: gh issue list failed for observe-to-close: {e}")
+        return
+
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        number = issue.get("number")
+        if not isinstance(number, int):
+            continue
+        blob = _issue_blob(issue)
+        for marker in DRIFT_MARKERS:
+            if marker not in blob:
+                continue
+            resolved_marker = f"resolved-at: {marker}"
+            if resolved_marker in blob:
+                log(f"dedup observe: {DRIFT_REPO}#{number} already carries {resolved_marker}")
+                break
+            comment = (
+                f"{resolved_marker}\n"
+                f"checkout: {resolved(checkout)}\n"
+                f"HEAD: {head}\n"
+                f"observed-at: {now_iso()}\n\n"
+                "Drift canary is green; this class is resolved on a real "
+                "heartbeat tick (fleet-ops#620 observe-to-close).\n"
+            )
+            try:
+                cp = subprocess.run(
+                    [GH, "issue", "comment", str(number), "-R", DRIFT_REPO, "--body", comment],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if cp.returncode == 0:
+                    name = marker_names.get(marker, marker)
+                    log(f"OBSERVED-RESOLVED: {name} -> {DRIFT_REPO}#{number}")
+                else:
+                    log(f"WARN: gh issue comment failed for {DRIFT_REPO}#{number}: {cp.stderr.strip()}")
+            except OSError as e:
+                log(f"WARN: gh issue comment failed for {DRIFT_REPO}#{number}: {e}")
+            break
 
 
 def auto_file_install_refuse(dest: str, repo: str, diff: str) -> None:
@@ -946,6 +1039,10 @@ def main(argv: list[str] | None = None) -> None:
     check_extra_symlinks(checkout, set(expected_dests.keys()))
     check_volatile_unit_paths(checkout)
     check_missing_execstarts()
+
+    rc, head_out, _ = run(["git", "-C", str(checkout), "rev-parse", "HEAD"], check=False)
+    head = head_out.strip() if rc == 0 else "unknown"
+    observe_close_drift_issues(checkout, head)
 
     log("drift canary: clean")
     audit("fleet-ops", "drift-ok", "checkout-and-installed-state-match-main")
