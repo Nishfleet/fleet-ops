@@ -172,11 +172,25 @@ Live sample 2026-08-26:
 - ratio 411.8
 
 fleet-ops#489 decided to keep `memory.current` for admission. The formula
-is now `ram_gb_per_worker = min(memory.current p95 * 3, 1.5)`.
-`config/seat-caps.json` sets `ram_gb_per_worker=1.5`, the clamped ceiling.
-That keeps lanes tight (~4) and does not undercount what the cgroup
-actually charges. Process VmRSS is much smaller, so using it would raise
-lanes but undercount real cost.
+is `ram_gb_per_worker = min(memory.current p95 * 3, <ceiling>)`.
+`config/seat-caps.json` sets the ceiling.
+
+**2026-08-27 (Nish packet "right-size the RAM governor"):** the ceiling was
+lowered 1.5 -> 0.6 to unblock fleet throughput (cap was 5 on a 24-seat
+config). The #489 METRIC stands (memory.current, not VmRSS); only the CLAMP
+moved. Backstops (unchanged): per-worker `MemoryHigh=3G`/`MemoryMax=6G`,
+system-scope `user-1000.slice` MemoryHigh=12G (fleet-ops#71, drilled
+2026-08-26), systemd-oomd at 80%/60s.
+
+Re-measured 2026-08-27 ~20:50 IST by agent (not packet figures):
+5 live `pi --print` workers, MemAvailable 11.3G, pressure `some avg10`=0.0%,
+worker cgroup MemoryCurrent non-throttled max 0.86G median ~0.17G (one at
+2.93G = MemoryHigh artifact). 0.6 = measured p95 ~0.5G × 1.2 margin, floor
+0.5. Governor at 0.6: `floor((11604-2500)/1024/0.6)=14` -> seat_max=14
+(was 5 on 1.5G).
+
+Raise toward 1.0-1.5 if pressure exceeds ~10% sustained or oomd kills
+become routine.
 
 Do not cite the 35 MB figure as cgroup cost.
 

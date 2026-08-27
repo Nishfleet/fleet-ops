@@ -93,29 +93,27 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission formula uses memory.current p95*3, no self-calibrate
+# 4. admission formula uses memory.current, no self-calibrate
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "1.5" ]] \
-    || fail "ram_gb_per_worker must be 1.5 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.6" ]] \
+    || fail "ram_gb_per_worker must be 0.6 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula is 1.5 G from memory.current p95*3, no self-calibrate"
+ok "4. admission formula uses memory.current, config is source of truth, no self-calibrate"
 
 # =========================================================================
-# 5. 35 MB cannot be cited as cgroup memory.current
+# 5. comment records the #489 metric decision (memory.current, not VmRSS)
 # =========================================================================
 comment=$(jq -r '._comment_ram_governor' "$caps")
-echo "$comment" | grep -q 'fleet-ops#202' \
-    || fail "seat-caps ram-governor comment must cite fleet-ops#202"
+echo "$comment" | grep -q 'fleet-ops#489' \
+    || fail "seat-caps ram-governor comment must cite fleet-ops#489 (the metric decision)"
 echo "$comment" | grep -q 'memory.current' \
     || fail "seat-caps ram-governor comment must name memory.current"
 echo "$comment" | grep -q 'VmRSS' \
-    || fail "seat-caps ram-governor comment must name VmRSS"
-echo "$comment" | grep -q '822.6' \
-    || fail "seat-caps ram-governor comment must record the 822.6 MB live p95"
+    || fail "seat-caps ram-governor comment must name VmRSS (the rejected metric)"
 if echo "$comment" | grep -q '35 MB'; then
     echo "$comment" | grep -q 'process VmRSS' \
         || fail "35 MB in the ram-governor comment must be labelled process VmRSS"
@@ -124,7 +122,7 @@ grep -q 'fleet-ops#202' "$docs" || fail "docs/ram-governor-tree.md must cite fle
 grep -q 'memory.current' "$docs" || fail "docs/ram-governor-tree.md must name memory.current"
 grep -q 'VmRSS' "$docs" || fail "docs/ram-governor-tree.md must name VmRSS"
 grep -q 'ram-metric-compare' "$readme" || fail "README must name ram-metric-compare"
-ok "5. 35 MB is labelled process VmRSS; memory.current + #202 are recorded"
+ok "5. comment records #489 metric decision; memory.current + VmRSS named"
 
 # =========================================================================
 # 6. heartbeat + MANIFEST wiring
