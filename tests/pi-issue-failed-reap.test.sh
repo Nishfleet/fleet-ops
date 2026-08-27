@@ -150,3 +150,159 @@ set -e
 [[ ! -s "$tried" ]] || fail "tried-seats must be truncated after claim release, got: $(cat "$tried")"
 grep -q 'TRIED-SEATS-RESET' "$triage" || fail "triage missing TRIED-SEATS-RESET: $(cat "$triage")"
 ok "reaper truncates tried-seats after claim release (fleet-ops#381)"
+
+# fleet-ops#638 (auditor 2026-08-27T03:31Z): a stale .in packet at
+# $PI_ISSUES_DIR/<instance>.in keeps pi-issue@<instance>.service on
+# Restart=on-failure life support after a closed issue's PR is already
+# merged. The reap must mv .in/.out/.err -> ARCHIVED-<instance>.<ext>-<ts>
+# when it actually reaps a CLOSED issue, so the next unit fire is a no-op.
+write_gh_fake() {
+    local state_json="$1" branch_delete="$2"
+    cat >"$gh_bin/gh" <<FAKE_GH
+#!/usr/bin/env bash
+case "\$1" in
+  issue)
+    case "\$2" in
+      view)
+        printf '%s\n' '$state_json'
+        exit 0
+        ;;
+      edit|comment)
+        exit 0
+        ;;
+      *) echo "unexpected gh issue \$*" >&2; exit 1 ;;
+    esac
+    ;;
+  pr)
+    echo 0
+    exit 0
+    ;;
+  api)
+    # GET refs/heads/<branch>: decide existence by \$3
+    if [[ "\${1:-GET}" == "GET" ]]; then
+      exit ${branch_delete}
+    fi
+    # DELETE: succeed on a live delete, no-op otherwise (the script treats
+    # exit 0 as a successful delete).
+    exit 0
+    ;;
+  *) echo "unexpected gh \$*" >&2; exit 1 ;;
+esac
+FAKE_GH
+    chmod +x "$gh_bin/gh"
+}
+
+# --- Test A: live-skip must NOT archive (worker is still live) ---------------
+state_638="$fake/state-638"
+mkdir -p "$state_638/attempts"
+issues_dir="$fake/issues-638"
+mkdir -p "$issues_dir"
+printf 'packet-body-638\n' >"$issues_dir/fleet-ops-638.in"
+printf 'out-body-638\n' >"$issues_dir/fleet-ops-638.out"
+printf 'err-body-638\n' >"$issues_dir/fleet-ops-638.err"
+: >"$triage"
+write_fake activating 4242
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_638" PI_ISSUES_DIR="$issues_dir" \
+    "$bin" --dry-run fleet-ops-638 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live skip must exit 0, got $rc ($out)"
+[[ -f "$issues_dir/fleet-ops-638.in" ]] || fail "live skip must not archive .in packet"
+[[ -f "$issues_dir/fleet-ops-638.out" ]] || fail "live skip must not archive .out packet"
+[[ -f "$issues_dir/fleet-ops-638.err" ]] || fail "live skip must not archive .err packet"
+shopt -s nullglob
+archived_live=("$issues_dir"/ARCHIVED-*)
+shopt -u nullglob
+[[ "${#archived_live[@]}" -eq 0 ]] || fail "live skip must not create ARCHIVED- files, got: ${archived_live[*]}"
+grep -q 'PACKETS-ARCHIVED' "$triage" && fail "live skip must not write PACKETS-ARCHIVED: $(cat "$triage")"
+ok "live skip leaves packets intact (no premature archive)"
+
+# --- Test B: CLOSED reap must archive .in/.out/.err (the 638 root cause) -----
+state_638b="$fake/state-638b"
+mkdir -p "$state_638b/attempts"
+issues_dir_b="$fake/issues-638b"
+mkdir -p "$issues_dir_b"
+printf 'packet-body-638b\n' >"$issues_dir_b/fleet-ops-638.in"
+printf 'out-body-638b\n' >"$issues_dir_b/fleet-ops-638.out"
+printf 'err-body-638b\n' >"$issues_dir_b/fleet-ops-638.err"
+: >"$triage"
+write_gh_fake '{"state":"CLOSED","labels":[]}' 1   # branch ref exists, DELETE ok
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_638b" PI_ISSUES_DIR="$issues_dir_b" \
+    "$bin" fleet-ops-638 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "CLOSED reap must exit 0, got $rc ($out)"
+[[ ! -f "$issues_dir_b/fleet-ops-638.in" ]] || fail "CLOSED reap must archive .in (still present)"
+[[ ! -f "$issues_dir_b/fleet-ops-638.out" ]] || fail "CLOSED reap must archive .out (still present)"
+[[ ! -f "$issues_dir_b/fleet-ops-638.err" ]] || fail "CLOSED reap must archive .err (still present)"
+shopt -s nullglob
+archived_b=("$issues_dir_b"/ARCHIVED-fleet-ops-638.in-*)
+archived_out=("$issues_dir_b"/ARCHIVED-fleet-ops-638.out-*)
+archived_err=("$issues_dir_b"/ARCHIVED-fleet-ops-638.err-*)
+shopt -u nullglob
+[[ "${#archived_b[@]}" -eq 1 ]] || fail "expected one ARCHIVED .in, got: ${archived_b[*]}"
+[[ "${#archived_out[@]}" -eq 1 ]] || fail "expected one ARCHIVED .out, got: ${archived_out[*]}"
+[[ "${#archived_err[@]}" -eq 1 ]] || fail "expected one ARCHIVED .err, got: ${archived_err[*]}"
+# Same timestamp across the three (one stamp per invocation).
+[[ "${archived_b[0]##*-}" == "${archived_out[0]##*-}" ]] || fail "stamp mismatch between .in and .out archive"
+[[ "${archived_out[0]##*-}" == "${archived_err[0]##*-}" ]] || fail "stamp mismatch between .out and .err archive"
+grep -q 'PACKETS-ARCHIVED' "$triage" || fail "triage missing PACKETS-ARCHIVED: $(cat "$triage")"
+grep -q 'CLAIM-CLOSED-CLEANUP' "$triage" || fail "triage missing CLAIM-CLOSED-CLEANUP: $(cat "$triage")"
+# Original content preserved (mv, not delete).
+grep -q 'packet-body-638b' "${archived_b[0]}" || fail "archived .in must preserve content"
+ok "CLOSED reap archives .in/.out/.err to ARCHIVED-<instance>.<ext>-<ts> (fleet-ops#638)"
+
+# --- Test C: branch_deleted on OPEN issue must also archive ------------------
+state_638c="$fake/state-638c"
+mkdir -p "$state_638c/attempts"
+issues_dir_c="$fake/issues-638c"
+mkdir -p "$issues_dir_c"
+printf 'open-packet\n' >"$issues_dir_c/fleet-ops-639.in"
+printf 'open-out\n' >"$issues_dir_c/fleet-ops-639.out"
+: >"$triage"
+write_gh_fake '{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}' 0  # branch ref exists, DELETE ok
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_638c" PI_ISSUES_DIR="$issues_dir_c" \
+    "$bin" fleet-ops-639 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "OPEN branch_deleted reap must exit 0, got $rc ($out)"
+[[ ! -f "$issues_dir_c/fleet-ops-639.in" ]] || fail "branch_deleted reap must archive .in (still present)"
+[[ ! -f "$issues_dir_c/fleet-ops-639.out" ]] || fail "branch_deleted reap must archive .out (still present)"
+shopt -s nullglob
+archived_c=("$issues_dir_c"/ARCHIVED-*)
+shopt -u nullglob
+[[ "${#archived_c[@]}" -ge 1 ]] || fail "branch_deleted reap must create ARCHIVED- files, got: ${archived_c[*]}"
+grep -q 'PACKETS-ARCHIVED' "$triage" || fail "triage missing PACKETS-ARCHIVED: $(cat "$triage")"
+ok "branch_deleted reap archives packets (OPEN issue re-claim)"
+
+# --- Test D: dry-run must NOT archive (no mutating gh, no mv) ---------------
+state_638d="$fake/state-638d"
+mkdir -p "$state_638d/attempts"
+issues_dir_d="$fake/issues-638d"
+mkdir -p "$issues_dir_d"
+printf 'dry-packet\n' >"$issues_dir_d/fleet-ops-640.in"
+: >"$triage"
+write_gh_fake '{"state":"CLOSED","labels":[]}' 1
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_638d" PI_ISSUES_DIR="$issues_dir_d" \
+    "$bin" --dry-run fleet-ops-640 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "dry-run must exit 0, got $rc ($out)"
+[[ -f "$issues_dir_d/fleet-ops-640.in" ]] || fail "dry-run must NOT archive .in"
+shopt -s nullglob
+archived_d=("$issues_dir_d"/ARCHIVED-*)
+shopt -u nullglob
+[[ "${#archived_d[@]}" -eq 0 ]] || fail "dry-run must NOT create ARCHIVED- files, got: ${archived_d[*]}"
+grep -q 'PACKETS-ARCHIVED' "$triage" && fail "dry-run must NOT write PACKETS-ARCHIVED: $(cat "$triage")"
+ok "dry-run leaves packets intact (archive is not a side effect of --dry-run)"
