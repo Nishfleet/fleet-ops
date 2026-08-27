@@ -45,7 +45,10 @@ LOG = PACKET_DIR / "actions.log"
 # fleet-completion-canary (packet 11, fleet-ops#468) — also must not
 # spawn a real repair worker; the canary drives the drill by faking a
 # DISPATCH line + a transient unit and watching the ladder.
-SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill"}
+# WasteRatioRising (fleet-ops#1211) is a TREND alert for Weekly Review.
+# severity=none is not enough: this dispatcher keys on alertname, not
+# severity, so the name must live in SKIP_SET or a firing trend pages.
+SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill", "WasteRatioRising"}
 
 # Seat selection — pick a healthy lane instead of hardcoding one. The
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed

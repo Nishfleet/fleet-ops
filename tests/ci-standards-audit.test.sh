@@ -194,3 +194,7 @@ bash "$here/fleet-gh-cache-stale.test.sh"
 # fleet-ops#1263: TTL + provenance compile layer. Nested host so P14
 # covers it without a workflow-file edit.
 bash "$here/memoryctl-ttl-provenance.test.sh"
+
+# fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
+# Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/fleet-waste-ledger.test.sh"
