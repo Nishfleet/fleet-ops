@@ -1853,6 +1853,14 @@ bash "$here/fleet-failed-command-observe-duplicate-python-traceback.test.sh" || 
 # live 01a03e61 signal. Same CI constraint (worker token cannot add a
 # P14 line).
 bash "$here/fleet-failed-command-observe-duplicate-enoent.test.sh" || fail "fleet-failed-command-observe-duplicate-enoent tests failed"
+# fleet-ops#985: leftover-duplicate observe-to-close drain for the
+# 01a04105 git-branch-force pile (index-delay filings #849/#985; #849
+# closed by PR #990, #985 still open). The drain mechanism is the same
+# as #965 (edit-unmatch pile), #966 (python-traceback pile) and #972
+# (read-ENOENT pile); this test pins the citation chain and the
+# leftover exhaustion under the live 01a04105 signal. Same CI constraint
+# (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-observe-duplicate-git-branch-force.test.sh" || fail "fleet-failed-command-observe-duplicate-git-branch-force tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
