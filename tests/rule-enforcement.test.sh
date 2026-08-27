@@ -784,6 +784,16 @@ ok "rule-enforcement: ci-hosted-paths class gate"
 bash "$here/vault-conflict-resolver.test.sh" || fail "vault-conflict-resolver drill failed"
 ok "rule-enforcement: vault-conflict-resolver drill"
 
+# fleet-ops#1264: vault snapshot lint. Nested host so P14 covers it
+# without a workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/vault-lint.test.sh" || fail "vault-lint drill failed"
+ok "rule-enforcement: vault-lint drill"
+
+# fleet-ops#1265: paved-road vault capture. Nested host so P14 covers it
+# without a workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/vault-capture.test.sh" || fail "vault-capture drill failed"
+ok "rule-enforcement: vault-capture drill"
+
 # fleet-ops#533: argv[0] + push-before-delete + FLEET-PAUSED. Same
 # nested-CI host so this token does not need a workflow edit.
 bash "$here/fleet-wipe-lessons.test.sh" || fail "fleet-wipe-lessons gate drill failed"
@@ -871,4 +881,4 @@ ok "rule-enforcement: paid-flash canary drill"
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, and quality-ratchet drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, and vault-capture drills"
