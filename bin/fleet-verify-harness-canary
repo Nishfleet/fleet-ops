@@ -46,7 +46,12 @@
 #   FLEET_VERIFY_HARNESS_ORIGIN_FALLBACK  1 (default) re-check against
 #                                 origin's default-branch HEAD before filing
 #                                 when the local checkout is stale; 0 disables
-#                                 (used by tests that assert the local-only path)
+#                                 (used by tests that assert the local-only
+#                                 path). When on, also re-checks a
+#                                 `nishfleet` remote (fleet-ops#961) so a
+#                                 fork-named remote carries the same
+#                                 fleet-ops#927 spirit when `origin` is
+#                                 upstream.
 #   FLEET_OPS_REPO
 #   GH                            gh binary (tests stub this)
 
@@ -226,18 +231,19 @@ harness_ok() {
     [[ -n "$feats" ]]
 }
 
-# Resolve origin's default-branch ref for a checkout, or print empty when there
-# is no origin remote / no default-branch ref (fresh fixtures, offline). Tries
-# `refs/remotes/origin/HEAD` first (set by `git remote set-head` / a fetch),
-# then `origin/main`, then `origin/master`. Prints the ref to use, or nothing.
-origin_head_ref() {
-    local checkout="$1" ref
-    ref=$(git -C "$checkout" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || true)
+# Resolve a remote's default-branch ref for a checkout, or print empty when
+# there is no <remote> remote / no default-branch ref (fresh fixtures,
+# offline). Tries `refs/remotes/<remote>/HEAD` first (set by
+# `git remote set-head` / a fetch), then `<remote>/main`, then
+# `<remote>/master`. Prints the ref to use, or nothing.
+remote_default_ref() {
+    local checkout="$1" remote="$2" ref
+    ref=$(git -C "$checkout" symbolic-ref --quiet "refs/remotes/${remote}/HEAD" 2>/dev/null || true)
     if [[ -n "$ref" ]] && git -C "$checkout" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
         printf '%s' "$ref"
         return 0
     fi
-    for cand in origin/main origin/master; do
+    for cand in "${remote}/main" "${remote}/master"; do
         if git -C "$checkout" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
             printf '%s' "$cand"
             return 0
@@ -245,6 +251,9 @@ origin_head_ref() {
     done
     return 0
 }
+
+# Back-compat shim: same shape, defaults to the `origin` remote.
+origin_head_ref() { remote_default_ref "$1" origin; }
 
 inspect_product() {
     # Prints one token: ok | missing | invalid | no-checkout | not-git
@@ -277,27 +286,41 @@ inspect_product() {
         return 0
     fi
     # The compliance target is "HEAD on the default branch has a valid skill"
-    # (issue body, fleet-ops#524). The local checkout's HEAD can lag origin's
-    # default branch — fleet-ops#927 was filed 7s after the harness PR merged
-    # because the local HEAD was behind origin/main. Re-check against origin's
-    # default-branch HEAD before reporting a gap; a stale local checkout with a
-    # valid harness on origin is `ok`, not a violation.
+    # (issue body, fleet-ops#524). The local checkout's HEAD can lag any
+    # default branch the operator pulls from. Re-check before reporting a gap;
+    # a stale local checkout with a valid harness on a remote default branch
+    # is `ok`, not a violation.
+    #
+    # Fallback order (fleet-ops#961):
+    #   1. origin/<default> — fleet-ops#927. Covers the common case where
+    #      `origin` is the user's fork (Nishfleet/<repo>).
+    #   2. nishfleet/<default> — covers the case where `origin` is upstream
+    #      (e.g. context-hub, where origin = andrewyng/context-hub) and the
+    #      user's fork is a separately named remote. Same fleet-ops#927 spirit
+    #      extended to a second remote name (fleet-ops#961).
+    #
+    # Both are off when ORIGIN_FALLBACK=0 (tests assert the local-only
+    # path). ORIGIN_FALLBACK=1 (default) is the production seam.
     if [[ "$ORIGIN_FALLBACK" == "1" ]]; then
-        local oref opaths opath
-        oref=$(origin_head_ref "$checkout")
-        if [[ -n "$oref" ]]; then
-            opaths=$(skill_paths_on_head "$checkout" "$oref")
-            if [[ -n "$opaths" ]]; then
-                while IFS= read -r opath; do
-                    [[ -n "$opath" ]] || continue
-                    if harness_ok "$checkout" "$opath" "$oref"; then
-                        log "stale-local: $name local HEAD lacks a valid harness but ${oref} has one — treating as ok (fleet-ops#927)"
-                        printf 'ok\n'
-                        return 0
-                    fi
-                done <<<"$opaths"
+        local -a fallback_remotes=("origin" "nishfleet")
+        local remote oref opaths opath
+        for remote in "${fallback_remotes[@]}"; do
+            if ! git -C "$checkout" remote get-url "$remote" >/dev/null 2>&1; then
+                continue
             fi
-        fi
+            oref=$(remote_default_ref "$checkout" "$remote")
+            [[ -n "$oref" ]] || continue
+            opaths=$(skill_paths_on_head "$checkout" "$oref")
+            [[ -n "$opaths" ]] || continue
+            while IFS= read -r opath; do
+                [[ -n "$opath" ]] || continue
+                if harness_ok "$checkout" "$opath" "$oref"; then
+                    log "stale-local: $name local HEAD lacks a valid harness but ${oref} has one — treating as ok (fleet-ops#927)"
+                    printf 'ok\n'
+                    return 0
+                fi
+            done <<<"$opaths"
+        done
     fi
     printf '%s\n' "$local_state"
 }

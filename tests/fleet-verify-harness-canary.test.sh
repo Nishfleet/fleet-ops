@@ -401,4 +401,142 @@ grep -q 'VERIFY-HARNESS-VIOLATION' <<<"$env_out" || fail "scenario14: must LOUD 
 grep -q 'issue create' "$gh_log" || fail "scenario14: must auto-file (gh=$(cat "$gh_log"))"
 ok "scenario14: ORIGIN_FALLBACK=0 re-asserts the local-only missing path"
 
-ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam"
+# --- 15. stale local, valid harness on nishfleet/main (fleet-ops#961) ------
+# Reproduces the #961 class: origin points at upstream (andrewyng) which
+# does NOT have the harness, but a separately named `nishfleet` remote
+# points at the user's fork (Nishfleet/<repo>) which DOES have the harness
+# on its default branch. The fallback must walk the fallback_remotes list
+# past origin and accept the nishfleet ref.
+: >"$gh_log"; : >"$triage"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+# Build TWO bare remotes: origin = upstream (no harness), nishfleet = fork
+# (with harness). The local checkout has both remotes, but HEAD lacks the
+# harness.
+upstream_bare="$scratch/upstream-0509.git"
+fork_bare="$scratch/fork-0509.git"
+git -c init.defaultBranch=main init -q --bare "$upstream_bare"
+git -c init.defaultBranch=main init -q --bare "$fork_bare"
+# Seed upstream with a no-harness commit.
+upstream_work="$scratch/upstream-work"
+git init -q -b main "$upstream_work"
+git -C "$upstream_work" config user.email t@t
+git -C "$upstream_work" config user.name t
+echo "no harness upstream" >"$upstream_work/README"
+git -C "$upstream_work" add README
+git -C "$upstream_work" commit -q -m "upstream seed"
+git -C "$upstream_work" remote add origin "$upstream_bare"
+git -C "$upstream_work" push -q origin main
+# Seed fork (nishfleet) with a valid harness.
+fork_work="$scratch/fork-work"
+git init -q -b main "$fork_work"
+git -C "$fork_work" config user.email t@t
+git -C "$fork_work" config user.name t
+make_valid_harness "$fork_work" 0509
+git -C "$fork_work" remote add origin "$fork_bare"
+git -C "$fork_work" push -q origin main
+# Now create the inspected checkout: clone upstream so origin = upstream,
+# then add a nishfleet remote pointing at fork. Reset HEAD to a harness-
+# less commit so the local state is "missing".
+git clone -q "$upstream_bare" "$products/0509"
+git -C "$products/0509" config user.email t@t
+git -C "$products/0509" config user.name t
+git -C "$products/0509" remote add nishfleet "$fork_bare"
+git -C "$products/0509" fetch -q nishfleet
+git -C "$products/0509" rev-parse --verify --quiet nishfleet/main >/dev/null \
+  || fail "scenario15: fixture must have nishfleet/main ref"
+# Sanity: origin/main is the upstream (no harness) and nishfleet/main is the
+# fork (with harness). local HEAD sits on the upstream main, harness-less.
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario15: stale-local + nishfleet has harness must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-OK' <<<"$env_out" || fail "scenario15: must log OK ($env_out)"
+grep -q 'stale-local: 0509' <<<"$env_out" || fail "scenario15: must log stale-local ($env_out)"
+grep -q 'nishfleet/main' <<<"$env_out" || fail "scenario15: must name nishfleet/main as the source ref ($env_out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario15: must not file when nishfleet/main has the harness (gh=$(cat "$gh_log"))"
+fi
+ok "scenario15: stale local checkout with valid nishfleet/main harness is ok, no file (fleet-ops#961)"
+
+# --- 16. nishfleet fallback disabled when no nishfleet remote exists ---------
+# Same shape as 13 (only origin, valid on origin/main). Proves the new
+# fallback_remotes loop tolerates a missing nishfleet remote without
+# breaking the existing origin path.
+: >"$gh_log"; : >"$triage"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+origin_bare="$scratch/origin-0509-16.git"
+git -c init.defaultBranch=main init -q --bare "$origin_bare"
+work_clone="$scratch/origin-work-16"
+git init -q -b main "$work_clone"
+git -C "$work_clone" config user.email t@t
+git -C "$work_clone" config user.name t
+make_valid_harness "$work_clone" 0509
+git -C "$work_clone" remote add origin "$origin_bare"
+git -C "$work_clone" push -q origin main
+git clone -q "$origin_bare" "$products/0509"
+git -C "$products/0509" config user.email t@t
+git -C "$products/0509" config user.name t
+# Sanity: the new clone has no `nishfleet` remote.
+if git -C "$products/0509" remote get-url nishfleet >/dev/null 2>&1; then
+  fail "scenario16: fixture must NOT have a nishfleet remote"
+fi
+git -C "$products/0509" checkout -q --orphan stale-local
+git -C "$products/0509" rm -rf --quiet .claude 2>/dev/null || true
+rm -rf "$products/0509/.claude"
+echo "no harness here" >"$products/0509/README"
+git -C "$products/0509" add README
+git -C "$products/0509" commit -q -m "stale local HEAD without harness"
+git -C "$products/0509" rev-parse --verify --quiet origin/main >/dev/null \
+  || fail "scenario16: fixture must have origin/main ref"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario16: stale-local with origin (no nishfleet) must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-OK' <<<"$env_out" || fail "scenario16: must log OK ($env_out)"
+grep -q 'stale-local: 0509' <<<"$env_out" || fail "scenario16: must log stale-local ($env_out)"
+grep -q 'origin/main' <<<"$env_out" || fail "scenario16: must name origin/main as the source ref ($env_out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario16: must not file (gh=$(cat "$gh_log"))"
+fi
+ok "scenario16: missing nishfleet remote is tolerated, origin fallback still wins (fleet-ops#961)"
+
+# --- 17. BOTH remotes empty: still a real violation ------------------------
+# Same fixture as 15 (both remotes set up), but the fork's main branch is
+# reset to also lack the harness. The canary must find no valid harness
+# anywhere and report a real gap (this is the "fallback is not a free
+# pass" guard).
+: >"$gh_log"; : >"$triage"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+upstream_bare="$scratch/upstream-0509-17.git"
+fork_bare="$scratch/fork-0509-17.git"
+git -c init.defaultBranch=main init -q --bare "$upstream_bare"
+git -c init.defaultBranch=main init -q --bare "$fork_bare"
+upstream_work="$scratch/upstream-work-17"
+git init -q -b main "$upstream_work"
+git -C "$upstream_work" config user.email t@t
+git -C "$upstream_work" config user.name t
+echo "no harness upstream" >"$upstream_work/README"
+git -C "$upstream_work" add README
+git -C "$upstream_work" commit -q -m "upstream seed"
+git -C "$upstream_work" remote add origin "$upstream_bare"
+git -C "$upstream_work" push -q origin main
+fork_work="$scratch/fork-work-17"
+git init -q -b main "$fork_work"
+git -C "$fork_work" config user.email t@t
+git -C "$fork_work" config user.name t
+echo "no harness fork" >"$fork_work/README"
+git -C "$fork_work" add README
+git -C "$fork_work" commit -q -m "fork seed"
+git -C "$fork_work" remote add origin "$fork_bare"
+git -C "$fork_work" push -q origin main
+git clone -q "$upstream_bare" "$products/0509"
+git -C "$products/0509" config user.email t@t
+git -C "$products/0509" config user.name t
+git -C "$products/0509" remote add nishfleet "$fork_bare"
+git -C "$products/0509" fetch -q nishfleet
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario17: both remotes no-harness must exit 1, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-VIOLATION' <<<"$env_out" || fail "scenario17: must LOUD ($env_out)"
+grep -q 'issue create' "$gh_log" || fail "scenario17: must auto-file (gh=$(cat "$gh_log"))"
+ok "scenario17: fallback is not a free pass — both remotes no-harness is a real violation"
+
+ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty"
