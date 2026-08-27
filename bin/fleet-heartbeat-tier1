@@ -311,7 +311,8 @@ PY
 }
 
 # Whether tier 1 may reset+start this failed unit itself.
-#   recover — supply/repair units with NO OnFailure reap. A transient lane
+#   recover — supply/repair units with NO OnFailure reap, plus the TOP GEAR
+#             seat-recovery path+oneshot (fleet-ops#617). A transient lane
 #             fault (provider 429, ETIMEDOUT, StartLimit from transient
 #             retries) leaves them failed with no other recovery path, so
 #             the heartbeat's reset+start floor is safe and is the fix the
@@ -328,6 +329,8 @@ unit_recovery_class() {
         pi-intake-repair@*.service) printf 'recover' ;;
         pi-scout@*.service)         printf 'recover' ;;
         pi-scout-repair@*.service)  printf 'recover' ;;
+        fleet-seat-recovery.path)   printf 'recover' ;;
+        fleet-seat-recovery.service) printf 'recover' ;;
         *)                          printf 'observe' ;;
     esac
 }
@@ -781,7 +784,7 @@ log "4. failed-units pass starting"
 
 mapfile -t failed_units < <(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null \
     | awk '{print $1}' \
-    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p)' \
+    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p|fleet-seat-recovery\.(path|service)$)' \
     || true)
 
 for unit in "${failed_units[@]}"; do

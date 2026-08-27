@@ -1,5 +1,8 @@
 [Unit]
 Description=Fleet seat-recovery path watcher (fleet-ops#468)
+# OnFailure comes from path.d/10-escalate.conf (#618). StartLimit on the
+# triggered oneshot is the wedge that used to take this watcher down; that
+# limit is disabled there (fleet-ops#617).
 
 [Path]
 PathChanged=/home/nish/workspaces/agent-state/lanes/seats

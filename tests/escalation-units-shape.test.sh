@@ -131,6 +131,15 @@ for dropin in "$global_dropin" "$path_dropin" "$timer_dropin"; do
 done
 ok "service.d/path.d/timer.d 10-escalate.conf shape"
 
+# 7b. fleet-seat-recovery.service must not StartLimit-wedge the path unit.
+# systemd.path: a StartLimit hit on the triggered oneshot is propagated to
+# the path unit and takes the watcher down (fleet-ops#617).
+seat_svc="$repo_root/systemd/fleet-seat-recovery.service"
+[[ -f "$seat_svc" ]] || fail "missing: $seat_svc"
+grep -q '^StartLimitIntervalSec=0$' "$seat_svc" \
+  || fail "fleet-seat-recovery.service: StartLimitIntervalSec=0 (default 5/10s wedges the path unit)"
+ok "fleet-seat-recovery.service StartLimitIntervalSec=0"
+
 # 8. unit-escalation@.service.d/no-self-escalate.conf shape (recursion guard).
 grep -q '^\[Unit\]$' "$tmpl_dropin" || fail "no-self-escalate.conf: missing [Unit]"
 grep -q '^OnFailure=$' "$tmpl_dropin" || fail "no-self-escalate.conf: OnFailure must be reset to empty"
