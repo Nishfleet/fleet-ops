@@ -22,6 +22,9 @@
 #      missing-begin end preserves last_run and does not bump it.
 #  13. pi-scout@0509 uses the same template ExecCondition (no instance
 #      override). fleet_rules.yml ships FleetScoutStale (organ heartbeat).
+#  14. export_last_run writes fleet-scout.prom mode 0644 (node_exporter
+#      is a different uid; mktemp is 0600 and would make the metric
+#      absent — FleetScoutStale 2026-08-27T19:41Z).
 #
 # The live pi-scout@ oneshot is the outermost edge (it would run a real
 # LLM). The detector decision is exercised through the real helper.
@@ -407,5 +410,21 @@ else
   echo "SKIP: promtool not on PATH"
 fi
 ok "scenario13: FleetScoutStale ships with the organ; 0509 uses the shared template"
+
+# --- 14. fleet-scout.prom is 0644 (node_exporter is prometheus uid) ---------
+unset SERVICE_RESULT EXIT_STATUS || true
+rm -f "$scratch/fleet-scout.prom"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+mode=$(stat -c '%a' "$scratch/fleet-scout.prom")
+[[ "$mode" == "644" ]] \
+  || fail "scenario14: begin must write fleet-scout.prom mode 0644, got '$mode'"
+# A leftover 0600 (the live 2026-08-27 failure) must be repaired on rewrite.
+chmod 0600 "$scratch/fleet-scout.prom"
+"$bin" end 0509 0 >/dev/null
+mode=$(stat -c '%a' "$scratch/fleet-scout.prom")
+[[ "$mode" == "644" ]] \
+  || fail "scenario14: end must rewrite fleet-scout.prom mode 0644, got '$mode'"
+ok "scenario14: fleet-scout.prom is 0644 after begin and after end"
 
 echo "OK: scout-futility: green-and-empty scout escalates after N dry runs, never loops quietly"
