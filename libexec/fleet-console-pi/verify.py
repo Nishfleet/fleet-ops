@@ -12,15 +12,14 @@ percent tolerance on the gh spot; live counts are exact.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -201,12 +200,27 @@ def _atomic_write(path: Path, text: str):
 
 
 def _http_json(url, timeout=VERIFY_TIMEOUT):
+    """GET JSON from a loopback HTTP URL via http.client (no urllib)."""
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise VerifyError(f"refusing non-loopback host {host!r}")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = path + "?" + parsed.query
+    conn = http.client.HTTPConnection(host, parsed.port or 80, timeout=timeout)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, json.JSONDecodeError, ValueError) as exc:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status >= 400:
+            raise VerifyError(f"http {resp.status} {url}")
+        return json.loads(body)
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError,
+            http.client.HTTPException) as exc:
         raise VerifyError(f"http {url}: {str(exc)[:160]}") from exc
+    finally:
+        conn.close()
 
 
 def _promql_sum(expr):

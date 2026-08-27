@@ -10,13 +10,12 @@ Every tile carries a freshness contract (observed_at + stale_after_s +
 source + explain). A missing or stale metric renders unknown (the shell
 shows "—"), never a frozen last value and never a coerced zero.
 """
+import http.client
 import json
 import os
 import subprocess
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,6 +63,30 @@ def _unknown(source, stale_s, reason, explain=None):
     return _tile(source, stale_s, False, None, **kw)
 
 
+def _loopback_json(url, timeout=5):
+    """GET JSON from a loopback HTTP URL via http.client (no urllib)."""
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise PromError(f"refusing non-loopback host {host!r}")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = path + "?" + parsed.query
+    conn = http.client.HTTPConnection(host, parsed.port or 80, timeout=timeout)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status >= 400:
+            raise PromError(f"http {resp.status}")
+        return json.loads(body)
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError,
+            http.client.HTTPException) as exc:
+        raise PromError(str(exc)[:160]) from exc
+    finally:
+        conn.close()
+
+
 def _prom_query(expr, timeout=5):
     """Instant query. Returns [{metric, value}] or raises PromError.
 
@@ -71,12 +94,7 @@ def _prom_query(expr, timeout=5):
     omitted, or a true zero with no per-repo samples).
     """
     url = PROM + "/api/v1/query?" + urllib.parse.urlencode({"query": expr})
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            payload = json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, json.JSONDecodeError, ValueError) as exc:
-        raise PromError(str(exc)[:160]) from exc
+    payload = _loopback_json(url, timeout=timeout)
     if payload.get("status") != "success":
         raise PromError(f"prom status={payload.get('status')}")
     rows = []
@@ -91,12 +109,7 @@ def _prom_query(expr, timeout=5):
 
 def _prom_alerts(timeout=5):
     url = PROM + "/api/v1/alerts"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            payload = json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, json.JSONDecodeError, ValueError) as exc:
-        raise PromError(str(exc)[:160]) from exc
+    payload = _loopback_json(url, timeout=timeout)
     if payload.get("status") != "success":
         raise PromError(f"prom alerts status={payload.get('status')}")
     return (payload.get("data") or {}).get("alerts") or []
