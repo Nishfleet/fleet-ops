@@ -45,7 +45,9 @@ main="$scratch/main"
 # ---------------------------------------------------------------------------
 # Build a local bare origin with an initial main commit
 # ---------------------------------------------------------------------------
-git init -q --bare "$origin"
+# fleet-ops#598: pin init.defaultBranch on the same line so CI's git 2.55
+# (defaultBranch=master) matches the test's expectation of "main".
+git -c init.defaultBranch=main init -q --bare "$origin"
 git clone -q "$origin" "$main" 2>/dev/null
 git -C "$main" config user.email t@t
 git -C "$main" config user.name t
