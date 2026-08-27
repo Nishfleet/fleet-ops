@@ -769,10 +769,9 @@
     {
       "id": "led-2026-08-27-geo-plan-approved-lets-go",
       "source": "decisions-ledger.md: 2026-08-27 | GEO plan approved (\"lets go\")",
-      "mechanism": "GEO plan approved: #1236 probe starts immediately; #1237/#1238 ride the 08-28 product share; preview-then-autonomous brand gate as the approval mechanism for public content voice. Mechanism issue open.",
-      "proof": "fleet-ops#1256",
-      "status": "queued(#1256)",
-      "queued_since": "2026-08-27"
+      "mechanism": "fleet-geo-aeo-canary enforces GEO plan: measurement issues [1236], owned-content issues [1237, 1238], brand gate preview-then-autonomous, parked tactics reddit-community/digital-pr; run by heartbeat-tier1 block 34",
+      "proof": "bin/fleet-geo-aeo-canary; lib/geo-aeo.py; config/geo-aeo-policy.json; tests/geo-aeo-canary.test.sh",
+      "status": "enforced"
     }
   ]
 }
