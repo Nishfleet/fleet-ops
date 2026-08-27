@@ -128,25 +128,35 @@ if [[ "$finding_count" != "0" ]]; then
 
         signal="signal: failed-command-flagged/${slug}"
 
-        # Search both open and closed issues for this signal. Open dedup is
-        # existing behaviour. Closed dedup (fleet-ops#933) prevents re-filing
-        # the same session when a previous issue was closed by a worker PR
-        # before the session aged out of the 24h window. A closed issue with
-        # a resolved-at marker is a legitimate observe-to-close and is left
-        # alone. A closed issue without the marker is reopened so the session
-        # stays tracked and observe-to-close closes it for real.
+        # Open-issue dedup: grep the already-fetched open issue list
+        # (open_json) for the signal. GitHub's search API has an indexing
+        # delay — a just-filed issue is not searchable for several minutes,
+        # so consecutive heartbeat ticks each filed a duplicate before the
+        # prior one was indexed (live #951: 7 duplicates of #652 for the
+        # same session). The open issue list is fetched fresh each tick
+        # (line ~107) and has no index delay, so it is the reliable dedup
+        # source for open issues.
+        open_match=$(jq -c --arg sig "$signal" \
+            '[.[] | select(((.body // "") + "\n" + ((.comments // []) | map(.body // "") | join("\n"))) | contains($sig))] | first' \
+            <<<"$open_json" 2>/dev/null)
+        if [[ -n "$open_match" && "$open_match" != "null" ]]; then
+            onum=$(jq -r '.number' <<<"$open_match")
+            log "auto-file: $slug already open (#$onum) — deduped via open list"
+            continue
+        fi
+
+        # Closed-issue dedup (fleet-ops#933): search closed issues for the
+        # signal. Closed issues are older and already indexed, so the search
+        # API is reliable here. A closed issue with a resolved-at marker is
+        # a legitimate observe-to-close and is left alone. A closed issue
+        # without the marker is reopened so the session stays tracked and
+        # observe-to-close closes it for real.
         set +e
-        all_for_signal=$("$GH" issue list -R "$ISSUE_REPO" --state all --search "\"$signal\"" --json number,body,comments,state 2>/dev/null)
-        signal_rc=$?
+        closed_for_signal=$("$GH" issue list -R "$ISSUE_REPO" --state closed --search "\"$signal\"" --json number,body,comments 2>/dev/null)
+        closed_rc=$?
         set -e
-        if [[ "$signal_rc" -eq 0 && -n "$all_for_signal" ]] && jq -e . >/dev/null 2>&1 <<<"$all_for_signal"; then
-            open_match=$(jq '[.[] | select(.state == "OPEN")] | first' <<<"$all_for_signal")
-            if [[ -n "$open_match" && "$open_match" != "null" ]]; then
-                onum=$(jq -r '.number' <<<"$open_match")
-                log "auto-file: $slug already open (#$onum) — deduped"
-                continue
-            fi
-            closed_match=$(jq '[.[] | select(.state == "CLOSED")] | first' <<<"$all_for_signal")
+        if [[ "$closed_rc" -eq 0 && -n "$closed_for_signal" ]] && jq -e . >/dev/null 2>&1 <<<"$closed_for_signal"; then
+            closed_match=$(jq 'first' <<<"$closed_for_signal" 2>/dev/null)
             if [[ -n "$closed_match" && "$closed_match" != "null" ]]; then
                 cnum=$(jq -r '.number' <<<"$closed_match")
                 cblob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$closed_match")
