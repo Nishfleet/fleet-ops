@@ -4,10 +4,9 @@ dirty-worktree-audit — implements fleet-ops#38.
 
 Reads the weekly dirty-worktrees list and applies the required protocol:
 
-1. After `git fetch origin`, for each worktree's branch:
-   a. zero commits ahead of origin/main; else
-   b. `git cherry origin/main <branch>` yields no `+` lines; else
-   c. a PR for the branch is MERGED and `git merge-base --is-ancestor
+1. After `git fetch origin`, for each worktree's HEAD:
+   a. `git ls-remote origin` shows the HEAD SHA on an origin ref; else
+   b. A PR for the branch is MERGED and `git merge-base --is-ancestor
       <mergeCommit> origin/main` succeeds.
 
 2. Produces four markdown deliverables:
@@ -33,7 +32,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -97,17 +95,6 @@ def resolve_main_ref(path: str) -> Optional[str]:
     return None
 
 
-def get_default_branch_name(ref: str) -> str:
-    """Return a human-readable default branch name for the resolved ref."""
-    if ref == "origin/main":
-        return "main"
-    if ref == "origin/master":
-        return "master"
-    if ref == "origin/HEAD":
-        return "HEAD"
-    return ref
-
-
 def has_uu(path: str) -> bool:
     """True if the worktree has unresolved merge-conflict (UU) entries."""
     r = run_git(path, "status", "--porcelain")
@@ -119,24 +106,29 @@ def has_uu(path: str) -> bool:
     return False
 
 
-def commits_ahead(path: str, main_ref: str, branch_ref: str) -> Optional[int]:
-    """Return the number of commits branch_ref is ahead of main_ref."""
-    r = run_git(path, "rev-list", "--count", f"{main_ref}..{branch_ref}")
-    if r.returncode != 0:
-        return None
-    try:
-        return int(r.stdout.strip())
-    except ValueError:
-        return None
+def head_sha_on_origin(path: str, remote_refs: List[str]) -> Tuple[bool, str, str]:
+    """Return (HEAD is a tip of some origin ref, HEAD sha, reason)."""
+    head = run_git(path, "rev-parse", "HEAD")
+    if head.returncode != 0:
+        return False, "", f"cannot read HEAD: {head.stderr.strip()}"
+    sha = head.stdout.strip()
+    if not sha:
+        return False, "", "empty HEAD"
+    return sha in remote_refs, sha, ""
 
 
-def cherry_has_plus(path: str, main_ref: str, branch_ref: str) -> bool:
-    """True if `git cherry` reports any `+` line (unmatched patch ids)."""
-    r = run_git(path, "cherry", main_ref, branch_ref)
+def load_remote_refs(path: str) -> Tuple[List[str], str]:
+    """Return (SHAs of all origin ref tips, error message)."""
+    r = run_git(path, "ls-remote", "origin")
     if r.returncode != 0:
-        # Cannot determine; treat as unlanded to avoid a false negative.
-        return True
-    return re.search(r"^\+", r.stdout, re.MULTILINE) is not None
+        return [], r.stderr.strip()
+    shas: List[str] = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        shas.append(line.split()[0])
+    return shas, ""
 
 
 def find_merged_pr(prs: List[dict], branch_name: str) -> Optional[Tuple[int, str]]:
@@ -169,29 +161,6 @@ def merge_base_is_ancestor(path: str, commit: str, main_ref: str) -> bool:
     return r.returncode == 0
 
 
-def remote_branches_containing(path: str, sha: str) -> List[str]:
-    """Return origin/* branch names (excluding HEAD) that contain `sha`."""
-    r = run_git(path, "branch", "-r", "--contains", sha)
-    if r.returncode != 0:
-        return []
-    branches = []
-    for line in r.stdout.splitlines():
-        b = line.strip().lstrip("* ")
-        if b and b.startswith("origin/") and b != "origin/HEAD" and " -> " not in b:
-            branches.append(b)
-    return branches
-
-
-def prefer_feature_branch(branches: List[str]) -> Optional[str]:
-    """Prefer a non-main/master origin branch if one exists."""
-    if not branches:
-        return None
-    for b in branches:
-        if not re.fullmatch(r"origin/(main|master)", b):
-            return b
-    return branches[0]
-
-
 def last_commit_date(path: str, ref: str) -> Optional[str]:
     """Return ISO-8601 committer date of the ref's tip."""
     r = run_git(path, "log", "-1", "--format=%cI", ref)
@@ -204,19 +173,6 @@ def md_cell(value) -> str:
     """Make a value safe for a markdown table cell."""
     s = str(value).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
     return s.strip()
-
-
-def record_to_dict(record: List[str]) -> dict:
-    """Convert an internal list record into a status dict for reporting."""
-    return {
-        "path": record[0],
-        "repo": record[1],
-        "branch": record[2],
-        "commits_ahead": record[3],
-        "last_commit_date": record[4],
-        "status": record[5],
-        "reason": record[6],
-    }
 
 
 def parse_dirty_file(path: str) -> List[str]:
@@ -314,10 +270,7 @@ def load_pr_cache(pr_cache_dir: Path, repo: str, pr_limit: int) -> Tuple[List[di
     return data, ""
 
 
-def determine_candidate(
-    meta: dict,
-    main_ref: str,
-) -> Tuple[Optional[str], Optional[str], str]:
+def determine_candidate(meta: dict) -> Tuple[Optional[str], Optional[str], str]:
     """
     Return (candidate_ref, candidate_name, note) for classification.
 
@@ -326,41 +279,16 @@ def determine_candidate(
     """
     branch = meta.get("branch", "")
     head_sha = meta.get("head_sha", "")
-    path = meta["path"]
 
     if branch and branch != "HEAD":
         # Worktree is on a named local branch.
         return branch, branch, ""
 
-    if not head_sha:
-        return None, None, "no HEAD"
+    if head_sha:
+        # Truly detached HEAD.
+        return head_sha, "DETACHED", "detached HEAD"
 
-    # Detached HEAD. If the commit is already in the default branch, use it.
-    head_count = commits_ahead(path, main_ref, head_sha)
-    if head_count is not None and head_count == 0:
-        default_name = get_default_branch_name(main_ref)
-        return main_ref, default_name, "detached on default branch"
-
-    # Otherwise try to find the closest origin branch containing the commit.
-    remotes = remote_branches_containing(path, head_sha)
-    if remotes:
-        # Pick the branch with the fewest commits ahead of the default branch;
-        # if tied, prefer stable sort order for repeatability.
-        best = None
-        best_count: Optional[int] = None
-        for b in remotes:
-            cnt = commits_ahead(path, main_ref, b)
-            if cnt is None:
-                continue
-            if best is None or cnt < best_count or (cnt == best_count and b < best):
-                best = b
-                best_count = cnt
-        if best:
-            name = re.sub(r"^origin/", "", best)
-            return best, name, "detached on origin branch"
-
-    # Truly detached with no containing origin branch.
-    return head_sha, "DETACHED", "detached with no origin branch"
+    return None, None, "no HEAD"
 
 
 def push_branch(path: str, branch_name: str, dry_run: bool) -> Tuple[bool, str]:
@@ -390,6 +318,7 @@ def classify_and_act(
     meta: dict,
     pr_cache: Dict[str, List[dict]],
     main_ref_cache: Dict[str, Optional[str]],
+    ls_remote_cache: Dict[str, List[str]],
     dry_run: bool,
 ) -> dict:
     """
@@ -403,7 +332,6 @@ def classify_and_act(
         "repo": repo,
         "branch": meta.get("branch", ""),
         "candidate_branch": "",
-        "commits_ahead": "",
         "last_commit_date": "",
         "status": "error",
         "reason": "",
@@ -422,7 +350,16 @@ def classify_and_act(
         record["reason"] = "could not resolve origin/main/master/HEAD after fetch"
         return record
 
-    candidate_ref, candidate_name, note = determine_candidate(meta, main_ref)
+    remote_refs = ls_remote_cache.get(meta["git_common_dir"])
+    if remote_refs is None:
+        remote_refs, remote_err = load_remote_refs(path)
+        if remote_err:
+            record["status"] = "error"
+            record["reason"] = f"git ls-remote origin failed: {remote_err}"
+            return record
+        ls_remote_cache[meta["git_common_dir"]] = remote_refs
+
+    candidate_ref, candidate_name, note = determine_candidate(meta)
     if not candidate_ref:
         record["status"] = "error"
         record["reason"] = note
@@ -441,26 +378,19 @@ def classify_and_act(
         record["reason"] = "unresolved merge conflict (UU)"
         return record
 
-    # Check 1: zero commits ahead.
-    count = commits_ahead(path, main_ref, candidate_ref)
-    if count is None:
+    # Check 1: is the HEAD SHA on any origin ref?
+    on_origin, head_sha, remote_err = head_sha_on_origin(path, remote_refs)
+    if remote_err:
         record["status"] = "error"
-        record["reason"] = f"git rev-list --count {main_ref}..{candidate_ref} failed"
+        record["reason"] = remote_err
         return record
-    record["commits_ahead"] = str(count)
 
-    if count == 0:
+    if on_origin:
         record["status"] = "landed"
-        record["reason"] = f"{count} commits ahead of {main_ref}"
+        record["reason"] = f"HEAD {head_sha[:8]} is on origin"
         return record
 
-    # Check 2: git cherry yields no `+` lines.
-    if not cherry_has_plus(path, main_ref, candidate_ref):
-        record["status"] = "landed"
-        record["reason"] = "git cherry found no unmatched `+` lines (squash/rebase merged)"
-        return record
-
-    # Check 3: a merged PR whose merge commit is an ancestor of main.
+    # Check 2: a merged PR whose merge commit is an ancestor of main.
     pr_info = find_merged_pr(pr_cache.get(repo, []), candidate_name)
     if pr_info:
         number, merge_commit = pr_info
@@ -476,28 +406,24 @@ def classify_and_act(
     # Decide whether/what to push.
     if candidate_name in ("main", "master"):
         record["pushed"] = "skipped (main/master branch)"
-        record["reason"] = f"{record['commits_ahead']} commits ahead; main/master is protected"
-    elif candidate_ref.startswith("origin/"):
-        # Already visible on origin.
-        record["pushed"] = "already on origin"
-        record["reason"] = f"{record['commits_ahead']} commits ahead; branch is on origin but not merged"
+        record["reason"] = "local branch is main/master; not pushed"
     elif candidate_name == "DETACHED":
         worktree_name = Path(path).name
         ok, msg = push_rescue_branch(path, repo, meta.get("head_sha", ""), worktree_name, dry_run)
         record["pushed"] = msg
         if not ok and not dry_run:
             record["status"] = "error"
-            record["reason"] = f"{record['commits_ahead']} commits ahead; detached push failed: {msg}"
+            record["reason"] = f"detached push failed: {msg}"
         else:
-            record["reason"] = f"{record['commits_ahead']} commits ahead; detached with no merged PR"
+            record["reason"] = "detached with no merged PR"
     else:
         ok, msg = push_branch(path, candidate_name, dry_run)
         record["pushed"] = msg
         if not ok and not dry_run:
             record["status"] = "error"
-            record["reason"] = f"{record['commits_ahead']} commits ahead; push failed: {msg}"
+            record["reason"] = f"push failed: {msg}"
         else:
-            record["reason"] = f"{record['commits_ahead']} commits ahead; no merged PR"
+            record["reason"] = "no merged PR"
 
     return record
 
@@ -534,11 +460,11 @@ def write_markdown_report(
         f.write(f"- Errors / skipped: {len(errors)}\n\n")
 
         f.write("## 1. Genuinely unlanded branches\n\n")
-        f.write("| Repo | Branch | Commits ahead | Last commit | Pushed | Worktree |\n")
-        f.write("|------|--------|--------------|-------------|--------|----------|\n")
+        f.write("| Repo | Branch | Last commit | Pushed | Worktree |\n")
+        f.write("|------|--------|-------------|--------|----------|\n")
         for r in sorted(unlanded, key=lambda x: (x["repo"], x["branch"], x["path"])):
             f.write(
-                f"| {md_cell(r['repo'])} | {md_cell(r['branch'])} | {md_cell(r['commits_ahead'])} | "
+                f"| {md_cell(r['repo'])} | {md_cell(r['branch'])} | "
                 f"{md_cell(r['last_commit_date'])} | {md_cell(r['pushed'])} | `{md_cell(r['path'])}` |\n"
             )
         if not unlanded:
@@ -574,11 +500,10 @@ def write_markdown_report(
 
         f.write("## Method\n\n")
         f.write("Protocol followed, in order:\n")
-        f.write("1. `git rev-list --count origin/main..<branch>` == 0; else\n")
-        f.write("2. `git cherry origin/main <branch>` has no `+` lines; else\n")
-        f.write("3. A PR for `<branch>` is `MERGED` and `git merge-base --is-ancestor <mergeCommit> origin/main` succeeds.\n")
-        f.write("\nThe first passing check proves the branch is fully landed.\n")
-        f.write("Branches failing all three are genuinely unlanded and are pushed to origin so they become visible to other agents.\n")
+        f.write("1. `git ls-remote origin` shows the worktree HEAD on an origin ref; else\n")
+        f.write("2. A PR for the branch is `MERGED` and `git merge-base --is-ancestor <mergeCommit> origin/main` succeeds.\n")
+        f.write("\nThe first passing check proves the work is on origin.\n")
+        f.write("Worktrees failing both are genuinely unlanded and are pushed to origin so they become visible to other agents.\n")
         f.write("No worktree was deleted, stashed, or had changes reverted during this run.\n")
 
 
@@ -650,13 +575,19 @@ def main() -> int:
         if not ok:
             log(f"WARN: fetch failed for {cd}: {err}")
 
-    # Phase 3: resolve main refs.
+    # Phase 3: resolve main refs and ls-remote shas per git common dir.
     main_ref_cache: Dict[str, Optional[str]] = {}
+    ls_remote_cache: Dict[str, List[str]] = {}
     for m in metas:
         cd = m.get("git_common_dir")
         if cd and cd not in main_ref_cache:
             path = m["path"]
             main_ref_cache[cd] = resolve_main_ref(path)
+            remote_refs, remote_err = load_remote_refs(path)
+            if remote_err:
+                log(f"WARN: git ls-remote origin failed for {cd}: {remote_err}")
+                remote_refs = []
+            ls_remote_cache[cd] = remote_refs
 
     # Phase 4: load PR cache per repo.
     repos = {m.get("repo") for m in metas if m.get("repo")}
@@ -673,7 +604,7 @@ def main() -> int:
         for i, m in enumerate(metas, 1):
             if args.verbose:
                 log(f"[{i}/{len(metas)}] classifying {m['path']}")
-            record = classify_and_act(m, pr_cache, main_ref_cache, args.dry_run)
+            record = classify_and_act(m, pr_cache, main_ref_cache, ls_remote_cache, args.dry_run)
             records.append(record)
             if not args.verbose and (i % 50 == 0 or i == len(metas)):
                 log(f"{i}/{len(metas)} worktrees classified")
