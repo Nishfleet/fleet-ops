@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# nish-boundary-notify — delivers the Nish-RESERVED escalation class out of
+# NISH-ESCALATIONS.md and into an actual message.
+#
+# Named reason: the SENIOR-AUDITOR layer summons AGENTS, never Nish. Anything
+# an agent may not decide (money, legal, product direction, customer-data
+# deletion) lands in NISH-ESCALATIONS.md — which nothing read. On 2026-08-25
+# a MONEY-BOUNDARY ("both prepaid seats hit payment walls, NISH DECISION
+# NEEDED") sat unread for 11h. This closes that, and ONLY that: routine faults
+# still go to auditors and never text him.
+set -euo pipefail
+AS=${UNIT_ESCALATION_AGENT_STATE:-/home/nish/workspaces/agent-state}
+FILE="$AS/NISH-ESCALATIONS.md"
+SEEN="$AS/lanes/nish-boundary-notify.seen"
+CLASSES='MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION'
+
+[ -f "$FILE" ] || exit 0
+mkdir -p "$(dirname "$SEEN")"; touch "$SEEN"
+
+grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null | while IFS= read -r line; do
+  key=$(printf '%s' "$line" | sha256sum | cut -c1-32)
+  grep -qxF "$key" "$SEEN" && continue
+  # Body: the header line plus its indented SUMMARY/DECISION block.
+  body=$(awk -v want="$line" '
+    $0==want {p=1; print; next}
+    p && /^[[:space:]]/ {print; next}
+    p {exit}' "$FILE" | head -25)
+
+  # --- Probe gate -----------------------------------------------------------
+  # A provider quota/rate wall that RESETS is not a money boundary. On
+  # 2026-08-25 an auditor read devin 402 + minimax 429 as "payment wall, NISH
+  # DECISION NEEDED"; both seats were simply rate-limited and answered fine the
+  # next morning. Nish got paged for nothing. So: if this entry names provider
+  # seats, re-probe them live. All healthy => suppress the text, record it as
+  # revoked. Any seat still down => deliver, the wall is real.
+  seats=$(printf '%s' "$body" | grep -oE '\b(devin|minimax|openrouter|cursor|deepseek|opencode-go)/[A-Za-z0-9._-]+' | sort -u)
+  if [ -n "$seats" ]; then
+    all_ok=1
+    for seat in $seats; do
+      prov=${seat%%/*}; model=${seat#*/}
+      if echo 'Reply with exactly: SEAT-OK' | timeout 120 "${PI_BIN:-/home/nish/.local/bin/pi}" \
+           --print --provider "$prov" --model "$model" 2>/dev/null | grep -q 'SEAT-OK'; then
+        echo "probe: $seat healthy"
+      else
+        echo "probe: $seat STILL DOWN — wall is real, delivering"; all_ok=0
+      fi
+    done
+    if [ "$all_ok" = 1 ]; then
+      printf '%s\n' "$key" >> "$SEEN"
+      printf '%s REVOKED-BY-PROBE %s (all seats answered live; not a payment wall)\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >> "$FILE"
+      echo "suppressed (false money page): $line"
+      continue
+    fi
+  fi
+  if hermes send -t telegram --urgent "NEEDS YOU — only you can decide this:
+
+$body
+
+Full log: $FILE" </dev/null >/dev/null 2>&1; then
+    printf '%s\n' "$key" >> "$SEEN"
+    echo "delivered: $line"
+  else
+    echo "DELIVERY FAILED (will retry next tick): $line" >&2
+    exit 1
+  fi
+done

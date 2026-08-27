@@ -122,6 +122,12 @@ bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
 bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
+# fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint. The
+# script delivers Nish-RESERVED escalation classes out of NISH-ESCALATIONS.md;
+# its CLASSES regex is the allowlist of classes that may page Nish. Landing it
+# here (plus tests/nish-boundary-notify-classes.test.sh) stops a later
+# overwrite from silently dropping a reserved token.
+bin/nish-boundary-notify /home/nish/.local/bin/nish-boundary-notify
 bin/fleet-claim /home/nish/.local/bin/fleet-claim
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
