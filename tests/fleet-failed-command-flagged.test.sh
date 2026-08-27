@@ -14,6 +14,10 @@
 #   6e. Bash [N/M] progress + timeout, real user-facing flag -> exit 0.
 #   6f. Live #821: read of source with 'Command timed out' regex text -> exit 0.
 #   6g. Live #821: bash grep with 'Command timed out' in doc body -> exit 0.
+#   6h. Live #848: bash `git log` whose stdout contains 'Command timed
+#       out' as commit body text (isError=false) -> exit 0. The 6f/6g
+#       tests cover `read` and `bash grep`; this one covers a successful
+#       git log whose multi-commit body embeds the literal string.
 #   7. Auto-file with signal key, deduped on a second run.
 #   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
 #   7c. Same snippet plus a later flag -> exit 0.
@@ -493,6 +497,29 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "bash grep with 'Command timed out' in doc text should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "live #821: bash output with 'Command timed out' as doc text is not a swallowed timeout"
 rm -f "$sessions/bash-timeout-doc.jsonl"
+
+# --- 6h. live #848: bash `git log` with 'Command timed out' in commit body --
+# The session `2026-08-27T02-17-01-276Z_01a04101-...` ran
+#   `git log --no-merges --format="%H%n%B" origin/main..HEAD 2>&1 | head -100`
+# and got a multi-commit log back. The body of commit 7d6267d8
+# (the prior failed-command fix) mentions `Command timed out` in its
+# PR description. Pre-#929, the detector treated any toolResult text
+# containing that literal as a swallowed timeout, and the session was
+# auto-filed as #848. The fix narrowed `result_failed` so a TIMEOUT_RE
+# match only counts when there is a real failure signal. This locks the
+# `git log` shape so a future refactor cannot reintroduce the false
+# positive on a successful git command whose output happens to mention
+# the literal phrase.
+write_session "bash-timeout-git-log" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_log","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-652 && git log --no-merges --format=\"%H%n%B\" origin/main..HEAD 2>&1 | head -100"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_log","toolName":"bash","isError":false,"content":[{"type":"text","text":"7d6267d8e4b69a4ead5493afc689703e6f846baf\nfix(failed-command): lock the edit 'Could not find the exact text' shape (fleet-ops#652)\n\nThe session-close lint (fleet-ops#535) auto-filed #652: an `edit` tool\nreturned isError=true with 'Could not find the exact text in <path>. The\nold text must match exactly including all whitespace and newlines.' and\nthe worker walked past it without naming the failure in user-facing\ntext. The worker then read the file to find the right offset and\nsilently retried the edit. The detector is right to flag it: a 'Command\ntimed out' response is a real tool failure, not noise.\n\n\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Confirmed the prior fix is on the branch."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "bash git log with 'Command timed out' as commit body should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #848: bash git log with 'Command timed out' as commit body is not a swallowed timeout"
+rm -f "$sessions/bash-timeout-git-log.jsonl"
 
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
