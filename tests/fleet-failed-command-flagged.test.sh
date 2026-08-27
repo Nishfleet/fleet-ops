@@ -69,11 +69,29 @@ case "$cmd" in
         for f in "$store"/*.body; do
           [ -f "$f" ] || continue
           n=$((n+1))
+          # Skip closed issues (issue-N.closed marker exists)
+          [ -f "$store/issue-$n.closed" ] && continue
           body=$(tail -n +2 "$f")
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
           printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
         done
         printf '\n]\n'
+        ;;
+      close)
+        num=""; comment=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            [0-9]*) num="$1"; shift ;;
+            --comment) comment="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            --reason) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        : > "$store/issue-$num.closed"
+        [ -n "$comment" ] && printf '%s\n' "$comment" > "$store/issue-$num.close-comment"
+        echo "Closed issue #$num"
         ;;
       *) exit 1 ;;
     esac
@@ -235,6 +253,59 @@ grep -q "deduped" "$scratch/err3.log" || fail "second run did not dedupe $(cat "
 grep -rl "signal: failed-command-flagged/" "$scratch/gh-issues" | wc -l | grep -q "^1$" \
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
+rm -f "$sessions/swallowed.jsonl"
+
+# --- 7b. observe-to-close: clean tick closes the filed issue ----------------
+# The auto-file run above filed one issue (issue-1.body) with a signal key.
+# A clean tick (no findings) must close it via observe-to-close.
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-close.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "clean tick should exit 0 (got $rc) $(cat "$scratch/err-close.log")"
+grep -q "observe-to-close: CLOSED" "$scratch/err-close.log" \
+  || fail "clean tick did not close the filed issue $(cat "$scratch/err-close.log")"
+[ -f "$gh_store/issue-1.closed" ] \
+  || fail "issue-1 was not marked closed by observe-to-close"
+grep -q "observe-to-close" "$gh_store/issue-1.close-comment" \
+  || fail "close comment missing observe-to-close evidence"
+ok "observe-to-close closes a filed issue on a clean tick"
+
+# --- 7c. observe-to-close: still-active slug is NOT closed ------------------
+# File a new issue, then run with the slug still in findings — must NOT close.
+write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-noclose.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "active slug should exit 1 (got $rc)"
+# The newly filed issue should NOT be closed (its slug is still in findings)
+new_issue=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[ -f "$gh_store/issue-$new_issue.closed" ] \
+  && fail "active slug issue #$new_issue was closed (should stay open)" || true
+ok "observe-to-close leaves an active slug open"
 rm -f "$sessions/swallowed.jsonl"
 
 # --- 8. missing helper fails loud -------------------------------------------
