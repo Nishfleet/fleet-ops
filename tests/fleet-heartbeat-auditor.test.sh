@@ -6,6 +6,9 @@
 #   1. fleet-heartbeat-auditor lists scout-candidate issues and starts the
 #      three pi-audit@<repo>--<candidate>--<role>.service units for each.
 #   2. If any audit unit is active/activating, it is not started again.
+#   2b. If any needed unit is failed (StartLimitBurst exhausted), it
+#       reset-failed then starts it (fleet-ops#616). A vote already on
+#       disk is not restarted.
 #   3. When all three votes are present, it calls pi-audit-tally.
 #   4. pi-audit-tally: 2-of-3 PASS -> agent-ready, drop scout-candidate.
 #   5. pi-audit-tally: 2-of-3 FAIL -> discarded, drop scout-candidate,
@@ -109,6 +112,7 @@ chmod +x "$gh_fake"
 
 # --- fake systemctl ---------------------------------------------------------
 # $ACTIVE_UNITS  list of units reported active/activating.
+# $FAILED_UNITS  list of units reported failed (StartLimitBurst exhausted).
 systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
 #!/usr/bin/env bash
@@ -120,9 +124,16 @@ case "$cmd" in
     if [[ -f "${ACTIVE_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${ACTIVE_UNITS:-/dev/nonexistent}" 2>/dev/null; then
       echo active
+    elif [[ -f "${FAILED_UNITS:-/dev/nonexistent}" ]] \
+       && grep -qxF "$unit" "${FAILED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+      echo failed
     else
       echo inactive
     fi
+    exit 0
+    ;;
+  reset-failed)
+    printf 'reset-failed %s\n' "$1" >>"${CALLS:-/dev/null}"
     exit 0
     ;;
   start)
@@ -152,6 +163,7 @@ export AUDIT_PENDING_AGE_S=1
 export AUDIT_TALLY_BIN="$tally_bin"
 export CANDIDATES="$scratch/candidates"
 export ACTIVE_UNITS="$scratch/active_units"
+export FAILED_UNITS="$scratch/failed_units"
 export CALLS="$calls"
 export GH_CALLS="$gh_calls"
 
@@ -182,8 +194,8 @@ reset_state() {
   rm -rf "$state_dir"/*
   # shellcheck disable=SC2115
   rm -rf "$log_dir"/*
-  rm -f "$triage" "$calls" "$gh_calls" "$scratch"/active_units "$scratch"/candidates 2>/dev/null || true
-  : >"$calls"; : >"$gh_calls"; : >"$ACTIVE_UNITS"
+  rm -f "$triage" "$calls" "$gh_calls" "$scratch"/active_units "$scratch"/failed_units "$scratch"/candidates 2>/dev/null || true
+  : >"$calls"; : >"$gh_calls"; : >"$ACTIVE_UNITS"; : >"$FAILED_UNITS"
 }
 
 # ============================================================================
@@ -313,4 +325,84 @@ run_auditor
 grep -q 'AUDITOR-PANEL-PENDING' "$triage" || fail "scenario7: triage missing AUDITOR-PANEL-PENDING"
 ok "scenario7: stale pending candidate -> AUDITOR-PANEL-PENDING loud finding"
 
-ok "fleet-heartbeat-auditor: starts missing pi-audit units, tallies 2-of-3, fails closed, raises stale-pending alarm"
+# ============================================================================
+# Scenario 8: failed unit (StartLimitBurst exhausted) -> reset-failed + start
+# ============================================================================
+# The 2026-08-26 incident: pi-audit@...--free-glm-5-3 and --devin sat
+# failed after two seat faults. systemd would not start them again for
+# an hour. The next tick must clear the burst and start, so a recovered
+# seat is used instead of waiting out StartLimitIntervalSec.
+reset_state
+printf '47\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+printf 'pi-audit@demo--47--devin.service\n' >"$FAILED_UNITS"
+printf 'pi-audit@demo--47--free-glm-5-3.service\n' >>"$FAILED_UNITS"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario8: must exit 0, got $env_rc ($env_out)"
+for role in devin free-glm-5-3; do
+  unit="pi-audit@demo--47--$role.service"
+  grep -qx "reset-failed $unit" "$calls" \
+      || fail "scenario8: missing reset-failed for $role ($(cat "$calls"))"
+  grep -qx "start $unit" "$calls" \
+      || fail "scenario8: missing start for $role ($(cat "$calls"))"
+  reset_line=$(grep -n "^reset-failed $unit$" "$calls" | head -1 | cut -d: -f1)
+  start_line=$(grep -n "^start $unit$" "$calls" | head -1 | cut -d: -f1)
+  [[ -n "$reset_line" && -n "$start_line" && "$reset_line" -lt "$start_line" ]] \
+      || fail "scenario8: reset-failed must precede start for $role (calls=$(cat "$calls"))"
+done
+grep -qx 'start pi-audit@demo--47--straitly.service' "$calls" \
+    || fail "scenario8: inactive straitly must still be started"
+grep -q 'reset-failed pi-audit@demo--47--straitly.service' "$calls" \
+    && fail "scenario8: inactive straitly must not be reset-failed"
+ok "scenario8: failed pi-audit units get reset-failed then start; inactive ones only start"
+
+# ============================================================================
+# Scenario 9: failed unit whose vote is already on disk is not restarted
+# ============================================================================
+reset_state
+printf '48\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+printf 'pi-audit@demo--48--devin.service\n' >"$FAILED_UNITS"
+write_vote demo 48 devin PASS "already voted; unit leftover failed"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario9: must exit 0, got $env_rc ($env_out)"
+grep -q 'reset-failed pi-audit@demo--48--devin.service' "$calls" \
+    && fail "scenario9: voted failed unit must not be reset-failed ($(cat "$calls"))"
+grep -q 'start pi-audit@demo--48--devin.service' "$calls" \
+    && fail "scenario9: voted failed unit must not be started"
+grep -qx 'start pi-audit@demo--48--free-glm-5-3.service' "$calls" \
+    || fail "scenario9: missing vote still starts free-glm-5-3"
+grep -qx 'start pi-audit@demo--48--straitly.service' "$calls" \
+    || fail "scenario9: missing vote still starts straitly"
+ok "scenario9: failed unit with a vote on disk is left alone"
+
+# ============================================================================
+# Scenario 10: class lock — tier1 must invoke the auditor (fleet-ops#366)
+# ============================================================================
+# The incident class is "helper exists but is never called". A future edit
+# that drops block 4b fails this test instead of wedging pi-audit units
+# for an hour again.
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+[[ -f "$tier1" ]] || fail "missing $tier1"
+grep -q 'FLEET_HEARTBEAT_AUDITOR' "$tier1" \
+    || fail "tier1 must honour FLEET_HEARTBEAT_AUDITOR (block 4b)"
+grep -q 'AUDITOR_BIN=' "$tier1" \
+    || fail "tier1 must set AUDITOR_BIN"
+grep -F -- 'require_manifest_helper "$AUDITOR_BIN"' "$tier1" >/dev/null \
+    || fail "tier1 must call require_manifest_helper on AUDITOR_BIN"
+grep -F -- 'senior-auditor helper missing at $AUDITOR_BIN' "$tier1" >/dev/null \
+    || fail "tier1 must loud HELPER-MISSING when the auditor dest is absent"
+grep -F -- 'auditor_rc' "$tier1" >/dev/null \
+    || fail "tier1 must propagate auditor_rc"
+ok "scenario10: tier1 block 4b invokes fleet-heartbeat-auditor (not-called class locked)"
+
+# Nested CI host (workers cannot add a ci.yml line).
+grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \
+    || fail "fleet-heartbeat-low-water-mark.test.sh must host this file (CI cannot gain a new workflow line)"
+ok "hosted by fleet-heartbeat-low-water-mark.test.sh"
+
+ok "fleet-heartbeat-auditor: starts missing pi-audit units, recovers failed ones, tallies 2-of-3, fails closed, raises stale-pending alarm"
