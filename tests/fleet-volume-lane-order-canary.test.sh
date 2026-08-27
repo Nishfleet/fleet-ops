@@ -59,12 +59,18 @@ case "$*" in
     echo "https://github.com/Nishfleet/fleet-ops/issues/999"
     exit 0
     ;;
+  *"issue close"*)
+    # observe-to-close path: record every close call so tests can assert.
+    printf '%s\n' "$*" >>"${GH_CLOSE_LOG:-/dev/null}"
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
 chmod +x "$gh_fake"
 export GH="$gh_fake"
 export GH_LOG="$gh_log"
+export GH_CLOSE_LOG="$scratch/gh.close.log"
 export PATH="$scratch:$PATH"
 
 write_caps() { cat >"$scratch/seat-caps.json"; }
@@ -387,4 +393,178 @@ set -e
   || fail "scenario12: volume order must prefer ollama over free hetzner, got: $pick"
 ok "scenario12: pick_seat prefers volume prefix (ollama) over leftover free (hetzner)"
 
-ok "fleet-volume-lane-order-canary: missing, mismatch, cap, models, cursor, seat-lib wire, xai detector, dedup, production clean, heartbeat, pick_seat"
+unset PI_SEAT_LIB_CHECK_SYSTEMD PI_MODELS_JSON SEAT_CAPS_JSON
+unset PI_SEAT_HEALTH_LEDGER_DIR PI_PACKET_STATE PI_ACTIVE_SEATS_DIR
+
+# --- 13. observe-to-close: open volume_providers_in_order missing, signal now clean ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps; base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: volume_providers_in_order missing\n' \
+  '[{number: 1269, title: "volume lane order: volume_providers_in_order missing", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario13: clean tick must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1269' <<<"$env_out" \
+  || fail "scenario13: must close #1269 ($env_out)"
+grep -q 'issue close.*1269' "$GH_CLOSE_LOG" \
+  || fail "scenario13: gh issue close must be called for #1269 (log=$(cat "$GH_CLOSE_LOG"))"
+ok "scenario13: closed #1269 once volume_providers_in_order is the locked prefix"
+unset GH_OPEN_ISSUES
+
+# --- 14. observe-to-close: open volume_providers_in_order missing, signal still active ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+write_caps <<'JSON'
+{
+  "providers": {
+    "ollama": { "cap": 4, "class": "prepaid-quota", "models": { "deepseek-v4-flash:0731": 4 } },
+    "devin": { "cap": 4, "class": "prepaid-quota", "models": { "glm-5-2": 4 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2 } },
+    "cline": { "cap": 2, "class": "prepaid-quota", "models": { "cline-pass/minimax-m3": 2 } }
+  }
+}
+JSON
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: volume_providers_in_order missing\n' \
+  '[{number: 1269, title: "volume lane order: volume_providers_in_order missing", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario14: missing csv must still exit 1, got rc=$env_rc ($env_out)"
+# A NEW issue is filed in this scenario (the canary re-detects the
+# missing field), so the open list now has #1269 as the original AND
+# #999 as a freshly filed one. observe_to_close must keep #1269 because
+# the signal is still active (csv still missing), and must NOT close it
+# just because we are filing a new ticket.
+if grep -q 'observe-to-close: CLOSED issue #1269' <<<"$env_out"; then
+    fail "scenario14: must NOT close #1269 when signal still active ($env_out)"
+fi
+grep -q 'observe-to-close: keep #1269' <<<"$env_out" \
+  || fail "scenario14: must log keep for #1269 ($env_out)"
+# Note: a fresh file_finding also runs; we only assert #1269 stays open
+# here. The newly filed issue lives in a separate marker shape and the
+# canary does not get to re-evaluate it on the same tick.
+ok "scenario14: kept #1269 open when volume_providers_in_order still missing"
+unset GH_OPEN_ISSUES
+
+# --- 15. observe-to-close: open <provider> cap-zero, cap is now >0 ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps
+jq '.providers.devin.cap = 2' "$scratch/seat-caps.json" >"$scratch/seat-caps.tmp" \
+  && mv "$scratch/seat-caps.tmp" "$scratch/seat-caps.json"
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: devin cap-zero\n' \
+  '[{number: 1290, title: "volume lane order: devin cap=0 (cannot lead)", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario15: cap>0 must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1290' <<<"$env_out" \
+  || fail "scenario15: must close #1290 ($env_out)"
+ok "scenario15: closed <provider> cap-zero issue once cap is raised"
+unset GH_OPEN_ISSUES
+
+# --- 16. observe-to-close: open <provider> empty-models, models now populated ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps
+jq '.providers.commandcode.models = {"deepseek/deepseek-v4-flash": 1}' \
+  "$scratch/seat-caps.json" >"$scratch/seat-caps.tmp" \
+  && mv "$scratch/seat-caps.tmp" "$scratch/seat-caps.json"
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: commandcode empty-models\n' \
+  '[{number: 1291, title: "volume lane order: commandcode has no allowlisted models", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario16: models populated must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1291' <<<"$env_out" \
+  || fail "scenario16: must close #1291 ($env_out)"
+ok "scenario16: closed empty-models issue once models map is non-empty"
+unset GH_OPEN_ISSUES
+
+# --- 17. observe-to-close: open cursor in-volume-prefix, cursor now excluded ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps
+jq '.volume_providers_in_order = ["ollama","devin","commandcode","cline"]' \
+  "$scratch/seat-caps.json" >"$scratch/seat-caps.tmp" \
+  && mv "$scratch/seat-caps.tmp" "$scratch/seat-caps.json"
+base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: cursor in-volume-prefix\n' \
+  '[{number: 1292, title: "volume lane order: cursor must not be in the volume prefix", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario17: cursor removed must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1292' <<<"$env_out" \
+  || fail "scenario17: must close #1292 ($env_out)"
+ok "scenario17: closed in-volume-prefix issue once cursor is excluded"
+unset GH_OPEN_ISSUES
+
+# --- 18. observe-to-close: xai-oauth unwired must NOT be auto-closed by this canary ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps; base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: xai-oauth unwired\n' \
+  '[{number: 1163, title: "wire xai-oauth into seat-caps", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18: xai detector tick must stay green, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: keep #1163' <<<"$env_out" \
+  || fail "scenario18: must keep #1163 (xai-oauth out of scope) ($env_out)"
+if [[ -s "$GH_CLOSE_LOG" ]] && grep -q '1163' "$GH_CLOSE_LOG"; then
+    fail "scenario18: must NOT call issue close on #1163 (log=$(cat "$GH_CLOSE_LOG"))"
+fi
+ok "scenario18: xai-oauth unwired kept open (wire owned by #1163)"
+unset GH_OPEN_ISSUES
+
+# --- 19. observe-to-close: issue without the marker is ignored ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps; base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+# Body has no marker; canary must not close it even though seat-caps is clean.
+jq -n '[{number: 42, title: "unrelated open issue", body: "no marker here"}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario19: clean tick must exit 0, got rc=$env_rc ($env_out)"
+if [[ -s "$GH_CLOSE_LOG" ]]; then
+    fail "scenario19: must not close issues without the marker (log=$(cat "$GH_CLOSE_LOG"))"
+fi
+ok "scenario19: issue without marker is ignored by observe-to-close"
+unset GH_OPEN_ISSUES
+
+# --- 20. observe-to-close: FLEET_VOLUME_ORDER_FILE=0 disables both file and close ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps; base_models; base_seat_lib
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: volume_providers_in_order missing\n' \
+  '[{number: 1269, title: "volume lane order: volume_providers_in_order missing", body: $b}]' >"$GH_OPEN_ISSUES"
+FLEET_VOLUME_ORDER_FILE=0 run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario20: clean tick must exit 0, got rc=$env_rc ($env_out)"
+if [[ -s "$GH_CLOSE_LOG" ]]; then
+    fail "scenario20: must not close when FLEET_VOLUME_ORDER_FILE=0 (log=$(cat "$GH_CLOSE_LOG"))"
+fi
+if grep -q 'issue close' "$gh_log"; then
+    fail "scenario20: must not even call gh when FLEET_VOLUME_ORDER_FILE=0 (gh=$(cat "$gh_log"))"
+fi
+ok "scenario20: FLEET_VOLUME_ORDER_FILE=0 disables both file and close"
+unset GH_OPEN_ISSUES
+
+# --- 21. observe-to-close: seat-lib wire issue is closed once seat-lib has the markers ---
+: >"$gh_log"; : >"$triage"; : >"$GH_CLOSE_LOG"
+base_caps; base_models
+# Stub seat-lib WITHOUT volume markers, then run the canary; the gate
+# fails and the canary files a no-volume-bucket issue. Then we swap
+# the stub to one WITH the markers, set up a matching open issue, and
+# run the canary again: gate passes, observe-to-close must drain.
+write_seat_lib <<'SH'
+#!/usr/bin/env bash
+SEAT_FREE_ORDER=""
+SH
+export GH_OPEN_ISSUES="$scratch/open.json"
+jq -n --arg b $'body\nvolume-lane-order-canary: seat-lib no-volume-bucket\n' \
+  '[{number: 1293, title: "volume lane order: pick_seat missing volume_seats bucket", body: $b}]' >"$GH_OPEN_ISSUES"
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario21a: missing seat-lib wire must fail, got rc=$env_rc"
+# Now wire seat-lib; the canary must close #1293.
+base_seat_lib
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario21b: wired seat-lib must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'observe-to-close: CLOSED issue #1293' <<<"$env_out" \
+  || fail "scenario21b: must close #1293 once seat-lib is wired ($env_out)"
+ok "scenario21: seat-lib wire issue closed once pick_seat carries the volume markers"
+unset GH_OPEN_ISSUES
+
+ok "fleet-volume-lane-order-canary: missing, mismatch, cap, models, cursor, seat-lib wire, xai detector, dedup, production clean, heartbeat, pick_seat, observe-to-close"
