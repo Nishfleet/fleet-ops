@@ -8,6 +8,21 @@ Description=Fleet seat-recovery trigger (fire intake on NO-USABLE-SEAT -> usable
 # Time-based bench expiry is the heartbeat's slow-path floor; this is the
 # fast path for the common case (a health write marks a seat usable).
 
+# fleet-ops#622: the seats ledger is written every few seconds (every
+# seat-health extension update), so fleet-seat-recovery.path fires this
+# service ~30x/min. The DEFAULT StartLimitBurst=5 / StartLimitIntervalSec=10s
+# is blown through in well under a minute of normal fleet traffic, which
+# wedges BOTH this service AND the .path unit with unit-start-limit-hit
+# (proven live: the path unit went inactive/failed 12min after start on
+# 2026-08-27). The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (default 120s) is
+# the real rate-limiter for the side effect (the intake fire); the systemd
+# start limit here only needs to tolerate the no-op trigger storm, not gate
+# the fire. Raise it well above the worst-case sustained write rate so a
+# healthy fleet cannot wedge its own seat-recovery fast path. StartLimit*
+# must live in [Unit], not [Service] (same convention as pi-intake@.service).
+StartLimitIntervalSec=1h
+StartLimitBurst=2000
+
 [Service]
 Type=oneshot
 ExecStart=/home/nish/.local/bin/fleet-seat-recovery

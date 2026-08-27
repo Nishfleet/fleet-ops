@@ -15,6 +15,11 @@
 #   5. Repos come from FLEET_SEAT_RECOVERY_REPOS when set.
 #   6. Fires for every enrolled repo from intake-repos.json when no override.
 #   7. systemctl mock records real invocations (not DRY).
+#
+# fleet-ops#622: the unit-shape + live wedge-recovery assertions live in the
+# split file tests/fleet-seat-recovery-units.test.sh, invoked first below so
+# they run independently of the bin-transition logic in this file (and before
+# any pre-existing failure in the bin section can abort the run).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +28,11 @@ bin="$repo_root/bin/fleet-seat-recovery"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
+
+# fleet-ops#622: run the unit-shape + wedge-recovery assertions first, in
+# their own process, so a regression there is reported independently of the
+# bin-transition checks below.
+bash "$here/fleet-seat-recovery-units.test.sh"
 
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
