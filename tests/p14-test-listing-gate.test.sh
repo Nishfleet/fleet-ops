@@ -88,6 +88,7 @@ live_skip[worker-token-live.test.sh]=1
 # gate fails with their basenames in the FAIL message.
 known_orphans=(
   agent-cron-failure-reason.test.sh
+  agent-cron-workdir-guard.test.sh
   failure-mechanism-gate.test.sh
   fleet-heartbeat-degraded-lane-glob.test.sh
   fleet-heartbeat-failed-units-recover.test.sh
