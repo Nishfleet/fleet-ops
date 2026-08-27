@@ -11,8 +11,13 @@ grep/rg/diff exit 1 (POSIX no-match) is not a failure. ls no-match
 (exit 2, the canonical "ls: cannot access '<path>': No such file or
 directory" line) and which no-match (exit 1) are also treated as probes.
 ls exit 2 with any other error (Permission denied, I/O error, Is a
-directory, etc.) is a real failure. Exit >= 2 (other than the canonical
-ls probe), timeouts, and non-probe exit 1 (the 404 origin case) are. A
+directory, etc.) is a real failure. `git log|rev-parse|show|diff|cat-file
+<bad-ref>` exit 128 (the canonical "fatal: ambiguous argument '<ref>'"
+or "fatal: bad revision '<ref>'" line) is a deliberate existence probe
+and is also treated as a probe. Other `fatal:` lines (not a git
+repository, unable to access, repository not found, bad object, etc.)
+remain real failures. Exit >= 2 (other than the canonical ls / git
+probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
 spawn-guard or harness block (SPAWN_BLOCKED / "Dangerous command
 blocked") is not a ran-and-failed command: the call never executed.
 
@@ -77,6 +82,54 @@ LS_REAL_ERR_RE = re.compile(
     r"Too many levels of symbolic links|Structure needs cleaning|"
     r"No space left on device|File name too long|"
     r"Invalid argument|Text file busy)",
+    re.I,
+)
+# git ref-existence probe (live #822): the agent runs
+#   `git log|rev-parse|show|diff|cat-file <ref> 2>/dev/null`
+# to test whether a branch/tag/remote ref exists. When the ref is unknown
+# git exits 128 with `fatal: ambiguous argument '<ref>': ...` on stderr
+# (or `fatal: bad revision '<ref>'` on older git). The agent has silenced
+# stderr on purpose, so the toolResult shows the successful stdout of any
+# preceding command in the same chain and a bare "Command exited with
+# code 128" trailer. Treat that as a deliberate probe, not a swallowed
+# failure. Other `fatal:` lines (not a git repository, unable to access,
+# repository not found, bad object, etc.) are real failures and must NOT
+# be exempted.
+GIT_BENIGN_RE = re.compile(
+    r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
+    r"git\s+(?:log(?:\s+-?\d+)?|rev-parse|show|diff|cat-file|shortlog)\b",
+    re.I,
+)
+# Canonical "this ref does not exist" probe line emitted by git on stderr.
+# Modern git prints "fatal: ambiguous argument '<ref>': unknown revision
+# or path not in the working tree."; older git prints "fatal: bad
+# revision '<ref>'". Both are exit 128 and both are deliberate-probe
+# signals. The ref itself is intentionally permissive.
+GIT_CANONICAL_NO_REF_RE = re.compile(
+    r"^fatal:\s+(?:ambiguous argument '([^']+)':"
+    r"|bad revision '([^']+)')",
+    re.M,
+)
+# Real git fatal/permission lines that must NOT be treated as a no-ref
+# probe even when the command is in the git-ref family. A `git log` on a
+# corrupt index, a repo that is not a git repository, a missing remote,
+# a bad config, a bad object, or a denied access is a genuine swallowed
+# failure; only the canonical "ambiguous argument / bad revision" shape
+# is benign.
+GIT_REAL_ERR_RE = re.compile(
+    r"(fatal:\s+not a git repository"
+    r"|fatal:\s+unable to access"
+    r"|fatal:\s+repository\b"
+    r"|fatal:\s+remote\b"
+    r"|fatal:\s+(?:bad config|invalid config|missing config)"
+    r"|fatal:\s+(?:index file|object|loose object|packed)"
+    r"|fatal:\s+(?:ref|reference)\b.*does not exist"
+    r"|fatal:\s+bad object"
+    r"|fatal:\s+(?:cannot|could not)"
+    r"|Permission denied"
+    r"|fatal:\s+protocol error"
+    r"|fatal:\s+(?:early EOF|the remote end hung up)"
+    r"|error: pathspec)",
     re.I,
 )
 # Unquoted assistant report. Tight on the standing-rule verbs.
@@ -186,6 +239,40 @@ def _ls_canonical_probe(text: str) -> bool:
     return True
 
 
+def _git_canonical_probe(text: str) -> bool:
+    """True iff a `git log|rev-parse|show|diff|cat-file` exit-128
+    toolResult text is a deliberate ref-existence probe and not a
+    swallowed failure (live #822).
+
+    Two shapes count as a probe:
+
+    1. The canonical no-ref line is present and the text shows no other
+       git fatal / permission error. The canonical line is
+           fatal: ambiguous argument '<ref>': ...
+       (modern git) or
+           fatal: bad revision '<ref>'
+       (older git). Real git errors (not a git repository, unable to
+       access, repository not found, bad config, Permission denied,
+       etc.) keep the toolResult as a finding.
+
+    2. The text shows no `fatal:` line at all. This is the
+       `git log <ref> 2>/dev/null` shape — the agent explicitly silenced
+       stderr and is checking the exit code. The non-zero exit on
+       `git log` with stderr silenced means the ref does not exist; that
+       is a deliberate probe.
+    """
+    if GIT_REAL_ERR_RE.search(text):
+        return False
+    if GIT_CANONICAL_NO_REF_RE.search(text):
+        return True
+    # No canonical probe line and no real git error: was stderr silenced?
+    # If the text contains any `fatal:` line we did not pattern-match,
+    # treat it as a real error and keep the toolResult as a finding.
+    if re.search(r"\bfatal:\s", text):
+        return False
+    return True
+
+
 def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     if code is None:
         return False
@@ -199,6 +286,17 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     # errors (permission, I/O, etc.) are still flagged.
     if LS_BENIGN_RE.search(command) and code == 2:
         return _ls_canonical_probe(text)
+    # git ref-existence probe (live #822): `git log|rev-parse|show|diff|
+    # cat-file <bad-ref>` exits 128 with `fatal: ambiguous argument` (or
+    # `fatal: bad revision` on older git) on stderr. Agents routinely
+    # run this with `2>/dev/null` to test whether a branch/tag/remote
+    # ref exists without spamming the user. Treat that exit-128 with
+    # the canonical probe line — or no `fatal:` line at all (silenced
+    # stderr) — as a deliberate probe. Other `fatal:` lines (not a git
+    # repository, unable to access, repository not found, etc.) remain
+    # real failures.
+    if GIT_BENIGN_RE.search(command) and code == 128:
+        return _git_canonical_probe(text)
     if code != 1:
         return False
     return BENIGN_STAGE_RE.search(command) is not None
