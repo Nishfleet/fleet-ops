@@ -13,6 +13,14 @@
 #   8. Auto-file with signal key, deduped on a second run.
 #   9. Missing helper / missing ledger fails loud.
 #  10. Contracts: heartbeat wiring, MANIFEST, nested CI host.
+#  11. Live #1138: systemd "should we read from the service" self-talk
+#      overlapping generic `from`/`process`/`source` (the last from the
+#      ledger context-pointer) is NOT a vacation-window re-ask.
+#  12. Positive control for #1138: a real same-sentence vacation-window
+#      question still flags.
+#  13. Observe-to-close (fleet-ops#650 shape, #1138 drain): green tick
+#      comments resolved-at; later tick closes; still-dirty slug is
+#      neither commented nor closed.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +45,7 @@ mkdir -p "$sessions"
 
 cat >"$scratch/ledger.md" <<'EOF'
 # Fixture ledger
+- 2026-08-27 | Vacation window corrected | Nish departs 2026-08-28, returns 2026-09-08 (11 days). All vacation grants (D1 migrations via senior process, fleet-ops precedence) run through 2026-09-08. Anything needing Nish's input must be surfaced TODAY (08-27); from tomorrow only boundary-class texts reach him. Credential/token/quota expiry checks must cover through 2026-09-08 inclusive. | source: interactive Claude session 2026-08-27
 - 2026-08-25 | 0509 deploys | auto deploy on green | test
 - 2026-08-26 | bikeshed colour | never ask about zebras painted purple | test
 - 2026-08-26 | worker-lane refresh | use whichever flash model is cheapest; caps land via seat-caps.json; file a wiring issue for the change | test
@@ -69,16 +78,71 @@ case "$cmd" in
         printf '%s\n' "$body" >> "$f"
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
+      comment)
+        num=""; body=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --body) body="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            *)
+              if [ -z "$num" ]; then num="$1"; fi
+              shift
+              ;;
+          esac
+        done
+        printf '%s\n' "$body" >"$store/issue-${num}.comments"
+        printf '%s\n' "$num" >>"$store/commented"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#issuecomment-1"
+        ;;
+      close)
+        num=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --reason|--repo|-R) shift 2 ;;
+            *)
+              if [ -z "$num" ]; then num="$1"; fi
+              shift
+              ;;
+          esac
+        done
+        : >"$store/issue-${num}.closed"
+        printf '%s\n' "$num" >>"$store/closed"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/${num}"
+        ;;
       list)
+        state_filter="open"
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --state) state_filter="$2"; shift 2 ;;
+            --limit|--json|--repo|-R) shift 2 ;;
+            *) shift ;;
+          esac
+        done
         printf '[\n'
         first=1
-        n=0
-        for f in "$store"/*.body; do
+        for f in "$store"/issue-*.body; do
           [ -f "$f" ] || continue
-          n=$((n+1))
+          num=$(basename "$f" .body)
+          num=${num#issue-}
+          is_closed=""
+          [ -f "$store/issue-${num}.closed" ] && is_closed="1"
+          if [ "$state_filter" = "open" ] && [ -n "$is_closed" ]; then
+            continue
+          fi
+          if [ "$state_filter" = "closed" ] && [ -z "$is_closed" ]; then
+            continue
+          fi
           body=$(tail -n +2 "$f")
+          comments_file="$store/issue-${num}.comments"
+          if [ -f "$comments_file" ]; then
+            comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
+          else
+            comments_json='[]'
+          fi
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+          printf '{"number":%s,"title":"","body":%s,"comments":%s}' "$num" \
+            "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" \
+            "$comments_json"
         done
         printf '\n]\n'
         ;;
@@ -312,4 +376,140 @@ jq -e '.rules[] | select(.id == "sr-decisions-ledger" and .status == "enforced")
   || fail "sr-decisions-ledger must be status=enforced in the matrix"
 ok "contracts: heartbeat-tier1, MANIFEST, nested CI host, matrix enforced"
 
-echo "OK: fleet-decisions-ledger: re-ask lint, ledger-checked escape, auto-file dedupe"
+# --- 11. live #1138: systemd self-talk is not a vacation-window re-ask ------
+# Live session 01a04318: "what should we read from the service?" is
+# implementation self-talk. ASK_RE matches `should we`. Overlap with the
+# vacation line was exactly {from, process, source} — `from` is a
+# preposition that STOP omitted, `source` came from the ledger
+# context-pointer (`| source: interactive Claude session ...`), `process`
+# is "senior process" / "main process started". That is not a re-ask of
+# the vacation window. The class is: generic `should we` prose overlapping
+# stop-word-adjacent tokens plus provenance metadata.
+write_session "oneshot-service" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I can rename without breaking public API.\n\nLet me now look at the source — what should we read from the service?\nHmm,   is empty for oneshot services.   is set to when the service last started.   is when the main process started.   is when the state last changed (i.e. when it last went from active to inactive — which is when it"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #1138 systemd self-talk should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #1138: systemd should-we-read-from-the-service self-talk is ignored"
+rm -f "$sessions/oneshot-service.jsonl"
+
+# --- 12. positive control: a real vacation-window re-ask still flags --------
+write_session "vacation-reask" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nish, should we keep the vacation window grants running only through 2026-09-08?"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real vacation-window re-ask should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "DECISIONS-LEDGER-REASK" "$scratch/err.log" || fail "missing REASK for real vacation-window question"
+ok "live #1138 positive: same-sentence vacation-window re-ask is flagged"
+rm -f "$sessions/vacation-reask.jsonl"
+
+# --- 13. observe-to-close (fleet-ops#650 shape; #1138 drain) ----------------
+# Isolate the mock store from the auto-file test's leftover issue.
+rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+printf '%s\n' "fix(decisions-ledger): vacation-window-corrected" >"$gh_store/issue-1138.body"
+printf '%s\n' "Do not close until the detector reports this clean.
+
+signal: decisions-ledger/vacation-window-corrected" >>"$gh_store/issue-1138.body"
+
+# Green tick (the live #1138 self-talk session, now clean) comments
+# resolved-at; does not close yet.
+write_session "oneshot-observe" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I can rename without breaking public API.\n\nLet me now look at the source — what should we read from the service?\nHmm,   is empty for oneshot services.   is set to when the service last started.   is when the main process started."}]}}'
+set +e
+FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/sessions" \
+FLEET_DECISIONS_LEDGER="$scratch/ledger.md" \
+FLEET_DECISIONS_LEDGER_LIB="$lib" \
+FLEET_DECISIONS_LEDGER_WINDOW_HOURS="24" \
+FLEET_DECISIONS_LEDGER_GRACE_MINUTES="0" \
+FLEET_DECISIONS_LEDGER_NOW="2026-08-27T00:10:00Z" \
+FLEET_DECISIONS_LEDGER_FILE_ISSUES=1 \
+FLEET_DECISIONS_LEDGER_CLOSE_ISSUES=1 \
+FLEET_DECISIONS_LEDGER_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-obs.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "observe-to-close green tick should exit 0 (got $rc) $(cat "$scratch/err-obs.log")"
+grep -q "OBSERVED-RESOLVED" "$scratch/err-obs.log" || fail "green tick must log OBSERVED-RESOLVED $(cat "$scratch/err-obs.log")"
+grep -q '^1138$' "$gh_store/commented" || fail "green tick must comment on #1138 (commented=$(cat "$gh_store/commented"))"
+grep -q "resolved-at: signal: decisions-ledger/vacation-window-corrected" "$gh_store/issue-1138.comments" \
+  || fail "comment missing resolved-at marker"
+if [ -s "$gh_store/closed" ]; then
+  fail "same-tick must not close (closed=$(cat "$gh_store/closed"))"
+fi
+ok "observe-to-close: green tick comments resolved-at, does not close same tick"
+rm -f "$sessions/oneshot-observe.jsonl"
+
+# Later tick: marker already present, slug still absent -> close
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+write_session "clean-observe2" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Still clean."}]}}'
+set +e
+FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/sessions" \
+FLEET_DECISIONS_LEDGER="$scratch/ledger.md" \
+FLEET_DECISIONS_LEDGER_LIB="$lib" \
+FLEET_DECISIONS_LEDGER_WINDOW_HOURS="24" \
+FLEET_DECISIONS_LEDGER_GRACE_MINUTES="0" \
+FLEET_DECISIONS_LEDGER_NOW="2026-08-27T00:10:00Z" \
+FLEET_DECISIONS_LEDGER_FILE_ISSUES=1 \
+FLEET_DECISIONS_LEDGER_CLOSE_ISSUES=1 \
+FLEET_DECISIONS_LEDGER_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-close.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "observe close tick should exit 0 (got $rc) $(cat "$scratch/err-close.log")"
+grep -q "OBSERVE-CLOSED" "$scratch/err-close.log" || fail "later tick must log OBSERVE-CLOSED $(cat "$scratch/err-close.log")"
+grep -q '^1138$' "$gh_store/closed" || fail "later tick must close #1138 (closed=$(cat "$gh_store/closed"))"
+if [ -s "$gh_store/commented" ]; then
+  fail "later tick must not comment again (commented=$(cat "$gh_store/commented"))"
+fi
+ok "observe-to-close: later tick with resolved-at marker closes"
+rm -f "$sessions/clean-observe2.jsonl"
+
+# Still-dirty slug: even with a resolved-at marker, do not close
+: >"$gh_store/commented"
+: >"$gh_store/closed"
+rm -f "$gh_store/issue-1138.closed"
+write_session "still-dirty" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nish, should we keep the vacation window grants running only through 2026-09-08?"}]}}'
+set +e
+FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/sessions" \
+FLEET_DECISIONS_LEDGER="$scratch/ledger.md" \
+FLEET_DECISIONS_LEDGER_LIB="$lib" \
+FLEET_DECISIONS_LEDGER_WINDOW_HOURS="24" \
+FLEET_DECISIONS_LEDGER_GRACE_MINUTES="0" \
+FLEET_DECISIONS_LEDGER_NOW="2026-08-27T00:10:00Z" \
+FLEET_DECISIONS_LEDGER_FILE_ISSUES=1 \
+FLEET_DECISIONS_LEDGER_CLOSE_ISSUES=1 \
+FLEET_DECISIONS_LEDGER_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-dirty.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "still-dirty slug should exit 1 (got $rc) $(cat "$scratch/err-dirty.log")"
+if [ -s "$gh_store/closed" ]; then
+  fail "still-dirty slug must not close (closed=$(cat "$gh_store/closed"))"
+fi
+if [ -s "$gh_store/commented" ]; then
+  fail "still-dirty slug must not comment resolved-at (commented=$(cat "$gh_store/commented"))"
+fi
+ok "observe-to-close: still-dirty slug is neither commented nor closed"
+rm -f "$sessions/still-dirty.jsonl"
+
+# Three-place citation lock for #1138
+grep -q 'fleet-ops#1138' "$lib" \
+  || fail "lib/decisions-ledger.py must cite fleet-ops#1138"
+grep -q 'fleet-ops#1138' "$bin" \
+  || fail "bin/fleet-decisions-ledger must cite fleet-ops#1138"
+grep -q 'fleet-ops#1138' "$repo_root/prompts/worker.md" \
+  || fail "prompts/worker.md must cite fleet-ops#1138"
+grep -Fq 'bash "$here/fleet-decisions-ledger.test.sh"' "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must nest this file"
+grep -q '#1138' "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must cite #1138 next to the nested host"
+ok "citation lock: #1138 in helper, bin, worker prompt, and nested CI host"
+
+echo "OK: fleet-decisions-ledger: re-ask lint, ledger-checked escape, auto-file dedupe, #1138 false-positive class, observe-to-close"

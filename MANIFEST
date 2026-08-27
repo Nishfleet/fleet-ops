@@ -79,10 +79,6 @@ systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
-# fleet-ops#1204: ExecStopPost salvage — bank a dying worker's dirty
-# worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
-bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree
-systemd/vps-weekly-update.service.d/20-wip-gc.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/20-wip-gc.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;

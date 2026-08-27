@@ -9,6 +9,13 @@ JSONL (assistant text + ask-shaped tool calls) is scanned the same way,
 quoted/fenced text is stripped, and 'ledger-checked' is the escape valve
 matching the vault guard.
 
+Overlap is against the decision (scope + body), never the date or the
+context-pointer. The pointer is often `source: interactive Claude
+session ...` and injected the token `source` into a 3-word overlap with
+systemd self-talk (`should we read from the service` / `main process
+started`) — live fleet-ops#1138. `from` is a STOP preposition (pair of
+`to`/`of`/`in`/`on`/`for`/`with`) so that class cannot refill.
+
 Usage:
   python3 lib/decisions-ledger.py scan --root DIR --ledger FILE [--now ISO]
       [--window-hours 24] [--grace-minutes 20]
@@ -56,7 +63,7 @@ ASK_TOOL_NAMES = {
 }
 
 STOP = set(
-    "the a an is are was were be been to of in on for with and or not no yes "
+    "the a an is are was were be been to of in on for with from and or not no yes "
     "do does how what which should would could can may we our your my his her "
     "their it this that these those you i nish about via when where who whom "
     "whose why".split()
@@ -85,6 +92,22 @@ def strip_quoted(text: str) -> str:
 
 def toks(s: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9][a-z0-9.-]{2,}", s.lower()) if w not in STOP}
+
+
+def decision_text(line: str) -> str:
+    """Scope + decision body. Drop date and context-pointer (4th field).
+
+    Ledger format: `- YYYY-MM-DD | scope | decision | context-pointer`.
+    Tokenizing the pointer (often `source: interactive Claude session`)
+    is how live #1138 overlapped systemd self-talk on `source`.
+    """
+    raw = line.lstrip("- ").strip()
+    parts = [p.strip() for p in raw.split("|", 3)]
+    if len(parts) >= 3:
+        return f"{parts[1]} {parts[2]}"
+    if len(parts) == 2:
+        return parts[1]
+    return raw
 
 
 def _content_chunks(content: Any) -> tuple[list[str], list[tuple[str, str]]]:
@@ -161,7 +184,7 @@ def best_overlap(blob: str, ledger_lines: list[str]) -> tuple[int, str]:
         return 0, ""
     hits: list[tuple[int, str]] = []
     for line in ledger_lines:
-        overlap = qtok & toks(line)
+        overlap = qtok & toks(decision_text(line))
         if len(overlap) >= 3:
             hits.append((len(overlap), line))
     if not hits:
@@ -224,6 +247,34 @@ def iter_session_files(root: str) -> list[str]:
     return out
 
 
+def session_hits(
+    path: str, ledger_lines: list[str]
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    seen: set[str] = set()
+    assistant, tools = session_blobs(path)
+    for blob in ask_blobs(assistant, tools):
+        if LEDGER_CHECKED_RE.search(blob):
+            continue
+        count, line = best_overlap(blob, ledger_lines)
+        if count < 3:
+            continue
+        slug = decision_slug(line)
+        key = f"{path}::{slug}"
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(
+            {
+                "slug": slug,
+                "path": path,
+                "ledger_line": line[:300],
+                "snippet": snippet_for(blob),
+            }
+        )
+    return findings
+
+
 def scan(
     root: str,
     ledger: str,
@@ -239,6 +290,7 @@ def scan(
     skipped_old = 0
     skipped_grace = 0
     skipped_unreadable = 0
+    skipped_grace_slugs: list[str] = []
     seen: set[str] = set()
 
     for path in iter_session_files(root):
@@ -251,30 +303,21 @@ def scan(
         if age > window_s:
             skipped_old += 1
             continue
+        hits = session_hits(path, ledger_lines)
         if age < grace_s:
             skipped_grace += 1
+            for hit in hits:
+                slug = hit["slug"]
+                if slug not in skipped_grace_slugs:
+                    skipped_grace_slugs.append(slug)
             continue
         scanned += 1
-        assistant, tools = session_blobs(path)
-        for blob in ask_blobs(assistant, tools):
-            if LEDGER_CHECKED_RE.search(blob):
-                continue
-            count, line = best_overlap(blob, ledger_lines)
-            if count < 3:
-                continue
-            slug = decision_slug(line)
-            key = f"{path}::{slug}"
+        for hit in hits:
+            key = f"{hit['path']}::{hit['slug']}"
             if key in seen:
                 continue
             seen.add(key)
-            findings.append(
-                {
-                    "slug": slug,
-                    "path": path,
-                    "ledger_line": line[:300],
-                    "snippet": snippet_for(blob),
-                }
-            )
+            findings.append(hit)
 
     return {
         "findings": findings,
@@ -282,6 +325,7 @@ def scan(
         "skipped_old": skipped_old,
         "skipped_grace": skipped_grace,
         "skipped_unreadable": skipped_unreadable,
+        "skipped_grace_slugs": skipped_grace_slugs,
         "root": root,
         "ledger": ledger,
         "ledger_lines": len(ledger_lines),
