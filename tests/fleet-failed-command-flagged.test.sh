@@ -39,6 +39,20 @@
 #   6h5. Live #987 positive control: the same dual-literal body with
 #       isError=true (Pi's genuine failure shape) is still flagged
 #       -> exit 1. Proves 6h4 is not "always flag".
+#   6h6. Live #1074: bash `git show HEAD` whose FULL DIFF output quotes
+#       multiple error literals ('Command exited with code',
+#       'Command timed out', 'fatal:') in the diff content (the
+#       worker.md diff quotes them), isError=false -> exit 0. Distinct
+#       from 6h2 (commit body, single literal) and 6h4 (git log
+#       --format=%B, dual literal): this is a full `git show HEAD` with
+#       a diff body that embeds the literals in +/- lines, not commit
+#       message text. A stale detector version filed #1074 from this
+#       session; the a5022b8/d64db83 isError=false guard already
+#       prevents the class. This locks the full-diff shape so a future
+#       refactor that parses diff structure cannot re-open the hole.
+#   6h7. Live #1074 positive control: the same full-diff content with
+#       isError=true (Pi's genuine failure shape) is still flagged
+#       -> exit 1. Proves 6h6 is not "always flag".
 #   6i. Live #953: `read` ENOENT (isError=true, no exit code) with only a
 #       `thinking` block in the next turn -> exit 1. Thinking is not a
 #       user-facing flag.
@@ -855,6 +869,53 @@ rc=$(run_bin 0)
 grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "live #1075 positive control must be flagged as swallowed"
 ok "live #1075 positive: real isError=true cat failure is still flagged"
 rm -f "$sessions/bash-cat-detector-source-real.jsonl"
+# --- 6h6. live #1074: bash `git show HEAD` whose FULL DIFF output quotes
+#         multiple error literals in the diff content (isError=false) ->
+#         exit 0. ---
+# The session 2026-08-27T08-16-44-255Z (slug 01a0424a-..., this issue's
+# origin) ran
+#   `cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-953 && git show HEAD 2>&1 | head -200`
+# and got a successful full diff back (isError=false, no exit trailer).
+# The diff of commit 4573ba6 (the #953 read-ENOENT drill fix) modifies
+# prompts/worker.md, whose +/- lines quote 'Command exited with code',
+# 'Command timed out', and 'fatal: not a git repository' as part of the
+# standing-rule prose. A stale detector version (pre-a5022b8) matched
+# EXIT_RE / TIMEOUT_RE against those quoted diff lines and auto-filed
+# the session as #1074 even though git show succeeded. The
+# a5022b8 (#1048) and d64db83 (#1122) isError=false guards already
+# prevent the class. This test locks the full-diff shape — distinct
+# from 6h2 (commit body text) and 6h4 (git log --format=%B commit
+# bodies) — so a future refactor that parses diff structure cannot
+# re-open the hole on a successful `git show HEAD` whose diff content
+# embeds error literals.
+write_session "bash-git-show-diff-literals" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_show","name":"bash","arguments":{"command":"cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-953 && git show HEAD 2>&1 | head -200"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_show","toolName":"bash","isError":false,"content":[{"type":"text","text":"commit 4573ba6439572247da79dcb70c84fb42682d5d8a\nAuthor: nishfleet-worker[bot] <321485391+nishfleet-worker[bot]@users.noreply.github.com>\nDate:   Thu Aug 27 13:12:51 2026 +0530\n\n    fix(failed-command): dedicated live #953 read-ENOENT thinking-only drill\n\ndiff --git a/prompts/worker.md b/prompts/worker.md\nindex 82dc86a..4ff809d 100644\n--- a/prompts/worker.md\n+++ b/prompts/worker.md\n@@ -25,7 +25,7 @@\n-- A failed command (non-zero exit, isError, timeout) is ALWAYS flagged.\n- `bash` exit != 0, `Command timed out`, `gh api` returning 4xx/5xx.\n+- A failed command (non-zero exit, isError, timeout) is ALWAYS flagged.\n+ `bash` exit != 0, `Command timed out`, `gh api` returning 4xx/5xx.\n+ `cd <path>` followed by `git status` returns `fatal: not a git repository` with `Command exited with code 128`.\n+ `systemctl --user status` of a failed unit (exit 3) returns `Command exited with code 3`."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The worktree already has a commit on claim/issue-953. Let me check the remote state."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "bash git show HEAD with error literals in diff content (isError=false) should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #1074: bash git show HEAD with error literals in full diff is not a swallowed failure"
+rm -f "$sessions/bash-git-show-diff-literals.jsonl"
+
+# --- 6h7. live #1074 positive control: the same full-diff content with
+#         isError=true is still flagged. ---
+# Same content as 6h6, but the toolResult now carries isError=true
+# (Pi's genuine failure shape). The isError=false guard must NOT weaken
+# the genuine-failure path. A non-git command is used so the git
+# ref-probe exemption (live #822) cannot mask it.
+write_session "bash-git-show-diff-real" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"commit 4573ba6439572247da79dcb70c84fb42682d5d8a\n    fix(failed-command): dedicated live #953 read-ENOENT thinking-only drill\n+ `Command timed out`, `gh api` returning 4xx/5xx.\n+ `fatal: not a git repository` with `Command exited with code 128`.\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real isError=true full-diff content must still be flagged (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "real isError=true full-diff content must be flagged as swallowed"
+ok "live #1074 positive: real isError=true full-diff content is still flagged"
+rm -f "$sessions/bash-git-show-diff-real.jsonl"
 
 # --- 6i. live #953: read tool ENOENT, no exit code, no later user-facing flag -
 # The session 2026-08-26T14-02-29-714Z ran `read` on a file that did not

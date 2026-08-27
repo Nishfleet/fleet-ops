@@ -583,6 +583,12 @@ def result_failed(
     # code is None; exit-code-only when not timed_out), so a body that
     # quoted both strings fell through to timed_out=True and was
     # flagged. Unify: no isError means content.
+    # Live #1074: a successful `git show HEAD` (isError=false) whose
+    # FULL DIFF output quotes 'Command exited with code', 'Command
+    # timed out', and 'fatal:' in the diff content (the worker.md +/-
+    # lines embed them). A stale detector version filed #1074 from
+    # this session; the isError=false guard already prevents the class.
+    # Locked by 6h6/6h7 alongside 6h2/6h4.
     if not is_error:
         return False, text
     # Downstream of a harness block (fleet-ops#677): the spawn-guard refused
