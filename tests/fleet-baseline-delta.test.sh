@@ -18,7 +18,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-bin="$repo_root/bin/fleet-baseline-delta"
+bin="$repo_root/bin/fleet-baseline-delta.py"
 svc="$repo_root/systemd/fleet-baseline-delta.service"
 timer="$repo_root/systemd/fleet-baseline-delta.timer"
 rule="$repo_root/config/fleet-baseline-delta.rule.yml"
@@ -287,8 +287,8 @@ set -e
 ok "7. prometheus down fails loud and skips the heartbeat"
 
 # --- 8. MANIFEST + install.sh ----------------------------------------------
-grep -Fxq "bin/fleet-baseline-delta /home/nish/.local/bin/fleet-baseline-delta" "$manifest" \
-  || fail "MANIFEST missing bin/fleet-baseline-delta"
+grep -Fxq "bin/fleet-baseline-delta.py /home/nish/.local/bin/fleet-baseline-delta" "$manifest" \
+  || fail "MANIFEST missing bin/fleet-baseline-delta.py"
 grep -Fxq "systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service" "$manifest" \
   || fail "MANIFEST missing service"
 grep -Fxq "systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer" "$manifest" \
@@ -307,9 +307,25 @@ grep -q '^\[Install\]$' "$timer" || fail "timer must carry [Install]"
 grep -q '^WantedBy=timers.target$' "$timer" || fail "timer [Install] must WantedBy=timers.target"
 grep -q '^Type=oneshot$' "$svc" || fail "service must be oneshot"
 grep -q '^Restart=no$' "$svc" || fail "service must Restart=no"
-grep -q '^ExecStart=/home/nish/.local/bin/fleet-baseline-delta$' "$svc" \
-  || fail "ExecStart must be fleet-baseline-delta"
+grep -q '^ExecStart=/usr/bin/python3 /home/nish/.local/bin/fleet-baseline-delta$' "$svc" \
+  || fail "ExecStart must be /usr/bin/python3 fleet-baseline-delta (CI systemd-analyze stubs python3, not a new dest)"
 ok "9. timer is Sunday 05:10 IST; service is oneshot Restart=no"
+
+# --- 9b. CI class locks (shellcheck SC1071, systemd-analyze missing dest, semgrep urllib) ---
+[[ "$bin" == *.py ]] || fail "source must be .py so CI shellcheck glob bin/!(*.py|*.ts) skips it"
+grep -q 'nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected' "$bin" \
+  || fail "source must carry the urllib nosemgrep audit comment"
+grep -q 'def require_http_url' "$bin" || fail "source must reject non-http(s) prometheus URLs"
+set +e
+"$bin" --prom-url "file:///etc/passwd" --out-dir "$scratch/fileurl" \
+  --prom-file "$scratch/h-file.prom" --timeout 1 --now 1787800000 \
+  >/dev/null 2>"$scratch/fileurl.err"
+file_rc=$?
+set -e
+[[ "$file_rc" != "0" ]] || fail "file:// prometheus URL must exit nonzero"
+grep -q "http(s)" "$scratch/fileurl.err" || fail "file:// reject must name http(s): $(cat "$scratch/fileurl.err")"
+[[ ! -f "$scratch/h-file.prom" ]] || fail "file:// reject must not write the heartbeat"
+ok "9b. .py source, python3 ExecStart, nosemgrep, file:// rejected"
 
 # --- 10. rule fragment: organ liveness only, no anomaly page ---------------
 grep -q 'absent(fleet_baseline_delta_last_run_seconds)' "$rule" \

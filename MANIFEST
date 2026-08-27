@@ -418,6 +418,6 @@ lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.p
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic; writes the review input dir; heartbeat
 # metric + absent() rule. Not an alert.
-bin/fleet-baseline-delta /home/nish/.local/bin/fleet-baseline-delta
+bin/fleet-baseline-delta.py /home/nish/.local/bin/fleet-baseline-delta
 systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service
 systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer

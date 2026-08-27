@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# The urlopen target is the operator-set Prometheus base (default
+# http://127.0.0.1:9090). require_http_url rejects file:// and other
+# schemes before urlopen. Semgrep still sees a concatenated URL.
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
 """fleet-baseline-delta — week-over-week MAD strangeness report (fleet-ops#1151).
 
 Queries Prometheus for every fleet_* series and a small set of key node_*
@@ -266,7 +270,19 @@ def parse_matrix(payload: dict[str, Any]) -> list[tuple[dict[str, str], list[tup
     return out
 
 
+def require_http_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise RuntimeError(
+            f"prometheus URL must be http(s), got scheme={parsed.scheme or 'empty'!r}"
+        )
+    if not parsed.netloc:
+        raise RuntimeError("prometheus URL missing host")
+    return url
+
+
 def http_json(url: str, path: str, params: dict[str, str], timeout: float, method: str = "GET") -> dict[str, Any]:
+    url = require_http_url(url)
     encoded = urllib.parse.urlencode(params)
     if method == "POST":
         req = urllib.request.Request(
@@ -282,6 +298,7 @@ def http_json(url: str, path: str, params: dict[str, str], timeout: float, metho
         )
     req.add_header("User-Agent", "fleet-baseline-delta/1151")
     try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:

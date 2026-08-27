@@ -13,7 +13,7 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/fleet-baseline-delta
+ExecStart=/usr/bin/python3 /home/nish/.local/bin/fleet-baseline-delta
 TimeoutStartSec=15min
 # Never restart: the next Sunday (Persistent=true) is the retry. systemd's
 # failed state plus FleetBaselineDeltaStale is the signal.
