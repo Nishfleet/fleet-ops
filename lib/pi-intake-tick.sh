@@ -105,10 +105,13 @@ else
     total_cap=$ram_cap
 fi
 active=$(count_active_total 2>/dev/null || echo 0)
+issue=$(count_active_issue 2>/dev/null || echo 0)
+org=$(count_active_org 2>/dev/null || echo 0)
+org_res=$(org_reserve 2>/dev/null || echo 2)
 slots=$(( total_cap - active ))
 
 if (( slots <= 0 )); then
-    echo "at capacity (total_cap=$total_cap, active=$active)"
+    echo "at capacity (total_cap=$total_cap, active=$active, issue=$issue, org=$org, org_reserve=$org_res)"
     exit 0
 fi
 
