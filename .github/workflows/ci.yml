@@ -235,3 +235,6 @@ jobs:
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh
+        # fleet-ops#828: lock the gate-integrity decision script's
+        # line-anchored attestation extraction (multi-line attest comments).
+        bash tests/gate-integrity.test.sh
