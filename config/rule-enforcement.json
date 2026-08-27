@@ -754,10 +754,9 @@
     {
       "id": "led-2026-08-27-precedence-band-overnight-machinery-surge-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Precedence band + overnight machinery surge (Nish)",
-      "mechanism": "From 2026-08-28 08:00 IST: blanket fleet-precedence ends; machinery capped ~30% of lanes, product 70%; machinery jumps the band only by naming its multiplier; Weekly Fleet Review owns the dial via the ratchet. Mechanism issue open.",
-      "proof": "fleet-ops#1223",
-      "status": "queued(#1223)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat fleet-precedence-band-canary (fleet-ops#1223): config/precedence-band.json locks the dial (cutoff_utc, machinery_max_pct<=30, product_min_pct>=70, machinery_repo=fleet-ops, owner=weekly-fleet-review, product_front=REPO#NUMBER, surge_leverage_issues); until cutoff_utc the canary rejects a live pi-issue@fleet-ops-N claim whose N is not in surge_leverage_issues; from cutoff_utc the canary rejects a live machinery share > machinery_max_pct; machinery jumps the band only by a `band-multiplier: N` line on the issue body (lib/precedence-band.sh precedence_band_has_multiplier); tighten-only ratchet — any loosening of machinery_max_pct / product_min_pct vs the prior committed value requires a strictly-later wfr_waiver_on in the live config; a re-stamped waiver is rejected; WFR owns the dial.",
+      "proof": "bin/fleet-precedence-band-canary; lib/pi-packet/precedence-band-canary.py; lib/precedence-band.sh; config/precedence-band.json; tests/fleet-precedence-band.test.sh; fleet-heartbeat-tier1 block 36; fleet-ops#1223",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-geo-aeo-fleet-executes-measurement-owned-content-",

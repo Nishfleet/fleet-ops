@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# tests/fleet-precedence-band.test.sh
+#
+# Proves the precedence-band canary (fleet-ops#1223) offline:
+#   1. Production policy + surge phase + 0 units -> exit 0, OK.
+#   2. Missing policy -> exit 1.
+#   3. machinery_max_pct > 30 -> exit 1.
+#   4. product_min_pct < 70 -> exit 1.
+#   5. owner != weekly-fleet-review -> exit 1.
+#   6. product_front missing or malformed -> exit 1.
+#   7. Surge phase: non-leverage fleet-ops claim -> exit 1.
+#   8. Surge phase: leverage fleet-ops claim only -> exit 0.
+#   9. Band phase: machinery share over cap -> exit 1.
+#  10. Band phase: machinery share at cap -> exit 0.
+#  11. Ratchet: loosening without wfr_waiver_on -> exit 1.
+#  12. Ratchet: loosening with fresh waiver -> exit 0.
+#  13. Ratchet: re-stamped waiver rejected.
+#  14. Heartbeat-tier1 wires the canary, fail-loud, MANIFEST installs it.
+#  15. Matrix row is enforced with mechanism+proof.
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+bin="$repo_root/bin/fleet-precedence-band-canary"
+lib="$repo_root/lib/pi-packet/precedence-band-canary.py"
+shlib="$repo_root/lib/precedence-band.sh"
+policy="$repo_root/config/precedence-band.json"
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+matrix="$repo_root/config/rule-enforcement.json"
+manifest="$repo_root/MANIFEST"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -x "$bin" ]] || fail "not executable: $bin"
+[[ -f "$lib" ]] || fail "missing $lib"
+[[ -f "$shlib" ]] || fail "missing $shlib"
+[[ -f "$policy" ]] || fail "missing $policy"
+[[ -f "$tier1" ]] || fail "missing $tier1"
+[[ -f "$matrix" ]] || fail "missing $matrix"
+command -v jq >/dev/null 2>&1 || fail "jq missing"
+command -v python3 >/dev/null 2>&1 || fail "python3 missing"
+
+scratch="$(mktemp -d -t precedence-band.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT INT TERM
+triage="$scratch/triage.md"
+: >"$triage"
+export FLEET_HEARTBEAT_TRIAGE="$triage"
+
+clean_policy() {
+  cat >"$scratch/policy.json"
+}
+
+base_policy_json() {
+  cat <<'JSON'
+{
+  "description": "test",
+  "cutoff_utc": "2026-08-28T02:30:00Z",
+  "machinery_max_pct": 30,
+  "product_min_pct": 70,
+  "machinery_repo": "fleet-ops",
+  "owner": "weekly-fleet-review",
+  "product_front": [
+    "0509#1299",
+    "0509#1302",
+    "fleet-ops#1198"
+  ],
+  "surge_leverage_issues": [1204, 1134, 1010, 1149, 1155, 1157, 1133, 1167, 1163, 1146, 1135, 1223]
+}
+JSON
+}
+
+run_canary() {
+  FLEET_PRECEDENCE_BAND_POLICY="${1:-$scratch/policy.json}" \
+  FLEET_PRECEDENCE_UNITS_FILE="${2:-$scratch/units.txt}" \
+  FLEET_PRECEDENCE_BAND_PRIOR="${3:-$scratch/missing.prior.json}" \
+  PRECEDENCE_BAND_NOW="${4:-}" \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+  "$bin" 2>&1
+}
+
+# --- 1. production: surge phase, 0 units ------------------------------------
+base_policy_json | clean_policy
+: >"$scratch/units.txt"
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario1: production must be clean, got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario1: production must log OK ($out)"
+ok "scenario1: production policy+surge+no-units is clean"
+
+# --- 2. missing policy ------------------------------------------------------
+set +e
+out=$(run_canary "$scratch/missing.json")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario2: missing policy must exit 1, got $rc ($out)"
+grep -q 'policy missing' <<<"$out" || fail "scenario2: must name policy missing ($out)"
+ok "scenario2: missing policy is fail-loud"
+
+# --- 3. machinery_max_pct > 30 ----------------------------------------------
+base_policy_json | jq '.machinery_max_pct = 60 | .product_min_pct = 40' | clean_policy
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario3: machinery_max_pct > 30 must exit 1, got $rc ($out)"
+grep -q 'machinery_max_pct' <<<"$out" || fail "scenario3: must name machinery_max_pct ($out)"
+ok "scenario3: machinery cap is locked to <= 30 (ledger ceiling)"
+
+# --- 4. product_min_pct < 70 ------------------------------------------------
+base_policy_json | jq '.product_min_pct = 50' | clean_policy
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario4: product_min_pct < 70 must exit 1, got $rc ($out)"
+grep -q 'product_min_pct' <<<"$out" || fail "scenario4: must name product_min_pct ($out)"
+ok "scenario4: product floor is locked to >= 70 (ledger floor)"
+
+# --- 5. owner != weekly-fleet-review ----------------------------------------
+base_policy_json | jq '.owner = "nish"' | clean_policy
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario5: owner != weekly-fleet-review must exit 1, got $rc ($out)"
+grep -q 'weekly-fleet-review' <<<"$out" || fail "scenario5: must name weekly-fleet-review ($out)"
+ok "scenario5: only the Weekly Fleet Review owns the dial"
+
+# --- 6. product_front malformed --------------------------------------------
+base_policy_json | jq '.product_front = ["bad-row", "0509#x"]' | clean_policy
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario6: malformed product_front must exit 1, got $rc ($out)"
+grep -q 'product_front' <<<"$out" || fail "scenario6: must name product_front ($out)"
+ok "scenario6: product_front entries must be REPO#NUMBER"
+
+# --- 7. surge phase, non-leverage fleet-ops claim ---------------------------
+base_policy_json | clean_policy
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1234.service
+UNITS
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario7: surge non-leverage must exit 1, got $rc ($out)"
+grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7: must name surge-phase non-leverage ($out)"
+ok "scenario7: surge refuses a non-leverage fleet-ops claim"
+
+# --- 8. surge phase, leverage fleet-ops claim only --------------------------
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1223.service
+UNITS
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario8: surge leverage-only must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario8: must log OK ($out)"
+ok "scenario8: surge accepts leverage-only fleet-ops claims"
+
+# --- 9. band phase, machinery share over cap --------------------------------
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@0509-1302.service
+pi-issue@0509-9999.service
+pi-issue@fleet-ops-1223.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+UNITS
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario9: band over-cap must exit 1, got $rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario9: must name over the cap ($out)"
+ok "scenario9: band rejects live machinery share > cap"
+
+# --- 10. band phase, machinery share at cap ---------------------------------
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@0509-1302.service
+pi-issue@0509-9999.service
+pi-issue@0509-8888.service
+pi-issue@0509-7777.service
+pi-issue@0509-6666.service
+pi-issue@0509-5555.service
+pi-issue@fleet-ops-1223.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+UNITS
+# 3 machinery / 10 total = 30% = cap (allowed)
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario10: band at-cap must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario10: must log OK ($out)"
+ok "scenario10: band accepts machinery share == cap"
+
+# --- 11. ratchet: loosening without wfr_waiver_on ---------------------------
+base_policy_json | jq '.machinery_max_pct = 30' | clean_policy
+cat >"$scratch/prior.json" <<'JSON'
+{
+  "machinery_max_pct": 20,
+  "product_min_pct": 80,
+  "wfr_waiver_on": "2026-08-26T18:00:00Z"
+}
+JSON
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/prior.json" "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario11: loosening without waiver must exit 1, got $rc ($out)"
+grep -q 'wfr_waiver_on is missing' <<<"$out" || fail "scenario11: must name wfr_waiver_on is missing ($out)"
+ok "scenario11: ratchet rejects loosening without a WFR waiver"
+
+# --- 12. ratchet: loosening with fresh waiver -------------------------------
+base_policy_json | jq '. + {"wfr_waiver_on": "2026-08-27T18:00:00Z"}' | clean_policy
+: >"$scratch/units.txt"
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/prior.json" "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario12: waiver with fresh date must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario12: must log OK ($out)"
+ok "scenario12: ratchet accepts a fresh, monotonically-later WFR waiver"
+
+# --- 13. ratchet: re-stamped waiver rejected --------------------------------
+cat >"$scratch/prior2.json" <<'JSON'
+{
+  "machinery_max_pct": 25,
+  "product_min_pct": 75,
+  "wfr_waiver_on": "2026-08-27T18:00:00Z"
+}
+JSON
+base_policy_json | jq '. + {"wfr_waiver_on": "2026-08-27T18:00:00Z"}' | clean_policy
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/prior2.json" "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario13: re-stamped waiver must exit 1, got $rc ($out)"
+grep -q 're-stamp forbidden' <<<"$out" || fail "scenario13: must name re-stamp forbidden ($out)"
+ok "scenario13: ratchet rejects a re-stamped WFR waiver"
+
+# --- 14. heartbeat + MANIFEST -----------------------------------------------
+grep -F 'fleet-precedence-band-canary' "$tier1" >/dev/null \
+  || fail "tier1 must invoke fleet-precedence-band-canary"
+grep -F 'precedence_band_canary_rc' "$tier1" >/dev/null \
+  || fail "tier1 must capture precedence_band_canary_rc"
+grep -F 'if [ "${precedence_band_canary_rc:-0}" -ne 0 ]; then' "$tier1" >/dev/null \
+  || fail "tier1 must exit non-zero when the precedence-band gate fails loud"
+grep -F 'exit "$precedence_band_canary_rc"' "$tier1" >/dev/null \
+  || fail "tier1 must exit with precedence_band_canary_rc when the gate fails loud"
+grep -F 'require_manifest_helper "$PRECEDENCE_BAND_CANARY_BIN"' "$tier1" >/dev/null \
+  || fail "tier1 precedence-band block must call require_manifest_helper"
+grep -F 'HELPER-MISSING' "$tier1" >/dev/null \
+  || fail "tier1 must emit HELPER-MISSING"
+grep -Fxq 'bin/fleet-precedence-band-canary /home/nish/.local/bin/fleet-precedence-band-canary' "$manifest" \
+  || fail "MANIFEST must install bin/fleet-precedence-band-canary"
+grep -Fxq 'lib/pi-packet/precedence-band-canary.py /home/nish/.local/lib/pi-packet/precedence-band-canary.py' "$manifest" \
+  || fail "MANIFEST must install lib/pi-packet/precedence-band-canary.py"
+grep -Fxq 'config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.json' "$manifest" \
+  || fail "MANIFEST must install config/precedence-band.json"
+grep -Fxq 'lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh' "$manifest" \
+  || fail "MANIFEST must install lib/precedence-band.sh"
+ok "scenario14: heartbeat-tier1 wires the canary, fail-loud, MANIFEST installs it"
+
+# --- 15. matrix row ---------------------------------------------------------
+jq -e '.rules[] | select(.id == "led-2026-08-27-precedence-band-overnight-machinery-surge-nish" and .status == "enforced")' \
+  "$matrix" >/dev/null \
+  || fail "matrix row must be status=enforced"
+mech=$(jq -r '.rules[] | select(.id == "led-2026-08-27-precedence-band-overnight-machinery-surge-nish") | .mechanism' "$matrix")
+printf '%s\n' "$mech" | grep -q 'fleet-precedence-band-canary' \
+  || fail "mechanism must name fleet-precedence-band-canary (got: $mech)"
+printf '%s\n' "$mech" | grep -qE 'machinery_max_pct(<=|<)30' \
+  || fail "mechanism must lock machinery to <=30% (got: $mech)"
+printf '%s\n' "$mech" | grep -qE 'product_min_pct(>=|>)70' \
+  || fail "mechanism must lock product to >=70% (got: $mech)"
+printf '%s\n' "$mech" | grep -q 'band-multiplier' \
+  || fail "mechanism must lock band-multiplier escape (got: $mech)"
+printf '%s\n' "$mech" | grep -q 'weekly-fleet-review' \
+  || fail "mechanism must name weekly-fleet-review as the dial owner (got: $mech)"
+printf '%s\n' "$mech" | grep -q 'tighten' \
+  || fail "mechanism must lock the tighten-only ratchet (got: $mech)"
+proof=$(jq -r '.rules[] | select(.id == "led-2026-08-27-precedence-band-overnight-machinery-surge-nish") | .proof' "$matrix")
+printf '%s\n' "$proof" | grep -q 'bin/fleet-precedence-band-canary' \
+  || fail "proof must name the canary (got: $proof)"
+printf '%s\n' "$proof" | grep -q 'tests/fleet-precedence-band.test.sh' \
+  || fail "proof must name this test (got: $proof)"
+printf '%s\n' "$proof" | grep -q 'lib/precedence-band.sh' \
+  || fail "proof must name the bash library (got: $proof)"
+ok "scenario15: matrix row is enforced with mechanism+proof"
+
+ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix"
