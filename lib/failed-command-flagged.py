@@ -54,6 +54,11 @@ HARNESS_BLOCK_RE = re.compile(
     r"|SPAWN_BLOCKED reason=",
     re.I,
 )
+# Read tool with an offset past the end of the file: a negative result,
+# like grep/rg/diff no-match, not a swallowed command failure.
+READ_OFFSET_RE = re.compile(
+    r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
+)
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -117,6 +122,8 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
 def result_failed(msg: dict[str, Any], command: str) -> tuple[bool, str]:
     text = _text_chunks(msg.get("content"))
     if HARNESS_BLOCK_RE.search(text):
+        return False, text
+    if msg.get("toolName") == "read" and READ_OFFSET_RE.search(text):
         return False, text
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
