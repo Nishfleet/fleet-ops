@@ -689,10 +689,6 @@ ok "rule-enforcement: repo-visibility canary drill"
 bash "$here/fleet-straitly-ds4-pro-canary.test.sh" || fail "straitly ds4-pro canary drill failed"
 ok "rule-enforcement: straitly ds4-pro canary drill"
 
-# fleet-ops#546: straitly ds4-pro worker-rotation canary. Same nested-CI host.
-bash "$here/fleet-straitly-ds4-pro-canary.test.sh" || fail "straitly ds4-pro canary drill failed"
-ok "rule-enforcement: straitly ds4-pro canary drill"
-
 # fleet-ops#537: execution-is-review receipt canary. Same nested-CI host.
 bash "$here/fleet-exec-review-canary.test.sh" || fail "exec-review receipt canary drill failed"
 ok "rule-enforcement: exec-review receipt canary drill"
@@ -702,4 +698,9 @@ ok "rule-enforcement: exec-review receipt canary drill"
 bash "$here/fleet-vault-knowledge-format.test.sh" || fail "vault knowledge-format drill failed"
 ok "rule-enforcement: vault knowledge-format drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, and vault-knowledge-format drills"
+# fleet-ops#539: shared-file collision PreToolUse guard. Nested host so the
+# worker token does not need to edit .github/workflows/**.
+bash "$here/guard-shared-file-collision.test.sh" || fail "shared-file collision guard drill failed"
+ok "rule-enforcement: shared-file collision guard drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, and shared-file-collision drills"
