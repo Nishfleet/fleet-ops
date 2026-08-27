@@ -33,7 +33,16 @@ with a Python traceback (KeyError, NameError, etc.) and
 'Command exited with code 1' (fleet-ops#957) is also a real swallowed
 failure: the command is not grep/rg/diff/ls/which so it is not a no-match
 probe, and a silent re-probe, a thinking block, or later prose that
-moves on is not a user-facing flag. A spawn-guard or harness block (SPAWN_BLOCKED
+moves on is not a user-facing flag. A `git checkout <branch>` (or a
+compound `&&` chain whose tail is `git checkout <branch>`) inside a
+worktree whose target branch is checked out in another worktree is a
+real swallowed failure (fleet-ops#954, #962): git refuses with
+`fatal: '<branch>' is already used by worktree at '<path>'` and exits
+128. The fatal line is not a canonical no-ref probe (GIT_CANONICAL_NO_REF_RE
+matches only `ambiguous argument` / `bad revision`), and `git checkout`
+is not in the git-ref probe family, so the failure must be flagged. A
+successful `git fetch origin` prefix in the same `&&` chain must not
+mask the failing `git checkout` tail. A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
 

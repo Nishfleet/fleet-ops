@@ -1706,6 +1706,14 @@ bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-
 # branch` (exit 128). The next assistant turn is a recovery toolCall
 # with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-git-branch-cannot-force-update.test.sh" || fail "fleet-failed-command-git-branch-cannot-force-update tests failed"
+# fleet-ops#962: `git checkout <branch>` (or a compound `&&` chain whose
+# tail is `git checkout <branch>`) inside a worktree whose target branch
+# is checked out in another worktree is refused with
+# `fatal: '<branch>' is already used by worktree at '<path>'` (exit 128).
+# The next assistant turn is a recovery toolCall with no user-facing
+# flag. The successful `git fetch origin` prefix in a `&&` chain must
+# not mask the failing `git checkout` tail. Same CI constraint.
+bash "$here/fleet-failed-command-git-checkout-worktree-conflict.test.sh" || fail "fleet-failed-command-git-checkout-worktree-conflict tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
