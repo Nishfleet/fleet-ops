@@ -1049,6 +1049,73 @@ set -e
 ok "640-heavy: mimo-v2.5-free is pickable for heavy work"
 
 unset PI_SEAT_CREDENTIAL_PRECHECK
+
+# fleet-ops#638: commandcode Laguna free slug is skippable until listed;
+# the billing sibling without -free never joins the allowlist.
+mkdir -p "$scratch/638"
+cat >"$scratch/638/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": {
+      "models": [
+        { "id": "deepseek/deepseek-v4-flash", "cost": { "input": 0 } },
+        { "id": "poolside/laguna-s-2.1-free", "cost": { "input": 0 } },
+        { "id": "poolside/laguna-s-2.1", "cost": { "input": 0.1 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/638/caps-unlisted.json" <<'JSON'
+{
+  "ram_gb_per_worker": 0.75,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": { "cap": 2, "class": "free", "models": { "deepseek/deepseek-v4-flash": 2 } }
+  }
+}
+JSON
+cat >"$scratch/638/caps-listed.json" <<'JSON'
+{
+  "ram_gb_per_worker": 0.75,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": { "cap": 2, "class": "free", "models": { "poolside/laguna-s-2.1-free": 1 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/638/models.json"
+export SEAT_CAPS_JSON="$scratch/638/caps-unlisted.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/638/ledger-unlisted"
+export PI_PACKET_STATE="$scratch/638/state-unlisted"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "638-unlisted: expected a fallback pick, got rc=$rc"
+if echo "$out" | grep -q 'laguna'; then
+  fail "638-unlisted: laguna must not be picked until allowlisted, got: $out"
+fi
+[[ "$out" == "commandcode	deepseek/deepseek-v4-flash" ]] \
+  || fail "638-unlisted: expected commandcode/deepseek incumbent, got: $out"
+ok "638-unlisted: unwired poolside/laguna-s-2.1-free is not pickable"
+
+export SEAT_CAPS_JSON="$scratch/638/caps-listed.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/638/ledger-listed"
+export PI_PACKET_STATE="$scratch/638/state-listed"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "638-listed: expected a pick, got rc=$rc"
+[[ "$out" == "commandcode	poolside/laguna-s-2.1-free" ]] \
+  || fail "638-listed: expected commandcode/poolside/laguna-s-2.1-free, got: $out"
+if echo "$out" | grep -qxF 'commandcode	poolside/laguna-s-2.1'; then
+  fail "638-listed: billing sibling poolside/laguna-s-2.1 must not be picked"
+fi
+ok "638-listed: allowlisted poolside/laguna-s-2.1-free is pickable; billing sibling is not"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 

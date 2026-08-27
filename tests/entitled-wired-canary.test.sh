@@ -224,4 +224,15 @@ jq -e '.providers.hetzner.cap > 0 and .providers.hetzner.models["Qwen/Qwen3.6-35
   "$repo_root/config/seat-caps.json" >/dev/null \
   || fail "production lock: hetzner must allowlist Qwen/Qwen3.6-35B-A3B-FP8"
 
+# Production lock (fleet-ops#638): the auditioned CommandCode Laguna free
+# slug stays wired so the free-roster canary does not re-file, and the
+# billing sibling without -free never joins the allowlist.
+jq -e '.providers.commandcode.cap > 0 and (.providers.commandcode.models["poolside/laguna-s-2.1-free"] // 0) > 0' \
+  "$repo_root/config/seat-caps.json" >/dev/null \
+  || fail "production lock: commandcode must allowlist poolside/laguna-s-2.1-free (fleet-ops#638)"
+if jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-caps.json" \
+    | grep -qxF 'poolside/laguna-s-2.1'; then
+  fail "production lock: commandcode must not allowlist billing slug poolside/laguna-s-2.1"
+fi
+
 ok "entitled-wired-canary: missing row, undated cap=0, class mismatch, empty-models, dedup, production clean"
