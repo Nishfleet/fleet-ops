@@ -5,7 +5,8 @@
 # This detector scans recent Pi session JSONL for toolResults with isError /
 # non-zero exit / timeout that the assistant never named in later text, and
 # auto-files when the failure was swallowed. grep/rg/diff exit 1 is skipped
-# (POSIX no-match, not a failure).
+# (POSIX no-match, not a failure). SPAWN_BLOCKED / harness confirmation
+# blocks are skipped (the command never ran).
 #
 # No new scheduler. Run by fleet-heartbeat-tier1 every tick.
 # Exit 0: no swallowed failures in the window. Exit 1: at least one
