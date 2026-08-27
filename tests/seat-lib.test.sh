@@ -1182,3 +1182,9 @@ bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests 
 # fleet-ops#497: gate-integrity reusable shape. Same CI constraint.
 bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable tests failed"
 
+# fleet-ops#661: a python `KeyError: 'input_domain'` toolResult walked past
+# is a real swallowed failure. Mechanism test (fleet-ops#366 — every
+# failure-fix ships a regression test, no silent close). Same CI
+# constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-keyerror-walked-past.test.sh" || fail "fleet-failed-command-keyerror-walked-past tests failed"
+
