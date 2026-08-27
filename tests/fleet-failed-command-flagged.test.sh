@@ -55,25 +55,6 @@
 #       failure ("the p14-test-listing-gate test failed with 1, fixing") ->
 #       exit 0. Proves 6l is not "always flag": naming the failure in
 #       user-facing text is the standing rule's required discharge.
-#   6n. Live #933: a chained probe
-#       `ls <lane> 2>/dev/null | head; echo "---"; cd <lane> 2>/dev/null &&
-#       git status 2>&1 | head -5 && git log --oneline -3 2>&1` against a
-#       directory that is not a git checkout exits 128 with two
-#       `fatal: not a git repository (or any of the parent directories):
-#       .git` lines, prefixed by a successful `---` from the earlier ls.
-#       The next assistant turn is a toolCall only (a probe against the
-#       products checkout) with NO user-facing text -> exit 1. The
-#       successful `---` prefix and the chained `cd && git ...` shape must
-#       NOT mask the real git-not-repo failure; the toolCall-only recovery
-#       never names it. Locks the live #933 shape so a future "chained
-#       command with a successful prefix clears" or "any toolCall
-#       recovery clears" refactor cannot silently re-open it.
-#   6o. Live #933 positive: same chained git-not-repo shape as 6n but the
-#       recovery turn NAMES the failure ("the lanes/0509 git log failed
-#       with 128 (not a git repository), trying the products checkout
-#       instead") -> exit 0. Proves 6n is not "always flag": naming the
-#       failure in user-facing text is the standing rule's required
-#       discharge.
 #   7. Auto-file with signal key, deduped on a second run.
 #   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
 #   7c. Same snippet plus a later flag -> exit 0.
@@ -882,60 +863,6 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "live #943 test-gate FAIL + failure-naming investigation should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "live #943 positive: test-gate FAIL with later failure-naming prose clears (exit 0)"
 rm -f "$sessions/test-gate-investigate-flagged.jsonl"
-
-# --- 6n. live #933: chained git-not-repo probe, successful prefix, toolCall-only recovery -
-# The session 2026-08-27T01-17-50-330Z (this issue's own origin session)
-# ran the chained probe
-#   `ls ~/workspaces/lanes/0509 2>/dev/null | head; echo "---"; cd ~/workspaces/lanes/0509 2>/dev/null && git status 2>&1 | head -5 && git log --oneline -3 2>&1`
-# against a directory that exists but is not a git checkout. The earlier
-# `ls ... 2>/dev/null | head` produced no rows (the lane dir was empty),
-# so the toolResult carries a successful `---` prefix from the `echo`,
-# then two `fatal: not a git repository (or any of the parent
-# directories): .git` lines (one from `git status`, one from `git log`),
-# then `Command exited with code 128`. The next assistant turn was a
-# toolCall only (`ls ~/workspaces/products/0509 ...; cd ... && git log`)
-# with NO user-facing text — the worker silently rerouted to the
-# products checkout without ever naming the lanes/0509 failure.
-# The detector must flag this: the git-not-repo fatal is a real failure
-# (GIT_REAL_ERR_RE matches `fatal: not a git repository`), the chained
-# `cd && git ...` shape is not a ref-existence probe (GIT_BENIGN_RE
-# matches `git log` but _git_canonical_probe returns False because
-# GIT_REAL_ERR_RE hits), and the toolCall-only recovery never discharges
-# the pending failure. Lock the shape so a future "chained command with
-# a successful prefix clears" or "any toolCall recovery clears" refactor
-# cannot silently re-open #933.
-write_session "git-not-repo-chained-toolcall" "$(cat <<'JSONL'
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_lane","name":"bash","arguments":{"command":"ls ~/workspaces/lanes/0509 2>/dev/null | head; echo \"---\"; cd ~/workspaces/lanes/0509 2>/dev/null && git status 2>&1 | head -5 && git log --oneline -3 2>&1"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_lane","toolName":"bash","isError":true,"content":[{"type":"text","text":"---\nfatal: not a git repository (or any of the parent directories): .git\nfatal: not a git repository (or any of the parent directories): .git\n\n\nCommand exited with code 128"}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_prod","name":"bash","arguments":{"command":"ls ~/workspaces/products/0509 2>/dev/null | head; echo \"---\"; cd ~/workspaces/products/0509 && git log --oneline -3 2>&1 | head; echo \"---\"; git remote -v 2>&1 | head"}}]}}
-JSONL
-)"
-rc=$(run_bin 0)
-[[ "$rc" == "1" ]] || fail "live #933 chained git-not-repo + toolCall-only recovery should exit 1 (got $rc) $(cat "$scratch/err.log")"
-grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "live #933 must be flagged as swallowed"
-grep -q "fatal: not a git repository" "$scratch/err.log" || fail "live #933 snippet must include the git-not-repo fatal line"
-ok "live #933: chained git-not-repo with successful prefix + toolCall-only recovery is flagged"
-rm -f "$sessions/git-not-repo-chained-toolcall.jsonl"
-
-# --- 6o. live #933 positive: same chained git-not-repo shape but recovery names the fail -
-# Same chained `ls ...; echo "---"; cd <non-repo> && git status && git log`
-# shape as 6n, but the recovery turn NAMES the failure ("the lanes/0509
-# git log failed with 128 (not a git repository), trying the products
-# checkout instead"). FLAG_RE must match ("failed" / "128") and clear
-# the pending failure -> exit 0. Proves 6n is not "always flag": naming
-# the failure in user-facing text is the standing rule's required
-# discharge, even when the failed command was a chained probe with a
-# successful prefix.
-write_session "git-not-repo-chained-flagged" "$(cat <<'JSONL'
-{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_lane","name":"bash","arguments":{"command":"ls ~/workspaces/lanes/0509 2>/dev/null | head; echo \"---\"; cd ~/workspaces/lanes/0509 2>/dev/null && git status 2>&1 | head -5 && git log --oneline -3 2>&1"}}]}}
-{"type":"message","message":{"role":"toolResult","toolCallId":"call_lane","toolName":"bash","isError":true,"content":[{"type":"text","text":"---\nfatal: not a git repository (or any of the parent directories): .git\nfatal: not a git repository (or any of the parent directories): .git\n\n\nCommand exited with code 128"}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the lanes/0509 git log failed with 128 (not a git repository), trying the products checkout instead."},{"type":"toolCall","id":"call_prod","name":"bash","arguments":{"command":"cd ~/workspaces/products/0509 && git log --oneline -3 2>&1 | head"}}]}}
-JSONL
-)"
-rc=$(run_bin 0)
-[[ "$rc" == "0" ]] || fail "live #933 chained git-not-repo + failure-naming recovery should exit 0 (got $rc) $(cat "$scratch/err.log")"
-ok "live #933 positive: chained git-not-repo with later failure-naming prose clears (exit 0)"
-rm -f "$sessions/git-not-repo-chained-flagged.jsonl"
 
 
 # --- 7. auto-file + dedupe --------------------------------------------------

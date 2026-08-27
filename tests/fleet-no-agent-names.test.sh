@@ -112,11 +112,10 @@ ok "B11: agent names in a list without attribution word pass"
 git_repo="$scratch/repo"
 mkdir -p "$git_repo"
 cd "$git_repo"
-# Pin the initial branch name to `main` so the `--commit-range main...feature`
-# check below finds a `main` ref. `git init` without `-b` follows the
-# runner's `init.defaultBranch`, which is `master` on hosted GitHub Actions
-# runners (Ubuntu 24.04 image) and `main` on the VPS. Pinning makes the
-# test deterministic across both.
+# fleet-ops#926: the drill range is <branch>~1..<branch>, which is
+# resolvable on any runner (no `main` ref required). `git init -q -b main`
+# is kept because Phase E still names `main` as a ref; hosted runners
+# still have `init.defaultBranch=master`.
 git init -q -b main
 git config user.email "agent@example.com"
 git config user.name "Test Agent"
@@ -135,7 +134,7 @@ Co-Authored-By: Claude <claude@example.com>
 Generated with Devin"
 
 set +e
-out=$("$bin" --commit-range main...feature 2>&1)
+out=$("$bin" --commit-range 'feature~1..feature' 2>&1)
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "commit range with Co-Authored-By must reject (rc=$rc out=$out)"
@@ -162,7 +161,7 @@ git commit -q -m "feat: add thing
 No agent attribution."
 
 set +e
-out=$("$bin" --commit-range main...clean-feature --pr-body "$scratch/body.md" 2>&1)
+out=$("$bin" --commit-range 'clean-feature~1..clean-feature' --pr-body "$scratch/body.md" 2>&1)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "clean commit + body must pass (rc=$rc out=$out)"
@@ -192,7 +191,7 @@ git commit -q -m "feat: add thing"
 printf 'This was built by Claude\n' >"$scratch/bad-body.md"
 
 set +e
-out=$("$bin" --commit-range main...combo-feature --pr-body "$scratch/bad-body.md" 2>&1)
+out=$("$bin" --commit-range 'combo-feature~1..combo-feature' --pr-body "$scratch/bad-body.md" 2>&1)
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "bad body + clean commits must reject (rc=$rc out=$out)"

@@ -724,6 +724,11 @@ ok "drill: observe-to-close closes #479 (marker + enforced); queued #78 stays op
 bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"
 ok "rule-enforcement: no-agent-names gate drill"
 
+# fleet-ops#926: hosted-runner rev-range class gate. Nested host so the
+# worker token does not need a workflow edit.
+bash "$here/ci-hosted-paths.test.sh" || fail "ci-hosted-paths class gate failed"
+ok "rule-enforcement: ci-hosted-paths class gate"
+
 # fleet-ops#529: conflict-file canary. Invoked from this CI-listed file so
 # hosted runners run it without a workflow edit (worker tokens cannot push
 # .github/workflows/**).
