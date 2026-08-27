@@ -341,6 +341,9 @@ bin/fleet-seat-live-validate /home/nish/.local/bin/fleet-seat-live-validate
 # Heartbeat-tier1 block 31.
 bin/fleet-credential-expiry-canary /home/nish/.local/bin/fleet-credential-expiry-canary
 lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expiry-canary.py
+# Heartbeat-tier1 block 32.
+bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary
+lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

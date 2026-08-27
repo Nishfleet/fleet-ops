@@ -13,8 +13,12 @@
 #   4. npm run deploy:cloudflare (real) or npm run cf:check (--dry-run).
 #   5. Echo DEPLOYED_TARGET_SHA=<sha>.
 #
-# Credentials: /home/nish/.config/cloudflare/deploy.env is sourced for wrangler.
-# Its values are NEVER printed.
+# Credentials: /home/nish/.config/cloudflare/deploy-ci.env is sourced for
+# wrangler. Its values are NEVER printed.
+# (fleet-ops#1166: the prior deploy.env token went 401 dead; deploy-ci.env
+# is the sanctioned live VPS CF file — proven tokens/verify 200/active and
+# 0509 D1 list succeeds. deploy.env stays untouched until Nish pastes a new
+# token; do not retarget back without re-proving.)
 #
 # --dry-run: everything except the actual `wrangler deploy`. Uses
 # `npm run cf:check` (which is `wrangler deploy --dry-run`). This is the only
@@ -43,7 +47,7 @@ LIVE_STATUS_URL="https://siterep.net/api/public/release-status"
 # target SHA — we never build or deploy from the shared checkout's working tree.
 SHARED_CHECKOUT="/home/nish/workspaces/products/siterep-public"
 WORKTREE_DIR="/home/nish/workspaces/agent-worktrees/deploy-siterep"
-CREDS_FILE="/home/nish/.config/cloudflare/deploy.env"
+CREDS_FILE="${SITEREP_DEPLOY_CREDS_FILE:-/home/nish/.config/cloudflare/deploy-ci.env}"
 
 log() { printf '[siterep-deploy] %s\n' "$*"; }
 die() { printf '[siterep-deploy] ERROR: %s\n' "$*" >&2; exit 1; }

@@ -11,6 +11,8 @@
 #   1. Use the repo's pinned wrangler (npx) inside the deploy worktree to run
 #      `wrangler rollback -y` (auto-accept the previous-version rollback).
 #      Source the credentials env file for wrangler.
+#      (fleet-ops#1166: deploy.env token went 401 dead; deploy-ci.env is the
+#      sanctioned live VPS CF file. Never print token values.)
 #   2. Run siterep-deploy-verify --post-rollback (canary only; live SHA is the
 #      OLD sha by design, so we do NOT check sha-equality).
 #   3. File a gh incident in Nishfleet/siterep-public so it is queued and visible.
@@ -23,7 +25,7 @@ set -euo pipefail
 
 REPO_SLUG="Nishfleet/siterep-public"
 WORKTREE_DIR="/home/nish/workspaces/agent-worktrees/deploy-siterep"
-CREDS_FILE="/home/nish/.config/cloudflare/deploy.env"
+CREDS_FILE="${SITEREP_DEPLOY_CREDS_FILE:-/home/nish/.config/cloudflare/deploy-ci.env}"
 VERIFY="/home/nish/.local/bin/siterep-deploy-verify"
 ROLLBACK_MSG="AUTO-ROLLBACK: deploy verification failed (siterep-deploy-verify.service OnFailure)"
 

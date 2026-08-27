@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# fleet-cf-token-canary — sanctioned VPS Cloudflare token liveness gate
+# (fleet-ops#1166, vacation-audit-20260827 finding 10).
+#
+# The vacation audit found ~/.config/cloudflare/deploy.env had gone 401 dead
+# while VPS scripts (siterep-deploy, siterep-deploy-rollback) kept sourcing
+# it. Those callers were retargeted to deploy-ci.env after proving its
+# tokens/verify returns 200/active AND a non-mutating 0509 D1 list succeeds.
+#
+# This wrapper is the detector for the blind spot: a dead sanctioned CF file
+# must fail loud, never degrade silently. It sources the sanctioned file,
+# GETs the official Cloudflare tokens/verify endpoint, and requires 200 +
+# result.status == "active". The token value is NEVER printed or logged.
+#
+# Official docs: developers.cloudflare.com/api/resources/user/subresources/
+# tokens/ — GET /user/tokens/verify returns result.status active|expired|... .
+#
+# Fail-loud (REJECT, exit 1): missing file, file with no token, 401, non-200,
+# or 200 with status != active.
+# SKIP (exit 0): network unreachable (a blip is not a credential failure).
+#
+# The implementation lives in lib/cf-token-canary.py.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_CF_TOKEN_CANARY_LIB:-$here/../lib/pi-packet/cf-token-canary.py}"
+[ -f "$lib" ] || lib="$here/../lib/cf-token-canary.py"
+[ -f "$lib" ] || { echo "fleet-cf-token-canary: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"
