@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# fleet-same-repo-closes-gate — conference criterion for fleet-ops#695.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes.
+# A PR body that references a same-repo issue with the cross-repo short
+# form (`Closes fleet-ops#567` on a PR in Nishfleet/fleet-ops) is REJECT.
+# GitHub does not auto-close in that form; the issue stays OPEN and gets
+# re-claimed by a later worker (the fleet-ops#567 → re-claimed incident
+# that surfaced this gap after PR #591).
+#
+# Usage:
+#   fleet-same-repo-closes-gate [--input pr.json]          # evaluate
+#   fleet-same-repo-closes-gate --ledger-line
+#
+# The implementation lives in lib/same-repo-closes-gate.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${SAME_REPO_CLOSES_GATE_LIB:-$here/../lib/pi-packet/same-repo-closes-gate.py}"
+[ -f "$lib" ] || lib="$here/../lib/same-repo-closes-gate.py"
+[ -f "$lib" ] || { echo "fleet-same-repo-closes-gate: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"
