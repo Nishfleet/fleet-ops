@@ -41,11 +41,13 @@ INLINE_RE = re.compile(r"`[^`]*`")
 DQUOTE_RE = re.compile(r'"[^"\n]{0,240}"')
 
 # After a catch-all offer, the next few words must name the filing/queueing
-# action (file/queue it, open an issue, ...). Otherwise "say the word and
+# action (file/queue it, open an issue, dig in). Otherwise "say the word and
 # I'll wire it" is an implementation offer, not an unqueued finding.
+# "dig in" is the standing-rule named phrase (fleet-ops#721).
 ACTION_RE = re.compile(
     r"\b(?:file|queue)\s+(?:it|one|this|that|an?\s+(?:new\s+)?(?:issue|finding|ticket))\b"
-    r"|\bopen\s+(?:an?|the)\s+(?:new\s+)?(?:issue|ticket|finding)\b",
+    r"|\bopen\s+(?:an?|the)\s+(?:new\s+)?(?:issue|ticket|finding)\b"
+    r"|\bdig in\b",
     re.I,
 )
 

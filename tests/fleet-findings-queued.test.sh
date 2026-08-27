@@ -184,6 +184,24 @@ grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "say the word with file a
 ok "say the word with explicit file action is still flagged"
 rm -f "$sessions/say-word-file.jsonl"
 
+# --- 5d. fleet-ops#721 origin session: colloquial hard-line "say the word"
+# is not a finding (irreversible delete, token scope, product-direction flip).
+write_session "say-word-721" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I did archive it to a single tarball. Say the word and that goes too; I kept it only so a deletion is not irreversible, not to keep it alive."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Either you delete it in Settings, or say the word and I will refresh the token scope."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Some runs sat 1,200+ minutes as cancelled-while-queued. Separate work item. Say the word on aiconverter-app and I will flip it."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "721 origin say-the-word should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "721 origin colloquial say-the-word is not flagged"
+rm -f "$sessions/say-word-721.jsonl"
+
+# Named failure mode still flags: "Say the word and I'll dig in".
+write_session "say-word-digin" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The canary is silent. Say the word and I will dig in."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "say-the-word dig-in should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "dig-in offer missing FINDINGS-UNQUEUED"
+ok "say the word and I will dig in is still flagged"
+rm -f "$sessions/say-word-digin.jsonl"
+
 # --- 6. auto-file + dedupe --------------------------------------------------
 write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
 set +e
