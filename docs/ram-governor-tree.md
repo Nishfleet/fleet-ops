@@ -171,12 +171,11 @@ Live sample 2026-08-26:
 - process `VmRSS` p95 = 2.8 MB
 - ratio 411.8
 
-fleet-ops#489 decided to keep `memory.current` for admission. The formula
-is now `ram_gb_per_worker = min(memory.current p95 * 3, 1.5)`.
-`config/seat-caps.json` sets `ram_gb_per_worker=1.5`, the clamped ceiling.
-That keeps lanes tight (~4) and does not undercount what the cgroup
-actually charges. Process VmRSS is much smaller, so using it would raise
-lanes but undercount real cost.
+fleet-ops#489 decided to keep `memory.current` for admission (not process
+VmRSS). fleet-ops#1168 then right-sized the live budget from that 1.5 GB
+p95*3 clamp to the measured typical-worker value: `config/seat-caps.json`
+sets `ram_gb_per_worker=0.6`. Process VmRSS is much smaller, so using it
+would raise lanes but undercount real cgroup cost.
 
 Do not cite the 35 MB figure as cgroup cost.
 
