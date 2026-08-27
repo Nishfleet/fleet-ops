@@ -711,6 +711,48 @@ rc=$(run_bin 0)
 ok "origin #650 snippet plus later flag is clean"
 rm -f "$sessions/install-cp-flagged.jsonl"
 
+# --- 7f. live #945: chained cmd, successful prefix masks a real `cat` ENOENT -
+# The session 2026-08-27T04-18-57-831Z ran two bash toolCalls in one turn. The
+# second was a chain `ls ... | wc -l; echo "---"; cat <missing-drop-in> 2>&1`
+# whose successful prefix printed "1820" and whose failing tail printed
+# `cat: <path>: No such file or directory` with `Command exited with code 1`
+# (isError=true). The assistant's next turn was "PASS\nThis candidate is not
+# a duplicate..." — it never named the cat failure. `cat` ENOENT is a REAL
+# failure, not a benign no-match probe like `ls` exit 2 (live #794) or
+# `git log <bad-ref>` exit 128 (live #822): there is no canonical-probe
+# exemption for `cat`, and the successful prefix must NOT mask the failing
+# tail. The detector must flag this as a swallowed failure.
+write_session "cat-chain-enoent" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_00","name":"bash","arguments":{"command":"ls /home/nish/workspaces/agent-state/fleet-blind-audit/reports/20260826T151158Z/report.md 2>&1; echo \"---\"; grep -in \"worktree\" /home/nish/workspaces/agent-state/fleet-blind-audit/reports/20260826T151158Z/report.md 2>&1 | head -20"}},{"type":"toolCall","id":"call_01","name":"bash","arguments":{"command":"ls /home/nish/workspaces/agent-worktrees/ 2>/dev/null | wc -l; echo \"---\"; cat /home/nish/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_00","toolName":"bash","isError":false,"content":[{"type":"text","text":"/home/nish/workspaces/agent-state/fleet-blind-audit/reports/20260826T151158Z/report.md\n---\n98:Environment=FLEET_OPS_DRIFT_BIN=/home/nish/workspaces/agent-worktrees/fix-drift-canary-external-units/bin/fleet-ops-drift.py"}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_01","toolName":"bash","isError":true,"content":[{"type":"text","text":"1820\n---\ncat: /home/nish/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf: No such file or directory\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"PASS\nThis candidate is not a duplicate of any open issue, open PR, or recently merged PR — the existing dirty-worktree-audit tests detect modified files inside worktrees, not stale-worktree pruning, which is a distinct operation — and the research-delta's they/we/adopting contract is concrete with c"}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "live #945 cat-chain ENOENT walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "live #945 missing SWALLOWED loud line"
+ok "live #945: chained cmd with successful prefix + real cat ENOENT tail, walked past with 'PASS', is flagged"
+rm -f "$sessions/cat-chain-enoent.jsonl"
+
+# --- 7g. live #945 positive: same chain but the assistant NAMES the failure ---
+# Same chained-command shape as 7f, but the later user-facing text names the
+# cat failure ("the cat call failed ... it is now the blocker"). FLAG_RE must
+# match and clear the pending failure -> exit 0. Proves 7f is not "always
+# flag": naming the failure in user-facing text is the standing rule's
+# required discharge and must clear, even when a successful prefix preceded
+# the failing tail.
+write_session "cat-chain-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_01","name":"bash","arguments":{"command":"ls /home/nish/workspaces/agent-worktrees/ 2>/dev/null | wc -l; echo \"---\"; cat /home/nish/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_01","toolName":"bash","isError":true,"content":[{"type":"text","text":"1820\n---\ncat: /home/nish/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf: No such file or directory\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the cat call failed with 1 — the deploy-checkout drop-in does not exist, it is now the blocker. Filing a separate issue."}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #945 cat-chain with later failure-naming prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #945 positive: cat-chain ENOENT with later failure-naming prose clears (exit 0)"
+rm -f "$sessions/cat-chain-flagged.jsonl"
+
 # --- 10. observe-to-close (fleet-ops#650) -----------------------------------
 # Isolate the mock store from the auto-file test's leftover issue-1.body.
 rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
