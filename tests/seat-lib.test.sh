@@ -311,12 +311,14 @@ grep -q "UNUSABLE (rate_limited until" "$PI_PACKET_STATE/watch.log" \
   || fail "rate-ledger: minimax fresh-RL must stay excluded"
 
 # --- invariant 6/7: dead / credentials_bad / stale-observed ----------------
-# (7) stale observed_at -> usable: cursor marker from yesterday
+# (7) stale observed_at -> usable: ollama marker from yesterday
+# (cursor is keystone-only — fleet-ops#1167 — so a volume pick never
+# consults it; prove the stale fail-open on a volume/free seat instead.)
 ledger="$scratch/ledger-stale"
 mkdir -p "$ledger"
 jq -n --arg obs "2026-08-24T00:00:00Z" \
   '{health_class:"healthy",seat_dead:false,observed_at:$obs}' \
-  > "$ledger/cursor__composer-2.5.json"
+  > "$ledger/ollama__deepseek-v4-flash_0731.json"
 export PI_PACKET_STATE="$scratch/state-stale"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 set +e
@@ -2281,4 +2283,8 @@ bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex 
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file
 # is the listed CI host.
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
+
+# fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
+# selection ledger. Hosted here (no workflow edit).
+bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
 
