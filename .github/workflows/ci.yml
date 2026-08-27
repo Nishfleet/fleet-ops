@@ -224,6 +224,8 @@ jobs:
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
+        # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
+        bash tests/orphan-workflow-detector.test.sh
         bash tests/escalation-coverage-canary.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh

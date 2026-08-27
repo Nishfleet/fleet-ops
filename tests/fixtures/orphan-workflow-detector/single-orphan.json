@@ -1,0 +1,29 @@
+{
+  "description": "Single-orphan fixture for the replay path. fleet2 has one orphan (auto-merge-arm) and one disabled-manual workflow (skipped by the active filter).",
+  "repository": "Nishfleet/fleet2",
+  "workflows": [
+    {
+      "id": 342125743,
+      "name": "Auto-merge arm",
+      "path": ".github/workflows/auto-merge-arm.yml",
+      "state": "active"
+    },
+    {
+      "id": 342125799,
+      "name": "Dependabot",
+      "path": "dynamic/dependabot/dependabot-updates",
+      "state": "active"
+    },
+    {
+      "id": 342125800,
+      "name": "Old CI",
+      "path": ".github/workflows/old-ci.yml",
+      "state": "disabled_manually"
+    }
+  ],
+  "file_checks": {
+    ".github/workflows/auto-merge-arm.yml": "missing",
+    "dynamic/dependabot/dependabot-updates": "exists",
+    ".github/workflows/old-ci.yml": "exists"
+  }
+}

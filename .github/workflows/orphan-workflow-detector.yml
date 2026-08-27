@@ -1,0 +1,100 @@
+# Orphan workflow detector (fleet-ops#1161, audit findings 3+4).
+#
+# Scans private repos for ACTIVE workflow registrations whose file is
+# missing from the default branch (the "orphan" class). GitHub keeps the
+# registration active and still bills private-repo minutes for any
+# schedule/push/workflow_dispatch trigger that fires, even though the
+# file is gone. The 2026-08-27 audit found three such orphans
+# (auto-merge-arm.yml on fleet2, egress-probe, 0509-telemetry) on an
+# already-over-quota free org.
+#
+# This is an ALERT mechanism, not a gate and not a mutator: it files one
+# reusable issue per orphan and never touches any repo's Actions
+# settings. The freeze (disable Actions / delete the registration) is
+# irreversible and requires Admin scope, so it stays in a manual runbook
+# gated by Nish. See the detector's issue body for the remediation
+# options.
+#
+# Usage from another private repo:
+#   jobs:
+#     detect:
+#       uses: Nishfleet/fleet-ops/.github/workflows/orphan-workflow-detector.yml@main
+#       with:
+#         target-repo: ${{ github.repository }}
+#       permissions:
+#         contents: read
+#         issues: write
+#
+# With no inputs it scans the default target set (fleet2, egress-probe,
+# 0509-telemetry, siterep). Callers override with `target-repo` (single
+# repo) or `repos-json` (a JSON array of owner/name).
+
+name: Orphan workflow detector
+
+on:
+  workflow_call:
+    inputs:
+      target-repo:
+        description: "Single repository to scan (owner/name). Overrides defaults."
+        required: false
+        type: string
+      repos-json:
+        description: "JSON array of owner/name repos to scan. Overrides defaults."
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      target-repo:
+        description: "Single repository to scan (owner/name). Leave empty for defaults."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out fleet-ops (has the detector script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: main
+          path: fleet-ops
+
+      - name: Write repo list
+        id: repos
+        env:
+          TARGET_REPO: ${{ inputs.target-repo }}
+          REPOS_JSON: ${{ inputs.repos-json }}
+        run: |
+          set -euo pipefail
+          if [ -n "$TARGET_REPO" ]; then
+            : > repos.txt; printf '%s\n' "$TARGET_REPO" >> repos.txt
+            printf 'using target-repo %s\n' "$TARGET_REPO"
+          elif [ -n "$REPOS_JSON" ]; then
+            printf '%s' "$REPOS_JSON" > repos.json
+            printf 'using repos-json\n'
+          else
+            : > repos.txt
+            printf 'Nishfleet/fleet2\nNishfleet/egress-probe\nNishfleet/0509-telemetry\nNishfleet/siterep\n' >> repos.txt
+            printf 'using default target set\n'
+          fi
+
+      - name: Run orphan-workflow detector
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          script=fleet-ops/.github/scripts/orphan-workflow-detector.mjs
+          if [ -f repos.json ]; then
+            node "$script" --repos-from repos.json --format json
+          elif [ -s repos.txt ]; then
+            # single repo
+            node "$script" --repo "$(head -1 repos.txt)" --format json
+          else
+            node "$script" --format human
+          fi
