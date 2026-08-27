@@ -371,10 +371,9 @@
     {
       "id": "sr-check-other-agents",
       "source": "global-standing-rules.md: Check for other agents before touching shared files (2026-08-26)",
-      "mechanism": "Worktrees isolate issue workers; no fleet-wide lock on shared non-git files",
-      "proof": "Nishfleet/fleet-ops#539",
-      "status": "queued(#539)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Claude PreToolUse guard warns when an open PR touches a shared control-plane file; fleet-claim conflicts checks live claim branches and open PRs. Warn-only, never block.",
+      "proof": "lib/guard_shared_file_collision.py; bin/guard_shared_file_collision; bin/guard_shared_file_collision_hook.py; tests/guard-shared-file-collision.test.sh; bin/fleet-claim; tests/fleet-claim.test.sh",
+      "status": "enforced"
     },
     {
       "id": "sr-memory-oom",
