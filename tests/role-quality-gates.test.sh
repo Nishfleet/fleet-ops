@@ -81,6 +81,7 @@ required = (
     "vault-knowledge-format",
     "vault-conflict",
     "fleet-metrics-export",
+    "standing-rules-render",
 )
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
@@ -94,13 +95,45 @@ leaked = [
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
         "fleet-metrics-export.service",
+        "standing-rules-render.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export (fleet-ops#1180)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render (fleet-ops#1180, #1152)"
+
+# fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
+# standing-rules-render.service on disk (the canonical-render unit that
+# the auditor flagged as ungated-role in CI) and prove the audit emits no
+# `unit:standing-rules-render.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1152=$(mktemp -d -t role-gates-1152.XXXXXX)
+trap 'rm -rf "$scratch1152"' EXIT INT TERM
+mkdir -p "$scratch1152/systemd" "$scratch1152/prompts" "$scratch1152/bin" "$scratch1152/config" "$scratch1152/tests"
+cat >"$scratch1152/systemd/standing-rules-render.service" <<'UNIT'
+[Unit]
+Description=Regenerate standing-rules regions (fixture for fleet-ops#1152)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/bin/render-standing-rules.py --render
+UNIT
+# Minimal catalog so the auditor can parse it.
+cp "$catalog" "$scratch1152/config/role-quality-gates.json"
+audit1152_out=$(python3 "$lib" audit --repo-root "$scratch1152" --catalog "$scratch1152/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1152_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1152_out"
+if echo "$audit1152_out" | jq -e '.findings[] | select(.id == "unit:standing-rules-render.service")' >/dev/null; then
+  fail "fleet-ops#1152 regression: standing-rules-render.service leaked into ungated-role findings: $(echo "$audit1152_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line CI reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit1152_out" | jq -e '.findings[] | select(.detail | test("standing-rules-render.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1152 regression: exact issue symptom re-appeared: $(echo "$audit1152_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: standing-rules-render.service is not flagged (fleet-ops#1152)"
 
 # fleet-ops#709: behaviour-locked. Build a scratch repo with a real
 # vault-knowledge-format.service on disk and prove the audit emits no
