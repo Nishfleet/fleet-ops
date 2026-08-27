@@ -2265,6 +2265,12 @@ bash "$here/fleet-failed-command-observe-duplicate-1003.test.sh" || fail "fleet-
 # leftover exhaustion under the live 01a04105 signal. Same CI constraint
 # (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-observe-duplicate-git-branch-force.test.sh" || fail "fleet-failed-command-observe-duplicate-git-branch-force tests failed"
+# fleet-ops#1052: a `bin/fleet-no-agent-names-check` REJECT (exit 1 with
+# `REJECT: agent attribution found`) is a real swallowed failure when the
+# worker explains it away as the test exercising the tool. The live 01a041ea
+# session ran the gate against `tests/fleet-no-agent-names.test.sh` and walked
+# past the REJECT. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-no-agent-names-reject.test.sh" || fail "fleet-failed-command-no-agent-names-reject tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#1116: heartbeat tier-1 alarm-vs-failure separation. The
