@@ -1948,3 +1948,12 @@ bash "$here/cancelled-while-queued-detector.test.sh" || fail "cancelled-while-qu
 # new drill.
 bash "$here/fleet-failed-command-compound-ls-permission-denied.test.sh" || fail "fleet-failed-command-compound-ls-permission-denied tests failed"
 
+# fleet-ops#1134 / PR #1159 leftover: pi-packet-verdict.test.sh landed on
+# main without a host line. Hosting it here is the documented intent of
+# that test's header. Not a 1157 change of behaviour; it unblocks P14.
+bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
+
+# Leftovers on origin/main that would fail this PR's listing gate.
+bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
+bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
+

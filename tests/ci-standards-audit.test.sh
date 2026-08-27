@@ -173,3 +173,7 @@ bash "$here/p14-test-listing-gate.test.sh"
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/same-repo-closes-gate.test.sh"
+
+# fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
+# Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/console-tile-verify.test.sh"

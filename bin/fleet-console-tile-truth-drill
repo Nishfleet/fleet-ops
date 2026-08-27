@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# fleet-console-tile-truth-drill — prove a lying tile is marked DISPUTED
+# and that ConsoleLying is a real rule on the repair rail (fleet-ops#1157,
+# a #1010 drill). One-shot; run by hand or from tests. Not timer-driven
+# (the issue forbids a new timer; verify piggybacks fleet-console-pi.timer).
+#
+# Injects a fake tile value into a scratch data.json, runs verify.py, and
+# asserts:
+#   1. the tile is disputed=true
+#   2. fleet_console_tile_mismatch{tile=...} 1 is exported
+#   3. shell.html would render DISPUTED (the marker is in the shell)
+#   4. config/fleet_rules.yml contains ConsoleLying (warning, 30m) and
+#      ConsoleTileVerifyAbsent (organ heartbeat)
+#   5. promtool check rules accepts the file (if promtool exists)
+#   6. --live (optional): Prometheus has loaded ConsoleLying
+#
+# Cleanup is the scratch dir. Never writes the live data.json. Never
+# leaves a live mismatch=1 behind (the live exporter is the next push).
+#
+# Usage: fleet-console-tile-truth-drill           # run the drill
+#        fleet-console-tile-truth-drill --check   # files present, no I/O
+#        fleet-console-tile-truth-drill --live    # also query 9090
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+self=$(readlink -f "$0")
+REPO="${FLEET_OPS_REPO:-$(cd "$(dirname "$self")/.." && pwd)}"
+VERIFY="${CONSOLE_VERIFY_PY:-$REPO/libexec/fleet-console-pi/verify.py}"
+GENERATE="${CONSOLE_GENERATE_PY:-$REPO/libexec/fleet-console-pi/generate.py}"
+SHELL_HTML="${CONSOLE_SHELL_HTML:-$REPO/libexec/fleet-console-pi/shell.html}"
+PUSH="${CONSOLE_PUSH_SH:-$REPO/libexec/fleet-console-pi/push.sh}"
+RULES="${CONSOLE_RULES_YML:-$REPO/config/fleet_rules.yml}"
+PROMTOOL="${PROMTOOL:-promtool}"
+CURL="${CURL:-curl}"
+PROM_URL="${PROM_URL:-http://127.0.0.1:9090}"
+
+log() { printf '[fleet-console-tile-truth-drill] %s\n' "$*" >&2; }
+fail() { log "FAIL: $*"; exit 1; }
+ok() { log "OK: $*"; }
+
+mode="${1:-}"
+
+check_files() {
+  [[ -f "$VERIFY" ]] || fail "missing verify.py: $VERIFY"
+  [[ -f "$GENERATE" ]] || fail "missing generate.py: $GENERATE"
+  [[ -f "$SHELL_HTML" ]] || fail "missing shell.html: $SHELL_HTML"
+  [[ -f "$PUSH" ]] || fail "missing push.sh: $PUSH"
+  [[ -f "$RULES" ]] || fail "missing fleet_rules.yml: $RULES"
+  grep -q 'python3 "$DIR/verify.py"' "$PUSH" \
+    || fail "push.sh must run verify.py after generate.py (no new timer)"
+  grep -q 'DISPUTED' "$SHELL_HTML" \
+    || fail "shell.html must render a DISPUTED marker"
+  grep -q 'verify.cmd' "$SHELL_HTML" || grep -q 'v.cmd' "$SHELL_HTML" \
+    || fail "shell.html what-is-this must cite tile.verify.cmd"
+  grep -q 'alert: ConsoleLying' "$RULES" \
+    || fail "fleet_rules.yml missing ConsoleLying"
+  grep -q 'for: 30m' "$RULES" \
+    || fail "ConsoleLying must wait 30m"
+  grep -q 'severity: warning' "$RULES" \
+    || fail "ConsoleLying must be warning (repair rail)"
+  grep -q 'alert: ConsoleTileVerifyAbsent' "$RULES" \
+    || fail "fleet_rules.yml missing ConsoleTileVerifyAbsent (organ heartbeat)"
+  grep -q 'absent(fleet_console_tile_verify_timestamp_seconds)' "$RULES" \
+    || fail "absent() heartbeat must key on fleet_console_tile_verify_timestamp_seconds"
+  extra=$(find "$REPO/systemd" -name '*console*.timer' | wc -l)
+  extra=${extra// /}
+  [[ "$extra" -eq 1 ]] || fail "exactly one console timer (no new timer), found $extra"
+  ok "files present: verify, generate, shell DISPUTED, ConsoleLying, no extra timer"
+}
+
+if [[ "$mode" == "--check" ]]; then
+  check_files
+  echo "ready"
+  exit 0
+fi
+
+check_files
+
+scratch=$(mktemp -d -t console-tile-truth.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+# A canned "ok" tile doc. Counts are invented; the runners are stubbed via
+# env so we never hit live Prom/gh/systemd from the offline drill.
+cat >"$scratch/data.json" <<'JSON'
+{
+  "generated_at": "2026-08-27T00:00:00+00:00",
+  "generated_epoch": 1787846400,
+  "cadence_min": 12,
+  "org": "Nishfleet",
+  "tiles": {
+    "open_prs": {
+      "source": "prometheus:fleet_open_prs",
+      "stale_after_s": 900,
+      "ok": true,
+      "observed_at": 1787846400,
+      "count": 10,
+      "items": [{"repo": "Nishfleet/fleet-ops", "count": 10}]
+    },
+    "shipped_24h": {
+      "source": "prometheus:fleet_merged_prs_24h",
+      "stale_after_s": 900,
+      "ok": true,
+      "observed_at": 1787846400,
+      "count": 5,
+      "items": [{"repo": "Nishfleet/fleet-ops", "count": 5}]
+    },
+    "main_ci": {
+      "source": "prometheus:fleet_main_ci_green",
+      "stale_after_s": 900,
+      "ok": true,
+      "observed_at": 1787846400,
+      "red_count": 0,
+      "items": []
+    },
+    "firing_alerts": {
+      "source": "prometheus:/api/v1/alerts",
+      "stale_after_s": 900,
+      "ok": true,
+      "observed_at": 1787846400,
+      "count": 0,
+      "items": []
+    },
+    "repairs_inflight": {
+      "source": "systemd:alert-repair-*",
+      "stale_after_s": 1200,
+      "ok": true,
+      "observed_at": 1787846400,
+      "count": 0
+    },
+    "running_pi": {
+      "source": "execstart+proc",
+      "stale_after_s": 1800,
+      "ok": true,
+      "observed_at": 1787846400,
+      "count": 4,
+      "proc_count": 2,
+      "unit_count": 2
+    },
+    "fleet_state": {
+      "source": "local:FLEET-PAUSED",
+      "stale_after_s": 3600,
+      "ok": true,
+      "observed_at": 1787846400,
+      "paused": false
+    }
+  }
+}
+JSON
+
+# Stub the independent runners by pointing verify.py at a tiny HTTP server
+# and a fake systemctl. Offline: we inject running_pi.count=999 (a lie)
+# against a verify runner that still sees the real /proc+/systemd, which
+# will almost certainly NOT be 999, so DISPUTED fires. That is the live
+# class of lie (the tile number is wrong). For fully offline CI, the
+# test file stubs SYSTEMCTL and /proc via CONSOLE_VERIFY helpers.
+#
+# Default drill path (this script, run on the VPS): inject a ridiculous
+# running_pi.count and let the real ExecStart verify contradict it.
+
+prom_out="$scratch/tiles.prom"
+log "injecting running_pi.count=999 (a lie) and running verify.py"
+CONSOLE_SKIP_GH=1 \
+CONSOLE_TILE_PROM="$prom_out" \
+python3 "$VERIFY" \
+  --data "$scratch/data.json" \
+  --prom-out "$prom_out" \
+  --inject 'running_pi.count=999' \
+  --skip-gh \
+  || fail "verify.py exited nonzero"
+
+python3 - "$scratch/data.json" "$prom_out" <<'PY' || fail "DISPUTED assertions failed"
+import json, sys
+doc = json.loads(open(sys.argv[1]).read())
+tile = doc["tiles"]["running_pi"]
+assert tile.get("disputed") is True, tile
+assert tile.get("verify", {}).get("cmd"), tile
+assert "pi --print" in tile["verify"]["cmd"], tile["verify"]["cmd"]
+assert doc.get("tile_mismatches", {}).get("running_pi") == 1, doc.get("tile_mismatches")
+prom = open(sys.argv[2]).read()
+assert 'fleet_console_tile_mismatch{tile="running_pi"} 1' in prom, prom
+assert "fleet_console_tile_verify_timestamp_seconds" in prom, prom
+print("OK: injected lie -> disputed=true, mismatch{tile=running_pi}=1, verify.cmd present")
+PY
+
+grep -q 'DISPUTED' "$SHELL_HTML" || fail "shell.html lost DISPUTED marker"
+ok "shell.html still carries DISPUTED"
+
+if command -v "$PROMTOOL" >/dev/null 2>&1; then
+  "$PROMTOOL" check rules "$RULES" >/dev/null \
+    || fail "promtool check rules failed on $RULES"
+  ok "promtool check rules: $RULES valid"
+else
+  log "promtool not installed — skipping syntax check"
+fi
+
+# Alarm shape (not a 30-minute wait): ConsoleLying expr + for: 30m + warning.
+python3 - "$RULES" <<'PY' || fail "ConsoleLying shape failed"
+import sys, pathlib
+text = pathlib.Path(sys.argv[1]).read_text()
+assert "alert: ConsoleLying" in text
+# The expr must be the mismatch gauge, not a recording of the tile number.
+assert "fleet_console_tile_mismatch" in text
+assert "for: 30m" in text
+assert "severity: warning" in text
+assert "alert: ConsoleTileVerifyAbsent" in text
+print("OK: ConsoleLying + ConsoleTileVerifyAbsent present with 30m warning")
+PY
+
+if [[ "$mode" == "--live" ]]; then
+  body=$("$CURL" -fsS "$PROM_URL/api/v1/rules" || fail "prometheus /api/v1/rules unreachable")
+  echo "$body" | grep -q 'ConsoleLying' \
+    || fail "Prometheus has not loaded ConsoleLying (install.sh --system + HUP prometheus)"
+  ok "Prometheus has loaded ConsoleLying"
+fi
+
+ok "tile-truth drill passed (inject lie -> DISPUTED + mismatch=1 + ConsoleLying rule)"
+echo "PASS"
+exit 0
