@@ -75,14 +75,17 @@ named non-main branch is checked out there.
 
 ### System-scope entries (fleet-ops#71)
 
-The MANIFEST may list entries under `/etc/systemd/system/...` — those are
-SYSTEM scope and need root to install. `./install.sh` (default) SKIPS them;
-run `./install.sh --system` to install them. `--system` is non-interactive
-(it checks `sudo -n true`; if sudo requires a password, it refuses with a
-loud error and the exact manual command to run, so a worker can never hang
-on a sudo prompt). Drift on system entries is also worth checking from
-heartbeat tier 1: `./install.sh --check --system` exits nonzero on any
-byte-difference.
+The MANIFEST may list entries under `/etc/systemd/system/...` and
+`/etc/prometheus/...` — those are SYSTEM scope and need root to install.
+`./install.sh` (default) SKIPS them. Heartbeat `fleet-ops-deploy` runs
+`./install.sh --system` after the user-scope install and reloads prometheus
+when that unit is active, so `fleet_rules.yml` actually loads
+(fleet-ops#1247). A hand-run of `./install.sh --system` still works.
+`--system` is non-interactive (it checks `sudo -n true`; if sudo requires a
+password, it refuses with a loud error and the exact manual command to run,
+so a worker can never hang on a sudo prompt). Drift on system entries is
+also worth checking from heartbeat tier 1: `./install.sh --check --system`
+exits nonzero on any byte-difference.
 
 The two system drop-ins repo-owned by `#71` are the fleet RAM governor
 themselves — see [docs/ram-governor-tree.md](docs/ram-governor-tree.md) for
