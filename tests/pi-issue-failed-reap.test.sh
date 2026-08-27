@@ -156,19 +156,62 @@ chmod +x "$gh_bin/gh"
 
 : >"$triage"
 write_fake inactive 0
-# Point SEAT_LIB at a missing path so the reap cannot leak the live VPS
-# seat ledger (a missing seat_usable looks like "benched" and keeps
-# tried-seats — the opposite of this recover case).
+# fleet-ops#1227: isolate the seat ledger. The reaper sources seat-lib and
+# keeps tried-seats when seat_usable says the last seat is benched
+# (TRIED-SEATS-KEPT). Point SEAT_LIB at the repo copy and
+# PI_SEAT_HEALTH_LEDGER_DIR at an empty scratch ledger so a live VPS bench
+# cannot leak into this recover case. Write last-seat so seat_usable is
+# actually consulted (no ledger file fail-opens as usable → RESET).
+printf 'cursor/composer-2.5\n' >"$state/attempts/pi-issue-fleet-ops-381.seat"
+ledger_reset="$fake/ledger-reset"
+mkdir -p "$ledger_reset"
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
-    PI_PACKET_STATE="$state" SEAT_LIB="$fake/no-seat-lib.sh" "$bin" fleet-ops-381 2>&1)"
+    PI_PACKET_STATE="$state" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_reset" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    "$bin" fleet-ops-381 2>&1)"
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "claim-release reap must exit 0, got $rc ($out)"
 [[ -f "$tried" ]] || fail "tried-seats file must still exist after reap"
 [[ ! -s "$tried" ]] || fail "tried-seats must be truncated after claim release, got: $(cat "$tried")"
 grep -q 'TRIED-SEATS-RESET' "$triage" || fail "triage missing TRIED-SEATS-RESET: $(cat "$triage")"
+grep -q 'TRIED-SEATS-KEPT' "$triage" && fail "empty ledger must not KEEP tried-seats: $(cat "$triage")"
 ok "reaper truncates tried-seats after claim release (fleet-ops#381)"
+
+# Inverse of the recover case (fleet-ops#516): last seat is benched in the
+# isolated ledger, so the re-claim must keep tried-seats and pick a different
+# seat. Own state + ledger dirs so this cannot poison the RESET case.
+state_keep="$fake/state-keep"
+mkdir -p "$state_keep/attempts"
+tried_keep="$state_keep/attempts/pi-issue-fleet-ops-516.tried-seats"
+printf 'devin/swe-1-7\ncursor/composer-2.5\n' >"$tried_keep"
+printf 'cursor/composer-2.5\n' >"$state_keep/attempts/pi-issue-fleet-ops-516.seat"
+ledger_keep="$fake/ledger-keep"
+mkdir -p "$ledger_keep"
+cat >"$ledger_keep/cursor__composer-2.5.json" <<'LEDGER'
+{"health_class":"quota_bench","seat_dead":false,"observed_at":"2026-08-27T00:00:00Z","bench_until":"2099-01-01T00:00:00Z"}
+LEDGER
+: >"$triage"
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_keep" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_keep" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    "$bin" fleet-ops-516 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "benched-last-seat reap must exit 0, got $rc ($out)"
+[[ -s "$tried_keep" ]] || fail "benched last-seat must keep tried-seats, file empty or missing"
+grep -q 'cursor/composer-2.5' "$tried_keep" || fail "kept tried-seats lost last seat, got: $(cat "$tried_keep")"
+grep -q 'devin/swe-1-7' "$tried_keep" || fail "kept tried-seats lost earlier seat, got: $(cat "$tried_keep")"
+grep -q 'TRIED-SEATS-KEPT' "$triage" || fail "triage missing TRIED-SEATS-KEPT: $(cat "$triage")"
+grep -q 'TRIED-SEATS-RESET' "$triage" && fail "benched last-seat must not RESET tried-seats: $(cat "$triage")"
+ok "reaper keeps tried-seats when last seat is benched (fleet-ops#516)"
 
 # fleet-ops#638 (auditor 2026-08-27T03:31Z): a stale .in packet at
 # $PI_ISSUES_DIR/<instance>.in keeps pi-issue@<instance>.service on
