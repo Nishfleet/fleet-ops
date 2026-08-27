@@ -24,6 +24,16 @@
 # #970, #975, #980 (search-index delay, fleet-ops#951). The shape lock
 # lives here; leftover-duplicate observe-to-close drain lives in
 # tests/fleet-failed-command-observe-duplicate-open.test.sh (#965).
+#
+# Second live session of this class: 2026-08-27T08-42-19-241Z_01a04262-
+# 62e9-7c55-8e9a-0ac4fdbc57d2, auto-filed as #1079. Same shape: the
+# auditor's minimax-m3-free worker edited
+# tests/seat-lib.test.sh with stale oldText (the insertion point line
+# had drifted from an earlier nearby edit by the same session).
+# The edit returned "Could not find the exact text in <path>",
+# isError=true, details={}. The assistant walked past it with a
+# silent `grep` recovery turn and never named the failure.
+# observe-to-close: ages out at 2026-08-28T08:42:19Z.
 # The worker edited
 #   /home/nish/workspaces/agent-state/0509-transformation/discovery-spike-v2/discover_v2.py
 # with a stale `oldText` (`def fetch_0509_search(query: str, retries: int = 2)`).
@@ -151,4 +161,4 @@ count=$(jq '.findings | length' <<<"$report")
 ok "edit 'Could not find the exact text' plus later user-facing flag is clean"
 rm -f "$sessions/edit-unmatch-flagged.jsonl"
 
-echo "OK: fleet-failed-command-edit-unmatch: live #956 edit 'Could not find the exact text' drills"
+echo "OK: fleet-failed-command-edit-unmatch: live #956 / #1079 edit 'Could not find the exact text' drills"
