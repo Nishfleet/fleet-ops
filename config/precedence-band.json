@@ -1,0 +1,27 @@
+{
+  "description": "Rent-paying band (fleet-ops#1223; ledger 2026-08-27 | Precedence band + overnight machinery surge). From cutoff_utc, blanket fleet-ops precedence ends: machinery (fleet-ops issue lanes) is capped at machinery_max_pct of live pi-issue@ units, product the rest, with product_front claimed first. Machinery jumps the band only by a `band-multiplier: N` line on the issue body. Weekly Fleet Review owns this dial via the quality ratchet (tighten only; canary fails if machinery_max_pct > 30 or product_min_pct < 70). Until cutoff: surge — fleet-ops intake claims only surge_leverage_issues.",
+  "cutoff_utc": "2026-08-28T02:30:00Z",
+  "machinery_max_pct": 30,
+  "product_min_pct": 70,
+  "machinery_repo": "fleet-ops",
+  "owner": "weekly-fleet-review",
+  "product_front": [
+    "0509#1299",
+    "0509#1302",
+    "fleet-ops#1198"
+  ],
+  "surge_leverage_issues": [
+    1204,
+    1134,
+    1010,
+    1149,
+    1155,
+    1157,
+    1133,
+    1167,
+    1163,
+    1146,
+    1135,
+    1223
+  ]
+}

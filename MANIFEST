@@ -497,3 +497,13 @@ bin/memoryctl-recall.py /home/nish/.local/bin/memoryctl-recall
 # through this instead of raw `gh issue create`.
 bin/fleet-issue-file /home/nish/.local/bin/fleet-issue-file
 lib/issue-file.py /home/nish/.local/lib/pi-packet/issue-file.py
+# fleet-ops#1223: precedence-band canary (rent-paying band + overnight
+# machinery surge). Heartbeat-tier1 block 36. Lock machinery at <=30%,
+# product at >=70%, machinery_repo=fleet-ops, owner=weekly-fleet-review;
+# tighten-only ratchet rejects a loosening without a strictly-later
+# wfr_waiver_on; surge phase rejects a non-leverage fleet-ops claim;
+# band phase rejects a live machinery share > cap.
+bin/fleet-precedence-band-canary /home/nish/.local/bin/fleet-precedence-band-canary
+lib/pi-packet/precedence-band-canary.py /home/nish/.local/lib/pi-packet/precedence-band-canary.py
+lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
+config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.json
