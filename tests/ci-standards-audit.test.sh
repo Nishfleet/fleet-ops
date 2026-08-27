@@ -163,3 +163,7 @@ echo "OK: ci-standards-audit.mjs fixtures and pure functions"
 # rides on a test already listed in verify-command rather than a new
 # workflow step.
 bash "$here/p14-unstubbed-unit-verify.test.sh"
+
+# fleet-ops#566: P14 verify-command is an explicit list. Workers cannot push
+# .github/workflows/**, so the listing gate rides on this listed test.
+bash "$here/p14-test-listing-gate.test.sh"
