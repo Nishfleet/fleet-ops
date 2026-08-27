@@ -287,6 +287,12 @@ bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-c
 # Heartbeat-tier1 block 26.
 lib/exec-review-receipt.py /home/nish/.local/lib/pi-packet/exec-review-receipt.py
 bin/fleet-exec-review-canary /home/nish/.local/bin/fleet-exec-review-canary
+# fleet-ops#540: 24h/12h work-supply drain trigger. Remaining hours from
+# agent-ready count / measured close rate. ExecCondition rests at >=24h;
+# low-water go-hams at <12h; heartbeat canary fail-loud if scouts sit idle
+# under 12h. Heartbeat-tier1 block 27.
+lib/work-supply.sh /home/nish/.local/lib/pi-packet/work-supply.sh
+bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill

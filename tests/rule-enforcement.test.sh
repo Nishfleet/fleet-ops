@@ -83,6 +83,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report straitly ds4-pro as enforced covered_rows (fleet-ops#546): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Execution IS the review — run it, log the bugs, fix, run again (Nish, 2026-08-25 — non-negotiable)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report sr-execution-is-review as enforced covered_rows (fleet-ops#537): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
@@ -93,6 +95,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: repo visibility source is enforced (observe-to-close for #542)"
   ok "live join: straitly ds4-pro source is enforced (observe-to-close for #546)"
   ok "live join: execution-is-review source is enforced (observe-to-close for #537)"
+  ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
 else
   ok "live vault not present (hosted CI) — skip exhaustiveness join"
 fi
@@ -703,4 +706,9 @@ ok "rule-enforcement: vault knowledge-format drill"
 bash "$here/guard-shared-file-collision.test.sh" || fail "shared-file collision guard drill failed"
 ok "rule-enforcement: shared-file collision guard drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, and shared-file-collision drills"
+# fleet-ops#540: 24h/12h work-supply drain canary. Nested host so the worker
+# token does not need to edit .github/workflows/**.
+bash "$here/fleet-work-supply-canary.test.sh" || fail "work-supply canary drill failed"
+ok "rule-enforcement: work-supply 24h/12h drain canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, and work-supply-24h drills"
