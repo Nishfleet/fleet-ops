@@ -29,12 +29,16 @@
 #      escalate loudly after N attempts so a unit never ends failed quietly.
 #      Then surface remaining failed units in triage (no Telegram, #428).
 #      Skip fleet-heartbeat itself.
-#   4b. Senior-auditor admission panel (fleet-ops#146 / #615 / #616). Delegates
-#      to bin/fleet-heartbeat-auditor: start missing pi-audit@ units for open
-#      scout-candidates, reset-failed + start any that are StartLimitBurst-
-#      wedged, tally 2-of-3 votes. HELPER-MISSING and a FATAL helper exit
-#      both fail the tick — a swallowed rc left the admission gate dead
-#      while heartbeat stayed green (fleet-ops#615).
+#   4b. Senior-auditor admission panel (fleet-ops#146 / #587 / #615 / #616).
+#      Delegates to bin/fleet-heartbeat-auditor: start missing pi-audit@
+#      units for open scout-candidates (research-delta issues carry that
+#      label too), reset-failed + start any that are StartLimitBurst-
+#      wedged, tally 2-of-3 votes. This is the standing path; the
+#      researcher-run nudge was a workaround that only fired after a
+#      research-delta (fleet-ops#587). HELPER-MISSING and a FATAL helper
+#      exit both fail the tick — a swallowed rc left the admission gate
+#      dead while heartbeat stayed green (fleet-ops#615). A silent skip
+#      is what left failed audit units sitting for an hour (#616).
 #   6. Re-examine agent-blocked issues. Named reason this is a sweep:
 #      the blocker (a dependency issue/PR, or a Nish decision) changes
 #      outside this repo, and the GitHub App has no webhooks. If every
@@ -926,7 +930,7 @@ else
 fi
 
 # ============================================================================
-# 4b. SENIOR AUDITOR PANEL (fleet-ops#146 / #615 / #616)
+# 4b. SENIOR AUDITOR PANEL (fleet-ops#146 / #587 / #615 / #616)
 # ============================================================================
 # pi-audit@.service is a oneshot with StartLimitBurst=2 / Interval=1h and
 # no OnFailure reap. After two seat faults systemd marks it failed and
@@ -935,13 +939,17 @@ fi
 # units (they are not intake/scout), and classify_failure would treat a
 # `Failed with result exit-code` journal as code-fail anyway.
 #
-# This pass is the reset path: the helper starts missing panel units and
-# reset-failed + starts failed ones whose vote is still missing. Named
-# reason this is a sweep: the GitHub App has no webhooks for scout-candidate
-# label changes, and systemd will not retry a StartLimit-exhausted unit.
-# HELPER-MISSING in production fails the tick (fleet-ops#485 / #616).
-# A FATAL helper exit (missing intake / jq / tally) also fails the tick
-# (fleet-ops#615) — gh list flakes are swallowed inside the helper.
+# This pass is the standing path (fleet-ops#587): every tick lists open
+# scout-candidate issues and starts the panel. The researcher-run nudge
+# stays as a backstop that fires sooner after a research-delta. It is
+# also the reset path for StartLimit-wedged units (fleet-ops#616): the
+# helper reset-failed + starts failed ones whose vote is still missing.
+# Named reason this is a sweep: the GitHub App has no webhooks for
+# scout-candidate label changes, and systemd will not retry a
+# StartLimit-exhausted unit. HELPER-MISSING in production fails the
+# tick (fleet-ops#485 / #616). A FATAL helper exit (missing intake / jq
+# / tally) also fails the tick (fleet-ops#615) — gh list flakes are
+# swallowed inside the helper.
 AUDITOR_BIN="${FLEET_HEARTBEAT_AUDITOR:-/home/nish/.local/bin/fleet-heartbeat-auditor}"
 auditor_rc=0
 if require_manifest_helper "$AUDITOR_BIN"; then
