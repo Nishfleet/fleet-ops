@@ -58,7 +58,8 @@
       "class": "free",
       "models": {
         "deepseek/deepseek-v4-flash": 2
-      }
+      },
+      "_comment_m3": "2026-08-27: MiniMax M3 on CommandCode (fleet-ops#545). Live models.json lists minimax/minimax-m3-free at cost 0. Do not allowlist a billing slug (minimax-m3 / minimax/minimax-m3). bin/opencode-m3-catalog-canary fail-louds a billing allowlist and a free-form slug whose models.json cost is non-zero, and auto-files when a -free or *-pass/ MiniMax M3 slug appears in Pi's commandcode catalog. Wiring requires a live spawn + meter check (fail closed if it bills) plus a dated seat-caps row (capacity-is-measured)."
     },
     "hetzner": {
       "cap": 2,

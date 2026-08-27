@@ -149,9 +149,10 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
 # and auto-files. No new scheduler.
 bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
-# fleet-ops#435: OpenCode MiniMax M3 catalog canary. Run by heartbeat-tier1.
-# Billing slug in seat-caps fails the tick. A new -free slug auto-files and
-# leaves the tick green. No new scheduler.
+# fleet-ops#435 / #545: OpenCode + CommandCode MiniMax M3 catalog canary.
+# Run by heartbeat-tier1. Billing slug in seat-caps fails the tick. A
+# free-form slug whose models.json cost is non-zero also fails. A new
+# -free slug auto-files and leaves the tick green. No new scheduler.
 bin/opencode-m3-catalog-canary /home/nish/.local/bin/opencode-m3-catalog-canary
 # fleet-ops#157/#378: recurring mechanical blind audit. One oneshot unit +
 # daily timer (primary) + heartbeat drained-board bonus; cadence-overdue

@@ -1570,23 +1570,26 @@ else
 fi
 
 # ============================================================================
-# 17. OPENCODE MINIMAX M3 CATALOG CANARY (fleet-ops#435)
+# 17. OPENCODE + COMMANDCODE MINIMAX M3 CATALOG CANARY (fleet-ops#435 / #545)
 # ============================================================================
-# Billing MiniMax M3 on OpenCode (minimax-m3) charges credits. Fail the tick
-# if seat-caps allowlists it. A newly published -free / *-pass/ slug auto-files
-# and keeps the tick green so the fleet is not red until someone wires it.
+# Billing MiniMax M3 on OpenCode (minimax-m3) charges credits. CommandCode
+# has a free-form MiniMax M3 slug that must still fail closed if it bills.
+# Fail the tick if seat-caps allowlists a billing slug on either provider,
+# or a free-form slug whose models.json cost is non-zero. A newly published
+# -free / *-pass/ slug auto-files and keeps the tick green so the fleet is
+# not red until someone proves zero spend and wires it.
 OPENCODE_M3_CANARY_BIN="${FLEET_OPENCODE_M3_CANARY:-/home/nish/.local/bin/opencode-m3-catalog-canary}"
 opencode_m3_canary_rc=0
 if [ -x "$OPENCODE_M3_CANARY_BIN" ]; then
-    log "17. opencode MiniMax M3 catalog canary starting"
+    log "17. opencode/commandcode MiniMax M3 catalog canary starting"
     if "$OPENCODE_M3_CANARY_BIN"; then
-        log "17. opencode MiniMax M3 catalog canary complete"
+        log "17. opencode/commandcode MiniMax M3 catalog canary complete"
     else
         opencode_m3_canary_rc=$?
-        log "17. opencode MiniMax M3 catalog canary FAILED (rc=$opencode_m3_canary_rc) — billing MiniMax M3 allowlisted on OpenCode; unit will land in --state=failed"
+        log "17. opencode/commandcode MiniMax M3 catalog canary FAILED (rc=$opencode_m3_canary_rc) — billing MiniMax M3 allowlisted on OpenCode or CommandCode; unit will land in --state=failed"
     fi
 else
-    log "17. opencode MiniMax M3 catalog canary missing at $OPENCODE_M3_CANARY_BIN — skip (not installed)"
+    log "17. opencode/commandcode MiniMax M3 catalog canary missing at $OPENCODE_M3_CANARY_BIN — skip (not installed)"
 fi
 
 # ============================================================================
