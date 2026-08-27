@@ -66,7 +66,7 @@ ledger="$scratch/seats"
 mkdir -p "$ledger"
 dead_seat() {
   cat >"$ledger/devin__glm-5-2.json" <<'JSON'
-{"provider":"devin","model":"glm-5-2","health_class":"quota_bench","seat_dead":false,"observed_at":"2026-08-27T00:00:00Z","bench_until":"2026-08-27T00:10:00Z"}
+{"provider":"devin","model":"glm-5-2","health_class":"quota_bench","seat_dead":false,"observed_at":"2026-08-27T00:00:00Z","bench_until":"2099-01-01T00:00:00Z"}
 JSON
 }
 live_seat() {
@@ -92,6 +92,11 @@ SYSTEMCTL_LOG="$scratch/systemctl.log"
 run_bin() {
   local dry="$1" repos="$2" now="$3"
   set +e
+  # Pin seat-lib to the in-repo copy. The bin prefers
+  # ~/.local/lib/pi-packet/seat-lib.sh if it exists, which on this host
+  # is a symlink to a different worktree's seat-lib and would silently
+  # undo the FLEET_SEAT_RECOVERY_NOW pin (fleet-ops#735).
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
   PI_MODELS_JSON="$scratch/models.json" \
   SEAT_CAPS_JSON="$scratch/seat-caps.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$ledger" \
