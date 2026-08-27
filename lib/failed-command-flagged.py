@@ -263,6 +263,33 @@ ages out of the 24h window. Live session
 2026-08-27T15-13-39-420Z_01a043c8-aa5c-72cb-9f02-d452218d767f.jsonl:
 `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls bin/ 2>/dev/null |
 head -20 && echo "---PROMPTS---" && ls prompts/ 2>/dev/null`.
+A `bin/fleet-failed-command-flagged` invocation (typically
+`FLEET_FAILED_COMMAND_FILE_ISSUES=0` pointed at `/tmp` via
+`FLEET_FAILED_COMMAND_SESSIONS=/tmp`) that returns `findings=N` +
+`LOUD [FAILED-COMMAND-SWALLOWED]` + `Command exited with code 1`
+is a real swallowed failure (fleet-ops#1220): the detector's
+contract is to exit 1 when it finds things, which does not make
+the non-zero a probe; the FAILED-COMMAND-SWALLOWED lines in the
+toolResult are about OTHER sessions, not a user-facing flag of
+THIS command; and a thinking-only note that the detector is
+working plus a later grep is not a flag. The detector already
+flags this class via the generic `isError or code != 0` path.
+A future refactor that treats the detector bin's own exit 1 as
+expected, treats FAILED-COMMAND-SWALLOWED in the toolResult as
+already-flagged, or lets thinking that says "the detector is
+working" discharge the pending failure would silently suppress
+this real signal. Distinct from #727 (`npm run canary` exit 1, a
+different command) and grep/rg POSIX no-match (BENIGN_STAGE_RE;
+the live session also carried an earlier
+`grep "fleet-heartbeat.service.d"` with `(no output)`, which
+must stay a probe). The dedicated regression test
+tests/fleet-failed-command-detector-bin-exit.test.sh pins that.
+The auto-filed issue closes via observe-to-close when the
+session mtime ages out of the 24h window. Live session
+2026-08-27T15-16-17-039Z_01a043cb-120f-7fe1-952d-b01474cd5852.jsonl:
+`cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1054 &&
+FLEET_FAILED_COMMAND_SESSIONS=/tmp ... FLEET_FAILED_COMMAND_FILE_ISSUES=0
+bin/fleet-failed-command-flagged 2>&1`.
 A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.

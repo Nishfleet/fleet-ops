@@ -2055,6 +2055,14 @@ bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-
 # (cd + git status, exit 128, fatal: not a git repository). Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-clone-race-cd.test.sh" || fail "fleet-failed-command-clone-race-cd tests failed"
+# fleet-ops#1220: `bin/fleet-failed-command-flagged` with
+# FILE_ISSUES=0 pointed at `/tmp` returns findings=N +
+# LOUD [FAILED-COMMAND-SWALLOWED] + exit 1. The next assistant
+# turn is thinking-only ("the detector IS working") plus a grep
+# with no user-facing flag. Distinct from #727 (npm run canary
+# exit 1) and grep POSIX no-match. Same CI constraint (worker
+# token cannot add a P14 line).
+bash "$here/fleet-failed-command-detector-bin-exit.test.sh" || fail "fleet-failed-command-detector-bin-exit tests failed"
 # fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main`
 # (or `git push --force-with-lease`) on the very branch the worktree
 # has checked out is refused with `fatal: cannot force update the
