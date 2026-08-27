@@ -665,10 +665,23 @@ _seat_registry_unit_live() {
     # signal. This is the fleet-ops#83 blind spot: the probe treated every
     # `activating` as live, so a wedged unit held its seat for the full
     # 45-minute TimeoutStartSec and starved pick_seat.
-    active_since=$(systemctl --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-    # ActiveEnterTimestampMonotonic is in MICROSECONDS since boot. /proc/uptime
-    # is in SECONDS. Compare in seconds to avoid ms/us mixing.
-    if [[ "$active_since" =~ ^[0-9]+$ ]]; then
+    #
+    # fleet-ops#993 (2026-08-27 outage): ActiveEnterTimestampMonotonic is 0
+    # for EVERY Type=oneshot unit that is still `activating` (systemd only
+    # stamps it when the start completes). With a live worker that has run
+    # 30+ min that read 0 -> age_s = uptime - 0 = 1.4M s > max -> every live
+    # seat got reaped, cap accounting went blind, and pick_seat piled
+    # unbounded workers onto the first free seat (the 8-vCPU box saturating
+    # at load 87, SustainedLoadHigh alert, zero-tools repair failure).
+    # Measure age from ExecMainStartTimestampMonotonic instead — systemd
+    # stamps it when the worker's ExecStart pi process actually started,
+    # so it is nonzero for every activating oneshot with a live process —
+    # and treat an unparseable/0 timestamp as live (a young unit that
+    # systemd has not yet stamped is not wedged).
+    active_since=$(systemctl --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || echo 0)
+    # Both timestamps are in MICROSECONDS since boot; /proc/uptime is in
+    # SECONDS. Compare in seconds to avoid ms/us mixing.
+    if [[ "$active_since" =~ ^[0-9]+$ ]] && (( active_since > 0 )); then
         now_s=$(awk '{print int($1)}' /proc/uptime)
         age_s=$(( now_s - active_since / 1000000 ))
         if (( age_s > PI_SEAT_ACTIVATING_MAX_S )); then
