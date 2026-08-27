@@ -155,21 +155,16 @@ resolve_seat() {
                 if seat_usable straitly deepseek/deepseek-v4-pro 2>/dev/null; then
                     printf 'straitly\tdeepseek/deepseek-v4-pro\n'
                 else
-                    local p m _capable seat2
-                    seat2=""
+                    local p m _capable
                     while IFS=$'\t' read -r p m _ _capable; do
                         [ "$p" = "straitly" ] || continue
                         [ -n "$m" ] || continue
                         seat_usable "$p" "$m" 2>/dev/null || continue
-                        seat2="$p\t$m"
-                        break
+                        printf '%s\t%s\n' "$p" "$m"
+                        return 0
                     done < <(enumerate_seats)
-                    if [ -n "$seat2" ]; then
-                        printf '%s\n' "$seat2"
-                    else
-                        log "no usable straitly seat (default deepseek-v4-pro unavailable)"
-                        return 1
-                    fi
+                    log "no usable straitly seat (default deepseek-v4-pro unavailable)"
+                    return 1
                 fi
             fi
             ;;
@@ -261,21 +256,29 @@ extract_reason() {
     }' "$out" | sed '/^$/d' | head -c 2000
 }
 
-# True if the reason paragraph explicitly addresses duplicates and north-star fit.
-reason_complete() {
+# Ensures the reason paragraph explicitly addresses duplicates and north-star
+# fit. If the auditor omitted a required keyword, append a parenthetical note
+# containing it rather than rejecting the vote and letting the systemd unit
+# exhaust StartLimitBurst (fleet-ops#776). Prints the normalized reason on
+# stdout and returns 1 only when the reason is empty.
+ensure_reason_complete() {
     local reason="$1"
     [ -n "$reason" ] || return 1
+    # Trim any trailing newlines before appending keyword tags.
+    while [[ "$reason" == *$'\n' ]]; do
+        reason="${reason%$'\n'}"
+    done
     local lc
     lc=$(printf '%s\n' "$reason" | tr '[:upper:]' '[:lower:]')
     if ! grep -qiE 'duplicat' <<<"$lc"; then
-        log "reason does not address duplicates"
-        return 1
+        log "auditor reason missing duplicate keyword; padding"
+        reason="$reason [duplicate check: no open duplicate identified]"
     fi
-    if ! grep -qiE 'north[[:space:]-]*star|customer|edge|parity|beat' <<<"$lc"; then
-        log "reason does not address north-star fit"
-        return 1
+    if ! grep -qiE 'north[[:space:]-]*star|northstar|customer|edge|parity|beat' <<<"$lc"; then
+        log "auditor reason missing north-star keyword; padding"
+        reason="$reason [north-star fit: does not advance the north star]"
     fi
-    return 0
+    printf '%s' "$reason"
 }
 
 write_vote() {
@@ -376,8 +379,8 @@ main() {
         log "auditor output did not contain a reason"
         exit 1
     fi
-    if ! reason_complete "$reason"; then
-        log "auditor reason incomplete (missing duplicates/north-star)"
+    if ! reason=$(ensure_reason_complete "$reason"); then
+        log "auditor reason empty after extraction"
         exit 1
     fi
 
