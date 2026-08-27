@@ -85,3 +85,10 @@ ok "later tick runs after lock release"
 # ci.yml lists this file explicitly and is a gate-owned path, so the
 # priority drill runs from here instead of a new workflow line.
 bash "$here/intake-priority.test.sh"
+# --- 5. fleet-ops#176 intake-tick heavy-seat gate (CI hook; keep this call) --
+# tests/pi-intake-tick-seat-gate.test.sh (added by PR #1114) locks the
+# no-heavy-seat hold on lib/pi-intake-tick.sh. ci.yml lists this file, so
+# the seat-gate drill runs from here instead of a new workflow line
+# (workers cannot edit .github/workflows/ci.yml). Same bash "$here/..."
+# host pattern as the priority drill above.
+bash "$here/pi-intake-tick-seat-gate.test.sh"
