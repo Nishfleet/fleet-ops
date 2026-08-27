@@ -34,7 +34,14 @@ must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) is also a real swallowed
 failure: a silent `read` recovery, a later thinking-only note that the
 file was different, or unrelated prose that moves on, is not a
-user-facing flag. A `python3 -c` / `python3 << 'EOF'` probe that crashes
+user-facing flag. #970 is the same session shape as #956 / #965 (the
+01a03dee edit-unmatch session); it is a leftover open duplicate filed
+by the same GitHub-search-index-delay that produced #951 / #965, so
+the citation chain must carry it. The leftover-duplicate
+observe-to-close drain for the 01a03dee pile (#956, #965, #970, #975,
+#980) is locked under
+tests/fleet-failed-command-observe-duplicate-open.test.sh.
+A `python3 -c` / `python3 << 'EOF'` probe that crashes
 with a Python traceback (KeyError, NameError, etc.) and
 'Command exited with code 1' (fleet-ops#957, #966) is also a real swallowed
 failure: the command is not grep/rg/diff/ls/which so it is not a no-match
@@ -216,7 +223,7 @@ HARNESS_BLOCK_RE = re.compile(
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
 # Do NOT add a similar exemption for `edit` "Could not find the exact
-# text" (fleet-ops#956, #965). That is a real swallowed failure: the worker's
+# text" (fleet-ops#956, #965, #970). That is a real swallowed failure: the worker's
 # oldText was stale. A silent read recovery does not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
