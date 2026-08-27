@@ -201,3 +201,11 @@ set -e
 ok "success -> pi-issue-run exits 0 AND resets tried_file (future re-trigger starts with the full pool)"
 
 ok "pi-issue-run tried-seats reset: exhausted pool and success both clear the rotation list"
+
+# fleet-ops#567: this file is green. Workers cannot add a P14 verify-command
+# line, so it rides on worker-token-fail-closed.test.sh (already listed).
+host="$repo_root/tests/worker-token-fail-closed.test.sh"
+[[ -f "$host" ]] || fail "missing P14 host: $host"
+grep -E 'bash[[:space:]]+"\$here/pi-issue-run-tried-reset.test.sh"' "$host" >/dev/null \
+  || fail "tests/worker-token-fail-closed.test.sh must bash-invoke this file now that it is green (fleet-ops#567)"
+ok "tried-reset is wired through tests/worker-token-fail-closed.test.sh (already in P14)"
