@@ -344,6 +344,13 @@ bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-c
 # volume_seats bucket. Observe-to-open when xai-oauth is in models.json but
 # unwired. Heartbeat-tier1 block 33.
 bin/fleet-volume-lane-order-canary /home/nish/.local/bin/fleet-volume-lane-order-canary
+# fleet-ops#1245: GEO/AEO measurement + owned-content lock. Parks
+# Reddit/community and digital-PR as Nish-reserved, locks brand gate to
+# preview-then-autonomous, llms.txt to developer-docs-only. Heartbeat-tier1
+# block 34.
+bin/fleet-geo-aeo-canary /home/nish/.local/bin/fleet-geo-aeo-canary
+lib/geo-aeo.py /home/nish/.local/lib/pi-packet/geo-aeo.py
+config/geo-aeo-policy.json /home/nish/.local/state/pi-packet/geo-aeo-policy.json
 # fleet-ops#537: Execution IS the review receipt canary. Worker prompt
 # inner loop stays agentic (no bin/exec-review dispatcher). This canary
 # detects a worker PR that skipped the run (no Verification: run-cue /
