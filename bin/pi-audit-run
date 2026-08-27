@@ -42,7 +42,18 @@ PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/auditor.md}"
 PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
-STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
+# fleet-ops#1011: vote path is intentionally VOTE_DIR, not STATE_DIR.
+# seat-lib.sh (the shared pick_seat provider) sets STATE_DIR=$HOME/.local/state/pi-packet
+# for its OWN attempts/active-seats/round-robin ledger, and pi-audit-run
+# sources that library a few lines below. Without the rename, the source
+# silently overwrites STATE_DIR, every vote is written to pi-packet/, the
+# heartbeat-auditor never sees any votes in fleet-audit/, the admission
+# panel never tallies to 2-of-3, and the senior admission queue is
+# starved forever — exactly the green-and-empty scout futility that
+# fleet-ops#454 was supposed to escalate. The #1011 live instance of that
+# class stayed open for the same reason: scout was green, panel never
+# admitted, ready buffer never grew.
+VOTE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 
 [ -f "$PROMPT" ] || { echo "pi-audit-run: prompt missing: $PROMPT" >&2; exit 2; }
@@ -52,6 +63,12 @@ command -v jq >/dev/null 2>&1 || { echo "pi-audit-run: jq missing" >&2; exit 2; 
 if [ -f "$SEAT_LIB" ]; then
     # shellcheck source=/dev/null
     source "$SEAT_LIB"
+    # fleet-ops#1011: belt-and-suspenders. seat-lib.sh's own STATE_DIR is
+    # an unrelated $HOME/.local/state/pi-packet ledger; the audit vote
+    # path lives at $VOTE_DIR. If a future seat-lib.sh refactor adds a
+    # conflicting export, the next line restores the audit default before
+    # vote_path() is called.
+    VOTE_DIR="${VOTE_DIR:-$HOME/.local/state/fleet-audit}"
 fi
 
 # Force-load the seat-caps map up front. load_seat_caps' read loops write to
@@ -244,7 +261,11 @@ instance_to_parts() {
 
 vote_path() {
     local repo="$1" candidate="$2" role="$3"
-    printf '%s/%s/%s/%s.vote\n' "$STATE_DIR" "$repo" "$candidate" "$role"
+    # fleet-ops#1011: vote path uses VOTE_DIR, not STATE_DIR. STATE_DIR is
+    # owned by seat-lib.sh (its own attempts/active-seats ledger) and gets
+    # clobbered when seat-lib.sh is sourced above. See the env-setup block
+    # for the full cause.
+    printf '%s/%s/%s/%s.vote\n' "${VOTE_DIR:-$HOME/.local/state/fleet-audit}" "$repo" "$candidate" "$role"
 }
 
 repo_reality() {

@@ -308,4 +308,62 @@ reason6=$(jq -r '.reason' "$state_dir/demo/47/free-glm-5-3.vote")
     || fail "scenario6: reason should mention transient failure, got: $reason6"
 ok "scenario6: provider wall writes SKIP vote, exit 0 (no auto-restart, no StartLimit burn)"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails"
+# -----------------------------------------------------------------------------
+# Scenario 7: fleet-ops#1011. pi-audit-run sources seat-lib.sh, which
+# itself sets STATE_DIR=$HOME/.local/state/pi-packet for its own
+# attempts/active-seats ledger. Without the VOTE_DIR rename, the source
+# silently overwrites pi-audit-run's STATE_DIR and the vote lands in
+# pi-packet/ where the heartbeat-auditor never reads it. The senior
+# admission panel is then permanently starved, scout-candidate issues
+# never graduate to agent-ready, and the ready buffer stays below 12h
+# forever — exactly the green-and-empty scout futility that #454 was
+# supposed to escalate. The #1011 live instance stayed open for the
+# same reason. This scenario sources a stub seat-lib that mirrors the
+# real one (it sets STATE_DIR) and asserts the vote lands in the
+# AUDIT_STATE_DIR override, not the seat-lib's STATE_DIR.
+# -----------------------------------------------------------------------------
+reset_state
+audit_dir="$scratch/audit-1011"
+mkdir -p "$audit_dir"
+seaty="$scratch/seat-lib-buggy.sh"
+cat >"$seaty" <<'LIB'
+# shellcheck shell=bash
+# Mirrors the real seat-lib.sh variable clobber (fleet-ops#1011).
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+export STATE_DIR
+
+load_seat_caps() { :; }
+
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' devin glm-5-2
+}
+
+class_of()   { printf 'prepaid-quota\n'; }
+model_cap()  { printf '1\n'; }
+seat_usable(){ return 0; }
+seat_ledger_path() { printf '%s/%s__%s.json\n' "/dev/null" "$1" "$2"; }
+LIB
+
+export PI_PACKET_SEAT_LIB="$seaty"
+export AUDIT_STATE_DIR="$audit_dir"
+# Sanity: the seat-lib clobbers STATE_DIR; the runner must NOT use that.
+PI_RESPONSE=$'PASS\nThis is a complete reason with duplicate and north-star keywords.' \
+  bash "$bin" 'demo--48--devin' >"$scratch/scenario7.out" 2>"$scratch/scenario7.err"
+unset PI_PACKET_SEAT_LIB
+unset AUDIT_STATE_DIR
+
+# Vote must land in AUDIT_STATE_DIR ($audit_dir), NOT in seat-lib's
+# $HOME/.local/state/pi-packet. The real fleet_ops/a/a votes are
+# invisible to the heartbeat-auditor when this fix is missing.
+[[ -f "$audit_dir/demo/48/devin.vote" ]] \
+  || fail "scenario7: vote missing from AUDIT_STATE_DIR ($audit_dir) — seat-lib STATE_DIR clobber not contained ($(cat "$scratch/scenario7.err"))"
+verdict7=$(jq -r '.verdict' "$audit_dir/demo/48/devin.vote")
+[[ "$verdict7" == "PASS" ]] || fail "scenario7: vote verdict was '$verdict7' (expected PASS)"
+
+# Defensive: a stray vote in seat-lib's STATE_DIR proves the bug. It
+# must NOT exist; the fix must keep pi-audit-run out of pi-packet.
+[[ ! -f "/home/nish/.local/state/pi-packet/demo/48/devin.vote" ]] \
+  || fail "scenario7: vote leaked to seat-lib STATE_DIR (/home/nish/.local/state/pi-packet/demo/48/devin.vote) — VOTE_DIR rename did not contain the clobber"
+ok "scenario7: seat-lib STATE_DIR clobber contained — vote lands in AUDIT_STATE_DIR, not in pi-packet"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained"
