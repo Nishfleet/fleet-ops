@@ -205,6 +205,7 @@ is_escalation_excluded() {
 SANCTIONED_PI_RUNNERS=(
     agent-cron-run
     fleet-blind-audit
+    fleet-console-tile-truth-drill
     fleet-heartbeat-tier2
     fleet-researcher-run
     pi-audit-run
