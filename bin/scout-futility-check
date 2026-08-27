@@ -30,6 +30,8 @@
 #   SCOUT_FUTILITY_REPO        repo to file tickets in (default Nishfleet/fleet-ops)
 #   SCOUT_FUTILITY_FILE        1 (default) file issues; 0 skip gh create
 #   SCOUT_FUTILITY_READY_COUNT override ready count (fixture scout)
+#   SCOUT_FUTILITY_PROM          textfile path (default
+#                                /var/lib/prometheus/node-exporter/fleet-scout.prom)
 #   EXIT_STATUS / SERVICE_RESULT  systemd ExecStopPost env when argv omits exit_code
 
 set -euo pipefail
@@ -44,6 +46,7 @@ N="${SCOUT_FUTILITY_N:-3}"
 BUFFER="${SCOUT_FUTILITY_BUFFER:-12}"
 FILE_REPO="${SCOUT_FUTILITY_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${SCOUT_FUTILITY_FILE:-1}"
+PROM="${SCOUT_FUTILITY_PROM:-/var/lib/prometheus/node-exporter/fleet-scout.prom}"
 
 log() {
     printf '[%s] [scout-futility-check] %s\n' \
@@ -126,6 +129,40 @@ write_state() {
     mv -f "$tmp" "$file"
 }
 
+# fleet-ops#1277: last actual begin (ExecStartPre) per repo. ExecStopPost
+# still runs when ExecCondition skipped the scout, so last_run_epoch is
+# written on begin only. 0 means begin has never succeeded.
+export_last_run() {
+    local dir tmp file repo epoch
+    dir=$(dirname "$PROM")
+    mkdir -p "$dir" 2>/dev/null || {
+        log "WARN: cannot mkdir $dir for scout last_run export"
+        return 0
+    }
+    tmp=$(mktemp "$dir/.fleet-scout.XXXXXX" 2>/dev/null) || {
+        log "WARN: cannot mktemp for scout last_run export"
+        return 0
+    }
+    {
+        printf '# HELP fleet_scout_last_run_seconds Epoch seconds of the last pi-scout begin (ExecStartPre) per repo. 0 means begin has never succeeded.\n'
+        printf '# TYPE fleet_scout_last_run_seconds gauge\n'
+        shopt -s nullglob
+        for file in "$STATE_DIR"/*.state; do
+            repo=$(basename "$file" .state)
+            valid_repo "$repo" || continue
+            epoch=$(read_field "$file" last_run_epoch)
+            is_uint "$epoch" || continue
+            printf 'fleet_scout_last_run_seconds{repo="%s"} %s\n' "$repo" "$epoch"
+        done
+        shopt -u nullglob
+    } >"$tmp"
+    if ! mv -f "$tmp" "$PROM" 2>/dev/null; then
+        rm -f "$tmp"
+        log "WARN: cannot write $PROM"
+        return 0
+    fi
+}
+
 with_lock() {
     local repo="$1"
     local lock
@@ -184,7 +221,7 @@ EOF
 }
 
 cmd_begin() {
-    local repo="$1" before file
+    local repo="$1" before file now_s
     valid_repo "$repo" || { log "begin: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "begin: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
     mkdir -p "$STATE_DIR"
@@ -195,14 +232,17 @@ cmd_begin() {
         log "begin: $repo ready count not numeric ('$before') — skip snapshot"
         return 0
     fi
+    now_s=$(date -u +%s)
     write_state "$file" \
         "before=${before}" \
         "begin_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "consecutive_dry=$(read_field "$file" consecutive_dry)" \
         "last_after=$(read_field "$file" last_after)" \
         "last_exit=$(read_field "$file" last_exit)" \
+        "last_run_epoch=${now_s}" \
         "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    log "begin: $repo ready_before=$before"
+    export_last_run
+    log "begin: $repo ready_before=$before last_run_epoch=$now_s"
 }
 
 resolve_exit() {
@@ -227,7 +267,7 @@ cmd_end() {
     local repo="$1"
     local exit_code
     exit_code=$(resolve_exit "${2:-}")
-    local file before after dry next_dry
+    local file before after dry next_dry last_run
     valid_repo "$repo" || { log "end: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "end: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
     is_uint "$BUFFER" || { log "end: SCOUT_FUTILITY_BUFFER not a uint: $BUFFER"; return 0; }
@@ -237,7 +277,28 @@ cmd_end() {
     file=$(state_path "$repo")
     before=$(read_field "$file" before)
     if ! is_uint "$before"; then
-        log "end: $repo missing begin snapshot — skip"
+        # fleet-ops#1277: missing/unreadable snapshot is absence-of-evidence,
+        # not futility. Seed a snapshot and exit 0 (success-run). Do not
+        # increment consecutive_dry: ExecStopPost still runs when
+        # ExecCondition skipped the scout, so this is not a completed tick.
+        after=$(ready_count "$repo")
+        dry=$(read_field "$file" consecutive_dry)
+        is_uint "$dry" || dry=0
+        last_run=$(read_field "$file" last_run_epoch)
+        is_uint "$last_run" || last_run=0
+        if ! is_uint "$after"; then
+            after=""
+        fi
+        write_state "$file" \
+            "before=" \
+            "begin_at=" \
+            "consecutive_dry=${dry}" \
+            "last_after=${after}" \
+            "last_exit=${exit_code}" \
+            "last_run_epoch=${last_run}" \
+            "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        export_last_run
+        log "end: $repo missing begin snapshot — created snapshot (success-run); not counted as dry last_run_epoch=$last_run"
         return 0
     fi
     after=$(ready_count "$repo")
@@ -264,6 +325,8 @@ cmd_end() {
             file_escalation "$repo" "$next_dry" "$before" "$after"
         fi
     fi
+    last_run=$(read_field "$file" last_run_epoch)
+    is_uint "$last_run" || last_run=0
     write_state "$file" \
         "before=" \
         "begin_at=" \
@@ -271,7 +334,9 @@ cmd_end() {
         "last_before=${before}" \
         "last_after=${after}" \
         "last_exit=${exit_code}" \
+        "last_run_epoch=${last_run}" \
         "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    export_last_run
 }
 
 [[ $# -ge 2 ]] || { usage; safe_exit; }
