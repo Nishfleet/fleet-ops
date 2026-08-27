@@ -9,6 +9,8 @@
 - Decisions-ledger session-close lint: `bash tests/fleet-decisions-ledger.test.sh`
 - Failed-command session-close lint: `bash tests/fleet-failed-command-flagged.test.sh`
 - Escalation canary tests: `bash tests/escalation-coverage-canary.test.sh`
+- Cancelled-while-queued detector drill (fleet-ops#819): `bash tests/cancelled-while-queued-detector.test.sh`
+- Replay with the actual enrolled set: `node .github/scripts/cancelled-while-queued-detector.mjs --targets-from config/intake-repos.json --dry-run --output-json /tmp/cwq.json`
 - Full P14 suite: `bash tests/manifest-shape.test.sh && bash tests/intake-repos-shape.test.sh && ...` (see `.github/workflows/ci.yml`)
 
 ## Useful env vars for canary

@@ -1,0 +1,28 @@
+{
+  "runs_by_repo": [
+    {
+      "repo": "Nishfleet/0509",
+      "runs": [
+        {
+          "id": 32636816500,
+          "name": "CI",
+          "event": "pull_request",
+          "status": "in_progress",
+          "conclusion": null,
+          "head_branch": "claim/issue-456",
+          "head_sha": "fedcba9876543210fedcba9876543210fedcba98",
+          "created_at": "2026-08-23T11:30:00Z",
+          "html_url": "https://github.com/Nishfleet/0509/actions/runs/32636816500",
+          "pull_request_numbers": [4567],
+          "pull_requests": [{"number": 4567}]
+        }
+      ]
+    }
+  ],
+  "open_issues": [
+    {
+      "number": 9999,
+      "body": "A workflow run has been queued for 50 minutes and was auto-cancelled by the fleet-ops cancelled-while-queued detector (fleet-ops#819).\n\n- repo: `Nishfleet/0509`\n- workflow: `CI`\n- run: #32636816499 — https://github.com/Nishfleet/0509/actions/runs/32636816499\n\n<!-- cancelled-while-queued-sig: 500adafca2ea7d3b819d900a128d9c625a08f1e26767b5bcb4a869444f9998e8 -->\n"
+    }
+  ]
+}

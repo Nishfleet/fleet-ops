@@ -1207,3 +1207,8 @@ bash "$here/gate-integrity-reusable.test.sh" || fail "gate-integrity reusable te
 # listed CI host.
 bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed"
 
+# fleet-ops#819: cancelled-while-queued detector. Workers cannot add a
+# P14 line in .github/workflows/ci.yml; this file is the listed CI
+# host for the new detector drill.
+bash "$here/cancelled-while-queued-detector.test.sh" || fail "cancelled-while-queued-detector tests failed"
+
