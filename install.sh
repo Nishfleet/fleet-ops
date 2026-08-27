@@ -472,6 +472,12 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now quality-research-weekly.timer
     fi
   fi
+  # fleet-ops#1151: weekly baseline-delta pre-pass. Same #183 class.
+  if [ -f "$here/systemd/fleet-baseline-delta.timer" ]; then
+    if ! is_unit_enabled fleet-baseline-delta.timer; then
+      "$SYSTEMCTL" --user enable --now fleet-baseline-delta.timer
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

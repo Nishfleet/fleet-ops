@@ -27,7 +27,9 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # interactive-session-reap (fleet-ops#592) reaps idle scopes; it is not a
 # work-producing role. vault-conflict-resolver (fleet-ops#529 / #636) is the
 # Syncthing freeze handler; vault-knowledge-format is the daily lint timer
-# for vault shape (fleet-ops#525). Both are plumbing, same class.
+# for vault shape (fleet-ops#525). fleet-baseline-delta (fleet-ops#1151) is
+# the weekly MAD strangeness pre-pass — deterministic plumbing, not a
+# judging role. All three are plumbing, same class.
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",
@@ -47,6 +49,7 @@ NON_ROLE_UNIT_PREFIXES = (
     "app-pi",
     "vault-conflict",
     "vault-knowledge-format",
+    "fleet-baseline-delta",
 )
 
 

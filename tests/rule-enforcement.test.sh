@@ -812,4 +812,9 @@ ok "rule-enforcement: verify-harness canary drill"
 bash "$here/paid-flash-canary.test.sh" || fail "paid-flash-canary drill failed"
 ok "rule-enforcement: paid-flash canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, and paid-flash drills"
+# fleet-ops#1151: week-over-week MAD strangeness pre-pass. Nested host so
+# the worker token does not need to edit .github/workflows/**.
+bash "$here/fleet-baseline-delta.test.sh" || fail "baseline-delta drill failed"
+ok "rule-enforcement: baseline-delta pre-pass drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, and baseline-delta drills"

@@ -75,7 +75,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("role_quality_gates", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-required = ("interactive-session-reap", "vault-knowledge-format", "vault-conflict")
+required = ("interactive-session-reap", "vault-knowledge-format", "vault-conflict", "fleet-baseline-delta")
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
     raise SystemExit("NON_ROLE_UNIT_PREFIXES missing " + ", ".join(missing))
@@ -87,13 +87,14 @@ leaked = [
         "interactive-session-reap.service",
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
+        "fleet-baseline-delta.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format (fleet-ops#636)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format (fleet-ops#636), baseline-delta (fleet-ops#1151)"
 
 # fleet-ops#709: behaviour-locked. Build a scratch repo with a real
 # vault-knowledge-format.service on disk and prove the audit emits no
