@@ -243,3 +243,6 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        # fleet-ops#1235: lock the /etc/default/prometheus retention
+        # override (40d) and the deploy restart-vs-reload + headroom guard.
+        bash tests/prometheus-retention-40d.test.sh
