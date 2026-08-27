@@ -30,6 +30,19 @@
 #       failure ("the OVERNIGHT.md read failed ... it is now the blocker")
 #       -> exit 0. Naming the failure is the standing rule's required
 #       discharge and must clear.
+#   6l. Live #943: a test gate (`bash tests/p14-test-listing-gate.test.sh`)
+#       exited 1 with the gate's FAIL line, the next assistant turn was a
+#       toolCall only (no user-facing text), and the turn after that emitted
+#       real user-facing prose that talks ABOUT the test (a sentence about
+#       which test file is in ci.yml) without naming the failure -> exit 1.
+#       "Investigating the failing test" without ever saying it failed is
+#       the same walked-past class as test 2; this locks the live #943
+#       shape so a future "any user-facing text clears" refactor cannot
+#       silently re-open it.
+#   6m. Live #943 positive: same shape as 6l but the later prose NAMES the
+#       failure ("the p14-test-listing-gate test failed with 1, fixing") ->
+#       exit 0. Proves 6l is not "always flag": naming the failure in
+#       user-facing text is the standing rule's required discharge.
 #   7. Auto-file with signal key, deduped on a second run.
 #   7b. Origin #650: cp /tmp/install.sh cannot-stat walked past -> exit 1.
 #   7c. Same snippet plus a later flag -> exit 0.
@@ -647,6 +660,57 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "read ENOENT with later failure-naming prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "live #936 positive: read ENOENT with later failure-naming prose clears (exit 0)"
 rm -f "$sessions/read-enoent-flagged-prose.jsonl"
+
+# --- 6l. live #943: test-gate FAIL + investigating-without-naming shape ----
+# The session 2026-08-27T04-02-24-751Z (this issue's own origin session)
+# ran `bash tests/p14-test-listing-gate.test.sh` and the gate FAILED with
+# the canonical `FAIL: 1 test file(s) are neither in ci.yml, hosted by a
+# listed test, live/destructive, nor a known orphan:` line and
+# `Command exited with code 1`. The next assistant turn was a toolCall
+# only (`grep -E "bash tests/" .github/workflows/ci.yml | head -30`)
+# with NO user-facing text. The turn after that emitted real
+# user-facing prose — "So `rule-enforcement.test.sh` is in ci.yml. The
+# fix should have made `dirty-worktree-audit.test.sh` hosted. Let me
+# check." — which TALKED ABOUT the test but never said it failed.
+# FLAG_RE does not match that prose (no "failed" / "fails" / "failure" /
+# "error" / "non-zero" / "exited with" / "blocker" etc.), so the pending
+# failure stays. Lock the shape: a real test-gate FAIL followed by an
+# investigation turn that never names the failure must stay flagged.
+write_session "test-gate-investigate" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Let me trace the issue. The gate should now find `dirty-worktree-audit.test.sh` hosted by `rule-enforcement.test.sh`. Let me run it."},{"type":"toolCall","id":"call_gate","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && bash tests/p14-test-listing-gate.test.sh 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gate","toolName":"bash","isError":true,"content":[{"type":"text","text":"FAIL: 1 test file(s) are neither in ci.yml, hosted by a listed test, live/destructive, nor a known orphan:\n  dirty-worktree-audit.test.sh\nAdd the test to ci.yml (requires workflow scope) or invoke it from a listed test.\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ci_grep","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && grep -E \"bash tests/\" .github/workflows/ci.yml | head -30"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ci_grep","toolName":"bash","isError":false,"content":[{"type":"text","text":"        bash tests/manifest-shape.test.sh\n        bash tests/intake-repos-shape.test.sh\n        bash tests/worker-token-fail-closed.test.sh\n        bash tests/semantic-conflict-detector.test.sh\n        bash tests/repeat-deterministic-detector.test.sh\n        bash tests/red-on-main-detector.test.sh\n        bash tests/ci-failure-escalation-detector.test.sh\n        bash tests/required-check-purity.test.sh\n        bash tests/pi-packet-guard.test.sh\n        bash tests/pi-systemd-run.test.sh\n        bash tests/pi-intake-run.test.sh\n        bash tests/pi-issue-start.test.sh\n        bash tests/pi-issue-failed-reap.test.sh\n        bash tests/repair-rotation.test.sh\n        bash tests/fleet-claim.test.sh\n        bash tests/agent-cron-seat-rotation.test.sh\n        bash tests/seat-lib.test.sh\n        bash tests/seat-lib-degraded.test.sh\n        bash tests/stop-escalation-dispatch.test.sh\n        bash tests/escalation-units-shape.test.sh\n        bash tests/system-dropins-shape.test.sh\n        bash tests/fleet-ops-deploy.test.sh\n        bash tests/fleet-heartbeat-undersaturation.test.sh\n        bash tests/fleet-heartbeat-throughput-split.test.sh\n        bash tests/pi-scout-packet-assembly.test.sh\n        bash tests/fleet-heartbeat-low-water-mark.test.sh\n        bash tests/fleet-blind-audit.test.sh\n        bash tests/fleet-heartbeat-blind-audit-trigger.test.sh\n        bash tests/mass-close-guard.test.sh\n        bash tests/codex-orphan-reap.test.sh\n"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"So `rule-enforcement.test.sh` is in ci.yml. The fix should have made `dirty-worktree-audit.test.sh` hosted. Let me check."},{"type":"toolCall","id":"call_rule_grep","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && grep -nE \"dirty-worktree\" tests/rule-enforcement.test.sh"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "live #943 test-gate FAIL + investigating-without-naming should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "live #943 must be flagged as swallowed"
+grep -q "FAIL: 1 test file(s) are neither" "$scratch/err.log" || fail "live #943 snippet must include the gate's FAIL line (the canonical p14-test-listing-gate FAIL message)"
+ok "live #943: test-gate FAIL with investigation turn that does not name the failure is flagged"
+rm -f "$sessions/test-gate-investigate.jsonl"
+
+# --- 6m. live #943 positive: same shape but the investigation names the fail -
+# Same p14-test-listing-gate FAIL + recovery toolCall + investigation
+# shape as 6l, but the investigation turn NAMES the failure ("the
+# p14-test-listing-gate test failed with exit 1, fixing"). FLAG_RE must
+# match and clear the pending failure -> exit 0. Proves 6l is not
+# "always flag": naming the failure in user-facing text is the standing
+# rule's required discharge.
+write_session "test-gate-investigate-flagged" "$(cat <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Let me trace the issue."},{"type":"toolCall","id":"call_gate","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && bash tests/p14-test-listing-gate.test.sh 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_gate","toolName":"bash","isError":true,"content":[{"type":"text","text":"FAIL: 1 test file(s) are neither in ci.yml, hosted by a listed test, live/destructive, nor a known orphan:\n  dirty-worktree-audit.test.sh\nAdd the test to ci.yml (requires workflow scope) or invoke it from a listed test.\n\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_ci_grep","name":"bash","arguments":{"command":"cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone && grep -E \"bash tests/\" .github/workflows/ci.yml | head -30"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_ci_grep","toolName":"bash","isError":false,"content":[{"type":"text","text":"        bash tests/rule-enforcement.test.sh\n"}}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The p14-test-listing-gate test failed with exit 1 — dirty-worktree-audit.test.sh is missing from ci.yml and not hosted. Fixing."},{"type":"toolCall","id":"call_rule_grep","name":"bash","arguments":{"command":"grep -nE \"dirty-worktree\" tests/rule-enforcement.test.sh"}}]}}
+JSONL
+)"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #943 test-gate FAIL + failure-naming investigation should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #943 positive: test-gate FAIL with later failure-naming prose clears (exit 0)"
+rm -f "$sessions/test-gate-investigate-flagged.jsonl"
+
 
 # --- 7. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
