@@ -1662,6 +1662,13 @@ bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger test
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
 # fleet-ops#651: read tool offset beyond end of file is a negative result.
 bash "$here/fleet-failed-command-read.test.sh" || fail "fleet-failed-command-read tests failed"
+# fleet-ops#953: `read` ENOENT with the live wording
+#   ENOENT: no such file or directory, access '<path>'
+# (isError=true, details={}, no exit-code line) plus a thinking-only
+# recovery turn is a swallowed failure. Distinct from the #651
+# "Failed to read ...: No such file or directory" fixture. Same CI
+# constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-read-enoent-thinking.test.sh" || fail "fleet-failed-command-read-enoent-thinking tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
