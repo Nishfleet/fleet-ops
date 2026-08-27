@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "fake sgscan: ERROR finding" >&2
+exit 2
