@@ -80,7 +80,6 @@ known_orphans=(
   agent-cron-failure-reason.test.sh
   failure-mechanism-gate.test.sh
   fleet-free-roster-canary.test.sh
-  fleet-heartbeat-auditor.test.sh
   fleet-heartbeat-degraded-lane-glob.test.sh
   fleet-heartbeat-failed-units-recover.test.sh
   fleet-heartbeat-orphan-distinguish.test.sh
@@ -92,10 +91,8 @@ known_orphans=(
   org-ruleset-skip-detector.test.sh
   paid-flash-canary.test.sh
   pi-issue-run-defensive-mkdir.test.sh
-  pi-issue-run-failure-reason.test.sh
   pi-issue-run-mid-session-bench.test.sh
   pi-issue-run-noop-bench.test.sh
-  pi-issue-run-tried-reset.test.sh
   pi-packet-run.test.sh
   pi-scout-seat-rotation.test.sh
   pi-transport-check-dropin-428.test.sh

@@ -105,6 +105,13 @@ by class:
   re-dispatches, so a heartbeat restart would race a second worker onto the
   same issue. They are logged and surfaced only.
 
+`pi-audit@*` is recovered by the senior-auditor panel pass (tier 1 block 4b,
+`fleet-heartbeat-auditor`), not by this matcher. A failed audit unit whose
+vote is still missing gets `reset-failed` + `start` on the next tick so a
+recovered seat is not wedged until `StartLimitIntervalSec` elapses
+(fleet-ops#616). A silent skip of that helper fails the tick
+(`HELPER-MISSING`).
+
 It records the outcome in the per-tick log and a per-unit state file under
 `~/.local/state/fleet-heartbeat/failed-units/`.
 
