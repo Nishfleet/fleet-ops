@@ -74,6 +74,13 @@ done
 declare -A live_skip
 live_skip[worker-token-live.test.sh]=1
 live_skip[pi-worker-execstart-live.test.sh]=1
+# fleet-ops#1453: opus-heartbeat tests read VPS-local state (the launcher
+# binary at /home/nish/.local/libexec/opus-heartbeat and the judge prompt
+# at /home/nish/.local/share/opus-heartbeat/judge-prompt.md). They are
+# live/VPS-only and cannot run in hosted CI.
+live_skip[opus-heartbeat-allowlist-gate.test.sh]=1
+live_skip[opus-heartbeat-follow-through.test.sh]=1
+live_skip[opus-heartbeat-replayed-frozen-snapshot.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.
