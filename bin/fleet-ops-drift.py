@@ -37,7 +37,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-VOLATILE; 0 skip gh
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
   FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
@@ -92,6 +92,7 @@ PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
+VOLATILE_MARKER = "volatile-unit-path: fleet-ops#369"
 
 DRIFT_MARKERS = (
     SOURCE_MARKER,
@@ -100,6 +101,7 @@ DRIFT_MARKERS = (
     PRODUCTS_MARKER,
     OFF_MAIN_MARKER,
     HOTPATCH_MARKER,
+    VOLATILE_MARKER,
 )
 
 PAPER_OVER_DROPIN = (
@@ -290,6 +292,30 @@ def auto_file_off_main(msg: str) -> None:
     auto_file_drift(
         OFF_MAIN_MARKER,
         "Live fleet-ops-deploy-clone is on a named branch, not main",
+        extra,
+        msg,
+    )
+
+
+def auto_file_volatile(msg: str) -> None:
+    """File one issue if a unit file or enable-link resolves into a volatile path.
+
+    A wants-link into /tmp (or /run, agent-worktrees) is one tmpfiles-clean
+    run or reboot from dangling, dropping the unit and any self-management
+    loop that runs through it. install.sh --check only verifies MANIFEST
+    fragment dests, not the wants-links systemctl enable creates, so this
+    canary is the only guard for that class (fleet-ops#369).
+    """
+    extra = (
+        "Re-symlink the wants-link to the deploy-clone's unit file: "
+        "systemctl --user reenable <unit>, or remove the link then "
+        "systemctl --user daemon-reload && systemctl --user enable <unit>. "
+        "A dangling link (target already deleted) takes the same reenable. "
+        "Do not restart a slice."
+    )
+    auto_file_drift(
+        VOLATILE_MARKER,
+        "Installed unit or enable-link resolves into a volatile path",
         extra,
         msg,
     )
@@ -794,11 +820,12 @@ def check_volatile_unit_paths(checkout: Path) -> None:
             findings.append(f"{item} -> {target}")
 
     if findings:
-        fail_loud(
-            "DRIFT-VOLATILE",
+        msg = (
             "installed unit file or enable-link resolves into a volatile path "
-            "(/tmp, /run, agent-worktrees):\n" + "\n".join(findings),
+            "(/tmp, /run, agent-worktrees):\n" + "\n".join(findings)
         )
+        auto_file_volatile(msg)
+        fail_loud("DRIFT-VOLATILE", msg)
     log("no unit file or enable-link resolves into a volatile path")
 
 

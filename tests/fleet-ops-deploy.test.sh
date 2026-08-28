@@ -19,6 +19,9 @@
 #      of checkout-vs-itself is impossible).
 #  11. Enable-link into a volatile path (/tmp outside the checkout) fails
 #      DRIFT-VOLATILE.
+#  11b. A MANIFEST unit's wants-link hijacked to /tmp (fragment symlink still
+#      correct, so install.sh --check is clean) fails DRIFT-VOLATILE and
+#      auto-files a deduped issue — the exact fleet-ops#369 shape.
 #  12. install.sh refuses to overwrite a live file newer than the repo copy,
 #      and removes the paper-over heartbeat drop-in.
 #  12c. install.sh refuses a seat-caps cap drop even when the repo file has
@@ -619,6 +622,81 @@ fi
     || fail "scenario11: volatile enable-link did not produce DRIFT-VOLATILE (got: $out)"
 ok "scenario11: enable-link into a volatile path fails DRIFT-VOLATILE"
 rm -f "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
+
+# --- scenario 11b: MANIFEST unit's wants-link hijacked to /tmp (fleet-ops#369)
+# The exact #369 shape: the fragment symlink is correct (points at the
+# checkout, so install.sh --check is clean), but the wants-link systemctl
+# enable created resolves into /tmp — one tmpfiles-clean from dangling.
+# install.sh --check only verifies MANIFEST fragment dests, not wants-links,
+# so the drift canary is the only guard. Prove it catches the class AND
+# auto-files a deduped issue (parity with every other DRIFT-* class).
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+mkdir -p "$HOME/.config/systemd/user/timers.target.wants" "$scratch/volatile-p13"
+printf '[Timer]\nOnCalendar=*:17\n' > "$scratch/volatile-p13/demo.timer"
+# Fragment symlink stays correct (install.sh --check would pass this).
+# Wants-link is the hijacked one — the #369 bug.
+ln -sfn "$scratch/volatile-p13/demo.timer" \
+    "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+vol_gh_log="$scratch/gh-volatile.log"
+vol_gh="$scratch/gh-volatile"
+: >"$vol_gh_log"
+echo '[]' >"$scratch/open-volatile.json"
+cat >"$vol_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/3690"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$vol_gh"
+run_volatile_canary() {
+  GH="$vol_gh" \
+  GH_LOG="$vol_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-volatile.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+}
+if out=$(run_volatile_canary); then
+    fail "scenario11b: canary should fail on a MANIFEST unit's hijacked wants-link, got: $out"
+fi
+[[ "$out" == *"DRIFT-VOLATILE"* ]] \
+    || fail "scenario11b: hijacked wants-link did not produce DRIFT-VOLATILE (got: $out)"
+[[ "$out" == *"timers.target.wants/demo.timer"* ]] \
+    || fail "scenario11b: must name the hijacked wants-link (got: $out)"
+grep -q 'issue create' "$vol_gh_log" \
+    || fail "scenario11b: must auto-file (log=$(cat "$vol_gh_log"))"
+ok "scenario11b: MANIFEST unit wants-link into /tmp fails DRIFT-VOLATILE and auto-files (fleet-ops#369)"
+
+# Dedup: an open issue carrying the marker must not be filed twice.
+: >"$vol_gh_log"
+jq -n --arg b $'body\nvolatile-unit-path: fleet-ops#369\n' \
+  '[{number: 369, body: $b}]' >"$scratch/open-volatile.json"
+if out=$(
+  GH="$vol_gh" \
+  GH_LOG="$vol_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-volatile.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario11b-dedup: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$vol_gh_log" \
+    && fail "scenario11b-dedup: must not file a duplicate (log=$(cat "$vol_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario11b-dedup: expected dedup log, got: $out"
+ok "scenario11b-dedup: open issue with the marker is not filed twice"
+rm -f "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
 
 # --- scenario 12: install.sh refuses newer live config; removes paper-over ---
 stale="$scratch/stale-repo"
