@@ -206,6 +206,7 @@ set -e
 grep -q 'LADDER-WALLED' "$STOP_ESCALATION_AUDITOR_LOG" || fail "empty ladder: LADDER-WALLED must land in auditor LOG (fail-loud, not silent)"
 [[ ! -s "$STOP_ESCALATION_SEEN" ]] || fail "empty ladder: must not consume dispatch budget"
 ok "fully-walled ladder (unit-failure) -> auditor LOG, NISH untouched, exit 0"
+: > "$STOP_ESCALATION_AUDITOR_LOG"  # reset for later scenarios (state bleed)
 
 : > "$STOP_ESCALATION_NISH"
 
