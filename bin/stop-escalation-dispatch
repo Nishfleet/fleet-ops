@@ -18,7 +18,8 @@
 #   3. Verify the dispatch actually wrote a diagnosis block.  A dispatch that
 #      produced no block (timeout, pi failure, or empty output) is recorded as
 #      a failed dispatch, does NOT consume the hash's 2-dispatch budget, and
-#      exits 1 so the next trip/sweep can try again.  A rc=0/no-block dispatch
+#      exits 0 so the unit stays active-and-quiet; the next STOP-REASON change
+#      or daily sweep still retries.  A rc=0/no-block dispatch
 #      (HTTP-200 with empty body — the tools=0 dead-seat class) ALSO benches
 #      the seat via mark_seat_spawn_fail so pick_seat rotates to the next
 #      capable seat on the next trip/sweep, instead of re-picking the same
@@ -130,7 +131,7 @@ clear_walled_at() {
   mv "$WALLED.tmp" "$WALLED"
 }
 
-# Record a kill for this hash. First kill retries (exit 1). Second consecutive
+# Record a kill for this hash. First kill retries (exit 0). Second consecutive
 # kill writes KILL-ESCALATION to AUDITOR-LOG and NISH-ESCALATIONS and exits 0.
 finish_kill_retry() {
   local rc="$1"
@@ -148,7 +149,7 @@ finish_kill_retry() {
     echo "STOP-ESCALATION: KILL-ESCALATION hash=$hash consecutive=$kc" >&2
     exit 0
   fi
-  exit 1
+  exit 0
 }
 
 [ -f "$SR" ] || exit 0
@@ -341,7 +342,7 @@ fi
 if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
   # Defect #3 from fleet-ops#34: a dispatch that produced no diagnosis block
   # is a failed dispatch.  Record it in AUDITOR-LOG.md as a TIMEOUT / NO-BLOCK,
-  # do NOT consume the 2-dispatch budget, and exit 1.
+  # do NOT consume the 2-dispatch budget, and exit 0.
   # fleet-ops#444: 124/137/143 are KILL-RETRY (timeout or signal-killed),
   # not DISPATCH-NO-BLOCK. After 2 consecutive kills on this hash, escalate
   # loud and stop burning seats.
@@ -380,7 +381,7 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     # bench that fails open (no reset window AND no provider default) falls
     # through to the spawn-fail bench so the seat still rotates.  Best-effort:
     # a write failure must not block the DISPATCH-NO-BLOCK record or the
-    # exit-1 retry contract.
+    # exit-0 quiet contract.
     benched=0; bench_reason="no-block"
     if is_quota_cap_error "$combined" "" 2>/dev/null; then
       bench_reason="quota_cap"
@@ -408,7 +409,7 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block, bench=$bench_reason)" >&2
     # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
     # unchanged, so the next STOP-REASON change or daily sweep re-tries.
-    exit 1
+    exit 0
   fi
 fi
 
