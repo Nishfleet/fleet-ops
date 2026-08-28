@@ -62,6 +62,14 @@ Environment seams (overridden by tests + fleet-ops deploy):
                             start); used by tests.
   GH_WEBHOOK_RECEIVER_PROM  Path to write the heartbeat prom file. Default
                             /var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom
+  GH_WEBHOOK_INTAKE_REPOS   Path to config/intake-repos.json (the single
+                            source of truth for which repos run intake).
+                            Default <fleet-ops checkout>/config/intake-repos.json.
+                            A repo NOT enrolled there is never dispatched
+                            to pi-intake@<repo> (the synthetic canary repo
+                            is the canonical case — it must keep the
+                            receiver heartbeat green without spawning a
+                            real intake tick on a non-existent repo).
 """
 from __future__ import annotations
 
@@ -89,10 +97,34 @@ PROM_FILE = os.environ.get(
     "GH_WEBHOOK_RECEIVER_PROM",
     "/var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom",
 )
+# config/intake-repos.json is the single source of truth for which repos
+# run intake (fleet-ops#32). The receiver refuses to dispatch
+# pi-intake@<repo> for a repo not enrolled here — the synthetic canary
+# repo (fleet-ops-canary) is the canonical non-enrolled case: it must
+# keep the receiver heartbeat green without firing a real intake tick on
+# a repo that has no checkout, no labels, and no intake unit.
+INTAKE_REPOS_FILE = os.environ.get(
+    "GH_WEBHOOK_INTAKE_REPOS",
+    "/home/nish/workspaces/products/fleet-ops/config/intake-repos.json",
+)
 MAX_BODY = 1 * 1024 * 1024  # 1 MiB
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 _log = logging.getLogger("gh-webhook-receiver")
+
+
+def _prom_quote(value: str) -> str:
+    """Quote a label value for Prometheus exposition format.
+
+    Prometheus label values MUST be double-quoted, with ``\\``, ``"``,
+    and ``\\n`` escaped. Python's ``repr()`` emits single quotes
+    (``unit='(ignored)'``) which node-exporter's textfile parser rejects
+    silently — the series is dropped, ``absent()`` fires forever, and the
+    FleetGhWebhookReceiverAbsent alert never clears. This is the
+    fleet-ops#1464 root cause: the receiver wrote a healthy prom file
+    that Prometheus could not scrape.
+    """
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
 def _read_secret() -> bytes:
@@ -103,6 +135,22 @@ def _read_secret() -> bytes:
     if not s:
         raise SystemExit(f"gh-webhook-receiver: secret file empty: {p}")
     return s.encode("utf-8")
+
+
+def _load_enrolled_repos(path: str) -> set[str]:
+    """Return the set of repo names enrolled in intake-repos.json.
+
+    A missing or unparseable file degrades to an EMPTY set (fail-closed:
+    no pi-intake@<repo> dispatch). fleet-ops#32 makes this file the single
+    source of truth; the receiver never enables an intake unit itself.
+    """
+    try:
+        data = json.loads(Path(path).read_text())
+        repos = data.get("repos") or []
+        return {str(r.get("name", "") or "") for r in repos if isinstance(r, dict)}
+    except (OSError, ValueError) as e:
+        _log.warning("intake-repos load failed (%s): %s — no intake dispatch", path, e)
+        return set()
 
 
 def verify_hmac(secret: bytes, body: bytes, signature_header: str) -> bool:
@@ -118,9 +166,16 @@ def verify_hmac(secret: bytes, body: bytes, signature_header: str) -> bool:
 
 
 def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
-             dry: bool) -> tuple[str, str]:
+             dry: bool, enrolled: set[str] | None = None) -> tuple[str, str]:
     """Return (unit, reason). ``unit`` is empty when no-op. ``reason`` is
-    human + log friendly."""
+    human + log friendly.
+
+    ``enrolled`` is the set of repos in config/intake-repos.json. A
+    pi-intake@<repo> dispatch is refused for a repo NOT in that set —
+    the synthetic canary repo (fleet-ops-canary) is the canonical
+    non-enrolled case. fleet-deploy-check is fleet-wide, NOT per-repo,
+    so it is never enrollment-gated.
+    """
     if event == "ping":
         return "", "ping (no-op)"
 
@@ -132,6 +187,8 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                 # 'opened' is the race-safe variant: the issue body itself
                 # has agent-ready (auto-applied by org rules) or the worker
                 # should at least try.
+                if enrolled is not None and repo not in enrolled:
+                    return "", f"issues: {repo!r} not enrolled in intake-repos.json"
                 return f"pi-intake@{repo}.service", f"issues/{action}/agent-ready → pi-intake@{repo}"
             if label == "pipeline-red":
                 return "fleet-deploy-check.service", f"issues/labeled/pipeline-red → fleet-deploy-check"
@@ -167,14 +224,20 @@ def fire_unit(unit: str, dry: bool) -> tuple[int, str]:
 
 def write_prom(file_path: str, last_event_ts: float, last_unit: str,
                last_rc: int, total: int, last_event: str) -> None:
-    """Write the heartbeat prom file atomically."""
+    """Write the heartbeat prom file atomically.
+
+    Label values are double-quoted via ``_prom_quote`` so node-exporter's
+    textfile parser accepts them. Single quotes (Python ``repr()``) are
+    silently dropped — that was the fleet-ops#1464 root cause.
+    """
     try:
         body = (
             "# HELP fleet_gh_webhook_receiver_last_green_seconds "
-            "Epoch seconds of the last verified webhook forward the receiver "
-            "dispatched (organ heartbeat).\n"
+            "Epoch seconds of the last verified webhook the receiver "
+            "accepted (organ heartbeat — bumped on every verified event, "
+            "dispatched OR ignored, so the synthetic canary keeps it green).\n"
             "# TYPE fleet_gh_webhook_receiver_last_green_seconds gauge\n"
-            f"fleet_gh_webhook_receiver_last_green_seconds{{unit={last_unit!r},event={last_event!r}}} "
+            f"fleet_gh_webhook_receiver_last_green_seconds{{unit={_prom_quote(last_unit)},event={_prom_quote(last_event)}}} "
             f"{last_event_ts:.0f}\n"
             "# HELP fleet_gh_webhook_receiver_dispatch_total "
             "Cumulative count of verified webhook dispatches since process start.\n"
@@ -196,6 +259,7 @@ def write_prom(file_path: str, last_event_ts: float, last_unit: str,
 
 class _State:
     secret: bytes = b""
+    enrolled: set[str] = set()
     last_event_ts: float = 0.0
     last_unit: str = ""
     last_rc: int = -1
@@ -209,6 +273,27 @@ class _State:
         cls.last_rc = rc
         cls.last_event = event or "(unknown)"
         cls.total += 1
+        write_prom(PROM_FILE, cls.last_event_ts, cls.last_unit,
+                   cls.last_rc, cls.total, cls.last_event)
+
+    @classmethod
+    def record_verified(cls, event: str, reason: str) -> None:
+        """Bump the heartbeat on every VERIFIED event — dispatched OR
+        ignored — without incrementing the dispatch counter.
+
+        The synthetic canary posts to a non-enrolled repo (fleet-ops-
+        canary), so its events are 'ignored' by the dispatch table. The
+        receiver heartbeat must still go green, or the
+        FleetGhWebhookReceiverAbsent alert fires forever even though the
+        channel is provably alive (the canary is the liveness probe).
+        Bumping last_green here, on every verified receive, is what makes
+        'silence is provable, not assumed' actually true.
+        """
+        cls.last_event_ts = time.time()
+        cls.last_event = event or "(unknown)"
+        # Keep last_unit/last_rc from the last real dispatch; an ignored
+        # event does not erase the dispatch state, it only refreshes the
+        # heartbeat timestamp.
         write_prom(PROM_FILE, cls.last_event_ts, cls.last_unit,
                    cls.last_rc, cls.total, cls.last_event)
 
@@ -277,7 +362,8 @@ def _make_handler(secret: bytes):
                         ((payload.get("workflow_run") or {}).get("conclusion")) or ""
                     )
 
-            unit, reason = dispatch(event, action, label, repo, conclusion, DRY)
+            unit, reason = dispatch(event, action, label, repo, conclusion, DRY,
+                                    _State.enrolled)
             if unit:
                 rc, err = fire_unit(unit, DRY)
                 _State.record(unit, rc, event)
@@ -296,6 +382,10 @@ def _make_handler(secret: bytes):
                 self.end_headers()
                 self.wfile.write(body_out)
             else:
+                # Ignored events are STILL verified receives — bump the
+                # heartbeat so the synthetic canary (non-enrolled repo)
+                # keeps FleetGhWebhookReceiverAbsent green.
+                _State.record_verified(event, reason)
                 _log.info("IGNORED event=%s delivery=%s reason=%s", event, delivery, reason)
                 body_out = json.dumps({
                     "received": True, "ignored": reason, "delivery": delivery,
@@ -316,10 +406,14 @@ def main(argv: list[str]) -> int:
         stream=sys.stderr,
     )
     _State.secret = _read_secret()
-    _log.info("starting gh-webhook-receiver v%s bind=%s port=%d dry=%s prom=%s",
-              VERSION, BIND, PORT, DRY, PROM_FILE)
+    _State.enrolled = _load_enrolled_repos(INTAKE_REPOS_FILE)
+    _log.info("starting gh-webhook-receiver v%s bind=%s port=%d dry=%s prom=%s "
+              "intake_repos=%s enrolled=%s",
+              VERSION, BIND, PORT, DRY, PROM_FILE, INTAKE_REPOS_FILE,
+              sorted(_State.enrolled) or "(none)")
     # Initial prom write so absent(fleet_gh_webhook_receiver_last_green_seconds)
-    # has a NaN-with-labels gauge, not a hard missing series.
+    # has a NaN-with-labels gauge, not a hard missing series. Double-quoted
+    # labels so node-exporter actually scrapes it (fleet-ops#1464 root cause).
     write_prom(PROM_FILE, 0.0, "", -1, 0, "")
     server = ThreadingHTTPServer((BIND, PORT), _make_handler(_State.secret))
     try:
