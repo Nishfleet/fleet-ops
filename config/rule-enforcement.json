@@ -728,10 +728,9 @@
     {
       "id": "led-2026-08-27-cursor-400-correction-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 correction (Nish)",
-      "mechanism": "Cursor $400 extra-usage budget expires with the 25d cycle: target ~$16/day SPENT on keystone/senior-review/Weekly-Review work (floor, not ceiling), meter-checked; do not bank it. Mechanism issue open.",
-      "proof": "fleet-ops#1177",
-      "status": "queued(#1177)",
-      "queued_since": "2026-08-27"
+      "mechanism": "lib/seat-lib.sh keystone-only provider hardcode plus cursor_overage model gating (non-overage cursor models rejected when included_exhausted is true). volume-lane-order canary ensures cursor stays out of the volume set. seat-selection metrics (record_seat_selection + export_seat_selection_prom) provide the 24h selection meter. Dollar-level Cursor billing has no programmatic API — the included_exhausted flip and $16/day spending check are Nish dashboard actions.",
+      "proof": "lib/seat-lib.sh _provider_is_keystone_only + pick_seat cursor_overage logic; config/seat-caps.json cursor_overage section + keystone_only_providers; tests/fleet-token-economy.test.sh; tests/token-economy-routing.test.sh; bin/fleet-volume-lane-order-canary; bin/fleet-credential-expiry-canary (seat liveness)",
+      "status": "advisory(senior: dollar-level Cursor budget tracking has no programmatic billing API; time-bound budget expires with the 25d cycle; existing mechanical guardrails — keystone-only, overage model gating, volume-lane exclusion, seat-selection metrics, CI config tests — enforce the runtime surface)"
     },
     {
       "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
