@@ -46,6 +46,11 @@ ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/
 SESSIONS="${FLEET_DECISIONS_LEDGER_SESSIONS:-$HOME/.pi/agent/sessions}"
 LEDGER="${FLEET_DECISIONS_LEDGER:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
 LIB="${FLEET_DECISIONS_LEDGER_LIB:-$_canon_repo/lib/decisions-ledger.py}"
+# fleet-ops#631: an explicit FLEET_DECISIONS_LEDGER_LIB pin (even to a missing
+# path) MUST win over the installed fallback. Without this guard the bin
+# silently falls back to ~/.local/lib/pi-packet/decisions-ledger.py, the
+# missing-helper drill scans clean, and the "fails loud" test exits 0 — a
+# broken helper looks healthy. The -z test below is the guard; do not remove.
 if [[ -z "${FLEET_DECISIONS_LEDGER_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/decisions-ledger.py" ]]; then
     LIB="${HOME}/.local/lib/pi-packet/decisions-ledger.py"
 fi

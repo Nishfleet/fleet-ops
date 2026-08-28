@@ -66,6 +66,11 @@ SESSIONS="${FLEET_FINDINGS_QUEUED_SESSIONS-$HOME/.pi/agent/sessions}"
 CURSOR_ROOTS="${FLEET_FINDINGS_QUEUED_CURSOR_ROOTS-$HOME/.cursor/projects}"
 CLAUDE_ROOTS="${FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS-$HOME/.claude/projects}"
 LIB="${FLEET_FINDINGS_QUEUED_LIB:-$_canon_repo/lib/findings-queued.py}"
+# fleet-ops#631: an explicit FLEET_FINDINGS_QUEUED_LIB pin (even to a missing
+# path) MUST win over the installed fallback. Without this guard the bin
+# silently falls back to ~/.local/lib/pi-packet/findings-queued.py, the
+# missing-helper drill scans clean, and the "fails loud" test exits 0 — a
+# broken helper looks healthy. The -z test below is the guard; do not remove.
 if [[ -z "${FLEET_FINDINGS_QUEUED_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/findings-queued.py" ]]; then
     LIB="${HOME}/.local/lib/pi-packet/findings-queued.py"
 fi
