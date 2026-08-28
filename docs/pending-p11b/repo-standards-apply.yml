@@ -1,0 +1,96 @@
+name: Repo standards apply
+
+# Weekly idempotent sweep that enforces the declarative repo standard
+# (.github/scripts/repo-standards.lib.mjs) across every non-archived repo in
+# Nishfleet + nish3451: label triad, branch protection, CODEOWNERS on gate
+# paths, merge_group triggers, SHA-pinned thin-caller workflows, and
+# .fleet/standards-exceptions.yml honoring.
+#
+# Sibling of repo-standards-sync.yml (which runs daily for allow_auto_merge +
+# canonical file sync). This workflow covers the settings + thin-caller
+# surface that file sync cannot reach: branch-protection payloads, label
+# creation, CODEOWNERS gate-path coverage, and SHA-current thin callers.
+#
+# Named reason for the weekly cadence (per the compute rule): new repos appear
+# out-of-band; org webhooks are unavailable on the free plan, so an
+# event-driven "repo created" trigger is not available. One idempotent weekly
+# sweep is the minimal mechanical form. (Daily would be wasteful — settings
+# drift slowly; weekly catches a new repo within 7 days, which the new-repo
+# bootstrap doc covers with a one-command fast path for anyone who wants it
+# sooner.)
+#
+# DRIFT handling: settings drift is applied via API + logged; file drift
+# (CODEOWNERS, thin callers) is reported and left to the file-sync action / a
+# follow-up PR (one writer per repo). Never weakens anything found stronger.
+# Hands-off + local-richer repos skipped. Every active exception is reported.
+#
+# Blocked on: FLEET_SYNC_PAT secret (contents+workflows+pull-requests write
+# across Nishfleet + nish3451). Fails LOUD if absent.
+
+on:
+  schedule:
+    # Weekly, Mondays 03:17 UTC. Off-peak for the org; idempotent so a missed
+    # run costs nothing.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply settings fixes (default: dry-run report only)."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-standards-apply
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Apply repo standards
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout fleet-ops
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify FLEET_SYNC_PAT
+        env:
+          PAT: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::FLEET_SYNC_PAT secret is not set. Create a PAT with contents+workflows+pull-requests write across Nishfleet and nish3451, add it as the FLEET_SYNC_PAT repo (or org) secret on Nishfleet/fleet-ops, then re-run this workflow. Until then the sync cannot run."
+            exit 1
+          fi
+
+      - name: Run standards sync
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          APPLY: ${{ inputs.apply || false }}
+        run: |
+          set -euo pipefail
+          args="--org Nishfleet --org nish3451 --format markdown --out-dir out"
+          if [ "$APPLY" = "true" ]; then args="$args --apply"; fi
+          node .github/scripts/repo-standards-apply.mjs $args
+
+      - name: Enqueue green fleet PRs (amendment 2 part c)
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_SYNC_PAT }}
+          APPLY: ${{ inputs.apply || false }}
+        run: |
+          set -euo pipefail
+          args="--org Nishfleet --org nish3451 --format markdown --out-dir out"
+          if [ "$APPLY" = "true" ]; then args="$args --apply"; fi
+          node .github/scripts/enqueue-green-prs.mjs $args
+
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repo-standards-drift
+          path: out/
+          retention-days: 28

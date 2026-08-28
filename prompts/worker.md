@@ -216,4 +216,18 @@ Steps:
 7. Open the PR:
    `gh pr create -R Nishfleet/<repo> --head claim/issue-<N> --title "<concise title>" --body "<what changed and why>. Verification: <exact commands run and their results>. run-proof: <journal lines, run URL, or systemctl/journalctl transcript — required when this PR adds a unit, timer, or workflow>. research: <last30days|official docs|live search> compared <options>; <why they lost or were adopted — required when this PR adds a new bin/ file>. help-first: ran <tool> --help; <why it does not already do this — required when this PR adds a new bin/ file>. Closes #<N>"`
    The `Verification:` section (with journalctl/systemctl/exit-code/URL/fenced-block evidence) satisfies the prove-one-run gate (fleet-ops#378). An explicit `run-proof: journal|url|service|transcript <value>` line is also accepted and is the louder signal. A `research:` line satisfies the research-before-build gate (fleet-ops#517) when the diff adds a new `bin/` file. A `help-first:` line satisfies the find-the-proven-thing gate (fleet-ops#534) on the same new `bin/` file.
-8. Print exactly one final line: the PR URL. Exit 0.
+8. Arm the merge queue — this is your LAST mandatory step, not an optional
+   extra. A PR left unarmed is an incomplete packet. The fleet standard
+   (Nish, 2026-08-25): green PRs enter the merge queue automatically, no
+   orchestrator hand needed. Arming on open means the queue fires the moment
+   required checks pass, with no second round-trip:
+   `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>`
+   (`--auto --squash` adds to the merge queue on queue-enabled repos and arms
+   auto-merge-on-green on the rest — one command, both shapes. Never queue a
+   fork PR, a draft, or a PR you marked `[no-merge]` in the title.) If the arm
+   fails because checks are still pending, that is fine — `--auto` waits. If it
+   fails for a permissions reason, say so in the PR body and stop; do not
+   hand-merge. The `auto-enqueue.yml` workflow and the weekly standards sweep
+   are backstops that re-arm anything this step missed — but arming here is the
+   primary path and is required.
+9. Print exactly one final line: the PR URL. Exit 0.
