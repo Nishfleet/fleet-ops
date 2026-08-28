@@ -522,6 +522,47 @@ set -e
 [[ "$quality" == "churn" ]] || fail "scenario17m: no-prefix -> churn, got $quality"
 ok "scenario17m: classify_quality no-prefix -> churn (safe catch-all)"
 
+# --- 17ab..17ah. content-based classification for unprefixed titles ---------
+# fleet-ops#1516 starvation root cause: every alert-filed issue has a
+# plain-English title with no conventional-commit prefix, so the old
+# classifier defaulted the whole title to churn and the legit-work surge
+# valve never opened for them. An unprefixed title carrying an unambiguous
+# outage/defect signal (in title OR body) must be repair; a prefixed title
+# keeps its prefix mapping regardless of body (chore: stays churn even when
+# the body says "broken").
+expect_quality() {  # title body expected
+  local title="$1" body="$2" expected="$3" got
+  set +e
+  got="$(precedence_band_classify_quality "$title" "$body")"
+  rc=$?
+  set -e
+  [[ "$rc" == "0" ]] || fail "classify_quality rc=$rc for '$title' (got $got)"
+  [[ "$got" == "$expected" ]] \
+    || fail "classify_quality '$title' -> '$got', want '$expected'"
+}
+
+# Unprefixed outage titles -> repair (the starved alert-filed issues).
+expect_quality "fleet-ops main CI red (FleetMainRed pending checks)" "" repair
+ok "scenario17ab: unprefixed 'red' signal -> repair"
+expect_quality "FleetGhWebhookReceiverAbsent firing 6h — receiver down" "" repair
+ok "scenario17ac: unprefixed 'down'/'absent' signal -> repair"
+expect_quality "alert-repair chain stalled at verify hop since 02:00" "" repair
+ok "scenario17ad: unprefixed 'stalled' signal -> repair"
+# Title alone carries no signal word; the outage lives in the body.
+expect_quality "Dispatcher burns 2851 at-capacity skips per 2h" \
+  "capacity exhausted; every ready issue skipped" repair
+ok "scenario17ae: unprefixed body 'exhausted' signal -> repair"
+expect_quality "at-capacity skip churn: 1006 events in 2h against cap=1" \
+  "lane starved; no worker dispatches" repair
+ok "scenario17af: unprefixed body 'starved' signal -> repair"
+
+# Prefixed title keeps its mapping even with a 'broken' body (content-blind).
+expect_quality "chore: tidy up logs" "broken everything, red alert" churn
+ok "scenario17ag: chore: stays churn despite repair-signal body"
+# Unprefixed churn signal (rename) with no outage signal -> churn.
+expect_quality "Rename helper" "" churn
+ok "scenario17ah: unprefixed 'rename' (no outage signal) -> churn"
+
 # Test is_legit_work directly
 set +e
 precedence_band_is_legit_work "feat: add new feature"
