@@ -170,10 +170,9 @@
     {
       "id": "sr-nothing-half-done",
       "source": "global-standing-rules.md: Nothing sits half-done, and no question dies unanswered (Nish, 2026-08-20)",
-      "mechanism": "No detector for done-but-unlanded work or unanswered questions",
-      "proof": "Nishfleet/fleet-ops#528",
-      "status": "queued(#528)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat loose-ends canary: parse QUESTIONS.md for OPEN rows and expired HOLD returns (24h nag cadence), scan enrolled repos for open MERGEABLE worker PRs older than the idle window without auto-merge, scan agent-worktrees for dirty or stale worktrees with no live worker unit. Observe-to-open auto-files complete-or-discard tickets with a marker; observe-to-close comments resolved-at on a green tick and closes on a later tick. Exit 1 stays reserved for helper crashes; findings are loud but the tick stays green (fleet-ops#1116 alarm-vs-failure separation).",
+      "proof": "bin/fleet-loose-ends-canary; lib/loose-ends.py; tests/fleet-loose-ends-canary.test.sh; fleet-heartbeat-tier1 block 42; Nishfleet/fleet-ops#528",
+      "status": "enforced"
     },
     {
       "id": "sr-one-instruction-binds",
