@@ -239,6 +239,23 @@ bash "$here/gh-webhook-canary.test.sh"
 bash "$here/gh-webhook-organ-heartbeat.test.sh"
 bash "$here/fleet-intake-reconciler-counter.test.sh"
 
+# fleet-ops#1464: receiver prom labels must be double-quoted so
+# node-exporter textfile parser keeps the series (single-quoted labels
+# vanish and absent() fires forever). Offline hermetic. Hosted here so
+# P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/gh-webhook-receiver-prom-quotes.test.sh"
+
+# fleet-ops#1558: per-repo MemoryMax/MemoryHigh drop-ins + admit floor.
+# Offline hermetic. Hosted here so P14 runs it without a workflow-file
+# edit (the worker App cannot push .github/workflows/**).
+bash "$here/worker-memory-dropin.test.sh"
+
+# siterep live canary pin wrapper (hourly pin + daily real-E2E hour).
+# Hermetic — stubs date/npm/git/node. Hosted here so P14 runs it without
+# a workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/siterep-live-canary-pin.test.sh"
+
 # fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**).

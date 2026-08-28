@@ -98,6 +98,12 @@
       "cadence": "6h",
       "source": "repo"
     },
+    "fleet-rulebook-redteam.timer": {
+      "reason": "Monthly rulebook red-team floor — unknown-unknown drift in the rule files has no event except a month passing; 1st-of-month 04:15 UTC catches a month the box was down (Persistent=true)",
+      "classification": "scheduled",
+      "cadence": "monthly",
+      "source": "repo"
+    },
     "gap-closure-drill-stub-mask.timer": {
       "reason": "Throwaway yearly timer for gap-closure mask-detection drills — never enabled; the drill runtime-masks then unmasks it. Named so timer-manifest shape lock does not fail on the repo file.",
       "classification": "disabled",
