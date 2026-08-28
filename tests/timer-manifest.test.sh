@@ -112,6 +112,28 @@ fi
 
 ok "systemctl --user available — running live check"
 
+# Stale-checkout guard (fleet-ops#1555): the live check compares the LOCAL
+# checkout's manifest against live timers. A checkout behind origin/main has
+# a stale manifest and would false-alarm on entries already landed on main
+# (e.g. grok-token-refresh.timer, #1547). Before failing on a missing live
+# timer, check origin/main's manifest: if it already covers the timer, the
+# local checkout is simply behind — SKIP that timer with a note rather than
+# filing a false gap. Real gaps (missing from both local AND origin/main)
+# still fail. If the fetch/show is unavailable, the guard is a no-op and the
+# original fail-on-missing behavior is preserved.
+ORIGIN_MANIFEST=""
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ORIGIN_MANIFEST="$(mktemp)"
+    if ! git -C "$REPO_ROOT" fetch origin main:refs/timer-manifest-test-main >/dev/null 2>&1 || \
+       ! git -C "$REPO_ROOT" show refs/timer-manifest-test-main:systemd/timer-manifest.json >"$ORIGIN_MANIFEST" 2>/dev/null || \
+       ! jq '.' "$ORIGIN_MANIFEST" >/dev/null 2>&1; then
+        rm -f "$ORIGIN_MANIFEST"
+        ORIGIN_MANIFEST=""
+    fi
+    git -C "$REPO_ROOT" update-ref -d refs/timer-manifest-test-main 2>/dev/null || true
+fi
+[[ -n "$ORIGIN_MANIFEST" ]] && ok "origin/main manifest fetched for stale-checkout guard"
+
 # System timers we exclude (OS-managed, not fleet)
 SYSTEM_TIMERS=(
     "launchpadlib-cache-clean.timer"
@@ -154,9 +176,26 @@ while IFS= read -r timer; do
         continue
     fi
 
+    # Stale-checkout guard: if origin/main's manifest already covers this
+    # timer (exact or template), the local checkout is behind main, not a
+    # real gap. SKIP with a note instead of failing (fleet-ops#1555).
+    if [[ -n "$ORIGIN_MANIFEST" ]]; then
+        if jq -e ".timers[\"$timer\"]" "$ORIGIN_MANIFEST" >/dev/null 2>&1; then
+            echo "SKIP: live timer '$timer' missing from LOCAL manifest but present on origin/main — checkout is behind, not a real gap" >&2
+            continue
+        fi
+        obase="${timer%%@*}@.timer"
+        if [[ "$timer" == *"@"* ]] && jq -e ".timers[\"$obase\"]" "$ORIGIN_MANIFEST" >/dev/null 2>&1; then
+            echo "SKIP: live timer '$timer' (template '$obase') missing from LOCAL manifest but present on origin/main — checkout is behind, not a real gap" >&2
+            continue
+        fi
+    fi
+
     echo "FAIL: live timer '$timer' missing from manifest" >&2
     missing_live=1
 done <<< "$ALL_LIVE_TIMERS"
+
+rm -f "$ORIGIN_MANIFEST"
 
 [[ $missing_live -eq 0 ]] || fail "one or more live timers missing from manifest"
 
