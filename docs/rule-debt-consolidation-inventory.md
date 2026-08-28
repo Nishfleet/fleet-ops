@@ -10,15 +10,15 @@ $LEDGER --matrix config/rule-enforcement.json`
 
 | metric | count |
 |---|---|
-| vault rules (standing + ledger) | 121 |
+| vault rules (standing + ledger) | 122 |
 | matrix entries | 113 |
 | enforced | 76 |
 | advisory | 8 |
 | queued (mechanism pending) | 29 |
-| uncovered (no matrix entry) | 8 |
-| violations (canary LOUD) | 8 |
+| uncovered (no matrix entry) | 9 |
+| violations (canary LOUD) | 9 |
 
-The 8 uncovered are rules added 2026-08-28 without matrix entries yet —
+The 9 uncovered are rules added 2026-08-28 without matrix entries yet —
 pre-existing, not introduced by this PR.
 
 ## Method
@@ -51,13 +51,14 @@ own join (authoritative — no re-derivation).
 
 ## Proposed binding-constraint clusters (the ~dozen)
 
-The consolidation merges 121 rules into 14 binding constraints. Each cluster
+The consolidation merges 122 rules into 15 binding constraints. Each cluster
 preserves every Nish-endorsed obligation verbatim-or-stronger — the cluster
 heading states the merged constraint; the full text of every member moves to
 the archive.
 
 | # | binding constraint | merges (matrix ids) |
 |---|---|---|
+| BC0 | Deletion-first, verified not vibes — prefer edits/deletions over construction; run on existing rails; net machinery trends negative; paper is not machinery; no checkers for canary-enforced conventions; prove state with live commands before claiming it. | no-hand-built-orchestration (agent instruction), prefer-proven-off-the-shelf (agent instruction), check-help-before-building (agent instruction), led-2026-08-28-deletion-first (uncovered) |
 | BC1 | Quality is the sole north star — constraint, never trade-off | sr-quality-speed-efficiency, sr-quality-outranks, sr-quality-is-a-constraint-never-a-trade-off (uncovered), led-north-star-quality, led-quality-inescapable, led-optimization-order, led-optimization-target-max-quality-throughput (uncovered), led-quality-is-a-constraint-never-a-trade-off (uncovered) |
 | BC2 | Act now, max speed, no deferral without a named clock | sr-get-it-moving, sr-max-speed, sr-nothing-waits-tomorrow, led-top-gear-everywhere |
 | BC3 | Fix it, don't report it — only the un-fixable reaches Nish | sr-unfixable-reaches-nish, sr-findings-queued, sr-failed-command-flagged, sr-watchdogs-dispatch |
@@ -212,6 +213,7 @@ Plus two conventions (not constraints — process rules for the file itself):
 | UNCOVERED | uncovered | advisory | archive | — | Band inversion: 70:30 is priority order (point-in-time) |
 | UNCOVERED | uncovered | advisory | archive | — | 0509 completeness claims distrusted (point-in-time) |
 | UNCOVERED | uncovered | advisory | archive | — | 0509 product direction: three epics (product direction, Nish-reserved) |
+| UNCOVERED | uncovered | binding-constraint | keep | BC0 | Deletion-first is the FIRST rule every agent reads (2026-08-28) |
 
 ## Disposition summary
 
@@ -220,11 +222,11 @@ Plus two conventions (not constraints — process rules for the file itself):
 | collapse-into (binding constraint) | 47 | 39% |
 | demote-to-pointer (mechanism exists) | 24 | 20% |
 | archive (history/incident/point-in-time) | 36 | 30% |
-| keep (standalone binding constraint) | 14 | 11% |
-| **total** | **121** | |
+| keep (standalone binding constraint) | 15 | 12% |
+| **total** | **122** | |
 
-Net effect: 121 rules → 14 binding constraints + 24 pointers + 36 archived
-+ 2 conventions. The short file carries ~40 lines (14 constraints + 24
+Net effect: 122 rules → 15 binding constraints + 24 pointers + 36 archived
++ 2 conventions. The short file carries ~41 lines (15 constraints + 24
 one-line pointers + 2 conventions); the archive preserves all 1656 lines
 verbatim.
 
@@ -268,7 +270,7 @@ drop from 29 to 16 (13 kept + 3 merge targets).
 
 ## What this PR ships
 
-This PR ships the P1 inventory (this document) + the `bin/rule-debt-inventory`
+This PR ships the P1 inventory (this document) + the `bin/rule-debt-inventory.py`
 tool that generates it from the live join. It does NOT rewrite the vault file
 or the matrix — those are P3, which requires the P2 blind review first (two
 independent senior POVs checking the disposition map for meaning loss).
