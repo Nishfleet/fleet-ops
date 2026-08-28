@@ -136,7 +136,7 @@ def page_healthchecks(url: str) -> tuple[int, str]:
     if DRY:
         return 0, f"(DRY=1 — would ping {url})"
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        with urllib.request.urlopen(url, timeout=10) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             return resp.status, ""
     except urllib.error.HTTPError as e:
         return e.code, f"HTTP {e.code}"

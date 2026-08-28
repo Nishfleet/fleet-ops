@@ -20,9 +20,9 @@ This document is the runbook for that hand-off.
 | Cloudflare Worker source         | `workers/github-push-forward/`                            |
 | VPS-side webhook receiver        | `libexec/gh-webhook-receiver/serve.py`                    |
 | Receiver systemd unit            | `systemd/gh-webhook-receiver.service`                     |
-| Synthetic canary script          | `bin/gh-webhook-canary`                                   |
+| Synthetic canary script          | `bin/gh-webhook-canary.py`                                |
 | Canary systemd unit + timer      | `systemd/gh-webhook-canary.{service,timer}`               |
-| Dead-man watchdog script         | `bin/gh-webhook-canary-deadman`                           |
+| Dead-man watchdog script         | `bin/gh-webhook-canary-deadman.py`                        |
 | Dead-man systemd unit + timer    | `systemd/gh-webhook-canary-deadman.{service,timer}`       |
 | Intake cadence slow-down         | `systemd/pi-intake@.timer` (`*:00/15` → `*:00/20`)        |
 | Reconciler-caught counter        | `lib/pi-intake-tick.sh`                                   |

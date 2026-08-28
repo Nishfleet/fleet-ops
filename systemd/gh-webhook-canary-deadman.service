@@ -18,5 +18,5 @@ Environment=GH_WEBHOOK_CANARY_PROM=/var/lib/prometheus/node-exporter/fleet-gh-we
 Environment=GH_WEBHOOK_DEADMAN_STALE_AFTER=900
 Environment=GH_WEBHOOK_DEADMAN_TRIAGE_FILE=%h/.local/state/pi-packet/alert-repair-triage.md
 Environment=GH_WEBHOOK_HEALTHCHECKS_FAIL_URL=
-ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary-deadman
+ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary-deadman.py
 TimeoutStartSec=20
