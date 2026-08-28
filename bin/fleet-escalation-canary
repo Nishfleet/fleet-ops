@@ -20,8 +20,12 @@
 #        defines the three functions AND bin/fleet-heartbeat + tier1 wire them
 #        AND the service loads hc.env via EnvironmentFile. A marker file still
 #        suppresses the finding; missing wiring = standing loud PENDING.
-#     4. Red-CI-on-ownerless-PR coverage (#124). Until #124's guard marker is
-#        present, a standing loud PENDING finding.
+#     4. Red-CI-on-ownerless-PR coverage (#124). The redispatch is delivered
+#        as heartbeat block 12 (bin/fleet-heartbeat-red-pr-repair, invoked by
+#        fleet-heartbeat-tier1). The canary observes that wiring directly so
+#        step 4 agrees with step 7 (which checks the claim_repos the helper
+#        scans). The marker override is still honored for tests / manual
+#        suppression. Missing wiring = standing loud PENDING finding.
 #     5. system-scope fleet artifacts are documented as kernel/oomd-supervised
 #        exclusions (no user-manager OnFailure by design).
 #
@@ -63,7 +67,7 @@
 #
 # The canary is run by fleet-heartbeat-tier1 on every tick. It fails loud
 # (exit 1) on real violations, exits 0 when the only findings are the
-# documented pending holes (#76 delivery, #124 guard, #152 bridge), and logs
+# documented pending holes (#76 delivery, #152 bridge), and logs
 # every check to stderr + the heartbeat triage file.
 #
 # Anti-recursion: the canary runs inside fleet-heartbeat.service, which is
@@ -375,13 +379,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. red-CI-on-ownerless-PR coverage (#124 pending)
+# 4. red-CI-on-ownerless-PR coverage (#124)
 # ---------------------------------------------------------------------------
+# The redispatch is delivered as heartbeat block 12:
+# bin/fleet-heartbeat-red-pr-repair is invoked by fleet-heartbeat-tier1 on
+# every tick and scans the claim_repos step 7 verifies. Observe the wiring
+# directly so step 4 agrees with step 7: the helper binary present AND
+# referenced by the tier1 heartbeat. The marker override is still honored
+# (tests / manual suppression), mirroring block 3 and block 8.
 log "4. checking red-CI ownerless-PR coverage"
+redpr_helper="$FLEET_OPS_REPO/bin/fleet-heartbeat-red-pr-repair"
+redpr_tier1="$FLEET_OPS_REPO/bin/fleet-heartbeat-tier1"
+redpr_wired=0
+# Executable helper + a non-comment invocation in tier1. A header comment
+# naming the helper is not wiring; heartbeat itself skips a non-executable
+# helper ("not installed"), so -x matches that skip.
+if [[ -x "$redpr_helper" ]] && grep -qE '^[^#]*fleet-heartbeat-red-pr-repair' "$redpr_tier1" 2>/dev/null; then
+    redpr_wired=1
+fi
 if [[ -f "$REDCI_MARKER" ]]; then
-    log "4.  - red-CI ownerless guard present: $REDCI_MARKER"
+    log "4.  - red-CI ownerless guard marker present: $REDCI_MARKER"
+elif [[ "$redpr_wired" == "1" ]]; then
+    log "4.  - red-CI ownerless-PR coverage wired: fleet-heartbeat-red-pr-repair invoked by fleet-heartbeat-tier1 (block 12) — agrees with step 7 claim_repos scan"
 else
-    loud "ESCALATION-CANARY-PENDING" "red-CI-on-ownerless-PR coverage pending (#124) — failing fleet PRs with no live worker are not yet re-dispatched"
+    loud "ESCALATION-CANARY-PENDING" "red-CI-on-ownerless-PR coverage pending (#124) — fleet-heartbeat-red-pr-repair not wired into the heartbeat (helper missing or not invoked by fleet-heartbeat-tier1)"
     pending=$((pending + 1))
 fi
 
