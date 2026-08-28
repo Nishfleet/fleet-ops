@@ -5,7 +5,8 @@
 # one existing heartbeat tick. No new scheduler.
 #
 #   - classify: default agent-ready; AUTO-REVERT SKIP/HALT → noise-class;
-#     FLAG-for-Nish → nish-reserved; drill: prefix → drill:lifecycle
+#     FLAG-for-Nish → nish-reserved; drill: prefix → drill:lifecycle;
+#     fix(failed-command) observe-to-close → observe-to-close
 #   - sweep labels unlabeled issues and skips ones that already have a
 #     lifecycle label (including drill:* and a non-lifecycle-only issue
 #     like auto-revert-halt still gets a lifecycle label)
@@ -53,6 +54,11 @@ ok "drill: prefix → drill:lifecycle"
 got=$("$bin" --classify "AUTO-REVERT SKIP: FLAG-for-Nish leftover")
 [[ "$got" == "noise-class" ]] || fail "skip wins over flag: $got"
 ok "AUTO-REVERT SKIP prefix wins over FLAG-for-Nish substring"
+
+# fleet-ops#1401: exact failed-command title template → observe-to-close.
+got=$("$bin" --classify "fix(failed-command): 01a03e61 — failed command walked past, never flagged")
+[[ "$got" == "observe-to-close" ]] || fail "failed-command offline classify: $got"
+ok "fix(failed-command) title → observe-to-close"
 
 # --- live sweep with mocked gh --------------------------------------------
 scratch=$(mktemp -d)
@@ -301,5 +307,46 @@ grep -q 'lifecycle-label-sweep' "$repo_root/bin/fleet-heartbeat-tier1" \
 grep -q 'bin/lifecycle-label-sweep' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/lifecycle-label-sweep"
 ok "contracts: tier1 call + MANIFEST entry present"
+
+# Case 11: failed-command observe-to-close on fleet-ops → observe-to-close,
+# not agent-ready (fleet-ops#1401). The body must carry the signal marker.
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1401,"title":"fix(failed-command): 01a03e61 — failed command walked past, never flagged","body":"The session-close lint found a swallowed failure.\n\nsignal: failed-command-flagged/01a03e61","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err11.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "failed-command observe-to-close relabeled: $out"
+grep -q -- '--add-label observe-to-close' "$scratch/edits.log" \
+  || fail "failed-command add-label: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "failed-command must not become agent-ready: $(cat "$scratch/edits.log")"
+fi
+grep -q 'lifecycle-label: observe-to-close' "$scratch/comments.log" \
+  || fail "failed-command comment: $(cat "$scratch/comments.log")"
+ok "failed-command observe-to-close issue → observe-to-close (not agent-ready)"
+
+# Case 11b: existing observe-to-close label is left alone (is_lifecycle).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1402,"title":"fix(failed-command): 01a03e62 — failed command walked past, never flagged","body":"signal: failed-command-flagged/01a03e62","labels":[{"name":"observe-to-close"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err11b.txt")
+grep -q 'relabeled=0' <<<"$out" || fail "existing observe-to-close relabeled: $out"
+[[ -s "$scratch/edits.log" ]] && fail "observe-to-close must not edit: $(cat "$scratch/edits.log")"
+ok "existing observe-to-close is left alone"
+
+# Case 11c: cross-check that a normal fleet-ops unlabeled issue with a body
+# but no failed-command signal still classifies as agent-ready.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1403,"title":"feat(quality): inescapable per-role gates","body":"- required: a named gate / CI check / drill\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err11c.txt")
+grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+  || fail "normal fleet-ops issue must still become agent-ready: $(cat "$scratch/edits.log")"
+ok "normal fleet-ops unlabeled issue still → agent-ready"
 
 echo "all lifecycle-label-sweep cases passed"

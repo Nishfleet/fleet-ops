@@ -58,11 +58,14 @@ orphaned branches (issue missing/closed, no open PR). It defers direction A
 Tier 1 §6b also runs `lifecycle-label-sweep` every tick (fleet-ops#376 / #457): any
 open issue in an enrolled repo that lacks a lifecycle label (`agent-ready` /
 `agent-in-progress` / `agent-blocked` / `nish-reserved` / `noise-class` /
-`scout-candidate` / `drill:*`) is labelled within one tick. Product repos
+`observe-to-close` / `scout-candidate` / `drill:*`) is labelled within one tick. Product repos
 default to `scout-candidate` (admission, not blank approval). `fleet-ops`
 defaults to `agent-ready` (builder gate). Titles starting `AUTO-REVERT SKIP`
 or `AUTO-REVERT HALT` get `noise-class`; titles containing `FLAG-for-Nish`
-get `nish-reserved`. Do not redo that sweep.
+get `nish-reserved`. Failed-command observe-to-close issues (title prefix
+`fix(failed-command):` + suffix `— failed command walked past, never flagged`
+with body `signal: failed-command-flagged/<slug>`) get `observe-to-close` so
+intake does not claim them while the detector waits to close. Do not redo that sweep.
 
 ---
 
