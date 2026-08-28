@@ -2102,6 +2102,16 @@ bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger test
 # fleet-ops#535: session-close lint for swallowed non-zero. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
+# fleet-ops#1097 / #1099: bare `cat` of the stale
+#   /home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged
+# path (canonical is tooling/fleet-ops-deploy-clone/bin/...) returned
+# `cat: <path>: No such file or directory` + `Command exited with code 1`
+# and was walked past with thinking-only + find recovery. `cat` is NOT
+# an ls/grep no-match probe. Distinct from #945 (chained cat ENOENT
+# locked inside fleet-failed-command-flagged.test.sh) and from #1001
+# / #1255 (read-tool ENOENT of a stale checkout). Same CI constraint
+# (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-cat-stale-fleet-ops.test.sh" || fail "fleet-failed-command-cat-stale-fleet-ops tests failed"
 # fleet-ops#651: read tool offset beyond end of file is a negative result.
 bash "$here/fleet-failed-command-read.test.sh" || fail "fleet-failed-command-read tests failed"
 # fleet-ops#953: `read` ENOENT with the live wording
