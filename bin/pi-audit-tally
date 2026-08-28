@@ -23,6 +23,31 @@ GH="${AUDIT_GH:-gh}"
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1"
+    local py
+    py=$(spec_gate_py)
+    if [ ! -f "$py" ]; then
+        log "SPEC-GATE missing at $py — refuse agent-ready (fail closed)"
+        return 1
+    fi
+    printf '%s' "$body" | python3 "$py" check-body >/dev/null
+}
+
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 [ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
@@ -62,6 +87,20 @@ main() {
     log "$repo/#$candidate votes: PASS=$pass FAIL=$fail"
 
     if [ "$pass" -ge 2 ]; then
+        # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
+        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
+        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
+        if ! issue_passes_spec_gate "$issue_body"; then
+            log "$repo/#$candidate SPEC-GATE-REFUSED (2-of-3 PASS but no spec)"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (no spec)"
+            else
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "spec-gate: refused agent-ready (fleet-ops#543). 2-of-3 PASS, but the body needs termination: / accept: / required: / metric:." \
+                    >/dev/null 2>&1 || true
+            fi
+            exit 0
+        fi
         log "$repo/#$candidate admitted (2-of-3 PASS)"
         if [ "$DRY_RUN" = "1" ]; then
             log "DRY-RUN: would add agent-ready + remove scout-candidate for $repo/#$candidate"

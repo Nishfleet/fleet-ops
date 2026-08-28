@@ -93,7 +93,11 @@ case "$*" in
     exit 0
     ;;
   *"issue view"*)
-    printf '{"title":"test","body":"body","labels":[]}\n'
+    if [[ -f "${GH_ISSUE_BODY:-/dev/nonexistent}" ]]; then
+      jq -n --rawfile b "${GH_ISSUE_BODY}" '{title:"test",body:$b,labels:[]}'
+    else
+      printf '{"title":"test","body":"termination: test -f README.md\\naccept: ship the fix\\n","labels":[]}\n'
+    fi
     exit 0
     ;;
   *"issue edit"*)
@@ -275,6 +279,30 @@ set -e
 [[ "$tally_rc" == 0 ]] || fail "scenario4: tally exit $tally_rc"
 grep -q 'issue edit' "$GH_CALLS" || fail "scenario4: tally did not call gh issue edit"
 ok "scenario4: 2 PASS 1 FAIL -> tally edits labels (admit)"
+
+# ============================================================================
+# Scenario 4b: 2-of-3 PASS but no spec → refuse agent-ready (fleet-ops#543)
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+printf '%s\n' 'please look at this' >"$scratch/nospec-body.txt"
+export GH_ISSUE_BODY="$scratch/nospec-body.txt"
+write_vote demo 99 devin PASS "north star; no duplicates"
+write_vote demo 99 free-glm-5-3 PASS "customer edge; unique"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 99 >"$scratch/tally_nospec" 2>&1
+tally_rc=$?
+set -e
+unset GH_ISSUE_BODY
+[[ "$tally_rc" == 0 ]] || fail "scenario4b: tally exit $tally_rc ($(cat "$scratch/tally_nospec"))"
+grep -q 'SPEC-GATE-REFUSED' "$scratch/tally_nospec" \
+  || fail "scenario4b: must log SPEC-GATE-REFUSED ($(cat "$scratch/tally_nospec"))"
+if grep -q 'add-label agent-ready' "$GH_CALLS"; then
+  fail "scenario4b: must not add agent-ready ($(cat "$GH_CALLS"))"
+fi
+grep -q 'issue comment' "$GH_CALLS" || fail "scenario4b: must comment the refusal"
+ok "scenario4b: 2-of-3 PASS without a spec → refused (spec-gate)"
 
 # ============================================================================
 # Scenario 5: 2 FAIL 1 PASS -> discard

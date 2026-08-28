@@ -142,17 +142,33 @@ grep -q 'lifecycle-label: scout-candidate' "$scratch/comments.log" \
   || fail "generic comment: $(cat "$scratch/comments.log")"
 ok "unlabeled generic issue on 0509 → scout-candidate (admission, not blank approval)"
 
-# Case 1b: unlabeled generic on fleet-ops → agent-ready (builder gate)
+# Case 1b: unlabeled fleet-ops WITH a spec → agent-ready (builder gate + spec-gate)
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
 cat >"$scratch/list.json" <<'JSON'
-[{"number":457,"title":"feat(quality): inescapable per-role gates","labels":[]}]
+[{"number":457,"title":"feat(quality): inescapable per-role gates","body":"- required: a named gate / CI check / drill\n","labels":[]}]
 JSON
 : >"$scratch/edits.log"
 : >"$scratch/comments.log"
 out=$("$bin" 2>"$scratch/err1b.txt")
 grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
-  || fail "fleet-ops generic add-label: $(cat "$scratch/edits.log")"
-ok "unlabeled generic issue on fleet-ops → agent-ready (builder gate)"
+  || fail "fleet-ops spec add-label: $(cat "$scratch/edits.log")"
+ok "unlabeled fleet-ops issue with a spec → agent-ready (builder gate)"
+
+# Case 1c: unlabeled fleet-ops WITHOUT a spec → refused (fleet-ops#543)
+cat >"$scratch/list.json" <<'JSON'
+[{"number":543,"title":"feat(quality): stamp ready with no spec","body":"please look at this\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err1c.txt")
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "spec-less fleet-ops must not become agent-ready: $(cat "$scratch/edits.log")"
+fi
+grep -q 'SPEC-GATE-REFUSED' "$scratch/err1c.txt" \
+  || fail "spec-less fleet-ops must log SPEC-GATE-REFUSED: $(cat "$scratch/err1c.txt")"
+grep -q 'spec-gate: refused agent-ready' "$scratch/comments.log" \
+  || fail "spec-less fleet-ops must comment the refusal: $(cat "$scratch/comments.log")"
+ok "unlabeled fleet-ops issue without a spec → refused (spec-gate)"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
 # Case 2: AUTO-REVERT SKIP (live #361 shape) → noise-class, not agent-ready
