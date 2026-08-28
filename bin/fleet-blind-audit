@@ -259,11 +259,11 @@ fi
 # starts there (or 24h back if this is the first run). fleet-ops#377.
 prev_audit_run=""
 if [ -f "$PLAN_FILE" ]; then
-    prev_audit_run=$(grep -E '^last-blind-audit-run:' "$PLAN_FILE" | head -1 | sed 's/^last-blind-audit-run:[[:space:]]*//' || true)
+    prev_audit_run=$(grep -m1 -E '^last-blind-audit-run:' "$PLAN_FILE" | sed 's/^last-blind-audit-run:[[:space:]]*//' || true)
 fi
 SEAM_SINCE="${AUDIT_SEAM_SINCE:-}"
 if [ -z "$SEAM_SINCE" ]; then
-    SEAM_SINCE=$(printf '%s' "$prev_audit_run" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' | head -1 || true)
+    SEAM_SINCE=$(printf '%s' "$prev_audit_run" | grep -m1 -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' || true)
 fi
 
 update_plan_stamp "last-blind-audit-run" "$NOW_ISO (started)"
