@@ -122,6 +122,11 @@ ok "rule-enforcement: pi-escalation-audit drill"
 bash "$here/fleet-d1-prod-migration-grant.test.sh" || fail "d1-prod-migration-grant drill failed"
 ok "rule-enforcement: d1-prod-migration-grant drill"
 
+# fleet-ops#908: D1 prod migration execution rule (process amendment) is
+# enforced by the worker prompt senior process gate and this CI drill.
+bash "$here/fleet-d1-prod-migration-process.test.sh" || fail "d1-prod-migration-process drill failed"
+ok "rule-enforcement: d1-prod-migration-process drill"
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e
