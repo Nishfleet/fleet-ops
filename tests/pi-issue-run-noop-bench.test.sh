@@ -143,6 +143,11 @@ mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_calls"
     orig_mark_seat_spawn_fail "\$@"
 }
+eval "\$(declare -f mark_seat_empty_run | sed '1s/^mark_seat_empty_run/orig_mark_seat_empty_run/')"
+mark_seat_empty_run() {
+    printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_empty_calls"
+    orig_mark_seat_empty_run "\$@"
+}
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
 
@@ -201,3 +206,89 @@ next_nm=$(printf '%s' "$next" | cut -f2)
 ok "intake re-spawn pick_seat skips $np/$nm and picks $next_np/$next_nm"
 
 ok "pi-issue-run no-op benches the seat so re-seat picks a different seat"
+
+# =============================================================================
+# fleet-ops#902: verdict-based EMPTY RUN — pi exits 0 and the ONLY stdout is
+# the PACKET-VERDICT tools=0 line (no final text). At ~90B this exceeds
+# OUT_MIN (20B), so the byte-count check alone would count it as success (the
+# #902 gap: devin lane exit 0, zero output, silently counted as success). The
+# empty-run check must exit 1 AND bench the seat via mark_seat_empty_run with
+# a ~15 min (900s) cooldown, so the packet is re-routed and the seat is
+# auto-re-eligible after the cooldown.
+# =============================================================================
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=0 class=no-tools\n'
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+inst2="fleet-ops-902"
+printf 'Implement one GitHub issue: fleet-ops#902.\n' >"$ISSUES_DIR/${inst2}.in"
+
+set +e
+bash "$bin" "$inst2" >"$scratch/run2.out" 2>"$scratch/run2.err"
+rc2=$?
+set -e
+
+[[ "$rc2" == "1" ]] \
+  || fail "empty-run (verdict tools=0, no text) must make pi-issue-run exit 1 (systemd re-seat), got rc=$rc2 err=$(cat "$scratch/run2.err")"
+
+# The seat pi-issue-run actually ran on (scenario 1 benched glm-5-2 for 5 min,
+# so this run picks the other seat unless that bench expired). Read it from
+# THIS run's tried-seats file, never assume.
+tried2="$STATE_DIR/attempts/pi-issue-${inst2}.tried-seats"
+[[ -s "$tried2" ]] || fail "tried-seats file missing after empty-run"
+seat2_line=$(head -n1 "$tried2")
+np2="${seat2_line%%/*}"
+nm2="${seat2_line#*/}"
+[[ "$np2" && "$nm2" ]] || fail "could not parse seat from $tried2: $seat2_line"
+
+# (a) mark_seat_empty_run was called for that seat, with an empty-run reason.
+[[ -f "$scratch/mark_empty_calls" ]] \
+  || fail "mark_seat_empty_run was never called for the empty run; spawn-fail calls: $(cat "$scratch/mark_calls" 2>/dev/null || true)"
+grep -qF "$np2/$nm2" "$scratch/mark_empty_calls" \
+  || fail "mark_seat_empty_run not called for $np2/$nm2; calls: $(cat "$scratch/mark_empty_calls")"
+grep -qF "empty-run" "$scratch/mark_empty_calls" \
+  || fail "mark_seat_empty_run reason must mention the empty run; calls: $(cat "$scratch/mark_empty_calls")"
+ok "empty-run -> mark_seat_empty_run called for $np2/$nm2"
+
+# (b) per-seat ledger: failure_mode=empty_run, usable_at ~15 min ahead.
+ledger2="$LEDGER/${np2//[^A-Za-z0-9._-]/_}__${nm2//[^A-Za-z0-9._-]/_}.json"
+[[ -f "$ledger2" ]] || fail "per-seat ledger missing at $ledger2"
+mode2=$(jq -r '.failure_mode // empty' "$ledger2")
+[[ "$mode2" == "empty_run" ]] \
+  || fail "ledger failure_mode must be empty_run, got '$mode2': $(cat "$ledger2")"
+usable2=$(jq -r '.usable_at // empty' "$ledger2")
+[[ -n "$usable2" ]] || fail "ledger has no usable_at: $(cat "$ledger2")"
+usable2_epoch=$(date -u -d "$usable2" +%s)
+now2_epoch=$(date -u +%s)
+delta2=$((usable2_epoch - now2_epoch))
+(( delta2 >= 840 && delta2 <= 960 )) \
+  || fail "empty-run usable_at should be ~900s (15 min) ahead, got ${delta2}s: $(cat "$ledger2")"
+ok "ledger failure_mode=empty_run usable_at=+${delta2}s (~15 min cooldown)"
+
+# (c) seat_usable rejects the benched seat; pick_seat skips it and re-routes.
+# The OTHER seat is still benched from scenario 1 (5 min) — expire its ledger
+# so pick_seat has somewhere to re-route to. This proves the empty-run seat is
+# skipped (not that the whole fleet is starved).
+# shellcheck disable=SC1091
+source "$repo_root/lib/seat-lib.sh"
+for other in "devin/glm-5-2" "devin/swe-1-7"; do
+    [[ "$other" == "$np2/$nm2" ]] && continue
+    o_p="${other%%/*}"; o_m="${other#*/}"
+    o_ledger="$LEDGER/${o_p//[^A-Za-z0-9._-]/_}__${o_m//[^A-Za-z0-9._-]/_}.json"
+    rm -f "$o_ledger" 2>/dev/null || true
+done
+if seat_usable "$np2" "$nm2"; then
+    fail "seat_usable $np2/$nm2 returned usable after empty-run bench"
+fi
+next2=$(pick_seat "" "" 0 "" || true)
+[[ -n "$next2" ]] || fail "pick_seat returned empty after benching $np2/$nm2"
+next2_np=$(printf '%s' "$next2" | cut -f1)
+next2_nm=$(printf '%s' "$next2" | cut -f2)
+[[ "$next2_np/$next2_nm" != "$np2/$nm2" ]] \
+  || fail "pick_seat re-selected the empty-run seat $np2/$nm2"
+ok "pick_seat skips the empty-run seat and re-routes to $next2_np/$next2_nm"
+
+ok "empty-run (tools=0 + no final text) fails loudly, benches 15 min, re-routes to the next seat"
