@@ -7,6 +7,16 @@ Description=Pi fleet issue worker %i
 OnFailure=pi-issue-failed@%i.service
 StartLimitIntervalSec=1h
 StartLimitBurst=3
+# fleet-ops#1451: systemd opens StandardInput=file BEFORE ExecStartPre runs,
+# so a missing .in packet (archived by the reaper while the claim branch
+# survived) makes the unit fail 208/STDIN — which trips OnFailure and
+# unit-escalation on every restart-ladder step and every re-dispatch.
+# ConditionPathExists is checked BEFORE stdin setup: a missing .in makes the
+# start a clean SKIP (no failure, no OnFailure, no escalation). The dispatch
+# path (pi-issue-start, fleet-heartbeat-red-pr-repair) regenerates the .in
+# before starting, so a skip here means the dispatcher raced a not-yet-
+# regenerated packet and the next tick retries cleanly.
+ConditionPathExists=/home/nish/.local/state/pi-issues/%i.in
 
 [Service]
 # Per-worker memory caps, restored from the pre-2026-08-23 lane-manager
