@@ -35,12 +35,29 @@
 #       "— failed command walked past, never flagged", and the body
 #       carries `signal: failed-command-flagged/<slug>`
 #       → observe-to-close  (detector observe-to-close, no work left)
+#   title starts with "fix(decisions-ledger):" and ends with
+#       "— decided question was re-asked", and the body carries
+#       `signal: decisions-ledger/<slug>`
+#       → observe-to-close  (detector observe-to-close, no work left)
 #   gap-audit topic label already present
 #       → agent-ready  (already judged by the blind-audit panel)
 #   repo is Nishfleet/fleet-ops (control-plane)
 #       → agent-ready  (builder gate: CI + conference + auto-revert)
 #   otherwise (product repos)
 #       → scout-candidate  (fleet-ops#457: admission, not blank approval)
+#
+# Class-lock reclassification (fleet-ops#1083): a `fix(failed-command):` or
+# `fix(decisions-ledger):` issue whose class-lock PR (the `claim/issue-<N>`
+# branch, merged with `Relates to #<N>` not `Closes #<N>`) has already
+# merged is reclassified to `observe-to-close` regardless of its current
+# lifecycle label. The release paths (tier1 §3, pi-issue-failed-reap,
+# undersaturation label-hygiene) flip it back to `agent-ready` after the
+# worker hits StartLimitBurst, so intake re-claims it every tick until the
+# 24h observe-to-close window expires. Parking it under observe-to-close
+# makes intake blind to it (intake only lists `-l agent-ready`) while the
+# detector's own observe-to-close still closes it on session age-out. The
+# merged-PR probe is `gh pr list --head claim/issue-<N> --state merged`,
+# which survives branch deletion (PRs keep their head ref).
 #
 # Environment (tests override all of these):
 #   LIFECYCLE_SWEEP_REPOS       newline-separated owner/name list
@@ -83,6 +100,18 @@ classify() {
         && [[ "$title" == *" — failed command walked past, never flagged" ]]; then
         if [ -z "$body" ] \
             || printf '%s' "$body" | grep -qE 'signal: failed-command-flagged/[a-z0-9-]+'; then
+            printf '%s\n' "observe-to-close"
+            return 0
+        fi
+    fi
+    # fleet-ops#1083: decisions-ledger observe-to-close issues are filed by
+    # bin/fleet-decisions-ledger (fleet-ops#1138); same shape as the
+    # failed-command observe-to-close class. Match the title template and
+    # the body signal marker.
+    if [[ "$title" == "fix(decisions-ledger):"* ]] \
+        && [[ "$title" == *" — decided question was re-asked" ]]; then
+        if [ -z "$body" ] \
+            || printf '%s' "$body" | grep -qE 'signal: decisions-ledger/[a-z0-9-]+'; then
             printf '%s\n' "observe-to-close"
             return 0
         fi
@@ -182,6 +211,34 @@ issue_has_lifecycle() {
     return 1
 }
 
+# fleet-ops#1083: a class-lock issue is one auto-filed by
+# bin/fleet-failed-command-flagged or bin/fleet-decisions-ledger. Its
+# class-lock PR uses `Relates to #<N>` (not `Closes #<N>`) on branch
+# claim/issue-<N>, so merging it does NOT close the issue. The detector's
+# own observe-to-close closes it later on session age-out. Until then the
+# release paths keep flipping it back to agent-ready and intake re-claims
+# it. This predicate names the title prefixes that need the merged-PR
+# reclassification below.
+is_class_lock_title() {
+    local title="$1"
+    [[ "$title" == "fix(failed-command):"* ]] && return 0
+    [[ "$title" == "fix(decisions-ledger):"* ]] && return 0
+    return 1
+}
+
+# Has the class-lock PR for issue <num> already merged? gh pr list keeps the
+# head ref on the PR record after branch deletion, so this works even once
+# the release paths have deleted claim/issue-<num>. Returns 0 (merged) / 1
+# (not merged or probe failed — fail-open to the existing label).
+class_lock_pr_merged() {
+    local repo="$1" num="$2"
+    local merged_json
+    merged_json=$(gh pr list -R "$repo" --head "claim/issue-${num}" \
+        --state merged --json number 2>/dev/null) || return 1
+    [ -n "$merged_json" ] || return 1
+    printf '%s' "$merged_json" | jq -e 'length > 0' >/dev/null 2>&1
+}
+
 mkdir -p "$LOCKDIR"
 exec 9>"$LOCKDIR/sweep.lock"
 if ! flock -n 9; then
@@ -209,6 +266,7 @@ NOW_ISO=$(now_iso)
 relabeled=0
 skipped=0
 failed=0
+reclassified=0
 drill_repo=""
 drill_num=""
 
@@ -260,6 +318,37 @@ apply_label() {
     ensure_label "$repo" "$label"
     if ! gh issue edit "$num" -R "$repo" --add-label "$label" >/dev/null; then
         log "  $repo#$num: add-label $label FAILED — retry next tick"
+        return 1
+    fi
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    return 0
+}
+
+# fleet-ops#1083: reclassify a class-lock issue whose class-lock PR merged
+# to observe-to-close. Unlike apply_label (add-only, for unlabeled issues),
+# this removes the intake-visible lifecycle label(s) first so intake stops
+# listing the issue, then adds observe-to-close. Non-lifecycle labels
+# (gap-audit, escalate-senior, etc.) are left in place.
+reclassify_to_observe_close() {
+    local repo="$1" num="$2" labels_json="$3"
+    local remove_args=() name
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        case "$name" in
+            agent-ready|agent-in-progress|agent-blocked)
+                remove_args+=(--remove-label "$name")
+                ;;
+        esac
+    done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
+    local body
+    body="lifecycle-label: observe-to-close by fleet-heartbeat at ${NOW_ISO} (class-lock PR merged; fleet-ops#1083). Intake will not claim this; the detector's observe-to-close still closes it on session age-out."
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: reclassify → observe-to-close (drop: ${remove_args[*]:-none})"
+        return 0
+    fi
+    ensure_label "$repo" "observe-to-close"
+    if ! gh issue edit "$num" -R "$repo" "${remove_args[@]}" --add-label observe-to-close >/dev/null 2>&1; then
+        log "  $repo#$num: reclassify to observe-to-close FAILED — retry next tick"
         return 1
     fi
     gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
@@ -343,11 +432,44 @@ while IFS= read -r repo; do
             failed=$((failed + 1))
         fi
     done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#1083: class-lock reclassification pass. A class-lock issue
+    # (fix(failed-command): / fix(decisions-ledger):) whose class-lock PR
+    # has merged is parked under observe-to-close so intake stops
+    # re-claiming it. This runs on issues that ALREADY have a lifecycle
+    # label (the unlabeled pass above skipped them) — the release paths
+    # flip them to agent-ready after StartLimitBurst, so they re-enter the
+    # intake queue every tick. Only agent-ready / agent-in-progress /
+    # agent-blocked are candidates; an issue already under observe-to-close
+    # is left alone (idempotent). The merged-PR probe fail-opens: a gh blip
+    # leaves the label untouched and the next tick retries.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        is_class_lock_title "$title" || continue
+        # Only reclassify the intake-visible / hold labels. observe-to-close
+        # and nish-reserved/noise-class/scout-candidate/drill:* are not the
+        # loop this issue owns.
+        case "$(printf '%s' "$labels_json" | jq -r '.[].name // empty' | paste -sd, -)" in
+            *agent-ready*|*agent-in-progress*|*agent-blocked*) ;;
+            *) continue ;;
+        esac
+        if class_lock_pr_merged "$repo" "$num"; then
+            log "  $repo#$num: class-lock PR merged → observe-to-close ($title)"
+            if reclassify_to_observe_close "$repo" "$num" "$labels_json"; then
+                reclassified=$((reclassified + 1))
+            else
+                failed=$((failed + 1))
+            fi
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
-log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed"
-printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s\n' \
-    "$relabeled" "$skipped" "$failed"
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s\n' \
+    "$relabeled" "$skipped" "$failed" "$reclassified"
 
 if [ "$DRILL" = "1" ]; then
     if [ "$DRY" = "1" ]; then

@@ -65,7 +65,15 @@ or `AUTO-REVERT HALT` get `noise-class`; titles containing `FLAG-for-Nish`
 get `nish-reserved`. Failed-command observe-to-close issues (title prefix
 `fix(failed-command):` + suffix `— failed command walked past, never flagged`
 with body `signal: failed-command-flagged/<slug>`) get `observe-to-close` so
-intake does not claim them while the detector waits to close. Do not redo that sweep.
+intake does not claim them while the detector waits to close. Decisions-ledger
+observe-to-close issues (title prefix `fix(decisions-ledger):` + suffix
+`— decided question was re-asked` with body `signal: decisions-ledger/<slug>`)
+get `observe-to-close` for the same reason (fleet-ops#1083). The sweep also
+reclassifies any class-lock issue (`fix(failed-command):` / `fix(decisions-ledger):`)
+whose class-lock PR on `claim/issue-<N>` has already merged back to
+`observe-to-close`, regardless of its current label — the release paths flip
+it to `agent-ready` after StartLimitBurst and intake re-claims it every tick
+until the 24h observe-to-close window expires (fleet-ops#1083). Do not redo that sweep.
 
 ---
 
