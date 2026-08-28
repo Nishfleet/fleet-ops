@@ -105,12 +105,16 @@ grep -q 'never `nohup`' "$repo_root/prompts/heartbeat.md" \
 ok "in-repo README and heartbeat name pi-systemd-run"
 
 # Live copies agents actually read. GitHub runners do not have these files
-# (HOME is /home/runner). On the VPS all four exist and this is the run.
+# (HOME is /home/runner). On the VPS all five exist and this is the run.
+# fleet-ops#256: ~/.pi/agent/AGENTS.md is the always-on context Pi loads
+# before prompts; #54's home/vault/codex update missed it, leaving nohup as
+# the path of least resistance there. It must name pi-systemd-run too.
 live_docs=(
     /home/nish/AGENTS.md
     /home/nish/.claude/CLAUDE.md
     /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md
     /home/nish/.codex/AGENTS.md
+    /home/nish/.pi/agent/AGENTS.md
 )
 live_checked=0
 for f in "${live_docs[@]}"; do
@@ -121,7 +125,7 @@ for f in "${live_docs[@]}"; do
 done
 expected="${#live_docs[@]}"
 if [[ "$live_checked" -eq "$expected" ]]; then
-    ok "live routing docs name pi-systemd-run ($live_checked files, including ~/.codex/AGENTS.md)"
+    ok "live routing docs name pi-systemd-run ($live_checked files, including ~/.pi/agent/AGENTS.md)"
 elif [[ "$live_checked" -eq 0 ]]; then
     echo "SKIP: live routing docs not present (CI runner)"
 else
