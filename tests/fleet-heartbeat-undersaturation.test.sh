@@ -283,6 +283,9 @@ export PI_PACKET_STATE="$seat_state"
 export CALLS="$calls"
 export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
+# fleet-ops#1558: pin the admit floor so scenarios do not read live
+# MemAvailable / seat-lib. Override per-scenario when testing the floor.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
 # Stale-label reap scenarios: the actual issue numbers labelled agent-in-progress
 # (one per line), and the subset of those that have an open claim/issue-<N> PR.
 # WORK_READY_NUMBERS mirrors the ready set so a flip (agent-in-progress ->
@@ -567,4 +570,57 @@ fi
 ! grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario7: must not repair on odd-named live worker"
 ok "scenario7: odd-named pi --print worker suppresses FleetUndersaturated (fleet-ops#1155)"
 
+# ============================================================================
+# Scenario 8 (fleet-ops#1558): below admit floor with supply.
+# ready >= admit AND 0 < running < admit -> REPAIR on first tick (not a full
+# wedge). Pins "25-when-supply-exists" without paging when MemAvailable drops.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '8\n' >"$scratch/work_ready"          # ready >= admit
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\n' >"$scratch/running_units"  # running=1 < 5
+: >"$scratch/failed_units"
+printf 'pi-issue@demo-1.service\n' >"$scratch/live_seat_units"
+printf '{"unit":"pi-issue-demo-1","provider":"devin","model":"glm-5-2"}' \
+    >"$seat_state/active-seats/pi-issue-demo-1.json"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario8: below-admit first tick must exit 0, got $env_rc ($env_out)"
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario8: triage missing UNDERSAT-REPAIR"
+grep -q 'below-admit-floor' <<<"$env_out" \
+    || fail "scenario8: stderr must name reason=below-admit-floor: $env_out"
+grep -qx 'start pi-intake@demo.service' "$calls" \
+    || fail "scenario8: intake restart not attempted ($(cat "$calls"))"
+[[ -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario8: marker must be set after below-admit repair"
+ok "scenario8: ready>=admit and running<admit -> repair (fleet-ops#1558)"
+
+# ============================================================================
+# Scenario 9 (fleet-ops#1558): running already at the admit floor is healthy
+# even when ready >> admit. Self-throttled / at-ceiling is not a fault.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=2
+printf '30\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\npi-issue@demo-2.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario9: at-admit tick must exit 0, got $env_rc ($env_out)"
+if grep -qE '^(reset-failed|start) ' "$calls"; then
+    fail "scenario9: at-admit must not repair, but calls=($(cat "$calls"))"
+fi
+! grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario9: must not UNDERSAT-REPAIR when running>=admit"
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" || fail "scenario9: must not fail-loud when running>=admit"
+ok "scenario9: running>=admit with ready>>admit is healthy (fleet-ops#1558)"
+
+# Restore the default admit pin for any later scenarios.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
+
 ok "undersaturation: stale agent-in-progress label is hygiene, not a wedge (auditor-finding-C)"
+ok "undersaturation: admit-floor below-target is a fault (fleet-ops#1558)"

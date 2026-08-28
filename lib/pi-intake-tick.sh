@@ -348,6 +348,31 @@ for i in "${!numbers[@]}"; do
         continue
     fi
 
+    # fleet-ops#1558: per-repo MemoryMax/MemoryHigh via per-instance drop-in
+    # before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this overrides
+    # for known repos (fleet-ops light 1536M/1G, 0509 browser 3G/2G). Missing
+    # table row = keep template. daemon-reload so the fresh drop-in is seen
+    # on the subsequent start (oneshot units are not lingering-loaded).
+    mem_row=$(worker_memory_for_repo "$REPO" 2>/dev/null || true)
+    if [[ -n "$mem_row" ]]; then
+        IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
+        drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
+        mkdir -p "$drop_dir"
+        drop_tmp="$drop_dir/memory.conf.tmp.$$"
+        {
+            printf '# fleet-ops#1558: per-repo memory cap (written by intake)\n'
+            printf '[Service]\n'
+            [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
+            [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+        } > "$drop_tmp"
+        if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
+            mv -f "$drop_tmp" "$drop_dir/memory.conf"
+            systemctl --user daemon-reload 2>/dev/null || true
+        else
+            rm -f "$drop_tmp"
+        fi
+    fi
+
     start_status=0
     start_out=$(systemctl --user start --no-block "$unit" 2>&1) || start_status=$?
     if (( start_status != 0 )); then

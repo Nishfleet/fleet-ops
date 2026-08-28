@@ -222,8 +222,15 @@
     {
       "id": "sr-box-75-80",
       "source": "global-standing-rules.md: The box runs at 75-80% capacity minimum (Nish, 2026-08-20)",
-      "mechanism": "Heartbeat undersaturation watchdog + low-water-mark fail loud when ready work sits next to idle seats",
-      "proof": "bin/fleet-heartbeat-undersaturation; bin/fleet-heartbeat-low-water-mark; tests/fleet-heartbeat-undersaturation.test.sh",
+      "mechanism": "Heartbeat undersaturation watchdog (full wedge + below-admit-floor) + low-water-mark fail loud when ready work sits next to idle seats",
+      "proof": "bin/fleet-heartbeat-undersaturation; bin/fleet-heartbeat-low-water-mark; tests/fleet-heartbeat-undersaturation.test.sh; config/seat-caps.json target_concurrent",
+      "status": "enforced"
+    },
+    {
+      "id": "led-capacity-25-concurrent",
+      "source": "decisions-ledger.md: 2026-08-28 | Capacity mandate: 25 concurrent workers (Nish standing order; fleet-ops#1558)",
+      "mechanism": "Undersaturation floor = min(target_concurrent=25, ram_governor_cap). ready>=admit AND running<admit is a FAULT (repair then fail-loud). Per-repo MemoryMax drop-ins written by intake from seat-caps.json worker_memory (fleet-ops 1536M/1G; 0509 3G/2G). ram_gb_per_worker=0.5 under those caps.",
+      "proof": "config/seat-caps.json target_concurrent+worker_memory; lib/seat-lib.sh admit_ceiling+worker_memory_for_repo; lib/pi-intake-tick.sh memory.conf drop-in; bin/fleet-heartbeat-undersaturation; tests/fleet-heartbeat-undersaturation.test.sh scenarios 8-9; tests/worker-memory-dropin.test.sh",
       "status": "enforced"
     },
     {
