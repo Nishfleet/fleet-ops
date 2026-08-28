@@ -51,6 +51,11 @@ jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-
   || fail "led-2026-08-27-worker-lane-order must be status=enforced (fleet-ops#1178)"
 ok "matrix row led-2026-08-27-worker-lane-order is enforced"
 
+jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced")' \
+  "$matrix" >/dev/null \
+  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be status=enforced (fleet-ops#1179)"
+ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is enforced"
+
 jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
   "$matrix" >/dev/null \
   || fail "sr-verify-harness must be status=enforced (fleet-ops#524)"
@@ -174,6 +179,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
     '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report worker lane order as enforced covered_rows (fleet-ops#1178): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report cursor \$400 sequencing as enforced covered_rows (fleet-ops#1179): $(jq -c '.covered_rows' <<<"$live")"
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
     '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report GEO/AEO parked tactics as enforced covered_rows (fleet-ops#1245): $(jq -c '.covered_rows' <<<"$live")"
@@ -205,6 +212,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
   ok "live join: worker lane order source is enforced (observe-to-close for #1178)"
+  ok "live join: cursor \$400 sequencing source is enforced (observe-to-close for #1179)"
   ok "live join: GEO/AEO parked tactics source is enforced (observe-to-close for #1245)"
   ok "live join: Quality ratchet source is enforced (observe-to-close for #1222)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"
@@ -931,6 +939,8 @@ ok "rule-enforcement: paid-flash canary drill"
 
 # fleet-ops#1176: token economy rebalance seat-cap drill. Nested host so
 # the worker token does not need to edit .github/workflows/**.
+# fleet-ops#1179: the same drill now asserts cursor $400 sequencing
+# (opens_after_included_exhausted, overage model, daily target).
 bash "$here/fleet-token-economy.test.sh" || fail "token economy canary drill failed"
 ok "rule-enforcement: token economy canary drill"
 

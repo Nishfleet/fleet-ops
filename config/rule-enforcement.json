@@ -732,10 +732,9 @@
     {
       "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)",
-      "mechanism": "Cursor $400 extra-usage opens only after included usage is exhausted; on overage use cursor-grok-4.6-high for keystone/senior-review, ~$16/day target, meter-checked. Mechanism issue open.",
-      "proof": "fleet-ops#1179",
-      "status": "queued(#1179)",
-      "queued_since": "2026-08-27"
+      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus lib/seat-lib.sh pick_seat enforce the 2026-08-27 Cursor $400 sequencing: `cursor_overage.opens_after_included_exhausted=true` keeps the $400 closed until the `included_exhausted` flag flips; `overage_model` is pinned to `cursor-grok-4.6-high`; `daily_spend_target_usd` is 16; `keystone_only_providers` and `providers.cursor.cap=1` keep cursor on keystone/senior-review only; `pick_seat` rejects any non-overage cursor model when `included_exhausted` is true. `bin/fleet-volume-lane-order-canary` keeps cursor out of the volume prefix. The `included_exhausted` flip and $16/day spending ceiling are Nish dashboard actions; the runtime surface is mechanically gated.",
+      "proof": "config/seat-caps.json cursor_overage + keystone_only_providers + providers.cursor.cap; lib/seat-lib.sh _provider_is_keystone_only + pick_seat cursor_overage logic; tests/fleet-token-economy.test.sh; tests/token-economy-routing.test.sh; bin/fleet-volume-lane-order-canary; bin/fleet-credential-expiry-canary (seat liveness)",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-quality-ratchet-nish",
