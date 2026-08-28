@@ -28,14 +28,40 @@
 #   --working-directory D  Default: /home/nish. MUST be the git worktree to
 #                          salvage on a non-clean stop (fleet-ops#1204).
 #   --stdin FILE           StandardInput=file: (absolute path). Packet on stdin.
+#   --deadline MIN         Dispatch deadline in minutes (default 90). The
+#                          dispatch canary re-dispatches entries still open
+#                          past this deadline whose unit is dead/missing.
+#   --provider NAME        Provider of the dispatched seat (recorded in the
+#                          dispatch ledger; used for re-dispatch seat rotation).
+#                          If omitted, parsed from the COMMAND when it is
+#                          `pi --print --provider P --model M`.
+#   --model NAME           Model of the dispatched seat (same as --provider).
+#   --chain-id ID          Chain id for re-dispatch continuity (default: new).
+#                          The dispatch canary passes the orphaned entry's
+#                          chain_id so the chain is tracked across hops.
+#   --hop N                Chain hop number (default 0). The original dispatch
+#                          is hop 0; each re-dispatch increments it.
 #
 # Salvage (fleet-ops#1204): every real dispatch sets ExecStopPost to
 # pi-salvage-worktree and TimeoutStopSec=180 so a SIGTERM/SIGKILL/nonzero
 # exit banks a dirty worktree onto wip/<unit>-<ts>. --working-directory is
 # the worktree contract. PI_SALVAGE_DISABLE=1 omits the hook (tests).
 #
+# Dispatch ledger (fleet-ops#1009): every real dispatch appends one JSONL
+# entry to $FLEET_DISPATCH_LEDGER (default
+# $AGENT_STATE/dispatch-ledger.jsonl). The entry records {id, chain_id, hop,
+# ts, unit, packet_path, provider, model, deadline_min, deadline_ts, status}.
+# When --stdin is given, the packet is COPIED into
+# $FLEET_DISPATCH_PACKET_DIR (default $AGENT_STATE/dispatch-packets) so the
+# re-dispatch can re-issue the SAME packet file after the originating session
+# scratchpad is gone. Append-only, no locking: a closing line (same id, new
+# status) is appended by fleet-dispatch-canary; the last line per id wins.
+#
 # Environment overrides (tests):
-#   SYSTEMD_RUN, SYSTEMCTL, PI_SALVAGE_BIN, PI_SALVAGE_DISABLE
+#   SYSTEMD_RUN, SYSTEMCTL, PI_SALVAGE_BIN, PI_SALVAGE_DISABLE, AGENT_STATE,
+#   FLEET_DISPATCH_LEDGER, FLEET_DISPATCH_PACKET_DIR,
+#   FLEET_DISPATCH_LEDGER_NO_WRITE (1 = skip the append, for tests that
+#   only want the systemd-run shape)
 #
 # Exit:
 #   0  started, already-running no-op, or dry-run
@@ -49,7 +75,7 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 usage() {
     cat <<'EOF' >&2
-usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] -- COMMAND [ARGS...]
+usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] [--deadline MIN] [--provider NAME] [--model NAME] [--chain-id ID] [--hop N] -- COMMAND [ARGS...]
 
 Run COMMAND as a user systemd unit so it outlives this session.
     Never use nohup or trailing & — those die with the launching shell.
@@ -61,6 +87,11 @@ dry_run=0
 unit=""
 workdir="${HOME:-/home/nish}"
 stdin_file=""
+deadline_min="90"
+provider=""
+model=""
+chain_id=""
+hop="0"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -80,6 +111,31 @@ while [[ $# -gt 0 ]]; do
             stdin_file="$2"
             shift 2
             ;;
+        --deadline)
+            [[ $# -ge 2 ]] || usage
+            deadline_min="$2"
+            shift 2
+            ;;
+        --provider)
+            [[ $# -ge 2 ]] || usage
+            provider="$2"
+            shift 2
+            ;;
+        --model)
+            [[ $# -ge 2 ]] || usage
+            model="$2"
+            shift 2
+            ;;
+        --chain-id)
+            [[ $# -ge 2 ]] || usage
+            chain_id="$2"
+            shift 2
+            ;;
+        --hop)
+            [[ $# -ge 2 ]] || usage
+            hop="$2"
+            shift 2
+            ;;
         --) shift; break ;;
         -h|--help) usage ;;
         *)
@@ -91,6 +147,13 @@ done
 
 [[ $# -ge 1 ]] || usage
 
+# deadline_min / hop are ledger fields; refuse junk so python int() never
+# crashes after systemd-run has already queued the unit (fleet-ops#1009).
+[[ "$deadline_min" =~ ^[1-9][0-9]*$ ]] \
+    || { echo "pi-systemd-run: --deadline must be a positive integer (minutes), got: $deadline_min" >&2; exit 2; }
+[[ "$hop" =~ ^[0-9]+$ ]] \
+    || { echo "pi-systemd-run: --hop must be a non-negative integer, got: $hop" >&2; exit 2; }
+
 # Refuse the failure mode this wrapper exists to replace.
 for arg in "$@"; do
     if [[ "$arg" == "nohup" ]]; then
@@ -101,6 +164,22 @@ done
 if [[ "${*}" == *" &"* || "${*}" == *"& "* || "${*}" == *" & " ]]; then
     echo "pi-systemd-run: refuse background '&' — systemd owns the process" >&2
     exit 2
+fi
+
+# Parse provider/model from the COMMAND when not given explicitly, so the
+# dispatch ledger records the seat even when callers use the bare form
+# `pi-systemd-run --unit X --stdin p.md -- pi --print --provider P --model M`.
+# Only the first --provider/--model pair in the command is taken.
+if [[ -z "$provider" || -z "$model" ]]; then
+    prev=""
+    for arg in "$@"; do
+        if [[ "$prev" == "--provider" && -z "$provider" ]]; then
+            provider="$arg"
+        elif [[ "$prev" == "--model" && -z "$model" ]]; then
+            model="$arg"
+        fi
+        prev="$arg"
+    done
 fi
 
 if [[ -z "$unit" ]]; then
@@ -171,6 +250,22 @@ if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
     cmd+=(--property="ExecStopPost=${salvage_bin}")
     cmd+=(--property=TimeoutStopSec=180)
 fi
+packet_path=""
+dispatch_id=""
+# Copy the packet into agent-state BEFORE systemd-run so (a) the unit
+# itself reads the durable copy (the session scratchpad can vanish while
+# the job is still running) and (b) a failed copy never leaves a running
+# unit with no re-dispatchable file (fleet-ops#1009).
+if [[ "$dry_run" != "1" && "${FLEET_DISPATCH_LEDGER_NO_WRITE:-0}" != "1" && -n "$stdin_file" ]]; then
+    AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+    PKT_DIR="${FLEET_DISPATCH_PACKET_DIR:-$AS/dispatch-packets}"
+    mkdir -p "$PKT_DIR"
+    dispatch_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+    pkt_copy="$PKT_DIR/${unit}-$(date -u +%Y%m%dT%H%M%SZ)-${dispatch_id}.md"
+    cp -- "$stdin_file" "$pkt_copy"
+    packet_path="$(readlink -f "$pkt_copy")"
+    stdin_file="$packet_path"
+fi
 if [[ -n "$stdin_file" ]]; then
     cmd+=(--property="StandardInput=file:${stdin_file}")
 fi
@@ -185,4 +280,58 @@ fi
 echo "pi-systemd-run: starting ${unit}.service (survives this session)"
 echo "pi-systemd-run: watch: systemctl --user status ${unit}.service"
 echo "pi-systemd-run: logs:  journalctl --user -u ${unit}.service -f"
-exec "${cmd[@]}"
+# Do NOT exec: --no-block returns immediately, and the dispatch ledger
+# append (fleet-ops#1009) must run after the unit is queued so the entry
+# reflects a real dispatch. The shell exits right after.
+set +e
+"${cmd[@]}"
+start_rc=$?
+set -e
+if [[ "$start_rc" -ne 0 ]]; then
+    echo "pi-systemd-run: systemd-run failed (rc=$start_rc)" >&2
+    exit 1
+fi
+
+# --- Dispatch ledger (fleet-ops#1009) ---------------------------------------
+# Append one JSONL entry so the dispatch canary can track this dispatch as
+# a chain: close it on completion (journal verdict) or re-dispatch the SAME
+# packet file when the unit is orphaned past deadline. Append-only, no
+# locking: a closing line (same id, new status) is appended by
+# fleet-dispatch-canary; the last line per id wins.
+if [[ "${FLEET_DISPATCH_LEDGER_NO_WRITE:-0}" != "1" ]]; then
+    AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+    LEDGER="${FLEET_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
+    PKT_DIR="${FLEET_DISPATCH_PACKET_DIR:-$AS/dispatch-packets}"
+    dispatch_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -z "${dispatch_id:-}" ]]; then
+        dispatch_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+    fi
+    if [[ -z "$chain_id" ]]; then
+        chain_id="$dispatch_id"
+    fi
+    # deadline_ts = dispatch ts + deadline_min minutes.
+    deadline_ts="$(date -u -d "@$(( $(date -u -d "$dispatch_ts" +%s) + deadline_min * 60 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+    mkdir -p "$(dirname "$LEDGER")"
+    python3 -c '
+import json, sys
+entry = {
+    "id": sys.argv[1],
+    "chain_id": sys.argv[2],
+    "hop": int(sys.argv[3]),
+    "ts": sys.argv[4],
+    "unit": sys.argv[5],
+    "packet_path": sys.argv[6],
+    "provider": sys.argv[7],
+    "model": sys.argv[8],
+    "deadline_min": int(sys.argv[9]),
+    "deadline_ts": sys.argv[10],
+    "status": "open",
+    "retries": int(sys.argv[3]),
+}
+sys.stdout.write(json.dumps(entry, separators=(",", ":")) + "\n")
+' "$dispatch_id" "$chain_id" "$hop" "$dispatch_ts" "$unit" "${packet_path:-}" \
+      "$provider" "$model" "$deadline_min" "$deadline_ts" >> "$LEDGER"
+    echo "pi-systemd-run: ledger entry id=$dispatch_id chain=$chain_id hop=$hop unit=$unit"
+fi
+
+exit 0
