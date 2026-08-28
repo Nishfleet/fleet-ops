@@ -537,3 +537,10 @@ config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.js
 # this file changes, because --storage.tsdb.retention.time is a start-time
 # flag.
 config/etc-default-prometheus /etc/default/prometheus
+# fleet-ops#1135: bare-metal fleet rebuild manifest, runbook, script and drill.
+# The manifest is the versioned inventory; the script and drill make it provable.
+bin/fleet-bare-metal-rebuild /home/nish/.local/bin/fleet-bare-metal-rebuild
+bin/fleet-bare-metal-rebuild-drill /home/nish/.local/bin/fleet-bare-metal-rebuild-drill
+config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-rebuild-manifest.json
+systemd/fleet-bare-metal-rebuild-drill.service /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.service
+systemd/fleet-bare-metal-rebuild-drill.timer /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.timer

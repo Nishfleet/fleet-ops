@@ -1,0 +1,24 @@
+[Unit]
+Description=Fleet bare-metal rebuild drill — prove the rebuild manifest is complete (fleet-ops#1135)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# a bare-metal rebuild runbook that is never exercised is a false promise.
+# The live box changes over time; the manifest can drift by simply not listing
+# a new file. A weekly container proof on a fresh Ubuntu image closes that gap
+# without relying on the existing live state. The drill is bounded by a 10m
+# timeout because the container proof pulls and installs packages.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-bare-metal-rebuild-drill.service).
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-bare-metal-rebuild-drill'
+# Container proof can pull an image and apt-get install; 10 minutes is enough
+# for a weekly proof and short enough to fail loud if the network is wedged.
+TimeoutStartSec=10min
+# Never restart: the timer is the retry. A failed drill escalates.
+Restart=no

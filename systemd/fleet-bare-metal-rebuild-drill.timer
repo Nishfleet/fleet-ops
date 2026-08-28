@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet bare-metal rebuild drill — weekly container proof (fleet-ops#1135)
+# Named reason: the manifest completeness invariant is not an event signal.
+# A new unit, bin or config that is not in the MANIFEST is a silent regression.
+# Weekly is frequent enough to catch drift before it is needed, cheap enough
+# because the container only runs --manifest-check.
+
+[Timer]
+OnCalendar=Sun *-*-* 04:17:00
+RandomizedDelaySec=15min
+Persistent=true
+AccuracySec=30min
+
+[Install]
+WantedBy=timers.target

@@ -43,6 +43,7 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-restore",
     "fleet-resilience",
     "resilience-drill",
+    "fleet-bare-metal-rebuild",
     "fleet-console",
     "fleet-heartbeat-failed-notify",
     "fleet-deploy-check",
