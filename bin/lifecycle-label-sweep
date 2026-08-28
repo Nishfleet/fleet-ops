@@ -21,6 +21,7 @@
 #   scout-candidate
 #   nish-reserved
 #   noise-class
+#   observe-to-close
 #   drill:*   (any label whose name starts with drill:)
 #
 # Classification of issues that currently have none of those:
@@ -30,6 +31,10 @@
 #       → nish-reserved
 #   title starts with "drill:" (any case)
 #       → drill:lifecycle
+#   title starts with "fix(failed-command):" and ends with
+#       "— failed command walked past, never flagged", and the body
+#       carries `signal: failed-command-flagged/<slug>`
+#       → observe-to-close  (detector observe-to-close, no work left)
 #   gap-audit topic label already present
 #       → agent-ready  (already judged by the blind-audit panel)
 #   repo is Nishfleet/fleet-ops (control-plane)
@@ -65,10 +70,22 @@ ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/
 classify() {
     local title="$1"
     local repo="${2:-}"
+    local body="${3:-}"
     local lower short
     if [[ "$title" == "AUTO-REVERT SKIP"* || "$title" == "AUTO-REVERT HALT"* ]]; then
         printf '%s\n' "noise-class"
         return 0
+    fi
+    # fleet-ops#1401: failed-command observe-to-close issues are filed by
+    # bin/fleet-failed-command-flagged; no implementation work left. Match
+    # the exact title template and the body signal marker.
+    if [[ "$title" == "fix(failed-command):"* ]] \
+        && [[ "$title" == *" — failed command walked past, never flagged" ]]; then
+        if [ -z "$body" ] \
+            || printf '%s' "$body" | grep -qE 'signal: failed-command-flagged/[a-z0-9-]+'; then
+            printf '%s\n' "observe-to-close"
+            return 0
+        fi
     fi
     lower=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')
     if [[ "$lower" == *"flag-for-nish"* ]]; then
@@ -124,6 +141,7 @@ label_color() {
     case "$1" in
         nish-reserved)   printf '%s' "5319E7" ;;
         noise-class)     printf '%s' "CFD3D7" ;;
+        observe-to-close) printf '%s' "BFD4F2" ;;
         drill:lifecycle) printf '%s' "EDEDED" ;;
         agent-ready)     printf '%s' "0E8A16" ;;
         scout-candidate) printf '%s' "FBCA04" ;;
@@ -135,6 +153,7 @@ label_desc() {
     case "$1" in
         nish-reserved)   printf '%s' "Reserved for Nish; agents must not claim" ;;
         noise-class)     printf '%s' "Not work (halt notices, noise); not agent-ready" ;;
+        observe-to-close) printf '%s' "Waiting for detector observe-to-close; do not claim (fleet-ops#1401)" ;;
         drill:lifecycle) printf '%s' "Lifecycle-label drill fixture (fleet-ops#376)" ;;
         agent-ready)     printf '%s' "Auto: ready for a worker to claim" ;;
         scout-candidate) printf '%s' "Queued for senior admission; not yet agent-ready" ;;
@@ -145,7 +164,7 @@ label_desc() {
 is_lifecycle_label() {
     local name="$1"
     case "$name" in
-        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate) return 0 ;;
+        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate|observe-to-close) return 0 ;;
         drill:*) return 0 ;;
     esac
     return 1
@@ -300,7 +319,7 @@ while IFS= read -r repo; do
         if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
             label="agent-ready"
         else
-            label=$(classify "$title" "$repo")
+            label=$(classify "$title" "$repo" "$issue_body")
         fi
         # fleet-ops#543: first admission to agent-ready needs a spec.
         # gap-audit leftovers already passed the panel; skip the body check.
