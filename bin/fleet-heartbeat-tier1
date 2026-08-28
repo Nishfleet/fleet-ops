@@ -2219,7 +2219,12 @@ fi
 if [ "${exec_review_canary_rc:-0}" -ne 0 ]; then
     exit "$exec_review_canary_rc"
 fi
-if [ "${work_supply_canary_rc:-0}" -ne 0 ]; then
+# work-supply: only propagate when the helper CRASHED (rc >= 2). exit 1
+# means "scout idle / drain trigger not live in go-ham mode" — already
+# loud + auto-filed (file_finding runs before exit 1); landing the unit
+# in --state=failed every tick for it is the trip-loop we are fixing
+# (fleet-ops#1116). rc>=2 = usage/config error (real crash).
+if [ "${work_supply_canary_rc:-0}" -ge 2 ]; then
     exit "$work_supply_canary_rc"
 fi
 if [ "${tailscale_acl_canary_rc:-0}" -ne 0 ]; then
