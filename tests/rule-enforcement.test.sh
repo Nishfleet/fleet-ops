@@ -117,6 +117,11 @@ ok "rule-enforcement: precedence-band canary drill"
 bash "$here/pi-escalation-audit.test.sh" || fail "pi-escalation-audit drill failed"
 ok "rule-enforcement: pi-escalation-audit drill"
 
+# fleet-ops#906: D1 prod migration correction — prompt gate requires the
+# senior process from the final 2026-08-27 process amendment.
+bash "$here/fleet-d1-migration-senior-process.test.sh" || fail "d1 migration senior process drill failed"
+ok "rule-enforcement: d1 migration senior process drill"
+
 # fleet-ops#907: D1 prod migration vacation grant is enforced by the worker
 # prompt D1 schema rule and this CI drill.
 bash "$here/fleet-d1-prod-migration-grant.test.sh" || fail "d1-prod-migration-grant drill failed"
@@ -125,7 +130,7 @@ ok "rule-enforcement: d1-prod-migration-grant drill"
 # fleet-ops#908: D1 prod migration execution rule (process amendment) is
 # enforced by the worker prompt senior process gate and this CI drill.
 bash "$here/fleet-d1-prod-migration-process.test.sh" || fail "d1-prod-migration-process drill failed"
-ok "rule-enforcement: d1-prod-migration-process drill"
+ok "rule-enforcement: d1-prod-migration-process drill" 
 
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
@@ -182,6 +187,9 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report sr-verify-harness as enforced covered_rows (fleet-ops#524): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | work supply" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report work-supply agent-ready as enforced covered_rows (fleet-ops#543): $(jq -c '.covered_rows' <<<"$live")"
+  src_906='decisions-ledger.md: 2026-08-27 | D1 prod migrations — CORRECTION'
+  jq -e --arg src "$src_906" '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report D1 prod migrations correction as enforced covered_rows (fleet-ops#906): $(jq -c '.covered_rows' <<<"$live")" 
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
   ok "live join: prepaid max-util source is enforced (observe-to-close for #531)"
