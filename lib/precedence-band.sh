@@ -110,24 +110,50 @@ precedence_band_has_multiplier() {
     printf '%s\n' "$body" | grep -qE '^band-multiplier:[[:space:]]*[1-9][0-9]*[[:space:]]*$'
 }
 
+# Outage/defect signals that promote an UNPREFIXED title to repair. When a
+# title carries no conventional-commit prefix, its content (title + body) is
+# scanned for these; a hit is repair, anything else is churn. Prefixed titles
+# keep their prefix mapping regardless of body (chore: stays churn even if the
+# body says "broken") — the legit-work guard (fleet-ops#1516) depends on this.
+PRECEDENCE_BAND_REPAIR_SIGNALS='\b(red|fail(s|ed|ing)?|broken|down|absent|stall(s|ed|ing)?|stuck|starv[a-z]*|outages?|regressions?|leak[a-z]*|crash[a-z]*|hang(s|ed|ing)?|timeouts?|deadlock|block(s|ed|ing)?|frozen|exhaust(s|ed|ion)?|dead|wedg(e|es|ed|ing)?|drift(s|ed|ing)?)\b'
+
 # Classify issue quality from title (and optionally body/labels).
 # Prints: upgrade | repair | churn
 # Based on conventional-commit prefix heuristic (fleet-ops#1136):
 #   feat       -> upgrade (new forward capability)
 #   fix, test  -> repair  (fixing / bulletproofing existing behaviour)
 #   chore      -> churn   (no forward value)
-#   everything else -> churn (safe catch-all)
+# Prefixed titles are classified by their type token ALONE — the prefix
+# mapping is authoritative and content-blind (chore: is churn even when the
+# body says "broken"). An UNPREFIXED title is classified on its content:
+# an unambiguous outage/defect signal (see PRECEDENCE_BAND_REPAIR_SIGNALS) in
+# the title or body is repair; chore/refactor/polish/docs/rename/cleanup/tidy
+# and signal-less titles stay churn. Without this, every alert-filed issue
+# (plain-English title, no prefix) fell to churn and starved the #1516 surge
+# valve — the starvation reports and "main is red" alerts skipped themselves.
 precedence_band_classify_quality() {
     local title="${1:-}" body="${2:-}"
-    # Match leading type token: "feat(scope): ...", "fix!: ...", "chore: ..." (case-insensitive)
-    local prefix
-    prefix="$(printf '%s\n' "$title" | sed -E 's/^\s*([A-Za-z]+)(\([^)]*\))?!?\s*:.*/\1/I' | tr '[:upper:]' '[:lower:]')"
-    case "$prefix" in
-        feat)     printf 'upgrade\n' ;;
-        fix|test) printf 'repair\n'  ;;
-        chore)    printf 'churn\n'   ;;
-        *)        printf 'churn\n'   ;;
-    esac
+    # Conventional-commit prefix? "feat(scope): ...", "fix!: ...", "chore: ..."
+    # If not, fall through to content-based classification below.
+    if printf '%s\n' "$title" \
+        | grep -qE '^[[:space:]]*[A-Za-z]+(\([^)]*\))?!?[[:space:]]*:'; then
+        local prefix
+        prefix="$(printf '%s\n' "$title" | sed -E 's/^\s*([A-Za-z]+)(\([^)]*\))?!?\s*:.*/\1/I' | tr '[:upper:]' '[:lower:]')"
+        case "$prefix" in
+            feat)     printf 'upgrade\n' ;;
+            fix|test) printf 'repair\n'  ;;
+            chore)    printf 'churn\n'   ;;
+            *)        printf 'churn\n'   ;;
+        esac
+        return 0
+    fi
+    # No prefix: classify on content (title + body).
+    if printf '%s\n%s\n' "$title" "$body" \
+        | grep -qiE "$PRECEDENCE_BAND_REPAIR_SIGNALS"; then
+        printf 'repair\n'
+    else
+        printf 'churn\n'
+    fi
 }
 
 # Check if an issue qualifies as legit work (not churn-class).
