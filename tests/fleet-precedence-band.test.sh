@@ -70,11 +70,21 @@ base_policy_json() {
 JSON
 }
 
+# Default NOW for run_canary: a fixed pre-cutoff instant. The base policy's
+# cutoff_utc is 2026-08-28T02:30:00Z, so 2026-08-28T01:00:00Z lands in the
+# surge phase. Pinning the default (instead of leaving it empty = live clock)
+# makes the whole drill time-invariant: a scenario that forgets to pass a
+# phase-specific NOW runs in surge phase by construction, never in whatever
+# phase real time happens to be in. This is the mechanical prevention for the
+# fleet-ops#1444 class — #1446 pinned scenarios 7/8 reactively; this default
+# pins every future scenario too. Scenario 18 below proves the default holds.
+DEFAULT_NOW="2026-08-28T01:00:00Z"
+
 run_canary() {
   FLEET_PRECEDENCE_BAND_POLICY="${1:-$scratch/policy.json}" \
   FLEET_PRECEDENCE_UNITS_FILE="${2:-$scratch/units.txt}" \
   FLEET_PRECEDENCE_BAND_PRIOR="${3:-$scratch/missing.prior.json}" \
-  PRECEDENCE_BAND_NOW="${4:-}" \
+  PRECEDENCE_BAND_NOW="${4:-$DEFAULT_NOW}" \
   FLEET_HEARTBEAT_TRIAGE="$triage" \
   "$bin" 2>&1
 }
@@ -409,5 +419,33 @@ set -e
 [[ "$reason" == "allow-band-bootstrap" ]] \
   || fail "scenario17g: expected allow-band-bootstrap, got $reason"
 ok "scenario17g: band bootstrap allows first claim when nothing is live"
+
+# --- 18. run_canary default NOW is pinned (mechanical prevention #1444) -----
+# The #1444 FleetMainRed root cause: run_canary defaulted PRECEDENCE_BAND_NOW
+# to empty (live clock), so a phase-specific scenario that forgot to pin NOW
+# ran in whatever phase real time happened to be in. #1446 pinned scenarios 7/8
+# reactively; the DEFAULT_NOW pin above prevents the class for every future
+# scenario. This static guard catches a revert: if someone restores the empty
+# default, the drill goes time-dependent again and CI breaks once real time
+# crosses cutoff_utc.
+self="$here/fleet-precedence-band.test.sh"
+grep -F 'DEFAULT_NOW="2026-08-28T01:00:00Z"' "$self" >/dev/null \
+  || fail "scenario18: DEFAULT_NOW must be pinned to a pre-cutoff instant (fleet-ops#1444)"
+grep -F 'PRECEDENCE_BAND_NOW="${4:-$DEFAULT_NOW}"' "$self" >/dev/null \
+  || fail "scenario18: run_canary must default PRECEDENCE_BAND_NOW to \$DEFAULT_NOW (fleet-ops#1444)"
+# Dynamic proof: a no-arg run_canary call lands in surge phase (the pinned
+# default), not in whatever phase the live clock is in. Real time at CI run
+# is post-cutoff (band phase), so a reverted empty default would yield
+# phase=band here and fail this assertion.
+base_policy_json | clean_policy
+: >"$scratch/units.txt"
+set +e
+out=$(run_canary)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario18: pinned-default surge must exit 0, got $rc ($out)"
+grep -q 'phase=surge' <<<"$out" \
+  || fail "scenario18: pinned default must yield phase=surge, got ($out)"
+ok "scenario18: run_canary default NOW is pinned (time-invariant drill)"
 
 ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick"
