@@ -167,6 +167,7 @@ packet_repo() {
 _seat_caps_loaded=0
 declare -A SEAT_PROVIDER_CAP=()
 declare -A SEAT_MODEL_CAP=()
+declare -A SEAT_MODEL_CLASS=()
 declare -A SEAT_PROVIDER_CLASS=()
 declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
 # fleet-ops 2026-08-27 #652 hot-patch: 503-overload bench defaults per provider.
@@ -232,6 +233,7 @@ load_quality_routing() {
 load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
+    SEAT_MODEL_CLASS=()
     SEAT_PROVIDER_CLASS=()
     SEAT_PROVIDER_BENCH_DEFAULT=()
     SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT=()
@@ -303,12 +305,26 @@ load_seat_caps() {
     # optional; absent fields emit "" so the guards above skip them.
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    while IFS=$'\t' read -r p m cap; do
+    while IFS=$'\t' read -r p m cap class; do
         [[ -n "$p" && -n "$m" ]] || continue
-        SEAT_MODEL_CAP["$p/$m"]="$cap"
+        # Models map may be a bare number (cap) or an object {cap, class}.
+        # Per-model class is an override for a free lane inside a mixed
+        # provider (e.g. cline has prepaid-pass seats and a free z-ai GLM).
+        if [[ "$cap" =~ ^[0-9]+$ ]]; then
+            SEAT_MODEL_CAP["$p/$m"]="$cap"
+        else
+            # Extract cap from object JSON; fail closed to 0 if missing.
+            local mcap
+            mcap=$(jq -r '.cap // 0' <<<"$cap" 2>/dev/null)
+            [[ "$mcap" =~ ^[0-9]+$ ]] && SEAT_MODEL_CAP["$p/$m"]="$mcap"
+        fi
+        if [[ -n "$class" ]]; then
+            [[ "$class" == "subscription" ]] && class="prepaid-quota"
+            SEAT_MODEL_CLASS["$p/$m"]="$class"
+        fi
     # Same bare-number guard as the providers loop: .value.models on a bare
     # number crashes jq before `// {}` can rescue it, emptying all model caps.
-    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
@@ -388,6 +404,25 @@ class_of() {
     local p="$1" c
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     c="${SEAT_PROVIDER_CLASS[$p]:-free}"
+    [[ "$c" == "subscription" ]] && c="prepaid-quota"
+    echo "$c"
+}
+
+# Class for a specific provider/model. A provider may carry both free and
+# non-free lanes (e.g. cline has cline-pass/ subscription seats and a free
+# z-ai/glm-5.3-flash seat). The model's class is the first available of:
+#   1) an explicit class on the {cap, class} object in the per-model map,
+#   2) the provider class from the cap map.
+# Per-model class overrides allow a free lane inside an otherwise
+# prepaid-quota/metered provider to be bucketed as free, so the free-tier
+# privacy line and order are honoured for that specific lane (fleet-ops#384).
+model_class_of() {
+    local p="$1" m="$2" c
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    c="${SEAT_MODEL_CLASS[$p/$m]:-}"
+    if [[ -z "$c" ]]; then
+        c=$(class_of "$p")
+    fi
     [[ "$c" == "subscription" ]] && c="prepaid-quota"
     echo "$c"
 }
@@ -2110,8 +2145,9 @@ pick_seat() {
             continue
         fi
 
-        class=$(class_of "$p")
-        # Bucket by CLASS from the cap map, not by provider name. prepaid-quota
+        class=$(model_class_of "$p" "$m")
+        # Bucket by per-model CLASS (explicit class on the model row in
+        # seat-caps, falling back to the provider class). prepaid-quota
         # includes the old "subscription" alias (normalized in class_of).
         # Free-tier privacy line (fleet-ops#520): a private target never
         # buckets a free-class seat — free lanes train on prompts. The seat
@@ -2283,8 +2319,9 @@ pick_seat() {
     elif (( ${#volume_seats[@]} > 0 )); then
         chosen="${volume_seats[0]}"
         chosen_p="${chosen%%$'\t'*}"
+        chosen_m="${chosen#*$'\t'}"
         # Prepaid members of the volume set still burn weekly pacing.
-        if [[ "$(class_of "$chosen_p")" == "prepaid-quota" ]]; then
+        if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
             _record_prepaid_pick "$chosen_p"
         fi
     elif (( ${#free_seats[@]} > 0 )); then

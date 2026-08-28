@@ -452,6 +452,12 @@
       "cadence": "monthly",
       "source": "repo"
     },
+    "fleet-truth-staleness-check.timer": {
+      "reason": "Truth staleness checker — weekly cross-check of standing docs vs live state (fleet-ops#1137); user-config drop-in until repo packaging lands",
+      "classification": "scheduled",
+      "cadence": "weekly",
+      "source": "user-config"
+    },
     "vps-maintenance-quiesce.timer": {
       "reason": "Weekly maintenance quiesce (T-15) — stops NEW work only; Sun 03:15 IST before vps-weekly-update",
       "classification": "scheduled",
