@@ -64,8 +64,10 @@ export function shouldReopen(stateReason, labels, linkedPrStates) {
  * @param {string[]} args
  * @returns {any}
  */
-function ghJson(args) {
-  const out = execFileSync("gh", ["api", "--hostname", process.env.GH_HOST || "", ...args].filter((x) => x !== ""), {
+export function ghJson(args) {
+  const ghHost = process.env.GH_HOST || "";
+  const ghArgs = ghHost ? ["api", "--hostname", ghHost, ...args] : ["api", ...args];
+  const out = execFileSync("gh", ghArgs, {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });
