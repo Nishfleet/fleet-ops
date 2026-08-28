@@ -636,6 +636,8 @@ bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completio
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
+# fleet-ops#796 sgscan wrapper — semgrep diff-scan review gate
+bin/sgscan /home/nish/.local/bin/sgscan
 lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.py
 # fleet-ops#796: repo-ize the sgscan semgrep wrapper so worker review gates are
 # version-controlled, and fix --help / unknown-flag crashes.

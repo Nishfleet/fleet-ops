@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# sgscan — free, offline-friendly security scan of what YOU changed.
+#
+# Semgrep Community Edition: no account, no login, no per-run cost, no limits.
+# Deterministic pattern matching for known vulnerability classes — the opposite
+# failure mode to the AI reviewers, which is why it runs alongside them.
+#
+# Only reports issues introduced since the base branch, so pre-existing noise in
+# the repo does not drown the signal.
+#
+#   sgscan                 scan changes vs the base branch
+#   sgscan --base develop  compare against a specific branch
+#   sgscan --all           scan the whole repo, not just the diff
+#   sgscan --json          machine-readable, for agents
+#
+# Exit codes:
+#   0  no new findings (or only INFO)
+#   1  new WARNING findings
+#   2  new ERROR findings — treat as blocking
+#   3  semgrep itself failed (invalid output, non-zero exit)
+#   5  semgrep not installed
+#   6  not a git repository
+#   7  unknown flag
+
+set -euo pipefail
+
+CONFIG="${SGSCAN_CONFIG:-p/default}"
+
+die() { printf '%s\n' "$*" >&2; }
+
+command -v semgrep >/dev/null 2>&1 || {
+  die "semgrep not found."
+  die "Install:  brew install semgrep   (Mac)"
+  die "          pipx install semgrep   (Linux)"
+  exit 5
+}
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  die "sgscan must run inside a git repository."
+  exit 6
+}
+
+BASE=""
+SCAN_ALL=0
+JSON=0
+EXTRA=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      cat <<'HELP'
+sgscan — security scan of what YOU changed.
+
+Usage:  sgscan [flags]
+
+Flags:
+  --base BRANCH   compare against a specific branch (default: auto-detect)
+  --all           scan the whole repo, not just the diff
+  --json          machine-readable output (JSON)
+  --help, -h      show this help
+
+Exit codes:
+  0  no new findings (or only INFO)
+  1  new WARNING findings
+  2  new ERROR findings — treat as blocking
+  3  semgrep itself failed (invalid output, non-zero exit)
+  5  semgrep not installed
+  6  not a git repository
+  7  unknown flag
+
+sgscan runs semgrep community rules against files changed since the base
+branch.  Only issues you introduced show up, so it is cheap enough to run
+on every PR and every worker review gate.
+HELP
+      exit 0 ;;
+    --base) BASE="${2:-}"; shift 2 ;;
+    --all)  SCAN_ALL=1; shift ;;
+    --json) JSON=1; shift ;;
+    --*|-*) die "unknown flag: $1"; exit 7 ;;
+    *) EXTRA+=("$1"); shift ;;
+  esac
+done
+
+# Find something sensible to diff against.
+if [ -z "$BASE" ] && [ "$SCAN_ALL" -eq 0 ]; then
+  for candidate in origin/HEAD origin/main main origin/master master; do
+    if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+      BASE="$candidate"
+      break
+    fi
+  done
+fi
+
+ARGS=(--config="$CONFIG" --quiet --json --metrics=off)
+if [ "$SCAN_ALL" -eq 0 ] && [ -n "$BASE" ]; then
+  merge_base="$(git merge-base HEAD "$BASE" 2>/dev/null || true)"
+  if [ -n "$merge_base" ]; then
+    ARGS+=(--baseline-commit "$merge_base")
+    die "Scanning changes since ${BASE} (${merge_base:0:8})…"
+  else
+    die "No diff against ${BASE:-base} — scanning the working tree…"
+  fi
+else
+  die "Scanning the whole repository…"
+fi
+
+# Auto-discover repo-local Semgrep rules (.semgrep/*.yml) so a bare sgscan
+# picks up project-specific rules IN ADDITION to SGSCAN_CONFIG defaults — one
+# rule source, two entry points (sgscan + CI). Follows the semgrep community
+# .semgrep/ convention; no-op in repos with no .semgrep/ rules.
+shopt -s nullglob
+for _f in .semgrep/*.yml .semgrep/*.yaml; do
+  ARGS+=(--config="$_f")
+done
+shopt -u nullglob
+
+# Portable form: `mktemp -t name` means a prefix on macOS but requires X's on
+# GNU coreutils, so spell the template out in full.
+tmp="$(mktemp "${TMPDIR:-/tmp}/sgscan.XXXXXX")"
+tmp_err="$(mktemp "${TMPDIR:-/tmp}/sgscan-err.XXXXXX")"
+trap 'rm -f "$tmp" "$tmp_err"' EXIT
+
+set +e
+semgrep "${ARGS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} > "$tmp" 2>"$tmp_err"
+sg_status=$?
+set -e
+
+# Treat semgrep exit != 0 as a fatal failure (e.g. unknown semgrep flag,
+# bug in semgrep, runtime error). Always map to exit 3.
+if [ "$sg_status" -ne 0 ] || [ ! -s "$tmp" ]; then
+  die "semgrep failed (exit $sg_status)."
+  if [ -s "$tmp_err" ]; then
+    die "semgrep stderr follows:"
+    cat "$tmp_err" >&2
+  elif [ -s "$tmp" ]; then
+    die "semgrep stdout (non-JSON) follows:"
+    head -c 4096 "$tmp" >&2
+  fi
+  exit 3
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  cat "$tmp"
+fi
+
+python3 - "$tmp" "$JSON" <<'PY'
+import json, sys
+path, as_json = sys.argv[1], sys.argv[2] == "1"
+
+with open(path) as fh:
+    raw = fh.read()
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as e:
+    print(f"could not parse semgrep output: {e}", file=sys.stderr)
+    if raw.strip():
+        print(f"sgscan: semgrep stdout ({len(raw)} bytes) follows:", file=sys.stderr)
+        print(raw[:4096], file=sys.stderr)
+    sys.exit(3)
+
+results = data.get("results", [])
+rank = {"ERROR": 2, "WARNING": 1, "INFO": 0}
+worst = 0
+buckets = {"ERROR": [], "WARNING": [], "INFO": []}
+
+for item in results:
+    sev = item.get("extra", {}).get("severity", "INFO").upper()
+    buckets.setdefault(sev, []).append(item)
+    worst = max(worst, rank.get(sev, 0))
+
+if not as_json:
+    if not results:
+        print("No new security findings.")
+    for sev in ("ERROR", "WARNING", "INFO"):
+        for item in buckets.get(sev, []):
+            rule = item.get("check_id", "?").split(".")[-1]
+            loc = f"{item.get('path','?')}:{item.get('start',{}).get('line','?')}"
+            msg = " ".join((item.get("extra", {}).get("message") or "").split())
+            print(f"[{sev}] {loc}  {rule}")
+            if msg:
+                print(f"        {msg[:160]}")
+
+sys.exit(worst)
+PY

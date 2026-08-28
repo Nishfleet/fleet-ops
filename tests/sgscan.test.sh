@@ -41,7 +41,11 @@ cat > "$fake_bin/semgrep" <<'FAKE'
 #   FAKE_SGSCAN_ARGS_FILE file to append the received arguments to
 
 exit_code="${FAKE_SGSCAN_EXIT:-0}"
-json="${FAKE_SGSCAN_JSON:-{\"version\":\"1.172.0\",\"results\":[],\"errors\":[],\"paths\":{\"scanned\":[]},\"time\":{}}}"
+if [ -n "${FAKE_SGSCAN_JSON+set}" ]; then
+  json="${FAKE_SGSCAN_JSON}"
+else
+  json='{"version":"1.172.0","results":[],"errors":[],"paths":{"scanned":[]},"time":{}}'
+fi
 
 if [[ -n "${FAKE_SGSCAN_ARGS_FILE:-}" ]]; then
     printf '%s\n' "$*" >> "$FAKE_SGSCAN_ARGS_FILE"
@@ -113,7 +117,7 @@ git -C "$scratch/repo5" add README.md
 git -C "$scratch/repo5" commit -qm feature
 set +e
 PATH="$fake_bin:$PATH" FAKE_SGSCAN_JSON='{"version":"1.172.0","results":[{"check_id":"python.lang.security.audit.hardcoded.credentials","path":"config.py","start":{"line":2},"extra":{"severity":"WARNING","message":"possible hardcoded credential"}}],"errors":[],"paths":{"scanned":["config.py"]},"time":{}}' \
-  out=$(PATH="$fake_bin:$PATH" FAKE_SGSCAN_JSON='{"version":"1.172.0","results":[{"check_id":"python.lang.security.audit.hardcoded.credentials","path":"config.py","start":{"line":2},"extra":{"severity":"WARNING","message":"possible hardcoded credential"}}],"errors":[],"paths":{"scanned":["config.py"]},"time":{}}' "$bin" --json 2>&1)
+  out=$(PATH="$fake_bin:$PATH" FAKE_SGSCAN_JSON='{"version":"1.172.0","results":[{"check_id":"python.lang.security.audit.hardcoded.credentials","path":"config.py","start":{"line":2},"extra":{"severity":"WARNING","message":"possible hardcoded credential"}}],"errors":[],"paths":{"scanned":["config.py"]},"time":{}}' "$bin" --json 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "WARNING finding with --json must exit 1, got $rc: $out"
