@@ -132,6 +132,11 @@ ok "rule-enforcement: d1-prod-migration-grant drill"
 bash "$here/fleet-d1-prod-migration-process.test.sh" || fail "d1-prod-migration-process drill failed"
 ok "rule-enforcement: d1-prod-migration-process drill" 
 
+# fleet-ops#528: loose-ends canary (sr-nothing-half-done). Nested host so
+# this token does not need a workflow edit.
+bash "$here/fleet-loose-ends-canary.test.sh" || fail "loose-ends canary drill failed"
+ok "rule-enforcement: loose-ends canary drill"
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e

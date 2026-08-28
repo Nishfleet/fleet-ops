@@ -470,6 +470,15 @@ bin/fleet-vibes-canary /home/nish/.local/bin/fleet-vibes-canary
 # silent miss — the agent thinks a skill exists and it does not.
 # Heartbeat-tier1 block 41.
 bin/fleet-skills-symlink-canary /home/nish/.local/bin/fleet-skills-symlink-canary
+# fleet-ops#528: sr-nothing-half-done enforcer (loose-ends canary).
+# Three classes share one classifier: QUESTIONS.md OPEN / expired-HOLD
+# rows (24h nag cadence), open MERGEABLE worker PRs older than the
+# idle window without auto-merge, and stale worktrees with no live
+# worker unit. Observe-to-open auto-files complete-or-discard tickets;
+# observe-to-close drains previously filed slugs. Invoked by
+# heartbeat-tier1 block 42. No new scheduler.
+lib/loose-ends.py /home/nish/.local/lib/pi-packet/loose-ends.py
+bin/fleet-loose-ends-canary /home/nish/.local/bin/fleet-loose-ends-canary
 # fleet-ops#536: proven-only Pi extension allowlist canary (sr-pi-extensions-proven).
 # Fail-loud if ~/.pi/agent/extensions or settings.json packages/extensions
 # wires an id that is not in config/pi-extensions-allowlist.json proven[],
