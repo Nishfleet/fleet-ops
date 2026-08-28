@@ -21,11 +21,25 @@
 #   0 = clean - both browser smokes + synthetic passed.
 #   1 = finding - one or more checks failed.
 #   2 = bad env (worktree missing, npm/node missing).
+#
+# Canary pin + daily real E2E (p6b, 2026-08-25):
+#   The synthetic monitor's chat probes default to the canary pin header
+#   (SITEREP_CANARY_PIN=1), which makes worker/index.js skip the paid Workers
+#   AI compose call and serve the extractive answer. The pin exercises the
+#   full chat stack (validation, rate limit, retrieval, recording, response
+#   shaping) on every hourly run while burning zero LLM answers — the canary
+#   was the dominant drain on the (now-exempt) 1000/month demo-bot response
+#   cap.
+#   Once per UTC day, at SITEREP_CANARY_DAILY_E2E_HOUR (default 3), this
+#   wrapper omits SITEREP_CANARY_PIN so the synthetic monitor hits the real
+#   model path. That single run is the "a visitor gets a real answer" proof
+#   the canary still owes production after the pin path is on by default.
 set -uo pipefail
 
 WORKTREE="${SITEREP_CANARY_WORKTREE:-/home/nish/workspaces/agent-state/meta-ci-offload/ops/siterep}"
 BASE_URL="${SITEREP_LAYOUT_SMOKE_BASE_URL:-https://siterep.net}"
 TIMEOUT_MS="${SITEREP_LAYOUT_SMOKE_TIMEOUT_MS:-240000}"
+DAILY_E2E_HOUR="${SITEREP_CANARY_DAILY_E2E_HOUR:-3}"
 
 [[ -e "$WORKTREE/.git" ]] || { printf 'siterep-live-canary: worktree missing at %s - failing loud\n' "$WORKTREE" >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { printf 'siterep-live-canary: no node on PATH - failing loud\n' >&2; exit 2; }
@@ -51,6 +65,21 @@ rc=0
 
 export SITEREP_LAYOUT_SMOKE_BASE_URL="$BASE_URL"
 export SITEREP_LAYOUT_SMOKE_TIMEOUT_MS="$TIMEOUT_MS"
+
+# Pin the canary by default; let exactly one UTC hour per day run the real
+# model path end-to-end so "a visitor gets an answer" still has a live proof.
+# Set SITEREP_CANARY_PIN=force-real to force the real path for a one-off run
+# (e.g. right after a worker deploy).
+if [[ "${SITEREP_CANARY_PIN:-}" == "force-real" ]]; then
+  unset SITEREP_CANARY_PIN
+  printf '[siterep-live-canary] canary pin DISABLED via SITEREP_CANARY_PIN=force-real (full model path)\n'
+elif (( $(date -u +%H) == DAILY_E2E_HOUR )); then
+  unset SITEREP_CANARY_PIN
+  printf '[siterep-live-canary] canary pin DISABLED (daily real E2E hour UTC=%s)\n' "$DAILY_E2E_HOUR"
+else
+  export SITEREP_CANARY_PIN=1
+  printf '[siterep-live-canary] canary pin ENABLED (daily real E2E runs at UTC=%s)\n' "$DAILY_E2E_HOUR"
+fi
 
 for browser in chromium firefox; do
   export SITEREP_LAYOUT_SMOKE_BROWSER="$browser"
