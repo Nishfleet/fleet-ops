@@ -983,4 +983,9 @@ ok "rule-enforcement: rulebook red-team drill"
 bash "$here/fleet-vibes-canary.test.sh" || fail "vibes canary drill failed"
 ok "rule-enforcement: vibes canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, and vibes drills"
+# fleet-ops#532: skills-native canary (sr-skills-native). Same nested-CI
+# host so the worker token does not need a workflow edit.
+bash "$here/skills-symlink-canary.test.sh" || fail "skills-symlink canary drill failed"
+ok "rule-enforcement: skills-symlink canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, and skills-symlink drills"

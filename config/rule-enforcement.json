@@ -235,10 +235,9 @@
     {
       "id": "sr-skills-native",
       "source": "global-standing-rules.md: Skills are native for every agent on every machine (Nish, 2026-08-20)",
-      "mechanism": "No canary that skills are linked on every harness after install",
-      "proof": "Nishfleet/fleet-ops#532",
-      "status": "queued(#532)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat skills-symlink canary: ~/.claude/skills and ~/.codex/skills must carry the same SKILL.md names (GATE, fail-loud); a house-method skill on any of {claude, codex, pi} must be on every present surface of that set; a broken skill symlink screams. A mismatch is a silent miss — the agent thinks a skill exists and it does not. Violations auto-file one fleet-ops issue per kind (deduped on an open issue whose body carries the marker).",
+      "proof": "bin/fleet-skills-symlink-canary; tests/skills-symlink-canary.test.sh; fleet-heartbeat-tier1 block 41",
+      "status": "enforced"
     },
     {
       "id": "sr-one-fleet",
