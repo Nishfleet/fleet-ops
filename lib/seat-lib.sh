@@ -1355,7 +1355,15 @@ _build_excluded_set() {
         return 0
     fi
 
-    # 1) cap=0 providers -> exclude every live model in models.json
+    # 1) cap=0 providers/models AND not-in-allowlist seats -> exclude.
+    # A seat is "not-in-allowlist" when its provider is absent from the
+    # cap map entirely (e.g. mergegateway in models.json but not in
+    # seat-caps.json), or when the provider IS in the cap map but the
+    # specific model is not listed in its models map (e.g. ollama has
+    # only deepseek-v4-flash:0731, so kimi-k2.7-code is not allowlisted).
+    # Both sub-cases were per-seat logged on every pick_seat pass
+    # ("skipped (not in cap-map allowlist)") — the dominant remaining
+    # flood after #1449's cap=0 fix (fleet-ops#1456: 1584 lines/16min).
     if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
         while IFS=$'\t' read -r p m; do
             [[ -n "$p" && -n "$m" ]] || continue
@@ -1365,13 +1373,22 @@ _build_excluded_set() {
                 _el["$p/$m"]=1
                 continue
             fi
-            # Per-model cap map: cap=0 -> excluded. Missing model entry
-            # is NOT marked here — the loop's allowlist check handles
-            # it (a different signal: standing-rule block, not at-capacity
-            # flood source).
             local m_cap="${SEAT_MODEL_CAP[$p/$m]:-}"
             if [[ -n "$m_cap" ]] && (( m_cap == 0 )); then
                 _er["$p/$m"]="cap=0:model"
+                _el["$p/$m"]=1
+                continue
+            fi
+            # Provider not in cap map at all -> not allowlisted.
+            if [[ -z "$cap" ]]; then
+                _er["$p/$m"]="not-in-allowlist:provider"
+                _el["$p/$m"]=1
+                continue
+            fi
+            # Provider in cap map but model not in its models map ->
+            # not allowlisted (the cap map's models map IS the allowlist).
+            if [[ -z "$m_cap" ]]; then
+                _er["$p/$m"]="not-in-allowlist:model"
                 _el["$p/$m"]=1
                 continue
             fi
@@ -1518,7 +1535,8 @@ pick_seat() {
             [[ -n "$_p" && -n "$_m" ]] || continue
             if [[ -n "${_EXCLUDED_REASON[$_p/$_m]:-}" ]]; then
                 case "${_EXCLUDED_REASON[$_p/$_m]}" in
-                    cap=0:*)       _excluded_cap0_n=$((_excluded_cap0_n + 1)) ;;
+                    cap=0:*)            _excluded_cap0_n=$((_excluded_cap0_n + 1)) ;;
+                    not-in-allowlist:*) _excluded_allowlist_n=$((_excluded_allowlist_n + 1)) ;;
                 esac
             fi
             local _ds
@@ -1560,13 +1578,15 @@ pick_seat() {
         [[ -n "$p" ]] || continue
         # must differ from all tried seats
         [[ -n "${tried[$p/$m]:-}" ]] && continue
-        # fleet-ops#1449: pre-computed excluded set. cap=0 providers and
-        # models, plus fresh seat_dead=true ledger entries, are SILENTLY
-        # skipped here — they were already counted in the summary line
-        # emitted at the end of pick_seat, and re-logging each on every
-        # pass is the source of the at_capacity_events flood (4492 events
-        # in 2h on 2026-08-28, prev window 3936). The summary replaces N
-        # per-seat lines with 1 per-pick line.
+        # fleet-ops#1449/#1456: pre-computed excluded set. cap=0 providers
+        # and models, not-in-allowlist seats (provider not in cap map or
+        # model not in its models map), plus fresh seat_dead=true ledger
+        # entries, are SILENTLY skipped here — they were already counted
+        # in the summary line emitted at the end of pick_seat, and
+        # re-logging each on every pass is the source of the
+        # at_capacity_events flood (4492 events/2h on 2026-08-28) and the
+        # not-in-allowlist flood (1584 lines/16min after #1449's cap=0
+        # fix). The summary replaces N per-seat lines with 1 per-pick line.
         if [[ -n "${_EXCLUDED_REASON[$p/$m]:-}" ]]; then
             continue
         fi
