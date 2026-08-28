@@ -130,6 +130,11 @@ bin/fleet-debug-playbook /home/nish/.local/bin/fleet-debug-playbook
 # but forgot to close (the forgotten-Closes-trailer class). Heartbeat-tier1;
 # close gated behind FLEET_MERGED_PR_CLOSE_OK=1.
 bin/fleet-merged-pr-close /home/nish/.local/bin/fleet-merged-pr-close
+# fleet-ops#526: session-close lint for "interventions get eliminated,
+# not repeated". Heartbeat-tier1 block 20; fail-loud + auto-file on a
+# third identical correction in the window.
+lib/interventions-eliminated.py /home/nish/.local/lib/pi-packet/interventions-eliminated.py
+bin/fleet-interventions-eliminated /home/nish/.local/bin/fleet-interventions-eliminated
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
