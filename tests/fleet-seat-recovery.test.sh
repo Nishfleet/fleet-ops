@@ -97,6 +97,16 @@ run_bin() {
   # is a symlink to a different worktree's seat-lib and would silently
   # undo the FLEET_SEAT_RECOVERY_NOW pin (fleet-ops#735).
   PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  # Isolate the active-seats registry (fleet-ops#739). seat-lib's
+  # count_active_on_provider reads $PI_PACKET_STATE/active-seats to gate
+  # the at-capacity skip in pick_seat. Without this pin the test reads the
+  # HOST's real registry, so on a live VPS with active devin workers the
+  # single fixture seat reads as at-capacity (cap=2, N active) and
+  # any_seat_usable returns no-usable for a HEALTHY ledger — the
+  # no-usable->usable transition never fires and test 2 trips
+  # "missing SEAT-RECOVERY line". CI is clean (no workers) so this only
+  # fails locally on a busy seat; the pin makes the test hermetic.
+  PI_PACKET_STATE="$scratch/pi-packet-state" \
   PI_MODELS_JSON="$scratch/models.json" \
   SEAT_CAPS_JSON="$scratch/seat-caps.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$ledger" \
