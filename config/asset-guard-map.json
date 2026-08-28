@@ -1,0 +1,93 @@
+{
+  "description": "Asset-to-guard mapping for the mechanical VPS asset census (fleet-ops#1149). Classes are covered by default; explicit assets override. Every asset must name a live enforcer or a documented manual guard.",
+  "version": 1,
+  "issue_repo": "Nishfleet/fleet-ops",
+  "auto_file_cap_per_tick": 5,
+  "classes": {
+    "systemd-user-service": {
+      "guard": "OnFailure=unit-escalation@%n.service drop-in (user) + global escalation path",
+      "proof": "systemd/service.d/10-escalation.conf; bin/fleet-escalation-canary block 1; tests/escalation-coverage-canary.test.sh"
+    },
+    "systemd-user-timer": {
+      "guard": "OnFailure=unit-escalation@%n.service drop-in (timer) + global escalation path",
+      "proof": "systemd/timer.d/10-escalation.conf; bin/fleet-escalation-canary block 1; tests/escalation-coverage-canary.test.sh"
+    },
+    "systemd-user-path": {
+      "guard": "OnFailure=unit-escalation@%n.service drop-in (path) + global escalation path",
+      "proof": "systemd/path.d/10-escalation.conf; bin/fleet-escalation-canary block 1; tests/escalation-coverage-canary.test.sh"
+    },
+    "systemd-user-socket": {
+      "guard": "OnFailure=unit-escalation@%n.service drop-in (socket) + global escalation path, or documented manual guard",
+      "proof": "systemd/socket.d/10-escalation.conf; bin/fleet-escalation-canary; tests/escalation-coverage-canary.test.sh"
+    },
+    "systemd-system-service": {
+      "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
+      "proof": "bin/fleet-escalation-canary block 5; config/rule-enforcement.json"
+    },
+    "systemd-system-timer": {
+      "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
+      "proof": "bin/fleet-escalation-canary block 5; config/rule-enforcement.json"
+    },
+    "systemd-system-path": {
+      "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
+      "proof": "bin/fleet-escalation-canary block 5; config/rule-enforcement.json"
+    },
+    "systemd-system-socket": {
+      "guard": "system OnFailure or kernel/oomd-supervised, documented in escalation canary exclusions",
+      "proof": "bin/fleet-escalation-canary block 5; config/rule-enforcement.json"
+    },
+    "port-tcp": {
+      "guard": "process owner maps to a systemd unit with global escalation; unknown owners are a census finding",
+      "proof": "bin/fleet-asset-census; ss; systemd user units; tests/fleet-asset-census.test.sh"
+    },
+    "port-udp": {
+      "guard": "process owner maps to a systemd unit with global escalation; unknown owners are a census finding",
+      "proof": "bin/fleet-asset-census; ss; systemd user units; tests/fleet-asset-census.test.sh"
+    },
+    "github-repo": {
+      "guard": "config/intake-repos.json + bin/intake-reconcile; lifecycle + visibility canaries",
+      "proof": "config/intake-repos.json; bin/intake-reconcile; bin/lifecycle-label-sweep; tests/fleet-repo-visibility-canary.test.sh"
+    },
+    "github-workflow": {
+      "guard": ".github/workflows version-controlled; required checks; red-CI guard",
+      "proof": ".github/workflows/*.yml; bin/fleet-escalation-canary block 6; bin/fleet-heartbeat-red-pr-repair"
+    },
+    "github-subscription": {
+      "guard": "fleet-asset-census re-asserts subscribed=false/ignored=false weekly",
+      "proof": "bin/fleet-asset-census set-subscriptions; tests/fleet-asset-census.test.sh"
+    },
+    "credential-file": {
+      "guard": "bin/fleet-credential-expiry-canary + bin/worker-app-canary",
+      "proof": "bin/fleet-credential-expiry-canary; tests/credential-expiry-canary.test.sh; bin/worker-app-canary"
+    },
+    "endpoint-key": {
+      "guard": "documented in config; validated by owning canary (HC -> heartbeat dead-man, CF -> cf-token, Telegram -> research)",
+      "proof": "bin/fleet-asset-census; config/hc.env, config/cloudflare; bin/fleet-cf-token-canary; tests/fleet-asset-census.test.sh"
+    },
+    "pi-seat": {
+      "guard": "config/seat-caps.json + config/entitled-seats.json + bin/fleet-entitled-wired-canary",
+      "proof": "config/seat-caps.json; config/entitled-seats.json; bin/fleet-entitled-wired-canary; tests/fleet-entitled-wired.test.sh"
+    },
+    "pi-provider": {
+      "guard": "config/seat-caps.json + config/entitled-seats.json + bin/fleet-entitled-wired-canary",
+      "proof": "config/seat-caps.json; config/entitled-seats.json; bin/fleet-entitled-wired-canary"
+    },
+    "storage-rclone": {
+      "guard": "rclone.conf versioned or backed by restic-r2-backup; restoration drill",
+      "proof": "systemd/restic-r2-backup.timer; bin/fleet-restore-drill; tests/fleet-restore-drill.test.sh"
+    },
+    "storage-restic-state": {
+      "guard": "restic-r2-backup.timer + bin/fleet-restore-drill",
+      "proof": "systemd/restic-r2-backup.timer; bin/fleet-restore-drill; tests/fleet-restore-drill.test.sh"
+    },
+    "test-suite": {
+      "guard": "referenced by a .github/workflows/*.yml job; unreferenced suites are auto-filed",
+      "proof": ".github/workflows/*.yml; bin/fleet-asset-census; tests/fleet-asset-census.test.sh"
+    },
+    "test-header-claim": {
+      "guard": "extracted by fleet-asset-census; stale-claim detector manual review queue",
+      "proof": "bin/fleet-asset-census; tests/fleet-asset-census.test.sh; fleet-ops#1137 (docs claim extractor) applied to test headers"
+    }
+  },
+  "assets": []
+}
