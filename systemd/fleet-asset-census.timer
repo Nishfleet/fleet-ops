@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly VPS asset census (fleet-ops#1149)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:15:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

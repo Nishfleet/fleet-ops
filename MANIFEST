@@ -552,3 +552,11 @@ bin/fleet-bare-metal-rebuild-drill /home/nish/.local/bin/fleet-bare-metal-rebuil
 config/bare-metal-rebuild-manifest.json /home/nish/.config/fleet-ops/bare-metal-rebuild-manifest.json
 systemd/fleet-bare-metal-rebuild-drill.service /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.service
 systemd/fleet-bare-metal-rebuild-drill.timer /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.timer
+# fleet-ops#1149: mechanical VPS asset census, guard mapping, and unguarded-asset
+# auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
+# textfile metrics, and auto-files deduped `unguarded asset:` issues.
+bin/fleet-asset-census /home/nish/.local/bin/fleet-asset-census
+lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
+config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
+systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
+systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
