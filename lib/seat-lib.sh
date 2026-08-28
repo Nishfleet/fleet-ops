@@ -21,6 +21,15 @@
 # Every pick appends seat-selection.jsonl and refreshes
 # fleet_seat_selection_24h{provider=} for the digest / Weekly Review.
 #
+# AIMD learned caps (fleet-ops#217, re-land #424): the declared cap is the
+# FLOOR. pick_seat may admit cap+1 on a free lane with room below
+# max_probe_ceiling, zero 429s, and RAM headroom. A fresh 429/concurrency
+# signal halves the learned cap and benches until the provider window.
+# hard_ceiling rows (devin, ollama) never probe. Metered rows default
+# max_probe_ceiling to the declared cap so money-adjacent seats do not
+# climb. State lives in learned-caps.json; every change writes one line to
+# learned-caps-audit.log (this library is the reader that #424 was missing).
+#
 # Survivors justified against systemd: systemd Restart= restarts the SAME
 # ExecStart — it cannot choose a different provider/model seat. Seat rotation
 # (pick a DIFFERENT seat on each retry) is real added value that systemd
@@ -105,6 +114,10 @@ declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
 declare -A SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT=()
 declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
 declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
+# fleet-ops#217/#424 AIMD: probe ceiling, hard-ceiling flag, dated cap=0 reason.
+declare -A SEAT_PROVIDER_MAX_PROBE=()
+declare -A SEAT_PROVIDER_HARD_CEILING=()
+declare -A SEAT_PROVIDER_REASON=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 SEAT_VOLUME_ORDER=""
@@ -160,6 +173,9 @@ load_seat_caps() {
     SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT=()
     SEAT_PROVIDER_QUOTA_WINDOW=()
     SEAT_PROVIDER_WEEKLY_BUDGET=()
+    SEAT_PROVIDER_MAX_PROBE=()
+    SEAT_PROVIDER_HARD_CEILING=()
+    SEAT_PROVIDER_REASON=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_VOLUME_ORDER=""
@@ -194,14 +210,21 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def window budget ko ov_model ov_ex ov_usd cb
-    while IFS=$'\t' read -r p cap class bench_def; do
+    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
+    # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
+    # so optional empty fields (max_probe_ceiling, reason) would vanish.
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
         [[ "$class" == "subscription" ]] && class="prepaid-quota"
         SEAT_PROVIDER_CLASS["$p"]="$class"
         [[ "$bench_def" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_BENCH_DEFAULT["$p"]="$bench_def"
+        # AIMD bounds (fleet-ops#217/#424). max_probe_ceiling absent -> ""
+        # -> max_probe_ceiling() returns the declared cap (no upward probe).
+        [[ "$max_probe" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_MAX_PROBE["$p"]="$max_probe"
+        [[ "$hard" == "true" ]] && SEAT_PROVIDER_HARD_CEILING["$p"]=1
+        [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
@@ -209,7 +232,9 @@ load_seat_caps() {
     # back to the (inflated) RAM governor. Normalise by type first.
     # quota_bench_default_s (fleet-ops#90) is optional; absent -> empty ->
     # provider_quota_bench_default returns 0 (no default, writer fails open).
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
+    # optional; absent fields emit "" so the guards above skip them.
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p m cap; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -319,6 +344,262 @@ provider_overload_bench_default() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT[$p]:-0}"
+}
+
+# --- AIMD learned caps (fleet-ops#217, re-land #424) ------------------------
+# Declared cap in seat-caps.json is the FLOOR. pick_seat may admit cap+1
+# (additive probe) when zero provider errors + RAM headroom + room below
+# max_probe_ceiling, and backs off to ~0.5x on a 429/concurrency signal
+# from the per-seat health ledger. Learned state persists in
+# learned-caps.json; every change writes one line to learned-caps-audit.log.
+# This library is the reader of that log (fleet-ops#424: leftover meter
+# after auto-revert had no reader).
+#
+# Authority: the existing per-seat health ledger (LEDGER_DIR). No network,
+# no wrapper scripts. File reads at pick_seat time only.
+#
+# hard_ceiling rows (devin, ollama) never probe and never back off below
+# declared. Metered rows default max_probe_ceiling to declared so
+# money-adjacent seats never climb without a ledger line.
+LEARNED_CAPS_JSON="${LEARNED_CAPS_JSON:-$HOME/.local/state/pi-packet/learned-caps.json}"
+LEARNED_CAPS_AUDIT="${LEARNED_CAPS_AUDIT:-$HOME/.local/state/pi-packet/learned-caps-audit.log}"
+_seat_learned_loaded=0
+declare -A LEARNED_CAP=()
+declare -A LEARNED_BENCH_UNTIL=()
+
+load_learned_caps() {
+    LEARNED_CAP=()
+    LEARNED_BENCH_UNTIL=()
+    _seat_learned_loaded=1
+    [[ -f "$LEARNED_CAPS_JSON" ]] || return 0
+    local p lc bu
+    while IFS=$'\x1f\n' read -r p lc bu; do
+        [[ -n "$p" ]] || continue
+        [[ "$lc" =~ ^[0-9]+$ ]] && LEARNED_CAP["$p"]="$lc"
+        [[ -n "$bu" ]] && LEARNED_BENCH_UNTIL["$p"]="$bu"
+    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//"")] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+}
+
+# Hard upper bound a provider may probe to. Absent -> declared cap (no
+# upward probe). Money-adjacent default: never climb without an explicit
+# max_probe_ceiling in seat-caps.json.
+max_probe_ceiling() {
+    local p="$1" declared
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if [[ -n "${SEAT_PROVIDER_MAX_PROBE[$p]:-}" ]]; then
+        echo "${SEAT_PROVIDER_MAX_PROBE[$p]}"
+        return
+    fi
+    declared=$(provider_cap "$p")
+    echo "$declared"
+}
+
+# 0 if the provider is a declared hard ceiling (never probe above declared).
+provider_hard_ceiling() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ "${SEAT_PROVIDER_HARD_CEILING[$p]:-0}" == "1" ]]
+}
+
+provider_reason() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_PROVIDER_REASON[$p]:-}"
+}
+
+# True if the provider has a FRESH 429/concurrency signal in the per-seat
+# ledger. credentials_bad and seat_dead are NOT rate signals.
+provider_has_recent_error() {
+    local p="$1" f hc dead observed usable_at bench_until
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local m
+    while IFS=$'\t' read -r pm m _ _; do
+        [[ "$pm" == "$p" ]] || continue
+        f=$(seat_ledger_path "$p" "$m")
+        [[ -f "$f" ]] || continue
+        IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until < <(
+            jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        case "$hc" in
+            rate_limited)
+                if _seat_rate_limit_fresh "$observed" && [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
+                    return 0
+                fi ;;
+            quota_exhausted|quota_bench)
+                local bu="$bench_until"; [[ -z "$bu" ]] && bu="$usable_at"
+                if [[ -n "$bu" ]] && _seat_in_future "$bu"; then
+                    return 0
+                fi ;;
+        esac
+    done < <(enumerate_seats)
+    return 1
+}
+
+# Soonest future bench_until/usable_at across this provider's walled models.
+_provider_bench_until() {
+    local p="$1" f hc observed usable_at bench_until soonest=""
+    local m
+    while IFS=$'\t' read -r pm m _ _; do
+        [[ "$pm" == "$p" ]] || continue
+        f=$(seat_ledger_path "$p" "$m")
+        [[ -f "$f" ]] || continue
+        IFS=$'\x1f'$'\n' read -r hc observed usable_at bench_until < <(
+            jq -r '[(.health_class//""),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        [[ "$hc" == "rate_limited" || "$hc" == "quota_exhausted" || "$hc" == "quota_bench" ]] || continue
+        local bu="$bench_until"
+        [[ -z "$bu" ]] && bu="$usable_at"
+        if [[ -z "$bu" ]] || ! _seat_in_future "$bu"; then continue; fi
+        if [[ -z "$soonest" ]]; then
+            soonest="$bu"
+        else
+            local s_s b_s
+            s_s=$(date -u -d "$soonest" +%s 2>/dev/null || echo 0)
+            b_s=$(date -u -d "$bu" +%s 2>/dev/null || echo 0)
+            (( b_s > 0 && b_s < s_s )) && soonest="$bu"
+        fi
+    done < <(enumerate_seats)
+    echo "$soonest"
+}
+
+_learned_audit() {
+    local line="$1"
+    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$LEARNED_CAPS_AUDIT" 2>/dev/null || true
+}
+
+_set_learned_in_memory() {
+    local p="$1" lc="$2" bench="${3:-}"
+    LEARNED_CAP["$p"]="$lc"
+    if [[ -n "$bench" ]]; then
+        LEARNED_BENCH_UNTIL["$p"]="$bench"
+    else
+        unset 'LEARNED_BENCH_UNTIL[$p]'
+    fi
+}
+
+# Persist learned state for one provider and emit an audit line.
+# Args: provider learned_cap result bench_until
+# result in {probe, backoff, decay}.
+_record_learned_cap() {
+    local p="$1" lc="$2" result="$3" bench="${4:-}"
+    [[ "$lc" =~ ^[0-9]+$ ]] || return 1
+    mkdir -p "$(dirname "$LEARNED_CAPS_JSON")" 2>/dev/null || true
+    local tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM" now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [[ -f "$LEARNED_CAPS_JSON" ]] && jq -e . "$LEARNED_CAPS_JSON" >/dev/null 2>&1; then
+        # Merge via object addition, not $ps[$p] = ... jq 1.7 rejects
+        # assignment through a variable-held object ("Invalid path
+        # expression") and the fallback would then rewrite the file with
+        # only this provider, wiping sibling learned caps.
+        if jq --arg p "$p" --argjson lc "$lc" --arg r "$result" \
+                --arg b "$bench" --arg t "$now_utc" \
+            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), last_at:$t}})' \
+            "$LEARNED_CAPS_JSON" >"$tmp" 2>/dev/null; then
+            :
+        else
+            rm -f "$tmp" 2>/dev/null || true
+            tmp=""
+        fi
+    else
+        tmp=""
+    fi
+    if [[ -z "$tmp" || ! -s "$tmp" ]]; then
+        tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM"
+        if ! jq -nc --arg p "$p" --argjson lc "$lc" --arg r "$result" \
+            --arg b "$bench" --arg t "$now_utc" \
+            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), last_at:$t}}}' >"$tmp" 2>/dev/null; then
+            seat_log "aimd: state write FAILED for $p (lc=$lc result=$result) — in-memory only"
+            rm -f "$tmp" 2>/dev/null || true
+            _set_learned_in_memory "$p" "$lc" "$bench"
+            return 0
+        fi
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$LEARNED_CAPS_JSON" 2>/dev/null; then
+        _set_learned_in_memory "$p" "$lc" "$bench"
+        local bench_desc="no bench"
+        [[ -n "$bench" ]] && bench_desc="bench_until=$bench"
+        _learned_audit "aimd $p: learned_cap=$lc result=$result $bench_desc"
+        return 0
+    fi
+    seat_log "aimd: state rename FAILED for $p at $LEARNED_CAPS_JSON — in-memory only"
+    rm -f "$tmp" 2>/dev/null || true
+    _set_learned_in_memory "$p" "$lc" "$bench"
+    return 0
+}
+
+# Effective cap pick_seat honours. Records backoff on a fresh 429.
+# Order: hard_ceiling -> fresh 429 backoff -> bench in effect -> decay ->
+# clamp learned to [declared, ceiling].
+effective_provider_cap() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+    local declared ceiling
+    declared=$(provider_cap "$p")
+    if provider_hard_ceiling "$p"; then
+        echo "$declared"
+        return
+    fi
+    ceiling=$(max_probe_ceiling "$p")
+    if provider_has_recent_error "$p"; then
+        local backoff=$(( declared / 2 ))
+        (( backoff < 1 )) && backoff=1
+        local bench
+        bench=$(_provider_bench_until "$p")
+        local cur="${LEARNED_CAP[$p]:-}"
+        local cur_bench="${LEARNED_BENCH_UNTIL[$p]:-}"
+        if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
+            _record_learned_cap "$p" "$backoff" "backoff" "$bench"
+        fi
+        echo "$backoff"
+        return
+    fi
+    local bench="${LEARNED_BENCH_UNTIL[$p]:-}"
+    if [[ -n "$bench" ]] && _seat_in_future "$bench"; then
+        local backed="${LEARNED_CAP[$p]:-}"
+        [[ "$backed" =~ ^[0-9]+$ ]] || backed="$declared"
+        echo "$backed"
+        return
+    fi
+    if [[ -n "$bench" ]] && ! _seat_in_future "$bench"; then
+        local cur="${LEARNED_CAP[$p]:-}"
+        if [[ "$cur" =~ ^[0-9]+$ ]] && (( cur != declared )); then
+            _record_learned_cap "$p" "$declared" "decay" ""
+        elif [[ -n "$cur" ]]; then
+            _record_learned_cap "$p" "$declared" "decay" ""
+        fi
+        echo "$declared"
+        return
+    fi
+    local current="${LEARNED_CAP[$p]:-}"
+    if [[ ! "$current" =~ ^[0-9]+$ ]]; then current="$declared"; fi
+    local eff=$(( current < ceiling ? current : ceiling ))
+    (( eff < declared )) && eff=$declared
+    echo "$eff"
+}
+
+# Additive probe admission. Returns 0 (admit one extra) iff ALL of:
+# not hard_ceiling, eff < ceiling, active == eff, zero provider errors,
+# RAM governor headroom. Records learned_cap=eff+1 result=probe.
+# Args: provider eff_cap active_count
+_aimd_probe_admitted() {
+    local p="$1" eff="$2" active="$3"
+    if provider_hard_ceiling "$p"; then return 1; fi
+    local ceiling
+    ceiling=$(max_probe_ceiling "$p")
+    (( eff < ceiling )) || return 1
+    (( active == eff )) || return 1
+    if provider_has_recent_error "$p"; then return 1; fi
+    local ram_cap active_total
+    ram_cap=$(ram_governor_cap) || ram_cap=0
+    [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
+    active_total=$(count_active_total)
+    (( ram_cap > active_total )) || return 1
+    local new=$(( eff + 1 ))
+    (( new > ceiling )) && new=$ceiling
+    _record_learned_cap "$p" "$new" "probe" ""
+    return 0
 }
 
 # RAM governor: max concurrent workers = floor(MemAvailable_GB / RAM_PER_WORKER).
@@ -1570,7 +1851,7 @@ pick_seat() {
     #   3) metered last (per-token; spend after prepaid/free)
     local -a free_seats=() prepaid_seats=() metered_seats=()
 
-    local p m free capable p_cap m_cap p_active m_active class
+    local p m free capable p_cap m_cap p_active m_active class eff_cap
     # `free` is emitted by enumerate_seats for parity with the legacy contract;
     # the new bucketing uses class_of() instead. Unused but stable in the pipe.
     # shellcheck disable=SC2034
@@ -1661,11 +1942,18 @@ pick_seat() {
             # seat_usable already logged the UNUSABLE reason from the ledger.
             continue
         fi
-        # P4-A: per-provider and per-model caps.
+        # P4-A + AIMD (#217/#424): honour the learned effective cap, and
+        # admit one additive probe when exactly saturated with room below
+        # the ceiling. cap=0 walled rows stay skipped via provider_cap above.
         p_active=$(count_active_on_provider "$p")
-        if (( p_cap > 0 )) && (( p_active >= p_cap )); then
-            seat_log "seat $p/$m skipped (provider $p cap=$p_cap reached: $p_active active)"
-            continue
+        eff_cap=$(effective_provider_cap "$p")
+        if (( eff_cap > 0 )) && (( p_active >= eff_cap )); then
+            if _aimd_probe_admitted "$p" "$eff_cap" "$p_active"; then
+                seat_log "seat $p/$m AIMD probe admitted (provider $p cap $eff_cap -> $((eff_cap + 1)): $p_active active, zero errors, RAM headroom)"
+            else
+                seat_log "seat $p/$m skipped (provider $p cap=$eff_cap reached: $p_active active)"
+                continue
+            fi
         fi
         m_active=$(count_active_on_seat "$p" "$m")
         if (( m_cap > 0 )) && (( m_active >= m_cap )); then

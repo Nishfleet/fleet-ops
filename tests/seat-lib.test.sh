@@ -2086,6 +2086,10 @@ bash "$here/ram-measure.test.sh" || fail "ram-measure tests failed"
 
 # fleet-ops#457: quality-weighted routing. Same CI constraint.
 bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
+# fleet-ops#424: AIMD re-land. Hosted here BEFORE role-quality-gates so a
+# pre-existing red catalog (fleet-ops#1563) cannot skip the AIMD drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml.
+bash "$here/seat-lib-aimd.test.sh" || fail "AIMD learned-cap tests failed"
 # fleet-ops#457: per-role gate audit. rule-enforcement.test.sh currently
 # fails validate-matrix on a pre-existing duplicate-source pair, so this
 # file is the listed CI host.

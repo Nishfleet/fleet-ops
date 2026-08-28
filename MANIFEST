@@ -261,6 +261,10 @@ bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
 # and auto-files. No new scheduler.
 bin/fleet-entitled-wired-canary /home/nish/.local/bin/fleet-entitled-wired-canary
+# fleet-ops#424: leftover AIMD meter canary. Run by heartbeat-tier1 block 37.
+# AIMD symbols missing from seat-lib.sh while learned-caps-audit.log remains
+# goes LOUD and auto-files. No new scheduler.
+bin/fleet-aimd-meter-canary /home/nish/.local/bin/fleet-aimd-meter-canary
 # fleet-ops#435 / #545: OpenCode + CommandCode MiniMax M3 catalog canary.
 # Run by heartbeat-tier1. Billing slug in seat-caps fails the tick. A
 # free-form slug whose models.json cost is non-zero also fails. A new
