@@ -153,6 +153,10 @@ EOF
 
 mkdir -p "$scratch/state"
 : > "$scratch/gh-create.log"
+# fleet-ops#377: feed an empty seam-evidence fixture so the harness does not
+# touch live memoryctl/actions-log sources, and prove the seam table still
+# appears in the report with no seams in the window.
+printf '%s\n' '{"candidates":[]}' >"$scratch/empty-seams.json"
 
 # Capture the binary's exit code without tripping set -e so the fail block
 # below actually prints. Under set -e a failing bin would exit the test
@@ -171,6 +175,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
+  AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   "$bin" >"$scratch/run.log" 2>&1 || rc=$?
 
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
@@ -205,6 +210,10 @@ grep -qE '^last-blind-audit-run:' "$plan" || fail "plan file missing last-blind-
 # Durable report and findings must exist.
 [[ -f "$report_dir/report.md" ]] || fail "report.md missing"
 [[ -f "$report_dir/findings.json" ]] || fail "findings.json missing"
+# fleet-ops#377: the harness writes the Manual-seam lens table into the
+# report even when the window has no seams.
+grep -q '## Manual-seam lens' "$report_dir/report.md" \
+  || fail "report.md must contain the Manual-seam lens table even with no seams"
 
 # Step 6 must write the filed URL into the durable report AND the verdict log.
 # The 2026-08-26 live run filed #367-#371 but left report.md saying "no GitHub

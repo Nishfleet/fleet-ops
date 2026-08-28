@@ -34,6 +34,46 @@ Read the repo and the live state, then rank the top N real, actionable gaps
    automatic finding. The harness also hunts this mechanically and merges
    those hits into findings before filing; copy any remaining hits you see
    yourself. Re-litigate `mechanism-impossible:` claims that look false.
+9. **Manual seams** — operations a human or flagship performed by hand.
+   Anything done by hand twice is a machinery defect unless it is
+   legitimately Nish-only. See the Manual-seam lens below.
+
+## Manual-seam lens
+
+This lens runs every cycle (gap-closure #180 cycle criteria). Do not skip
+it. The harness enumerates candidates from evidence; you classify them.
+
+Enumerate (or confirm) every hand-performed operation since
+`{{SEAM_SINCE}}` from the evidence JSON in Context below. Sources:
+
+- memoryctl outcome records
+- the actions log
+- GitHub issue / comment / label events authored outside worker claim
+  identities (`claimed by pi-…`, `[gap-audit]`, `Filed by fleet-blind-audit`)
+- `systemctl start` events with no timer or trigger parent
+
+For each seam, either match it to an existing mechanism issue, or add a
+finding so the caller files one via the standard queue. Previously queued
+mechanisms that vanished without a merged PR are regressions — file them
+loud.
+
+Include a `seams` array in the findings JSON. Each row:
+
+- `seam` — what was done by hand
+- `source` — `memoryctl` | `actions-log` | `github` | `systemctl-start`
+- `disposition` — `matched` | `filed` | `accepted-as-manual`
+- `mechanism` — `#N` or `—`
+- `reason` — for `accepted-as-manual`, a **dated reason** (ISO date + why)
+
+Nish-only work is listed, not "fixed": money, privacy, security, legal,
+product direction, merge to main / production deploy. Those get
+`accepted-as-manual` with a dated reason.
+
+The Markdown report MUST contain a `## Manual-seam lens` table with
+columns: seam, source, mechanism, disposition, reason. The harness
+rewrites this table after you return so it cannot go missing.
+
+A cycle is not CLEAN while any seam is still unmatched.
 
 ## Deliberate-states rule
 
@@ -57,6 +97,15 @@ gaps. An entry whose expiry has passed IS a loud gap — file it as a finding.
       "body": "what the gap is, why it matters, and what to check",
       "severity": "critical|high|medium|low",
       "evidence": "the exact file, command, or output that proves the gap"
+    }
+  ],
+  "seams": [
+    {
+      "seam": "short description of the hand operation",
+      "source": "memoryctl|actions-log|github|systemctl-start",
+      "disposition": "matched|filed|accepted-as-manual",
+      "mechanism": "#N or —",
+      "reason": "dated reason when accepted-as-manual"
     }
   ]
 }
@@ -121,4 +170,10 @@ gaps. An entry whose expiry has passed IS a loud gap — file it as a finding.
 - User systemd timers:
 ```
 {{SYSTEMCTL_TIMERS}}
+```
+- Gap-closure cycle criteria: `{{CYCLE_CRITERIA_PATH}}`
+- Manual-seam window start (last cycle): `{{SEAM_SINCE}}`
+- Manual-seam evidence (hand-performed operations since last cycle):
+```json
+{{SEAM_EVIDENCE_JSON}}
 ```

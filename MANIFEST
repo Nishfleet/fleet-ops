@@ -81,6 +81,7 @@ lib/guard_shared_file_collision.py /home/nish/.local/lib/pi-packet/guard_shared_
 bin/guard_shared_file_collision /home/nish/.local/bin/guard_shared_file_collision
 bin/guard_shared_file_collision_hook.py /home/nish/.claude/hooks/guard_shared_file_collision.py
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
+lib/manual-seam-lens.py /home/nish/.local/lib/pi-packet/manual-seam-lens.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
 # fleet-ops#383: join helper for the rule-enforcement canary step.
 lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
