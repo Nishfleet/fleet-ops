@@ -1,0 +1,17 @@
+[Unit]
+Description=Mechanical VPS asset census and guard-map diff (fleet-ops#1149)
+# Runs before the Weekly Fleet Review so the Pi review can start from an
+# enumerated, guarded surface. Fail-loud on internal error; findings are
+# auto-filed as issues and written as Prometheus textfile metrics.
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-asset-census diff --map /home/nish/.local/state/pi-packet/asset-guard-map.json --file-issues
+# Census touches the live system (systemctl, ss, gh, file scans); give it room.
+TimeoutStartSec=300
+Environment="PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/nish"
+
+[Install]
+WantedBy=default.target

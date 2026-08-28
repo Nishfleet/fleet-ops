@@ -537,3 +537,11 @@ config/precedence-band.json /home/nish/.local/state/pi-packet/precedence-band.js
 # this file changes, because --storage.tsdb.retention.time is a start-time
 # flag.
 config/etc-default-prometheus /etc/default/prometheus
+# fleet-ops#1149: mechanical VPS asset census, guard mapping, and unguarded-asset
+# auto-filer. Runs weekly before the Weekly Fleet Review, writes Prometheus
+# textfile metrics, and auto-files deduped `unguarded asset:` issues.
+bin/fleet-asset-census /home/nish/.local/bin/fleet-asset-census
+lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
+config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
+systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
+systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
