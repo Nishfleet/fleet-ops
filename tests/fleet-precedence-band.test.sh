@@ -455,7 +455,210 @@ set -e
   || fail "scenario17f: expected allow-multiplier, got $reason"
 ok "scenario17f: band-multiplier lets machinery jump the cap"
 
-# scenario17g: band bootstrap — when nothing is live (0 machinery, 0 product),
+# --- 17g. legit-work quality classification function -----------------------
+# shellcheck source=/dev/null
+. "$shlib"
+export PRECEDENCE_BAND_JSON="$scratch/policy.json"
+export PRECEDENCE_BAND_NOW="2026-08-28T03:30:00Z"
+export BAND_PENDING_FILE="$scratch/pending.latch"
+rm -f "$BAND_PENDING_FILE"
+: >"$scratch/units.txt"
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units.txt"
+
+# Test classify_quality directly
+set +e
+quality=$(precedence_band_classify_quality "feat: add new feature")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17g: classify_quality feat must rc=0, got $rc ($quality)"
+[[ "$quality" == "upgrade" ]] || fail "scenario17g: feat -> upgrade, got $quality"
+ok "scenario17g: classify_quality feat -> upgrade"
+
+set +e
+quality=$(precedence_band_classify_quality "fix: resolve bug")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17h: classify_quality fix must rc=0, got $rc ($quality)"
+[[ "$quality" == "repair" ]] || fail "scenario17h: fix -> repair, got $quality"
+ok "scenario17h: classify_quality fix -> repair"
+
+set +e
+quality=$(precedence_band_classify_quality "test: add unit test")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17i: classify_quality test must rc=0, got $rc ($quality)"
+[[ "$quality" == "repair" ]] || fail "scenario17i: test -> repair, got $quality"
+ok "scenario17i: classify_quality test -> repair"
+
+set +e
+quality=$(precedence_band_classify_quality "chore: update deps")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17j: classify_quality chore must rc=0, got $rc ($quality)"
+[[ "$quality" == "churn" ]] || fail "scenario17j: chore -> churn, got $quality"
+ok "scenario17j: classify_quality chore -> churn"
+
+set +e
+quality=$(precedence_band_classify_quality "refactor: clean up code")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17k: classify_quality refactor must rc=0, got $rc ($quality)"
+[[ "$quality" == "churn" ]] || fail "scenario17k: refactor -> churn, got $quality"
+ok "scenario17k: classify_quality refactor -> churn"
+
+set +e
+quality=$(precedence_band_classify_quality "docs: update readme")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17l: classify_quality docs must rc=0, got $rc ($quality)"
+[[ "$quality" == "churn" ]] || fail "scenario17l: docs -> churn, got $quality"
+ok "scenario17l: classify_quality docs -> churn"
+
+set +e
+quality=$(precedence_band_classify_quality "random title no prefix")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17m: classify_quality no-prefix must rc=0, got $rc ($quality)"
+[[ "$quality" == "churn" ]] || fail "scenario17m: no-prefix -> churn, got $quality"
+ok "scenario17m: classify_quality no-prefix -> churn (safe catch-all)"
+
+# Test is_legit_work directly
+set +e
+precedence_band_is_legit_work "feat: add new feature"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17n: is_legit_work feat must rc=0, got $rc"
+ok "scenario17n: is_legit_work feat -> true (legit)"
+
+set +e
+precedence_band_is_legit_work "fix: resolve bug"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17o: is_legit_work fix must rc=0, got $rc"
+ok "scenario17o: is_legit_work fix -> true (legit)"
+
+set +e
+precedence_band_is_legit_work "test: add unit test"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17p: is_legit_work test must rc=0, got $rc"
+ok "scenario17p: is_legit_work test -> true (legit)"
+
+set +e
+precedence_band_is_legit_work "chore: update deps"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17q: is_legit_work chore must rc=1, got $rc"
+ok "scenario17q: is_legit_work chore -> false (churn)"
+
+set +e
+precedence_band_is_legit_work "refactor: clean up code"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17r: is_legit_work refactor must rc=1, got $rc"
+ok "scenario17r: is_legit_work refactor -> false (churn)"
+
+# --- 17s. empty-product surge expansion with legit-work guard (fleet-ops#1516) ---
+# When product-ready is empty (BAND_PRODUCT == 0) and we're over the machinery
+# cap, legit work (upgrade/repair) should be allowed, churn should be skipped.
+export PRECEDENCE_BAND_NOW="2026-08-28T03:30:00Z"
+cat >"$scratch/units-empty-product.txt" <<'UNITS'
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+UNITS
+# 3 machinery / 3 total = 100% > 30% cap. Next machinery claim would be 4/4.
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-empty-product.txt"
+rm -f "$BAND_PENDING_FILE"
+
+# Empty product, legit work (feat) -> allow-band-surge-legit
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 104 "" "feat: add new feature")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17s: empty-product + feat must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-surge-legit" ]] || fail "scenario17s: expected allow-band-surge-legit, got $reason"
+ok "scenario17s: empty-product surge allows legit work (feat/upgrade)"
+
+# Empty product, legit work (fix) -> allow-band-surge-legit
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 105 "" "fix: resolve bug")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17t: empty-product + fix must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-surge-legit" ]] || fail "scenario17t: expected allow-band-surge-legit, got $reason"
+ok "scenario17t: empty-product surge allows legit work (fix/repair)"
+
+# Empty product, legit work (test) -> allow-band-surge-legit
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 106 "" "test: add unit test")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17u: empty-product + test must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-surge-legit" ]] || fail "scenario17u: expected allow-band-surge-legit, got $reason"
+ok "scenario17u: empty-product surge allows legit work (test/repair)"
+
+# Empty product, churn work (chore) -> skip-band
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 107 "" "chore: update deps")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17v: empty-product + chore must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] || fail "scenario17v: expected skip-band, got $reason"
+ok "scenario17v: empty-product surge rejects churn work (chore)"
+
+# Empty product, churn work (refactor) -> skip-band
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 108 "" "refactor: clean up code")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17w: empty-product + refactor must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] || fail "scenario17w: expected skip-band, got $reason"
+ok "scenario17w: empty-product surge rejects churn work (refactor)"
+
+# Empty product, churn work (no prefix) -> skip-band (safe catch-all)
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 109 "" "random title no prefix")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17x: empty-product + no-prefix must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] || fail "scenario17x: expected skip-band, got $reason"
+ok "scenario17x: empty-product surge rejects churn work (no-prefix catch-all)"
+
+# Empty product, empty title -> skip-band (safe catch-all)
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 110 "" "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17y: empty-product + empty-title must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] || fail "scenario17y: expected skip-band, got $reason"
+ok "scenario17y: empty-product surge rejects churn work (empty title)"
+
+# Product NOT empty, over cap, legit work -> still skip-band (only empty product)
+cat >"$scratch/units-with-product.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+UNITS
+# 3 machinery + 1 product = 4 total, 75% machinery > 30%
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-with-product.txt"
+rm -f "$BAND_PENDING_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 104 "" "feat: add new feature")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17z: product-not-empty + feat must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] || fail "scenario17z: expected skip-band, got $reason"
+ok "scenario17z: product-not-empty does NOT trigger empty-product surge expansion"
+
+# scenario17aa: band bootstrap — when nothing is live (0 machinery, 0 product),
 # the first machinery claim MUST be allowed. Without the bootstrap exception,
 # the first claim makes it 100% > 30% → skip-band, deadlocking the fleet
 # when product is all blocked-on (auditor 2026-08-28, summon unit-failure
@@ -468,10 +671,10 @@ set +e
 reason=$(precedence_band_allow_claim fleet-ops 9999 "")
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "scenario17g: bootstrap must rc=0, got $rc ($reason)"
+[[ "$rc" == "0" ]] || fail "scenario17aa: bootstrap must rc=0, got $rc ($reason)"
 [[ "$reason" == "allow-band-bootstrap" ]] \
-  || fail "scenario17g: expected allow-band-bootstrap, got $reason"
-ok "scenario17g: band bootstrap allows first claim when nothing is live"
+  || fail "scenario17aa: expected allow-band-bootstrap, got $reason"
+ok "scenario17aa: band bootstrap allows first claim when nothing is live"
 
 # scenario19: machinery floor (fleet-ops#1452). The 0-live bootstrap in
 # 17g does not cover the low-n case: overnight 2026-08-27→28, 1-2 product

@@ -236,7 +236,9 @@ for i in "${!numbers[@]}"; do
     # live machinery == 0 (fleet-ops#1452 floor). Skip, do not fail the tick —
     # product ticks still run, and the next fleet-ops tick retries when a
     # slot opens.
-    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body") || {
+    # Legit-work guard (fleet-ops#1516): pass title for quality classification
+    # to allow empty-product surge expansion only for upgrade/repair work.
+    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body" "$title") || {
         echo "issue $N ($title): skipped-precedence-band ($band_reason)"
         continue
     }
