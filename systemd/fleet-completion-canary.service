@@ -1,13 +1,13 @@
 [Unit]
 Description=Fleet completion canary: every failure chain must terminate in a verified fix
-Documentation=file:/home/nish/.local/bin/fleet-completion-canary
+Documentation=file:/home/nish/.local/libexec/fleet-completion-canary
 
 [Service]
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStart=/home/nish/.local/bin/fleet-completion-canary
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-completion-canary
 # One pass over actions.log + 9090 + systemd show. Fail-loud (exit 1) climbs
 # the existing service.d/10-escalate.conf rail; do not restart here.
 TimeoutStartSec=2min

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# PROM_URL is operator-controlled localhost Prometheus (127.0.0.1:9090); the
+# env override is loopback-only and never pointed elsewhere. Audit-confirmed
+# safe (same suppression as bin/gh-webhook-canary.py + lib/credential-expiry-canary.py).
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
 """fleet-completion-canary — alert-repair COMPLETION invariant (fleet-ops#468).
 
 The coverage canary (fleet-escalation-canary) proves every failure STARTS a
@@ -213,6 +217,8 @@ def load_firing_alerts() -> dict[str, datetime]:
             return {}
     else:
         try:
+            # Operator-controlled PROM_URL (localhost Prometheus).
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             with urllib.request.urlopen(PROM_URL, timeout=5) as resp:
                 payload = json.loads(resp.read().decode())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
