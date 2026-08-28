@@ -51,9 +51,10 @@
       "quota_bench_default_s": 604800,
       "models": {
         "cline-pass/minimax-m3": 2,
-        "cline-pass/deepseek-v4-flash": 2
+        "cline-pass/deepseek-v4-flash": 2,
+        "z-ai/glm-5.3-flash": { "cap": 2, "class": "free" }
       },
-      "_comment_glm53": "2026-08-27: ClinePass GLM 5.3 flash (fleet-ops#462). Probe 2026-08-26: cline-pass/glm-5.3-flash and cline-pass/glm-5-3-flash 404. Official docs list cline-pass/glm-5.3 (non-flash, quota) not flash. Do not allowlist a guessed flash slug or the non-flash glm-5.3. bin/fleet-cline-glm53-canary auto-files when a cline-pass GLM 5.3 flash slug appears in Pi's catalog; wiring requires a live spawn + weekly-cap-bypass meter check + models.json entry."
+      "_comment_glm53": "2026-08-29: ClinePass GLM 5.3 flash wired as a free lane (fleet-ops#384). Probe 2026-08-26: cline-pass/glm-5.3-flash and cline-pass/glm-5-3-flash 404. The live Cline API model is z-ai/glm-5.3-flash. Live pi --print spawn at 2026-08-29T04:22Z returned content while the ClinePass weekly cap was 100% exhausted (verified: a paid deepseek/deepseek-v4-flash-0731 call on the same account returned insufficient_credits with current_balance -0.004674, unchanged after the free GLM spawn). models.json providers.cline.z-ai/glm-5.3-flash has cost 0; lib/seat-lib.sh model_class_of treats it as free so the free-tier privacy line and bucket order apply even though the provider class is prepaid-quota. Fail-closed: never a slug that can bill credits."
     },
     "minimax": {
       "cap": 2,

@@ -633,8 +633,8 @@
     {
       "id": "led-glm-5-3-free-clinepass",
       "source": "decisions-ledger.md: 2026-08-26 | GLM 5.3 flash free on ClinePass",
-      "mechanism": "Heartbeat ClinePass GLM 5.3 flash canary: fail-loud if seat-caps allowlists a GLM 5.3 flash slug without the cline-pass/ prefix (would bill), the non-flash cline-pass/glm-5.3 quota id, a guessed slug absent from Pi's cline catalog, or a proven slug missing from models.json; observe-to-open detector auto-files a prove-weekly-cap-bypass + models.json + wire ticket when a cline-pass flash slug appears unwired",
-      "proof": "bin/fleet-cline-glm53-canary; tests/fleet-cline-glm53-canary.test.sh; fleet-heartbeat-tier1 block 23; fleet-ops#462",
+      "mechanism": "Heartbeat ClinePass GLM 5.3 flash canary: fail-loud if seat-caps allowlists a non-cline-pass GLM 5.3 flash slug without a zero-cost models.json proof (would bill), the non-flash cline-pass/glm-5.3 quota id, a guessed slug absent from Pi's cline catalog, or a proven slug missing from models.json; observe-to-open detector auto-files a prove-weekly-cap-bypass + models.json + wire ticket when a free cline-pass/ or proven free non-cline-pass flash slug appears unwired. lib/seat-lib.sh model_class_of supports a per-model class override so a free lane inside an otherwise prepaid-quota provider is bucketed as free and the free-tier privacy line applies.",
+      "proof": "bin/fleet-cline-glm53-canary; tests/fleet-cline-glm53-canary.test.sh; fleet-heartbeat-tier1 block 23; lib/seat-lib.sh model_class_of; config/seat-caps.json; fleet-ops#384",
       "status": "enforced"
     },
     {
