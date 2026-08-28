@@ -37,8 +37,8 @@ assert "systemd/gh-webhook-receiver.service" in rx["files"]
 cn = organs["gh-webhook-canary"]
 assert cn["heartbeat_metric"] == "fleet_gh_webhook_canary_last_green_seconds", cn
 assert cn["absent_alert"] == "FleetGhWebhookCanaryAbsent", cn
-assert "bin/gh-webhook-canary" in cn["files"]
-assert "bin/gh-webhook-canary-deadman" in cn["files"]
+assert "bin/gh-webhook-canary.py" in cn["files"]
+assert "bin/gh-webhook-canary-deadman.py" in cn["files"]
 assert "systemd/gh-webhook-canary.timer" in cn["files"]
 assert "systemd/gh-webhook-canary-deadman.timer" in cn["files"]
 print("registry OK")
@@ -78,8 +78,8 @@ ns="$(mktemp)"
 trap 'rm -f "$ns"' EXIT INT TERM
 {
     echo "M\tlibexec/gh-webhook-receiver/serve.py"
-    echo "M\tbin/gh-webhook-canary"
-    echo "M\tbin/gh-webhook-canary-deadman"
+    echo "M\tbin/gh-webhook-canary.py"
+    echo "M\tbin/gh-webhook-canary-deadman.py"
     echo "M\tsystemd/gh-webhook-receiver.service"
     echo "M\tsystemd/gh-webhook-canary.timer"
     echo "M\tsystemd/gh-webhook-canary-deadman.timer"

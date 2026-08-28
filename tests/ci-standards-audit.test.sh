@@ -220,3 +220,16 @@ bash "$here/fleet-waste-ledger.test.sh"
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/seat-health-classifier.test.sh"
+
+# fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
+# The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
+#   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
+#   - gh-webhook-canary: synthetic probe HMAC + dead-man status states
+#   - gh-webhook-organ-heartbeat: organ registry + absent() rules + gate
+#   - fleet-intake-reconciler-counter: reconciler-caught counter + cadence
+# Hosted here so P14 runs them without a workflow-file edit (the worker
+# App cannot push .github/workflows/**).
+bash "$here/gh-webhook-receiver-hmac.test.sh"
+bash "$here/gh-webhook-canary.test.sh"
+bash "$here/gh-webhook-organ-heartbeat.test.sh"
+bash "$here/fleet-intake-reconciler-counter.test.sh"

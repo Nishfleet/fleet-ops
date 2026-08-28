@@ -12,8 +12,8 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-canary="$repo_root/bin/gh-webhook-canary"
-deadman="$repo_root/bin/gh-webhook-canary-deadman"
+canary="$repo_root/bin/gh-webhook-canary.py"
+deadman="$repo_root/bin/gh-webhook-canary-deadman.py"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }

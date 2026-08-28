@@ -20,5 +20,5 @@ Environment=GH_WEBHOOK_CANARY_PROM=/var/lib/prometheus/node-exporter/fleet-gh-we
 Environment=GH_WEBHOOK_CANARY_DRY=0
 # P14 systemd-analyze dodge: hosted runners lack ~/.local. The repo
 # install.sh symlinks the script to ~/.local/bin for the live box.
-ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary
+ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary.py
 TimeoutStartSec=30
