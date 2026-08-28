@@ -14,7 +14,7 @@ $LEDGER --matrix config/rule-enforcement.json`
 | matrix entries | 113 |
 | enforced | 76 |
 | advisory | 8 |
-| queued (mechanism pending) | 29 |
+| queued (mechanism pending) | 27 |
 | uncovered (no matrix entry) | 9 |
 | violations (canary LOUD) | 9 |
 
@@ -230,7 +230,7 @@ Net effect: 122 rules → 15 binding constraints + 24 pointers + 36 archived
 one-line pointers + 2 conventions); the archive preserves all 1656 lines
 verbatim.
 
-## 29 queued mechanisms — re-scoping
+## Queued mechanisms — re-scoping (27 live matrix rows / 25 distinct issues)
 
 Each queued mechanism re-scoped against the consolidated set. "Close" = the
 binding constraint it serves is already enforced by another mechanism, so the
@@ -258,15 +258,15 @@ two queued issues serve the same constraint, merge into one.
 | #437 (cursor-grok-re-admitted) | — | close | point-in-time routing decision; archived, not a standing mechanism |
 | #905 (D1-prod-migrations) | — | close | VOIDED by the correction |
 | #906 (D1-prod-migrations-correction) | — | close | superseded by DECIDED |
-| #907 (D1-prod-migrations-decided) | — | keep | the vacation grant is live through 2026-09-08 |
+| #907 (D1-prod-migrations-decided) | — | close | enforced by #1543 CI drill; the queued mechanism is now obsolete |
 | #908 (D1-prod-migrations-process-amendment) | — | keep | the senior-process requirement is live |
 | #1177 (cursor-400-correction) | — | close | point-in-time budget decision; archived |
 | #1179 (cursor-400-sequencing) | — | close | point-in-time; archived |
 | #1399 (relic-pager-masked-emergency) | — | close | one-time emergency; archived |
 | #1480 (machinery-ban-mechanical + machinery-violations) | BC5 | merge-into-#366 | same constraint, same mechanism class |
 
-Re-scope summary: **keep 13, merge 5 into 3, close 11**. Net queued mechanisms
-drop from 29 to 16 (13 kept + 3 merge targets).
+Re-scope summary: **keep 11, merge 5 into 2, close 9**. Net queued mechanisms
+drop from 27 matrix rows to 13 distinct mechanisms (11 kept + 2 merge targets).
 
 ## What this PR ships
 
