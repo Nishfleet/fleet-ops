@@ -920,4 +920,10 @@ ok "rule-enforcement: organ-heartbeat drill"
 bash "$here/fleet-asset-census.test.sh" || fail "asset census drill failed"
 ok "rule-enforcement: asset census and guard-mapping drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, and organ-heartbeat drills, and asset-census drills"
+# fleet-ops#1460: timer manifest shape lock (every user timer has a
+# named-reason manifest entry). Nested host so the worker token does
+# not need to edit .github/workflows/**.
+bash "$here/timer-manifest.test.sh" || fail "timer-manifest drill failed"
+ok "rule-enforcement: timer-manifest shape lock drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, and organ-heartbeat drills, asset-census, and timer-manifest drills"
