@@ -431,6 +431,10 @@ bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 # that auto-file audition+wire / bench tickets from `pi --list-models`.
 # Invoked by heartbeat-tier1 block 21.
 bin/fleet-free-roster-canary /home/nish/.local/bin/fleet-free-roster-canary
+# fleet-ops#531: prepaid max-utilization canary (sr-prepaid-max-util).
+# Fail-loud prepaid ladder completeness + observe-to-open expiry-waste
+# detector. Invoked by heartbeat-tier1 block 38. No new scheduler.
+bin/fleet-prepaid-util-canary /home/nish/.local/bin/fleet-prepaid-util-canary
 # fleet-ops#536: proven-only Pi extension allowlist canary (sr-pi-extensions-proven).
 # Fail-loud if ~/.pi/agent/extensions or settings.json packages/extensions
 # wires an id that is not in config/pi-extensions-allowlist.json proven[],

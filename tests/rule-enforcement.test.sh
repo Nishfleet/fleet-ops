@@ -132,6 +132,8 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   [[ "$extra" == "0" ]] || fail "live matrix has extra rows: $(jq -c '.extra_matrix' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report TOP GEAR as enforced covered_rows (fleet-ops#479): $(jq -c '.covered_rows' <<<"$live")"
+  jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)" and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report sr-prepaid-max-util as enforced covered_rows (fleet-ops#531): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report escalation FIXES as enforced covered_rows (fleet-ops#548): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Vault sync conflicts auto-resolve (Nish, 2026-08-19, amends the freeze rule)" and .status == "enforced")' <<<"$live" >/dev/null \
@@ -168,6 +170,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report sr-verify-harness as enforced covered_rows (fleet-ops#524): $(jq -c '.covered_rows' <<<"$live")"
   ok "live vault join is covered (vault=$(jq .vault_rule_count <<<"$live") rc=$live_rc)"
   ok "live join: TOP GEAR source is enforced (observe-to-close for #479)"
+  ok "live join: prepaid max-util source is enforced (observe-to-close for #531)"
   ok "live join: escalation FIXES source is enforced (observe-to-close for #548)"
   ok "live join: vault sync conflicts source is enforced (observe-to-close for #529)"
   ok "live join: find-the-proven-thing source is enforced (observe-to-close for #534)"
