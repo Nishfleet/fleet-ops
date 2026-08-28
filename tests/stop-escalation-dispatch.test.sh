@@ -492,8 +492,10 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "1354 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
-grep -q "MONEY-BOUNDARY hash=$hash1354" "$STOP_ESCALATION_NISH" \
-  || fail "1354 fire 3: expected MONEY-BOUNDARY in NISH (both seats benched, fleet-ops#1534)"
+grep -q "LADDER-WALLED hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "1354 fire 3: benched wall must land in auditor LOG (storm fix: not a money page)"
+! grep -q "hash=$hash1354" "$STOP_ESCALATION_NISH" \
+  || fail "1354 fire 3: benched wall must NOT reach NISH"
 
 # Exactly 2 dispatches across 3 fires — never an unbounded same-seat loop.
 dispatch_count=$(grep -c "DISPATCH hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG" || true)
@@ -526,8 +528,10 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "flash: expected exit 0 (ladder walled by need_capable, quiet), got $rc"
-grep -q "MONEY-BOUNDARY hash=$hashflash" "$STOP_ESCALATION_NISH" \
-  || fail "flash: expected MONEY-BOUNDARY (need_capable excluded the only seat, fleet-ops#1534)"
+grep -q "LADDER-WALLED hash=$hashflash" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "flash: capability wall must land in auditor LOG (storm fix: not a money page)"
+! grep -q "hash=$hashflash" "$STOP_ESCALATION_NISH" \
+  || fail "flash: capability wall must NOT reach NISH"
 dispatch_count=$(grep -c "DISPATCH hash=$hashflash" "$STOP_ESCALATION_AUDITOR_LOG" || true)
 [[ "$dispatch_count" == "0" ]] \
   || fail "flash: must not dispatch to a tools=0 seat (got $dispatch_count DISPATCH lines)"
@@ -583,8 +587,10 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "623 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
-grep -q "MONEY-BOUNDARY hash=$hash623" "$STOP_ESCALATION_NISH" \
-  || fail "623 fire 3: expected MONEY-BOUNDARY in NISH (fleet-ops#1534)"
+grep -q "LADDER-WALLED hash=$hash623" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "623 fire 3: benched wall must land in auditor LOG (storm fix: not a money page)"
+! grep -q "hash=$hash623" "$STOP_ESCALATION_NISH" \
+  || fail "623 fire 3: benched wall must NOT reach NISH"
 dispatch_count=$(grep -c "DISPATCH hash=$hash623" "$STOP_ESCALATION_AUDITOR_LOG" || true)
 [[ "$dispatch_count" == "2" ]] \
   || fail "623: expected exactly 2 dispatches (rotation), got $dispatch_count"
