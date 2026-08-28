@@ -68,6 +68,34 @@ export GH="$gh_fake"
 export GH_LOG="$gh_log"
 export PATH="$scratch:$PATH"
 
+pi_fake="$scratch/pi"
+cat >"$pi_fake" <<'PIFAKE'
+#!/usr/bin/env bash
+if [[ "$*" == *"--list-models"* ]]; then
+  # Tests supply the catalog as a fixture; a stray --list-models is an error.
+  exit 1
+fi
+provider=""
+model=""
+while (( $# )); do
+  case "$1" in
+    --provider) provider="$2"; shift 2 ;;
+    --model)    model="$2";    shift 2 ;;
+    *)          shift ;;
+  esac
+done
+if [[ ":${FLEET_FREE_ROSTER_PROBE_FAIL:-}:" == *":$provider/$model:"* ]]; then
+  printf '500: {"type":"error","message":"Internal server error"}\n'
+  printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+  exit 1
+fi
+printf 'PONG received.\n'
+printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+exit 0
+PIFAKE
+chmod +x "$pi_fake"
+export PI="$pi_fake"
+
 write_caps()   { cat >"$scratch/seat-caps.json"; }
 write_entitled() { cat >"$scratch/entitled-seats.json"; }
 write_catalog() { cat >"$scratch/catalog.tsv"; }
@@ -78,6 +106,7 @@ run_canary() {
     FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
     SEAT_CAPS_JSON="$scratch/seat-caps.json" \
     FLEET_FREE_ROSTER_CATALOG_JSON="$scratch/catalog.tsv" \
+    FLEET_FREE_ROSTER_PROBE_TIMEOUT=5 \
     FLEET_OPS_REPO="$scratch" \
     "$bin" 2>&1
   )
@@ -258,6 +287,26 @@ run_canary
 grep -q 'issue create' "$gh_log" && fail "scenario9: must not file a duplicate"
 ok "scenario9: open issue with marker dedupes"
 unset GH_OPEN_ISSUES
+
+# --- 18. unservable new free slug is not filed ----------------------------
+# fleet-ops#760: the canary must not file an audition+wire ticket when the
+# servability probe (pi --print) returns a provider/transport failure.
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free", "models": { "hy3-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	hy3-free
+opencode	broken-v1-free
+TSV
+FLEET_FREE_ROSTER_PROBE_FAIL="opencode/broken-v1-free" run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18: expected rc=0, got $env_rc ($env_out)"
+! grep -q 'issue create' "$gh_log" || fail "scenario18: must not file for unservable slug"
+! grep -q 'FREE-ROSTER-AVAILABLE' "$triage" || fail "scenario18: must not mark unservable slug available"
+grep -q 'broken-v1-free.*not servable' <<<"$env_out" || fail "scenario18: must log the skipped slug (got: $env_out)"
+ok "scenario18: unservable free slug is skipped"
 
 # --- 10. pi missing -> exit 1 (watcher broken) ----------------------------
 : >"$gh_log"; : >"$triage"
