@@ -671,18 +671,16 @@
     {
       "id": "led-2026-08-27-d1-prod-migrations",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations",
-      "mechanism": "No canary enforcing the D1 prod migration senior process (independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish). Mechanism issue open.",
-      "proof": "fleet-ops#905",
-      "status": "queued(#905)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat-tier1 block 37 canary: fleet-d1-prod-migration-canary inspects 0509 migrations/; every migration added after the canary's own introduction must carry a migrations/evidence/<name>/ directory with plan, review, backup, rollback, verification, and text-nish artifacts; rejects new migrations after 2026-09-08. Enforces the senior process (independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish).",
+      "proof": "bin/fleet-d1-prod-migration-canary; lib/d1-prod-migration-canary.py; tests/fleet-d1-prod-migration-canary.test.sh; fleet-heartbeat-tier1 block 37; MANIFEST; fleet-ops#905",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-correction",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 CORRECTION",
-      "mechanism": "Superseded/corrected D1 prod migration decision; the live enforcer must gate on the final process amendment. Mechanism issue open.",
-      "proof": "fleet-ops#906",
-      "status": "queued(#906)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Superseded by led-2026-08-27-d1-prod-migrations-decided and led-2026-08-27-d1-prod-migrations-process-amendment. The live canary (fleet-d1-prod-migration-canary) gates the final process and grant.",
+      "proof": "bin/fleet-d1-prod-migration-canary; tests/fleet-d1-prod-migration-canary.test.sh; fleet-ops#906",
+      "status": "advisory(superseded by the decided grant and the process amendment; live canary gates both)"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-decided",

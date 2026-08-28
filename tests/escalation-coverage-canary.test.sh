@@ -1113,3 +1113,8 @@ bash "$here/cf-token-canary.test.sh"
 # tokens cannot push .github/workflows/**).
 bash "$here/fleet-bare-metal-rebuild.test.sh"
 
+# fleet-ops#905: D1 prod migration senior-process canary. Invoked from this
+# CI-listed file so hosted runners run it without a workflow edit (worker
+# tokens cannot push .github/workflows/**).
+bash "$here/fleet-d1-prod-migration-canary.test.sh"
+

@@ -447,6 +447,13 @@ lib/credential-expiry-canary.py /home/nish/.local/lib/pi-packet/credential-expir
 # Heartbeat-tier1 block 32.
 bin/fleet-cf-token-canary /home/nish/.local/bin/fleet-cf-token-canary
 lib/cf-token-canary.py /home/nish/.local/lib/pi-packet/cf-token-canary.py
+# fleet-ops#905: D1 prod migration senior-process canary. Inspects 0509
+# migrations/; every migration added after this canary's introduction must
+# carry a migrations/evidence/<name>/ directory with plan, review, backup,
+# rollback, verification, and text-nish artifacts. Rejects new migrations
+# after 2026-09-08. Heartbeat-tier1 block 37.
+bin/fleet-d1-prod-migration-canary /home/nish/.local/bin/fleet-d1-prod-migration-canary
+lib/d1-prod-migration-canary.py /home/nish/.local/lib/pi-packet/d1-prod-migration-canary.py
 systemd/oomd-drill.slice /home/nish/.config/systemd/user/oomd-drill.slice
 systemd/oomd-drill-hog.service /home/nish/.config/systemd/user/oomd-drill-hog.service
 bin/oomd-drill /home/nish/.local/bin/oomd-drill
