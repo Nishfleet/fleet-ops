@@ -6,17 +6,46 @@
 # Ledger 2026-08-27 | Precedence band + overnight machinery surge (Nish):
 #   Until 2026-08-28 08:00 IST (cutoff_utc): GO HAM, leverage-ranked only.
 #   After: machinery capped at ~30% of live pi-issue@ lanes; product 70%
-#   with product_front first. A machinery issue jumps the band only by
-#   naming `band-multiplier: N` on its body. Weekly Fleet Review owns
+#   with product_front first. One repair lane always runs when live
+#   machinery == 0 (fleet-ops#1452 floor); ratio resumes from the second
+#   machinery unit. A machinery issue jumps the band only by naming
+#   `band-multiplier: N` on its body. Weekly Fleet Review owns
 #   machinery_max_pct / product_min_pct (tighten only).
 #
 # Environment (tests):
 #   PRECEDENCE_BAND_JSON         config/precedence-band.json
 #   PRECEDENCE_BAND_NOW          ISO-8601 UTC clock (default: live date -u)
 #   FLEET_PRECEDENCE_UNITS_FILE  one pi-issue@ unit name per line
+#   BAND_PENDING_FILE            intra-tick floor latch (default: runtime dir)
 
 PRECEDENCE_BAND_JSON="${PRECEDENCE_BAND_JSON:-}"
 PRECEDENCE_BAND_NOW="${PRECEDENCE_BAND_NOW:-}"
+
+# Intra-tick floor latch (fleet-ops#1452). pi-intake-tick captures the
+# allow_claim reason in $(), so a bash variable cannot persist to the next
+# claim. Bash $$ is the original shell even inside $(), so a file keyed on
+# $$ is visible to every claim in this tick. The tick starts workers
+# --no-block; without the latch the floor would dump the overnight queue.
+precedence_band_pending_file() {
+    printf '%s\n' "${BAND_PENDING_FILE:-${XDG_RUNTIME_DIR:-/tmp}/precedence-band-pending.$$}"
+}
+precedence_band_pending_get() {
+    if [[ -f "$(precedence_band_pending_file)" ]]; then
+        printf '1\n'
+    else
+        printf '0\n'
+    fi
+}
+precedence_band_pending_set() {
+    local f dir
+    f="$(precedence_band_pending_file)"
+    dir="$(dirname "$f")"
+    mkdir -p "$dir"
+    : >"$f"
+}
+precedence_band_pending_clear() {
+    rm -f "$(precedence_band_pending_file)"
+}
 
 precedence_band_resolve_json() {
     local here
@@ -163,19 +192,35 @@ precedence_band_allow_claim() {
     fi
     pct="$(precedence_band_max_pct)"
     precedence_band_count_live
+    BAND_PENDING_MACHINERY="$(precedence_band_pending_get)"
     # Bootstrap exception (auditor 2026-08-28, summon unit-failure
     # fleet-heartbeat): when nothing is live (BAND_MACHINERY + BAND_PRODUCT
     # == 0), the first claim cannot violate the machinery share — 30% of 0
     # is 0, and the ratio constraint is meaningless with no running units.
     # Without this, the band phase deadlocks: the first machinery claim
     # makes it 100% > 30% → skip-band, so machinery can never start when
-    # product is all blocked-on. The ratio enforcement resumes from the
-    # second claim onward once at least one unit is live.
-    if (( BAND_MACHINERY + BAND_PRODUCT == 0 )); then
+    # product is all blocked-on.
+    if (( BAND_MACHINERY + BAND_PRODUCT == 0 && BAND_PENDING_MACHINERY == 0 )); then
+        precedence_band_pending_set
         printf 'allow-band-bootstrap\n'
         return 0
     fi
-    if precedence_band_over_cap "$((BAND_MACHINERY + 1))" "$((BAND_MACHINERY + BAND_PRODUCT + 1))" "$pct"; then
+    # Machinery floor (fleet-ops#1452): the 0-live bootstrap does not cover
+    # the low-n case. Overnight 2026-08-27→28, 1-2 product units were live
+    # and every machinery claim computed as 1/(1+N) > 30% (N=1 → 50%,
+    # N=2 → 33%), so the whole repair queue was skipped-precedence-band —
+    # including the starvation reports themselves. One repair lane may
+    # always run when live machinery == 0. Ratio enforcement resumes from
+    # the second machinery unit. BAND_PENDING_MACHINERY is the intra-tick
+    # latch: pi-intake-tick starts workers --no-block, so systemd may not
+    # list the new unit before the next ready issue is considered. Without
+    # the latch the floor would dump the whole overnight queue.
+    if (( BAND_MACHINERY == 0 && BAND_PENDING_MACHINERY == 0 )); then
+        precedence_band_pending_set
+        printf 'allow-band-floor\n'
+        return 0
+    fi
+    if precedence_band_over_cap "$((BAND_MACHINERY + BAND_PENDING_MACHINERY + 1))" "$((BAND_MACHINERY + BAND_PRODUCT + BAND_PENDING_MACHINERY + 1))" "$pct"; then
         if precedence_band_has_multiplier "$body"; then
             printf 'allow-multiplier\n'
             return 0
