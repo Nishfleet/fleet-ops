@@ -48,6 +48,50 @@ repo_fallback="$(cd "$here/.." && pwd)"
 LIB="${RESEARCHER_LIB:-$HOME/.local/lib/pi-packet/researcher-delta.py}"
 [ -f "$LIB" ] || LIB="$repo_fallback/lib/researcher-delta.py"
 
+# --- help ---------------------------------------------------------------
+# fleet-ops#1549: --help/-h must print usage and exit 0 without taking the
+# flock, calling pi, starting a unit, or writing a state/report directory.
+case "${1:-}" in
+    --help|-h)
+        cat <<'HELP'
+fleet-researcher-dispatch — event-driven researcher trigger (fleet-ops#458).
+
+Deterministic. No LLM. Called from heartbeat-tier1 every tick. Starts
+fleet-researcher.service when a named trigger is live and cadence has
+not been cut.
+
+Usage: fleet-researcher-dispatch [--help|-h]
+
+Triggers:
+  (a) quality-metric plateau or regression (#457 snapshot, if present)
+  (b) seat-map hash change vs last research run
+  (c) a plane with no research in N weeks (default 28d)
+  (d) every Nth gap-closure cycle (default 4, cycle % 4 == 1)
+  (e) a failed gap-closure cycle
+
+Exit 0 = decision made (started, skipped, or cadence-cut).
+Exit 1 = dispatcher broken (helper missing/unreadable in a hard way).
+
+Environment:
+  RESEARCHER_STATE_DIR       state sink (default: agent-state/fleet-researcher)
+  RESEARCHER_QUALITY_JSON    quality scoreboard snapshot
+  RESEARCHER_GAP_JSON        gap-closure state.json
+  RESEARCHER_SEAT_MAP        entitled-seats.json for hash trigger
+  RESEARCHER_LIB             researcher-delta.py path
+  RESEARCHER_FAKE_NOW        ISO-8601 UTC override for tests
+  RESEARCHER_STALE_DAYS      plane staleness window (default: 28)
+  RESEARCHER_NTH_CYCLE       gap-closure cycle modulo (default: 4)
+  RESEARCHER_MIN_INTERVAL_S  min seconds between dispatches (default: 7200)
+  RESEARCHER_DISABLE=1       exit 0 without deciding
+  RESEARCHER_REFRESH_LABELS  set 0 to skip live label refresh
+  SYSTEMCTL                  systemctl binary (tests)
+  GH                         gh binary (tests)
+  FLEET_HEARTBEAT_TRIAGE     triage log path for LOUD lines
+HELP
+        exit 0
+        ;;
+esac
+
 log() {
     printf '[%s] [fleet-researcher-dispatch] %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2

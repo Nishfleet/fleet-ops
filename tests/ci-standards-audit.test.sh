@@ -243,3 +243,9 @@ bash "$here/fleet-intake-reconciler-counter.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**).
 bash "$here/fleet-gap-closure-loop.test.sh"
+
+# fleet-ops#1549: --help/-h on fleet-blind-audit and fleet-researcher-dispatch
+# must print usage and exit 0 without running a live audit or dispatch.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**).
+bash "$here/fleet-help-flag-runs-live.test.sh"
