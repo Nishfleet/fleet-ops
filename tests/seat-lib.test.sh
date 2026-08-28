@@ -135,7 +135,10 @@ set -e
 if echo "$out" | grep -qE "^(groq|ollama.*gpt-oss)"; then
   fail "no-entry ledger: groq/gpt-oss must never be picked, got: $out"
 fi
-grep -qE "provider (groq not in cap-map allowlist|cap=0)" "$PI_PACKET_STATE/watch.log" \
+# fleet-ops#1456: groq is now pre-computed as not-in-allowlist:provider
+# (groq is in models.json but NOT in the scratch seat-caps.json). The
+# per-seat log line is silenced; the summary line is the evidence.
+grep -qE "(provider (groq not in cap-map allowlist|cap=0)|pick_seat: excluded.*not-in-allowlist)" "$PI_PACKET_STATE/watch.log" \
   || fail "no-entry ledger: groq must be rejected (cap=0 or allowlist)"
 
 # --- invariant 2b: provider with NO cap-map entry at all is rejected ------
@@ -172,7 +175,9 @@ set -e
 if echo "$out" | grep -q "notacredentialedprovider"; then
   fail "no-entry2 ledger: provider with no cap entry must never be picked, got: $out"
 fi
-grep -q "provider notacredentialedprovider not in cap-map allowlist" "$PI_PACKET_STATE/watch.log" \
+# fleet-ops#1456: notacredentialedprovider is pre-computed as
+# not-in-allowlist:provider; the per-seat log line is silenced.
+grep -qE "(provider notacredentialedprovider not in cap-map allowlist|pick_seat: excluded.*not-in-allowlist)" "$PI_PACKET_STATE/watch.log" \
   || fail "no-entry2 ledger: must log the allowlist rejection for a provider with no entry"
 export PI_MODELS_JSON="$scratch/models.json"
 
@@ -192,11 +197,14 @@ set -e
 [[ "$rc" == "0" ]] || fail "modelcap0: expected a free-lane pick, got rc=$rc out=$out"
 [[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
   || fail "modelcap0: expected a free lane, not a cap=0 prepaid model, got: $out"
-# fleet-ops#1449: the per-seat "skipped (model cap=0)" lines were the
+# fleet-ops#1449/#1456: the per-seat "skipped (model cap=0)" lines were the
 # source of the at_capacity_events flood (4492/2h). They are now folded
 # into a single per-pick summary; assert the summary is present and
-# the count covers both models.
-grep -qE "pick_seat: excluded [0-9]+ seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log" \
+# the count covers both models. groq + opencode are in models.json but
+# NOT in the scratch seat-caps.json (not-in-allowlist:provider), and
+# ollama/gpt-oss:20b is in models.json but not in ollama's models map
+# (not-in-allowlist:model) -> not-in-allowlist: 3.
+grep -qE "pick_seat: excluded 5 seats \(cap=0: 2; dead: 0; not-in-allowlist: 3\)" "$PI_PACKET_STATE/watch.log" \
   || fail "modelcap0: must log per-pick summary line naming both devin models as cap=0, got log: $(cat "$PI_PACKET_STATE/watch.log")"
 # Old per-seat line must NOT appear any more (silenced by the excluded set).
 if grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
@@ -329,8 +337,12 @@ fi
 # of those counters, not 9 unique seats. The at_capacity_events metric
 # the issue tracks is the SUM of the per-seat log lines, which is also
 # 11 if the loop were re-logging them.
-grep -qE "pick_seat: excluded 11 seats \(cap=0: 2; dead: 9; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log" \
-  || fail "atcap: must log per-pick summary 'pick_seat: excluded 11 seats (cap=0: 2; dead: 9; not-in-allowlist: 0)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# fleet-ops#1456: groq + opencode are in models.json but NOT in the
+# scratch seat-caps.json (not-in-allowlist:provider), and ollama/gpt-oss:20b
+# is not in ollama's models map (not-in-allowlist:model) -> not-in-allowlist: 3
+# (total 14).
+grep -qE "pick_seat: excluded 14 seats \(cap=0: 2; dead: 9; not-in-allowlist: 3\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "atcap: must log per-pick summary 'pick_seat: excluded 14 seats (cap=0: 2; dead: 9; not-in-allowlist: 3)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
 ok "atcap: per-pick summary replaces per-seat UNUSABLE (seat_dead=true) lines; 0 dead lines logged, 1 summary line"
 
 # --- invariant 4: free lanes before prepaid on an empty (usable) ledger ---
@@ -353,8 +365,8 @@ set -e
 # inherits the scratch cap map (devin cap=4 but both devin models
 # cap=0), so the summary DOES fire for the cap=0 devin entries; the
 # assertion is that the dead-count is zero and the cap=0 count is the
-# expected two.
-if grep -qE "pick_seat: excluded [0-9]+ seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log"; then
+# expected two. groq + opencode + ollama/gpt-oss:20b add not-in-allowlist: 3.
+if grep -qE "pick_seat: excluded [0-9]+ seats \(cap=0: 2; dead: 0; not-in-allowlist: 3\)" "$PI_PACKET_STATE/watch.log"; then
   ok "clean ledger: per-pick summary fires for cap=0 (the at_capacity fix path), with dead: 0"
 else
   echo "DEBUG clean log:" >&2
@@ -1733,7 +1745,10 @@ set -e
 if echo "$out" | grep -q '^hetzner'; then
   fail "437-empty: hetzner must not be picked with an empty models map, got: $out"
 fi
-grep -q "not in cap-map allowlist for hetzner" "$PI_PACKET_STATE/watch.log" \
+# fleet-ops#1456: hetzner/Qwen is now pre-computed as not-in-allowlist:model
+# (hetzner has cap=2 but no models map in caps-empty.json). The per-seat log
+# line is silenced; the summary line is the evidence.
+grep -qE "(not in cap-map allowlist for hetzner|pick_seat: excluded.*not-in-allowlist)" "$PI_PACKET_STATE/watch.log" \
   || fail "437-empty: must log the allowlist skip for the live Qwen slug"
 ok "437-empty: cap=2 hetzner with no models map skips Qwen/Qwen3.6-35B-A3B-FP8"
 
