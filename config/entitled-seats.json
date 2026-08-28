@@ -30,6 +30,12 @@
       "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter)."
     },
     {
+      "id": "xai-oauth",
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "note": "SuperGrok via stnly/pi-grok OAuth proxy (fleet-ops#1163). Live pi --print 2026-08-27 returned 200 for grok-4.6 and grok-4.5; weekly meter moved within minutes. Provider cap=1, models grok-4.6/grok-4.5, alternate never-stack."
+    },
+    {
       "id": "minimax",
       "class": "metered",
       "note": "MiniMax-M3 direct, per-token."

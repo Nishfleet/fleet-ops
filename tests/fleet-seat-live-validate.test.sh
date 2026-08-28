@@ -113,6 +113,11 @@ ledger_class() {
   jq -r '.health_class' "$PI_SEAT_HEALTH_LEDGER_DIR/grok__${model}.json"
 }
 
+xai_oauth_ledger_class() {
+  local model="$1"
+  jq -r '.health_class' "$PI_SEAT_HEALTH_LEDGER_DIR/xai-oauth__${model}.json"
+}
+
 # --- 1. grok missing -> watcher-broken, exit 1 -----------------------------
 : >"$gh_log"; : >"$triage"
 export FLEET_GROK_BIN="$scratch/bin/no-such-grok"
@@ -145,8 +150,14 @@ grep -q -- '--search' "$gh_log" || fail "scenario2: gh issue list must use --sea
   || fail "scenario2: grok-4.6 ledger must be credentials_bad"
 [[ "$(ledger_class grok-4.5)" == "credentials_bad" ]] \
   || fail "scenario2: grok-4.5 ledger must be credentials_bad"
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "credentials_bad" ]] \
+  || fail "scenario2: xai-oauth/grok-4.6 ledger must be credentials_bad"
+[[ "$(xai_oauth_ledger_class grok-4.5)" == "credentials_bad" ]] \
+  || fail "scenario2: xai-oauth/grok-4.5 ledger must be credentials_bad"
 jq -e '.seat_dead == true' "$PI_SEAT_HEALTH_LEDGER_DIR/grok__grok-4.6.json" >/dev/null \
   || fail "scenario2: seat_dead must be true"
+jq -e '.seat_dead == true' "$PI_SEAT_HEALTH_LEDGER_DIR/xai-oauth__grok-4.6.json" >/dev/null \
+  || fail "scenario2: xai-oauth seat_dead must be true"
 ok "scenario2: unauthenticated + missing auth.json writes credentials_bad and files"
 
 # --- 3. logged in + auth.json -> healthy, no file, no token leak -----------
@@ -164,8 +175,12 @@ grep -q 'SEAT-LIVE-VALIDATE-OK' "$triage" || fail "scenario3: missing OK line"
 ! grep -q 'issue create' "$gh_log" || fail "scenario3: must not file when healthy"
 [[ "$(ledger_class grok-4.6)" == "healthy" ]] \
   || fail "scenario3: grok-4.6 must be healthy"
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "healthy" ]] \
+  || fail "scenario3: xai-oauth/grok-4.6 must be healthy"
+[[ "$(xai_oauth_ledger_class grok-4.5)" == "healthy" ]] \
+  || fail "scenario3: xai-oauth/grok-4.5 must be healthy"
 assert_no_token_leak
-ok "scenario3: logged-in grok is healthy; token never printed"
+ok "scenario3: logged-in grok is healthy; xai-oauth mirrored healthy; token never printed"
 
 # --- 4. not authenticated + auth.json present (refresh failed) -------------
 : >"$gh_log"; : >"$triage"
@@ -179,8 +194,14 @@ grep -q 'SEAT-LIVE-VALIDATE-GROK-DEAD' "$triage" || fail "scenario4: missing LOU
 grep -q 'issue create' "$gh_log" || fail "scenario4: must auto-file"
 [[ "$(ledger_class grok-4.6)" == "credentials_bad" ]] \
   || fail "scenario4: refresh-failed must write credentials_bad"
+[[ "$(ledger_class grok-4.5)" == "credentials_bad" ]] \
+  || fail "scenario4: grok-4.5 must be credentials_bad"
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "credentials_bad" ]] \
+  || fail "scenario4: xai-oauth/grok-4.6 must be credentials_bad"
+[[ "$(xai_oauth_ledger_class grok-4.5)" == "credentials_bad" ]] \
+  || fail "scenario4: xai-oauth/grok-4.5 must be credentials_bad"
 assert_no_token_leak
-ok "scenario4: auth.json present but still unauthenticated is dead"
+ok "scenario4: auth.json present but still unauthenticated is dead; xai-oauth mirrored dead"
 
 # --- 5. dedup on marker ----------------------------------------------------
 : >"$gh_log"; : >"$triage"
@@ -232,7 +253,11 @@ run_canary
 [[ "$env_rc" == "0" ]] || fail "scenario8: expected rc=0, got $env_rc ($env_out)"
 grep -q 'SEAT-LIVE-VALIDATE-GROK-DEAD' "$triage" || fail "scenario8: missing LOUD"
 grep -q 'timed out' "$triage" || fail "scenario8: must name the timeout"
-ok "scenario8: grok models timeout is needs-interactive, tick stays green"
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "credentials_bad" ]] \
+  || fail "scenario8: xai-oauth/grok-4.6 must be credentials_bad"
+[[ "$(xai_oauth_ledger_class grok-4.5)" == "credentials_bad" ]] \
+  || fail "scenario8: xai-oauth/grok-4.5 must be credentials_bad"
+ok "scenario8: grok models timeout is needs-interactive, tick stays green; xai-oauth mirrored dead"
 unset GROK_MODELS_SLEEP
 unset FLEET_GROK_MODELS_TIMEOUT
 
