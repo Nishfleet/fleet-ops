@@ -330,6 +330,28 @@ groups:
           summary: "console tile-verify organ absent — the self-audit pass is missing or dead"
           description: "Repair worker: fleet-console-pi/verify.py must write fleet_console_tile_verify_timestamp_seconds (and fleet_console_tile_mismatch). Check fleet-console-pi.timer is running and journalctl --user -u fleet-console-pi.service. No new timer was added; verify piggybacks the existing push cycle (fleet-ops#1157)."
 
+      # Organ heartbeat (fleet-ops#1463 + #1010 standing pattern). The
+      # resilience drill exports fleet_resilience_drill_last_green_seconds
+      # ONLY when every plane passes (or skips) on the last run; a red run
+      # deliberately keeps the timestamp at 0 so a drill that stays red is
+      # itself loud. 26h is just over one missed daily cycle (the drill
+      # fires at 05:47; a one-day skip should not page on a brief host
+      # pause, a two-day skip is a real failure). absent() catches a
+      # missing file (node-exporter textfile collector keeps the last
+      # scrape, so a frozen file keeps the timestamp fresh — that's why
+      # time()-timestamp is in the OR clause). The drill runs on the
+      # existing daily 05:47 timer (no new timer; #1463 only extends the
+      # existing roster).
+      - alert: ResilienceDrillAbsent
+        expr: absent(fleet_resilience_drill_last_green_seconds) or fleet_resilience_drill_last_green_seconds == 0 or (time() - fleet_resilience_drill_last_green_seconds) > 93600
+        for: 4h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet resilience drill organ absent — the eleven-plane drill is missing, dead, or stuck red"
+          description: "Repair worker: bin/fleet-resilience-drill must write fleet_resilience_drill_last_green_seconds on every all-pass run. fleet_resilience_drill_plane_fail{plane=...} and fleet_resilience_drill_plane_skip{plane=...} name the failing planes. Check fleet-resilience-drill.timer is running and journalctl --user -u fleet-resilience-drill.service. The five #1463 failure-class planes (queue_freeze, pipeline_red, boundary_delivery, band_floor, event_trigger_spot) sandbox against live state, so a red plane is safe to reproduce."
+
       # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
       # out and scheduled refreshes did not recover. Honesty rendering
       # (dash + stale marker) already works; this is the missing

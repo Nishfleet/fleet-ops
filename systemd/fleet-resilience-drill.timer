@@ -1,10 +1,14 @@
 [Unit]
-Description=Fleet four-plane resilience drill — daily cycle (fleet-ops#455)
-# Named reason: each plane's failure is silent without a periodic proof
-# (untested Restart=always, a public SSH bind, a stale restore drill, a
-# missing break-glass runbook). Daily at 05:47 IST is one waking window,
-# off the :00/:17 heartbeat cluster. The drill is cheap (systemctl show
-# + one isolated stub). Persistent=true survives downtime.
+Description=Fleet resilience drill — eleven planes (fleet-ops#455 + #1463)
+# Named reason: each plane's failure is silent without a periodic proof.
+# Original four planes (untested Restart=always, a public SSH bind, a
+# stale restore drill, a missing break-glass runbook) plus the five
+# #1463 failure-class planes (queue_freeze, pipeline_red,
+# boundary_delivery, band_floor, event_trigger_spot) all rot silently
+# without a daily proof. Daily at 05:47 IST is one waking window, off
+# the :00/:17 heartbeat cluster. The drill is cheap (systemctl show +
+# one isolated stub + sandbox fixtures). Persistent=true survives
+# downtime.
 
 [Timer]
 OnCalendar=*-*-* 05:47:00

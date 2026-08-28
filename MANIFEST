@@ -283,15 +283,25 @@ bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
 systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
 systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
 systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/fleet-restore-drill.service.d/10-keystone-hc.conf
-# fleet-ops#455: four-plane resilience drill + keystone dead-man pings +
-# tailscaled Restart=always. Isolated stubs only; never kills live
-# tailscaled. Daily timer; named reason is in the unit file.
+# fleet-ops#455 + #1463: eleven-plane resilience drill + keystone dead-man
+# pings + tailscaled Restart=always. The five #1463 failure-class planes
+# (queue_freeze, pipeline_red, boundary_delivery, band_floor,
+# event_trigger_spot) are sandboxed against the libs below; isolated
+# stubs only; never kills live tailscaled. Daily timer; named reason is
+# in the unit file.
 bin/fleet-resilience-drill /home/nish/.local/bin/fleet-resilience-drill
 bin/keystone-hc-ping /home/nish/.local/bin/keystone-hc-ping
 systemd/fleet-resilience-drill.service /home/nish/.config/systemd/user/fleet-resilience-drill.service
 systemd/fleet-resilience-drill.timer /home/nish/.config/systemd/user/fleet-resilience-drill.timer
 systemd/resilience-drill.slice /home/nish/.config/systemd/user/resilience-drill.slice
 systemd/resilience-drill-stub-restart.service /home/nish/.config/systemd/user/resilience-drill-stub-restart.service
+# fleet-ops#1463: the five failure-class planes source these libs at
+# runtime. precedence-band.sh is the band floor's sandbox (live install
+# is via the line below; the repo copy is what the drill sees when
+# invoked from a checkout). vault-conflict-resolver.py classifies the
+# sync-conflict fixture under a scratch VAULT.
+lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
+lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-keystone-hc.conf
 systemd/pi-scout@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-scout@.service.d/10-keystone-hc.conf
 systemd/intake-reconcile.service.d/20-keystone-hc.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/20-keystone-hc.conf
