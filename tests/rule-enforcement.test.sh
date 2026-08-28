@@ -905,4 +905,11 @@ ok "rule-enforcement: token economy canary drill"
 bash "$here/standing-rules-drift.test.sh" || fail "standing-rules drift drill failed"
 ok "rule-enforcement: standing-rules drift drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, and aeo-probe drills" 
+# fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
+# absent() rule in the same PR; the registry enumerates the known organs and
+# the gate rejects a PR that touches an organ without its absent() rule.
+# Nested host so the worker token does not need to edit .github/workflows/**.
+bash "$here/fleet-organ-heartbeat.test.sh" || fail "organ-heartbeat drill failed"
+ok "rule-enforcement: organ-heartbeat drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, and organ-heartbeat drills"
