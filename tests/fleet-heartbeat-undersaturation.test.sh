@@ -205,8 +205,8 @@ case "$cmd" in
     ;;
   show)
     # Parse: systemctl show UNIT [--property=PROP] [--value].
-    # fleet-ops#1155: the worker counter now inspects ExecStart for
-    # "pi --print" instead of matching unit names.
+    # fleet-ops#1155: the worker counter now inspects ExecStart for live
+    # worker literals: "pi --print", "pi-issue-run", "pi-packet-run".
     prop="ActiveEnterTimestampMonotonic"
     unit=""
     while [[ $# -gt 0 ]]; do
@@ -227,7 +227,12 @@ case "$cmd" in
           if grep -qxF "$unit" "${RUNNING_UNITS:-/dev/nonexistent}" 2>/dev/null \
              || grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
              || grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-            printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n'
+            inst=""
+            case "$unit" in
+              pi-issue@*) inst="${unit#pi-issue@}"; inst="${inst%.service}"; printf '/home/nish/.local/bin/pi-issue-run %s\n' "$inst" ;;
+              pi-packet@*) inst="${unit#pi-packet@}"; inst="${inst%.service}"; printf '/home/nish/.local/bin/pi-packet-run %s\n' "$inst" ;;
+              *) printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n' ;;
+            esac
           fi
         fi
         ;;

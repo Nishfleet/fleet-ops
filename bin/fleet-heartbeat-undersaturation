@@ -137,11 +137,13 @@ admit_floor() {
     echo 25
 }
 
-# --- count running: active/activating user services whose ExecStart contains
-# the literal "pi --print" (fleet-ops#1155). Never enumerate by unit-name
-# patterns: odd-named `pi-systemd-run --unit <name> -- ... pi --print` units
-# must count, and pi-packet@/alert-repair-*/pi-job-* workers are also live
-# capacity. #72's liveness rule still holds: the state filter is the live set.
+# --- count running: active/activating user services whose ExecStart command
+# line contains a live worker literal: "pi --print" (fleet-ops#1155),
+# "pi-issue-run" (P4-A seat-rotation wrapper for pi-issue@ units),
+# or "pi-packet-run". Never enumerate by unit-name patterns: odd-named
+# `pi-systemd-run --unit <name> -- ... pi --print` units must count, and
+# pi-packet@/alert-repair-*/pi-job-* workers are also live capacity. #72's
+# liveness rule still holds: the state filter is the live set.
 count_running() {
     local unit execstart n=0
     while IFS= read -r unit; do
@@ -149,7 +151,7 @@ count_running() {
         [ -z "${unit##*.service}" ] || continue
         execstart=$("$SYSTEMCTL" --user show "$unit" --property=ExecStart --value 2>/dev/null || true)
         case "$execstart" in
-            *"pi --print"*) n=$((n+1)) ;;
+            *"pi --print"*|*"pi-issue-run"*|*"pi-packet-run"*) n=$((n+1)) ;;
         esac
     done < <("$SYSTEMCTL" --user list-units --type=service \
         --state=active,activating --no-legend --plain 2>/dev/null \
