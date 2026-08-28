@@ -1,0 +1,30 @@
+name = "github-push-forward"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+
+# fleet-ops#1464 — dumb transport Worker. Verifies the GitHub webhook
+# HMAC, then forwards the original body through the configured tunnel
+# URL. All logic stays on the VPS side (gh-webhook-receiver.service).
+#
+# Secrets (never committed; set with `wrangler secret put`):
+#   GITHUB_WEBHOOK_SECRET   the same shared secret the VPS receiver uses
+#                           (~/.config/fleet-ops/gh-webhook.secret on VPS)
+#   TUNNEL_FORWARD_TOKEN    shared bearer between Worker and VPS so the
+#                           VPS-side can authenticate the tunnel hop
+#                           independently of the GH HMAC
+#
+# Vars (safe to commit):
+#   TUNNEL_FORWARD_URL      the public ingress URL of the Cloudflare
+#                           Tunnel that terminates at gh-webhook-receiver:
+#                           8088 on this VPS. Configure via
+#                           `wrangler vars set TUNNEL_FORWARD_URL ...`
+#
+# The Worker itself does NOT hold the tunnel credentials — those live
+# on the VPS in cloudflared. The Worker only knows the public URL to
+# POST to.
+
+[vars]
+TUNNEL_FORWARD_URL = "https://gh-webhook.tunnel.example.invalid/webhook"
+
+[observability]
+enabled = true

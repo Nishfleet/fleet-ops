@@ -1,0 +1,15 @@
+[Unit]
+Description=Synthetic canary timer for GitHub push channel (fleet-ops#1464)
+
+[Timer]
+# Named reason (decisions-ledger 2026-08-27): the 5-minute cadence is the
+# resolution at which a path death becomes visible to the deadman. Going
+# faster would burn a worker seat; going slower would let the channel die
+# silently for too long. Jitter avoids a thundering herd with the other
+# 5-minute exporter ticks.
+OnCalendar=*:00/5
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
