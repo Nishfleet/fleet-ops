@@ -1548,7 +1548,11 @@ UNJUSTIFIED_BIN="${FLEET_UNJUSTIFIED_WAIT:-/home/nish/.local/bin/fleet-unjustifi
 unjustified_rc=0
 if [ -x "$UNJUSTIFIED_BIN" ]; then
     log "15. unjustified-wait detector starting"
-    if "$UNJUSTIFIED_BIN"; then
+    # Opt in to observe-to-close (fleet-ops#852): the production heartbeat is
+    # the only caller trusted to close signal: unjustified-wait/* issues, and
+    # it is the only one that sets CLOSE_ISSUES=1. A test or one-off run with
+    # an isolated READY-WORK fixture must not close live issues (#820 class).
+    if FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES=1 "$UNJUSTIFIED_BIN"; then
         log "15. unjustified-wait detector complete"
     else
         unjustified_rc=$?

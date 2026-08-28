@@ -13,9 +13,14 @@
 #   4. credentials_bad seat WITHOUT seat_dead=true -> exit 1 (missing clock).
 #   5. seat_dead=true with a non-dead class -> exit 1 (inconsistent).
 #   6. STOP-REASON with an illegal reason -> exit 1.
-#   7. READY-WORK stalled claim (CLAIMED, old, no DONE, no after:) -> exit 1.
+#   7. READY-WORK stalled claim (CLAIMED, old, no DONE, no after:) with
+#      REPAIR=0 -> exit 1 (audit-only path still LOUD).
+#   7b. Same stalled claim with REPAIR=1 (default) -> strips CLAIMED:,
+#      exits 0, UNJUSTIFIED-WAIT-REPAIR + UNJUSTIFIED-WAIT-OK (fleet-ops#852).
 #   8. Auto-file: gh mock creates an issue with the signal key, deduped on
 #      a second run (open issue already carries the signal).
+#   8b. Observe-to-close: green tick with CLOSE_ISSUES=1 posts resolved-at
+#       on an open signal issue; a later green tick closes it (#852).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,8 +37,9 @@ scratch="$(mktemp -d -t unjustified.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # gh mock: per-issue body files under the store dir (multi-line bodies).
+# Also tracks comments + closed state for observe-to-close (fleet-ops#852).
 gh_store="$scratch/gh-issues"
-mkdir -p "$gh_store"
+mkdir -p "$gh_store" "$gh_store/comments" "$gh_store/closed"
 cat >"$scratch/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -49,27 +55,89 @@ case "$cmd" in
           case "$1" in
             --title) title="$2"; shift 2 ;;
             --body) body="$2"; shift 2 ;;
-            --repo) shift 2 ;;
+            --repo|-R) shift 2 ;;
             *) shift ;;
           esac
         done
-        n=$(ls "$store" | wc -l)
+        n=$(find "$store" -maxdepth 1 -name 'issue-*.body' | wc -l)
         f="$store/issue-$((n+1)).body"
         printf '%s\n' "$title" > "$f"
         printf '%s\n' "$body" >> "$f"
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
       list)
+        # Support --json number,body[,comments] and --state open.
+        want_comments=0
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --json)
+              [[ "$2" == *comments* ]] && want_comments=1
+              shift 2
+              ;;
+            --state) shift 2 ;;
+            --limit|-R|--repo) shift 2 ;;
+            *) shift ;;
+          esac
+        done
         printf '[\n'
         first=1
-        for f in "$store"/*.body; do
+        for f in "$store"/issue-*.body; do
           [ -f "$f" ] || continue
-          # body = everything after the first line (the title).
+          base=$(basename "$f" .body)           # issue-N
+          num=${base#issue-}
+          [ -f "$store/closed/$num" ] && continue
           body=$(tail -n +2 "$f")
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":1,"title":"","body":%s}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+          body_json=$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")
+          if [ "$want_comments" = 1 ]; then
+            comments_json='[]'
+            cdir="$store/comments/$num"
+            if [ -d "$cdir" ]; then
+              comments_json=$(python3 -c '
+import json,sys,os
+d=sys.argv[1]
+out=[]
+for name in sorted(os.listdir(d)):
+    p=os.path.join(d,name)
+    if os.path.isfile(p):
+        out.append({"body": open(p).read()})
+print(json.dumps(out))
+' "$cdir")
+            fi
+            printf '{"number":%s,"title":"","body":%s,"comments":%s}' "$num" "$body_json" "$comments_json"
+          else
+            printf '{"number":%s,"title":"","body":%s}' "$num" "$body_json"
+          fi
         done
         printf '\n]\n'
+        ;;
+      comment)
+        num="$1"; shift
+        body=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --body) body="$2"; shift 2 ;;
+            -R|--repo) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        mkdir -p "$store/comments/$num"
+        n=$(find "$store/comments/$num" -maxdepth 1 -type f 2>/dev/null | wc -l)
+        printf '%s\n' "$body" > "$store/comments/$num/c$((n+1)).txt"
+        echo "https://github.com/Nishfleet/fleet-ops/issues/$num#comment-1"
+        ;;
+      close)
+        num="$1"; shift
+        # Accept --reason completed and -R/--repo.
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --reason|-R|--repo) shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        mkdir -p "$store/closed"
+        : > "$store/closed/$num"
+        echo "Closed #$num"
         ;;
       *) exit 1 ;;
     esac
@@ -80,12 +148,16 @@ FAKE
 chmod +x "$scratch/gh"
 
 run_bin() {
+  # Default REPAIR=0 so existing audit-only scenarios keep asserting the
+  # LOUD finding. Scenario 7b opts into REPAIR=1 to prove the #852 fix.
   set +e
   FLEET_SEAT_LEDGER_DIR="$scratch/seats" \
   FLEET_STOP_REASON="$scratch/STOP-REASON.json" \
   FLEET_READY_WORK="$scratch/READY-WORK.md" \
   FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:00:00Z" \
   FLEET_CLAIM_STALE_HOURS="24" \
+  FLEET_UNJUSTIFIED_WAIT_REPAIR="${FLEET_UNJUSTIFIED_WAIT_REPAIR:-0}" \
+  FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES:-0}" \
   FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0 \
   FLEET_OPS_REPO="$scratch" \
   SYSTEMD_ANALYZE="${SYSTEMD_ANALYZE:-systemd-analyze}" \
@@ -163,13 +235,34 @@ grep -q "mystery-wait" "$scratch/err.log" || fail "missing reason mention"
 ok "illegal STOP-REASON reason is flagged"
 printf '%s\n' '{"reason":"unit-failure","detail":{}}' >"$scratch/STOP-REASON.json"
 
-# --- 7. stalled READY-WORK claim ---------------------------------------------
+# --- 7. stalled READY-WORK claim (audit-only, REPAIR=0) ----------------------
 printf '%s\n' "- [ ] Item A — a ready item without after:" >"$scratch/READY-WORK.md"
 printf '%s\n' "- [ ] Item B CLAIMED:2026-08-25T00:00:00Z — stale claim, no DONE, no after:" >>"$scratch/READY-WORK.md"
-rc=$(run_bin)
+rc=$(FLEET_UNJUSTIFIED_WAIT_REPAIR=0 run_bin)
 [[ "$rc" == "1" ]] || fail "stale READY-WORK claim should exit 1 (got $rc)"
 grep -q "stalled" "$scratch/err.log" || fail "missing stalled-claim mention"
-ok "stalled READY-WORK claim is flagged"
+ok "stalled READY-WORK claim is flagged (REPAIR=0)"
+
+# --- 7b. stalled READY-WORK claim REPAIR=1 strips CLAIMED (fleet-ops#852) ----
+# NOTE: do NOT put the prose "no after:" immediately before CLAIMED — the
+# detector matches the substring "after: " (space required), and "no after: "
+# would false-positive as a named clock.
+printf '%s\n' "- [ ] Item A — a ready item" >"$scratch/READY-WORK.md"
+printf '%s\n' "- [ ] Item B — stale claim without a named clock CLAIMED:2026-08-25T00:00:00Z" >>"$scratch/READY-WORK.md"
+printf '%s\n' "- [ ] Item C after: test -f /tmp/does-not-exist CLAIMED:2026-08-25T00:00:00Z — gated, leave CLAIMED alone" >>"$scratch/READY-WORK.md"
+rc=$(FLEET_UNJUSTIFIED_WAIT_REPAIR=1 run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "REPAIR=1 should exit 0 after unclaiming (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-REPAIR" "$scratch/err.log" || fail "missing REPAIR loud line"
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || fail "missing OK line after repair"
+# Item B must no longer carry CLAIMED:
+grep "Item B" "$scratch/READY-WORK.md" | grep -q "CLAIMED:" \
+  && { cat "$scratch/READY-WORK.md"; fail "Item B still carries CLAIMED after repair"; }
+grep -q "Item B — stale claim without a named clock" "$scratch/READY-WORK.md" \
+  || { cat "$scratch/READY-WORK.md"; fail "Item B should remain as ready-now without CLAIMED"; }
+# Item C keeps CLAIMED because it has an after: gate (named clock).
+grep "Item C" "$scratch/READY-WORK.md" | grep -q "CLAIMED:2026-08-25T00:00:00Z" \
+  || { cat "$scratch/READY-WORK.md"; fail "Item C with after: must keep its CLAIMED marker"; }
+ok "stalled READY-WORK claim is unclaimed by REPAIR=1 (fleet-ops#852)"
 
 # --- 8. auto-file with signal key + dedupe -----------------------------------
 : >"$scratch/READY-WORK.md"
@@ -216,6 +309,67 @@ grep -q "deduped" "$scratch/err3.log" || fail "second run did not dedupe"
 grep -rl "signal: unjustified-wait/" "$scratch/gh-issues" | wc -l | grep -q "^1$" \
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
+
+# --- 8b. observe-to-close on a green tick (fleet-ops#852) --------------------
+# Seed an open signal issue (no finding this run) and prove the two-tick close.
+rm -rf "$scratch/seats" "$scratch/gh-issues"
+mkdir -p "$scratch/seats" "$scratch/gh-issues/comments" "$scratch/gh-issues/closed"
+cat >"$scratch/seats/good.json" <<'JSON'
+{"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"observed_at":"2026-08-27T00:00:00Z"}
+JSON
+: >"$scratch/STOP-REASON.json"
+: >"$scratch/READY-WORK.md"
+# Pre-seed issue #1 with the signal key (as if a prior tick filed it).
+printf '%s\n' "fix(unjustified-wait): top-gear-no-clock — deferral with no named clock" \
+  >"$scratch/gh-issues/issue-1.body"
+printf '%s\n' "finding body" "" "signal: unjustified-wait/top-gear-no-clock" \
+  >>"$scratch/gh-issues/issue-1.body"
+
+# Tick 1: green + CLOSE_ISSUES=1 -> posts resolved-at, does NOT close yet.
+set +e
+FLEET_SEAT_LEDGER_DIR="$scratch/seats" \
+FLEET_STOP_REASON="$scratch/STOP-REASON.json" \
+FLEET_READY_WORK="$scratch/READY-WORK.md" \
+FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:00:00Z" \
+FLEET_UNJUSTIFIED_WAIT_REPAIR=0 \
+FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES=1 \
+FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0 \
+FLEET_OPS_REPO="$scratch" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO="Nishfleet/fleet-ops" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" "$scratch" >/dev/null 2>"$scratch/err-obs1.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || { cat "$scratch/err-obs1.log"; fail "observe tick1 should exit 0 (got $rc)"; }
+grep -q "OBSERVED-RESOLVED" "$scratch/err-obs1.log" || { cat "$scratch/err-obs1.log"; fail "tick1 missing OBSERVED-RESOLVED"; }
+[[ -f "$scratch/gh-issues/closed/1" ]] && fail "tick1 must NOT close yet (two-tick close)"
+grep -Rq "resolved-at: signal: unjustified-wait/top-gear-no-clock" "$scratch/gh-issues/comments/1" \
+  || { ls -la "$scratch/gh-issues/comments/1" 2>/dev/null; fail "tick1 did not post resolved-at marker"; }
+ok "observe-to-close tick1 posts resolved-at without closing"
+
+# Tick 2: green + CLOSE_ISSUES=1 with marker already present -> closes.
+set +e
+FLEET_SEAT_LEDGER_DIR="$scratch/seats" \
+FLEET_STOP_REASON="$scratch/STOP-REASON.json" \
+FLEET_READY_WORK="$scratch/READY-WORK.md" \
+FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:00:00Z" \
+FLEET_UNJUSTIFIED_WAIT_REPAIR=0 \
+FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES=1 \
+FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0 \
+FLEET_OPS_REPO="$scratch" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO="Nishfleet/fleet-ops" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" "$scratch" >/dev/null 2>"$scratch/err-obs2.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || { cat "$scratch/err-obs2.log"; fail "observe tick2 should exit 0 (got $rc)"; }
+grep -q "OBSERVE-CLOSED" "$scratch/err-obs2.log" || { cat "$scratch/err-obs2.log"; fail "tick2 missing OBSERVE-CLOSED"; }
+[[ -f "$scratch/gh-issues/closed/1" ]] || fail "tick2 did not close the issue"
+ok "observe-to-close tick2 closes after resolved-at marker (fleet-ops#852)"
 
 # --- 9. timer gate audit ----------------------------------------------------
 # Prepare a clean scratch repo with a systemd/ dir so the timer audit is
@@ -267,4 +421,14 @@ rc=$(run_bin)
 [[ "$rc" == "0" ]] || fail "past one-shot with no gate should exit 0 (got $rc)"
 ok "past one-shot with no gate is ignored (not parked on a future date)"
 
-echo "OK: fleet-unjustified-wait: clock audit, timer gates, loud fail, auto-file dedupe"
+# --- 10. heartbeat wiring contract (fleet-ops#852 / #820 class) --------------
+# Production heartbeat is the only caller trusted to close. Pin the opt-in.
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+[[ -f "$tier1" ]] || fail "fleet-heartbeat-tier1 missing"
+grep -q 'FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES=1' "$tier1" \
+  || fail "fleet-heartbeat-tier1 must set FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES=1 (fleet-ops#852 observe-to-close opt-in)"
+grep -q 'FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES' "$bin" \
+  || fail "fleet-unjustified-wait must gate close on FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES"
+ok "heartbeat wires CLOSE_ISSUES=1; detector gates on the flag"
+
+echo "OK: fleet-unjustified-wait: clock audit, timer gates, loud fail, auto-file dedupe, repair, observe-to-close"
