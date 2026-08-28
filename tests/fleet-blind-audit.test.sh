@@ -496,3 +496,75 @@ grep -F 'dedup:' "$scratch/dedup.log" >/dev/null \
     || fail "dedup run did not log dedup: $(cat "$scratch/dedup.log")"
 ok "open #367-marker issue suppresses a second detector file"
 
+# ============================================================================
+# fleet-ops#838: the original 'find ... | sort | head -200' (and the
+# matching `| head -50` on the systemctl lines) caused bin/fleet-blind-audit
+# to exit 141 (SIGPIPE) once the repo had more than 200 files. The fix
+# (fleet-ops#786) dropped the head caps; this scenario is the class guard
+# so a future prompt-tuner cannot reintroduce the pattern.
+#
+# Two locks:
+#   1. Static: bin/fleet-blind-audit must not have `| head -N` or
+#      `| head -c` inside a command substitution. A bare `head -1` is
+#      allowed (single-item pick, no SIGPIPE risk).
+#   2. Dynamic: build a synthetic repo with 300+ files and run the bin
+#      with AUDIT_DRILL=1 against it. The drill path still runs the
+#      `find ... | sort` line; with the old `| head -200` this would
+#      SIGPIPE the find/sort and exit 141.
+# ============================================================================
+
+# --- 1. Static lock --------------------------------------------------------
+# fleet-ops#523 token-efficiency gate already covers shell file caps; this
+# is a fleet-blind-audit specific class lock so a single-file edit cannot
+# reintroduce SIGPIPE on the repo-files / systemctl context lines.
+# Block `| head -c` inside a command substitution (byte-cap on context).
+if grep -nE '\$\([^()]*\|[[:space:]]*head[[:space:]]+-[c][[:space:]]' "$bin" >/dev/null; then
+    bad=$(grep -nE '\$\([^()]*\|[[:space:]]*head[[:space:]]+-[c][[:space:]]' "$bin" || true)
+    fail "bin/fleet-blind-audit has head -c inside a command substitution (fleet-ops#838 / #786 class):"$'\n'"$bad"
+fi
+# Block `| head -N` (N != 1) inside a command substitution. head -1 is a
+# single-item pick and has no SIGPIPE risk; N >= 2 on a producer that can
+# exceed N is the #838 shape. ERE does not support negative lookahead, so
+# match N >= 2 by listing 2..9 / 1[0-9] / [2-9][0-9] explicitly.
+hits=$(grep -nE '\$\([^()]*\|[[:space:]]*head[[:space:]]+-([2-9]|1[0-9]|[2-9][0-9])([[:space:]]|$)' "$bin" || true)
+if [[ -n "$hits" ]]; then
+    fail "bin/fleet-blind-audit has '| head -N' (N >= 2) inside a command substitution (fleet-ops#838 / #786 class):"$'\n'"$hits"
+fi
+ok "static: bin/fleet-blind-audit has no SIGPIPE-prone head -N / head -c in command substitutions (fleet-ops#838 / #786)"
+
+# --- 2. Dynamic lock: drill on a synthetic 300+ file repo -----------------
+big_root="$scratch/big-root"
+mkdir -p "$big_root/bin" "$big_root/lib" "$big_root/prompts" "$big_root/tests/fixtures"
+# 320 files is well above the old `head -200` cap.
+for i in $(seq 1 320); do
+    printf 'placeholder file %d\n' "$i" >"$big_root/lib/f_$i.sh"
+done
+printf '# big synthetic repo for #838\n' >"$big_root/README.md"
+printf '# plan\n' >"$scratch/big-plan.md"
+
+big_state="$scratch/big-state"
+big_log="$scratch/big-create.log"
+mkdir -p "$big_state"
+: > "$big_log"
+
+big_rc=0
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$big_log" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$big_root" \
+  AUDIT_STATE_DIR="$big_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$scratch/big-plan.md" \
+  AUDIT_FAKE_NOW="2026-08-26T06:27:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/big.log" 2>&1 || big_rc=$?
+# rc=0 means no SIGPIPE; rc=141 means SIGPIPE reappeared (the live #838 shape).
+[[ $big_rc == 0 ]] || { cat "$scratch/big.log"; fail "big-repo drill exited $big_rc (141=SIGPIPE on | head -N; fleet-ops#838)"; }
+# The drill should have filed exactly one issue.
+grep -c 'FILED' "$scratch/big.log" | grep -qx 1 \
+  || fail "big-repo drill did not file exactly one issue: $(cat "$scratch/big.log")"
+ok "dynamic: bin/fleet-blind-audit drill on a 320-file synthetic repo exits 0 (no SIGPIPE; fleet-ops#838)"
+
