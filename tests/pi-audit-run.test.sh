@@ -225,15 +225,22 @@ PI_RESPONSE=$'PASS\nNo duplicate; beats customer edge AI and advances the north 
 ok "scenario3: complete PASS reason writes vote and exits 0"
 
 # -----------------------------------------------------------------------------
-# Scenario 4: missing verdict still exits 1 (systemd may retry once).
+# Scenario 4: missing verdict writes SKIP and exits 0 (fleet-ops#146).
+# A seat that returns exit 0 with no PASS/FAIL token is transient
+# seat-quality (no-tools/empty/refusal run), same class as a provider wall.
+# SKIP (not exit 1) so the panel sees the seat failure without cascading
+# into a new escalation trip. Previously exit 1 silently killed the script
+# under set -e (grep -m1 no-match) before this branch was reachable.
 # -----------------------------------------------------------------------------
 reset_state
 PI_RESPONSE=$'some random text\nwith no verdict' \
   bash "$bin" 'demo--45--devin' >"$scratch/scenario4.out" 2>"$scratch/scenario4.err" || rc=$?
-[[ "${rc:-0}" == "1" ]] || fail "scenario4: missing verdict must exit 1, got rc=${rc:-0}"
-[[ ! -f "$state_dir/demo/45/devin.vote" ]] \
-    || fail "scenario4: vote must not be written when verdict is missing"
-ok "scenario4: missing verdict still exits 1"
+[[ "${rc:-0}" == "0" ]] || fail "scenario4: missing verdict must SKIP (exit 0), got rc=${rc:-0}"
+[[ -f "$state_dir/demo/45/devin.vote" ]] \
+    || fail "scenario4: SKIP vote must be written when verdict is missing"
+[[ $(jq -r '.verdict' "$state_dir/demo/45/devin.vote") == "SKIP" ]] \
+    || fail "scenario4: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/45/devin.vote")"
+ok "scenario4: missing verdict writes SKIP vote and exits 0 (no escalation cascade)"
 
 # -----------------------------------------------------------------------------
 # Scenario 5: seat-health preflight refuses a transient_fault seat
@@ -366,4 +373,4 @@ verdict7=$(jq -r '.verdict' "$audit_dir/demo/48/devin.vote")
   || fail "scenario7: vote leaked to seat-lib STATE_DIR (/home/nish/.local/state/pi-packet/demo/48/devin.vote) — VOTE_DIR rename did not contain the clobber"
 ok "scenario7: seat-lib STATE_DIR clobber contained — vote lands in AUDIT_STATE_DIR, not in pi-packet"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained"
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict SKIPs (no escalation), #1011 clobber contained"
