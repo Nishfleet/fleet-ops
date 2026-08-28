@@ -144,6 +144,37 @@ tried_file="$ATTEMPTS_DIR/pi-issue-${inst}.tried-seats"
 
 mkdir -p "$ATTEMPTS_DIR" "$(dirname "$out_file")"
 
+# --- ensure packet exists (fleet-ops#1451) ---------------------------------
+# The .in packet may have been archived by pi-issue-failed-reap while the
+# unit's Restart=on-failure ladder is still armed (OnFailure fires on the
+# FIRST failure, but RestartSteps=3 gives 3 more retries). If the packet is
+# missing, regenerate it from the worker prompt + TARGET line so the restart
+# can proceed instead of failing with 208/STDIN (missing StandardInput=file).
+# Instance format: <repo>-<issue> (e.g. fleet-ops-1149, 0509-1302).
+if [[ ! -f "$pkt" ]]; then
+    repo="${inst%-*}"
+    issue="${inst##*-}"
+    if [[ -z "$repo" || -z "$issue" || ! "$issue" =~ ^[0-9]+$ ]]; then
+        seat_log "pi-issue-run: $inst cannot parse repo/issue from instance — cannot regenerate packet"
+        echo "pi-issue-run: packet file not found: $pkt" >&2
+        exit 1
+    fi
+    full_repo="Nishfleet/${repo}"
+    unit_name="pi-issue-${inst}"
+    worker_prompt="${WORKER_PROMPT:-/home/nish/.pi/agent/prompts/worker.md}"
+    if [[ ! -f "$worker_prompt" ]]; then
+        seat_log "pi-issue-run: $inst worker prompt not found at $worker_prompt — cannot regenerate packet"
+        echo "pi-issue-run: packet file not found: $pkt" >&2
+        exit 1
+    fi
+    {
+        cat "$worker_prompt"
+        echo
+        echo "TARGET: repo $full_repo issue $issue unit $unit_name"
+    } > "$pkt"
+    seat_log "pi-issue-run: $inst REGENERATED missing packet for $full_repo#$issue"
+fi
+
 [[ -f "$pkt" ]] || { echo "pi-issue-run: packet file not found: $pkt" >&2; exit 1; }
 
 # --- pick a seat for THIS attempt ------------------------------------------
