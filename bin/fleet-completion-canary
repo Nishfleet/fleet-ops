@@ -793,6 +793,12 @@ def main() -> int:
                             "terminal": "detector-red",
                             "dead_until": iso(cooldown_deadline),
                         })
+                        # The chain terminated this tick — do not count it as
+                        # still-open/stalled (fleet-ops#1610). Without this the
+                        # metric over-counts and the next tick shows a phantom
+                        # open verify chain even though it just closed.
+                        open_hops[hop] -= 1
+                        stalled_hops[hop] -= 1
                         continue
                 elif state.get("ladder"):
                     # Pre-existing stuck chain (laddered by a prior canary version

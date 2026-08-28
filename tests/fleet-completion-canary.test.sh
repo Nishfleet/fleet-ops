@@ -333,20 +333,26 @@ ok "MANIFEST + named-reason timer + nested CI wiring"
 # --- 9. verify stall deadline → detector-red terminal (fleet-ops#1610) -----
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 
-# Fire BridgeSelfTest (resolved alert) + leave it firing.
-# A chain at verify gets stalled, laddered, and hits the deadline.
-write_alerts <<'JSON'
-[
-  {"labels":{"alertname":"BridgeSelfTest"},"activeAt":"2026-08-28T10:00:00Z"}
-]
-JSON
+# Fire BridgeSelfTest: the repair unit ALREADY SUCCEEDED but the alert is
+# STILL firing — that is the verify-stall #1610 targets. classify sees
+# hop=verify, stalled (unit_success + is_firing + verify_age past the clock).
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "BridgeSelfTest"},
+   "activeAt": "2026-08-28T10:00:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
 
-# Write a DISPATCH + resolved unit entry so classify sees hop=verify.
+# DISPATCH + a unit result of success so classify sees hop=verify (not green).
 now_ts="2026-08-28T12:05:00Z"
 cat >"$scratch/actions.log" <<PYEND
 [2026-08-28T10:02:00Z] DISPATCH alertname=BridgeSelfTest seat=someseat/SomeModel unit=alert-repair-BridgeSelfTest-20260828T100200Z
-[2026-08-28T11:30:00Z] RESOLVED alertname=BridgeSelfTest
 PYEND
+# The dispatched alert-repair unit succeeded (moved to verify), but the alert
+# has not left firing, so the chain stays open at verify and stalls.
+printf '%s\n' "success" >"$scratch/sysctl/alert-repair-BridgeSelfTest-20260828T100200Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/alert-repair-BridgeSelfTest-20260828T100200Z.active"
 
 # Seed a pre-existing laddered verify chain (no deadline marker).
 mkdir -p "$scratch/state/open"
@@ -363,9 +369,9 @@ echo "$state1" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 've
 rc=$(run_bin "2026-08-28T12:05:01Z")
 [[ "$rc" == "0" ]] || fail "tick-2 deadline rc=$rc"
 
-# Chain must not be in open/.
-[[ -f "$scratch/state/open/BridgeSelfTest.json" ]] \
-  && fail "chain must be removed from open on deadline expiry"
+# The chain is no longer an OPEN verify chain — it is a cooldown marker
+# (dead_until) on disk so a later tick does not re-open it. The glob below
+# asserts every state file left in open/ carries dead_until.
 
 # Must have a cooldown marker (dead_until).
 mkdir -p "$scratch/state/open"  # just in case
