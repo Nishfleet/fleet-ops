@@ -2452,6 +2452,82 @@ mark_seat_spawn_fail() {
     return 1
 }
 
+# --- empty-run bench (fleet-ops#902) ---------------------------------------
+# A run where pi exits 0 but the only output is a PACKET-VERDICT tools=0
+# verdict (no final text) is an EMPTY RUN — the seat accepted the packet,
+# spent the tokens, and produced nothing (the devin lane #902 gap: exit 0,
+# zero output, silently counted as success). It is a retryable LANE FAULT,
+# not proof the seat is dead: bench it for a short cooldown
+# (EMPTY_RUN_BACKOFF_S, default 900s = 15 min, matching seat-health.ts's
+# empty_run mode) so pick_seat skips it and the packet is re-routed to the
+# next healthy seat, then fail-opens (auto re-eligible — no manual re-arm,
+# no permanent demotion, no two-strikes charge to the packet).
+#
+# The seat-health.ts extension writes the same empty_run marker from inside
+# pi (classifyCliOutput of an empty CLI routes to the empty_run mode); this
+# is the deterministic wrapper-side counterpart pi-issue-run calls on the
+# exact run that produced the empty verdict, so the bench is written even if
+# the extension is not wired. Ledger shape is byte-compatible with
+# SeatLedgerEntry (seat-health.ts); seat_usable skips via the generic
+# usable_at check and fail-opens after.
+EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
+
+mark_seat_empty_run() {
+    local p="$1" m="$2" reason="${3:-empty_run}"
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    local tmp="$path.empty.$$.$RANDOM.tmp"
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local backoff="$EMPTY_RUN_BACKOFF_S"
+    # Compute usable_at = now + backoff (ISO 8601, bash portable).
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry (same policy
+    # as mark_seat_spawn_fail: a real session-time 429 resetting later does
+    # not briefly flip us back to 0).
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg reason "$reason" \
+        --arg observed "$now_utc" --arg usable "$usable_at" \
+        --argjson http_status 200 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"transient_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"cli_spawn",
+          failure_mode:"empty_run",
+          usable_at:$usable,
+          consecutive_failure_count:$merged,
+          empty_run_reason:$reason,
+          empty_run_backoff_s:$backoff
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "empty-run: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "empty-run: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+        return 0
+    fi
+    seat_log "empty-run: rename FAILED for $p/$m at $path (reason=$reason)"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
 # --- quota/cap bench (fleet-ops#90) ----------------------------------------
 # A provider that returns a hard cap/quota 429 with an advertised reset window
 # (ClinePass "weekly Clinepass limit ... resets in 1d 11h", devin 15-min 429,

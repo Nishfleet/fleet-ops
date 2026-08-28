@@ -419,18 +419,46 @@ out_bytes=0
 [[ -f "$out_file" ]] && out_bytes=$(wc -c < "$out_file" 2>/dev/null || echo 0)
 out_bytes=${out_bytes//[^0-9]/}; out_bytes=${out_bytes:-0}
 
-if (( out_bytes < OUT_MIN )); then
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — no-op, exiting 1 so systemd re-seats"
+# fleet-ops#902: a PACKET-VERDICT tools=0 run with no substantive output is
+# an EMPTY RUN, not a success. The verdict line alone (~40B) exceeds OUT_MIN
+# (20B), so byte-count cannot catch it — a devin lane that exits 0 with
+# tools=0 and no final text was silently counted as success (#902). Detect:
+# (1) the output's verdict says tools=0, AND (2) after stripping the
+# EXTLOAD-OK handshake lines, the verdict line and blank lines, nothing real
+# remains (no final text). A tools=0 run WITH real text is a legitimate
+# text-only answer (e.g. "blocked: proposal posted") and stays a success.
+is_empty_run() {
+    local out="${1:-}"
+    [[ -f "$out" ]] || return 1
+    grep -qE 'PACKET-VERDICT[[:space:]]+tools=0' "$out" 2>/dev/null || return 1
+    local rest
+    rest=$(grep -vE '^(EXTLOAD-OK|PACKET-VERDICT)' "$out" 2>/dev/null || true)
+    rest=$(grep -vE '^[[:space:]]*$' <<<"$rest" 2>/dev/null || true)
+    [[ -z "$rest" ]]
+}
+
+if (( out_bytes < OUT_MIN )) || is_empty_run "$out_file"; then
+    if (( out_bytes < OUT_MIN )); then
+        noop_reason="stdout=${out_bytes}B (< ${OUT_MIN}B)"
+        mark_fn=mark_seat_spawn_fail
+    else
+        noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
+        mark_fn=mark_seat_empty_run
+    fi
+    seat_log "pi-issue-run: $inst pi exited 0 but ${noop_reason} — no-op, exiting 1 so systemd re-seats"
     # fleet-ops#390: a no-op is a flake on this packet, not proof the seat
     # is dead. Bench it briefly (SPAWN_FAIL_BACKOFF_S, default 5 min) so
     # pick_seat skips it on the next Restart AND on an intake re-spawn
     # that starts with an empty tried-seats file. Without this, the
     # healthy ledger re-selects the same seat and the unit loops until
     # StartLimitBurst exhausts (fleet-ops-378: 1 byte stdout, unit dead).
-    if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:no-op:stdout=${out_bytes}B"; then
+    # fleet-ops#902: an empty-run (verdict tools=0, no final text) benches
+    # via mark_seat_empty_run (15 min, empty_run mode) matching the
+    # seat-health.ts extension's classification.
+    if "$mark_fn" "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
         seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via pick_seat (excluded by usable_at in the future)"
     else
-        seat_log "pi-issue-run: $inst WARN: spawn-fail marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
+        seat_log "pi-issue-run: $inst WARN: $mark_fn marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
     fi
     exit 1
 fi
