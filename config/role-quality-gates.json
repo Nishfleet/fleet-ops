@@ -91,7 +91,7 @@
     },
     {
       "id": "weekly-fleet-review",
-      "gate": "blind 5-lens research + senior conference, output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only (no Nish report) — fleet-ops#1146, ledger 2026-08-27 Weekly Fleet Review approved",
+      "gate": "blind 6-lens research + senior conference (throughput, output-quality, machinery, truth, outside-world, SECURITY), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only (no Nish report) — fleet-ops#1146, ledger 2026-08-27 Weekly Fleet Review approved",
       "proof": [
         "prompts/weekly-fleet-review.md",
         "systemd/fleet-weekly-fleet-review.service",
