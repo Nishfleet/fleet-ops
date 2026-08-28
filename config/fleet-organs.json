@@ -87,6 +87,17 @@
         "systemd/fleet-asset-census.timer",
         "config/asset-guard-map.json"
       ]
+    },
+    {
+      "name": "resilience-drill",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_resilience_drill_last_green_seconds",
+      "absent_alert": "ResilienceDrillAbsent",
+      "files": [
+        "bin/fleet-resilience-drill",
+        "systemd/fleet-resilience-drill.service",
+        "systemd/fleet-resilience-drill.timer"
+      ]
     }
   ]
 }
