@@ -85,6 +85,35 @@ SEAM_LIB="${AUDIT_SEAM_LIB:-$HOME/.local/lib/pi-packet/manual-seam-lens.py}"
 [ -f "$SEAM_LIB" ] || SEAM_LIB="$repo_fallback/lib/manual-seam-lens.py"
 CYCLE_CRITERIA="${AUDIT_CYCLE_CRITERIA:-$repo_fallback/config/gap-closure-cycle-criteria.md}"
 
+# --- help ---------------------------------------------------------------
+# fleet-ops#1549: --help/-h must print usage and exit 0 without taking the
+# flock, calling pi, starting a unit, or writing a report directory.
+case "${1:-}" in
+    --help|-h)
+        cat <<'HELP'
+fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
+
+Usage: fleet-blind-audit [--help|-h]
+
+Environment:
+  AUDIT_REPO            repo to audit (default: Nishfleet/fleet-ops)
+  AUDIT_REPO_ROOT       checked-out repo path (default: canonical deploy-clone)
+  AUDIT_STATE_DIR       agent-state sink
+  AUDIT_PROMPT          prompt template (prompts/blind-audit.md)
+  AUDIT_DELIBERATE_STATES   docs/deliberate-states.md path
+  AUDIT_PLAN_FILE       fleet plan file for stamps
+  AUDIT_PI_BIN          pi binary
+  AUDIT_PANEL_BIN       panel binary
+  AUDIT_MAX_FINDINGS    cap on filed issues per run (default: 5)
+  AUDIT_DRY_RUN         if 1, do not run pi or file issues
+  AUDIT_DRILL           if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
+  AUDIT_FAKE_NOW        ISO-8601 UTC override for tests
+  AUDIT_ALLOW_NONCANONICAL  if 1, do not retarget products/fleet-ops
+HELP
+        exit 0
+        ;;
+esac
+
 mkdir -p "$STATE_DIR"
 
 # Per-run report directory (UTC timestamp).
