@@ -1191,6 +1191,13 @@ bash "$here/fleet-free-roster-canary.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-prepaid-util-canary.test.sh"
 
+# fleet-ops#629: parked-flash watcher canary (fleet-ops#436). Invoked from
+# this CI-listed file so hosted runners run it without a workflow edit
+# (worker tokens cannot push .github/workflows/**). Same shape as the
+# prepaid-util sibling above; the canary + offline test shipped without a
+# CI host line, so hosted runners never ran the drill.
+bash "$here/paid-flash-canary.test.sh"
+
 # fleet-ops#917: SuperGrok live-validate canary. Invoked from this CI-listed
 # file so hosted runners run it without a workflow edit (worker tokens cannot
 # push .github/workflows/**).
