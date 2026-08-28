@@ -67,4 +67,19 @@ printf '%s\n' "$proof" | grep -q 'tests/fleet-d1-migration-senior-process.test.s
   || fail "matrix proof must name this test (got: $proof)"
 ok "matrix row is enforced with prompt gate and proof"
 
-ok "d1-migration-senior-process: prompt gate locked, matrix enforced"
+# --- 4. original "do it right now?" row is enforced as superseded/voided ------
+jq -e '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations" and .status == "enforced")' "$matrix" >/dev/null \
+  || fail "matrix row led-2026-08-27-d1-prod-migrations must be status=enforced"
+mech_orig=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations") | .mechanism' "$matrix")
+printf '%s\n' "$mech_orig" | grep -q 'void' \
+  || fail "original mechanism must name the VOID of the do-it-right-now decision (got: $mech_orig)"
+printf '%s\n' "$mech_orig" | grep -q 'senior process' \
+  || fail "original mechanism must name the senior process (got: $mech_orig)"
+proof_orig=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations") | .proof' "$matrix")
+printf '%s\n' "$proof_orig" | grep -q 'prompts/worker.md' \
+  || fail "original proof must name prompts/worker.md (got: $proof_orig)"
+printf '%s\n' "$proof_orig" | grep -q 'tests/fleet-d1-migration-senior-process.test.sh' \
+  || fail "original proof must name this test (got: $proof_orig)"
+ok "original matrix row is enforced as voided and superseded by the prompt gate"
+
+ok "d1-migration-senior-process: prompt gate locked, original and correction enforced"
