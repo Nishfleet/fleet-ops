@@ -458,6 +458,13 @@ bin/fleet-prepaid-util-canary /home/nish/.local/bin/fleet-prepaid-util-canary
 # seat-caps.json either carries a measurement citation or has a filed
 # ticket (DETECTOR, observe-to-open). Heartbeat-tier1 block 40.
 bin/fleet-vibes-canary /home/nish/.local/bin/fleet-vibes-canary
+# fleet-ops#532: skills-native canary (sr-skills-native, Nish 2026-08-20).
+# Fail-loud if ~/.claude/skills and ~/.codex/skills diverge in SKILL.md
+# names, a house-method skill is on some harnesses but not all of
+# {claude, codex, pi}, or a skill symlink is broken. A mismatch is a
+# silent miss — the agent thinks a skill exists and it does not.
+# Heartbeat-tier1 block 41.
+bin/fleet-skills-symlink-canary /home/nish/.local/bin/fleet-skills-symlink-canary
 # fleet-ops#536: proven-only Pi extension allowlist canary (sr-pi-extensions-proven).
 # Fail-loud if ~/.pi/agent/extensions or settings.json packages/extensions
 # wires an id that is not in config/pi-extensions-allowlist.json proven[],
