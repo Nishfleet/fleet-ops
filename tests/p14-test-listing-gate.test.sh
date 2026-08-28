@@ -89,7 +89,6 @@ live_skip[pi-worker-execstart-live.test.sh]=1
 # gate fails with their basenames in the FAIL message.
 known_orphans=(
   agent-cron-failure-reason.test.sh
-  bulk-close-pr-landings.test.sh
   failure-mechanism-gate.test.sh
   fleet-heartbeat-degraded-lane-glob.test.sh
   fleet-heartbeat-failed-units-recover.test.sh
@@ -104,10 +103,8 @@ known_orphans=(
   pi-issue-run-mid-session-bench.test.sh
   pi-issue-run-noop-bench.test.sh
   pi-packet-run.test.sh
-  pi-packet-verdict.test.sh
   pi-scout-seat-rotation.test.sh
   pi-transport-check-dropin-428.test.sh
-  salvage-secret-scan.test.sh
   verify-fleet-sync-pat.test.sh
 )
 
