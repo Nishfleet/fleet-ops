@@ -271,7 +271,7 @@ bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # fleet-ops#468: alert-repair COMPLETION canary (Prometheus alert chains).
 # hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
-bin/fleet-completion-canary /home/nish/.local/libexec/fleet-completion-canary
+bin/fleet-completion-canary.py /home/nish/.local/libexec/fleet-completion-canary
 # fleet-ops#468: alert-repair COMPLETION service. oneshot, fail-loud, no restart.
 systemd/fleet-completion-canary.service /home/nish/.config/systemd/user/fleet-completion-canary.service
 # fleet-ops#468: alert-repair COMPLETION timer. 15-min OnCalendar.
