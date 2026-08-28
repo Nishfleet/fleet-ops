@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # tests/worker-memory-dropin.test.sh
 #
-# fleet-ops#1558: per-repo MemoryMax/MemoryHigh via intake-written per-instance
-# drop-ins. Proves:
+# fleet-ops#1558 + #1587: per-repo MemoryMax/MemoryHigh and Environment
+# variables via intake-written per-instance drop-ins. Proves:
 #   1. seat-caps.json carries worker_memory for fleet-ops + 0509 with the
-#      decided caps (Q1=A: light 1536M/1G, browser 3G/2G).
+#      decided caps (light 1536M/1G, browser 2G/1536M — lowered in #1587).
 #   2. seat-lib.sh worker_memory_for_repo returns those values.
-#   3. pi-intake-tick.sh writes the drop-in before systemctl start.
-#   4. pi-issue-start.sh mirrors the same drop-in on re-dispatch.
+#   3. pi-intake-tick.sh writes the memory drop-in before systemctl start.
+#   4. pi-issue-start.sh mirrors the same memory drop-in on re-dispatch.
 #   5. target_concurrent=25 and admit_ceiling = min(25, ram_governor).
-#   6. A universal 1.5G MemoryMax is NOT on the pi-issue@ template (that
-#      would OOM-kill 0509 browser E2E — measured peaks 2.06–2.39G).
+#   6. A universal 1.5G MemoryMax is NOT on the pi-issue@ template.
+#   7. seat-caps.json carries worker_env for 0509 (VITEST_MAX_WORKERS=2,
+#      PLAYWRIGHT_WORKERS=1 — fleet-ops#1587).
+#   8. seat-lib.sh worker_env_for_repo returns those values.
+#   9. pi-intake-tick.sh writes the environment drop-in before systemctl start.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,8 +41,8 @@ o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
 o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
 [[ "$fo_max" == "1536M" ]] || fail "fleet-ops MemoryMax want 1536M got '$fo_max'"
 [[ "$fo_high" == "1G" ]] || fail "fleet-ops MemoryHigh want 1G got '$fo_high'"
-[[ "$o5_max" == "3G" ]] || fail "0509 MemoryMax want 3G got '$o5_max'"
-[[ "$o5_high" == "2G" ]] || fail "0509 MemoryHigh want 2G got '$o5_high'"
+[[ "$o5_max" == "2G" ]] || fail "0509 MemoryMax want 2G got '$o5_max'"
+[[ "$o5_high" == "1536M" ]] || fail "0509 MemoryHigh want 1536M got '$o5_high'"
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
 [[ "$tgt" == "25" ]] || fail "target_concurrent want 25 got '$tgt'"
 ram=$(jq -r '.ram_gb_per_worker // empty' "$caps")
@@ -53,7 +56,7 @@ source "$seat_lib"
 row=$(worker_memory_for_repo "fleet-ops")
 [[ "$row" == $'1536M\t1G' ]] || fail "fleet-ops row want $'1536M\\t1G' got '$row'"
 row=$(worker_memory_for_repo "0509")
-[[ "$row" == $'3G\t2G' ]] || fail "0509 row want $'3G\\t2G' got '$row'"
+[[ "$row" == $'2G\t1536M' ]] || fail "0509 row want $'2G\\t1536M' got '$row'"
 row=$(worker_memory_for_repo "unknown-repo")
 [[ -z "$row" ]] || fail "unknown-repo must return empty, got '$row'"
 ok "2: worker_memory_for_repo returns per-repo caps"
@@ -122,6 +125,47 @@ grep -qE '^MemoryMax=1536M$' "$drop_dir/memory.conf" \
 grep -qE '^MemoryHigh=1G$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemoryHigh=1G"
 ok "7: scratch drop-in write produces MemoryMax=1536M / MemoryHigh=1G"
+
+# --- 8. worker_env_for_repo -------------------------------------------------
+# fleet-ops#1587: per-repo Environment variables for browser-heavy repos.
+o5_env=$(worker_env_for_repo "0509")
+[[ -n "$o5_env" ]] || fail "worker_env_for_repo 0509 must return non-empty"
+grep -qF 'VITEST_MAX_WORKERS=2' <<<"$o5_env" \
+    || fail "worker_env_for_repo 0509 missing VITEST_MAX_WORKERS=2"
+grep -qF 'PLAYWRIGHT_WORKERS=1' <<<"$o5_env" \
+    || fail "worker_env_for_repo 0509 missing PLAYWRIGHT_WORKERS=1"
+env_row=$(worker_env_for_repo "fleet-ops")
+[[ -z "$env_row" ]] || fail "worker_env_for_repo fleet-ops must return empty, got '$env_row'"
+env_row=$(worker_env_for_repo "unknown-repo")
+[[ -z "$env_row" ]] || fail "worker_env_for_repo unknown-repo must return empty, got '$env_row'"
+ok "8: worker_env_for_repo returns per-repo env vars"
+
+# --- 9. intake tick writes the environment drop-in block ---------------------
+grep -qF 'worker_env_for_repo' "$tick" \
+    || fail "pi-intake-tick.sh missing worker_env_for_repo call"
+grep -qF 'environment.conf' "$tick" \
+    || fail "pi-intake-tick.sh missing environment.conf write"
+grep -qF 'Environment=' "$tick" \
+    || fail "pi-intake-tick.sh missing Environment= write"
+ok "9: intake tick writes per-instance environment.conf"
+
+# --- 10. end-to-end environment drop-in write --------------------------------
+unit="pi-issue@0509-9999.service"
+env_lines=$(worker_env_for_repo "0509")
+drop_dir="$XDG_CONFIG_HOME/systemd/user/${unit}.d"
+mkdir -p "$drop_dir"
+{
+    printf '# fleet-ops#1587: per-repo test-parallelism limit (test)\n'
+    printf '[Service]\n'
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && printf 'Environment=%s\n' "$line"
+    done <<<"$env_lines"
+} > "$drop_dir/environment.conf"
+grep -qE '^Environment=VITEST_MAX_WORKERS=2$' "$drop_dir/environment.conf" \
+    || fail "written drop-in missing Environment=VITEST_MAX_WORKERS=2"
+grep -qE '^Environment=PLAYWRIGHT_WORKERS=1$' "$drop_dir/environment.conf" \
+    || fail "written drop-in missing Environment=PLAYWRIGHT_WORKERS=1"
+ok "10: scratch environment.conf write produces correct Environment lines"
 
 echo ""
 echo "ALL OK: worker-memory drop-in + admit ceiling (fleet-ops#1558)"

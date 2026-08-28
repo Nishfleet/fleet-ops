@@ -769,6 +769,16 @@ worker_memory_for_repo() {
     printf '%s\t%s\n' "$max" "$high"
 }
 
+# Per-repo Environment variables from seat-caps.json worker_env.<repo>.
+# Prints "KEY=VALUE" lines (one per env var) or nothing if the repo has no row.
+# Caller writes these into a systemd drop-in Environment file.
+worker_env_for_repo() {
+    local repo="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -r --arg r "$repo" '.worker_env[$r] // empty | to_entries[] | "\(.key)=\(.value)"' "$SEAT_CAPS_JSON" 2>/dev/null || true
+}
+
 # --- seat enumeration from models.json (never hardcode) ----------------------
 # Emit lines: <provider>\t<model>\t<free:1|0>\t<capable:1|0>
 # A seat is "capable" (safe for a heavy code-editing packet) iff ANY of:

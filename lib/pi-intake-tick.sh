@@ -350,7 +350,7 @@ for i in "${!numbers[@]}"; do
 
     # fleet-ops#1558: per-repo MemoryMax/MemoryHigh via per-instance drop-in
     # before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this overrides
-    # for known repos (fleet-ops light 1536M/1G, 0509 browser 3G/2G). Missing
+    # for known repos (fleet-ops light 1536M/1G, 0509 browser 2G/1536M). Missing
     # table row = keep template. daemon-reload so the fresh drop-in is seen
     # on the subsequent start (oneshot units are not lingering-loaded).
     mem_row=$(worker_memory_for_repo "$REPO" 2>/dev/null || true)
@@ -367,6 +367,29 @@ for i in "${!numbers[@]}"; do
         } > "$drop_tmp"
         if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
             mv -f "$drop_tmp" "$drop_dir/memory.conf"
+            systemctl --user daemon-reload 2>/dev/null || true
+        else
+            rm -f "$drop_tmp"
+        fi
+    fi
+
+    # fleet-ops#1587: per-repo Environment variables via per-instance drop-in.
+    # Limits test parallelism (vitest forks, playwright workers) on browser-
+    # heavy repos so per-worker MemoryPeak stays under the lowered cap.
+    env_lines=$(worker_env_for_repo "$REPO" 2>/dev/null || true)
+    if [[ -n "$env_lines" ]]; then
+        drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
+        mkdir -p "$drop_dir"
+        drop_tmp="$drop_dir/environment.conf.tmp.$$"
+        {
+            printf '# fleet-ops#1587: per-repo test-parallelism limit (written by intake)\n'
+            printf '[Service]\n'
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && printf 'Environment=%s\n' "$line"
+            done <<<"$env_lines"
+        } > "$drop_tmp"
+        if ! cmp -s "$drop_tmp" "$drop_dir/environment.conf" 2>/dev/null; then
+            mv -f "$drop_tmp" "$drop_dir/environment.conf"
             systemctl --user daemon-reload 2>/dev/null || true
         else
             rm -f "$drop_tmp"
