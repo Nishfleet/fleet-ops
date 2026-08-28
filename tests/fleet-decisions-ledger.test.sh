@@ -347,6 +347,14 @@ set -e
 grep -q "DECISIONS-LEDGER-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
 ok "missing helper fails loud (guard wins over installed fallback)"
 
+# Citation lock for #631 (missing-helper guard). The guard above (env-var pin
+# wins over installed fallback) is the fix for fleet-ops#631, the sibling of
+# the findings-queued guard. Pin the issue number next to the guard in the bin
+# so a future refactor that removes the guard also has to remove the citation.
+grep -q 'fleet-ops#631' "$bin" \
+  || fail "bin/fleet-decisions-ledger must cite fleet-ops#631 next to the missing-helper guard"
+ok "citation lock: #631 pinned to the missing-helper guard in bin/fleet-decisions-ledger"
+
 set +e
 FLEET_DECISIONS_LEDGER_SESSIONS="$scratch/sessions" \
 FLEET_DECISIONS_LEDGER="$scratch/no-such-ledger.md" \
