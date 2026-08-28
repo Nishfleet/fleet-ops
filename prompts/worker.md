@@ -97,6 +97,16 @@ before opening the PR. Hand-building what already exists is a failed run
 (fleet-ops#517). Skipping `--help` and hand-building a flag that already
 exists is a failed run (fleet-ops#534).
 
+A PR that adds or changes a fleet organ (timer/exporter/guard/canary that
+exports a heartbeat metric) is not done without a matching
+`absent(<heartbeat_metric>)` rule in config/fleet_rules.yml AND a registry
+entry in config/fleet-organs.json, shipped in the same PR. An organ without
+an absent-rule is an organ whose death is invisible (fleet-ops#1010). Run
+`bin/fleet-organ-heartbeat-check gate --name-status <(git diff --name-status origin/main...HEAD) --rules config/fleet_rules.yml --rules-diff <(git diff origin/main...HEAD -- config/fleet_rules.yml) --body <pr-body-file>`
+before opening the PR. A new candidate-organ file (e.g. `libexec/*-export.py`,
+`bin/fleet-*canary*`) that is NOT an organ must carry an
+`organ-heartbeat: <path> not-an-organ: <reason>` line in the PR body.
+
 Agent names are forbidden on Nish's work. No `Co-Authored-By` trailers, no
 "Generated with" footers, and no agent names in the PR body or issue comments
 (fleet-ops#519). Run
