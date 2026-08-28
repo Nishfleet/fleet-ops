@@ -66,10 +66,13 @@ VERSION = "1"
 
 SIGNAL_FMT = "signal: asset-census/{id}"
 
-# Sensitive key/value patterns: we never emit these.
+# Sensitive key/value patterns: we never emit these. re.search already scans
+# the whole string, so no leading/trailing .* — wrapping in .*(...).* forces
+# O(n^2) backtracking per line and hung the census on 13k config files
+# (fleet-ops#1149 inner-loop fix).
 SECRET_KEY_RE = re.compile(
-    r"(.*(TOKEN|KEY|SECRET|PASSWORD|PRIVATE_KEY|CERT|CREDENTIAL|API_KEY|ACCESS_KEY|"
-    r"SECRET_KEY|AUTH|PIN).*)",
+    r"(TOKEN|KEY|SECRET|PASSWORD|PRIVATE_KEY|CERT|CREDENTIAL|API_KEY|ACCESS_KEY|"
+    r"SECRET_KEY|AUTH|PIN)",
     re.I,
 )
 ENDPOINT_KEY_PATTERNS = frozenset(
@@ -147,6 +150,39 @@ def _rel_to_or_name(p: Path, root: Path) -> str:
         return str(p.relative_to(root))
     except ValueError:
         return p.name
+
+
+# Subtrees under the scan roots that are runtime/vendored/session state, not
+# config sinks. Scanning them crawls tens of thousands of files (e.g.
+# ~/.pi/agent/git holds vendored checkouts, ~/.pi/agent/sessions holds per-run
+# transcripts) and turns a weekly census into a multi-minute hot loop. They are
+# not where credentials or endpoint declarations live, so prune them.
+SCAN_PRUNE_DIRS = frozenset(
+    {
+        "git",        # ~/.pi/agent/git — vendored/pi-managed checkouts
+        "sessions",   # ~/.pi/agent/sessions — per-run transcripts
+        "skills",     # ~/.pi/agent/skills — vendored skill bundles
+        "node_modules",
+        ".git",
+        ".cache",
+        "cache",
+    }
+)
+
+
+def _pruned_dirs(root: Path):
+    """Yield (dirpath, dirnames) like os.walk but with prune dirs removed in
+    place, so rglob does not descend into them."""
+    import os
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Mutate dirnames in place to prevent descent into pruned subtrees.
+        dirnames[:] = [d for d in dirnames if d not in SCAN_PRUNE_DIRS and not d.startswith(".git")]
+        yield dirpath, dirnames, filenames
+
+
+# Hard cap on files read per scan root, so a runaway tree can never make the
+# weekly census hang. The credential/endpoint sinks are small; 4000 is generous.
+SCAN_FILE_CAP = 4000
 
 
 class Config:
@@ -538,6 +574,8 @@ class CensusTaker:
         # Limit to the machine's own credential sinks. Product repo worktrees
         # may hold .env files, but scanning them would crawl node_modules and
         # vendor trees; they are guarded by the repo's own CI and secret-scan.
+        # Use os.walk with pruning so vendored/session subtrees
+        # (~/.pi/agent/git, sessions, skills) are not descended into.
         search_roots = [
             self.cfg.home / ".config",
             self.cfg.home / ".local" / "state",
@@ -546,30 +584,36 @@ class CensusTaker:
         for root in search_roots:
             if not root.is_dir():
                 continue
-            for p in root.rglob("*"):
-                if not p.is_file():
-                    continue
-                if p.is_symlink():
-                    continue
-                name = p.name
-                if not self._looks_credentialish(p, name):
-                    continue
-                identities = self._credential_identities(p)
-                if not identities:
-                    identities = ["(no named identity keys)"]
-                rel = _rel_to_or_name(p, root)
-                self.add(
-                    {
-                        "id": f"credential:{rel}",
-                        "class": "credential-file",
-                        "name": name,
-                        "source": f"scan {root}",
-                        "details": {
-                            "path": rel,
-                            "identities": identities,
-                        },
-                    }
-                )
+            seen_files = 0
+            for dirpath, _dirnames, filenames in _pruned_dirs(root):
+                for fname in sorted(filenames):
+                    p = Path(dirpath) / fname
+                    if seen_files >= SCAN_FILE_CAP:
+                        log("credentials: file cap reached at %s (%s), stopping scan of %s", seen_files, p, root)
+                        break
+                    seen_files += 1
+                    if not p.is_file() or p.is_symlink():
+                        continue
+                    if not self._looks_credentialish(p, fname):
+                        continue
+                    identities = self._credential_identities(p)
+                    if not identities:
+                        identities = ["(no named identity keys)"]
+                    rel = _rel_to_or_name(p, root)
+                    self.add(
+                        {
+                            "id": f"credential:{rel}",
+                            "class": "credential-file",
+                            "name": fname,
+                            "source": f"scan {root}",
+                            "details": {
+                                "path": rel,
+                                "identities": identities,
+                            },
+                        }
+                    )
+                if seen_files >= SCAN_FILE_CAP:
+                    break
 
     def _looks_credentialish(self, p: Path, name: str) -> bool:
         lower = name.lower()
@@ -625,6 +669,7 @@ class CensusTaker:
     def endpoints(self) -> None:
         # Endpoint declarations live in config/systemd in the control plane
         # and in the machine's own config sinks. Avoid crawling the whole repo.
+        # Use os.walk with pruning so vendored/session subtrees are skipped.
         search_roots = [
             self.cfg.home / ".config",
             self.cfg.home / ".pi" / "agent",
@@ -636,39 +681,50 @@ class CensusTaker:
         for root in search_roots:
             if not root.is_dir():
                 continue
-            for p in root.rglob("*"):
-                if not p.is_file():
-                    continue
-                if p.is_symlink():
-                    continue
-                if p.suffix.lower() not in (".env", ".sh", ".service", ".timer", ".conf", ".json", ".yml", ".yaml", ".toml", ".md"):
-                    if p.name not in ("hc.env",):
+            seen_files = 0
+            for dirpath, _dirnames, filenames in _pruned_dirs(root):
+                for fname in sorted(filenames):
+                    p = Path(dirpath) / fname
+                    if seen_files >= SCAN_FILE_CAP:
+                        log("endpoints: file cap reached at %s (%s), stopping scan of %s", seen_files, p, root)
+                        break
+                    seen_files += 1
+                    if not p.is_file() or p.is_symlink():
                         continue
-                if p.stat().st_size > 262144:
-                    continue
-                try:
-                    text = p.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                for line in text.splitlines():
-                    line = line.split("#", 1)[0]
-                    for key in self._endpoint_keys(line):
-                        rel = _rel_to_or_name(p, root)
-                        if (rel, key) in seen:
+                    if p.suffix.lower() not in (".env", ".sh", ".service", ".timer", ".conf", ".json", ".yml", ".yaml", ".toml", ".md"):
+                        if fname not in ("hc.env",):
                             continue
-                        seen.add((rel, key))
-                        self.add(
-                            {
-                                "id": f"endpoint:{rel}:{key}",
-                                "class": "endpoint-key",
-                                "name": key,
-                                "source": f"scan {root}",
-                                "details": {
-                                    "file": rel,
-                                    "key": key,
-                                },
-                            }
-                        )
+                    try:
+                        st = p.stat()
+                    except OSError:
+                        continue
+                    if st.st_size > 262144:
+                        continue
+                    try:
+                        text = p.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    for line in text.splitlines():
+                        line = line.split("#", 1)[0]
+                        for key in self._endpoint_keys(line):
+                            rel = _rel_to_or_name(p, root)
+                            if (rel, key) in seen:
+                                continue
+                            seen.add((rel, key))
+                            self.add(
+                                {
+                                    "id": f"endpoint:{rel}:{key}",
+                                    "class": "endpoint-key",
+                                    "name": key,
+                                    "source": f"scan {root}",
+                                    "details": {
+                                        "file": rel,
+                                        "key": key,
+                                    },
+                                }
+                            )
+                if seen_files >= SCAN_FILE_CAP:
+                    break
 
     def _endpoint_keys(self, line: str) -> list[str]:
         keys: list[str] = []
@@ -1160,7 +1216,16 @@ def prom_label(s: str) -> str:
 
 
 def write_metrics(path: Path, diff: dict[str, Any]) -> None:
+    # Organ heartbeat (fleet-ops#1010 standing pattern, required by fleet-ops#1149
+    # item 4): a fresh timestamp on every successful diff so absent() can fire
+    # when the weekly census stops running. Written even when the diff finds
+    # unguarded assets — a finding is a healthy run, not a dead organ.
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
     lines = [
+        "# HELP fleet_asset_census_last_run_seconds Epoch seconds of the last successful asset-census diff. absent() fires when the weekly timer stops running.",
+        "# TYPE fleet_asset_census_last_run_seconds gauge",
+        f"fleet_asset_census_last_run_seconds {now_epoch}",
+        "",
         "# HELP fleet_asset_census_total Total assets enumerated by class.",
         "# TYPE fleet_asset_census_total gauge",
     ]

@@ -74,6 +74,19 @@
         "systemd/pi-scout@.service",
         "systemd/pi-scout@.timer"
       ]
+    },
+    {
+      "name": "asset-census",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_asset_census_last_run_seconds",
+      "absent_alert": "FleetAssetCensusAbsent",
+      "files": [
+        "bin/fleet-asset-census",
+        "lib/pi-packet/asset-census.py",
+        "systemd/fleet-asset-census.service",
+        "systemd/fleet-asset-census.timer",
+        "config/asset-guard-map.json"
+      ]
     }
   ]
 }

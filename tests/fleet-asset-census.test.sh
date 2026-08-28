@@ -90,6 +90,11 @@ grep -q 'fleet_asset_census_total' "$metrics" \
   || fail "metrics must include fleet_asset_census_total"
 grep -q 'fleet_asset_census_unguarded_total' "$metrics" \
   || fail "metrics must include fleet_asset_census_unguarded_total"
+# Organ heartbeat (fleet-ops#1010 standing pattern, fleet-ops#1149 item 4):
+# the diff must write a fresh timestamp so absent() can fire when the weekly
+# timer stops running.
+grep -q 'fleet_asset_census_last_run_seconds' "$metrics" \
+  || fail "metrics must include fleet_asset_census_last_run_seconds heartbeat"
 ok "diff exits 0 and writes JSON + Prometheus textfile"
 
 # --- 6. unguarded-asset detection with a custom map ------------------------
@@ -181,5 +186,66 @@ echo "$out" >"$scratch/claim-census.json"
 claims=$(jq '[.assets[] | select(.class == "test-header-claim")] | length' "$scratch/claim-census.json")
 [[ "$claims" -ge 2 ]] || fail "must extract at least 2 test-header claims, got $claims"
 ok "test-header claim extraction finds capability comments"
+
+# --- 11. organ registration + absent() rule (fleet-ops#1010, #1149 item 4) --
+organs="$repo_root/config/fleet-organs.json"
+rules="$repo_root/config/fleet_rules.yml"
+grep -q '"name": "asset-census"' "$organs" \
+  || fail "fleet-organs.json must register the asset-census organ"
+grep -q 'fleet_asset_census_last_run_seconds' "$organs" \
+  || fail "fleet-organs.json must name the heartbeat metric"
+grep -q 'FleetAssetCensusAbsent' "$organs" \
+  || fail "fleet-organs.json must name the absent alert"
+grep -q 'alert: FleetAssetCensusAbsent' "$rules" \
+  || fail "fleet_rules.yml must define the FleetAssetCensusAbsent alert"
+grep -q 'absent(fleet_asset_census_last_run_seconds)' "$rules" \
+  || fail "fleet_rules.yml must use absent() on the census heartbeat metric"
+# The verify drill is the standing proof that registry <-> rules agree.
+bin/fleet-organ-heartbeat-check verify --registry "$organs" --rules "$rules" >/tmp/organ-verify.out 2>&1 \
+  || fail "organ-heartbeat verify drill failed: $(cat /tmp/organ-verify.out)"
+grep -q 'organ asset-census -> FleetAssetCensusAbsent' /tmp/organ-verify.out \
+  || fail "verify drill must list the asset-census organ"
+ok "asset-census organ registered with matching absent() rule"
+
+# --- 12. scalability: SECRET_KEY_RE must not backtrack, prune must skip -----
+# Regression pin for the 2026-08-28 inner-loop fix: a wrapped .*(...).* regex
+# hung the census for 60+ seconds on 13k config files, and an unpruned
+# ~/.pi/agent/git crawled 24k vendored files. A large fake config tree with
+# long non-matching lines must finish well under the cap.
+# The census scans ~/.config, ~/.local/state, ~/.pi/agent — place the fixture
+# under ~/.config so it is actually walked.
+mkdir -p "$scratch/.config"
+python3 - "$scratch/.config" <<'PY'
+import sys, os
+root = sys.argv[1]
+# 50 files × 400 lines × 200 chars of non-matching noise. The old wrapped
+# .*(...).* regex still took 15+ seconds on this shape; a correct regex
+# finishes in well under a second.
+for i in range(50):
+    with open(os.path.join(root, f"f{i}.conf"), "w") as f:
+        for _ in range(400):
+            f.write("x" * 200 + " no marker here just noise\n")
+# A vendored subtree that must be pruned, not descended into.
+vend = os.path.join(root, "git")
+os.makedirs(vend, exist_ok=True)
+for i in range(500):
+    with open(os.path.join(vend, f"v{i}.json"), "w") as f:
+        f.write('{"no":"secret"}\n')
+PY
+export FLEET_ASSET_CENSUS_SKIP_LIVE=1
+export HOME="$scratch"
+start=$(date +%s)
+out="$("$bin" census 2>/tmp/big.err)"
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+[[ "$rc" -eq 0 ]] || fail "big-config census failed (rc=$rc): $(cat /tmp/big.err)"
+echo "$out" | jq -e . >/dev/null || fail "big-config census output not JSON"
+# 30s is a generous ceiling; the bug took 60s+. A future wrapped-regex
+# regression or a missing prune will blow past it.
+[[ "$elapsed" -lt 30 ]] || fail "census took ${elapsed}s on a large config tree (must be <30s; regex/prune regression)"
+# The pruned git/ subtree must not contribute assets.
+pruned=$(echo "$out" | jq '[.assets[] | select(.id | contains(".config/git/"))] | length')
+[[ "$pruned" -eq 0 ]] || fail "pruned git/ subtree leaked $pruned assets into the census"
+ok "scalability: large config tree scanned in ${elapsed}s, vendored subtree pruned"
 
 echo "OK: fleet-asset-census (fleet-ops#1149)"
