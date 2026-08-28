@@ -77,4 +77,10 @@ if grep -E 'npm ci|gitleaks git|actions/setup-node' "$template_ci" | grep -v 'in
 fi
 ok "template callers point at fleet-ops and pass inputs"
 
+# P11-B repo-standards test is hosted here so it stays in the P14 reachable set
+# without a workflow edit. It exercises .github/scripts/standards-exceptions.mjs
+# and .github/scripts/repo-standards.lib.mjs, and checks the parked/callable
+# reusable workflow files.
+bash "$here/p11b-pending-or-callable.test.sh"
+
 echo "OK: reusable workflow set is shape-locked"
