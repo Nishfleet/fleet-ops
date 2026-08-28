@@ -83,6 +83,9 @@ required = (
     "fleet-metrics-export",
     "standing-rules-render",
     "fleet-aeo",
+    "fleet-gap-closure-drill",
+    "fleet-gap-closure-loop",
+    "gap-closure-drill",
 )
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
@@ -98,13 +101,17 @@ leaked = [
         "fleet-metrics-export.service",
         "standing-rules-render.service",
         "fleet-aeo-probe.service",
+        "fleet-gap-closure-drill.service",
+        "fleet-gap-closure-loop.service",
+        "gap-closure-drill-stub-fail.service",
+        "gap-closure-drill-stub-mask.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe (fleet-ops#1180, #1152, #1236)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, gap-closure-drill/loop (fleet-ops#1180, #1152, #1236, #180)"
 
 # fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
 # standing-rules-render.service on disk (the canonical-render unit that
