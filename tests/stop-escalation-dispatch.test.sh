@@ -83,6 +83,33 @@ mark_seat_spawn_fail() {
   [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
   printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
 }
+# Mirror the real seat-lib detectors (fleet-ops#623): "insufficient funds" is
+# NOT a quota_cap match in production either, so a 402 falls through to
+# mark_seat_spawn_fail — that is the live tight-loop path this fix targets.
+is_quota_cap_error() {
+  local out="$1" err="$2"
+  local combined="$out"$'\n'"$err"
+  [[ -n "$combined" ]] || return 1
+  grep -qiE 'quota[[:space:]]+(exhausted|exceeded|reached)|out[[:space:]]+of[[:space:]]+credits|weekly[[:space:]]+(clinepass[[:space:]]+)?limit' <<<"$combined" || return 1
+  grep -qiE 'resets?[[:space:]]+(in|at|after)|retry[[:space:]_-]?after' <<<"$combined" || grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit' <<<"$combined" || return 1
+  return 0
+}
+is_overload_error() {
+  local out="$1" err="$2"
+  local combined="$out"$'\n'"$err"
+  grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable' <<<"$combined" || return 1
+  return 0
+}
+mark_seat_quota_bench() {
+  local p="$1" m="$2"
+  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
+  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+}
+mark_seat_overload_bench() {
+  local p="$1" m="$2"
+  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
+  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
+}
 seat_log() { :; }
 EOF
 chmod +x "$SEAT_LIB_STUB"
@@ -105,6 +132,16 @@ case "$mode" in
     ;;
   fail)
     echo "pi: simulated provider error" >&2
+    exit 1
+    ;;
+  http402)
+    # The live tight-loop cause (fleet-ops#623): straitly billing wall.
+    echo "HTTP 402: Insufficient funds for request. Check the billing page." >&2
+    exit 1
+    ;;
+  quota)
+    # A hard quota/cap wall with an advertised reset window.
+    echo "quota exhausted, resets in 1h" >&2
     exit 1
     ;;
   timeout)
@@ -132,29 +169,34 @@ export STOP_ESCALATION_AS="$AS"
 export STOP_ESCALATION_STOP_REASON="$AS/STOP-REASON.json"
 export STOP_ESCALATION_SEEN="$AS/stop-escalation-seen.txt"
 export STOP_ESCALATION_KILLS="$AS/stop-escalation-kills.txt"
+export STOP_ESCALATION_WALLED="$AS/stop-escalation-walled.txt"
 export STOP_ESCALATION_NISH="$AS/NISH-ESCALATIONS.md"
 export STOP_ESCALATION_AUDITOR_LOG="$AS/AUDITOR-LOG.md"
 export STOP_ESCALATION_PI_BIN="$PI_STUB"
 export PI_PACKET_SEAT_LIB="$SEAT_LIB_STUB"
 export STOP_ESCALATION_AUDITOR_TIMEOUT=2
 export STOP_ESCALATION_COOLDOWN=0
+# Walled cooldown disabled so re-fire invariants are not silently skipped.
+export STOP_ESCALATION_WALLED_CD=0
 # Stands in for the per-seat ledger a real mark_seat_spawn_fail writes.
 # Cleared per-invariant that needs a fresh bench set.
 export STOP_ESCALATION_TEST_BENCH_FILE="$scratch/benched.txt"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 
 # ---------------------------------------------------------------------------
-# Invariant 1: fully-walled ladder -> LADDER-WALLED in NISH, no AUDITOR dispatch
+# Invariant 1: fully-walled ladder -> LADDER-WALLED in NISH, no AUDITOR dispatch.
+# fleet-ops#623: a walled ladder is a Nish escalation, NOT a unit failure —
+# the dispatcher exits 0 so the unit is active-and-quiet (no alarm blindness).
 # ---------------------------------------------------------------------------
 export STOP_ESCALATION_TEST_SEAT_MODE=empty
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "empty ladder: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "empty ladder: expected exit 0 (quiet walled escalation), got $rc"
 [[ -s "$STOP_ESCALATION_NISH" ]] || fail "empty ladder: NISH-ESCALATIONS should not be empty"
 grep -q 'LADDER-WALLED' "$STOP_ESCALATION_NISH" || fail "empty ladder: expected LADDER-WALLED in NISH"
 [[ ! -s "$STOP_ESCALATION_SEEN" ]] || fail "empty ladder: must not consume dispatch budget"
-ok "fully-walled ladder -> LADDER-WALLED (no NISH on a healthy seat)"
+ok "fully-walled ladder -> LADDER-WALLED in NISH, exit 0 (quiet, not failed)"
 
 : > "$STOP_ESCALATION_NISH"
 
@@ -425,13 +467,14 @@ grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=cursor" "$STOP_ESCALATION_AUD
 grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "1354 fire 2: cursor must be benched"
 
-# Fire 3: both capable seats benched -> ladder walled -> LADDER-WALLED, exit 1.
-# This is the bound: the loop does NOT keep re-picking a dead seat forever.
+# Fire 3: both capable seats benched -> ladder walled -> LADDER-WALLED, exit 0
+# (fleet-ops#623: a walled ladder is a quiet Nish escalation, not a unit
+# failure).  This is the bound: the loop does NOT keep re-picking a dead seat.
 : > "$STOP_ESCALATION_NISH"
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "1354 fire 3: expected exit 1 (ladder walled), got $rc"
+[[ $rc -eq 0 ]] || fail "1354 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
 grep -q "LADDER-WALLED hash=$hash1354" "$STOP_ESCALATION_NISH" \
   || fail "1354 fire 3: expected LADDER-WALLED in NISH (both seats benched)"
 
@@ -464,7 +507,7 @@ export STOP_ESCALATION_TEST_PI_MODE=block
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "flash: expected exit 1 (ladder walled by need_capable), got $rc"
+[[ $rc -eq 0 ]] || fail "flash: expected exit 0 (ladder walled by need_capable, quiet), got $rc"
 grep -q "LADDER-WALLED hash=$hashflash" "$STOP_ESCALATION_NISH" \
   || fail "flash: expected LADDER-WALLED (need_capable excluded the only seat)"
 dispatch_count=$(grep -c "DISPATCH hash=$hashflash" "$STOP_ESCALATION_AUDITOR_LOG" || true)
@@ -472,4 +515,90 @@ dispatch_count=$(grep -c "DISPATCH hash=$hashflash" "$STOP_ESCALATION_AUDITOR_LO
   || fail "flash: must not dispatch to a tools=0 seat (got $dispatch_count DISPATCH lines)"
 ok "fleet-ops#1354: need_capable=1 excludes tools=0 flash seat at pick time"
 
-ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block fail loud, cap enforced, kill-retry capped, dead-seat rotation (#1354)"
+# ---------------------------------------------------------------------------
+# Invariant 12 (fleet-ops#623): a seat returning pi_rc=1 with an HTTP 402
+# "Insufficient funds" billing wall MUST be benched (spawn-fail fallback) and
+# rotate, never re-picked.  This is the live tight-loop cause: the #1354 fix
+# only benched rc=0 seats, so a 402 seat was re-offered every trip and the
+# unit failed 6x in 2 min.  Two capable seats, both 402 -> bench + rotate,
+# then ladder walled (exit 0).
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-623.service"}}
+JSON
+hash623=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=rotate
+export STOP_ESCALATION_TEST_PI_MODE=http402
+
+# Fire 1: picks devin, 402 -> bench (spawn-fail, not quota: "insufficient
+# funds" is not a quota_cap match), DISPATCH-NO-BLOCK, exit 1.
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "623 fire 1: expected exit 1, got $rc"
+grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "623 fire 1: expected DISPATCH-NO-BLOCK on devin"
+grep -q "bench=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "623 fire 1: expected bench=no_block:rc=1 (402 is not a quota wall)"
+grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
+  || fail "623 fire 1: devin must be benched (rc=1 402 -> spawn-fail bench)"
+
+# Fire 2: devin benched -> rotates to cursor, 402 -> bench, exit 1.
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "623 fire 2: expected exit 1, got $rc"
+grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "623 fire 2: expected DISPATCH-NO-BLOCK on cursor (rotation)"
+grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
+  || fail "623 fire 2: cursor must be benched"
+
+# Fire 3: both benched -> ladder walled -> LADDER-WALLED, exit 0 (quiet).
+: > "$STOP_ESCALATION_NISH"
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "623 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
+grep -q "LADDER-WALLED hash=$hash623" "$STOP_ESCALATION_NISH" \
+  || fail "623 fire 3: expected LADDER-WALLED in NISH"
+dispatch_count=$(grep -c "DISPATCH hash=$hash623" "$STOP_ESCALATION_AUDITOR_LOG" || true)
+[[ "$dispatch_count" == "2" ]] \
+  || fail "623: expected exactly 2 dispatches (rotation), got $dispatch_count"
+count=$(awk -v h="$hash623" '$1==h{print $2}' "$STOP_ESCALATION_SEEN" 2>/dev/null || true)
+[[ -z "$count" ]] || fail "623: no-block must not consume dispatch budget (got count=$count)"
+ok "fleet-ops#623: rc=1 HTTP 402 seat benches + rotates, never unbounded loop"
+
+# ---------------------------------------------------------------------------
+# Invariant 13 (fleet-ops#623): a seat returning pi_rc=1 with a quota/cap wall
+# ("quota exhausted, resets in 1h") is benched via the quota bench path, not
+# the spawn-fail fallback.  Proves the longer-bench ladder is wired.
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-623-quota.service"}}
+JSON
+hashq=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=healthy
+export STOP_ESCALATION_TEST_PI_MODE=quota
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "quota: expected exit 1, got $rc"
+grep -q "DISPATCH-NO-BLOCK hash=$hashq provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "quota: expected DISPATCH-NO-BLOCK on devin"
+grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "quota: expected bench=quota_cap (quota wall uses the long bench)"
+grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
+  || fail "quota: devin must be benched"
+ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
+
+ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block fail loud, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"
