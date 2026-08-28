@@ -320,7 +320,7 @@ remove_papered_heartbeat_dropin() {
 # for any such line and proves no filesystem entry with that name exists.
 check_comment_junk() {
   local src dest check_path
-  while read -r src dest; do
+  while read -r src dest || [ -n "$src" ]; do
     [ -z "$src" ] && continue
     # Only whole-line comments (first token starts with '#').
     case "$src" in
@@ -414,7 +414,11 @@ process_entry() {
   fi
 }
 
-while read -r src dest; do
+# `while read` silently drops the final line if the file has no trailing
+# newline (fleet-ops#1443: fleet-asset-census.timer was never installed
+# because MANIFEST ended mid-line). The `|| [ -n "$src" ]` guard catches
+# that last unterminated line so every MANIFEST entry is processed.
+while read -r src dest || [ -n "$src" ]; do
   [ -z "$src" ] && continue
   # Skip whole-line comment lines (first token is '#' with no leading path).
   case "$src" in '#'*) continue ;; esac
