@@ -262,4 +262,6 @@ jobs:
         bash tests/alertmanager-routing-matrix.test.sh
         bash tests/fleet-rules-severity-page.test.sh
         bash tests/stop-escalation-writer-class-gate.test.sh
+        # fleet-ops#754: lock spawn-guard stash readonly enforcement.
+        bash tests/fleet-spawn-guard-stash-readonly.test.sh
         bash tests/phone-chokepoint.test.sh
