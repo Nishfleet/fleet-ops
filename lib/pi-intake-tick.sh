@@ -73,6 +73,10 @@ fi
 . "$SEAT_LIB"
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
 . "$PRECEDENCE_BAND_LIB"
+# Each tick starts with a clean floor latch. The file is keyed on $$ so a
+# leftover from a recycled PID cannot freeze the floor for this tick
+# (fleet-ops#1452). The flock above already serializes fleet-ops ticks.
+precedence_band_pending_clear
 
 # Step 1: list ready work
 # Limit 250 (auditor 2026-08-28, summon unit-failure fleet-heartbeat): the
@@ -228,8 +232,10 @@ for i in "${!numbers[@]}"; do
     # Rent-paying band (fleet-ops#1223): until cutoff_utc, fleet-ops intake
     # claims only surge_leverage_issues; after cutoff, a new machinery claim
     # that would push live share over machinery_max_pct is skipped unless the
-    # body carries `band-multiplier: N`. Skip, do not fail the tick — product
-    # ticks still run, and the next fleet-ops tick retries when a slot opens.
+    # body carries `band-multiplier: N`. One repair lane always runs when
+    # live machinery == 0 (fleet-ops#1452 floor). Skip, do not fail the tick —
+    # product ticks still run, and the next fleet-ops tick retries when a
+    # slot opens.
     band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body") || {
         echo "issue $N ($title): skipped-precedence-band ($band_reason)"
         continue

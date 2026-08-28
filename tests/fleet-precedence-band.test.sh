@@ -17,6 +17,7 @@
 #  13. Ratchet: re-stamped waiver rejected.
 #  14. Heartbeat-tier1 wires the canary, fail-loud, MANIFEST installs it.
 #  15. Matrix row is enforced with mechanism+proof.
+#  19. Band floor: machinery=0, product=1..3 allows one repair lane (fleet-ops#1452).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -216,6 +217,49 @@ set -e
 grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario10: must log OK ($out)"
 ok "scenario10: band accepts machinery share == cap"
 
+# --- 10b. band phase, one repair lane at low-n is the floor, not drift ------
+# fleet-ops#1452: 1 machinery + 1 product is 50% > 30%, but that is the
+# machinery floor (one repair lane always allowed), not over-cap drift.
+# Without this, allowing the floor in allow_claim would immediately trip
+# the canary the moment live units are wired in.
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1452.service
+UNITS
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario10b: one repair lane at low-n must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario10b: must log OK ($out)"
+ok "scenario10b: canary accepts the one-repair-lane floor (1 machinery + 1 product)"
+
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@0509-1302.service
+pi-issue@fleet-ops-1452.service
+UNITS
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario10c: 1 machinery + 2 product must exit 0, got $rc ($out)"
+ok "scenario10c: canary accepts the one-repair-lane floor (1 machinery + 2 product)"
+
+# Two repair lanes at low-n is still over-cap. The floor is one lane.
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1452.service
+pi-issue@fleet-ops-101.service
+UNITS
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario10d: 2 machinery + 1 product must exit 1, got $rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario10d: must name over the cap ($out)"
+ok "scenario10d: canary still rejects a second repair lane at low-n"
+
 # --- 11. ratchet: loosening without wfr_waiver_on ---------------------------
 base_policy_json | jq '.machinery_max_pct = 30' | clean_policy
 cat >"$scratch/prior.json" <<'JSON'
@@ -312,6 +356,10 @@ printf '%s\n' "$proof" | grep -q 'lib/pi-intake-tick.sh' \
   || fail "proof must name the intake-tick hookup (got: $proof)"
 printf '%s\n' "$mech" | grep -q 'pi-intake-tick' \
   || fail "mechanism must name pi-intake-tick (got: $mech)"
+printf '%s\n' "$mech" | grep -q 'machinery floor' \
+  || fail "mechanism must name the machinery floor (fleet-ops#1452) (got: $mech)"
+printf '%s\n' "$proof" | grep -q 'fleet-ops#1452' \
+  || fail "proof must cite fleet-ops#1452 (got: $proof)"
 ok "scenario15: matrix row is enforced with mechanism+proof"
 
 # --- 16. intake-tick sources the band and skips BEFORE the claim push -------
@@ -323,6 +371,8 @@ grep -F 'precedence_band_allow_claim' "$tick" >/dev/null \
   || fail "intake-tick must call precedence_band_allow_claim"
 grep -F 'skipped-precedence-band' "$tick" >/dev/null \
   || fail "intake-tick must log skipped-precedence-band"
+grep -F 'precedence_band_pending_clear' "$tick" >/dev/null \
+  || fail "intake-tick must clear the floor latch at start (fleet-ops#1452)"
 allow_line=$(grep -n 'precedence_band_allow_claim' "$tick" | head -1 | cut -d: -f1)
 push_line=$(grep -n 'push --force-with-lease' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$allow_line" && -n "$push_line" ]] || fail "intake-tick must contain allow_claim and claim push"
@@ -336,6 +386,8 @@ ok "scenario16: intake-tick sources the band and skips before the claim push"
 base_policy_json | clean_policy
 export PRECEDENCE_BAND_JSON="$scratch/policy.json"
 export PRECEDENCE_BAND_NOW="2026-08-27T12:00:00Z"
+export BAND_PENDING_FILE="$scratch/pending.latch"
+rm -f "$BAND_PENDING_FILE"
 : >"$scratch/units.txt"
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units.txt"
 
@@ -411,6 +463,7 @@ ok "scenario17f: band-multiplier lets machinery jump the cap"
 cat >"$scratch/units-empty.txt" <<'UNITS'
 UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-empty.txt"
+rm -f "$BAND_PENDING_FILE"
 set +e
 reason=$(precedence_band_allow_claim fleet-ops 9999 "")
 rc=$?
@@ -419,6 +472,81 @@ set -e
 [[ "$reason" == "allow-band-bootstrap" ]] \
   || fail "scenario17g: expected allow-band-bootstrap, got $reason"
 ok "scenario17g: band bootstrap allows first claim when nothing is live"
+
+# scenario19: machinery floor (fleet-ops#1452). The 0-live bootstrap in
+# 17g does not cover the low-n case: overnight 2026-08-27→28, 1-2 product
+# units were live and every machinery claim computed as 1/(1+N) > 30%
+# (N=1 → 50%, N=2 → 33%). Result: 224 ready items, ~0 dispatches, the
+# starvation reports themselves skipped-precedence-band. One repair lane
+# must always be allowed when live machinery == 0; ratio enforcement
+# resumes from the second machinery unit.
+export PRECEDENCE_BAND_NOW="2026-08-28T03:30:00Z"
+for product_n in 1 2 3; do
+  rm -f "$BAND_PENDING_FILE"
+  : >"$scratch/units-floor.txt"
+  i=0
+  while (( i < product_n )); do
+    echo "pi-issue@0509-$((1299 + i)).service" >>"$scratch/units-floor.txt"
+    i=$((i + 1))
+  done
+  export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
+  set +e
+  reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+  rc=$?
+  set -e
+  [[ "$rc" == "0" ]] \
+    || fail "scenario19: machinery=0 product=$product_n must rc=0, got $rc ($reason)"
+  [[ "$reason" == "allow-band-floor" ]] \
+    || fail "scenario19: machinery=0 product=$product_n expected allow-band-floor, got $reason"
+  ok "scenario19: machinery=0 product=$product_n allows one repair lane ($reason)"
+done
+# The floor is one lane, not a free-for-all: once a machinery unit is
+# live, a second machinery claim at low-n is still skip-band (2/4 = 50%
+# > 30% with product=2).
+cat >"$scratch/units-floor.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@0509-1302.service
+pi-issue@fleet-ops-101.service
+UNITS
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] \
+  || fail "scenario19d: second machinery unit at low-n must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19d: expected skip-band, got $reason"
+ok "scenario19d: ratio resumes from the second machinery unit (skip-band)"
+
+# Intra-tick latch (fleet-ops#1452 blast radius): the floor reads live
+# systemd units, but pi-intake-tick starts workers --no-block and then
+# immediately considers the next ready issue. Until the first unit shows
+# as activating, BAND_MACHINERY stays 0 and an unlatched floor would dump
+# the whole overnight queue (224 ready items). One process may spend the
+# floor once; the next call falls through to the ratio. The latch is a
+# file keyed on $$ because allow_claim is captured in $() (subshell).
+rm -f "$BAND_PENDING_FILE"
+cat >"$scratch/units-floor.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@0509-1302.service
+UNITS
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario19e: first floor claim must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-floor" ]] \
+  || fail "scenario19e: expected allow-band-floor, got $reason"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1453 "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19e: second claim same process must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19e: expected skip-band (floor already spent), got $reason"
+ok "scenario19e: floor is one claim per process (intra-tick latch)"
 
 # --- 18. run_canary default NOW is pinned (mechanical prevention #1444) -----
 # The #1444 FleetMainRed root cause: run_canary defaulted PRECEDENCE_BAND_NOW
