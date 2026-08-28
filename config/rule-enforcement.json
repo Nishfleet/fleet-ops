@@ -687,10 +687,9 @@
     {
       "id": "led-2026-08-27-d1-prod-migrations-decided",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 DECIDED (plain-language re-ask, informed)",
-      "mechanism": "D1 prod migration vacation grant: fleet MAY apply prod migrations autonomously through 2026-09-08 via senior process. Mechanism issue open.",
-      "proof": "fleet-ops#907",
-      "status": "queued(#907)",
-      "queued_since": "2026-08-27"
+      "mechanism": "CI drill tests/fleet-d1-prod-migration-grant.test.sh asserts prompts/worker.md keeps the D1 schema rule (expand/contract, rollback-before-data, one phase per PR, banned DROP/NOT NULL without DEFAULT, real integration test, no stale API names). The vacation grant is time-bound through 2026-09-08 and supersedes the earlier same-day void/correction rows.",
+      "proof": "tests/fleet-d1-prod-migration-grant.test.sh; prompts/worker.md; config/rule-enforcement.json; fleet-ops#907",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-process-amendment",

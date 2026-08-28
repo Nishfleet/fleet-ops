@@ -112,6 +112,11 @@ ok "rule-enforcement: precedence-band canary drill"
 bash "$here/pi-escalation-audit.test.sh" || fail "pi-escalation-audit drill failed"
 ok "rule-enforcement: pi-escalation-audit drill"
 
+# fleet-ops#907: D1 prod migration vacation grant is enforced by the worker
+# prompt D1 schema rule and this CI drill.
+bash "$here/fleet-d1-prod-migration-grant.test.sh" || fail "d1-prod-migration-grant drill failed"
+ok "rule-enforcement: d1-prod-migration-grant drill"
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e
