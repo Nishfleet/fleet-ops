@@ -111,6 +111,26 @@ as naming the failure, and must not treat later successful reads of
 unrelated files as discharging the read-ENOENT of salvage-secret-scan.
 The dedicated regression test
 tests/fleet-failed-command-read-enoent-stale-rg.test.sh pins that.
+A bare `cat` of a stale, non-canonical checkout path like
+`/home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged`
+(the canonical path is `tooling/fleet-ops-deploy-clone/bin/...`) that
+returns `cat: <path>: No such file or directory` with
+`Command exited with code 1` (isError=true) is a real swallowed
+failure (fleet-ops#1097, #1099): the live next turn was thinking-only
+("Let me find the correct path") plus a silent `find ...` recovery
+toolCall with no user-facing text. `cat` is NOT an ls/grep no-match
+probe (there is no canonical-probe exemption for `cat`), and a later
+successful `find` / `cat` of the deploy-clone copy does NOT discharge
+the original failure. Thinking-only path-hunt is the same
+swallowed-failure class as the #953 thinking-only recovery and the
+#1001 "clear picture" prose. Distinct from #945 (chained
+`ls|wc; echo ---; cat <missing-drop-in>` walked past with "PASS"
+prose, locked in tests/fleet-failed-command-flagged.test.sh) and
+from #1001 / #1255 (`read` tool ENOENT of a stale checkout — same
+stale-checkout family, different tool and path). #1099 is the same
+class on a DIFFERENT session slug (01a042cc). The dedicated
+regression test
+tests/fleet-failed-command-cat-stale-fleet-ops.test.sh pins that.
 The auto-filed issue closes via observe-to-close when the session
 mtime ages out of the 24h window. An `edit`
 tool returning "Could not find the exact text in <path>. The old text
