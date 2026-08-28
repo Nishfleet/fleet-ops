@@ -3,6 +3,13 @@ Description=Fleet Console (Pi) — path watch on inputs (seat health, FLEET-PAUS
 # Event-driven: fires when local input files change. The 12-min timer is kept as a dead-man backstop.
 # Inputs: seat health (Pi work tile), FLEET-PAUSED marker (fleet state tile), fleet.prom mtime (exporter output).
 # The exporter runs every 5 min; its atomic write to fleet.prom triggers this path unit.
+# StartLimit* lives in [Unit] for .path units (not [Path]). Without it the default 5/10s
+# burst is blown by rapid inotify retriggering (fleet.prom atomic replace every 5 min +
+# frequent pi-seat-health.json touches). Same class as vault-conflict-resolver.path
+# (fleet-ops#1460). PR #1511 carried this fix but was CLOSED unmerged; reapplied live
+# 2026-08-28 by senior auditor after the .path re-tripped at 12:06/12:48/13:03.
+StartLimitIntervalSec=1h
+StartLimitBurst=200
 
 [Path]
 PathChanged=/home/nish/workspaces/agent-state/lanes/pi-seat-health.json
