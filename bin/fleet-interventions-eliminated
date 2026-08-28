@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# fleet-interventions-eliminated — session-close lint (fleet-ops#526).
+#
+# Standing rule: interventions get eliminated, not repeated. A correction
+# that is absorbed silently and recurs is a rule violation. This detector
+# scans recent Pi session JSONL for correction-shaped user (and
+# self-caught assistant) text, clusters by token overlap, and auto-files
+# when the same intervention appears a third time in the window.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 every tick.
+# Exit 0: no third-strike cluster in the window. Exit 1: at least one
+# (LOUD + auto-filed, deduped by signal: interventions-eliminated/<slug>).
+# Exit 1 also if the helper itself is broken (missing python/lib).
+#
+# Observe-to-close (fleet-ops#650 shape): a green tick comments
+# `resolved-at: signal: ...`. A later tick that already carries that
+# marker closes the issue. A slug still in findings is neither commented
+# nor closed. Same-tick close is refused because a single scan miss
+# would close a still-live cluster. A grace-skipped session named in
+# the issue body is treated as in-flight, not resolved.
+#
+# Environment seams (tests override all of these):
+#   FLEET_INTERVENTIONS_SESSIONS   default ~/.pi/agent/sessions
+#   FLEET_INTERVENTIONS_LIB        python helper
+#   FLEET_INTERVENTIONS_WINDOW_HOURS   default 336 (14 days)
+#   FLEET_INTERVENTIONS_GRACE_MINUTES  default 20 (skip in-flight sessions)
+#   FLEET_INTERVENTIONS_THRESHOLD      default 3
+#   FLEET_INTERVENTIONS_NOW        ISO timestamp
+#   FLEET_INTERVENTIONS_FILE_ISSUES    1 (default) / 0
+#   FLEET_INTERVENTIONS_CLOSE_ISSUES   1 (default) / 0
+#   FLEET_INTERVENTIONS_ISSUE_REPO     default Nishfleet/fleet-ops
+#   FLEET_INTERVENTIONS_CAP            default 5
+#   FLEET_HEARTBEAT_TRIAGE
+#   GH
+#   FLEET_ISSUE_FILE
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+SESSIONS="${FLEET_INTERVENTIONS_SESSIONS:-$HOME/.pi/agent/sessions}"
+LIB="${FLEET_INTERVENTIONS_LIB:-$_canon_repo/lib/interventions-eliminated.py}"
+# Only fall back to the installed copy when the caller did not pin LIB.
+if [[ -z "${FLEET_INTERVENTIONS_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/interventions-eliminated.py" ]]; then
+    LIB="${HOME}/.local/lib/pi-packet/interventions-eliminated.py"
+fi
+WINDOW_HOURS="${FLEET_INTERVENTIONS_WINDOW_HOURS:-336}"
+GRACE_MINUTES="${FLEET_INTERVENTIONS_GRACE_MINUTES:-20}"
+THRESHOLD="${FLEET_INTERVENTIONS_THRESHOLD:-3}"
+NOW_ISO="${FLEET_INTERVENTIONS_NOW:-}"
+FILE_ISSUES="${FLEET_INTERVENTIONS_FILE_ISSUES:-1}"
+CLOSE_ISSUES="${FLEET_INTERVENTIONS_CLOSE_ISSUES:-1}"
+ISSUE_REPO="${FLEET_INTERVENTIONS_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_INTERVENTIONS_CAP:-5}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+log() {
+    printf '[%s] [fleet-interventions-eliminated] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "INTERVENTIONS-BROKEN" "python3 missing — cannot lint sessions"
+    exit 1
+fi
+if [[ ! -f "$LIB" ]]; then
+    loud "INTERVENTIONS-BROKEN" "helper missing at $LIB"
+    exit 1
+fi
+
+scan_args=(scan --root "$SESSIONS" --window-hours "$WINDOW_HOURS" --grace-minutes "$GRACE_MINUTES" --threshold "$THRESHOLD")
+if [[ -n "$NOW_ISO" ]]; then
+    scan_args+=(--now "$NOW_ISO")
+fi
+
+set +e
+report=$(python3 "$LIB" "${scan_args[@]}" 2>/tmp/interventions-eliminated.err)
+scan_rc=$?
+set -e
+
+if [[ "$scan_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$report"; then
+    loud "INTERVENTIONS-BROKEN" "helper produced no JSON (rc=$scan_rc) $(tr '\n' ' ' </tmp/interventions-eliminated.err 2>/dev/null)"
+    exit 1
+fi
+
+finding_count=$(jq '.findings | length' <<<"$report")
+scanned=$(jq -r '.scanned' <<<"$report")
+skipped_grace_slugs=$(jq -r '.skipped_grace_slugs[] // empty' <<<"$report")
+log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") events=$(jq -r .events <<<"$report") findings=$finding_count"
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body,comments 2>/dev/null)
+    set -e
+    open_json="${open_json:-[]}"
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "WARN: gh issue list produced no JSON"
+        open_json="[]"
+    fi
+fi
+
+filed=0
+if [[ "$finding_count" != "0" ]]; then
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        slug=$(jq -r '.slug' <<<"$row")
+        snippet=$(jq -r '.snippet' <<<"$row")
+        path=$(jq -r '.path' <<<"$row")
+        count=$(jq -r '.count' <<<"$row")
+        paths=$(jq -r '.paths' <<<"$row")
+        loud "INTERVENTIONS-REPEAT" "slug=$slug count=$count path=$path sessions=$paths snippet=$snippet"
+
+        [[ "$FILE_ISSUES" == "1" ]] || continue
+        [[ "$filed" -lt "$CAP" ]] || continue
+        command -v "$GH" >/dev/null 2>&1 || continue
+
+        signal="signal: interventions-eliminated/${slug}"
+        if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+            '[.[] | select((.body // "") | contains($s))] | length > 0' \
+            >/dev/null 2>&1; then
+            log "auto-file: $slug already open (deduped)"
+            continue
+        fi
+
+        title="fix(interventions-eliminated): $slug — same correction appeared a third time"
+        body="The session-close lint (fleet-ops#526, standing rule: interventions get eliminated, not repeated) found the same correction three or more times in recent Pi sessions.
+
+- sessions: \`$paths\`
+- latest: \`$path\`
+- count: $count
+- snippet: $snippet
+- detector: bin/fleet-interventions-eliminated (heartbeat tier1)
+
+The class is not eliminated until a lint, test, or architecture change makes this correction impossible to repeat. Do not close until the detector reports this clean on a real heartbeat tick (observe-to-close).
+
+$signal"
+        set +e
+        created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+        create_rc=$?
+        set -e
+        if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+            log "auto-file: FILED $slug -> $created"
+            filed=$((filed + 1))
+        else
+            log "auto-file: failed to file $slug (rc=$create_rc)"
+        fi
+    done < <(jq -c '.findings[]' <<<"$report")
+fi
+
+# Observe-to-close: comment resolved-at when a previously filed slug is no
+# longer a finding; close on a later tick once that marker is already present.
+# fleet-ops#650. A grace-skipped session named in the issue body is
+# in-flight, not resolved.
+observed=0
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    finding_slugs=$(jq -r '.findings[].slug // empty' <<<"$report")
+    while IFS= read -r irow; do
+        [[ -n "$irow" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$irow")
+        [[ -n "$num" && "$num" != "null" ]] || continue
+        body=$(jq -r '.body // ""' <<<"$irow")
+        signal=$(grep -oE 'signal: interventions-eliminated/[a-z0-9-]+' <<<"$body" | head -1 || true)
+        [[ -n "$signal" ]] || continue
+        slug="${signal#signal: interventions-eliminated/}"
+        if printf '%s\n' "$finding_slugs" | grep -qxF -- "$slug"; then
+            log "observe: $slug still a finding (#$num) — skip"
+            continue
+        fi
+        in_grace=0
+        while IFS= read -r gslug; do
+            [[ -n "$gslug" ]] || continue
+            if grep -Fq -- "$gslug" <<<"$body"; then
+                in_grace=1
+                break
+            fi
+        done <<<"$skipped_grace_slugs"
+        if [[ "$in_grace" -eq 1 ]]; then
+            log "observe: $slug skipped due to in-flight grace (#$num) — not resolved"
+            continue
+        fi
+        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")
+        marker="resolved-at: ${signal}"
+        if grep -Fq -- "$marker" <<<"$blob"; then
+            if [[ "$CLOSE_ISSUES" == "1" ]] && [[ "$closed" -lt "$CAP" ]]; then
+                set +e
+                "$GH" issue close "$num" -R "$ISSUE_REPO" --reason completed >/tmp/interventions-eliminated-close.err 2>&1
+                close_rc=$?
+                set -e
+                if [[ "$close_rc" -eq 0 ]]; then
+                    closed=$((closed + 1))
+                    log "OBSERVE-CLOSED $slug -> #$num (resolved-at + no longer a finding)"
+                else
+                    log "WARN: failed to close #$num (rc=$close_rc) $(tr '\n' ' ' </tmp/interventions-eliminated-close.err 2>/dev/null)"
+                fi
+            else
+                log "dedup observe: #$num already carries $marker"
+            fi
+            continue
+        fi
+        [[ "$observed" -lt "$CAP" ]] || continue
+        comment="${marker}
+
+observed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Detector is green for this intervention on a real heartbeat tick (fleet-ops#526 observe-to-close)."
+        set +e
+        "$GH" issue comment "$num" -R "$ISSUE_REPO" --body "$comment" >/tmp/interventions-eliminated-comment.err 2>&1
+        comment_rc=$?
+        set -e
+        if [[ "$comment_rc" -eq 0 ]]; then
+            observed=$((observed + 1))
+            log "OBSERVED-RESOLVED $slug -> #$num"
+        else
+            log "WARN: failed to comment on #$num (rc=$comment_rc) $(tr '\n' ' ' </tmp/interventions-eliminated-comment.err 2>/dev/null)"
+        fi
+    done < <(jq -c '.[]' <<<"$open_json")
+    log "observe-to-close: commented=$observed closed=$closed"
+fi
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "INTERVENTIONS-OK" "no third-strike intervention in window (scanned=$scanned)"
+    exit 0
+fi
+
+loud "INTERVENTIONS-FAIL" "third-strike clusters=$finding_count — the same correction recurred; heartbeat tick will fail"
+exit 1

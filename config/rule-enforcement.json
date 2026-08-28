@@ -156,10 +156,9 @@
     {
       "id": "sr-interventions-eliminated",
       "source": "global-standing-rules.md: Interventions get eliminated, not repeated (Nish, 2026-08-20)",
-      "mechanism": "Two-strikes: nothing detects a third identical attempt of the same correction",
-      "proof": "Nishfleet/fleet-ops#526",
-      "status": "queued(#526)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Heartbeat session-close lint: Pi JSONL user/assistant correction text clustered by token overlap; a third identical attempt in the window is LOUD + auto-filed. Observe-to-close comments resolved-at when the cluster ages out, then closes on a later tick (fleet-ops#650 shape).",
+      "proof": "bin/fleet-interventions-eliminated; lib/interventions-eliminated.py; tests/fleet-interventions-eliminated.test.sh; fleet-heartbeat-tier1 block 18; fleet-ops#526",
+      "status": "enforced"
     },
     {
       "id": "sr-gap-rules-audit",
