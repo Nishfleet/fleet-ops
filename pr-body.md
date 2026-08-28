@@ -1,38 +1,70 @@
-feat(1464): GitHub push channel via Cloudflare + synthetic canary
+Fix sgscan wrapper: --help crash, unknown-flag pass-through, stderr capture.
 
-Implements the two patterns from fleet-ops#1464:
+## What changed
 
-1. REAL PUSH FROM GITHUB — Cloudflare Worker (`workers/github-push-forward/`) receives org-level webhooks, verifies the GitHub HMAC, and forwards the body through a Cloudflare Tunnel to `libexec/gh-webhook-receiver/serve.py` on the VPS. The receiver re-verifies HMAC (defence-in-depth), dispatches to the matching systemd unit (`pi-intake@<repo>` for `issues/labeled/agent-ready`, `fleet-deploy-check` for `workflow_run/completed/success`), and exports a Prometheus heartbeat.
+sgscan, the semgrep wrapper used in the worker review gate (sgscan → crgate → repo tests → PR), had three failure modes:
 
-2. SYNTHETIC CANARY — `bin/gh-webhook-canary.py` fires every 5 min, posts a synthetic `issues/labeled/agent-ready` payload to the local receiver, and bumps the last-green metric. `bin/gh-webhook-canary-deadman.py` checks the metric and writes the alert-repair triage file (plus an optional healthchecks.io fail URL) when the series is missing or stale > 15 min.
+1. `sgscan --help` crashed with `JSONDecodeError` — the flag was passed through to semgrep, which returned text, not JSON.
+2. Unknown flags (e.g. `--diff`) were passed through to semgrep, which failed with exit 2 and empty output.
+3. When semgrep returned non-JSON output or failed, the wrapper provided no diagnostic.
 
-The slow `pi-intake@<repo>.timer` cadence drops from `*/15` to `*/20` so it behaves as a reconciler, not the primary trigger. `lib/pi-intake-tick.sh` now increments `fleet_intake_reconciler_caught_total{repo="<repo>"}` per slow-poll catch so a rising count is visible.
+## Fix
 
-New fleet organs (`gh-webhook-receiver`, `gh-webhook-canary`) are registered in `config/fleet-organs.json` with matching `absent()` rules in `config/fleet_rules.yml` (fleet-ops#1010).
+- **--help / -h handler**: prints usage and exits 0 (before the arg-parsing catch-all).
+- **Unknown-flag rejection**: any `--*` or `-*` not in the known set now exits 7 (`unknown flag: <name>`) instead of passing through to semgrep.
+- **Robust semgrep failure handling**: semgrep non-zero exit or empty output maps to exit 3. Stderr is captured to a temp file and shown on failure.
+- **Invalid JSON handling**: JSON parse errors map to exit 3 with descriptive message, not a raw traceback.
+- **Always pass `--baseline-commit`** when a base ref is available, even when HEAD equals merge-base (semgrep handles this fine).
+- **Added to MANIFEST** so the tool is version-controlled and installed by `install.sh`.
+- **Regression test suite**: 7 cases in `tests/sgscan.test.sh` covering --help, unknown flags, no-diff clean, ERROR/WARNING findings, semgrep fatal, and invalid JSON.
+- **Test harness fix**: the fake semgrep's `${VAR:-default}` with nested `}` in the default was misparsed by bash — switched to explicit if/else.
 
-Verification:
+Exit codes updated: 3 = semgrep itself failed, 7 = unknown flag (added).
+
+## Verification
+
 ```
-bash tests/gh-webhook-receiver-hmac.test.sh      # 10/10 phases green
-bash tests/gh-webhook-canary.test.sh             # 8/8 phases green
-bash tests/fleet-intake-reconciler-counter.test.sh # 8/8 phases green
-bash tests/gh-webhook-organ-heartbeat.test.sh    # 4/4 phases green
-bash tests/timer-manifest.test.sh                # all repo + live timers covered
-systemd-analyze verify --man=no systemd/*.service systemd/*.timer
-gitleaks git --redact --verbose                    # no leaks
-sgscan                                              # no new security findings
-find bin -maxdepth 1 -type f ! -name '*.py' ! -name '*.ts' -print | xargs -r shellcheck -x
-shellcheck -x install.sh
+$ bash tests/sgscan.test.sh
+OK: --help exits 0 and prints usage
+OK: unknown flag exits 7 without JSONDecodeError
+OK: no-diff repo exits 0 and passes --baseline-commit
+OK: ERROR finding exits 2
+OK: WARNING --json exits 1 and emits valid JSON
+OK: semgrep fatal exit 2 maps to wrapper exit 3
+OK: invalid semgrep JSON maps to wrapper exit 3
+ALL PASS
 ```
-All above passed on the VPS.
 
-run-proof: tests/gh-webhook-receiver-hmac.test.sh + tests/gh-webhook-canary.test.sh + tests/fleet-intake-reconciler-counter.test.sh + tests/timer-manifest.test.sh all passed; systemd user timers active on netcup-rs2000; gitleaks/shellcheck/sgscan clean.
+```
+$ sgscan --help
+sgscan — security scan of what YOU changed.
+...
+exit: 0
+```
 
-research: official docs and last30days-scale pass (Cloudflare Workers webhooks, GitHub org webhooks + HMAC, Cloudflare Tunnel ingress); compared a hand-built persistent daemon (rejected per no-hand-built-orchestration) and a per-repo GitHub Actions workflow (rejected: one org-level webhook beats N per-repo workflows). Adopted Cloudflare Worker + Tunnel because it keeps the Worker as dumb transport and all logic on the VPS.
+```
+$ sgscan --diff origin/main...origin/main
+unknown flag: --diff
+exit: 7
+```
 
-help-first: ran `curl --help`, `systemctl --help`, `python3 --help`, and `python3 -m http.server --help` — none can verify a GitHub HMAC signature, forward webhooks through a Cloudflare Tunnel, write a dead-man Prometheus metric, or append an alert-repair triage entry, so the existing tools do not already do this.
+Live sgscan on the PR diff itself:
+```
+$ sgscan
+Scanning changes since origin/HEAD (c69ceada)…
+No new security findings.
+exit: 0
+```
 
-Pre-existing (not this PR):
-- `tests/rule-enforcement.test.sh` fails locally because `config/rule-enforcement.json` is missing rows for new 2026-08-28 ledger/standing rules; the issue that owns that matrix update is unrelated.
-- `tests/ci-standards-audit.test.sh` invokes `tests/seat-health-classifier.test.sh`, which fails only on the VPS because the out-of-repo `~/.pi/agent/extensions/seat-health.ts` is installed and still marks HTTP-200/empty-body as healthy. It is the fleet-ops#1466 closure canary.
+## research
 
-Closes #1464
+sgscan was already a hand-written wrapper (not available as a standard tool). The fix extends it, not builds a new tool. No alternative was considered — the existing wrapper needed repair. `semgrep --help` was consulted to understand its exit codes and output format.
+
+## help-first
+
+`semgrep --help` confirms it has no `--diff` flag and that unknown flags exit 2 with text on stderr. The sgscan wrapper now guards against this before semgrep runs.
+
+Closes #796
+
+research: official docs (semgrep --help) — compared with no off-the-shelf sgscan alternative; the existing hand-written wrapper was already the simplest approach and just needed repair. No alternative adopted or rejected.
+help-first: ran --help on semgrep (the underlying tool) — confirmed unknown flags exit 2 with text on stderr; the wrapper needs to guard that path because semgrep alone does not validate unknown flags before emitting non-JSON output.
