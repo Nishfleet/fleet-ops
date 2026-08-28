@@ -86,3 +86,31 @@ fleet-merge-trample-gate evaluate
 Exit 1 / `"verdict":"REJECT"` is an automatic REJECT. Cite the ledger
 line above. You may still REJECT a PASS from the gate but may not
 APPROVE a gate REJECT.
+
+
+## Automatic criterion: new machinery needs authorization (fleet-ops#1548)
+
+Ledger line (verbatim):
+
+STANDING, NON-NEGOTIABLE: NEW machinery (unit files under systemd/**, MANIFEST lines that install those units) is default-DENIED. A PR that adds machinery must either (a) name a unit already on config/machinery-allowlist.json, or (b) carry the Nish-only body signal `authorized-by-nish: <reason>`. Repairs and deletions of existing machinery stay ungated. Live hand-placed units not on the allowlist are hunt findings for senior-conference adjudication (MECHANICAL-INSTEAD / EXCEPTION-APPROVED / NISH-RESERVED). Enforced mechanically at the senior conference + blind audit (fleet-ops #1548, extends #366). Origin: 2026-08-28 machinery audit Step 4; Nish: 'Make it mechanically non-negotiable'.
+
+A diff that adds a new file under `systemd/**` or a new MANIFEST line
+installing a `systemd/` unit is REJECT unless the unit is on the
+allowlist or the PR body carries `authorized-by-nish: <reason>`.
+Repairs (`M`) and deletions (`D`) of existing machinery stay ungated
+(fix-it-now unaffected). Allowlist grandfathering stays until the
+deletion review (#1531) prunes it.
+
+Do not re-derive the automatic half. Run the mechanical gate on the
+name-status diff + PR body + allowlist:
+
+```
+fleet-machinery-authorization-gate evaluate --name-status <diff> --body <pr-body>
+```
+
+Exit 1 / `"verdict":"REJECT"` is an automatic REJECT. Cite the ledger
+line above. Violations route to senior-conference adjudication
+(MECHANICAL-INSTEAD default on doubt; EXCEPTION-APPROVED with both
+POVs; NISH-RESERVED via boundary-notify — the only path that reaches
+Nish). You may still REJECT a PASS from the gate (rubber-stamp
+`authorized-by-nish:` reasons) but you may not APPROVE a gate REJECT.

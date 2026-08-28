@@ -1,0 +1,25 @@
+{
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"},
+      {"unit": "pi-intake@", "class": "a"}
+    ]
+  },
+  "unit_files": [
+    {
+      "unit": "auditor-stdio-test",
+      "path": "/home/nish/.config/systemd/user/auditor-stdio-test.service",
+      "symlink": false
+    },
+    {
+      "unit": "fleet-heartbeat",
+      "path": "/home/nish/.config/systemd/user/fleet-heartbeat.service",
+      "symlink": true
+    },
+    {
+      "unit": "ready-work",
+      "path": "/home/nish/.config/systemd/user/ready-work.service",
+      "symlink": false
+    }
+  ]
+}

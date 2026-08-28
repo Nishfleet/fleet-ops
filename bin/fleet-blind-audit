@@ -300,6 +300,8 @@ closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labe
 recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
 GATE_LIB="${AUDIT_MECHANISM_GATE:-$HOME/.local/lib/pi-packet/failure-mechanism-gate.py}"
 [ -f "$GATE_LIB" ] || GATE_LIB="$repo_fallback/lib/failure-mechanism-gate.py"
+MACHINERY_GATE_LIB="${AUDIT_MACHINERY_GATE:-$HOME/.local/lib/pi-packet/machinery-authorization-gate.py}"
+[ -f "$MACHINERY_GATE_LIB" ] || MACHINERY_GATE_LIB="$repo_fallback/lib/machinery-authorization-gate.py"
 
 # Parse deliberate-states into a JSON list for the packet.
 deliberate_json='[]'
@@ -459,6 +461,30 @@ if [ -f "$GATE_LIB" ]; then
     log "recurrence hunt merged ($(printf '%s' "$hunt_out" | jq '.findings | length') hits)"
 else
     log "WARN: mechanical-fix gate missing ($GATE_LIB); recurrence hunt skipped"
+fi
+
+# --- mechanical machinery-authorization hunt (fleet-ops#1548) -------------
+# Hand-placed (non-symlink) user units not on the allowlist become automatic
+# findings. Merged here so filing does not depend on the reviewer noticing.
+if [ -f "$MACHINERY_GATE_LIB" ]; then
+    allowlist="${AUDIT_MACHINERY_ALLOWLIST:-$repo_fallback/config/machinery-allowlist.json}"
+    [ -f "$allowlist" ] || allowlist="$HOME/.local/state/pi-packet/machinery-allowlist.json"
+    mach_out=$(ALLOWLIST="$allowlist" python3 "$MACHINERY_GATE_LIB" hunt --allowlist "$allowlist" 2>/dev/null || echo '{"findings":[]}')
+    if ! printf '%s' "$mach_out" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        mach_out='{"findings":[]}'
+    fi
+    if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
+            findings=$(printf '%s' "$findings" | jq '{findings: .}')
+        else
+            findings='{"findings":[]}'
+        fi
+    fi
+    findings=$(jq -s '{findings: (.[0].findings + .[1].findings)}' \
+        <(printf '%s' "$findings") <(printf '%s' "$mach_out"))
+    log "machinery hunt merged ($(printf '%s' "$mach_out" | jq '.findings | length') hits)"
+else
+    log "WARN: machinery-authorization gate missing ($MACHINERY_GATE_LIB); machinery hunt skipped"
 fi
 
 # --- findings empty? -------------------------------------------------------
