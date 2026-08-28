@@ -492,7 +492,16 @@ pins that. The auto-filed issue closes via observe-to-close when
 the session mtime ages out of the 24h window. Live session
 2026-08-27T15-50-45-409Z_01a043ea-a1a1-79d2-b579-ef094ed1e3aa.jsonl:
 empty-name toolCall on fleet-ops#1009, snippet `Tool  not found`.
-A spawn-guard or harness block (SPAWN_BLOCKED
+A `bin/fleet-no-agent-names-check` REJECT (exit 1 with
+`REJECT: agent attribution found`) is a real swallowed failure. The live
+#1052 session (01a041ea) ran the gate against `tests/fleet-no-agent-names.test.sh`
+while debugging fleet-ops#926; the test file contains example attribution
+strings, so the tool correctly REJECTED, but the next turn said "Good - this is
+testing the tool's behavior..." and moved on. That prose does NOT name the
+failure. The prompt-side lock in `prompts/worker.md` forbids explaining a
+no-agent-names REJECT as test data; the dedicated regression test
+`tests/fleet-failed-command-no-agent-names-reject.test.sh` pins the shape
+(fleet-ops#1052). A spawn-guard or harness block (SPAWN_BLOCKED
 / "Dangerous command blocked") is not a ran-and-failed command: the call
 never executed.
 

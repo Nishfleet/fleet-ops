@@ -111,7 +111,10 @@ Agent names are forbidden on Nish's work. No `Co-Authored-By` trailers, no
 "Generated with" footers, and no agent names in the PR body or issue comments
 (fleet-ops#519). Run
 `bin/fleet-no-agent-names-check --pr-body <pr-body-file> --commit-range origin/main..HEAD`
-before opening the PR and fix any REJECT it reports.
+before opening the PR and fix any REJECT it reports. A `REJECT: agent attribution found`
+exit is a real failed command even if the matching text lives in a test file you are
+reading; name it and fix the attribution, do not explain it away as the test exercising
+the tool (fleet-ops#1052, live 01a041ea).
 
 Fleet-wipe lessons (fleet-ops#533): never `pgrep -f` / substring command-line
 matching. Match argv[0]/argv[1] with
