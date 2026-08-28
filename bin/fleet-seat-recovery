@@ -86,18 +86,40 @@ now_epoch() {
     fi
 }
 
-# Does ANY enrolled, cap-allowed seat currently rate as usable?
+# Does ANY cap-map-allowlisted seat currently rate as usable per the ledger?
 # Returns 0 (usable exists) / 1 (no usable seat).
+#
+# fleet-ops#837: this MUST use seat_usable (the ledger verdict), NOT pick_seat.
+# pick_seat adds an active-capacity check (count_active_on_provider /
+# count_active_on_seat) that reads the real host's active-seats state. A
+# healthy-but-busy seat then reads as "no usable seat", so the
+# no-usable -> usable transition never fires and seat recovery stays dead.
+# The detector's question is "is the fleet alive per the ledger", not "is
+# there free capacity right now" — a busy seat frees when its worker exits,
+# and intake firing on a healthy fleet is the intended fast path. The
+# allowlist + cap=0 + keystone-only filters mirror pick_seat's volume walk
+# (pick_seat "" "" 0, difficulty=light) so the verdict matches what a
+# volume worker would be offered; only the active-capacity check is dropped.
 any_seat_usable() {
-    local p m
-    # pick_seat "" "" 0 returns a usable seat or nothing. It already
-    # excludes cap-map-allowed seats, credential-less providers, benched
-    # seats, dead seats, and cap-saturated ones. Empty = NO-USABLE-SEAT.
-    local seat
-    seat=$(pick_seat "" "" 0 2>/dev/null || true)
-    if [[ -n "$seat" ]]; then
-        return 0
-    fi
+    local key p m p_cap m_cap
+    # Force the cap map load (seat-lib lazy-loads on first pick_seat; we
+    # bypass pick_seat so trigger it explicitly).
+    load_seat_caps 2>/dev/null || true
+    for key in "${!SEAT_MODEL_CAP[@]}"; do
+        p="${key%%/*}"
+        m="${key#*/}"
+        p_cap="${SEAT_PROVIDER_CAP[$p]:-0}"
+        (( p_cap > 0 )) || continue
+        m_cap="${SEAT_MODEL_CAP[$key]:-0}"
+        (( m_cap > 0 )) || continue
+        # Keystone-only providers (cursor) serve keystone/senior-review work
+        # only; the recovery detector fires volume intake, so skip them —
+        # same filter pick_seat applies for difficulty=light.
+        _provider_is_keystone_only "$p" && continue
+        if seat_usable "$p" "$m"; then
+            return 0
+        fi
+    done
     return 1
 }
 
