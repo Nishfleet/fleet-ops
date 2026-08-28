@@ -724,7 +724,7 @@ fallback_log="${FLEET_RES_DRILL_BOUNDARY_FALLBACK_LOG:-/dev/null}"
 key="$RANDOM-$$"
 sent=0
 for attempt in 1 2; do
-  if "$hermes" send -t telegram --urgent "drill: $key attempt=$attempt" >/dev/null 2>&1; then
+  if "$hermes" send -t telegram --urgent --class MONEY-BOUNDARY "drill: $key attempt=$attempt" >/dev/null 2>&1; then
     sent=1
     break
   fi

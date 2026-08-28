@@ -251,3 +251,15 @@ jobs:
         # fleet-ops#1460: lock the timer manifest shape (every user timer
         # has a manifest entry with a named reason — schedule-needs-reason).
         bash tests/timer-manifest.test.sh
+        # fleet-ops#1534: single chokepoint for messages to Nish's phone.
+        # hermes outbound class-gate (--urgent requires sanctioned --class),
+        # alertmanager routing matrix (only severity=page -> telegram),
+        # RepairDispatchDown is the only severity=page alert, writer class-gate
+        # in stop-escalation-dispatch (CAP-REACHED/KILL-ESCALATION -> auditor
+        # path, LADDER-WALLED -> MONEY-BOUNDARY), and the integration test
+        # proving the two gates together form one phone chokepoint.
+        bash tests/hermes-outbound-class-gate.test.sh
+        bash tests/alertmanager-routing-matrix.test.sh
+        bash tests/fleet-rules-severity-page.test.sh
+        bash tests/stop-escalation-writer-class-gate.test.sh
+        bash tests/phone-chokepoint.test.sh

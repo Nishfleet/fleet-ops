@@ -29,6 +29,17 @@ bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-trut
 # fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
 # install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
 config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
+# fleet-ops#1534: repo-ize alertmanager routing so the severity=page-only
+# phone path is PR-reviewed and cannot drift back to "everything pages"
+# (the 2026-08-28 leak this file replaces). install.sh --system deploys to
+# /etc/prometheus/alertmanager.yml; fleet-ops-deploy reloads alertmanager.
+config/alertmanager.yml /etc/prometheus/alertmanager.yml
+# fleet-ops#1534: repo-ize prometheus.yml + add the am-executor scrape job
+# (127.0.0.1:9095) so RepairDispatchDown has a metric to fire on. The Debian
+# package owns /etc/prometheus/prometheus.yml; install.sh --system deploys
+# this as a copy (system-scope drop-in semantics). fleet-ops-deploy reloads
+# prometheus after the change.
+config/prometheus.yml /etc/prometheus/prometheus.yml
 # fleet-ops#1010: organ registry consumed by bin/fleet-organ-heartbeat-check.
 # Lives next to the rules so the verify drill + PR gate can read it in-repo.
 config/fleet-organs.json /home/nish/.local/state/pi-packet/fleet-organs.json
@@ -176,6 +187,14 @@ bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # here (plus tests/nish-boundary-notify-classes.test.sh) stops a later
 # overwrite from silently dropping a reserved token.
 bin/nish-boundary-notify /home/nish/.local/bin/nish-boundary-notify
+# fleet-ops#1534: repo-ize the outbound gate shim so the "only Nish-reserved
+# classes + the digests reach the phone" policy is PR-reviewed and cannot
+# drift back. Hand-placed wrapper was class (b) (machinery audit
+# reports/machinery-audit-2026-08-28.md). The class-gate (--urgent requires a
+# sanctioned --class) is the chokepoint; alertmanager severity=page routing is
+# the other phone path. install.sh symlinks this over the hand-placed real
+# file on deploy.
+bin/hermes /home/nish/.local/bin/hermes
 bin/fleet-claim /home/nish/.local/bin/fleet-claim
 # fleet-ops#1199: atomic alert-repair claim mutex. Lives next to
 # alert-repair-dispatch under /home/nish/.local/libexec/ so the dispatch
@@ -183,6 +202,12 @@ bin/fleet-claim /home/nish/.local/bin/fleet-claim
 # honours the libexec/ -> /home/nish/.local/libexec/ prefix.
 libexec/alert-repair-claim /home/nish/.local/libexec/alert-repair-claim
 libexec/alert-repair-dispatch /home/nish/.local/libexec/alert-repair-dispatch
+# fleet-ops#1534: repo-ize the daily-digest sender so the --class daily-digest
+# declaration (the outbound gate's sanctioned digest class) is PR-reviewed and
+# cannot drift back. Hand-placed script was class (b) (machinery audit
+# reports/machinery-audit-2026-08-28.md). The daily-digest.{timer,service} user
+# units already symlink to this repo's systemd/ — only the script was missing.
+libexec/daily-digest /home/nish/.local/libexec/daily-digest
 bin/fleet-heartbeat /home/nish/.local/bin/fleet-heartbeat
 bin/fleet-heartbeat-tier1 /home/nish/.local/bin/fleet-heartbeat-tier1
 bin/fleet-heartbeat-tier2 /home/nish/.local/bin/fleet-heartbeat-tier2
