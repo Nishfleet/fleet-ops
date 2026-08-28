@@ -125,4 +125,69 @@ if (( soft_bad > 0 )); then
     echo "  ($soft_bad cap=0 reason(s) lack a measurement marker; tracked under the follow-up issue filed by this PR, NOT fixed here)"
 fi
 
-ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured"
+# 7. Cross-fleet check: every MODEL cap=0 entry has a dated _* reason
+#    field on its provider (fleet-ops#1456). #1506 re-audited all 8
+#    cap=0 entries and persisted dated reasons in _<sanitised>
+#    documentation fields, but scenario 5 only walks provider-level
+#    .cap — model-level cap=0 reasons (opencode/deepseek-v4-flash-free,
+#    x-preview-f-free, muse-spark-1.2-contributor-free) were unpinned
+#    here. The fleet-free-roster canary pins two of the three by exact
+#    field name (scenarios 14/17); this scenario enforces the contract
+#    for EVERY model cap=0 entry so a future addition or a silent
+#    reason-field deletion is caught before push, not on the next
+#    auditor re-probe. The reason field naming is _<sanitised-model>
+#    with inconsistent version handling (muse-spark-1.2 dropped the
+#    "1.2"), so the match is by distinctive token (model split on
+#    [-._], tokens of length >= 4, longest first) against _* field
+#    names whose value carries a YYYY-MM-DD date.
+echo "--- scenario 7: every model cap=0 entry has a dated _* reason field ---"
+mbad=0
+while IFS=$'\t' read -r prov model; do
+    [[ -n "$prov" && -n "$model" ]] || continue
+    # Distinctive tokens of the model name, longest first (most
+    # distinctive first reduces false matches on generic tokens like
+    # "free"). Tokens shorter than 4 chars (v4, 1, 2, f, x) are dropped.
+    tokens=$(printf '%s' "$model" \
+        | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
+        | sort -rn | cut -f2)
+    [[ -n "$tokens" ]] || { echo "  $prov/$model: no >=4-char token to match a reason field" >&2; mbad=$((mbad+1)); continue; }
+    # Dated _* reason field names on this provider. Reason fields are
+    # _<sanitised-model> (NOT _comment_* — those are general provider
+    # notes), and must carry a YYYY-MM-DD date.
+    dated_fields=$(jq -r --arg p "$prov" '
+        .providers[$p] | to_entries[]
+        | select(.key|startswith("_"))
+        | select(.key|startswith("_comment")|not)
+        | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
+        | .key
+    ' "$caps")
+    # A token is "distinctive" iff it matches exactly ONE dated reason
+    # field. Generic tokens like "free" match several reason fields and
+    # cannot uniquely identify a model's audit trail, so they do NOT
+    # satisfy the contract. Require at least one distinctive token.
+    found=0
+    while IFS= read -r tok; do
+        [[ -n "$tok" ]] || continue
+        matches=0
+        while IFS= read -r fname; do
+            [[ -n "$fname" ]] || continue
+            case "$fname" in
+                *"$tok"*) matches=$((matches+1)) ;;
+            esac
+        done <<<"$dated_fields"
+        (( matches == 1 )) && { found=1; break; }
+    done <<<"$tokens"
+    if (( found == 0 )); then
+        echo "  $prov/$model: cap=0 but no dated _* reason field uniquely identified by a model token (audit trail would be lost on re-edit — fleet-ops#1456)" >&2
+        mbad=$((mbad+1))
+    else
+        ok "$prov/$model: model cap=0 has a dated _* reason field"
+    fi
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.models // {}) | to_entries[]
+    | select(.value == 0) | [$p, .key] | @tsv
+' "$caps")
+[[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing a dated _* reason field — audit durability gap (fleet-ops#1456)"
+
+ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 reasons pinned"
