@@ -409,6 +409,25 @@ groups:
           summary: "pi-scout@{{ $labels.repo }} has not actually begun in 8+ hours"
           description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 8h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
 
+      # Organ heartbeat (fleet-ops#1137 standing pattern). The truth
+      # staleness checker exports fleet_truth_staleness_last_run_seconds on
+      # every run (both the weekly timer and the exporter-piggyback
+      # ExecStartPost). 25h = just over one missed weekly cycle, so a
+      # routine skip never fires but a dead checker does. absent() catches
+      # a missing file; time()-timestamp catches a frozen file (textfile
+      # collector keeps last scrape). No new timer needed for the heartbeat
+      # — the checker piggybacks the existing 5-min exporter tick via
+      # ExecStartPost.
+      - alert: TruthStalenessAbsent
+        expr: absent(fleet_truth_staleness_last_run_seconds) or (time() - fleet_truth_staleness_last_run_seconds) > 90000
+        for: 12h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "truth-staleness-checker organ absent — the standing-doc checker is missing or dead"
+          description: "Repair worker: fleet_truth_staleness_last_run_seconds is absent or older than 25h (one missed weekly cycle). The truth-staleness-checker (fleet-ops#1137) cross-checks standing docs against live state; if this is silent, standing truth can silently rot without detection. Check: (1) `systemctl --user list-timers fleet-truth-staleness-check.timer` is present; (2) the weekly timer fired successfully; (3) `cat ~/.local/libexec/staleness-checker.py` is intact; (4) `systemctl --user status fleet-metrics-export.service` (the checker piggybacks the exporter via ExecStartPost). Helper: /home/nish/.local/libexec/staleness-checker.py. fleet-ops#1137."
+
 
   - name: fleet_asset_census_supply
     rules:
