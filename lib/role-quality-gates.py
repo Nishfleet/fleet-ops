@@ -47,6 +47,11 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-console",
     "fleet-heartbeat-failed-notify",
     "fleet-deploy-check",
+    # fleet-ops#468/#1610: alert-repair COMPLETION canary. It reads
+    # Prometheus alert chains / actions.log, climbs the stall ladder and
+    # writes a detector-red terminal — observability plumbing that runs no
+    # model and owns no prompt, so it has no role gate.
+    "fleet-completion-canary",
     "fleet-seat-recovery",
     "interactive-session-reap",
     "agent-cron-",

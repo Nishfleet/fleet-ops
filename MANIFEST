@@ -269,6 +269,13 @@ bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
 # so the first install lands it with zero hands.
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
+# fleet-ops#468: alert-repair COMPLETION canary (Prometheus alert chains).
+# hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
+bin/fleet-completion-canary /home/nish/.local/libexec/fleet-completion-canary
+# fleet-ops#468: alert-repair COMPLETION service. oneshot, fail-loud, no restart.
+systemd/fleet-completion-canary.service /home/nish/.config/systemd/user/fleet-completion-canary.service
+# fleet-ops#468: alert-repair COMPLETION timer. 15-min OnCalendar.
+systemd/fleet-completion-canary.timer /home/nish/.config/systemd/user/fleet-completion-canary.timer
 # fleet-ops#387: entitled-vs-wired canary. Run by heartbeat-tier1 block 15.
 # Diffs entitled-seats.json against seat-caps.json every tick; missing row,
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
