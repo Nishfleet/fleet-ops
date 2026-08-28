@@ -168,6 +168,12 @@ bash "$here/p14-unstubbed-unit-verify.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#1457: stop-the-line detector drill. The detector + watch
+# workflows landed in #1465, but the test was never registered in ci.yml
+# (workers cannot push .github/workflows/**), so the p14-test-listing-gate
+# failed on main. Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/stop-the-line-detector.test.sh"
+
 # fleet-ops#1212: filing-time same-problem dedupe helper. Hosted here so
 # P14 runs it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
