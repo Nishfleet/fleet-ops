@@ -1,0 +1,12 @@
+[Unit]
+Description=Open-question stall watchdog — path watch on state directory (replaces 10-min timer for direct triggers)
+# Event-driven: fires when any question state changes (new question recorded, transition logged, brief written).
+# The 10-min timer is kept as a dead-man backstop for stalled questions with NO event (PathChanged cannot notice "nothing happened").
+# The path unit catches state changes immediately; the timer backstops the no-event stall case.
+
+[Path]
+PathChanged=/home/nish/.local/state/open-questions
+Unit=open-question-sweep.service
+
+[Install]
+WantedBy=default.target

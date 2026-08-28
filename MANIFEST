@@ -16,6 +16,7 @@ systemd/siterep-live-canary.service /home/nish/.config/systemd/user/siterep-live
 systemd/siterep-live-canary.timer /home/nish/.config/systemd/user/siterep-live-canary.timer
 systemd/fleet-console-pi.service /home/nish/.config/systemd/user/fleet-console-pi.service
 systemd/fleet-console-pi.timer /home/nish/.config/systemd/user/fleet-console-pi.timer
+systemd/fleet-console-pi.path /home/nish/.config/systemd/user/fleet-console-pi.path
 # fleet-ops#1157: self-auditing console. Generator + verify + shell live in
 # fleet-ops so the tile truth-check is version-controlled. push.sh still
 # runs on the existing 12-min timer (no new timer). verify.py writes
@@ -473,6 +474,7 @@ systemd/nish-memory-curator.service.d/10-ledger-supersede.conf /home/nish/.confi
 lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/vault-conflict-resolver.service /home/nish/.config/systemd/user/vault-conflict-resolver.service
 systemd/vault-conflict-resolver.timer /home/nish/.config/systemd/user/vault-conflict-resolver.timer
+systemd/vault-conflict-resolver.path /home/nish/.config/systemd/user/vault-conflict-resolver.path
 # fleet-ops#1264: vault snapshot lint. Flags live-state prose without a
 # check-command and a fresh observed timestamp. --check is the worker
 # pre-write gate; --report is the heartbeat drift surface; --pre-write
@@ -514,6 +516,7 @@ systemd/standing-rules-render.path /home/nish/.config/systemd/user/standing-rule
 bin/fleet-deploy-check /home/nish/.local/bin/fleet-deploy-check
 systemd/fleet-deploy-check.service /home/nish/.config/systemd/user/fleet-deploy-check.service
 systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-check.timer
+systemd/fleet-deploy-check.path /home/nish/.config/systemd/user/fleet-deploy-check.path
 # fleet-ops#468 TOP GEAR: seat recovery fires intake instantly. A systemd
 # .path watcher on the seat ledger (event-driven, no polling) fires
 # fleet-seat-recovery.service, which starts pi-intake@<repo> on the
@@ -570,3 +573,13 @@ lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
 systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
 systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
+# fleet-ops#1460: event-driven sweep. Convert pollers to systemd .path triggers
+# and gate every remaining schedule with a named reason in timer-manifest.json.
+# Each .path unit fires on the state file its service renders; the timer stays
+# as a dead-man backstop so silence stays loud.
+systemd/open-question-sweep.path /home/nish/.config/systemd/user/open-question-sweep.path
+systemd/ready-work-recheck.path /home/nish/.config/systemd/user/ready-work-recheck.path
+systemd/pi-intake-trigger.path /home/nish/.config/systemd/user/pi-intake-trigger.path
+systemd/pi-intake-trigger.service /home/nish/.config/systemd/user/pi-intake-trigger.service
+bin/pi-intake-trigger /home/nish/.local/bin/pi-intake-trigger
+systemd/timer-manifest.json /home/nish/.config/fleet-ops/timer-manifest.json

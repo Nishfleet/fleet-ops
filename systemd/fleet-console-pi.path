@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet Console (Pi) — path watch on inputs (seat health, FLEET-PAUSED, Prometheus export)
+# Event-driven: fires when local input files change. The 12-min timer is kept as a dead-man backstop.
+# Inputs: seat health (Pi work tile), FLEET-PAUSED marker (fleet state tile), fleet.prom mtime (exporter output).
+# The exporter runs every 5 min; its atomic write to fleet.prom triggers this path unit.
+
+[Path]
+PathChanged=/home/nish/workspaces/agent-state/lanes/pi-seat-health.json
+PathChanged=/home/nish/workspaces/agent-state/FLEET-PAUSED
+PathChanged=/var/lib/prometheus/node-exporter/fleet.prom
+Unit=fleet-console-pi.service
+
+[Install]
+WantedBy=default.target

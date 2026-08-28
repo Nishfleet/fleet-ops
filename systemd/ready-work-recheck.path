@@ -1,0 +1,12 @@
+[Unit]
+Description=Ready-work dispatcher — path watch on READY-WORK.md (replaces 15-min timer for direct triggers)
+# Event-driven: fires when READY-WORK.md changes (new item added, item checked, CLAIMED appended).
+# The 15-min timer is kept as a dead-man backstop for dependency-gated items (after: checks polling external state).
+# The path unit handles direct file changes; the timer backstops the after: check polls.
+
+[Path]
+PathChanged=/home/nish/workspaces/agent-state/READY-WORK.md
+Unit=ready-work.service
+
+[Install]
+WantedBy=default.target

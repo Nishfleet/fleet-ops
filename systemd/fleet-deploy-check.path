@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet merge-to-live deploy check — path watch on origin/main ref (replaces 2-min timer)
+# Event-driven: fires when origin/main ref changes (merge lands).
+# The 2-min timer is kept as a dead-man backstop (silence stays loud).
+# Git updates refs via replace-by-rename; PathChanged catches close-after-write.
+# PathExists catches the initial appearance. Both re-arm the check.
+
+[Path]
+PathChanged=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/.git/refs/remotes/origin/main
+PathExists=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/.git/refs/remotes/origin/main
+Unit=fleet-deploy-check.service
+
+[Install]
+WantedBy=default.target
