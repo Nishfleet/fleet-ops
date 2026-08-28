@@ -2540,7 +2540,8 @@ fi
 # exit 1 means "TOP GEAR invariant violated" — already loud + auto-
 # filed; landing the unit in --state=failed every 15 min for it is the
 # trip-loop we are fixing (fleet-ops#1116).
-if [ "${unjustified_rc:-0}" -ge 2 ]; then    exit "${unjustified_rc}"
+if [ "${unjustified_rc:-0}" -ge 2 ]; then
+    exit "${unjustified_rc}"
 fi
 if [ "${max_speed_rc:-0}" -ne 0 ]; then
     exit "${max_speed_rc}"
