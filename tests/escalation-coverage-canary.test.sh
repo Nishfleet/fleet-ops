@@ -1098,6 +1098,13 @@ bash "$here/fleet-free-roster-canary.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-seat-live-validate.test.sh"
 
+# fleet-ops#41: headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"].
+# Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**). The
+# script is the prevent side of #41; the live-validate canary above
+# catches the dead case, this one keeps the credential alive.
+bash "$here/grok-token-refresh.test.sh"
+
 # fleet-ops#938: vacation-window credential expiry canary. Invoked from this
 # CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).

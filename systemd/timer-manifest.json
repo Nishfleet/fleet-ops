@@ -451,6 +451,12 @@
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "user-config"
+    },
+    "grok-token-refresh.timer": {
+      "reason": "Headless OAuth refresh of SuperGrok xai-oauth seat — access token lifetime is 6h; 4h cadence keeps ~/.pi/agent/auth.json fresh so an idle prepaid seat does not wake into a 401 (fleet-ops#41).",
+      "classification": "scheduled",
+      "cadence": "4h",
+      "source": "repo"
     }
   }
 }
