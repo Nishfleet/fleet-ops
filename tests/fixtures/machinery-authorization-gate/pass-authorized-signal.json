@@ -1,0 +1,10 @@
+{
+  "name_status": "A\tsystemd/exception-unit.service\n",
+  "body": "Exception unit after conference.\n\nauthorized-by-nish: conference EXCEPTION-APPROVED on 2026-08-28\n\nCloses #9999\n",
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ]
+  },
+  "manifest_added_lines": []
+}

@@ -27,6 +27,8 @@ Read the repo and the live state, then rank the top N real, actionable gaps
    `bin/fleet-role-gate-audit` (fleet-ops#457); still flag anything it
    would miss, especially a new role that stamps `agent-ready` without
    admission judging.
+8. **Hand-placed machinery not on the allowlist** — a non-transient user unit whose fragment is a real file under `~/.config/systemd/user/` (not a symlink into the repo) and not on `config/machinery-allowlist.json`. Every hit is an automatic finding for senior-conference adjudication (MECHANICAL-INSTEAD / EXCEPTION-APPROVED / NISH-RESERVED). The harness also hunts this mechanically via `fleet-machinery-authorization-gate hunt` and merges those hits into findings before filing (fleet-ops#1548).
+
 8. **Recurred failure classes** — a failure class that came back after a
    closed 'fix' (same signal key firing again post-close). Every hit is an
    automatic finding. The harness also hunts this mechanically and merges

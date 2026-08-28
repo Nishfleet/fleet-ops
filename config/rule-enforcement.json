@@ -716,7 +716,7 @@
     {
       "id": "led-2026-08-27-weekly-fleet-review-approved",
       "source": "decisions-ledger.md: 2026-08-27 | Weekly Fleet Review approved",
-      "mechanism": "Weekly systemd timer (Sun 04:30 IST, post-vps-weekly-update) fires agent-cron-run weekly-fleet-review: blind 6-lens senior research + conference (throughput, output-quality, machinery, truth, outside-world, SECURITY — fleet-ops#1146 Nish addition), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only. Role-gate catalog entry locks the cap and the signal-attribution contract; the rule-enforcement canary observes the source as covered on a real heartbeat tick (observe-to-close).",
+      "mechanism": "Weekly systemd timer (Sun 04:30 IST, post-vps-weekly-update) fires agent-cron-run weekly-fleet-review: blind 6-lens senior research + conference (throughput, output-quality, machinery, truth, outside-world, SECURITY \u2014 fleet-ops#1146 Nish addition), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only. Role-gate catalog entry locks the cap and the signal-attribution contract; the rule-enforcement canary observes the source as covered on a real heartbeat tick (observe-to-close).",
       "proof": "systemd/fleet-weekly-fleet-review.timer; systemd/fleet-weekly-fleet-review.service; prompts/weekly-fleet-review.md; bin/agent-cron-run; config/role-quality-gates.json; lib/role-quality-gates.py (check_weekly_fleet_review_output_contract); tests/weekly-fleet-review.test.sh; fleet-ops#1146",
       "status": "enforced"
     },
@@ -753,7 +753,7 @@
     {
       "id": "led-2026-08-27-precedence-band-overnight-machinery-surge-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Precedence band + overnight machinery surge (Nish)",
-      "mechanism": "Heartbeat fleet-precedence-band-canary + pi-intake-tick (fleet-ops#1223): config/precedence-band.json locks the dial (cutoff_utc, machinery_max_pct<=30, product_min_pct>=70, machinery_repo=fleet-ops, owner=weekly-fleet-review, product_front=REPO#NUMBER, surge_leverage_issues); pi-intake-tick sources lib/precedence-band.sh and calls precedence_band_allow_claim before the claim push — until cutoff_utc fleet-ops intake claims only surge_leverage_issues, from cutoff_utc a new machinery claim that would push live share over machinery_max_pct is skipped unless the body carries `band-multiplier: N`; machinery floor (fleet-ops#1452): when live machinery == 0 one repair lane always runs, one claim per process (BAND_PENDING_MACHINERY latch so a --no-block tick cannot dump the queue), ratio resumes from the second machinery unit; the canary rejects a live pi-issue@fleet-ops-N claim whose N is not in surge_leverage_issues (surge) or a live machinery share > machinery_max_pct with 2+ machinery units (band; one repair lane is the floor, not drift); tighten-only ratchet — any loosening of machinery_max_pct / product_min_pct vs the prior committed value requires a strictly-later wfr_waiver_on in the live config; a re-stamped waiver is rejected; WFR owns the dial.",
+      "mechanism": "Heartbeat fleet-precedence-band-canary + pi-intake-tick (fleet-ops#1223): config/precedence-band.json locks the dial (cutoff_utc, machinery_max_pct<=30, product_min_pct>=70, machinery_repo=fleet-ops, owner=weekly-fleet-review, product_front=REPO#NUMBER, surge_leverage_issues); pi-intake-tick sources lib/precedence-band.sh and calls precedence_band_allow_claim before the claim push \u2014 until cutoff_utc fleet-ops intake claims only surge_leverage_issues, from cutoff_utc a new machinery claim that would push live share over machinery_max_pct is skipped unless the body carries `band-multiplier: N`; machinery floor (fleet-ops#1452): when live machinery == 0 one repair lane always runs, one claim per process (BAND_PENDING_MACHINERY latch so a --no-block tick cannot dump the queue), ratio resumes from the second machinery unit; the canary rejects a live pi-issue@fleet-ops-N claim whose N is not in surge_leverage_issues (surge) or a live machinery share > machinery_max_pct with 2+ machinery units (band; one repair lane is the floor, not drift); tighten-only ratchet \u2014 any loosening of machinery_max_pct / product_min_pct vs the prior committed value requires a strictly-later wfr_waiver_on in the live config; a re-stamped waiver is rejected; WFR owns the dial.",
       "proof": "bin/fleet-precedence-band-canary; lib/pi-packet/precedence-band-canary.py; lib/precedence-band.sh; lib/pi-intake-tick.sh; config/precedence-band.json; tests/fleet-precedence-band.test.sh; fleet-heartbeat-tier1 block 36; fleet-ops#1223; fleet-ops#1452",
       "status": "enforced"
     },
@@ -802,24 +802,29 @@
     {
       "id": "led-2026-08-28-machinery-ban-mechanical",
       "source": "decisions-ledger.md: 2026-08-28 | Machinery ban is mechanically enforced (Nish: \"It needs to be mechanical. No agent should be able to do it unless explicitly authorized by me\")",
-      "mechanism": "fleet-ops#1480 owns the mechanism design; enforcement as pipeline not prose. The by-fiat build (gate workflow, labels, conference wiring) was deleted per the REVERSAL ledger line. New machinery (unit files, MANIFEST additions) is default-DENIED via the existing fleet-ops#366 gate class extended by #1480's audit inventory. Violations self-adjudicate via senior conference (fleet-ops#1032).",
-      "proof": "decisions-ledger.md: 2026-08-28 | Clarification of the reversal above; fleet-ops#1480 acceptance criteria; existing #366 gate workflow",
-      "status": "queued(#1480)",
-      "queued_since": "2026-08-28"
+      "mechanism": "PR / senior-conference gate (fleet-ops#1548, extends #366 class): fleet-machinery-authorization-gate evaluate REJECTS a name-status diff that adds a new systemd/** unit file or a new MANIFEST line installing a systemd/ unit unless the unit is on config/machinery-allowlist.json or the PR body carries `authorized-by-nish: <reason>`. Repairs and deletions stay ungated. Blind-audit merges `hunt` findings for hand-placed (non-symlink) user units not on the allowlist. Violations self-adjudicate via senior conference (fleet-ops#1032). Allowlist grandfathering stays until deletion review (#1531) prunes it.",
+      "proof": "bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit; fleet-ops#1548",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-28-machinery-violations-senior-conference",
       "source": "decisions-ledger.md: 2026-08-28 | Machinery violations self-adjudicate via senior conference (Nish: \"violations should automatically go to other senior agents to confer... most things should close on their own automatically\")",
-      "mechanism": "fleet-ops#1480 (via #366 gate class) auto-files `agent-ready` + `machinery-exception-review` issues on gate failure; convener runs TWO blind senior POVs then verdicts: MECHANICAL-INSTEAD (default on doubt), EXCEPTION-APPROVED (requires both POVs), or NISH-RESERVED (boundary-notify — the only path reaching Nish). Weekly Fleet Review audits all verdicts.",
-      "proof": "decisions-ledger.md: 2026-08-28 | Clarification of the reversal above; fleet-ops#1480 acceptance criteria; existing gate + boundary-notify channels",
-      "status": "queued(#1480)",
-      "queued_since": "2026-08-28"
+      "mechanism": "fleet-machinery-authorization-gate REJECT / hunt findings auto-route to senior conference on existing rails (queue + pi-issue + boundary-notify; zero new organs). Convener runs TWO blind senior POVs then verdicts: MECHANICAL-INSTEAD (default on doubt), EXCEPTION-APPROVED (both POVs; allowlist PR), or NISH-RESERVED (boundary-notify \u2014 only path reaching Nish). Weekly Fleet Review audits all verdicts.",
+      "proof": "bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit; fleet-ops#1548",
+      "status": "enforced"
     },
     {
       "id": "sr-legit-work-no-spinning-wheels",
-      "source": "global-standing-rules.md: Legit work only — no spinning wheels, fleet-wide (Nish, 2026-08-28)",
-      "mechanism": "Precedence-band empty-product surge expansion (fleet-ops#1516): when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity — BUT only for legit work (upgrade/repair per quality classification). Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The existing quality/churn metrics (upgrade/repair/churn baseline from fleet-ops#1136) are the gate.",
+      "source": "global-standing-rules.md: Legit work only \u2014 no spinning wheels, fleet-wide (Nish, 2026-08-28)",
+      "mechanism": "Precedence-band empty-product surge expansion (fleet-ops#1516): when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity \u2014 BUT only for legit work (upgrade/repair per quality classification). Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The existing quality/churn metrics (upgrade/repair/churn baseline from fleet-ops#1136) are the gate.",
       "proof": "lib/precedence-band.sh (precedence_band_classify_quality, precedence_band_is_legit_work, precedence_band_allow_claim); lib/pi-intake-tick.sh (passes title for quality check); tests/fleet-precedence-band.test.sh scenarios 17g-17z; config/precedence-band.json; fleet-ops#1516",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-deletion-first",
+      "source": "decisions-ledger.md: 2026-08-28 | Deletion-first is the FIRST rule every agent reads (Nish: \"Keep this on top for all agents and before building anything new\")",
+      "mechanism": "Deletion-first / net-negative-machinery is enforced at the same gate: new machinery is default-DENIED (fleet-machinery-authorization-gate), so construction without authorization cannot land. Absorbs no-hand-built-orchestration / prefer-proven-off-the-shelf / check-help-before-building at the machinery surface. Paper (docs, config edits inside existing organs) stays ungated.",
+      "proof": "bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit; fleet-ops#1548",
       "status": "enforced"
     }
   ]

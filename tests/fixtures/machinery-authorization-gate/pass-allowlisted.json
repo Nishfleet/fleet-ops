@@ -1,0 +1,10 @@
+{
+  "name_status": "A\tsystemd/fleet-heartbeat.service\n",
+  "body": "Re-add an already-allowlisted unit file after a restore.\n",
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ]
+  },
+  "manifest_added_lines": []
+}

@@ -278,6 +278,13 @@ prompts/blind-audit.md /home/nish/.pi/agent/prompts/blind-audit.md
 # evaluator — no dispatcher. Blind audit merges recurrence hits before filing.
 bin/fleet-failure-mechanism-gate /home/nish/.local/bin/fleet-failure-mechanism-gate
 lib/failure-mechanism-gate.py /home/nish/.local/lib/pi-packet/failure-mechanism-gate.py
+# fleet-ops#1548: machinery-authorization gate. Conference auto-rejects
+# new systemd/** / MANIFEST unit lines that are neither allowlisted nor
+# carrying authorized-by-nish:. Pure evaluator — no dispatcher. Blind
+# audit merges hand-placed-unit hunt hits before filing.
+bin/fleet-machinery-authorization-gate /home/nish/.local/bin/fleet-machinery-authorization-gate
+lib/machinery-authorization-gate.py /home/nish/.local/lib/pi-packet/machinery-authorization-gate.py
+config/machinery-allowlist.json /home/nish/.local/state/pi-packet/machinery-allowlist.json
 # fleet-ops#1010: organ-heartbeat invariant. Every fleet organ ships an
 # absent() rule in the same PR; the registry enumerates the known organs
 # and the gate rejects a PR that touches an organ without its absent() rule.

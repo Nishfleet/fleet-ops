@@ -1,0 +1,10 @@
+{
+  "name_status": "M\tMANIFEST\n",
+  "body": "Install a new unit via MANIFEST only.\n",
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ]
+  },
+  "diff": "diff --git a/MANIFEST b/MANIFEST\n--- a/MANIFEST\n+++ b/MANIFEST\n@@ -1,0 +1,1 @@\n+systemd/sneaky-via-diff.timer /home/nish/.config/systemd/user/sneaky-via-diff.timer\n"
+}
