@@ -139,6 +139,16 @@ done
 # closed via this PR (no new code, the host line and named pin above
 # already do the work). #824 provenance was re-anchored in PR #924.
 #
+# fleet-ops#799 is the ORIGINAL issue in this pile (filed
+# 2026-08-27T02:21:00Z, before #824 at 02:53:41Z and #831 at
+# 03:13:59Z): "tests/dirty-worktree-audit.test.sh is orphaned (not
+# run in CI)", surfaced while implementing fleet-ops#660. The fix
+# (host line via PR #883, named pin via PR #901) landed before #799
+# was re-queued, so #799 stayed open with no remaining work — the
+# test is hosted from rule-enforcement.test.sh and is not in
+# known_orphans. This comment plus the closing PR is the receipt;
+# no new code, same as #831.
+#
 # class-prevention: the named FAIL is the loudest signal; a future
 # worker who sees "1 test file(s) are neither ..." and parks the
 # test on known_orphans to silence the message would now also fail
