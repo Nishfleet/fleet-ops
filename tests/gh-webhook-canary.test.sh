@@ -118,4 +118,69 @@ after="$(wc -c < "$scratch/triage.md")"
 grep -q '^fleet_gh_webhook_canary_deadman_paged_total 1$' "$fake_prom" \
     || fail "8: throttle must not re-increment paged_total: $(grep deadman $fake_prom)"
 ok "8: deadman LIVE: throttle prevents re-paging within 30m"
+
+# --- 9: deadman fleet-ops#1569: a FRESH canary prom + a STALE receiver
+# prom must STILL page. This is the exact root-cause class from #1464/#1607:
+# the receiver returns HTTP 200 to the canary POST (so the canary prom file
+# stays green) but writes un-scrapeable prom labels (single-quoted via
+# Python repr) to its OWN prom file — node-exporter drops the receiver
+# series and FleetGhWebhookReceiverAbsent stays firing forever. The
+# canary-only check cannot see this; the deadman must read the receiver
+# prom file too.
+export GH_WEBHOOK_DEADMAN_DRY="1"
+export GH_WEBHOOK_DEADMAN_TRIAGE_FILE="$scratch/triage9.md"
+# Fresh canary prom (canary is green).
+fresh_canary="$scratch/canary-green.prom"
+{
+    echo "# HELP fleet_gh_webhook_canary_last_green_seconds epoch"
+    echo "# TYPE fleet_gh_webhook_canary_last_green_seconds gauge"
+    echo "fleet_gh_webhook_canary_last_green_seconds $(date -u +%s)"
+} > "$fresh_canary"
+export GH_WEBHOOK_CANARY_PROM="$fresh_canary"
+# Stale receiver prom (receiver heartbeat is old — un-scrapeable labels
+# or the receiver stopped writing).
+stale_receiver="$scratch/receiver-stale.prom"
+{
+    echo "# HELP fleet_gh_webhook_receiver_last_green_seconds epoch"
+    echo "# TYPE fleet_gh_webhook_receiver_last_green_seconds gauge"
+    echo "fleet_gh_webhook_receiver_last_green_seconds 1000000000"
+} > "$stale_receiver"
+export GH_WEBHOOK_RECEIVER_PROM="$stale_receiver"
+out="$(python3 "$deadman")" || fail "9: deadman DRY exited non-zero"
+echo "$out" | grep -q "canary_status=ok" || fail "9: canary must be ok: $out"
+echo "$out" | grep -q "receiver_ok=False" || fail "9: receiver must be flagged stale: $out"
+echo "$out" | grep -q "page_reason=receiver-stale" || fail "9: must report receiver-stale page reason: $out"
+echo "$out" | grep -q "should_page=True" || fail "9: must page when receiver stale: $out"
+ok "9: deadman detects canary-green but receiver-stale (the #1607 gap)"
+
+# --- 10: deadman with FRESH canary + FRESH receiver → ok (no page).
+fresh_receiver="$scratch/receiver-green.prom"
+{
+    echo "# HELP fleet_gh_webhook_receiver_last_green_seconds epoch"
+    echo "# TYPE fleet_gh_webhook_receiver_last_green_seconds gauge"
+    echo "fleet_gh_webhook_receiver_last_green_seconds $(date -u +%s)"
+} > "$fresh_receiver"
+export GH_WEBHOOK_RECEIVER_PROM="$fresh_receiver"
+out="$(python3 "$deadman")" || fail "10: deadman DRY exited non-zero"
+echo "$out" | grep -q "canary_status=ok" || fail "10: canary must be ok: $out"
+echo "$out" | grep -q "receiver_ok=True" || fail "10: receiver must be healthy: $out"
+ok "10: deadman ok when both canary and receiver are fresh"
+
+# --- 11: deadman LIVE with stale receiver → pages + writes receiver detail.
+export GH_WEBHOOK_DEADMAN_DRY=""
+export GH_WEBHOOK_DEADMAN_TRIAGE_FILE="$scratch/triage11.md"
+export GH_WEBHOOK_CANARY_PROM="$fresh_canary"
+export GH_WEBHOOK_RECEIVER_PROM="$stale_receiver"
+out="$(python3 "$deadman" 2>&1)" || true  # exits 1 by design when paging
+[[ -s "$scratch/triage11.md" ]] \
+    || fail "11: triage file empty: $(ls -la $scratch/triage11.md 2>&1)"
+grep -q 'gh-webhook-canary-deadman' "$scratch/triage11.md" \
+    || fail "11: triage file missing deadman marker"
+grep -q 'receiver' "$scratch/triage11.md" \
+    || fail "11: triage file must mention receiver: $(cat $scratch/triage11.md)"
+grep -q '^fleet_gh_webhook_canary_deadman_paged_total 1$' "$fresh_canary" \
+    || fail "11: paged_total counter not in canary prom: $(cat $fresh_canary)"
+grep -q 'receiver-stale' "$scratch/triage11.md" \
+    || fail "11: triage must mention receiver-stale: $(cat $scratch/triage11.md)"
+ok "11: deadman LIVE: stale receiver → triage written with receiver detail + paged_total"
 exit 0

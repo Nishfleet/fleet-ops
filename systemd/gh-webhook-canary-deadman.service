@@ -9,8 +9,15 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/1464
 # stale, this unit writes a loud entry to the alert-repair triage file
 # (and pings the healthchecks.io fail URL if configured).
 #
-# Standard dead-man's-switch inversion: alert on missing success, never
-# on present failure alone. If the path is fine, this unit is silent.
+# fleet-ops#1569: ALSO reads the receiver prom file
+# (fleet_gh_webhook_receiver_last_green_seconds). The canary only proves
+# the receiver's HTTP endpoint is alive — a receiver that returns 200
+# but writes un-scrapeable prom labels (single-quoted, the original
+# #1464 bug fixed in #1607) keeps the canary green while
+# FleetGhWebhookReceiverAbsent stays firing. The deadman must catch that
+# class by reading the receiver prom file directly (not via a Prometheus
+# scrape, which would already be failing — the point is to page BEFORE
+# Prometheus catches it).
 
 [Service]
 Type=oneshot
