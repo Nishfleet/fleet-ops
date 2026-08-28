@@ -1624,6 +1624,27 @@ fi
 grep -qE "pick_seat: at-capacity 2 seats \[xai-oauth/grok-4\.5,xai-oauth/grok-4\.6\]" "$PI_PACKET_STATE/watch.log" \
   || fail "1163-atcap-flood: must log per-pick at-capacity summary 'pick_seat: at-capacity 2 seats [...]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
 ok "1163-atcap-flood: per-seat cap-reached lines silenced (0); 1 at-capacity summary line for 2 grok models"
+# (c3) fleet-ops#1611: pin the EXACT at_capacity_events_last_2h metric
+#      predicate. The heartbeat gather rolls up watch.log lines that carry
+#      BOTH "cap=" and "skipped" (any skip reason, not only "reached"). The
+#      grep above checks "skipped (.*cap=.*reached" — it requires "reached",
+#      so a defence-in-depth "skipped (provider cap=0)" / "skipped (model
+#      cap=0)" line (lines that the _build_excluded_set pre-compute normally
+#      suppresses) would match the live metric but NOT the grep above. This
+#      scenario loads the production cap map (load_seat_caps), so the cap=0
+#      providers (groq, inferx, opencode-anthropic, orcarouter, grok) and
+#      cap=0 models are present and MUST be pre-excluded — if the pre-compute
+#      ever regresses, their per-seat "skipped (... cap=0)" lines reappear,
+#      this count goes > 0, and at_capacity_events_last_2h climbs back over
+#      the issue's under-50 verification target. Pin the exact predicate so
+#      any future refactor that re-introduces a "cap=...skipped" line fails
+#      here, not in production.
+_metric_predicate_lines=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_metric_predicate_lines=${_metric_predicate_lines:-0}
+if (( _metric_predicate_lines > 0 )); then
+  fail "1163-atcap-flood (#1611): at_capacity_events metric predicate (cap= + skipped) must be 0, was $_metric_predicate_lines — a per-seat 'skipped (... cap=...)' line leaked past the #1624 log-fold or the #1449 cap=0 pre-exclusion. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1163-atcap-flood (#1611): at_capacity_events metric predicate (cap= + skipped) is 0 — under-50 verification target pinned"
 rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
 # restore the 1163 state dir for later 1163 tests
 export PI_PACKET_STATE="$scratch/1163/state"
