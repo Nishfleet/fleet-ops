@@ -211,6 +211,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-waste-ledger\.test\.sh"?' 
   || fail "fleet-waste-ledger.test.sh must not be a known orphan (fleet-ops#1211)"
 ok "fleet-waste-ledger.test.sh is pinned in the P14 reachable set (fleet-ops#1211)"
 
+# fleet-ops#1367: hard-pin the host line for fleet-worker-prompt-gh-pr-view-unknown-field.
+# The test was added in PR #1352 without a P14 listing and was later hosted from
+# tests/seat-lib.test.sh by PR #1369. This named pin is class-prevention so a
+# future dropped host or a worker parking the test on known_orphans to silence a
+# generic "1 test file(s) are neither..." message fails by name.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-worker-prompt-gh-pr-view-unknown-field\.test\.sh"?' \
+  "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must bash-invoke fleet-worker-prompt-gh-pr-view-unknown-field.test.sh (fleet-ops#1367)"
+[[ -n "${reachable[fleet-worker-prompt-gh-pr-view-unknown-field.test.sh]:-}" ]] \
+  || fail "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1367)"
+[[ -z "${known_orphan_set[fleet-worker-prompt-gh-pr-view-unknown-field.test.sh]:-}" ]] \
+  || fail "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh must not be a known orphan (fleet-ops#1367)"
+ok "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh is pinned in the P14 reachable set (fleet-ops#1367)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
