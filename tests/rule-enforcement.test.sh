@@ -949,4 +949,9 @@ ok "rule-enforcement: token-efficiency gate drill"
 bash "$here/fleet-rulebook-redteam.test.sh" || fail "rulebook red-team drill failed"
 ok "rule-enforcement: rulebook red-team drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, and rulebook-redteam drills"
+# fleet-ops#538: "never decide by vibes — always measure" canary. Same
+# nested-CI host so the worker token does not need a workflow edit.
+bash "$here/fleet-vibes-canary.test.sh" || fail "vibes canary drill failed"
+ok "rule-enforcement: vibes canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, and vibes drills"
