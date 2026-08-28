@@ -669,10 +669,9 @@
     {
       "id": "led-2026-08-27-d1-prod-migrations",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations",
-      "mechanism": "No canary enforcing the D1 prod migration senior process (independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish). Mechanism issue open.",
-      "proof": "fleet-ops#905",
-      "status": "queued(#905)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Prompt gate: prompts/worker.md and prompts/scout.md void the 2026-08-27 \"do it right now?\" D1 prod migration decision and require the senior process from the final 2026-08-27 process amendment (strong lane plan, independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish). tests/fleet-d1-migration-senior-process.test.sh locks the prompt needles.",
+      "proof": "prompts/worker.md; prompts/scout.md; tests/fleet-d1-migration-senior-process.test.sh; fleet-ops#906; fleet-ops#908",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-correction",
