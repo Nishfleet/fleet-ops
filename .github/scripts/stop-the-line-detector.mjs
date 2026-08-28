@@ -84,6 +84,8 @@ const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_LABEL = "stop-the-line";
 const DEFAULT_BRANCH = "main";
 const COMMENT_MARKER_PREFIX = "<!-- stop-the-line:";
+const WORKFLOW_MARKER_RE = /<!--\s*stop-the-line:workflow=([^>\s]+?)\s*-->/;
+const FROZEN_TITLE_RE = /stop-the-line:\s+\S+\s+frozen\s+—\s+(.+?)\s+red on consecutive commits/;
 
 // Workflows the detector never treats as halt signals — these are
 // observers/detectors on top of CI, not the CI signals themselves. A red
@@ -151,6 +153,81 @@ export function isSkippedWorkflow(name) {
 export function isMainBranchRun(runs, branch = DEFAULT_BRANCH) {
   if (!Array.isArray(runs)) return false;
   return runs.some((r) => r && r.head_branch === branch);
+}
+
+/**
+ * Extract the halted workflow name from an issue body marker
+ * (`<!-- stop-the-line:workflow=CI -->`), falling back to the frozen-issue
+ * title shape `stop-the-line: <repo> frozen — <wf> red on consecutive
+ * commits`. The marker is the canonical source (it is what the detector
+ * itself writes); the title is the dedup key and carries the same name.
+ *
+ * Lookback-amnesia fix (fleet-ops#1489): the detector needs the workflow
+ * named in an already-open freeze issue to decide whether that workflow
+ * has gone green, even when the red runs that triggered the freeze have
+ * aged out of the lookback window.
+ *
+ * @param {string | null | undefined} body
+ * @param {string | null | undefined} title
+ * @returns {string | null}
+ */
+export function parseHaltedWorkflow(body, title) {
+  if (typeof body === "string") {
+    const m = body.match(WORKFLOW_MARKER_RE);
+    if (m && m[1]) return m[1];
+  }
+  if (typeof title === "string") {
+    const m = title.match(FROZEN_TITLE_RE);
+    if (m && m[1]) return m[1];
+  }
+  return null;
+}
+
+/**
+ * When an existing stop-the-line issue is open but the red runs that
+ * triggered it have aged out of the lookback, classifyHalt returns noop
+ * (it never saw the halt, so everHalted is empty and no unfreeze candidate
+ * is surfaced). The open issue IS the memory of the halt. This function
+ * checks whether the workflow named in the open issue has gone green in
+ * the sampled runs — a green run with no red for that workflow after it —
+ * and returns that green run so the close path can fire.
+ *
+ * Returns null when the workflow is still red (a red follows the last
+ * green), has no runs in the lookback, or the last run for it is red
+ * (cannot confirm cleared — the freeze stays until a green is observed).
+ *
+ * Lookback-amnesia fix (fleet-ops#1489).
+ *
+ * @param {WorkflowRun[]} runs
+ * @param {string | null | undefined} workflow
+ * @param {string} [branch]
+ * @returns {WorkflowRun | null}
+ */
+export function greenRunForWorkflow(runs, workflow, branch = DEFAULT_BRANCH) {
+  if (!workflow || !Array.isArray(runs)) return null;
+  const list = runs
+    .filter(
+      (r) =>
+        r &&
+        r.head_branch === branch &&
+        r.name === workflow &&
+        !isSkippedWorkflow(r.name),
+    )
+    .slice()
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  if (list.length === 0) return null;
+  let lastGreen = null;
+  let redAfterLastGreen = false;
+  for (const r of list) {
+    if (r.conclusion === "success") {
+      lastGreen = r;
+      redAfterLastGreen = false;
+    } else if (r.conclusion === "failure" && lastGreen) {
+      redAfterLastGreen = true;
+    }
+  }
+  if (lastGreen && !redAfterLastGreen) return lastGreen;
+  return null;
 }
 
 /**
@@ -555,7 +632,11 @@ function ensureLabel(repository) {
 }
 
 /**
- * Find the existing open stop-the-line issue (if any) for this repo.
+ * Find the existing open stop-the-line issue (if any) for this repo, and
+ * the workflow it names. The workflow is read from the issue body marker
+ * (`<!-- stop-the-line:workflow=CI -->`) with a title-shape fallback, so
+ * the detector can unfreeze even when the red runs that triggered the
+ * freeze have aged out of the lookback (fleet-ops#1489).
  *
  * Dedup has to handle the production fact that labels do not always stick
  * on issue-creation under app installation tokens (`gh issue create --label`
@@ -565,9 +646,13 @@ function ensureLabel(repository) {
  * what label-matching misses.
  *
  * @param {string} repository
- * @returns {number | null}
+ * @returns {{ number: number, workflow: string | null } | null}
  */
 function findExistingIssue(repository) {
+  /** @type {number | null} */
+  let matchedNumber = null;
+  /** @type {string | null} */
+  let matchedTitle = null;
   try {
     const itemsRaw = execFileSync(
       "gh",
@@ -598,7 +683,9 @@ function findExistingIssue(repository) {
           issue.title.includes("frozen") &&
           Number.isFinite(issue.number)
         ) {
-          return Number(issue.number);
+          matchedNumber = Number(issue.number);
+          matchedTitle = issue.title;
+          break;
         }
       } catch {
         // Skip stray lines.
@@ -607,7 +694,23 @@ function findExistingIssue(repository) {
   } catch {
     // List may fail (no permissions / no issues yet). Fall through.
   }
-  return null;
+  if (matchedNumber == null) return null;
+  // Read the body marker for the halted workflow (canonical source). Fall
+  // back to the title shape if the body fetch fails or the marker is absent.
+  let body = "";
+  try {
+    const bodyJson = execFileSync(
+      "gh",
+      ["issue", "view", String(matchedNumber), "--repo", repository, "--json", "body"],
+      { encoding: "utf8", env: process.env, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
+    );
+    const parsed = JSON.parse(bodyJson);
+    if (parsed && typeof parsed.body === "string") body = parsed.body;
+  } catch {
+    // Body fetch failed; title fallback below.
+  }
+  const workflow = parseHaltedWorkflow(body, matchedTitle ?? "");
+  return { number: matchedNumber, workflow };
 }
 
 /**
@@ -716,6 +819,8 @@ function closeIssue(repository, issueNumber) {
  *   verdict: ReturnType<typeof classifyHalt>,
  *   repository: string,
  *   existingIssueNumber: number | null,
+ *   knownHaltedWorkflow?: string | null,
+ *   runs?: WorkflowRun[],
  * }} ctx
  * @returns {Decision}
  */
@@ -739,6 +844,33 @@ export function buildDecision(ctx) {
         },
         open_issue_number: existingIssueNumber,
       };
+    }
+    // Lookback-amnesia close (fleet-ops#1489): an open freeze issue is the
+    // memory of a halt whose red runs have aged out of the lookback.
+    // classifyHalt returned no halt and no unfreeze candidate because it
+    // never saw the red pair. If the workflow named in the open issue has
+    // gone green in the sampled runs (no red after the last green), close
+    // the issue — the freeze is over. Without this, a freeze issue stays
+    // open forever once its red runs age out of the (short) watch lookback.
+    if (existingIssueNumber && !verdict.unfreeze_candidate) {
+      const knownWorkflow = ctx.knownHaltedWorkflow ?? null;
+      const green = greenRunForWorkflow(ctx.runs ?? [], knownWorkflow);
+      if (green) {
+        return {
+          action: "close",
+          repository,
+          workflow: knownWorkflow ?? "(unknown)",
+          reason: "halt cleared (open-issue memory; red runs aged out of lookback)",
+          red_runs: [],
+          unfreeze_run: {
+            run_id: green.id,
+            run_url: green.html_url,
+            head_sha: green.head_sha,
+            created_at: green.created_at,
+          },
+          open_issue_number: existingIssueNumber,
+        };
+      }
     }
     return {
       action: "noop",
@@ -928,10 +1060,16 @@ async function main() {
       const verdict = classifyHalt(runs, { branch });
       const issueNumber =
         typeof payload.existing_issue_number === "number" ? payload.existing_issue_number : null;
+      const issueWorkflow =
+        typeof payload.existing_issue_workflow === "string" && payload.existing_issue_workflow.length > 0
+          ? payload.existing_issue_workflow
+          : null;
       decision = buildDecision({
         verdict,
         repository,
         existingIssueNumber: issueNumber,
+        knownHaltedWorkflow: issueWorkflow,
+        runs,
       });
     } else {
       throw new Error(`fixture must be an object: ${args.fromJson}`);
@@ -944,7 +1082,9 @@ async function main() {
     decision = buildDecision({
       verdict,
       repository,
-      existingIssueNumber: existing,
+      existingIssueNumber: existing ? existing.number : null,
+      knownHaltedWorkflow: existing ? existing.workflow : null,
+      runs,
     });
   }
 
