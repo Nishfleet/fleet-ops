@@ -1040,3 +1040,8 @@ bash "$here/credential-expiry-canary.test.sh"
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/cf-token-canary.test.sh"
 
+# fleet-ops#1135: bare-metal rebuild manifest + drill. Invoked from this
+# CI-listed file so hosted runners run it without a workflow edit (worker
+# tokens cannot push .github/workflows/**).
+bash "$here/fleet-bare-metal-rebuild.test.sh"
+
