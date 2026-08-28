@@ -28,18 +28,8 @@ CONFIG="${SGSCAN_CONFIG:-p/default}"
 
 die() { printf '%s\n' "$*" >&2; }
 
-command -v semgrep >/dev/null 2>&1 || {
-  die "semgrep not found."
-  die "Install:  brew install semgrep   (Mac)"
-  die "          pipx install semgrep   (Linux)"
-  exit 5
-}
-
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-  die "sgscan must run inside a git repository."
-  exit 6
-}
-
+# Parse argv before any host-side requirement so --help and unknown flags
+# exit cleanly without semgrep or git. fleet-ops#1549.
 BASE=""
 SCAN_ALL=0
 JSON=0
@@ -79,6 +69,18 @@ HELP
     *) EXTRA+=("$1"); shift ;;
   esac
 done
+
+command -v semgrep >/dev/null 2>&1 || {
+  die "semgrep not found."
+  die "Install:  brew install semgrep   (Mac)"
+  die "          pipx install semgrep   (Linux)"
+  exit 5
+}
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  die "sgscan must run inside a git repository."
+  exit 6
+}
 
 # Find something sensible to diff against.
 if [ -z "$BASE" ] && [ "$SCAN_ALL" -eq 0 ]; then
