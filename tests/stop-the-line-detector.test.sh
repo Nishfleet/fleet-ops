@@ -55,6 +55,8 @@ import {
   issueTitle,
   issueBody,
   renderReport,
+  parseHaltedWorkflow,
+  greenRunForWorkflow,
 } from "./.github/scripts/stop-the-line-detector.mjs";
 
 // classifyHalt: red-green-red -> no halt and no unfreeze (no consecutive reds).
@@ -151,6 +153,88 @@ if (!rep.includes("Stop-the-line detector")) throw new Error("renderReport must 
 if (!rep.includes("OPEN")) throw new Error("renderReport must show the OPEN decision");
 
 console.log("OK: classify, buildDecision, skip, render, marker, body");
+
+// --- lookback-amnesia (fleet-ops#1489) -------------------------------------
+// parseHaltedWorkflow: body marker is canonical.
+const wfBody = parseHaltedWorkflow("<!-- stop-the-line:workflow=CI -->\n\nfrozen", null);
+if (wfBody !== "CI") throw new Error(`parseHaltedWorkflow marker must yield CI, got ${wfBody}`);
+// Title fallback when body marker absent.
+const wfTitle = parseHaltedWorkflow(null, "stop-the-line: Nishfleet/fleet-ops frozen — CI red on consecutive commits");
+if (wfTitle !== "CI") throw new Error(`parseHaltedWorkflow title fallback must yield CI, got ${wfTitle}`);
+// Neither present -> null.
+if (parseHaltedWorkflow("", "some other title") !== null) throw new Error("parseHaltedWorkflow must return null when no marker and no title shape");
+
+// greenRunForWorkflow: green present, no red after -> returns the green.
+const gAmnesia = [
+  { id: 100, name: "CI", conclusion: "success", head_branch: "main", head_sha: "x", created_at: "2026-08-28T05:24:00Z", html_url: "u100" },
+  { id: 200, name: "CI", conclusion: "success", head_branch: "main", head_sha: "y", created_at: "2026-08-28T05:38:00Z", html_url: "u200" },
+];
+const gr1 = greenRunForWorkflow(gAmnesia, "CI");
+if (!gr1 || gr1.id !== 200) throw new Error("greenRunForWorkflow must return the most-recent green (200)");
+// red after green -> null (still halted, cannot confirm cleared).
+const gr2 = greenRunForWorkflow([
+  { id: 100, name: "CI", conclusion: "success", head_branch: "main", head_sha: "x", created_at: "t1", html_url: "u" },
+  { id: 200, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "y", created_at: "t2", html_url: "u" },
+], "CI");
+if (gr2) throw new Error("greenRunForWorkflow must return null when a red follows the last green");
+// only red, no green -> null.
+const gr3 = greenRunForWorkflow([
+  { id: 100, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "x", created_at: "t1", html_url: "u" },
+], "CI");
+if (gr3) throw new Error("greenRunForWorkflow must return null when there is no green run");
+// no runs for the workflow -> null.
+if (greenRunForWorkflow([], "CI") !== null) throw new Error("greenRunForWorkflow must return null for empty runs");
+// wrong workflow name -> null.
+const gr4 = greenRunForWorkflow(gAmnesia, "Deploy");
+if (gr4) throw new Error("greenRunForWorkflow must return null when no run matches the named workflow");
+// null/empty workflow -> null.
+if (greenRunForWorkflow(gAmnesia, null) !== null) throw new Error("greenRunForWorkflow must return null for null workflow");
+// skipped workflow name -> null even if a green run exists.
+const gr5 = greenRunForWorkflow([
+  { id: 100, name: "Stop-the-line watch", conclusion: "success", head_branch: "main", head_sha: "x", created_at: "t1", html_url: "u" },
+], "Stop-the-line watch");
+if (gr5) throw new Error("greenRunForWorkflow must ignore skipped workflows");
+
+// buildDecision amnesia-close: noop verdict + open issue + known workflow +
+// green runs in lookback -> close (the freeze lifts even though the red pair
+// aged out of the lookback and classifyHalt never saw the halt).
+const noopVerdict = { halt: false, halted_workflow: null, halted_runs: [], last_run_for_halted: null, unfreeze_candidate: null };
+const dAmnesiaClose = buildDecision({
+  verdict: noopVerdict,
+  repository: "Nishfleet/fleet-ops",
+  existingIssueNumber: 1478,
+  knownHaltedWorkflow: "CI",
+  runs: gAmnesia,
+});
+if (dAmnesiaClose.action !== "close") throw new Error(`amnesia-close must action=close, got ${dAmnesiaClose.action}`);
+if (dAmnesiaClose.workflow !== "CI") throw new Error(`amnesia-close workflow must be CI, got ${dAmnesiaClose.workflow}`);
+if (!dAmnesiaClose.unfreeze_run || dAmnesiaClose.unfreeze_run.run_id !== 200) throw new Error("amnesia-close unfreeze_run must point at run 200");
+if (dAmnesiaClose.open_issue_number !== 1478) throw new Error("amnesia-close must carry the existing issue number");
+
+// buildDecision amnesia-stays-open: open issue + known workflow but the
+// lookback only shows a red run (no green) -> noop (cannot confirm cleared;
+// the freeze stays until a green is observed).
+const dAmnesiaRed = buildDecision({
+  verdict: noopVerdict,
+  repository: "Nishfleet/fleet-ops",
+  existingIssueNumber: 1478,
+  knownHaltedWorkflow: "CI",
+  runs: [{ id: 100, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "x", created_at: "t1", html_url: "u" }],
+});
+if (dAmnesiaRed.action !== "noop") throw new Error(`amnesia-still-red must action=noop (issue stays open), got ${dAmnesiaRed.action}`);
+
+// buildDecision amnesia-no-workflow: open issue but no workflow name
+// recoverable -> noop (cannot confirm which workflow to clear).
+const dAmnesiaNoWf = buildDecision({
+  verdict: noopVerdict,
+  repository: "Nishfleet/fleet-ops",
+  existingIssueNumber: 1478,
+  knownHaltedWorkflow: null,
+  runs: gAmnesia,
+});
+if (dAmnesiaNoWf.action !== "noop") throw new Error(`amnesia-no-workflow must action=noop, got ${dAmnesiaNoWf.action}`);
+
+console.log("OK: lookback-amnesia helpers + buildDecision (fleet-ops#1489)");
 ' || fail "pure function tests failed"
 
 # --- replay: red-red -> open decision ---------------------------------------
@@ -185,6 +269,33 @@ if (r.decision.workflow !== "CI") throw new Error(`unfreeze workflow must be CI,
 if (!r.decision.unfreeze_run || r.decision.unfreeze_run.run_id !== 3003) throw new Error("unfreeze_run must point at run 3003");
 console.log("OK: red-red-green + open issue -> close (auto-unfreeze, no human step)");
 ' || fail "unfreeze replay failed"
+
+# --- replay: lookback-amnesia -> close (fleet-ops#1489) ---------------------
+# The red pair that triggered the freeze aged out of the (short) watch
+# lookback; only green CI runs remain in-window. An open freeze issue names
+# CI. The detector must STILL close the issue using the open issue as the
+# memory of the halt — the regression that kept #1478 open after green CI.
+node "$script" --from-json "$fixtures/unfreeze-amnesia.json" --format json --output-json /tmp/stl-amnesia.json >/dev/null
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const r = JSON.parse(readFileSync("/tmp/stl-amnesia.json", "utf8"));
+if (r.decision.action !== "close") throw new Error(`amnesia fixture must action=close (existing #1478, CI green), got ${r.decision.action}`);
+if (r.decision.workflow !== "CI") throw new Error(`amnesia workflow must be CI, got ${r.decision.workflow}`);
+if (!r.decision.unfreeze_run || r.decision.unfreeze_run.run_id !== 33145362942) throw new Error("amnesia unfreeze_run must point at the green run 33145362942");
+if (r.decision.open_issue_number !== 1478) throw new Error("amnesia must close the existing issue #1478");
+console.log("OK: lookback-amnesia + open issue -> close (red runs aged out, CI green, fleet-ops#1489)");
+' || fail "amnesia replay failed"
+
+# --- replay: lookback-amnesia still red -> noop (issue stays open) ----------
+# Open freeze issue names CI, but the lookback only shows a red CI run (no
+# green). The detector must NOT close — it cannot confirm the freeze lifted.
+node "$script" --from-json "$fixtures/unfreeze-amnesia-still-red.json" --format json --output-json /tmp/stl-amnesia-red.json >/dev/null
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const r = JSON.parse(readFileSync("/tmp/stl-amnesia-red.json", "utf8"));
+if (r.decision.action !== "noop") throw new Error(`amnesia-still-red must action=noop (issue stays open), got ${r.decision.action}`);
+console.log("OK: lookback-amnesia still-red -> noop (freeze stays until a green is observed)");
+' || fail "amnesia-still-red replay failed"
 
 # --- replay: quiet (no consecutive red pairs) -> noop -----------------------
 node "$script" --from-json "$fixtures/quiet-runs.json" --format json --output-json /tmp/stl-quiet.json >/dev/null
