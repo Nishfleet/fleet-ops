@@ -446,6 +446,12 @@
       "cadence": "weekly",
       "source": "user-config"
     },
+    "fleet-rulebook-redteam.timer": {
+      "reason": "Monthly rulebook red-team floor — heading-growth bonus fires via heartbeat; calendar floor catches a month the box was down",
+      "classification": "scheduled",
+      "cadence": "monthly",
+      "source": "repo"
+    },
     "vps-maintenance-quiesce.timer": {
       "reason": "Weekly maintenance quiesce (T-15) — stops NEW work only; Sun 03:15 IST before vps-weekly-update",
       "classification": "scheduled",
