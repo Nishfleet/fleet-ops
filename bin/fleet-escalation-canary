@@ -213,6 +213,7 @@ SANCTIONED_PI_RUNNERS=(
     fleet-console-tile-truth-drill
     fleet-heartbeat-tier2
     fleet-researcher-run
+    fleet-gap-closure-auditor
     pi-audit-run
     pi-intake-run
     pi-intake-repair-run

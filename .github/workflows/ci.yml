@@ -234,6 +234,7 @@ jobs:
         bash tests/fleet-seat-recovery.test.sh
         bash tests/fleet-escalation-completion.test.sh
         bash tests/rule-enforcement.test.sh
+        bash tests/signal-reconcile.test.sh
         bash tests/reusable-workflows.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
         # behavior so a reverted merge can no longer leave its issues closed.
