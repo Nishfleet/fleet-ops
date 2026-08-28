@@ -46,6 +46,12 @@
 #   FLEET_READY_WORK            default $AGENT_STATE/READY-WORK.md
 #   FLEET_UNJUSTIFIED_WAIT_NOW  ISO timestamp override (tests)
 #   FLEET_CLAIM_STALE_HOURS     claim age threshold (default 24)
+#   FLEET_CLAIM_DEAD_WORKER_MIN minimum claim age before checking if the
+#     ready-work-worker unit is dead (default 5). A claim younger than this
+#     is assumed in-flight; a claim older than this AND whose worker unit is
+#     no longer active is an orphaned claim — repaired immediately instead
+#     of waiting CLAIM_STALE_HOURS (fleet-ops#1614).
+#   FLEET_SYSTEMCTL             systemctl override (tests inject a fake)
 #   FLEET_UNJUSTIFIED_WAIT_REPAIR default 1 — strip CLAIMED: from stalled
 #     READY-WORK items (CLAIMED older than threshold, no DONE, no after:)
 #     so they return to ready-now. Set 0 to audit-only (tests that assert
@@ -71,6 +77,8 @@ STOP_REASON="${FLEET_STOP_REASON:-$AS/STOP-REASON.json}"
 READY_WORK="${FLEET_READY_WORK:-$AS/READY-WORK.md}"
 NOW_ISO="${FLEET_UNJUSTIFIED_WAIT_NOW:-}"
 CLAIM_STALE_HOURS="${FLEET_CLAIM_STALE_HOURS:-24}"
+CLAIM_DEAD_WORKER_MIN="${FLEET_CLAIM_DEAD_WORKER_MIN:-5}"
+SYSTEMCTL="${FLEET_SYSTEMCTL:-systemctl}"
 REPAIR="${FLEET_UNJUSTIFIED_WAIT_REPAIR:-1}"
 CLOSE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES:-0}"
 GH="${GH:-gh}"
@@ -276,6 +284,27 @@ audit_stop_reason() {
     esac
 }
 
+# --- ready-work-worker liveness check ----------------------------------------
+# A CLAIMED item's worker unit is named ready-work-worker-<compact_ts>-<N>
+# (ready-work-dispatch: unit = "ready-work-worker-%s-%d" % (compact_ts, line)).
+# The CLAIMED timestamp is the ISO form of the same instant. Convert ISO ->
+# compact (strip dashes and colons) and ask systemd whether any unit with
+# that prefix is still active or activating. If not, the worker is dead and
+# the claim is orphaned — repair it now instead of waiting CLAIM_STALE_HOURS
+# (fleet-ops#1614: the 24h stall was the recurring top-gear-no-clock signal).
+worker_unit_active() {
+    local claimed_ts="$1"
+    # ISO 2026-08-28T19:23:20Z -> compact 20260828T192320Z
+    local compact
+    compact=$(printf '%s' "$claimed_ts" | tr -d ':-')
+    [[ -n "$compact" ]] || return 1
+    local out
+    out=$("$SYSTEMCTL" --user list-units \
+        "ready-work-worker-${compact}-*.service" \
+        --state=active,activating --no-pager 2>/dev/null || true)
+    grep -qE '^[[:space:]]*ready-work-worker' <<<"$out"
+}
+
 # --- READY-WORK audit + repair ----------------------------------------------
 # Unchecked items: `after:` = named clock (the shell check is the gate).
 # A CLAIMED item with no DONE marker older than CLAIM_STALE_HOURS is a
@@ -325,26 +354,46 @@ audit_ready_work() {
             done_flag=1
         fi
         if [[ -n "$claimed" ]] && [[ -z "$done_flag" ]] && [[ -z "$after" ]]; then
-            # CLAIMED but no DONE and no after: gate. If the claim is old,
-            # it is a stalled claim. A recent claim (< CLAIM_STALE_HOURS)
-            # is in-flight — still not a clock, but not stale enough to
-            # scream. TOP GEAR's clock rule is about WAITING; a fresh claim
-            # is being worked.
+            # CLAIMED but no DONE and no after: gate. Two paths to a LOUD
+            # finding / repair:
+            #   (a) STALE: claim older than CLAIM_STALE_HOURS (24h) — the
+            #       original proxy for "the worker is probably dead".
+            #   (b) DEAD WORKER (fleet-ops#1614): claim older than
+            #       CLAIM_DEAD_WORKER_MIN (5 min) AND the ready-work-worker
+            #       unit is no longer active. This catches the real root
+            #       cause — a worker that failed/exited — within minutes
+            #       instead of 24h, so the item returns to ready-now on
+            #       the next heartbeat tick rather than stalling for a day.
+            # A claim younger than CLAIM_DEAD_WORKER_MIN is in-flight (the
+            # worker may still be starting); do not check or flag it.
             claim_epoch=0
             claim_epoch=$(date -u -d "$claimed" +%s 2>/dev/null || echo 0)
             if [[ "$claim_epoch" =~ ^[0-9]+$ ]] && (( claim_epoch > 0 )); then
+                local age_min=0 stale=0 dead_worker=0 reason=""
+                age_min=$(( (now - claim_epoch) / 60 ))
                 if (( now - claim_epoch > CLAIM_STALE_HOURS * 3600 )); then
+                    stale=1
+                    reason="${CLAIM_STALE_HOURS}h threshold"
+                elif (( age_min >= CLAIM_DEAD_WORKER_MIN )); then
+                    # Old enough to check liveness. If the worker unit is
+                    # gone, the claim is orphaned — repair now.
+                    if ! worker_unit_active "$claimed"; then
+                        dead_worker=1
+                        reason="dead-worker ${age_min}m old"
+                    fi
+                fi
+                if (( stale == 1 || dead_worker == 1 )); then
                     if [[ "$REPAIR" == "1" ]]; then
                         rewritten=$(repair_stalled_claim_line "$line")
                         if [[ "$rewritten" != "$line" ]]; then
-                            loud "UNJUSTIFIED-WAIT-REPAIR" "READY-WORK claim unclaimed: '${item:0:100}…' CLAIMED:$claimed (${CLAIM_STALE_HOURS}h threshold) — stripped CLAIMED so the item is ready-now again"
+                            loud "UNJUSTIFIED-WAIT-REPAIR" "READY-WORK claim unclaimed: '${item:0:100}…' CLAIMED:$claimed ($reason) — stripped CLAIMED so the item is ready-now again"
                             out_lines+=("$rewritten")
                             dirty=1
                             repaired=$((repaired + 1))
                             continue
                         fi
                     fi
-                    loud "UNJUSTIFIED-WAIT" "READY-WORK claim is stalled: '${item:0:100}…' CLAIMED:$claimed (${CLAIM_STALE_HOURS}h threshold) with no DONE and no after: gate — the wait has no clock"
+                    loud "UNJUSTIFIED-WAIT" "READY-WORK claim is stalled: '${item:0:100}…' CLAIMED:$claimed ($reason) with no DONE and no after: gate — the wait has no clock"
                     n=$((n + 1))
                 fi
             fi

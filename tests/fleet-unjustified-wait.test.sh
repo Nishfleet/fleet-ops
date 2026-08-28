@@ -154,8 +154,9 @@ run_bin() {
   FLEET_SEAT_LEDGER_DIR="$scratch/seats" \
   FLEET_STOP_REASON="$scratch/STOP-REASON.json" \
   FLEET_READY_WORK="$scratch/READY-WORK.md" \
-  FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:00:00Z" \
+  FLEET_UNJUSTIFIED_WAIT_NOW="${FLEET_UNJUSTIFIED_WAIT_NOW:-2026-08-27T00:00:00Z}" \
   FLEET_CLAIM_STALE_HOURS="24" \
+  FLEET_SYSTEMCTL="${FLEET_SYSTEMCTL:-systemctl}" \
   FLEET_UNJUSTIFIED_WAIT_REPAIR="${FLEET_UNJUSTIFIED_WAIT_REPAIR:-0}" \
   FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES:-0}" \
   FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES=0 \
@@ -263,6 +264,106 @@ grep -q "Item B — stale claim without a named clock" "$scratch/READY-WORK.md" 
 grep "Item C" "$scratch/READY-WORK.md" | grep -q "CLAIMED:2026-08-25T00:00:00Z" \
   || { cat "$scratch/READY-WORK.md"; fail "Item C with after: must keep its CLAIMED marker"; }
 ok "stalled READY-WORK claim is unclaimed by REPAIR=1 (fleet-ops#852)"
+
+# --- 7c. dead-worker fast repair (fleet-ops#1614) ----------------------------
+# A CLAIMED item whose worker unit is no longer active is an orphaned claim.
+# The detector must repair it immediately (after CLAIM_DEAD_WORKER_MIN grace)
+# instead of waiting CLAIM_STALE_HOURS. This is the root-cause fix for the
+# recurring top-gear-no-clock signal: workers fail/exited but CLAIMED sat
+# for 24h.
+#
+# Fake systemctl: the "active_units" file lists unit names that are active.
+# An empty file (or no match) means the worker is dead.
+cat >"$scratch/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+# Minimal fake: systemctl --user list-units <pattern> --state=... --no-pager
+# Prints active unit names from $FAKE_SYSTEMCTL_ACTIVE file (one per line)
+# that match the glob pattern.
+set -euo pipefail
+active_file="${FAKE_SYSTEMCTL_ACTIVE:-/dev/null}"
+pattern=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --user) shift ;;
+    list-units) shift; pattern="$1"; shift ;;
+    --state) shift 2 ;;
+    --no-pager) shift ;;
+    *) shift ;;
+  esac
+done
+[ -f "$active_file" ] || exit 0
+# Convert systemd glob to grep regex: * -> .*
+regex=$(printf '%s' "$pattern" | sed 's/\./\\./g; s/\*/.*/g')
+grep -E "^${regex}\$" "$active_file" 2>/dev/null || true
+FAKE
+chmod +x "$scratch/systemctl"
+
+# 7c-1: dead worker (no active unit) + REPAIR=1 -> strips CLAIMED immediately.
+# Claim is 10 min old (well past the 5-min grace), well under the 24h threshold.
+# NOW=00:10:00Z, CLAIMED=00:00:00Z -> age=10min, not stale, dead worker.
+printf '%s\n' "- [ ] Item A — a ready item" >"$scratch/READY-WORK.md"
+printf '%s\n' "- [ ] Item D — orphaned claim, worker is dead CLAIMED:2026-08-27T00:00:00Z" >>"$scratch/READY-WORK.md"
+# No active units -> worker is dead.
+: >"$scratch/active_units"
+rc=$(FLEET_UNJUSTIFIED_WAIT_REPAIR=1 \
+     FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:10:00Z" \
+     FLEET_SYSTEMCTL="$scratch/systemctl" \
+     FAKE_SYSTEMCTL_ACTIVE="$scratch/active_units" \
+     run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "dead-worker REPAIR=1 should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-REPAIR" "$scratch/err.log" || fail "missing dead-worker REPAIR line"
+grep -q "dead-worker" "$scratch/err.log" || fail "missing dead-worker reason in REPAIR line"
+grep "Item D" "$scratch/READY-WORK.md" | grep -q "CLAIMED:" \
+  && { cat "$scratch/READY-WORK.md"; fail "Item D still carries CLAIMED after dead-worker repair"; }
+ok "dead-worker claim is unclaimed immediately by REPAIR=1 (fleet-ops#1614)"
+
+# 7c-2: dead worker + REPAIR=0 (audit-only) -> LOUD finding, exit 1.
+printf '%s\n' "- [ ] Item A — a ready item" >"$scratch/READY-WORK.md"
+printf '%s\n' "- [ ] Item D — orphaned claim, worker is dead CLAIMED:2026-08-27T00:00:00Z" >>"$scratch/READY-WORK.md"
+: >"$scratch/active_units"
+rc=$(FLEET_UNJUSTIFIED_WAIT_REPAIR=0 \
+     FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:10:00Z" \
+     FLEET_SYSTEMCTL="$scratch/systemctl" \
+     FAKE_SYSTEMCTL_ACTIVE="$scratch/active_units" \
+     run_bin)
+[[ "$rc" == "1" ]] || { cat "$scratch/err.log"; fail "dead-worker REPAIR=0 should exit 1 (got $rc)"; }
+grep -q "dead-worker" "$scratch/err.log" || fail "missing dead-worker reason in LOUD line"
+ok "dead-worker claim is flagged LOUD in audit-only mode (fleet-ops#1614)"
+
+# 7c-3: live worker (active unit) -> NOT flagged, CLAIMED preserved.
+# Same age (10 min) but the worker unit is still active.
+printf '%s\n' "- [ ] Item A — a ready item" >"$scratch/READY-WORK.md"
+printf '%s\n' "- [ ] Item E — in-flight claim, worker alive CLAIMED:2026-08-27T00:00:00Z" >>"$scratch/READY-WORK.md"
+printf '%s\n' "ready-work-worker-20260827T000000Z-1.service" >"$scratch/active_units"
+rc=$(FLEET_UNJUSTIFIED_WAIT_REPAIR=1 \
+     FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:10:00Z" \
+     FLEET_SYSTEMCTL="$scratch/systemctl" \
+     FAKE_SYSTEMCTL_ACTIVE="$scratch/active_units" \
+     run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "live-worker should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-REPAIR" "$scratch/err.log" \
+  && { cat "$scratch/err.log"; fail "live-worker must NOT be repaired"; }
+grep "Item E" "$scratch/READY-WORK.md" | grep -q "CLAIMED:2026-08-27T00:00:00Z" \
+  || { cat "$scratch/READY-WORK.md"; fail "live-worker CLAIMED must be preserved"; }
+ok "live-worker claim is NOT flagged or repaired (fleet-ops#1614)"
+
+# 7c-4: young claim (< CLAIM_DEAD_WORKER_MIN) -> NOT checked, even if worker
+# is dead. A fresh claim is in-flight; the worker may still be starting.
+printf '%s\n' "- [ ] Item A — a ready item" >"$scratch/READY-WORK.md"
+# Claim is 2 min old — under the 5-min grace. NOW is 2026-08-27T00:02:00Z.
+printf '%s\n' "- [ ] Item F — fresh claim, worker may be starting CLAIMED:2026-08-27T00:00:00Z" >>"$scratch/READY-WORK.md"
+: >"$scratch/active_units"
+rc=$(FLEET_UNJUSTIFIED_WAIT_REPAIR=1 \
+     FLEET_UNJUSTIFIED_WAIT_NOW="2026-08-27T00:02:00Z" \
+     FLEET_SYSTEMCTL="$scratch/systemctl" \
+     FAKE_SYSTEMCTL_ACTIVE="$scratch/active_units" \
+     run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "young claim should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-REPAIR" "$scratch/err.log" \
+  && { cat "$scratch/err.log"; fail "young claim must NOT be repaired (under grace)"; }
+grep "Item F" "$scratch/READY-WORK.md" | grep -q "CLAIMED:2026-08-27T00:00:00Z" \
+  || { cat "$scratch/READY-WORK.md"; fail "young claim CLAIMED must be preserved (under grace)"; }
+ok "young claim (< grace) is NOT checked even if worker is dead (fleet-ops#1614)"
 
 # --- 8. auto-file with signal key + dedupe -----------------------------------
 : >"$scratch/READY-WORK.md"
