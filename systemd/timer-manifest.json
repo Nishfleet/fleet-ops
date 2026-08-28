@@ -98,6 +98,12 @@
       "cadence": "6h",
       "source": "repo"
     },
+    "gap-closure-drill-stub-mask.timer": {
+      "reason": "Throwaway yearly timer for gap-closure mask-detection drills — never enabled; the drill runtime-masks then unmasks it. Named so timer-manifest shape lock does not fail on the repo file.",
+      "classification": "disabled",
+      "cadence": "yearly",
+      "source": "repo"
+    },
     "fleet-weekly-fleet-review.timer": {
       "reason": "Weekly Fleet Review (WFR) — mandated weekly senior review per WBR/kaizen pattern; Sun 04:30 IST post-maintenance chain",
       "classification": "scheduled",

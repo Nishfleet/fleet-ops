@@ -1,0 +1,9 @@
+[Unit]
+Description=Throwaway service for the mask-detection drill timer
+# Paired with gap-closure-drill-stub-mask.timer. /bin/true. No [Install].
+
+[Service]
+Type=oneshot
+Slice=gap-closure-drill.slice
+ExecStart=/bin/true
+Restart=no

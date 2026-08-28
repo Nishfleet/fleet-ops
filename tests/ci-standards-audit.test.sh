@@ -233,3 +233,8 @@ bash "$here/gh-webhook-receiver-hmac.test.sh"
 bash "$here/gh-webhook-canary.test.sh"
 bash "$here/gh-webhook-organ-heartbeat.test.sh"
 bash "$here/fleet-intake-reconciler-counter.test.sh"
+
+# fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**).
+bash "$here/fleet-gap-closure-loop.test.sh"

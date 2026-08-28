@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-slo — per-cycle SLO snapshot from logs already produced
+# (fleet-ops#180, step 4). Mechanical. No LLM.
+#
+# product_vs_control_plane_merge_ratio is a declared PLACEHOLDER filled by
+# #153's THROUGHPUT line (visibility, not a cap). This script does not
+# recompute that split.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+
+STATE_DIR="${GAP_LOOP_STATE_DIR:-/home/nish/workspaces/agent-state/gap-closure}"
+REPO="${GAP_LOOP_REPO:-Nishfleet/fleet-ops}"
+GH="${GAP_LOOP_GH:-gh}"
+DISABLE="${GAP_LOOP_DISABLE:-0}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+QUALITY_JSON="${GAP_LOOP_QUALITY_JSON:-/home/nish/workspaces/agent-state/quality-slo/snapshot.json}"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'EOF'
+usage: fleet-gap-closure-slo
+Print one JSON SLO snapshot on stdout. --help prints this and exits 0.
+EOF
+    exit 0
+fi
+
+now_iso() {
+    if [ -n "${GAP_LOOP_FAKE_NOW:-}" ]; then printf '%s' "$GAP_LOOP_FAKE_NOW"
+    else date -u +%Y-%m-%dT%H:%M:%SZ; fi
+}
+
+command -v jq >/dev/null 2>&1 || { echo '{"green":false,"error":"jq missing"}'; exit 2; }
+
+if [ "$DISABLE" = "1" ]; then
+    jq -c -n '{green:true, snapshot:{}, note:"disabled"}'
+    exit 0
+fi
+
+drill_pass_rate="null"
+if [ -f "$STATE_DIR/drill-results.json" ]; then
+    drill_pass_rate="$(jq -r '
+        if .all_pass == true then 1
+        elif .all_pass == false then 0
+        elif (.results // [] | length) > 0
+        then ([.results[] | if .pass then 1 else 0 end] | add / length)
+        else null end' "$STATE_DIR/drill-results.json" 2>/dev/null || echo "null")"
+fi
+
+esc_to_nish="null"
+if command -v "$GH" >/dev/null 2>&1; then
+    esc_to_nish="$("$GH" issue list -R "$REPO" --state open --search "blocked-on:nish-decision" \
+        --json number --jq length 2>/dev/null || echo "null")"
+fi
+
+pct_auto_repaired="null"
+if command -v "$GH" >/dev/null 2>&1; then
+    closed="$("$GH" issue list -R "$REPO" -l gap-audit --state closed \
+        --json number --jq length 2>/dev/null || echo "0")"
+    if [ "${closed:-0}" -gt 0 ] 2>/dev/null; then
+        auto="$("$GH" issue list -R "$REPO" -l gap-audit --state closed \
+            --search "-blocked-on:nish-decision" --json number --jq length 2>/dev/null || echo "0")"
+        pct_auto_repaired="$(python3 -c "print(round(100*${auto:-0}/${closed},1))" 2>/dev/null || echo "null")"
+    fi
+fi
+
+starvation_min="null"
+starve_state="${HOME}/.local/state/fleet-heartbeat/queue-starvation.json"
+if [ -f "$starve_state" ]; then
+    starvation_min="$(jq -r '.starvation_minutes_24h // null' "$starve_state" 2>/dev/null || echo "null")"
+fi
+
+# Fill from #153's last THROUGHPUT line when present; otherwise the declared placeholder.
+ratio='{"value":null,"source":"PLACEHOLDER:fleet-ops#153","note":"product-vs-control-plane merge ratio; filled by #153 throughput-split line; visibility not cap"}'
+if [ -f "$TRIAGE" ]; then
+    last_tp="$(grep -E '\[THROUGHPUT\]' "$TRIAGE" | tail -1 || true)"
+    if [ -n "$last_tp" ]; then
+        prod="$(printf '%s' "$last_tp" | sed -n 's/.*merged_product_PRs=\([0-9][0-9]*\).*/\1/p')"
+        ctrl="$(printf '%s' "$last_tp" | sed -n 's/.*merged_control_plane_PRs=\([0-9][0-9]*\).*/\1/p')"
+        if [ -n "$prod" ] && [ -n "$ctrl" ]; then
+            ratio="$(jq -nc --argjson p "$prod" --argjson c "$ctrl" \
+                '{value:{merged_product_PRs:$p, merged_control_plane_PRs:$c}, source:"fleet-ops#153", note:"read from last THROUGHPUT line; not recomputed"}')"
+        fi
+    fi
+fi
+
+quality='{"present":false}'
+quality_green="true"
+if [ -f "$QUALITY_JSON" ]; then
+    quality="$(jq -c '{
+        present:true,
+        computed_at:(.computed_at // null),
+        cycle_verdict:(.cycle.verdict // null),
+        regressions:(.cycle.regressions // []),
+        auto_revert_rate:(.metrics.auto_revert_rate.value // null),
+        post_merge_defect_rate:(.metrics.post_merge_defect_rate.value // null),
+        churn_pct:(.metrics.churn_pct.value // null),
+        decision_overturn_rate:(.metrics.decision_overturn_rate.value // null),
+        drill_pass_rate:(.metrics.drill_pass_rate.value // null),
+        canary_regression_count:(.metrics.canary_regression_count.value // null),
+        scout_futility_rate:(.metrics.scout_futility_rate.value // null),
+        merge_count:(.metrics.merge_count.value // null),
+        saturation_pct:(.metrics.saturation_pct.value // null)
+    }' "$QUALITY_JSON" 2>/dev/null || echo '{"present":false}')"
+    if jq -e '(.cycle_verdict // "") == "FAIL" or ((.regressions // []) | length) > 0' <<<"$quality" >/dev/null 2>&1; then
+        quality_green="false"
+    fi
+fi
+
+green="true"
+if [ "$drill_pass_rate" != "null" ]; then
+    awk_ok="$(awk -v d="$drill_pass_rate" 'BEGIN { print (d+0 >= 1) ? "true" : "false" }')"
+    green="$awk_ok"
+fi
+if [ "$quality_green" != "true" ]; then
+    green="false"
+fi
+
+jq -c -n \
+    --argjson green "$green" \
+    --argjson drill_pass_rate "$drill_pass_rate" \
+    --argjson escalations_to_nish "$esc_to_nish" \
+    --argjson pct_auto_repaired "$pct_auto_repaired" \
+    --argjson starvation_minutes "$starvation_min" \
+    --argjson ratio "$ratio" \
+    --argjson quality "$quality" \
+    --arg now "$(now_iso)" \
+    '{green:$green, snapshot:{
+        time_to_repair_per_class:{},
+        pct_auto_repaired:$pct_auto_repaired,
+        queue_starvation_minutes:$starvation_minutes,
+        detector_drill_pass_rate:$drill_pass_rate,
+        product_vs_control_plane_merge_ratio:$ratio,
+        escalations_to_nish:$escalations_to_nish,
+        quality:$quality,
+        computed_at:$now}}'

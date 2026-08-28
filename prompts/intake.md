@@ -15,10 +15,11 @@ Hard rules:
 - NEVER push a claim branch when the issue number is empty. An unnumbered `claim/issue-` belongs to no issue, can never be released by the normal path, and accumulates as garbage (fleet-ops#39). Before step 3b, assert `N` is a non-empty integer (`[[ "$N" =~ ^[1-9][0-9]*$ ]]`); if it is not, print "intake: refusing claim push with empty/non-numeric issue number N='$N'", skip, and continue. The claim-reconciler sweeps any that slip through, but the push must refuse them at the source.
 
 Steps:
-1. List and order ready work mechanically (fleet-ops#379). Never sort by issue number and never pick by vibes.
+1. Precedence (fleet-ops#180). Run `/home/nish/.local/bin/fleet-gap-closure-yield <repo>`. If it prints `yield`, print "loop-precedence: yielding to fleet-ops gap-audit" and exit 0. While the intensive gap-closure loop is converging, product repos yield when fleet-ops has ready gap-audit work; after unanimous DONE the helper prints `proceed`.
+1b. List and order ready work mechanically (fleet-ops#379). Never sort by issue number and never pick by vibes.
    a. Promote first: `/home/nish/.local/bin/pi-intake-priority promote --repo <repo>`. This creates the `critical-path` label if missing and copies it onto open `escalate-senior` issues. A promote failure is not fatal — print the error and continue; the orderer still treats `escalate-senior` as critical-path.
    b. `ready=$(gh issue list -R Nishfleet/<repo> -l agent-ready --state open --json number,title,labels,createdAt --limit 50)`. If empty `[]`, print "no ready issues", exit 0.
-   c. `printf '%s\n' "$ready" | /home/nish/.local/bin/pi-intake-priority order --repo <repo>`. The output is TSV lines `<number>\t<kind>\tratio=<k>/<window>`. That list IS the claim order. Kinds: `critical-path`, `escalate-senior`, `tail`, `tail-ratio`. `tail-ratio` is the anti-starvation guard (after two critical claims, the next claim is a waiting tail issue). If the command prints nothing, print "no ready issues", exit 0.
+   c. `printf '%s\n' "$ready" | /home/nish/.local/bin/pi-intake-priority order --repo <repo>`. The output is TSV lines `<number>\t<kind>\tratio=<k>/<window>`. That list IS the claim order. Kinds: `critical-path`, `escalate-senior`, `gap-audit`, `tail`, `tail-ratio`. While the intensive loop is open, `gap-audit` is treated as critical so it outranks product work. `tail-ratio` is the anti-starvation guard (after two critical claims, the next claim is a waiting tail issue). If the command prints nothing, print "no ready issues", exit 0.
 2. Capacity (P4-A — fleet-ops config/seat-caps.json, NOT a hardcoded "4 Devin"):
    a. Source the shared seat logic so the same accounting the run wrapper uses is what the intake tick sees:
       `. /home/nish/.local/lib/pi-packet/seat-lib.sh`
@@ -28,7 +29,7 @@ Steps:
       `active=$(count_active_total)`  # issues + min(org, org_reserve)
       `issue=$(count_active_issue); org=$(count_active_org)`
    d. `slots = total_cap - active`. If slots <= 0, print "at capacity (total_cap=$total_cap, active=$active)", exit 0. If the cap map is missing, total_cap = ram_cap and the fleet still gets a sensible ceiling.
-3. For each TSV line from step 1c, while slots remain. `N` is field 1 and `kind` is field 2:
+3. For each TSV line from step 1b.c, while slots remain. `N` is field 1 and `kind` is field 2:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
