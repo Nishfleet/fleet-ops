@@ -65,6 +65,12 @@ NON_ROLE_UNIT_PREFIXES = (
     # work-producing role. It enumerates the VPS and diffs against a
     # versioned guard map before the Weekly Fleet Review.
     "fleet-asset-census",
+    # pi-intake-trigger is event-driven intake plumbing (PR #1490): a
+    # oneshot that fires on trigger files and starts pi-intake@ instances.
+    # It runs no model, owns no prompt and produces no work items — same
+    # class as intake-reconcile above. The planner role gate already
+    # covers pi-intake@.service and pi-intake-repair@.service.
+    "pi-intake-trigger",
 )
 
 
