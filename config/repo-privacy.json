@@ -1,0 +1,21 @@
+{
+  "_comment": "Source of truth for the free-tier privacy line (vault global-standing-rules.md: Free-tier privacy line, 2026-08-18). No-card free LLM tiers train on prompts, so free-class seats may only process PUBLIC-repo work. Private-repo or sensitive packets route to prepaid/metered lanes only. lib/seat-lib.sh repo_privacy() reads this file; pick_seat skips every free-class seat when the routing target is private (privacy=private). A repo not in either list resolves to default_policy — fail-closed (private) so a newly created private product repo can never silently leak to a free lane before it is classified here. Update this file via PR whenever a repo flips visibility; the fleet-escalation-canary block 11 drills the guard every heartbeat tick.",
+  "default_policy": "private",
+  "public": [
+    "0509",
+    "aiconverter-app",
+    "context-hub",
+    "fleet-ops",
+    "inish-site",
+    "siterep-public",
+    "tinystudio-in",
+    "TinyStudio.io",
+    "TinyStudio.io-public"
+  ],
+  "private": [
+    "0509-telemetry",
+    "egress-probe",
+    "fleet2",
+    "siterep"
+  ]
+}

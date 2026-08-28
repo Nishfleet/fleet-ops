@@ -95,6 +95,70 @@ _seat_now_epoch() {
     date -u +%s
 }
 
+# --- repo privacy (free-tier privacy line, vault 2026-08-18) ----------------
+# Source of truth: config/repo-privacy.json. Free-class seats train on
+# prompts, so they may only process PUBLIC-repo work. pick_seat skips every
+# free-class seat when the routing target is private (privacy=private). A
+# missing/unparseable config fails CLOSED (default_policy=private) so a
+# newly created private product repo can never silently leak to a free lane
+# before it is classified here. fleet-ops#520.
+REPO_PRIVACY_JSON="${REPO_PRIVACY_JSON:-$HOME/.local/state/pi-packet/repo-privacy.json}"
+_repo_privacy_loaded=0
+REPO_PRIVACY_DEFAULT="private"
+declare -A REPO_PRIVACY_MAP=()
+
+load_repo_privacy() {
+    REPO_PRIVACY_MAP=()
+    _repo_privacy_loaded=1
+    local default
+    default=$(jq -r '.default_policy // "private"' "$REPO_PRIVACY_JSON" 2>/dev/null || echo "private")
+    case "$default" in
+        public|private) REPO_PRIVACY_DEFAULT="$default" ;;
+        *) REPO_PRIVACY_DEFAULT="private" ;;
+    esac
+    local repo vis
+    while IFS=$'\t' read -r repo vis; do
+        [[ -n "$repo" ]] || continue
+        REPO_PRIVACY_MAP["$repo"]="$vis"
+    done < <(
+        {
+            jq -r '.public[]?  | [.,"public"]  | @tsv' "$REPO_PRIVACY_JSON" 2>/dev/null || true
+            jq -r '.private[]? | [.,"private"] | @tsv' "$REPO_PRIVACY_JSON" 2>/dev/null || true
+        }
+    )
+}
+
+# repo_privacy <repo> -> echoes "private" or "public".
+# Fail-closed: a repo with no entry resolves to REPO_PRIVACY_DEFAULT (private
+# unless the config explicitly widens it). A missing config also fails closed.
+repo_privacy() {
+    local repo="$1" v
+    if (( ! _repo_privacy_loaded )); then load_repo_privacy || true; fi
+    v="${REPO_PRIVACY_MAP[$repo]:-}"
+    [[ "$v" == "public" || "$v" == "private" ]] || v="$REPO_PRIVACY_DEFAULT"
+    echo "$v"
+}
+
+# packet_repo <pkt> -> echoes the Nishfleet repo name targeted by a packet, or
+# empty if no TARGET line is present. Recognises every TARGET shape the
+# dispatch wrappers emit:
+#   TARGET: repo Nishfleet/<repo> issue <N> unit <unit>      (pi-issue-run)
+#   TARGET: <role> unit <unit>, repo Nishfleet/<repo>        (pi-scout-run legacy)
+#   TARGET REPO: Nishfleet/<repo>                            (pi-scout-run 0509)
+#   TARGET: intake unit <unit>, repo Nishfleet/<repo>        (pi-intake-repair-run)
+packet_repo() {
+    local pkt="$1" line repo
+    [[ -f "$pkt" ]] || return 0
+    line=$(grep -m1 -E '^TARGET(:| REPO:)' "$pkt" 2>/dev/null || true)
+    [[ -n "$line" ]] || return 0
+    # Strip everything up to and including "Nishfleet/", then take the first
+    # token (the repo name). Handles both "repo Nishfleet/<repo>" and
+    # "Nishfleet/<repo>" shapes, and trailing punctuation.
+    repo=${line##*Nishfleet/}
+    repo=${repo%%[[:space:],]*}
+    printf '%s' "$repo"
+}
+
 # --- capacity map (P4-A) ----------------------------------------------------
 # Read once per shell. Returns 0 on success, 1 if the map is missing/unreadable.
 # Caller is expected to fall back to "no caps" behaviour (allow everything)
@@ -1759,7 +1823,7 @@ _seat_is_dead() {
 }
 
 # Pick a different seat than the failed one(s).
-# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty]
+# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty] [privacy:public|private]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
 # (one per line); all are excluded. If not given, only fail_provider/fail_model
 # is excluded.
@@ -1767,9 +1831,23 @@ _seat_is_dead() {
 # class first (prepaid -> metered -> free), and returns empty after 2 strikes
 # so the caller escalates to the senior conference instead of another cheap
 # retry. heavy/light (default) keep the #387/#1178 walk (volume first).
+# privacy (optional, default public, fleet-ops#520): "private" excludes every
+# free-class seat (free-tier privacy line). Fail-closed: a private target with
+# only free seats available returns rc=1 instead of leaking to a free lane.
+# Dispatch wrappers derive this from config/repo-privacy.json via repo_privacy
+# / packet_repo.
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
     local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
+    # privacy (6th arg, default "public"): "private" excludes every free-class
+    # seat — the free-tier privacy line (vault 2026-08-18, fleet-ops#520). Free
+    # lanes train on prompts, so private-repo or sensitive work must route to
+    # prepaid/metered lanes only. Fail-closed: a private target with ONLY free
+    # seats available returns rc=1 (loud stall) rather than leaking to a free
+    # lane. Dispatch wrappers derive this from config/repo-privacy.json via
+    # repo_privacy / packet_repo.
+    local privacy="${6:-public}"
+    [[ "$privacy" == "private" ]] || privacy="public"
 
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
@@ -1964,6 +2042,14 @@ pick_seat() {
         class=$(class_of "$p")
         # Bucket by CLASS from the cap map, not by provider name. prepaid-quota
         # includes the old "subscription" alias (normalized in class_of).
+        # Free-tier privacy line (fleet-ops#520): a private target never
+        # buckets a free-class seat — free lanes train on prompts. The seat
+        # is skipped (logged) so a private repo can never leak to a free lane
+        # even when free is the only class with capacity.
+        if [[ "$privacy" == "private" && "$class" == "free" ]]; then
+            seat_log "seat $p/$m skipped (free-tier privacy: private-repo target, free-class lane blocked)"
+            continue
+        fi
         case "$class" in
             prepaid-quota) prepaid_seats+=("$p"$'\t'"$m") ;;
             metered)       metered_seats+=("$p"$'\t'"$m") ;;
@@ -2122,7 +2208,11 @@ pick_seat() {
     # P15: loud stall beats a garbage seat. Every allowlisted seat was dead or
     # capped — return 1 (caller must not spawn anything) and say so, rather
     # than falling back to a non-allowlisted model.
-    seat_log "pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map."
+    if [[ "$privacy" == "private" ]]; then
+        seat_log "pick_seat: NO USABLE SEAT — every non-free allowlisted seat is dead/capped/rate-limited, and free-class lanes are blocked for this private-repo target (free-tier privacy line, fleet-ops#520). Refusing to route outside the cap map or to a free lane."
+    else
+        seat_log "pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map."
+    fi
     return 1
 }
 

@@ -28,6 +28,11 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
 export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "heavy"; }
+# fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
+# returns "public" so the test's deterministic pick_seat path is unchanged;
+# the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
+repo_privacy() { echo "public"; }
+packet_repo() { echo ""; }
 pick_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
@@ -75,6 +80,11 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
 export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "heavy"; }
+# fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
+# returns "public" so the test's deterministic pick_seat path is unchanged;
+# the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
+repo_privacy() { echo "public"; }
+packet_repo() { echo ""; }
 pick_seat() { :; return 1; }
 EOF
 
