@@ -311,10 +311,17 @@ done
 log "2. checking bin/ for unwrapped pi invocations"
 # Match a literal `pi` binary or the $PI / $PI_BIN variables followed by
 # `--print`. This deliberately skips comment lines and the canary's own source.
+# The `\bpi\b` alternative is for bare `pi` in command position; we filter out
+# lines where `pi` appears inside a double-quoted string literal (e.g. a case
+# pattern like `*"pi --print"*)` that COUNTS units mentioning pi rather than
+# INVOKING pi — fleet-ops#1443 false positive on fleet-heartbeat-undersaturation).
 mapfile -t pi_matching < <(
-    grep -R -l --exclude="$self_name" \
+    grep -R --exclude="$self_name" \
         -E '^[^#]*(\bpi\b|"\$PI(_BIN)?")[[:space:]]+--print' \
         "$FLEET_OPS_REPO/bin" 2>/dev/null \
+        | grep -vE '^[^:]+:[^#]*".*\bpi\b.*--print' \
+        | cut -d: -f1 \
+        | sort -u \
         || true
 )
 
