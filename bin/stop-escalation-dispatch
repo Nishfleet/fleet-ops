@@ -5,16 +5,24 @@
 # STOP-REASON hash.  It does NOT do its own retry loop: a fresh STOP-REASON or
 # the daily-sweep will re-trigger it.  What it does do is:
 #
-#   1. Pick a healthy, non-rate-limited seat from the ladder via pick_seat.
-#      A rate_limited / retryable=true / dead=false seat is a LANE FAULT,
-#      not an escalation.  Only a fully-walled ladder reaches NISH.
+#   1. Pick a healthy, non-rate-limited, CAPABLE seat from the ladder via
+#      pick_seat (need_capable=1).  The SENIOR AUDITOR drives tools (reads
+#      files, runs commands, dispatches packets), so a tools=0 / flash /
+#      local seat is functionally dead for it and must never be selected
+#      (fleet-ops#1354).  A rate_limited / retryable=true / dead=false seat
+#      is a LANE FAULT, not an escalation.  Only a fully-walled ladder
+#      reaches NISH.
 #   2. Dispatch the SENIOR AUDITOR packet with a hard internal timeout shorter
 #      than the unit's TimeoutStartSec, so a timeout is recorded LOUD in
 #      AUDITOR-LOG.md before systemd can silently kill the service.
 #   3. Verify the dispatch actually wrote a diagnosis block.  A dispatch that
 #      produced no block (timeout, pi failure, or empty output) is recorded as
 #      a failed dispatch, does NOT consume the hash's 2-dispatch budget, and
-#      exits 1 so the next trip/sweep can try again.  SIGTERM (143) / SIGKILL
+#      exits 1 so the next trip/sweep can try again.  A rc=0/no-block dispatch
+#      (HTTP-200 with empty body — the tools=0 dead-seat class) ALSO benches
+#      the seat via mark_seat_spawn_fail so pick_seat rotates to the next
+#      capable seat on the next trip/sweep, instead of re-picking the same
+#      dead seat forever (fleet-ops#1354).  SIGTERM (143) / SIGKILL
 #      (137) / GNU timeout (124) are KILL-RETRY, not DISPATCH-NO-BLOCK. After
 #      2 consecutive kills on the same hash, write KILL-ESCALATION and skip
 #      further dispatches on that hash (exit 0) so a 3rd seat is not burned.
@@ -162,7 +170,10 @@ fi
 pick_seat_with_retry() {
   local tried_file="$1"
   local seat
-  seat=$(pick_seat "" "" 0 "$tried_file" 2>/dev/null || true)
+  # need_capable=1: the SENIOR AUDITOR drives tools, so a tools=0 / flash /
+  # local seat is functionally dead for it and must never be selected
+  # (fleet-ops#1354).
+  seat=$(pick_seat "" "" 1 "$tried_file" 2>/dev/null || true)
   printf '%s' "$seat"
 }
 
@@ -305,6 +316,17 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     finish_kill_retry "$pi_rc"
   else
     clear_kill_count "$hash"
+    # fleet-ops#1354: a seat that returns rc=0 with no diagnosis block is
+    # HTTP-healthy (200) but functionally dead for an agentic packet (the
+    # tools=0 / no-tools class).  Bench it via mark_seat_spawn_fail so
+    # pick_seat rotates to the next capable seat on the next trip/sweep,
+    # instead of re-picking the same dead seat forever (unbounded retry loop
+    # pinned to one seat).  A 200-with-empty-body is a lane fault and is
+    # recorded as one.  Best-effort: a write failure must not block the
+    # DISPATCH-NO-BLOCK record or the exit-1 retry contract.
+    if [ "$pi_rc" -eq 0 ]; then
+      mark_seat_spawn_fail "$PROVIDER" "$MODEL" "no_block" 2>/dev/null || true
+    fi
     printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" >> "$LOG"
     if [ -n "$combined" ]; then
       {

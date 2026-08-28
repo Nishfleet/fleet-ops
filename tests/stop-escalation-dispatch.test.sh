@@ -36,15 +36,52 @@ cat >"$AS/STOP-REASON.json" <<'JSON'
 JSON
 
 SEAT_LIB_STUB="$scratch/seat-lib-stub.sh"
+# The stub mirrors the real seat-lib contract the fix relies on:
+#   - pick_seat honours need_capable (arg 3) and the tried-file exclusion (arg 4)
+#   - pick_seat skips seats recorded in $STOP_ESCALATION_TEST_BENCH_FILE
+#     (stands in for seat_usable reading the per-seat ledger a real
+#     mark_seat_spawn_fail writes)
+#   - mark_seat_spawn_fail appends to the bench file so the next pick rotates
+# Only ollama is treated as not-capable, so the existing healthy/second modes
+# (devin / cursor) keep returning a seat and the legacy invariants are
+# unchanged.
 cat >"$SEAT_LIB_STUB" <<'EOF'
 #!/usr/bin/env bash
+# $'\t' gives a real tab; a double-quoted "\t" is a literal backslash-t and
+# would not split in `read` / `cut`, breaking provider/model parsing.
 pick_seat() {
-  case "${STOP_ESCALATION_TEST_SEAT_MODE:-healthy}" in
-    empty) return 1 ;;
-    healthy) printf 'devin\tglm-5-2\n' ;;
-    second) printf 'cursor\tsonnet-4\n' ;;
-    *) printf 'devin\tglm-5-2\n' ;;
+  local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}"
+  local mode="${STOP_ESCALATION_TEST_SEAT_MODE:-healthy}"
+  local TAB=$'\t'
+  local -a cands=()
+  case "$mode" in
+    empty)  return 1 ;;
+    healthy) cands=("devin${TAB}glm-5-2") ;;
+    second)  cands=("cursor${TAB}sonnet-4") ;;
+    rotate)  cands=("devin${TAB}glm-5-2" "cursor${TAB}sonnet-4") ;;
+    flash)   cands=("ollama${TAB}deepseek-v4-flash") ;;
+    *) cands=("devin${TAB}glm-5-2") ;;
   esac
+  local s p m
+  for s in "${cands[@]}"; do
+    IFS="$TAB" read -r p m <<<"$s"
+    # need_capable: ollama/flash is the tools=0 dead-seat class (fleet-ops#1354)
+    if [ "$need_capable" = "1" ] && [ "$p" = "ollama" ]; then continue; fi
+    # benched seats (stands in for seat_usable reading the ledger)
+    if [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] && [ -f "$STOP_ESCALATION_TEST_BENCH_FILE" ] \
+       && grep -qxF "$p/$m" "$STOP_ESCALATION_TEST_BENCH_FILE" 2>/dev/null; then continue; fi
+    # tried seats (the dispatcher records each pick in the tried file)
+    if [ -n "$tried_file" ] && [ -f "$tried_file" ] \
+       && grep -qxF "$p/$m" "$tried_file" 2>/dev/null; then continue; fi
+    printf '%s%s%s\n' "$p" "$TAB" "$m"
+    return 0
+  done
+  return 1
+}
+mark_seat_spawn_fail() {
+  local p="$1" m="$2"
+  [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
+  printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
 }
 seat_log() { :; }
 EOF
@@ -101,6 +138,10 @@ export STOP_ESCALATION_PI_BIN="$PI_STUB"
 export PI_PACKET_SEAT_LIB="$SEAT_LIB_STUB"
 export STOP_ESCALATION_AUDITOR_TIMEOUT=2
 export STOP_ESCALATION_COOLDOWN=0
+# Stands in for the per-seat ledger a real mark_seat_spawn_fail writes.
+# Cleared per-invariant that needs a fresh bench set.
+export STOP_ESCALATION_TEST_BENCH_FILE="$scratch/benched.txt"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
 
 # ---------------------------------------------------------------------------
 # Invariant 1: fully-walled ladder -> LADDER-WALLED in NISH, no AUDITOR dispatch
@@ -203,6 +244,7 @@ ok "empty pi output -> DISPATCH-NO-BLOCK, budget not consumed"
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_AUDITOR_LOG"
 : > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
 {"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-37.service"}}
 JSON
@@ -231,6 +273,7 @@ ok "2-dispatch cap -> CAP-REACHED in NISH"
 : > "$STOP_ESCALATION_KILLS"
 : > "$STOP_ESCALATION_AUDITOR_LOG"
 : > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
 {"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-444.service"}}
 JSON
@@ -285,6 +328,7 @@ ok "2x pi_rc=143 -> KILL-ESCALATION, no 3rd dispatch"
 : > "$STOP_ESCALATION_KILLS"
 : > "$STOP_ESCALATION_AUDITOR_LOG"
 : > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
 {"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-444-sigkill.service"}}
 JSON
@@ -313,6 +357,7 @@ ok "pi_rc=137 -> KILL-RETRY, not DISPATCH-NO-BLOCK"
 : > "$STOP_ESCALATION_KILLS"
 : > "$STOP_ESCALATION_AUDITOR_LOG"
 : > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
 {"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-444-timeout.service"}}
 JSON
@@ -340,4 +385,91 @@ dispatch_count=$(grep -c "DISPATCH hash=$hash124" "$STOP_ESCALATION_AUDITOR_LOG"
 [[ "$dispatch_count" == "2" ]] || fail "3rd-timeout: must not dispatch a 3rd time (got $dispatch_count DISPATCH lines)"
 ok "2x pi_rc=124 -> KILL-ESCALATION, no 3rd dispatch"
 
-ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block fail loud, cap enforced, kill-retry capped"
+# ---------------------------------------------------------------------------
+# Invariant 10 (fleet-ops#1354): a stub seat returning rc=0/empty must
+# BENCH the seat and ROTATE on the next fire, never re-pick the same dead
+# seat.  Two capable seats, both return empty.  Without the fix the tried
+# file is wiped each fire and the same first seat is re-picked forever
+# (unbounded loop).  With the fix each no-block benches the seat, so the
+# next fire rotates to the other seat, then the ladder is walled.
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-1354.service"}}
+JSON
+hash1354=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=rotate
+export STOP_ESCALATION_TEST_PI_MODE=empty
+
+# Fire 1: picks the first capable seat (devin), rc=0/empty -> bench it, exit 1.
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "1354 fire 1: expected exit 1, got $rc"
+grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "1354 fire 1: expected DISPATCH-NO-BLOCK on devin"
+grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
+  || fail "1354 fire 1: devin must be benched (mark_seat_spawn_fail called)"
+
+# Fire 2: devin is benched -> rotates to cursor, rc=0/empty -> bench it, exit 1.
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "1354 fire 2: expected exit 1, got $rc"
+grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "1354 fire 2: expected DISPATCH-NO-BLOCK on cursor (rotation)"
+grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
+  || fail "1354 fire 2: cursor must be benched"
+
+# Fire 3: both capable seats benched -> ladder walled -> LADDER-WALLED, exit 1.
+# This is the bound: the loop does NOT keep re-picking a dead seat forever.
+: > "$STOP_ESCALATION_NISH"
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "1354 fire 3: expected exit 1 (ladder walled), got $rc"
+grep -q "LADDER-WALLED hash=$hash1354" "$STOP_ESCALATION_NISH" \
+  || fail "1354 fire 3: expected LADDER-WALLED in NISH (both seats benched)"
+
+# Exactly 2 dispatches across 3 fires — never an unbounded same-seat loop.
+dispatch_count=$(grep -c "DISPATCH hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG" || true)
+[[ "$dispatch_count" == "2" ]] \
+  || fail "1354: expected exactly 2 dispatches (rotation), got $dispatch_count"
+# Budget never consumed (no-block does not consume the 2-dispatch cap).
+count=$(awk -v h="$hash1354" '$1==h{print $2}' "$STOP_ESCALATION_SEEN" 2>/dev/null || true)
+[[ -z "$count" ]] || fail "1354: no-block must not consume dispatch budget (got count=$count)"
+ok "fleet-ops#1354: rc=0/empty seat benches + rotates, never unbounded loop"
+
+# ---------------------------------------------------------------------------
+# Invariant 11 (fleet-ops#1354): need_capable=1 excludes a tools=0 flash seat
+# at pick time, so the auditor is never dispatched to a seat that cannot drive
+# tools.  The only candidate is ollama/flash (not capable) -> LADDER-WALLED
+# immediately, no DISPATCH line written.
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-1354-flash.service"}}
+JSON
+hashflash=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=flash
+export STOP_ESCALATION_TEST_PI_MODE=block
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "flash: expected exit 1 (ladder walled by need_capable), got $rc"
+grep -q "LADDER-WALLED hash=$hashflash" "$STOP_ESCALATION_NISH" \
+  || fail "flash: expected LADDER-WALLED (need_capable excluded the only seat)"
+dispatch_count=$(grep -c "DISPATCH hash=$hashflash" "$STOP_ESCALATION_AUDITOR_LOG" || true)
+[[ "$dispatch_count" == "0" ]] \
+  || fail "flash: must not dispatch to a tools=0 seat (got $dispatch_count DISPATCH lines)"
+ok "fleet-ops#1354: need_capable=1 excludes tools=0 flash seat at pick time"
+
+ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block fail loud, cap enforced, kill-retry capped, dead-seat rotation (#1354)"
