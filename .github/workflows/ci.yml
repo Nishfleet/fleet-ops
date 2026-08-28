@@ -248,3 +248,6 @@ jobs:
         # fleet-ops#1235: lock the /etc/default/prometheus retention
         # override (40d) and the deploy restart-vs-reload + headroom guard.
         bash tests/prometheus-retention-40d.test.sh
+        # fleet-ops#1460: lock the timer manifest shape (every user timer
+        # has a manifest entry with a named reason — schedule-needs-reason).
+        bash tests/timer-manifest.test.sh
