@@ -226,11 +226,11 @@
       "status": "enforced"
     },
     {
-      "id": "led-capacity-25-concurrent",
-      "source": "decisions-ledger.md: 2026-08-28 | Capacity mandate: 25 concurrent workers (Nish standing order; fleet-ops#1558)",
-      "mechanism": "Undersaturation floor = min(target_concurrent=25, ram_governor_cap). ready>=admit AND running<admit is a FAULT (repair then fail-loud). Per-repo MemoryMax drop-ins written by intake from seat-caps.json worker_memory (fleet-ops 1536M/1G; 0509 3G/2G). ram_gb_per_worker=0.5 under those caps.",
-      "proof": "config/seat-caps.json target_concurrent+worker_memory; lib/seat-lib.sh admit_ceiling+worker_memory_for_repo; lib/pi-intake-tick.sh memory.conf drop-in; bin/fleet-heartbeat-undersaturation; tests/fleet-heartbeat-undersaturation.test.sh scenarios 8-9; tests/worker-memory-dropin.test.sh",
-      "status": "enforced"
+      "id": "led-2026-08-28-25-concurrent-workers",
+      "source": "decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: \"I want 25 workers on all the time... quality is the bar, it has to keep climbing\")",
+      "mechanism": "Amended by Capacity: ceiling accepted — the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000. Undersaturation below the measured ceiling with ready supply stays a fault (existing undersaturation canary).",
+      "proof": "config/seat-caps.json; bin/fleet-heartbeat-undersaturation; lib/seat-lib.sh; decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted",
+      "status": "advisory(senior: amended by capacity ceiling; floor is now measured safe max of netcup-rs2000)"
     },
     {
       "id": "sr-skills-native",
@@ -822,6 +822,85 @@
       "source": "decisions-ledger.md: 2026-08-28 | Deletion-first is the FIRST rule every agent reads (Nish: \"Keep this on top for all agents and before building anything new\")",
       "mechanism": "Deletion-first / net-negative-machinery is enforced at the same gate: new machinery is default-DENIED (fleet-machinery-authorization-gate), so construction without authorization cannot land. Absorbs no-hand-built-orchestration / prefer-proven-off-the-shelf / check-help-before-building at the machinery surface. Paper (docs, config edits inside existing organs) stays ungated.",
       "proof": "bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit; fleet-ops#1548",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-quality-constraint-never-trade-off",
+      "source": "global-standing-rules.md: Quality is a constraint, never a trade-off (Nish, 2026-08-28)",
+      "mechanism": "Mechanical enforcement, five layers: (1) merge: required CI checks + auto-revert on red main; (2) closure: user-facing work cannot close without live proof (0509#1365) and null-diff merges never count; (3) dial: WFR ratchet is tighten-only; loosening requires Nish waiver; (4) proposal: senior conference treats quality-gate relaxation as out-of-scope (unauthorized machinery class); (5) metric: success number is VERIFIED throughput only (#1136).",
+      "proof": ".github/workflows/ci.yml; .github/workflows/auto-revert.yml; 0509#1365; lib/quality-routing.py; config/quality-routing.json; lib/north-star-quality.py; fleet-ops#1136; fleet-ops#1516",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-runway-measured-in-time",
+      "source": "decisions-ledger.md: 2026-08-28 | Runway measured in TIME, not items (Nish: \"duhh yes\")",
+      "mechanism": "Proposal filed for the WFR dial owner to design the formula and wire it into EXISTING scout-futility/scout-cadence organs — no new units. Item floor stays as lower bound; breach stays loud + auto-escalating.",
+      "proof": "no mechanism yet; WFR dial owner to design via existing scout-futility/scout-cadence organs",
+      "status": "advisory(senior: WFR dial owner to design 12h-runway formula; wired into existing organs; no new units)"
+    },
+    {
+      "id": "led-2026-08-28-band-inversion",
+      "source": "decisions-ledger.md: 2026-08-28 | Band inversion: 70:30 is priority order, not an idle-mandate (Nish)",
+      "mechanism": "Implementation through the queue (fleet-ops issue filed, prioritized). WFR keeps the dial afterward. Tighten-only ratchet satisfied via wfr_waiver_on stamp authorized by this decision.",
+      "proof": "no specific fleet-ops mechanism issue identified in ledger entry; WFR dial + ratchet",
+      "status": "advisory(senior: implementation through queue; WFR keeps dial; specific fleet-ops issue not named in ledger entry)"
+    },
+    {
+      "id": "led-2026-08-28-0509-completeness-claims-distrusted",
+      "source": "decisions-ledger.md: 2026-08-28 | 0509 completeness claims distrusted (Nish: \"scouts/researchers/auditors are blatantly lying\")",
+      "mechanism": "Adversarial live-product audit queued on 0509: verify closed-work claims against the deployed product, fix the known-live defects (0509#1286/#1343 stale proof dates, 0509#1290, 0509#1269), and fix the DETECTOR for each false 'done'. Any agent claiming 0509 work 'complete' without live-browser evidence is violating this rule.",
+      "proof": "0509#1286; 0509#1343; 0509#1290; 0509#1269; 0509#1365 (unknown-defect sweep)",
+      "status": "queued(#1365)",
+      "queued_since": "2026-08-28"
+    },
+    {
+      "id": "led-2026-08-28-0509-product-direction-three-epics",
+      "source": "decisions-ledger.md: 2026-08-28 | 0509 product direction: three epics (Nish, verbatim)",
+      "mechanism": "Product direction, not a fleet control-plane rule. Three epics: (a) auto competitor discovery, (b) full-site competitor tracking, (c) competitor + self mention tracking across the internet. Decomposed via scout-and-plan + spec-gate, evals before specs.",
+      "proof": "n/a — product direction, gated by 0509 epics + spec-gate + evals",
+      "status": "advisory(senior: product direction; gated by 0509 epics + spec-gate + evals)"
+    },
+    {
+      "id": "led-2026-08-28-legit-work-only-fleet-wide-law",
+      "source": "decisions-ledger.md: 2026-08-28 | Legit-work-only is fleet-wide law (Nish)",
+      "mechanism": "Written to global-standing-rules.md with enforcement via precedence-band empty-product surge expansion: when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity — BUT only for legit work. Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. Enforcer assigned to fleet-ops#1516.",
+      "proof": "lib/precedence-band.sh; tests/fleet-precedence-band.test.sh; config/precedence-band.json; fleet-ops#1516",
+      "status": "queued(#1516)",
+      "queued_since": "2026-08-28"
+    },
+    {
+      "id": "led-2026-08-28-optimization-target-max-quality-throughput",
+      "source": "decisions-ledger.md: 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: \"max *quality* throughput because *quality* above all else\")",
+      "mechanism": "Strategic target, not a single direct enforcer. The fleet optimizes verified, live-proven merged product work per day. The unit is a VERIFIED merge (real diff + live/execution proof per closure rules). Served by band inversion (#1516), deletion review (#1531), webhook intake (#1483/#1464), and quality gates. WFR owns the dial and the ratchet.",
+      "proof": "fleet-ops#1516; fleet-ops#1531; fleet-ops#1483; fleet-ops#1464; lib/quality-routing.py; config/quality-routing.json; lib/north-star-quality.py",
+      "status": "advisory(senior: strategic target; served by #1516/#1531/#1483/#1464; measured by WFR dial and ratchet)"
+    },
+    {
+      "id": "led-2026-08-28-quality-constraint-never-trade-off",
+      "source": "decisions-ledger.md: 2026-08-28 | Quality is a CONSTRAINT, never a trade-off (Nish)",
+      "mechanism": "Amends the quality-throughput entry: no layer may relax a quality gate for speed — such proposals are rejected as invalid, not weighed. Written to global-standing-rules.md with per-layer enforcement (five layers: merge, closure, dial, proposal, metric). #1516/#1136 must register the enforcer in the matrix on landing.",
+      "proof": "global-standing-rules.md: Quality is a constraint, never a trade-off; .github/workflows/ci.yml; .github/workflows/auto-revert.yml; 0509#1365; lib/quality-routing.py; fleet-ops#1136; fleet-ops#1516",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-hostinger-kvm4-revival",
+      "source": "decisions-ledger.md: 2026-08-28 | hostinger-kvm4 revival queued under existing decisions (ledger-derived, no new ask)",
+      "mechanism": "VOIDED by hostinger-kvm4 is RETIRED entry — the box is decommissioned, not idle prepaid capacity. Never revive, never investigate; netcup-rs2000 is the sole fleet host.",
+      "proof": "decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED; fleet-ops#1501 (hostname-drift cleanup)",
+      "status": "advisory(senior: VOIDED by hostinger RETIRED entry; hostinger is decommissioned)"
+    },
+    {
+      "id": "led-2026-08-28-hostinger-kvm4-retired",
+      "source": "decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED (Nish: \"Hostinger was retired. It's now Netcup dummy\")",
+      "mechanism": "Hostinger-kvm4 is decommissioned — the retirement itself is the enforcement. Netcup-rs2000 is the sole fleet host. Every standing rule/doc still naming hostinger-kvm4 reads as netcup-rs2000 (hostname-drift cleanup filed as fleet-ops#1501).",
+      "proof": "fleet-ops#1501 (hostname-drift cleanup); hostinger-kvm4 decommissioned; netcup-rs2000 is sole fleet host",
+      "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-capacity-ceiling-accepted",
+      "source": "decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted (Nish, via decision prompt)",
+      "mechanism": "AMENDS the 25-worker floor: the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000 (currently ~11 mixed; #1587's browser-memory squeeze raises it — new measured ceiling becomes the new floor automatically). Undersaturation below the measured ceiling with ready supply stays a fault that auto-dispatches repair (existing undersaturation canary). Quality gates untouched.",
+      "proof": "config/seat-caps.json; bin/fleet-heartbeat-undersaturation; lib/seat-lib.sh; bin/ram-measure; fleet-ops#1587",
       "status": "enforced"
     }
   ]
