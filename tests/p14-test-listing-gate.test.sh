@@ -73,6 +73,7 @@ done
 # Live/destructive tests that are intentionally not run in hosted CI.
 declare -A live_skip
 live_skip[worker-token-live.test.sh]=1
+live_skip[pi-worker-execstart-live.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.

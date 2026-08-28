@@ -204,21 +204,47 @@ case "$cmd" in
     exit 0
     ;;
   show)
-    # ActiveEnterTimestampMonotonic (us). The awk shim below floors the
-    # simulated uptime at 3700s so the timestamp is always representable on
-    # any runner (a fresh runner cannot have a 3600s-old monotonic value).
-    unit="$1"
-    now_s=$(awk '{print int($1)}' /proc/uptime)
-    if (( now_s < 3700 )); then now_s=3700; fi
-    if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( (now_s - 3600) * 1000000 ))"
-    elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( (now_s - 60) * 1000000 ))"
-    else
-      echo 0
-    fi
+    # Parse: systemctl show UNIT [--property=PROP] [--value].
+    # fleet-ops#1155: the worker counter now inspects ExecStart for
+    # "pi --print" instead of matching unit names.
+    prop="ActiveEnterTimestampMonotonic"
+    unit=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -p|--property) prop="$2"; shift 2 ;;
+        --property=*) prop="${1#--property=}"; shift ;;
+        --value) shift ;;
+        *.service) unit="$1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    case "$prop" in
+      ExecStart)
+        if [[ -f "${RUNNING_EXEC:-/dev/nonexistent}" ]]; then
+          grep -F "${unit}|" "${RUNNING_EXEC:-/dev/nonexistent}" 2>/dev/null | head -n1 | cut -d'|' -f2-
+        else
+          # Default: any unit declared as live for this tick is a pi worker.
+          if grep -qxF "$unit" "${RUNNING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+             || grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+             || grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+            printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n'
+          fi
+        fi
+        ;;
+      ActiveEnterTimestampMonotonic|*)
+        now_s=$(awk '{print int($1)}' /proc/uptime)
+        if (( now_s < 3700 )); then now_s=3700; fi
+        if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 3600) * 1000000 ))"
+        elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 60) * 1000000 ))"
+        else
+          echo 0
+        fi
+        ;;
+    esac
     exit 0
     ;;
   *)
@@ -518,5 +544,27 @@ grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario6: missing UNDERSAT-REPAIR 
 [[ -f "$log_dir/undersaturation.flag" ]] \
     || fail "scenario6: marker must be set (genuine wedge remains after flip)"
 ok "scenario6: stale agent-in-progress + no PR + no live worker -> flipped to agent-ready, intake restarted, exit 0"
+
+# ============================================================================
+# Scenario 7 (fleet-ops#1155): an odd-named pi unit is still a live worker.
+# The worker-count counter must inspect ExecStart for "pi --print", not unit
+# names. A `pi-systemd-run --unit weird-1155-undersaturation -- ... pi --print`
+# unit must suppress the false FleetUndersaturated alarm.
+# ============================================================================
+reset_state
+printf '3\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf 'weird-1155-undersaturation.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario7: odd-named live worker must be healthy, got $env_rc ($env_out)"
+if grep -qE '^(reset-failed|start) ' "$calls"; then
+    fail "scenario7: odd-named live worker must not repair, but calls=($(cat "$calls"))"
+fi
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" || fail "scenario7: must not fail-loud on odd-named live worker"
+! grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario7: must not repair on odd-named live worker"
+ok "scenario7: odd-named pi --print worker suppresses FleetUndersaturated (fleet-ops#1155)"
 
 ok "undersaturation: stale agent-in-progress label is hygiene, not a wedge (auditor-finding-C)"

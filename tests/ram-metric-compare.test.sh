@@ -94,6 +94,7 @@ ok "3. zero units exit 0 and write state"
 
 # =========================================================================
 # 4. admission uses cap-map ram_gb_per_worker (0.6), no self-calibrate
+#    The current measured ceiling is 0.6 GB (fleet-ops#1168 / #489).
 # =========================================================================
 [[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.6" ]] \
     || fail "ram_gb_per_worker must be 0.6 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
