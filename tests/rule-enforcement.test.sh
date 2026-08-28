@@ -948,7 +948,22 @@ ok "rule-enforcement: timer-manifest shape lock drill"
 bash "$here/agent-ready-spec-gate.test.sh" || fail "agent-ready spec-gate drill failed"
 ok "rule-enforcement: agent-ready spec-gate drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, and agent-ready-spec-gate drills"
+# fleet-ops#1464: gh-webhook receiver prom-quote regression. Nested host
+# so the worker token does not need a workflow edit.
+bash "$here/gh-webhook-receiver-prom-quotes.test.sh" || fail "gh-webhook receiver prom-quotes drill failed"
+ok "rule-enforcement: gh-webhook receiver prom-quotes drill"
+
+# fleet-ops#1558: per-repo worker memory drop-ins. Nested host so the worker
+# token does not need a workflow edit.
+bash "$here/worker-memory-dropin.test.sh" || fail "worker-memory drop-in drill failed"
+ok "rule-enforcement: worker-memory drop-in drill"
+
+# fleet-ops#????: siterep live canary pin wrapper. Nested host so the worker
+# token does not need a workflow edit.
+bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
+ok "rule-enforcement: siterep live canary pin drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills"
 
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
