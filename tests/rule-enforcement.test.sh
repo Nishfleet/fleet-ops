@@ -944,3 +944,9 @@ bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
 # host so the worker token does not need to edit .github/workflows/**.
 bash "$here/fleet-token-efficiency.test.sh" || fail "token-efficiency gate drill failed"
 ok "rule-enforcement: token-efficiency gate drill"
+# fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Same
+# CI constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-rulebook-redteam.test.sh" || fail "rulebook red-team drill failed"
+ok "rule-enforcement: rulebook red-team drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, and rulebook-redteam drills"

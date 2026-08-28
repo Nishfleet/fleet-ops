@@ -221,6 +221,7 @@ SANCTIONED_PI_RUNNERS=(
     fleet-gap-closure-auditor
     fleet-heartbeat-tier2
     fleet-researcher-run
+    fleet-rulebook-redteam
     pi-audit-run
     pi-intake-run
     pi-intake-repair-run

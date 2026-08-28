@@ -5,6 +5,7 @@
 - Rule-enforcement matrix: `python3 lib/rule-enforcement.py validate-matrix --matrix config/rule-enforcement.json`
 - Live coverage check: `python3 lib/rule-enforcement.py join --rules $STANDING_RULES --ledger $DECISIONS_LEDGER --matrix config/rule-enforcement.json`
 - Rule-enforcement tests: `bash tests/rule-enforcement.test.sh`
+- Rulebook red-team (monthly + backup gate): `bash tests/fleet-rulebook-redteam.test.sh`
 - Findings-queued session-close lint: `bash tests/fleet-findings-queued.test.sh`
 - Decisions-ledger session-close lint: `bash tests/fleet-decisions-ledger.test.sh`
 - Failed-command session-close lint: `bash tests/fleet-failed-command-flagged.test.sh`
