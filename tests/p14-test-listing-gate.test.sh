@@ -861,4 +861,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-duty-officer-recording\.te
   || fail "fleet-duty-officer-recording.test.sh must not be a known orphan (fleet-ops#4394)"
 ok "fleet-duty-officer-recording.test.sh is pinned in the P14 reachable set (fleet-ops#4394)"
 
+# fleet-ops#362: hard-pin the host line for signal-reconcile in
+# ci-standards-audit.test.sh. The detector->queue reconciler test is hermetic
+# and hosted here (workers cannot push .github/workflows/**); the pin is
+# class-prevention so a future drop of the host line cannot park the test on
+# known_orphans to silence the generic $bad[] message — it fails by name first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/signal-reconcile\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke signal-reconcile.test.sh (fleet-ops#362)"
+[[ -n "${reachable[signal-reconcile.test.sh]:-}" ]] \
+  || fail "signal-reconcile.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#362)"
+[[ -z "${known_orphan_set[signal-reconcile.test.sh]:-}" ]] \
+  || fail "signal-reconcile.test.sh must not be a known orphan (fleet-ops#362)"
+ok "signal-reconcile.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#362)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
