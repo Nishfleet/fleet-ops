@@ -295,6 +295,30 @@ lib/merge-trample-gate.py /home/nish/.local/lib/pi-packet/merge-trample-gate.py
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
+# fleet-ops#180: gap-closure loop (audit→fix→drill→measure→conference).
+# Heartbeat starts the loop oneshot once per tick. Conference/drill/
+# fleet-gap-closure-auditor@ are started by the loop. Stub units live in
+# gap-closure-drill.slice only. Sibling of pi-audit@ (admission panel).
+bin/fleet-gap-closure-loop /home/nish/.local/bin/fleet-gap-closure-loop
+bin/fleet-gap-closure-conference /home/nish/.local/bin/fleet-gap-closure-conference
+bin/fleet-gap-closure-tally /home/nish/.local/bin/fleet-gap-closure-tally
+bin/fleet-gap-closure-drill /home/nish/.local/bin/fleet-gap-closure-drill
+bin/fleet-gap-closure-slo /home/nish/.local/bin/fleet-gap-closure-slo
+bin/fleet-gap-closure-auditor /home/nish/.local/bin/fleet-gap-closure-auditor
+bin/fleet-gap-closure-yield /home/nish/.local/bin/fleet-gap-closure-yield
+bin/fleet-gap-closure-order /home/nish/.local/bin/fleet-gap-closure-order
+systemd/fleet-gap-closure-loop.service /home/nish/.config/systemd/user/fleet-gap-closure-loop.service
+systemd/fleet-gap-closure-conference.service /home/nish/.config/systemd/user/fleet-gap-closure-conference.service
+systemd/fleet-gap-closure-drill.service /home/nish/.config/systemd/user/fleet-gap-closure-drill.service
+systemd/fleet-gap-closure-auditor@.service /home/nish/.config/systemd/user/fleet-gap-closure-auditor@.service
+systemd/gap-closure-drill.slice /home/nish/.config/systemd/user/gap-closure-drill.slice
+systemd/gap-closure-drill-stub-fail.service /home/nish/.config/systemd/user/gap-closure-drill-stub-fail.service
+systemd/gap-closure-drill-stub-mask.service /home/nish/.config/systemd/user/gap-closure-drill-stub-mask.service
+systemd/gap-closure-drill-stub-mask.timer /home/nish/.config/systemd/user/gap-closure-drill-stub-mask.timer
+prompts/gap-closure-conference.md /home/nish/.pi/agent/prompts/gap-closure-conference.md
+prompts/gap-closure-conference-round2.md /home/nish/.pi/agent/prompts/gap-closure-conference-round2.md
+prompts/gap-closure-research.md /home/nish/.pi/agent/prompts/gap-closure-research.md
+prompts/gap-closure-research-round2.md /home/nish/.pi/agent/prompts/gap-closure-research-round2.md
 # fleet-ops#458: standing researcher role. Event-driven dispatch on the
 # heartbeat; oneshot unit runs the cheap/free-lane researcher; deltas go
 # through the same scout-candidate admission panel. No researcher timer —

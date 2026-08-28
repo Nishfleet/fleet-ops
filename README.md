@@ -436,4 +436,28 @@ decided to keep `memory.current` for admission. fleet-ops#1168 then set
 `ram_gb_per_worker` to 0.6 GiB from the live typical-worker measurement
 (the 1.5 GiB figure was the p95*3 clamp).
 
+## Gap-closure loop (issue #180)
+
+The fleet closes its own gaps as a loop on top of the #157 blind audit (the
+audit engine is unchanged). Heartbeat tier1 starts
+`fleet-gap-closure-loop.service` once per tick. That oneshot does **one**
+phase transition and exits: audit → research (cycle 1 and every 4th) → fix →
+drill → measure → conference.
+
+A cycle with findings never convenes the conference. A clean cycle with green
+SLOs and passing drills does. Three senior auditors vote via
+`fleet-gap-closure-auditor@` (sibling of `pi-audit@`, which stays the
+admission panel); only unanimous DONE closes the intensive loop (the daily
+blind-audit timer stays). Two-of-three continues and the dissent is filed as a
+`gap-audit` issue. A later finding or a quality-snapshot FAIL reopens the loop.
+
+While the loop is converging, intake prefers those gap-audit issues over
+product work (`fleet-gap-closure-yield` plus `pi-intake-priority`, which treats
+`gap-audit` as critical until unanimous DONE). Unanimous DONE flips that to
+product.
+
+Live validation of a full cycle (real drill + real conference) is a follow-up
+once merge-to-live has installed these units. This repo ships the machinery
+and the stubbed acceptance tests.
+
 

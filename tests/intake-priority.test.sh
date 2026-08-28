@@ -90,6 +90,29 @@ num="${out%%$'\t'*}"
 [[ "$num" == "5" ]] || fail "escalate-senior must be excluded from regular claim, got: $out"
 ok "escalate-senior is excluded from the regular-worker claim order (senior panel owns it)"
 
+# --- fleet-ops#180: gap-audit is critical while the intensive loop is open --
+issues_gap="$scratch/gap.json"
+cat >"$issues_gap" <<'JSON'
+[
+  {"number": 50, "title": "plain tail", "labels": [{"name": "agent-ready"}]},
+  {"number": 180, "title": "gap finding", "labels": [{"name": "agent-ready"}, {"name": "gap-audit"}]}
+]
+JSON
+printf 'loop\n' >"$scratch/loop.prec"
+out="$(GAP_LOOP_PRECEDENCE_FILE="$scratch/loop.prec" "$bin" order --repo fleet-ops --issues-file "$issues_gap" --ratio-file "$scratch/empty-gap.ratio" --pick-one)"
+num="${out%%$'\t'*}"
+rest="${out#*$'\t'}"
+kind="${rest%%$'\t'*}"
+[[ "$num" == "180" ]] || fail "loop-open: expected to claim gap-audit #180, got: $out"
+[[ "$kind" == "gap-audit" ]] || fail "loop-open: expected kind=gap-audit, got: $out"
+ok "loop-open: gap-audit is claimed before the product tail"
+
+printf 'product\n' >"$scratch/product.prec"
+out="$(GAP_LOOP_PRECEDENCE_FILE="$scratch/product.prec" "$bin" order --repo fleet-ops --issues-file "$issues_gap" --ratio-file "$scratch/empty-gap2.ratio" --pick-one)"
+num="${out%%$'\t'*}"
+[[ "$num" == "50" ]] || fail "loop-closed: expected product tail #50 first, got: $out"
+ok "loop-closed: gap-audit is tail after unanimous DONE"
+
 # --- record persists for the next tick --------------------------------------
 "$bin" record --ratio-file "$scratch/rec.ratio" 223 critical-path
 "$bin" record --ratio-file "$scratch/rec.ratio" 224 critical-path

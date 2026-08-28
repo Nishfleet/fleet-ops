@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-yield — intake precedence helper (fleet-ops#180).
+#
+# Prints "yield" or "proceed" for one TARGET repo. While the intensive loop
+# is converging (precedence=loop), product repos yield when fleet-ops has
+# ready gap-audit work. After unanimous DONE (precedence=product), everyone
+# proceeds. Missing precedence file defaults to loop (the intensive loop is
+# on until a DONE transition writes product).
+#
+# Usage: fleet-gap-closure-yield <repo>
+
+set -euo pipefail
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'EOF'
+usage: fleet-gap-closure-yield <repo>
+Print yield or proceed. --help prints this and exits 0.
+EOF
+    exit 0
+fi
+
+repo="${1:-}"
+[ -n "$repo" ] || { echo "fleet-gap-closure-yield: missing repo" >&2; exit 2; }
+
+PREC_FILE="${GAP_LOOP_PRECEDENCE_FILE:-/home/nish/workspaces/agent-state/gap-closure/precedence}"
+GH="${GAP_LOOP_GH:-gh}"
+OPS_REPO="${GAP_LOOP_REPO:-Nishfleet/fleet-ops}"
+
+prec="loop"
+if [ -f "$PREC_FILE" ]; then
+    prec="$(tr -d '[:space:]' <"$PREC_FILE")"
+fi
+[ -n "$prec" ] || prec="loop"
+
+if [ "$prec" != "loop" ]; then
+    echo proceed
+    exit 0
+fi
+
+# Control plane always proceeds under loop precedence — it IS the loop's work.
+if [ "$repo" = "fleet-ops" ]; then
+    echo proceed
+    exit 0
+fi
+
+n=0
+if command -v "$GH" >/dev/null 2>&1; then
+    n="$("$GH" issue list -R "$OPS_REPO" -l agent-ready -l gap-audit --state open \
+        --json number --jq length 2>/dev/null || echo 0)"
+fi
+if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+    echo yield
+else
+    echo proceed
+fi
