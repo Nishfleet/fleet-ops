@@ -61,6 +61,10 @@ NON_ROLE_UNIT_PREFIXES = (
     # tests/standing-rules-drift.test.sh.
     "standing-rules-render",
     "fleet-aeo",
+    # fleet-ops#1149: asset census is observability plumbing, not a
+    # work-producing role. It enumerates the VPS and diffs against a
+    # versioned guard map before the Weekly Fleet Review.
+    "fleet-asset-census",
 )
 
 

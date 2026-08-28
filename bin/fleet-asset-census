@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# fleet-asset-census — mechanical VPS asset census, guard mapping, and
+# unguarded-asset auto-filing (fleet-ops#1149).
+#
+# Wraps lib/pi-packet/asset-census.py and resolves it from the installed
+# lib/pi-packet path or the repo lib/pi-packet path.
+#
+# Usage:
+#   fleet-asset-census census
+#   fleet-asset-census diff --map config/asset-guard-map.json --file-issues
+#   fleet-asset-census validate-map --map config/asset-guard-map.json
+#   fleet-asset-census set-subscriptions --dry-run
+#
+# Exit:
+#   0  census/diff complete and all assets guarded
+#   1  diff found unguarded assets (auto-file attempted if enabled)
+#   2  internal error (missing lib, bad map, command unavailable)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+lib="${FLEET_ASSET_CENSUS_LIB:-$here/../lib/pi-packet/asset-census.py}"
+[ -f "$lib" ] || lib="$here/../lib/asset-census.py"
+[ -f "$lib" ] || { echo "fleet-asset-census: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

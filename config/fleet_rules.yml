@@ -368,3 +368,22 @@ groups:
           summary: "pi-scout@{{ $labels.repo }} has not actually begun in 8+ hours"
           description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 8h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
 
+
+  - name: fleet_asset_census_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR; required by fleet-ops#1149
+      # item 4). fleet-asset-census writes fleet_asset_census_last_run_seconds
+      # on every successful weekly diff — findings (unguarded assets) still
+      # count as a healthy run, only a stopped timer leaves the metric stale.
+      # 14d is two missed weekly timer cycles (Sun 03:15 IST), matching the
+      # scout doctrine of two missed cycles before "dead".
+      - alert: FleetAssetCensusAbsent
+        expr: absent(fleet_asset_census_last_run_seconds) or (time() - fleet_asset_census_last_run_seconds) > 1209600
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "weekly VPS asset census has not run in 14+ days"
+          description: "Repair worker: fleet_asset_census_last_run_seconds is absent or older than 14d (two weekly timer cycles). The census enumerates the VPS surface and diffs against config/asset-guard-map.json; a dead census means new/unguarded assets are invisible. Check journalctl --user -u fleet-asset-census.service and systemctl --user list-timers fleet-asset-census.timer. Helper: /home/nish/.local/bin/fleet-asset-census. fleet-ops#1149."
