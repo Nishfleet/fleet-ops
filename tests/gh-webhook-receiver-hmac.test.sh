@@ -123,6 +123,13 @@ export GH_WEBHOOK_SECRET_FILE="$HOME/.config/fleet-ops/gh-webhook.secret"
 export GH_WEBHOOK_RECEIVER_BIND="127.0.0.1"
 export GH_WEBHOOK_RECEIVER_DRY="1"
 export GH_WEBHOOK_RECEIVER_PROM="$scratch/receiver.prom"
+# Point the receiver at this checkout's own intake-repos.json. The
+# receiver's default is a VPS-specific absolute path
+# (/home/nish/workspaces/tooling/fleet-ops-deploy-clone/...) that does
+# not exist on CI's fresh checkout, so without this override the
+# enrolled set loads empty and the issues/labeled/agent-ready dispatch
+# is rejected as "not enrolled" (fleet-ops#1560).
+export GH_WEBHOOK_INTAKE_REPOS="$repo_root/config/intake-repos.json"
 # Pick an unused TCP port via the stdlib so two parallel test runs do
 # not collide. If another run grabbed it first, the curl loop will
 # timeout and the test will fail loud.
