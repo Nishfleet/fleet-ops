@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pi-intake-trigger — reads trigger files and starts corresponding pi-intake@ instances.
+# Triggered by pi-intake-trigger.path watching /home/nish/workspaces/agent-state/pi-intake-triggers/
+# Each trigger file is named after the repo (e.g., fleet-ops, 0509) and contains the repo name.
+# This is the event-driven complement to the 15-min pi-intake@* timers (GitHub has no push
+# channel to the VPS, so the timers remain as dead-man backstops).
+
+set -euo pipefail
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+TRIGGER_DIR="/home/nish/workspaces/agent-state/pi-intake-triggers"
+mkdir -p "$TRIGGER_DIR"
+
+log() { printf '[%s] [pi-intake-trigger] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+# Process each trigger file
+for trigger_file in "$TRIGGER_DIR"/*; do
+    [[ -f "$trigger_file" ]] || continue
+    repo=$(basename "$trigger_file")
+    [[ -n "$repo" ]] || continue
+
+    log "Triggering pi-intake@$repo"
+    systemctl --user start "pi-intake@$repo.service" || log "Failed to start pi-intake@$repo (may already be running)"
+
+    # Remove the trigger file after processing
+    rm -f "$trigger_file"
+done
+
+exit 0

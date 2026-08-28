@@ -1,5 +1,13 @@
 [Unit]
 Description=Fleet merge-to-live deploy check (tight cadence, fleet-ops#468)
+# fleet-ops#1460: the .path unit (fleet-deploy-check.path) can fire rapidly
+# — git updates refs via replace-by-rename, generating multiple inotify
+# events per fetch. The default 5/10s burst is blown through, wedging the
+# service (same wedge as fleet-seat-recovery #617). The check is idempotent
+# (fetch + rev compare, deploy only if moved); raise the limit so a ref
+# update cannot wedge the fast path. StartLimit* must live in [Unit].
+StartLimitIntervalSec=1h
+StartLimitBurst=100
 
 # Named reason (decisions-ledger 2026-08-27 TOP GEAR): merged-but-not-live
 # latency. Every 2 minutes: git fetch + rev compare (seconds). Only when

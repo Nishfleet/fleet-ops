@@ -7,6 +7,16 @@ Documentation=file:/home/nish/.local/bin/vault-conflict-resolver
 # unit lives in fleet-ops so deploy restores it; the heartbeat canary
 # screams if it dies.
 ConditionPathIsDirectory=/home/nish/workspaces/tooling/nish-vault
+# fleet-ops#1460: the .path unit (vault-conflict-resolver.path) can fire
+# rapidly — a single file creation generates multiple inotify events, and
+# PathExistsGlob retriggers while the conflict file exists. The default
+# 5/10s burst is blown through in under a second, wedging BOTH this service
+# AND the .path unit (same wedge as fleet-seat-recovery #617). The resolver
+# is idempotent and exits 0 when no conflicts remain; raise the limit so a
+# burst of conflict files cannot wedge the fast path. StartLimit* must live
+# in [Unit], not [Service] (same convention as pi-intake@.service).
+StartLimitIntervalSec=1h
+StartLimitBurst=200
 
 [Service]
 Type=oneshot

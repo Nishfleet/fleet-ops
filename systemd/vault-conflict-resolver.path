@@ -1,0 +1,19 @@
+[Unit]
+Description=Fleet vault conflict resolver — path watch for *.sync-conflict-* (replaces 10-min timer)
+Documentation=file:/home/nish/.local/bin/vault-conflict-resolver
+# Event-driven: fires when Syncthing creates a *.sync-conflict-* file.
+# The 10-min timer is kept as a dead-man backstop (silence stays loud).
+# systemd PathExistsGlob does NOT support ** recursive globbing (systemd 255),
+# so we watch the vault root and its top-level subdirectories. The resolver
+# scans the full tree; the path unit provides the fast trigger, the timer
+# backstops conflicts in deep subdirectories the path unit cannot see.
+
+[Path]
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/*.sync-conflict-*
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/00 Inbox/*.sync-conflict-*
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/03 Knowledge/*.sync-conflict-*
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/_system/*.sync-conflict-*
+Unit=vault-conflict-resolver.service
+
+[Install]
+WantedBy=default.target
