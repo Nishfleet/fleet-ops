@@ -153,6 +153,24 @@
       ]
     },
     {
+      "id": "truth-staleness",
+      "gate": "weekly checker cross-checks standing docs against live state",
+      "proof": [
+        "bin/staleness-checker.py",
+        "tests/staleness-checker.test.sh",
+        "config/fleet_rules.yml",
+        "systemd/fleet-truth-staleness-check.timer",
+        "systemd/fleet-truth-staleness-check.service",
+        "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
+      ],
+      "units": [
+        "fleet-truth-staleness-check.timer",
+        "fleet-truth-staleness-check.service"
+      ],
+      "prompts": [],
+      "bypass_checks": []
+    },
+    {
       "id": "researcher",
       "gate": "adopted-delta rate on the quality scoreboard; frontier deltas enter through the admission pipeline, paired with auditors",
       "proof": [
