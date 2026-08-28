@@ -249,3 +249,9 @@ bash "$here/fleet-gap-closure-loop.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**).
 bash "$here/fleet-help-flag-runs-live.test.sh"
+
+# fleet-ops#796: sgscan wrapper regression suite (--help, JSON parsing,
+# unknown-flag rejection). Added by #1652 without a ci.yml listing or
+# host; hosted here so P14 runs it without a workflow-file edit and the
+# p14-test-listing-gate accounts for it (fleet-ops#1622).
+bash "$here/sgscan.test.sh"
