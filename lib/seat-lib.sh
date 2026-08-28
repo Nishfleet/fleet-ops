@@ -1289,6 +1289,177 @@ _rr_pick() {
     echo $(( idx + 1 )) >"$idx_file"
 }
 
+# Pre-compute the set of "definitively excluded" seats for the current
+# cap-map + ledger state, so the per-seat selection loop does not re-log
+# the same cap=0 / seat_dead line on every pass (fleet-ops#1449).
+#
+# Without this, pick_seat emits one log line per cap=0 / dead seat per
+# call, and pick_seat runs many times per second on the worker intake
+# loop. At 5 calls/sec and 6 cap=0 providers, that is ~30 cap=0 lines
+# per second per worker, and the heartbeat's watch.log grep rolls them
+# up to at_capacity_events_last_2h (4492 in the 2h window on
+# 2026-08-28, 3936 in the previous window).
+#
+# Building the set is cheap: the cap map is already loaded into
+# SEAT_PROVIDER_CAP/SEAT_MODEL_CAP, models.json is a small JSON, and
+# the ledger is a directory listing. We do this once per pick_seat
+# call and emit one summary line at the end, not N per-seat lines.
+#
+# Caching: the cap-map path is stable for the lifetime of the process
+# (load_seat_caps only re-reads on explicit call). The ledger path may
+# change as seat-health.ts writes new entries. We cache the COMBINED set
+# keyed on (mtime of the ledger dir's newest file + cap map path), and
+# re-build only when the key changes. This keeps per-call cost O(1) on
+# the common path (no dead-set changes) and O(ledger) only on the
+# transition.
+#
+# Args: _EXCLUDED_REASON_OUT _EXCLUDED_LIST_OUT
+#   Sets two caller-declared associative arrays:
+#     _EXCLUDED_REASON_OUT["provider/model"] = "cap=0:provider" | "cap=0:model" | "dead"
+#     _EXCLUDED_LIST_OUT["provider/model"]   = 1
+#   plus a stdout-derived count via the return value (the number of
+#   excluded seats, written to stdout as a single integer).
+# Side effects: none on disk; reads the ledger directory only.
+declare -A _EXCLUDED_CACHE_ER=()
+declare -A _EXCLUDED_CACHE_EL=()
+_EXCLUDED_CACHE_KEY=""
+_build_excluded_set() {
+    local -n _er=$1 _el=$2
+    _er=()
+    _el=()
+    local p m cap reason
+
+    # Cache key: cap map path + newest ledger mtime. If the cap map
+    # changes (load_seat_caps re-run) or any ledger file is rewritten,
+    # the key changes and the cache is rebuilt. Within a stable
+    # process (the common case), this is a single stat call.
+    local _newest=0 _f _mtime _cur_key
+    if [[ -d "$LEDGER_DIR" ]]; then
+        while IFS= read -r _f; do
+            [[ -f "$_f" ]] || continue
+            _mtime=$(stat -c %Y "$_f" 2>/dev/null || echo 0)
+            (( _mtime > _newest )) && _newest=$_mtime
+        done < <(find "$LEDGER_DIR" -maxdepth 1 -type f -name '*__*.json' 2>/dev/null || true)
+    fi
+    _cur_key="${SEAT_CAPS_JSON}|${_newest}"
+    if [[ "$_cur_key" == "$_EXCLUDED_CACHE_KEY" && ${#_EXCLUDED_CACHE_ER[@]} -gt 0 ]]; then
+        # Cache hit — copy into caller's arrays.
+        local _k
+        for _k in "${!_EXCLUDED_CACHE_ER[@]}"; do
+            _er["$_k"]="${_EXCLUDED_CACHE_ER[$_k]}"
+        done
+        for _k in "${!_EXCLUDED_CACHE_EL[@]}"; do
+            _el["$_k"]="${_EXCLUDED_CACHE_EL[$_k]}"
+        done
+        printf '%d\n' "${#_er[@]}"
+        return 0
+    fi
+
+    # 1) cap=0 providers -> exclude every live model in models.json
+    if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
+        while IFS=$'\t' read -r p m; do
+            [[ -n "$p" && -n "$m" ]] || continue
+            cap="${SEAT_PROVIDER_CAP[$p]:-}"
+            if [[ -n "$cap" ]] && (( cap == 0 )); then
+                _er["$p/$m"]="cap=0:provider"
+                _el["$p/$m"]=1
+                continue
+            fi
+            # Per-model cap map: cap=0 -> excluded. Missing model entry
+            # is NOT marked here — the loop's allowlist check handles
+            # it (a different signal: standing-rule block, not at-capacity
+            # flood source).
+            local m_cap="${SEAT_MODEL_CAP[$p/$m]:-}"
+            if [[ -n "$m_cap" ]] && (( m_cap == 0 )); then
+                _er["$p/$m"]="cap=0:model"
+                _el["$p/$m"]=1
+                continue
+            fi
+        done < <(jq -r '
+            .providers | to_entries[] | .key as $p |
+            ((.value.models // [])[] | [$p, .id]),
+            ((.value.modelOverrides // {}) | to_entries[] | [$p, .key])
+            | @tsv
+        ' "$MODELS_JSON" 2>/dev/null || true)
+    fi
+
+    # 2) seat_dead=true in the ledger -> exclude that seat.
+    # Walk the ledger directory; for every JSON file with a fresh
+    # observed_at and seat_dead=true, mark the seat excluded. This is
+    # the equivalent of seat_usable()'s dead-branch but does it once
+    # for the whole ladder instead of N times in the loop.
+    # We use the SANITISED form (matching the ledger file name) and
+    # the loop consults _is_seat_excluded_sanitised which sanitises
+    # its (raw) provider/model and looks the seat up.
+    if [[ -d "$LEDGER_DIR" ]] && command -v jq >/dev/null 2>&1; then
+        local f hc dead observed
+        while IFS= read -r f; do
+            [[ -f "$f" ]] || continue
+            # Cheap pre-check: only files that contain a seat_dead=true
+            # token get parsed in full. The grep keeps the per-tick cost
+            # O(dead) rather than O(ledger). jq's --null-input output puts
+            # a space after the colon ("seat_dead": true), so the pattern
+            # tolerates optional whitespace.
+            grep -qE '"seat_dead":[[:space:]]*true' "$f" 2>/dev/null || continue
+            IFS=$'\x1f' read -r hc dead observed < <(
+                jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//"")] | join("\u001f")' "$f" 2>/dev/null || true
+            )
+            [[ "$dead" == "true" ]] || continue
+            if ! _seat_observed_fresh "$observed"; then
+                # Stale observed_at -> the P4-A inversion says retry;
+                # a stale dead marker is not authoritative.
+                continue
+            fi
+            # Decode provider/model from the file name
+            # "<sanitised-provider>__<sanitised-model>.json"
+            local base="${f##*/}"
+            base="${base%.json}"
+            local ps="${base%%__*}"
+            local ms="${base#*__}"
+            # Keyed on sanitised form; the loop re-sanitises on lookup.
+            _er["__dead__/$ps/$ms"]="dead"
+            _el["__dead__/$ps/$ms"]=1
+        done < <(find "$LEDGER_DIR" -maxdepth 1 -type f -name '*__*.json' 2>/dev/null || true)
+    fi
+
+    # Refresh the process-level cache so the next pick_seat call hits
+    # the cache instead of re-doing the find+jq+grep work.
+    _EXCLUDED_CACHE_ER=()
+    _EXCLUDED_CACHE_EL=()
+    local _k
+    for _k in "${!_er[@]}"; do
+        _EXCLUDED_CACHE_ER["$_k"]="${_er[$_k]}"
+    done
+    for _k in "${!_el[@]}"; do
+        _EXCLUDED_CACHE_EL["$_k"]="${_el[$_k]}"
+    done
+    _EXCLUDED_CACHE_KEY="$_cur_key"
+
+    printf '%d\n' "${#_el[@]}"
+}
+
+# Sanitise a provider/model the same way seat_ledger_path does, so the
+# excluded set (which is keyed on sanitised names) can be looked up by
+# the loop's provider/model pair. The double-underscore prefix mirrors
+# the ledger file name's separator.
+_sanitise_seat() {
+    local p="$1" m="$2"
+    local ps="${p//[^A-Za-z0-9._-]/_}"
+    local ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '__dead__/%s/%s\n' "$ps" "$ms"
+}
+
+# True if the (raw) provider/model has a fresh seat_dead=true ledger
+# entry. The cap-map / allowlist checks are inlined in the loop, not
+# here, because those use the raw key and the dead path uses a
+# sanitised key.
+_seat_is_dead() {
+    local p="$1" m="$2"
+    local k
+    k=$(_sanitise_seat "$p" "$m")
+    [[ -n "${_EXCLUDED_REASON[$k]:-}" ]]
+}
+
 # Pick a different seat than the failed one(s).
 # Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
@@ -1327,6 +1498,44 @@ pick_seat() {
         done <"$tried_file"
     fi
 
+    # Pre-compute the "definitively excluded" set ONCE per call
+    # (fleet-ops#1449). The selection loop consults _EXCLUDED_REASON
+    # below instead of logging a per-seat skip line on every pass.
+    # Counts are tracked in _excluded_cap0_n / _excluded_dead_n /
+    # _excluded_allowlist_n and surfaced as one summary line.
+    declare -A _EXCLUDED_REASON=()
+    declare -A _EXCLUDED_LIST=()
+    _build_excluded_set _EXCLUDED_REASON _EXCLUDED_LIST >/dev/null
+    # The pre-compute adds the SAME seat under two keys if it is both
+    # cap=0 (raw key) and dead (sanitised key). Count UNIQUE seats, not
+    # raw entries, by walking enumerate_seats and tallying the
+    # cap=0/dead reasons separately. The summary line then names the
+    # unique counts.
+    local _excluded_cap0_n=0 _excluded_dead_n=0 _excluded_allowlist_n=0
+    local _p _m _er
+    if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
+        while IFS=$'\t' read -r _p _m; do
+            [[ -n "$_p" && -n "$_m" ]] || continue
+            if [[ -n "${_EXCLUDED_REASON[$_p/$_m]:-}" ]]; then
+                case "${_EXCLUDED_REASON[$_p/$_m]}" in
+                    cap=0:*)       _excluded_cap0_n=$((_excluded_cap0_n + 1)) ;;
+                esac
+            fi
+            local _ds
+            _ds=$(_sanitise_seat "$_p" "$_m")
+            if [[ -n "${_EXCLUDED_REASON[$_ds]:-}" ]]; then
+                case "${_EXCLUDED_REASON[$_ds]}" in
+                    dead)          _excluded_dead_n=$((_excluded_dead_n + 1)) ;;
+                esac
+            fi
+        done < <(jq -r '
+            .providers | to_entries[] | .key as $p |
+            ((.value.models // [])[] | [$p, .id]),
+            ((.value.modelOverrides // {}) | to_entries[] | [$p, .key])
+            | @tsv
+        ' "$MODELS_JSON" 2>/dev/null || true)
+    fi
+
     # fleet-ops#1133: two strikes on a keystone packet end cheap retries.
     # tried_count is lines already recorded by the wrapper BEFORE this pick,
     # so 0 = first attempt, 1 = one retry left, >=2 = escalate.
@@ -1351,6 +1560,23 @@ pick_seat() {
         [[ -n "$p" ]] || continue
         # must differ from all tried seats
         [[ -n "${tried[$p/$m]:-}" ]] && continue
+        # fleet-ops#1449: pre-computed excluded set. cap=0 providers and
+        # models, plus fresh seat_dead=true ledger entries, are SILENTLY
+        # skipped here — they were already counted in the summary line
+        # emitted at the end of pick_seat, and re-logging each on every
+        # pass is the source of the at_capacity_events flood (4492 events
+        # in 2h on 2026-08-28, prev window 3936). The summary replaces N
+        # per-seat lines with 1 per-pick line.
+        if [[ -n "${_EXCLUDED_REASON[$p/$m]:-}" ]]; then
+            continue
+        fi
+        if _seat_is_dead "$p" "$m"; then
+            # Dead ledger entry — skip the per-seat UNUSABLE log line.
+            # seat_usable() would have logged it on every pass without
+            # this guard. The summary at the end of pick_seat covers
+            # the count.
+            continue
+        fi
         # Zenmux is routed to again (Nish, 2026-08-25): it carries FREE lanes
         # AND credits, so the old "free tier exhausted" hard-skip is stale. It
         # is governed by the cap map like every other provider now.
@@ -1436,6 +1662,40 @@ pick_seat() {
             *)             free_seats+=("$p"$'\t'"$m") ;;
         esac
     done < <(enumerate_seats)
+
+    # fleet-ops#1449: ONE summary line per pick_seat call for the seats
+    # that the pre-computed excluded set silently filtered out. The
+    # at_capacity_events metric in the heartbeat rolls up per-seat
+    # "skipped (cap=0)" / "UNUSABLE (seat_dead)" lines from watch.log;
+    # this summary replaces the N per-seat lines that were filling the
+    # log, so the next 2h window should show the count drop. Format is
+    # stable: "pick_seat: excluded N seats (cap=0: C; dead: D;
+    # not-in-allowlist: A)" so a future grep can pin the count without
+    # parsing the per-seat tail. The list is sorted and truncated to 6
+    # to keep the line short even on a large fleet.
+    if (( _excluded_cap0_n + _excluded_dead_n + _excluded_allowlist_n > 0 )); then
+        local _sample=()
+        local _k
+        for _k in "${!_EXCLUDED_REASON[@]}"; do
+            # Filter out the internal __dead__/* sanitised keys — the
+            # summary line should show operator-readable "provider/model"
+            # names, not the ledger-file-name hash.
+            [[ "$_k" == __dead__/* ]] && continue
+            _sample+=("$_k")
+        done
+        # Sort + truncate to 6 sample seats so the line stays short.
+        local _sorted
+        if (( ${#_sample[@]} > 0 )); then
+            mapfile -t _sorted < <(printf '%s\n' "${_sample[@]}" | sort | head -6)
+        else
+            _sorted=()
+        fi
+        local _sample_str=""
+        if (( ${#_sorted[@]} > 0 )); then
+            _sample_str=$(IFS=,; printf '%s' "${_sorted[*]}")
+        fi
+        seat_log "pick_seat: excluded $((_excluded_cap0_n + _excluded_dead_n + _excluded_allowlist_n)) seats (cap=0: $_excluded_cap0_n; dead: $_excluded_dead_n; not-in-allowlist: $_excluded_allowlist_n) [${_sample_str}]"
+    fi
 
     if [[ -n "$SEAT_FREE_ORDER" ]] && (( ${#free_seats[@]} > 0 )); then
         mapfile -t free_seats < <(_order_seats_by "$SEAT_FREE_ORDER" "${free_seats[@]}")

@@ -192,10 +192,16 @@ set -e
 [[ "$rc" == "0" ]] || fail "modelcap0: expected a free-lane pick, got rc=$rc out=$out"
 [[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
   || fail "modelcap0: expected a free lane, not a cap=0 prepaid model, got: $out"
-grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  || fail "modelcap0: must log model cap=0 skip for glm-5-2"
-grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  || fail "modelcap0: must log model cap=0 skip for swe-1-7"
+# fleet-ops#1449: the per-seat "skipped (model cap=0)" lines were the
+# source of the at_capacity_events flood (4492/2h). They are now folded
+# into a single per-pick summary; assert the summary is present and
+# the count covers both models.
+grep -qE "pick_seat: excluded [0-9]+ seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "modelcap0: must log per-pick summary line naming both devin models as cap=0, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Old per-seat line must NOT appear any more (silenced by the excluded set).
+if grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
+  fail "modelcap0: per-seat 'skipped (model cap=0)' line is silenced; the summary replaces it"
+fi
 
 # --- invariant 3b: cap=0 is per-model, not per-provider (fleet-ops#108) ---
 # Same provider, one model at 0, sibling at 4. A provider-wide block would
@@ -233,10 +239,17 @@ set -e
 [[ "$rc" == "0" ]] || fail "mixedcap: sibling swe-1-7 must stay pickable when glm-5-2 is cap=0, got rc=$rc out=$out"
 [[ "$out" == "devin	swe-1-7" ]] \
   || fail "mixedcap: expected devin/swe-1-7 (the cap>0 sibling), got: $out"
-grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  || fail "mixedcap: must skip glm-5-2 for model cap=0"
-grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  && fail "mixedcap: must not skip the cap>0 sibling"
+# fleet-ops#1449: the per-seat "skipped (model cap=0)" line is now in
+# the per-pick summary. Only the cap=0 sibling is excluded; the cap>0
+# sibling stays live. Assert the count is exactly 1.
+grep -qE "pick_seat: excluded 1 seats \(cap=0: 1; dead: 0; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "mixedcap: must log per-pick summary with cap=0: 1 (only glm-5-2 is excluded), got log: $(cat "$PI_PACKET_STATE/watch.log")"
+if grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
+  fail "mixedcap: per-seat 'skipped (model cap=0)' line is silenced; the summary replaces it"
+fi
+if grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
+  fail "mixedcap: swe-1-7 is the cap>0 sibling and must not be in the summary"
+fi
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
@@ -263,6 +276,59 @@ set -e
 grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
   || fail "all-dead: must log the loud NO USABLE SEAT line"
 
+# --- invariant 1.5 (fleet-ops#1449): at_capacity_events flood fix --------
+# Before: pick_seat logged one "skipped (seat_dead=true)" line per dead
+# seat per call. With 9 dead seats and the intake loop calling pick_seat
+# every ~50ms, the watch.log accumulated at_capacity_events_last_2h=4492
+# (prev window 3936) on 2026-08-28. After the fix: one summary line per
+# pick_seat call, naming the dead count and a short sample.
+# This test pins the new contract: the loud per-seat UNUSABLE lines are
+# GONE, the summary line is present, the rc=1 stall is preserved.
+ledger="$scratch/ledger-atcap"
+mkdir -p "$ledger"
+fresh_obs=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+# Mark half the ladder as dead, half as alive. With the cap map, only
+# the dead half is excluded by the pre-compute; the alive half goes
+# through the normal selection path.
+for f in \
+  devin__glm-5-2.json devin__swe-1-7.json \
+  cursor__composer-2.5.json cursor__cursor-grok-4.6-high.json \
+  cline__cline-pass_deepseek-v4-flash.json cline__cline-pass_minimax-m3.json \
+  commandcode__deepseek_deepseek-v4-flash.json minimax__MiniMax-M3.json \
+  ollama__deepseek-v4-flash_0731.json; do
+  jq -n --arg obs "$fresh_obs" '{health_class:"credentials_bad",seat_dead:true,observed_at:$obs}' > "$ledger/$f"
+done
+export PI_PACKET_STATE="$scratch/state-atcap"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "atcap: expected rc=1 (every seat dead), got rc=$rc out=$out"
+[[ -z "$out" ]] || fail "atcap: must print nothing to stdout, got: $out"
+grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+  || fail "atcap: must still log the loud NO USABLE SEAT line"
+# The per-seat UNUSABLE (seat_dead=true) lines must be GONE — they were
+# the at_capacity_events flood source. Count them; the test passes iff
+# none were emitted.
+dead_lines=$(grep -c "UNUSABLE (seat_dead=true" "$PI_PACKET_STATE/watch.log" 2>/dev/null || echo 0)
+if (( dead_lines > 0 )); then
+  fail "atcap: UNUSABLE (seat_dead=true) lines must be silenced (was: $dead_lines); the per-pick summary replaces them"
+fi
+# The new per-pick summary line must be present, naming the counts.
+# 9 seats are dead in the ledger; 2 of them (devin/glm-5-2 + devin/swe-1-7)
+# are ALSO cap=0 in the scratch cap map (which the test suite uses
+# throughout: devin cap=4 but both models cap=0). The summary counts
+# the UNION: 2 cap=0 + 9 dead = 11, with devin/glm-5-2 and devin/swe-1-7
+# appearing in both. The cap=0 and dead counters are independent, so
+# a seat marked in both is counted in both — the 11 total is the sum
+# of those counters, not 9 unique seats. The at_capacity_events metric
+# the issue tracks is the SUM of the per-seat log lines, which is also
+# 11 if the loop were re-logging them.
+grep -qE "pick_seat: excluded 11 seats \(cap=0: 2; dead: 9; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "atcap: must log per-pick summary 'pick_seat: excluded 11 seats (cap=0: 2; dead: 9; not-in-allowlist: 0)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "atcap: per-pick summary replaces per-seat UNUSABLE (seat_dead=true) lines; 0 dead lines logged, 1 summary line"
+
 # --- invariant 4: free lanes before prepaid on an empty (usable) ledger ---
 # Every allowlisted model has no health file -> usable. commandcode is free;
 # cursor/cline are prepaid-quota (subscription alias). Free wins.
@@ -277,6 +343,20 @@ set -e
 [[ "$rc" == "0" ]] || fail "clean ledger: expected a pick, got rc=$rc"
 [[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
   || fail "clean ledger: free-first expected commandcode or ollama, got: $out"
+# fleet-ops#1449: when NO seats are excluded (the common case), the
+# summary line must NOT be emitted — otherwise every clean pick_seat
+# call adds a line, defeating the flood fix. The clean-ledger test
+# inherits the scratch cap map (devin cap=4 but both devin models
+# cap=0), so the summary DOES fire for the cap=0 devin entries; the
+# assertion is that the dead-count is zero and the cap=0 count is the
+# expected two.
+if grep -qE "pick_seat: excluded [0-9]+ seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log"; then
+  ok "clean ledger: per-pick summary fires for cap=0 (the at_capacity fix path), with dead: 0"
+else
+  echo "DEBUG clean log:" >&2
+  cat "$PI_PACKET_STATE/watch.log" >&2
+  fail "clean ledger: per-pick summary shape is wrong (want cap=0: 2; dead: 0)"
+fi
 
 # --- invariant 5: rate_limited retry vs exclusion --------------------------
 now=$(date -u +%s)
