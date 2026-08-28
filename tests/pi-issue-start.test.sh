@@ -74,3 +74,7 @@ bash "$here/exec-review-prompt.test.sh" || fail "exec-review prompt contract tes
 # Hosted here so CI fails if someone deletes the routing from worker.md
 # without a workflow edit (workers have no Workflows permission).
 bash "$here/pstack-worker-prompt.test.sh" || fail "pstack worker prompt contract tests failed"
+# fleet-ops#350: worker.md must route session-outliving work through
+# pi-systemd-run, never nohup. Hosted here for the same CI-host reason
+# (workers have no Workflows permission).
+bash "$here/worker-prompt-systemd-run.test.sh" || fail "worker-prompt-systemd-run tests failed"
