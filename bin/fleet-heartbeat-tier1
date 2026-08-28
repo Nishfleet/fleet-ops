@@ -331,6 +331,16 @@ unit_recovery_class() {
         pi-scout-repair@*.service)  printf 'recover' ;;
         fleet-seat-recovery.path)   printf 'recover' ;;
         fleet-seat-recovery.service) printf 'recover' ;;
+        # Infrastructure path/timer organs (fleet-ops#1521 line 1): these
+        # wedge on start-limit-hit when inotify retriggering blows the
+        # default 5/10s burst. They are idempotent oneshots (fetch+rev-compare,
+        # generate+push) safe to reset-failed + start. The 2026-08-28 incident
+        # needed a hand reset-failed + restart on fleet-console-pi and
+        # fleet-deploy-check; this floor makes heartbeat recover them.
+        fleet-console-pi.path)     printf 'recover' ;;
+        fleet-console-pi.service)  printf 'recover' ;;
+        fleet-deploy-check.path)   printf 'recover' ;;
+        fleet-deploy-check.service) printf 'recover' ;;
         *)                          printf 'observe' ;;
     esac
 }
@@ -798,6 +808,14 @@ fi
 # instance, and the reset+start floor does not depend on any agent lane
 # being healthy.
 #
+# The 2026-08-28 incident (#1521 line 1): fleet-console-pi.path and
+# fleet-deploy-check.path wedged on start-limit-hit (inotify retriggering
+# blew the default 5/10s burst before the StartLimit* fix in #1522/#1509
+# landed, and a .path can still wedge if its service fails repeatedly).
+# They needed a hand reset-failed + restart. The matcher now also covers
+# these infrastructure path/timer organs, and unit_recovery_class marks
+# them `recover` (idempotent oneshots, safe to restart).
+#
 # Idempotency: a per-unit JSON state file tracks attempts and escalation so
 # the N-attempt ceiling is real and the triage file is not spammed.
 seen=0
@@ -811,7 +829,7 @@ log "4. failed-units pass starting"
 
 mapfile -t failed_units < <(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null \
     | awk '{print $1}' \
-    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p|fleet-seat-recovery\.(path|service)$)' \
+    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p|fleet-seat-recovery\.(path|service)$|fleet-console-pi\.(path|service)$|fleet-deploy-check\.(path|service)$)' \
     || true)
 
 for unit in "${failed_units[@]}"; do

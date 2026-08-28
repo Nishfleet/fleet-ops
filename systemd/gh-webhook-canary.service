@@ -1,0 +1,24 @@
+[Unit]
+Description=GitHub push-channel synthetic canary (fleet-ops#1464)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/1464
+
+# fleet-ops#1464 pattern 2: silence must be provable. Every 5 minutes
+# (RandomizedDelaySec jitter), this unit fires the canary script. The
+# script POSTs a synthetic 'issues/labeled/agent-ready' payload to the
+# local receiver, asserts a 200 response, and bumps the
+# fleet_gh_webhook_canary_last_green_seconds Prometheus metric.
+# A separate deadman (gh-webhook-canary-deadman.{service,timer}) watches
+# that metric and pages the alert-repair rail when the series goes
+# absent for > 15 min. That's the standard dead-man's-switch inversion:
+# alert on missing success, never on present failure alone.
+
+[Service]
+Type=oneshot
+Environment=GH_WEBHOOK_CANARY_TARGET=http://127.0.0.1:8088/webhook
+Environment=GH_WEBHOOK_CANARY_SECRET_FILE=%h/.config/fleet-ops/gh-webhook.secret
+Environment=GH_WEBHOOK_CANARY_PROM=/var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom
+Environment=GH_WEBHOOK_CANARY_DRY=0
+# P14 systemd-analyze dodge: hosted runners lack ~/.local. The repo
+# install.sh symlinks the script to ~/.local/bin for the live box.
+ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary.py
+TimeoutStartSec=30

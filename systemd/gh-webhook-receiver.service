@@ -1,0 +1,33 @@
+[Unit]
+Description=GitHub webhook receiver (fleet-ops#1464 push channel — VPS side)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/1464
+
+# The Cloudflare Worker (workers/github-push-forward/) verifies the GitHub
+# HMAC, then forwards the original body through a Cloudflare Tunnel to
+# 127.0.0.1:8088 on this VPS. This service listens there, re-verifies the
+# HMAC (defence-in-depth), and fires the matching user unit. See
+# libexec/gh-webhook-receiver/serve.py and docs/github-push-channel.md.
+
+# Hard dependency: the secret file must exist before we start, otherwise
+# the process exits at import time with a missing-secret diagnostic.
+ConditionPathExists=%h/.config/fleet-ops/gh-webhook.secret
+
+[Service]
+Type=simple
+Environment=GH_WEBHOOK_RECEIVER_BIND=127.0.0.1
+Environment=GH_WEBHOOK_RECEIVER_PORT=8088
+Environment=GH_WEBHOOK_SECRET_FILE=%h/.config/fleet-ops/gh-webhook.secret
+Environment=GH_WEBHOOK_RECEIVER_PROM=/var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom
+# P14 systemd-analyze dodge on hosted runners that lack ~/.local. The
+# repo install.sh symlinks serve.py to ~/.local/libexec for the live box.
+ExecStart=/usr/bin/python3 %h/.local/libexec/gh-webhook-receiver/serve.py
+# Restart on any failure (bind error, port conflict). 3s delay so the
+# journalctl storm is bounded; systemd caps the storm with StartLimit*.
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=10
+# Bound to 127.0.0.1 by default — the tunnel terminates here; never open
+# this on a public interface.
+
+[Install]
+WantedBy=default.target

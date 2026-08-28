@@ -110,6 +110,35 @@ precedence_band_has_multiplier() {
     printf '%s\n' "$body" | grep -qE '^band-multiplier:[[:space:]]*[1-9][0-9]*[[:space:]]*$'
 }
 
+# Classify issue quality from title (and optionally body/labels).
+# Prints: upgrade | repair | churn
+# Based on conventional-commit prefix heuristic (fleet-ops#1136):
+#   feat       -> upgrade (new forward capability)
+#   fix, test  -> repair  (fixing / bulletproofing existing behaviour)
+#   chore      -> churn   (no forward value)
+#   everything else -> churn (safe catch-all)
+precedence_band_classify_quality() {
+    local title="${1:-}" body="${2:-}"
+    # Match leading type token: "feat(scope): ...", "fix!: ...", "chore: ..." (case-insensitive)
+    local prefix
+    prefix="$(printf '%s\n' "$title" | sed -E 's/^\s*([A-Za-z]+)(\([^)]*\))?!?\s*:.*/\1/I' | tr '[:upper:]' '[:lower:]')"
+    case "$prefix" in
+        feat)     printf 'upgrade\n' ;;
+        fix|test) printf 'repair\n'  ;;
+        chore)    printf 'churn\n'   ;;
+        *)        printf 'churn\n'   ;;
+    esac
+}
+
+# Check if an issue qualifies as legit work (not churn-class).
+# Legit work = upgrade or repair. Churn = NOT legit for surge expansion.
+# Args: title [body]
+precedence_band_is_legit_work() {
+    local quality
+    quality="$(precedence_band_classify_quality "$@")"
+    [[ "$quality" == "upgrade" || "$quality" == "repair" ]]
+}
+
 precedence_band_product_front_numbers() {
     local repo="$1" json
     json="$(precedence_band_resolve_json)" || return 0
@@ -168,9 +197,9 @@ precedence_band_over_cap() {
 }
 
 # Return 0 if this claim may proceed. Prints a one-token reason.
-# Args: repo issue_number body
+# Args: repo issue_number body [title]
 precedence_band_allow_claim() {
-    local repo="$1" n="$2" body="${3:-}"
+    local repo="$1" n="$2" body="${3:-}" title="${4:-}"
     local phase pct
     # Product repos are never gated by the machinery band. Check this
     # before reading the policy so a missing config cannot stall 0509.
@@ -221,6 +250,17 @@ precedence_band_allow_claim() {
         return 0
     fi
     if precedence_band_over_cap "$((BAND_MACHINERY + BAND_PENDING_MACHINERY + 1))" "$((BAND_MACHINERY + BAND_PRODUCT + BAND_PENDING_MACHINERY + 1))" "$pct"; then
+        # Empty-product surge expansion (fleet-ops#1516): when product-ready
+        # is empty (or below claimable count), machinery may expand beyond
+        # machinery_max_pct up to full capacity — BUT only for legit work.
+        # Legit work = upgrade or repair (passes existing spec/quality gates).
+        # Churn-class (chore, refactor, polish, machinery-on-machinery) does
+        # NOT qualify. The legit-work guard is fleet-wide (global standing
+        # rule 2026-08-28).
+        if (( BAND_PRODUCT == 0 )) && precedence_band_is_legit_work "$title" "$body"; then
+            printf 'allow-band-surge-legit\n'
+            return 0
+        fi
         if precedence_band_has_multiplier "$body"; then
             printf 'allow-multiplier\n'
             return 0

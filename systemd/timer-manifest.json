@@ -122,6 +122,18 @@
       "cadence": "unknown",
       "source": "user-config"
     },
+    "gh-webhook-canary-deadman.timer": {
+      "reason": "GitHub push-channel dead-man's switch — every 5 min checks the synthetic canary's last-green metric and pages if missing/stale > 15 min (fleet-ops#1464).",
+      "classification": "scheduled",
+      "cadence": "5min",
+      "source": "repo"
+    },
+    "gh-webhook-canary.timer": {
+      "reason": "GitHub push-channel synthetic canary — every 5 min posts a synthetic issues/labeled/agent-ready event through the local receiver and bumps the last-green metric (fleet-ops#1464).",
+      "classification": "scheduled",
+      "cadence": "5min",
+      "source": "repo"
+    },
     "intake-reconcile.timer": {
       "reason": "30-min backstop for intake reconciler — path unit handles synchronous file-change trips; this timer catches missed mtime bumps or masked path units",
       "classification": "scheduled",

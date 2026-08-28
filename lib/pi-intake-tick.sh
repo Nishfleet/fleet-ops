@@ -92,6 +92,23 @@ issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number
     exit 1
 }
 
+# fleet-ops#1464 — reconciler-caught counter. Every time the poll finds
+# ready work, it means the GH webhook (workers/github-push-forward/ →
+# gh-webhook-receiver.service) DID NOT trigger pi-intake@<repo> for this
+# issue first. The counter bumps by the number of ready issues found, so
+# a sustained rise means the push channel is degraded and the dead-man
+# on the canary should also be firing. The metric is informational only:
+# it is NOT a blocker for the tick. A rising counter is what
+# fleet-intake-reconciler-stale alerts on (see config/fleet_rules.yml).
+#
+# Per-repo prom file (matches the existing per-repo metric convention,
+# e.g. fleet-opus-heartbeat.prom is repo-scoped via Pi seat labels):
+# a single shared file would be clobbered by parallel pi-intake@<repo>
+# timers. Naming: ${base}-<repo>.prom, default base fleet-intake-reconciler.
+reconciler_caught=0
+reconciler_prom_base="${PI_INTAKE_RECONCILER_PROM:-/var/lib/prometheus/node-exporter/fleet-intake-reconciler}"
+reconciler_prom="${reconciler_prom_base}-${REPO}.prom"
+
 # Blocker filter (auditor 2026-08-26, summon fleet-ops-87): an agent-ready
 # issue can carry a body `blocked-on:` line (machine-checkable dep or
 # nish-decision). Claiming such an issue spawns a worker that cannot make
@@ -118,6 +135,49 @@ if (( ready_count == 0 )); then
     echo "no ready issues"
     exit 0
 fi
+
+# fleet-ops#1464 — bump the reconciler-caught counter. We found ready
+# work via the SLOW poll; the GH webhook path either did not fire or did
+# not win the race for these issues. The counter is the visibility
+# signal that drives the dead-man / alert. Tests can override the
+# prom path via PI_INTAKE_RECONCILER_PROM (see
+# tests/fleet-intake-reconciler-counter.test.sh).
+#
+# Per-repo prom file means there is no read-modify-write race with
+# parallel pi-intake@<other>.timer ticks (each repo owns its own file).
+# Within the same repo, the flock at the top of the tick ensures only
+# one tick is in flight, so the read-modify-write below is safe.
+reconciler_caught=$ready_count
+reconciler_ts="$(date -u +%s)"
+
+# Read the previous cumulative value (if any) so we can add this tick's
+# delta. Default 0 when the file is missing or the line is malformed.
+_reconciler_prev_total=0
+if [[ -f "$reconciler_prom" ]]; then
+    _reconciler_prev_total=$(awk -v r="$REPO" '
+        $0 ~ "fleet_intake_reconciler_caught_total\\{repo=\""r"\"\\}" {
+            gsub(/[^0-9.]/, "", $2); v = int($2);
+            if (v > 0) print v; else print 0; exit
+        }
+        END { if (NR == 0) print 0 }
+    ' "$reconciler_prom" 2>/dev/null || echo 0)
+    _reconciler_prev_total="${_reconciler_prev_total:-0}"
+fi
+_reconciler_new_total=$(( _reconciler_prev_total + reconciler_caught ))
+
+mkdir -p "$(dirname "$reconciler_prom")" 2>/dev/null || true
+{
+    printf '# HELP fleet_intake_reconciler_caught_total Cumulative number of agent-ready issues the slow poll caught that the GitHub webhook did not catch first (fleet-ops#1464).\n'
+    printf '# TYPE fleet_intake_reconciler_caught_total counter\n'
+    printf 'fleet_intake_reconciler_caught_total{repo="%s"} %d\n' "$REPO" "$_reconciler_new_total"
+    printf '# HELP fleet_intake_reconciler_last_caught_timestamp_seconds Epoch seconds of the last time the slow poll caught at least one ready issue.\n'
+    printf '# TYPE fleet_intake_reconciler_last_caught_timestamp_seconds gauge\n'
+    printf 'fleet_intake_reconciler_last_caught_timestamp_seconds{repo="%s"} %d\n' "$REPO" "$reconciler_ts"
+    printf '# HELP fleet_intake_reconciler_last_count Number of agent-ready issues found by the most recent slow poll (per repo).\n'
+    printf '# TYPE fleet_intake_reconciler_last_count gauge\n'
+    printf 'fleet_intake_reconciler_last_count{repo="%s"} %d\n' "$REPO" "$reconciler_caught"
+} > "$reconciler_prom.tmp" 2>/dev/null && mv "$reconciler_prom.tmp" "$reconciler_prom" 2>/dev/null || true
+echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
@@ -236,7 +296,9 @@ for i in "${!numbers[@]}"; do
     # live machinery == 0 (fleet-ops#1452 floor). Skip, do not fail the tick —
     # product ticks still run, and the next fleet-ops tick retries when a
     # slot opens.
-    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body") || {
+    # Legit-work guard (fleet-ops#1516): pass title for quality classification
+    # to allow empty-product surge expansion only for upgrade/repair work.
+    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body" "$title") || {
         echo "issue $N ($title): skipped-precedence-band ($band_reason)"
         continue
     }
