@@ -105,7 +105,7 @@ PROM_FILE = os.environ.get(
 # a repo that has no checkout, no labels, and no intake unit.
 INTAKE_REPOS_FILE = os.environ.get(
     "GH_WEBHOOK_INTAKE_REPOS",
-    "/home/nish/workspaces/products/fleet-ops/config/intake-repos.json",
+    "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json",
 )
 MAX_BODY = 1 * 1024 * 1024  # 1 MiB
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
