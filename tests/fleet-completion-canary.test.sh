@@ -21,7 +21,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-bin="$repo_root/bin/fleet-completion-canary"
+bin="$repo_root/bin/fleet-completion-canary.py"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -318,8 +318,8 @@ ok "unit-escalation open observed, STOP-REASON left alone, 24h clock honoured"
 
 # --- 8. wiring ---------------------------------------------------------------
 manifest="$repo_root/MANIFEST"
-grep -F 'bin/fleet-completion-canary /home/nish/.local/libexec/fleet-completion-canary' "$manifest" >/dev/null \
-  || fail "MANIFEST missing bin/fleet-completion-canary"
+grep -F 'bin/fleet-completion-canary.py /home/nish/.local/libexec/fleet-completion-canary' "$manifest" >/dev/null \
+  || fail "MANIFEST missing bin/fleet-completion-canary.py"
 grep -F 'systemd/fleet-completion-canary.timer /home/nish/.config/systemd/user/fleet-completion-canary.timer' "$manifest" >/dev/null \
   || fail "MANIFEST missing timer"
 timer="$repo_root/systemd/fleet-completion-canary.timer"
