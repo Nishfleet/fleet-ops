@@ -202,6 +202,7 @@ jobs:
         bash tests/pi-systemd-run.test.sh
         bash tests/pi-intake-run.test.sh
         bash tests/pi-issue-start.test.sh
+        bash tests/pi-issue-start-packet-regen.test.sh
         bash tests/pi-issue-failed-reap.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/fleet-claim.test.sh
