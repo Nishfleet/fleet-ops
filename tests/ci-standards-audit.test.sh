@@ -210,3 +210,13 @@ bash "$here/memoryctl-ttl-provenance.test.sh"
 # fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-waste-ledger.test.sh"
+
+# fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
+# false-healthy gap. The test imports the live extension at
+# $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
+# runs the three invariants from the issue's test plan. CI skips when the
+# extension is missing; on the VPS the test fails today (the gap is open)
+# and passes once the classifier is fixed. Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/seat-health-classifier.test.sh"
