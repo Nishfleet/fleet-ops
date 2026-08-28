@@ -45,6 +45,9 @@
 #      not wait for the whole canary to be green.
 #  18. fleet-ops-deploy invokes install.sh --system after the user-scope
 #      install (fleet-ops#1247). A --system failure fails the deploy.
+#  19. The drift canary rc is captured explicitly, not inverted: a canary
+#      that exits nonzero with success-looking output fails the deploy with
+#      the rc logged; a canary that exits 0 passes (fleet-ops#463).
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -1270,6 +1273,70 @@ grep -q '^774$' "$off_comment_log" \
   || fail "scenario17f: must comment on #774 (commented=$(cat "$off_comment_log"))"
 ok "scenario17f: off-main observe-to-close fires despite a later red check (fleet-ops#774)"
 rm -f "$HOME/.config/systemd/user/leftover-774.service"
+
+# --- scenario 19: deploy drift canary rc is captured, not inverted (#463) ----
+# The 2026-08-26 regression: the drift canary step logged "drift canary
+# failed" while its own output said the checkout was clean — an inverted
+# `if canary_out=$(...)` capture swallowed the real rc. Pin the explicit
+# canary_rc=$? path: a canary that exits nonzero with success-looking text
+# must fail the deploy with the rc logged, and a canary that exits 0 must
+# pass with its output on the success line.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+
+# 19a: canary exits 1 while printing a clean-checkout message.
+stub_canary_fail="$scratch/stub-canary-fail.sh"
+cat >"$stub_canary_fail" <<'STUB'
+#!/usr/bin/env bash
+echo "[fleet-ops-drift] checkout is at origin/main and clean"
+exit 1
+STUB
+chmod +x "$stub_canary_fail"
+if out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$stub_canary_fail" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario19a: deploy must fail when the canary exits nonzero, got: $out"
+fi
+[[ "$out" == *"drift canary failed (rc=1)"* ]] \
+    || fail "scenario19a: expected 'drift canary failed (rc=1)' (got: $out)"
+# The inverted-capture bug logged the canary output on the SUCCESS line even
+# on failure. The fix must not: a failing canary's text rides the failed line.
+[[ "$out" != *"drift canary output:"* ]] \
+    || fail "scenario19a: failing canary must not hit the success 'drift canary output:' line (got: $out)"
+ok "scenario19a: canary exiting nonzero fails deploy with rc captured (fleet-ops#463)"
+
+# 19b: canary exits 0 with output → deploy succeeds, output on the success line.
+stub_canary_ok="$scratch/stub-canary-ok.sh"
+cat >"$stub_canary_ok" <<'STUB'
+#!/usr/bin/env bash
+echo "[fleet-ops-drift] checkout is at origin/main and clean"
+exit 0
+STUB
+chmod +x "$stub_canary_ok"
+if ! out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$stub_canary_ok" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario19b: deploy should succeed when the canary exits 0, got: $out"
+fi
+[[ "$out" == *"drift canary output:"* ]] \
+    || fail "scenario19b: expected 'drift canary output:' on success (got: $out)"
+[[ "$out" != *"drift canary failed"* ]] \
+    || fail "scenario19b: passing canary must not log 'drift canary failed' (got: $out)"
+ok "scenario19b: canary exiting 0 passes deploy and logs output (fleet-ops#463)"
 
 # --- scenario 18: deploy runs install.sh --system (fleet-ops#1247) ----------
 # Do not rewrite checkout/install.sh here: that dirties a tracked file and
