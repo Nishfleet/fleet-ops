@@ -146,10 +146,15 @@ if [[ "$hit_n" -ge 1 ]]; then
 else
   # Still prove the live scan ran: either findings exist for other drift, or
   # the unit dir was readable. Empty findings after a real scan is possible
-  # only after #1531 deletion review lands — name it.
+  # only after #1531 deletion review lands — name it. CI (GitHub Actions
+  # hosted runner) has no user systemd dir, so the live hunt is VPS-only:
+  # schema-validity must still hold there. fleet-ops#308.
   total=$(jq '.findings | length' <<<"$live")
-  [[ -d "$HOME/.config/systemd/user" ]] || fail "user unit dir missing"
-  ok "live hunt ran (findings=$total; class-c already pruned or absent — schema OK)"
+  if [[ -d "$HOME/.config/systemd/user" ]]; then
+    ok "live hunt ran (findings=$total; class-c already pruned or absent — schema OK)"
+  else
+    ok "SKIP: live hunt is VPS-only (no ~/.config/systemd/user); schema OK (findings=$total, hunt exit 0, findings object present)"
+  fi
 fi
 
 # --- prompts state the rule (authored, not retrofitted) ------------------
