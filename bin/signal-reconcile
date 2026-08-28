@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+# signal-reconcile — detector→queue reconciler + observe-to-close (fleet-ops#362).
+#
+# An alarm's ONLY legitimate terminus is a dispatched fix. A signal whose
+# pipeline ends in a log line is a defect by definition. This reconciler
+# closes the blind spot behind #358/#359/#360/siterep-public#80: a detector
+# was already screaming but nothing converted the scream into a queued work
+# item, and "issue closed" was trusted even after the delivery was reverted.
+#
+# Universal rule (Nish, 2026-08-26 spec widening): EVERY LOUD alarm line in a
+# tick — PENDING, VIOLATION, DEPLOY-BLOCKED, FAIL, the #418 saturation
+# verdicts, future classes — is matched to an open ticket by signal key, or
+# auto-filed, within ONE tick. No allowlist of ALARM classes: a new alarm
+# class is consumed by default, because an alarm type someone forgets to
+# register is exactly how noise is reborn.
+#
+# Source: the heartbeat triage file. Every loud() call (tier1 AND every helper
+# canary) appends `[<ts>] [<tag>] <msg>` to $TRIAGE, so it is the complete,
+# single source of this tick's LOUD lines. The reconciler snapshots it once,
+# keeps only lines timestamped at/after the tick start, and processes those.
+#
+# Classification (no alarm allowlist — alarm is the DEFAULT):
+#   NON-ALARM (skip) when the tag ends in a green/action suffix
+#     (-OK -GREEN -RECOVERED -PARKED -COMPLETE -SKIP -FILED -AVAILABLE
+#      -DISPATCHED -RECONCILED -REROUTE) or is a pure metric (THROUGHPUT).
+#     These are "the canary is clean" / "action already taken" / "a self-
+#     filing canary already filed and kept the tick green" lines. This is a
+#     GREEN set, the inverse of an alarm allowlist: new alarm classes default
+#     to consumed, new green classes with a novel suffix file one spurious
+#     ticket that is noticed and the suffix registered — fail-safe (a
+#     spurious ticket, never a missed alarm).
+#   ALARM (consume) otherwise.
+#
+# Signal key: `signal: loud/<tag-lower>[/<subkey>]`. The subkey is a stable
+# identifier extracted from the message — a `unit=...` value, a `repo=...`
+# value, or a bare `*.service|*.timer|*.path` token — so a flapping unit gets
+# ONE rolling ticket, not one per tick (the #360 dedupe lesson). Tags with no
+# subkey get one rolling ticket per alarm class.
+#
+# Dedupe vs self-filing canaries: many canaries (paid-flash, free-roster,
+# repo-visibility, opencode-m3, rule-enforcement, findings-queued, ...) file
+# their own tickets under their OWN signal-key namespace. This reconciler
+# files under `signal: loud/...`, a separate namespace, so a self-filing
+# canary's VIOLATION line that does NOT self-file is correctly backstopped,
+# while one that DOES self-file gets a temporary second ticket. That duplicate
+# is intentional and fail-safe: both tickets close via observe-to-close the
+# tick the detector goes green. Better a temporary duplicate than a permanent
+# missed alarm — the spec's explicit priority.
+#
+# Observe-to-close: issues carrying a `signal: loud/...` key are NEVER closed
+# by PR merge alone. The reconciler closes them only when their alarm did NOT
+# appear in this tick (the detector reports green on a real tick). This makes
+# "closed but not delivered" impossible from both directions (with #359 reopen
+# on revert) and mechanically enforces prove-one-run for workflow fixes.
+# Fail-closed gate (FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE=1, mirroring
+# fleet-findings-queued#820): the close path is destructive against the live
+# repo, so only the production heartbeat opts in; any other invocation gets a
+# logged skip, not a close.
+#
+# Routing (spec point 2): each auto-filed ticket goes through a seriousness
+# classifier. Control-plane / matrix alarms (the fleet's own watching system:
+# escalation canary, deploy, helpers, unit-escalation, gap-loop, blind-audit,
+# resurrection, bare-metal rebuild, tailscale, seat-live-validate, keystone,
+# and any detector whose tag ends in -BROKEN) get `escalate-senior` +
+# `critical-path` so the senior conference fixes them autonomously (#234 /
+# #223). Routine alarms get `agent-ready` for the worker pool. #379 priority
+# puts the critical-path set first.
+#
+# Unclaimed-stall (spec point 2, closed loop): a `signal: loud/...` issue still
+# labelled `agent-ready` past FLEET_SIGNAL_RECONCILE_STALL_HOURS is re-routed
+# to `escalate-senior` and a green `SIGNAL-RECONCILE-REROUTE` line is emitted.
+# The loop is closed: a stalled alarm escalates itself; no new ticket is filed
+# (the reroute line is green, so the reconciler does not consume it).
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 at the END of every tick
+# (after every canary has emitted its LOUD lines). No new timer.
+#
+# Exit codes:
+#   0  normal (filed / deduped / closed / clean)
+#   1  reconciler broken (python/gh missing, unparseable) OR cap exceeded
+#      (LOUD past the cap — the spec's "fail LOUD past the cap")
+#
+# Environment seams (tests override all of these):
+#   FLEET_HEARTBEAT_TRIAGE              triage file (single source of LOUD lines)
+#   FLEET_SIGNAL_RECONCILE_TICK_START   ISO ts; only lines at/after this are read
+#   FLEET_SIGNAL_RECONCILE_FILE_ISSUES  1 (default) / 0
+#   FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE  0 (default — close OFF) / 1 (prod heartbeat)
+#   FLEET_SIGNAL_RECONCILE_ISSUE_REPO   default Nishfleet/fleet-ops
+#   FLEET_SIGNAL_RECONCILE_CAP          default 5 (auto-file per tick)
+#   FLEET_SIGNAL_RECONCILE_STALL_HOURS  default 6 (agent-ready → escalate-senior)
+#   FLEET_SIGNAL_RECONCILE_NOW          ISO ts for stall-age checks (tests)
+#   FLEET_SIGNAL_RECONCILE_HEARTBEAT_COMMENT_MIN_HOURS  default 24 (daily touch)
+#   GH                                  default gh
+#   FLEET_ISSUE_FILE                    default sibling fleet-issue-file
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+TICK_START="${FLEET_SIGNAL_RECONCILE_TICK_START:-}"
+FILE_ISSUES="${FLEET_SIGNAL_RECONCILE_FILE_ISSUES:-1}"
+OK_TO_CLOSE="${FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE:-0}"
+ISSUE_REPO="${FLEET_SIGNAL_RECONCILE_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_SIGNAL_RECONCILE_CAP:-5}"
+STALL_HOURS="${FLEET_SIGNAL_RECONCILE_STALL_HOURS:-6}"
+NOW_ISO="${FLEET_SIGNAL_RECONCILE_NOW:-}"
+COMMENT_MIN_HOURS="${FLEET_SIGNAL_RECONCILE_HEARTBEAT_COMMENT_MIN_HOURS:-24}"
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+log() {
+    printf '[%s] [signal-reconcile] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# Loud lines go to BOTH stderr and the triage file (same contract as every
+# other tier1 helper). Format matches fleet-heartbeat-tier1's loud().
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "SIGNAL-RECONCILE-BROKEN" "python3 missing — cannot reconcile LOUD lines"
+    exit 1
+fi
+
+# A LOUD tag is NON-ALARM (skip) when it ends in a green/action suffix or is a
+# pure metric. This is the GREEN set — the inverse of an alarm allowlist. New
+# alarm classes default to consumed; new green classes with a novel suffix
+# file one spurious ticket that is noticed and the suffix registered.
+GREEN_SUFFIX_RE='-(OK|GREEN|RECOVERED|PARKED|COMPLETE|SKIP|FILED|AVAILABLE|DISPATCHED|RECONCILED|REROUTE)$'
+# Pure metric / status lines (not alarms). THROUGHPUT is emitted every tick as
+# a throughput metric; consuming it would file a permanent spurious ticket.
+INFORMATIONAL_TAGS_RE='^THROUGHPUT$'
+
+# Control-plane / matrix subsystems: the fleet's own watching system. A
+# broken watching system is senior-auditor work (#234 / #223), not worker
+# pool. A tag ending in -BROKEN is always control-plane (a detector itself is
+# dead). Prefixes name the known control-plane subsystems; a new control-plane
+# subsystem not listed here routes to agent-ready and, if workers cannot fix
+# it, stalls into the unclaimed-stall reroute below — fail-safe.
+CONTROL_PLANE_PREFIX_RE='^(ESCALATION-CANARY-|DEPLOY-|HELPER-MISSING|UNIT-ESCALATE|GAP-LOOP-FAIL|BLIND-AUDIT-|RESURRECTION-FAIL|BARE-METAL-REBUILD-|TAILSCALE-|SEAT-LIVE-VALIDATE-|KEYSTONE-HC-)'
+
+is_green() {
+    local tag="$1"
+    [[ "$tag" =~ $GREEN_SUFFIX_RE ]] && return 0
+    [[ "$tag" =~ $INFORMATIONAL_TAGS_RE ]] && return 0
+    return 1
+}
+
+# Routing labels for a freshly filed alarm.
+routing_labels() {
+    local tag="$1"
+    if [[ "$tag" =~ -BROKEN$ ]] || [[ "$tag" =~ $CONTROL_PLANE_PREFIX_RE ]]; then
+        printf 'escalate-senior\ncritical-path\n'
+    else
+        printf 'agent-ready\n'
+    fi
+}
+
+# Snapshot the triage file ONCE (so the reconciler's own loud() calls this
+# tick are not self-consumed) and extract this tick's LOUD alarm lines as
+# TSV: tag<TAB>subkey<TAB>msg. Lines before TICK_START are dropped (old ticks).
+# If TICK_START is empty, process nothing (defensive — tier1 always sets it).
+snapshot_alarms() {
+    [[ -n "$TICK_START" ]] || return 0
+    [[ -s "$TRIAGE" ]] || return 0
+    python3 - "$TRIAGE" "$TICK_START" <<'PY'
+import sys, re
+path, tick_start = sys.argv[1], sys.argv[2]
+# loud() triage format: a blank line then [<ts>] [<TAG>] <msg>. The leading
+# newline is how loud() blocks are separated; tolerate lines without it too.
+line_re = re.compile(
+    r'^\[([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)\] '
+    r'\[([A-Z][A-Z0-9_-]*)\] (.*)$'
+)
+green_re = re.compile(r'-(OK|GREEN|RECOVERED|PARKED|COMPLETE|SKIP|FILED|AVAILABLE|DISPATCHED|RECONCILED|REROUTE)$')
+info_re = re.compile(r'^THROUGHPUT$')
+unit_re = re.compile(r'(?:unit=|repo=)([^\s]+)')
+bare_unit_re = re.compile(r'([A-Za-z0-9@_.-]+\.(?:service|timer|path))')
+seen = set()
+try:
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for ln in f:
+            ln = ln.rstrip('\n')
+            m = line_re.match(ln)
+            if not m:
+                continue
+            ts, tag, msg = m.group(1), m.group(2), m.group(3)
+            if ts < tick_start:
+                continue
+            if green_re.search(tag) or info_re.match(tag):
+                continue
+            sub = ''
+            um = unit_re.search(msg)
+            if um:
+                sub = um.group(1)
+            else:
+                bm = bare_unit_re.search(msg)
+                if bm:
+                    sub = bm.group(1)
+            # sanitise subkey to signal-key-safe chars
+            sub = re.sub(r'[^A-Za-z0-9@_.-]', '_', sub).strip('_.')
+            key = tag.lower()
+            if sub:
+                key = key + '/' + sub
+            if key in seen:
+                continue
+            seen.add(key)
+            sys.stdout.write('%s\t%s\t%s\n' % (tag, sub, msg))
+except FileNotFoundError:
+    pass
+PY
+}
+
+# Current open issues in ISSUE_REPO carrying a `signal: loud/...` key, as
+# JSON via the mock-able GH. Returns TSV: number<TAB>signal-key on stdout.
+open_signal_issues() {
+    [[ "$FILE_ISSUES" == "1" ]] || return 0
+    command -v "$GH" >/dev/null 2>&1 || return 0
+    local json
+    json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 300 \
+        --json number,body 2>/dev/null || true)
+    [[ -n "$json" ]] || return 0
+    printf '%s' "$json" | jq -r '
+        .[] | .number as $n | (.body // "") as $b |
+        select($b | contains("signal: loud/")) |
+        (try ($b | capture("signal: loud/(?<k>[^\\s`]+)") | .k) catch null) as $k |
+        select($k != null and $k != "<k>") |
+        "\($n)\t\($k)"
+    ' 2>/dev/null || true
+}
+
+# All open issues (for filing-time dedup against the reconciler's own key).
+# Returns the list JSON on stdout (caller checks for the key substring).
+open_issues_json() {
+    [[ "$FILE_ISSUES" == "1" ]] || { printf '[]'; return 0; }
+    command -v "$GH" >/dev/null 2>&1 || { printf '[]'; return 0; }
+    local json
+    json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 300 \
+        --json number,body,labels,createdAt 2>/dev/null || true)
+    printf '%s' "${json:-[]}"
+}
+
+now_iso() {
+    if [[ -n "$NOW_ISO" ]]; then printf '%s' "$NOW_ISO"; else date -u +%Y-%m-%dT%H:%M:%SZ; fi
+}
+
+# ----------------------------------------------------------------------------
+# main
+# ----------------------------------------------------------------------------
+log "signal-reconcile starting (tick_start=$TICK_START repo=$ISSUE_REPO)"
+
+if [[ ! -f "$ISSUE_FILE" ]]; then
+    loud "SIGNAL-RECONCILE-BROKEN" "fleet-issue-file missing at $ISSUE_FILE — cannot auto-file alarms"
+    exit 1
+fi
+
+# Snapshot this tick's alarms (tag<TAB>subkey<TAB>msg).
+mapfile -t ALARMS < <(snapshot_alarms)
+alarm_count=${#ALARMS[@]}
+log "tick alarms=$alarm_count (after green/metric filter)"
+
+# Current signal keys observed this tick (for observe-to-close).
+declare -A current_keys
+current_key_list=""
+for row in "${ALARMS[@]}"; do
+    [[ -n "$row" ]] || continue
+    IFS=$'\t' read -r tag sub msg <<<"$row"
+    key="$tag"
+    [[ -z "$sub" ]] || key="$tag/$sub"
+    key_lower=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+    current_keys["$key_lower"]=1
+    if [[ -z "$current_key_list" ]]; then
+        current_key_list="$key_lower"
+    else
+        current_key_list="$current_key_list $key_lower"
+    fi
+done
+
+# Open signal-keyed issues (number<TAB>key).
+mapfile -t OPEN_ISSUES < <(open_signal_issues)
+
+# Build a set of open signal keys for fast dedup.
+declare -A open_key_to_num
+for row in "${OPEN_ISSUES[@]}"; do
+    [[ -n "$row" ]] || continue
+    IFS=$'\t' read -r num key <<<"$row"
+    open_key_to_num["$key"]="$num"
+done
+
+# Full open-issues JSON for filing-time dedup (checks the reconciler's own
+# signal key substring, so a prior tick already filed → no duplicate).
+open_json=$(open_issues_json)
+
+filed=0
+capped=0
+for row in "${ALARMS[@]}"; do
+    [[ -n "$row" ]] || continue
+    IFS=$'\t' read -r tag sub msg <<<"$row"
+    key="$tag"
+    [[ -z "$sub" ]] || key="$tag/$sub"
+    key_lower=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+    signal="signal: loud/${key_lower}"
+
+    # Dedup: an open issue already carries this exact signal key.
+    if [[ -n "${open_key_to_num[$key_lower]:-}" ]]; then
+        log "dedup: $key_lower already open (#${open_key_to_num[$key_lower]})"
+        continue
+    fi
+    # Filing-time belt-and-braces: substring check against the full open list.
+    if printf '%s' "$open_json" | jq -e --arg s "$signal" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        log "dedup: $key_lower already open (substring match)"
+        continue
+    fi
+
+    # Cap per tick (the spec's "cap auto-filed issues per tick and fail LOUD
+    # past the cap"). Over-cap alarms are still LOUD-named below so they are
+    # not silent, but they are not filed this tick.
+    if [[ "$filed" -ge "$CAP" ]]; then
+        loud "SIGNAL-RECONCILE-CAP" "auto-file cap reached ($CAP); unfiled alarm $key_lower: $msg"
+        capped=$((capped + 1))
+        continue
+    fi
+
+    [[ "$FILE_ISSUES" == "1" ]] || continue
+    command -v "$GH" >/dev/null 2>&1 || continue
+
+    # Routing labels (seriousness classifier).
+    mapfile -t labels < <(routing_labels "$tag")
+    label_args=()
+    for l in "${labels[@]}"; do
+        [[ -n "$l" ]] && label_args+=(--label "$l")
+    done
+
+    ts=$(now_iso)
+    short=$(printf '%s' "$msg" | cut -c1-80)
+    title="alarm: ${tag} — ${short}"
+    body="The heartbeat detector reported this alarm on a real tick and no open ticket carried its signal key, so the detector→queue reconciler filed one.
+
+- alarm tag: \`$tag\`
+- evidence: $msg
+- observed tick: $ts
+- detector→queue reconciler: bin/signal-reconcile (heartbeat tier1, fleet-ops#362)
+
+An alarm's only legitimate terminus is a dispatched fix. Do NOT close this issue on PR merge alone — the reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).
+
+$signal"
+
+    set +e
+    created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" \
+        "${label_args[@]}" 2>/dev/null)
+    create_rc=$?
+    set -e
+    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+        log "auto-file: FILED $key_lower -> $created (labels=${labels[*]})"
+        filed=$((filed + 1))
+        open_key_to_num["$key_lower"]="new"
+    else
+        loud "SIGNAL-RECONCILE-BROKEN" "auto-file failed for $key_lower (rc=$create_rc) — an alarm with no ticket is the blind spot this reconciler exists to close"
+    fi
+done
+
+# ----------------------------------------------------------------------------
+# observe-to-close: close signal-keyed issues whose alarm did NOT appear this
+# tick (the detector reports green on a real tick). Fail-closed gate.
+# ----------------------------------------------------------------------------
+closed=0
+if [[ "$OK_TO_CLOSE" != "1" ]]; then
+    if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: SKIPPED (FLEET_SIGNAL_RECONCILE_OK_TO_CLOSE != 1; fleet-ops#820 — only the production heartbeat is trusted to close)"
+    fi
+else
+    if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: ENABLED (production heartbeat OK_TO_CLOSE=1)"
+    fi
+fi
+if [[ "$OK_TO_CLOSE" == "1" ]] && [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    for row in "${OPEN_ISSUES[@]}"; do
+        [[ -n "$row" ]] || continue
+        IFS=$'\t' read -r num key <<<"$row"
+        if [[ -z "${current_keys[$key]:-}" ]]; then
+            ts=$(now_iso)
+            comment="observe-to-close: signal: loud/${key} no longer reported as an alarm on heartbeat tick at $ts — detector reports green."
+            set +e
+            "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" 2>/dev/null
+            close_rc=$?
+            set -e
+            if [[ "$close_rc" -eq 0 ]]; then
+                log "observe-to-close: CLOSED #$num (key=$key not in this tick's alarms)"
+                closed=$((closed + 1))
+            else
+                log "observe-to-close: failed to close #$num (rc=$close_rc)"
+            fi
+        fi
+    done
+fi
+
+# ----------------------------------------------------------------------------
+# unclaimed-stall reroute: a signal-keyed issue still labelled agent-ready
+# past STALL_HOURS is re-routed to escalate-senior (the closed loop — a
+# stalled alarm escalates itself; no new ticket is filed).
+# ----------------------------------------------------------------------------
+rerouted=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1 && [[ -n "$open_json" ]] && [[ "$open_json" != "[]" ]]; then
+    now=$(now_iso)
+    stall_json=$(printf '%s' "$open_json" | jq -r --arg now "$now" --argjson hours "$STALL_HOURS" '
+        .[] | .number as $n | (.createdAt // "") as $c | (.labels // []) as $ls |
+        select(($ls | map(.name) | index("agent-ready"))) |
+        select($c != "") |
+        # age in hours from createdAt to now (lexicographic ISO diff is fine
+        # for whole hours; use a coarse hour bucket).
+        ($c | sub("T"; " ") | sub("Z"; "")) as $cs |
+        ($now | sub("T"; " ") | sub("Z"; "")) as $ns |
+        ((($ns | strptime("%Y-%m-%d %H:%M:%S")) | mktime) -
+         (($cs | strptime("%Y-%m-%d %H:%M:%S")) | mktime)) as $secs |
+        select($secs > ($hours * 3600)) |
+        "\($n)\t\($c)"
+    ' 2>/dev/null || true)
+    while IFS=$'\t' read -r num created; do
+        [[ -n "$num" ]] || continue
+        set +e
+        "$GH" issue edit "$num" -R "$ISSUE_REPO" \
+            --add-label escalate-senior --remove-label agent-ready 2>/dev/null
+        edit_rc=$?
+        set -e
+        if [[ "$edit_rc" -eq 0 ]]; then
+            loud "SIGNAL-RECONCILE-REROUTE" "issue #$num unclaimed past ${STALL_HOURS}h (created $created) — re-routed agent-ready -> escalate-senior (closed loop, fleet-ops#362)"
+            rerouted=$((rerouted + 1))
+        else
+            log "unclaimed-stall: failed to reroute #$num (rc=$edit_rc)"
+        fi
+    done <<<"$stall_json"
+fi
+
+log "signal-reconcile complete: alarms=$alarm_count filed=$filed capped=$capped closed=$closed rerouted=$rerouted"
+
+if [[ "$capped" -gt 0 ]]; then
+    loud "SIGNAL-RECONCILE-FAIL" "auto-file cap exceeded ($CAP); $capped alarm(s) unfiled this tick — alarms with no ticket is the blind spot this reconciler exists to close"
+    exit 1
+fi
+
+loud "SIGNAL-RECONCILE-OK" "alarms=$alarm_count filed=$filed closed=$closed rerouted=$rerouted (tick_start=$TICK_START)"
+exit 0
