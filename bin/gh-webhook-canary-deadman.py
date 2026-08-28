@@ -33,6 +33,15 @@ Environment seams:
                                      pages the local alert-repair rail.
   GH_WEBHOOK_DEADMAN_DRY         1 = compute decision, write to stdout,
                                   no network/triage writes (used by tests)
+  GH_WEBHOOK_RECEIVER_PROM      default .../fleet-gh-webhook-receiver.prom.
+                                  If set, the deadman ALSO checks the
+                                  receiver heartbeat (not just the canary).
+                                  A receiver that returns HTTP 200 but writes
+                                  un-scrapeable prom labels (fleet-ops#1607,
+                                  single-quoted via Python repr) keeps the
+                                  canary green while
+                                  FleetGhWebhookReceiverAbsent stays red —
+                                  the canary-only check cannot see this class.
 """
 from __future__ import annotations
 
@@ -58,12 +67,21 @@ HEALTHCHECKS = os.environ.get("GH_WEBHOOK_HEALTHCHECKS_FAIL_URL", "")
 DRY = os.environ.get("GH_WEBHOOK_DEADMAN_DRY", "") == "1"
 
 META_RE = re.compile(r"^#.*$")
-SERIES_RE = re.compile(
+CANARY_SERIES_RE = re.compile(
     r"^fleet_gh_webhook_canary_last_green_seconds\s+(\S+)\s*$"
+)
+# fleet-ops#1569: also watch the receiver's own heartbeat. The canary
+# POSTs to the receiver's /webhook and bumps the canary prom file — but
+# a receiver that returns 200 yet writes un-scrapeable prom labels (the
+# #1607 single-quote class) keeps the canary green while
+# FleetGhWebhookReceiverAbsent stays firing. The canary-only check cannot
+# see this class; reading the receiver prom file closes the gap.
+RECEIVER_SERIES_RE = re.compile(
+    r"^fleet_gh_webhook_receiver_last_green_seconds[\{\s].*"
 )
 
 
-def read_canary_ts(path: str) -> float | None:
+def _read_ts(path: str, series_re: re.Pattern) -> float | None:
     p = Path(path)
     if not p.is_file():
         return None
@@ -73,13 +91,28 @@ def read_canary_ts(path: str) -> float | None:
         return None
     for line in text.splitlines():
         line = META_RE.sub("", line).strip()
-        m = SERIES_RE.match(line)
-        if m:
+        m = series_re.match(line)
+        if not m:
+            continue
+        for tok in m.group(0).split():
             try:
-                return float(m.group(1))
+                return float(tok) if tok else None
             except ValueError:
                 continue
     return None
+
+
+def read_canary_ts(path: str) -> float | None:
+    return _read_ts(path, CANARY_SERIES_RE)
+
+
+RECEIVER_PROM = os.environ.get(
+    "GH_WEBHOOK_RECEIVER_PROM",
+    "/var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom",
+)
+RECEIVER_DEADMAN_STALE_AFTER = int(
+    os.environ.get("GH_WEBHOOK_DEADMAN_STALE_AFTER", "900")
+)
 
 
 def already_paged_recently(triage: Path, window_sec: int = 1800) -> bool:
@@ -181,44 +214,103 @@ def update_deadman_prom(file_path: str, total: int, last_status: str) -> None:
         print(f"gh-webhook-canary-deadman: prom write skipped: {e}", file=sys.stderr)
 
 
+def _eval_status(now: float, last_green: float | None,
+                 stale_after: int) -> str:
+    """Return ok / stale / missing for a single heartbeat series."""
+    if last_green is None:
+        return "missing"
+    if (now - last_green) > stale_after:
+        return "stale"
+    return "ok"
+
+
+def _receiver_healthy(now: float) -> tuple[bool, str]:
+    """Check the receiver prom file independently of the canary.
+
+    fleet-ops#1569 root-cause class: the receiver returns HTTP 200 but
+    writes un-scrapeable prom labels (single-quoted via Python repr —
+    the original #1464 bug). The canary POST will succeed and bump the
+    canary prom file, but FleetGhWebhookReceiverAbsent stays firing
+    because Prometheus cannot scrape the receiver's broken prom file.
+    The canary-only deadman cannot see this — it must also read the
+    receiver prom file.
+
+    Returns (healthy, detail). healthy=False means the receiver heartbeat
+    is missing or stale.
+    """
+    if not Path(RECEIVER_PROM).is_file():
+        # No receiver prom file at all — this is a different failure
+        # class (PROM_FILE path wrong, or the receiver never ran). Do NOT
+        # treat as a deadman trigger: the canary check already covers a
+        # dead receiver (the canary POST will fail). Missing receiver
+        # prom is a PRE-EXISTING / deployment concern, not this deadman's
+        # mandate. The canary is the authoritative liveness probe.
+        return True, "receiver prom file absent (canary is authoritative)"
+    last = _read_ts(RECEIVER_PROM, RECEIVER_SERIES_RE)
+    if last is None:
+        return True, "receiver prom file has no scrapeable heartbeat (canary is authoritative)"
+    status = _eval_status(now, last, RECEIVER_DEADMAN_STALE_AFTER)
+    if status != "ok":
+        return False, f"receiver_last_green={last} status={status}"
+    return True, f"receiver_last_green={last} ok"
+
+
 def main(argv: list[str]) -> int:
     now = time.time()
     last_green = read_canary_ts(PROM)
+    receiver_ok, receiver_detail = _receiver_healthy(now)
     triage = Path(TRIAGE_FILE)
 
-    if last_green is None:
-        status = "missing"
-    elif (now - last_green) > STALE_AFTER:
-        status = "stale"
-    else:
-        status = "ok"
+    canary_status = _eval_status(now, last_green, STALE_AFTER)
+    # The overall page decision considers BOTH the canary and the receiver.
+    # canary_status stays an accurate reflection of the canary; receiver_ok
+    # is an independent trigger (fleet-ops#1569).
+    should_page = (canary_status != "ok") or (not receiver_ok)
+    page_reason = canary_status if canary_status != "ok" else (
+        "receiver-stale" if not receiver_ok else "ok"
+    )
 
     if DRY:
         print(f"---DEADMAN-EVAL---")
         print(f"last_green={last_green}")
         print(f"now={now:.0f}")
         print(f"stale_after={STALE_AFTER}")
-        print(f"status={status}")
+        print(f"canary_status={canary_status}")
+        print(f"receiver_ok={receiver_ok} receiver_detail={receiver_detail}")
+        print(f"should_page={should_page} page_reason={page_reason}")
         print(f"already_paged_recently={already_paged_recently(triage)}")
         return 0
 
-    if status == "ok":
-        update_deadman_prom(PROM, total=0, last_status=status)
+    if not should_page:
+        update_deadman_prom(PROM, total=0, last_status="ok")
         return 0
 
     if already_paged_recently(triage):
-        # Throttle: do not spam. The timer keeps running; if the canary
-        # recovers, this branch stops getting hit.
-        update_deadman_prom(PROM, total=0, last_status=status)
+        update_deadman_prom(PROM, total=0, last_status=page_reason)
         return 0
 
-    page_local(TRIAGE_FILE, now, last_green or 0.0, status)
+    # Describe WHY we are paging — canary failure or receiver failure.
+    if canary_status != "ok":
+        ago = int(now - (last_green or 0)) if last_green and last_green > 0 else -1
+        detail = f"canary {canary_status} (last_green_age={ago}s, stale_after={STALE_AFTER}s)"
+    else:
+        detail = f"receiver heartbeat stale ({receiver_detail})"
+    page_reason_text = (
+        f"{detail} — canary prom={PROM} "
+        f"{'receiver prom=' + RECEIVER_PROM if not receiver_ok else ''}. "
+        "Likely causes: tunnel down, receiver service dead, "
+        "or VM unreachable. Repair rail: bring "
+        "gh-webhook-receiver.service back, then verify "
+        "gh-webhook-canary.timer is firing."
+    )
+    page_local(TRIAGE_FILE, now, last_green or 0.0, page_reason_text)
     hc_status, hc_msg = page_healthchecks(HEALTHCHECKS)
-    update_deadman_prom(PROM, total=1, last_status=status)
+    update_deadman_prom(PROM, total=1, last_status=page_reason)
 
     print(
-        f"gh-webhook-canary-deadman: paged (status={status}, "
-        f"hc_status={hc_status}, hc_msg={hc_msg!r})",
+        f"gh-webhook-canary-deadman: paged (canary={canary_status}, "
+        f"receiver_ok={receiver_ok}, hc_status={hc_status}, "
+        f"hc_msg={hc_msg!r})",
         file=sys.stderr,
     )
     return 1
