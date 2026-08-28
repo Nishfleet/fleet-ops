@@ -637,6 +637,9 @@ lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 lib/salvage_secret_scan.py /home/nish/.local/lib/pi-packet/salvage_secret_scan.py
+# fleet-ops#796: repo-ize the sgscan semgrep wrapper so worker review gates are
+# version-controlled, and fix --help / unknown-flag crashes.
+bin/sgscan /home/nish/.local/bin/sgscan
 # fleet-ops#1263: TTL + provenance on recorded facts (recall/compile layer).
 # Policy file stays in-repo (lib/shared-memory/ttl-policy.md); recall resolves
 # the symlink and reads it. Do not MANIFEST-install into nish-vault — that
