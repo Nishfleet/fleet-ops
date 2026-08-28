@@ -93,6 +93,24 @@ status=$(jq -r --arg src "$src_1245" '.rules[] | select(.source == $src) | .stat
 [[ "$status" == "enforced" ]] || fail "matrix must have $src_1245 as enforced, got ${status:-missing}"
 ok "matrix row for GEO/AEO parked tactics (fleet-ops#1245) is enforced"
 
+# fleet-ops#1529: the five 2026-08-28 afternoon ledger decisions must each
+# have a matrix entry with a valid status (enforced | queued(#N) |
+# advisory(reason)). Same class as #1371. Asserted against the matrix
+# directly so it holds on CI too, where the live-vault join is skipped.
+for src in \
+  'decisions-ledger.md: 2026-08-28 | Runway measured in TIME, not items (Nish: "duhh yes")' \
+  'decisions-ledger.md: 2026-08-28 | Band inversion: 70:30 is priority order, not an idle-mandate (Nish)' \
+  'decisions-ledger.md: 2026-08-28 | 0509 completeness claims distrusted (Nish: "scouts/researchers/auditors are blatantly lying")' \
+  'decisions-ledger.md: 2026-08-28 | 0509 product direction: three epics (Nish, verbatim)' \
+  'decisions-ledger.md: 2026-08-28 | Legit-work-only is fleet-wide law (Nish)'
+do
+  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
+  case "$status" in
+    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1529)" ;;
+    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1529)" ;;
+  esac
+done
+
 # fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
 # vault join so a busy board of other uncovered sibling ledger lines
 # cannot skip this drill (the live join still asserts our covered_rows).
