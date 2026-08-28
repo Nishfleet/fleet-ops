@@ -2,13 +2,18 @@
 # tests/stop-escalation-dispatch.test.sh
 #
 # Proves the SENIOR-AUDITOR dispatcher from fleet-ops#34 and #444:
-#   - a fully-walled ladder reaches NISH (loud fail-loud escalation)
+#   - a fully-walled ladder reaches NISH as MONEY-BOUNDARY (fleet-ops#1534:
+#     writer class-gate tags walled ladders with a sanctioned boundary class
+#     so nish-boundary-notify can match and page; the old LADDER-WALLED token
+#     was not in CLASSES and never paged)
 #   - a healthy seat dispatches the auditor and writes a diagnosis block
 #   - a timeout / empty / failed dispatch does NOT consume the 2-dispatch budget
 #   - the 2-dispatch cap is enforced
 #   - auditor-resolved closeouts skip (do not re-summon)
 #   - pi_rc 143/137 is KILL-RETRY (not DISPATCH-NO-BLOCK); 2 consecutive
-#     kills on the same hash write KILL-ESCALATION and skip a 3rd seat
+#     kills on the same hash write KILL-ESCALATION to AUDITOR-LOG only
+#     (fleet-ops#1534: writer class-gate routes non-boundary escalations to
+#     the auditor path, not NISH — they fold into the daily digest)
 #
 # Runs entirely offline with stubbed seat-lib.sh and a fake `pi` binary.
 set -euo pipefail
@@ -184,7 +189,9 @@ export STOP_ESCALATION_TEST_BENCH_FILE="$scratch/benched.txt"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 
 # ---------------------------------------------------------------------------
-# Invariant 1: fully-walled ladder -> LADDER-WALLED in NISH, no AUDITOR dispatch.
+# Invariant 1: fully-walled ladder -> MONEY-BOUNDARY in NISH (fleet-ops#1534),
+# no AUDITOR dispatch. The writer class-gate tags walled ladders with the
+# sanctioned MONEY-BOUNDARY class so nish-boundary-notify can match and page.
 # fleet-ops#623: a walled ladder is a Nish escalation, NOT a unit failure —
 # the dispatcher exits 0 so the unit is active-and-quiet (no alarm blindness).
 # ---------------------------------------------------------------------------
@@ -194,9 +201,10 @@ set +e
 set -e
 [[ $rc -eq 0 ]] || fail "empty ladder: expected exit 0 (quiet walled escalation), got $rc"
 [[ -s "$STOP_ESCALATION_NISH" ]] || fail "empty ladder: NISH-ESCALATIONS should not be empty"
-grep -q 'LADDER-WALLED' "$STOP_ESCALATION_NISH" || fail "empty ladder: expected LADDER-WALLED in NISH"
+grep -q 'MONEY-BOUNDARY' "$STOP_ESCALATION_NISH" || fail "empty ladder: expected MONEY-BOUNDARY in NISH (fleet-ops#1534 writer class-gate)"
+grep -q 'reason=ladder-walled' "$STOP_ESCALATION_NISH" || fail "empty ladder: MONEY-BOUNDARY line must carry reason=ladder-walled"
 [[ ! -s "$STOP_ESCALATION_SEEN" ]] || fail "empty ladder: must not consume dispatch budget"
-ok "fully-walled ladder -> LADDER-WALLED in NISH, exit 0 (quiet, not failed)"
+ok "fully-walled ladder -> MONEY-BOUNDARY in NISH, exit 0 (quiet, not failed)"
 
 : > "$STOP_ESCALATION_NISH"
 
@@ -305,8 +313,12 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "cap: expected exit 0, got $rc"
-grep -q 'CAP-REACHED' "$STOP_ESCALATION_NISH" || fail "cap: expected CAP-REACHED in NISH"
-ok "2-dispatch cap -> CAP-REACHED in NISH"
+# fleet-ops#1534: CAP-REACHED is an auditor-path outcome, not a Nish-reserved
+# decision. The writer class-gate routes it to AUDITOR-LOG only — it must NOT
+# appear in NISH (it would pollute the file nish-boundary-notify scans).
+grep -q 'CAP-REACHED' "$STOP_ESCALATION_AUDITOR_LOG" || fail "cap: expected CAP-REACHED in AUDITOR-LOG (fleet-ops#1534 writer class-gate)"
+[[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "cap: CAP-REACHED must NOT write NISH (fleet-ops#1534 — auditor path only, folds into digest)"
+ok "2-dispatch cap -> CAP-REACHED in AUDITOR-LOG only (not NISH)"
 
 # ---------------------------------------------------------------------------
 # Invariant 6 (fleet-ops#444): pi_rc=143 is KILL-RETRY, not DISPATCH-NO-BLOCK
@@ -349,8 +361,10 @@ set -e
 [[ $rc -eq 0 ]] || fail "2x-sigterm: expected exit 0 after KILL-ESCALATION, got $rc"
 grep -q "KILL-ESCALATION hash=$hash444" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "2x-sigterm: expected KILL-ESCALATION in AUDITOR-LOG"
-grep -q "KILL-ESCALATION hash=$hash444" "$STOP_ESCALATION_NISH" \
-  || fail "2x-sigterm: expected KILL-ESCALATION in NISH-ESCALATIONS"
+# fleet-ops#1534: KILL-ESCALATION is an auditor-path outcome, not a Nish-reserved
+# decision. The writer class-gate routes it to AUDITOR-LOG only — it must NOT
+# appear in NISH (it would pollute the file nish-boundary-notify scans).
+[[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "2x-sigterm: KILL-ESCALATION must NOT write NISH (fleet-ops#1534 — auditor path only)"
 dispatch_count=$(grep -c "DISPATCH hash=$hash444" "$STOP_ESCALATION_AUDITOR_LOG" || true)
 [[ "$dispatch_count" == "2" ]] || fail "2x-sigterm: expected 2 DISPATCH lines, got $dispatch_count"
 
@@ -417,8 +431,8 @@ set -e
 [[ $rc -eq 0 ]] || fail "2x-timeout: expected exit 0 after KILL-ESCALATION, got $rc"
 grep -q "KILL-ESCALATION hash=$hash124" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "2x-timeout: expected KILL-ESCALATION in AUDITOR-LOG"
-grep -q "KILL-ESCALATION hash=$hash124" "$STOP_ESCALATION_NISH" \
-  || fail "2x-timeout: expected KILL-ESCALATION in NISH-ESCALATIONS"
+# fleet-ops#1534: KILL-ESCALATION is auditor-path only — must NOT write NISH.
+[[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "2x-timeout: KILL-ESCALATION must NOT write NISH (fleet-ops#1534 — auditor path only)"
 set +e
 "$dispatch"; rc=$?
 set -e
@@ -467,7 +481,8 @@ grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=cursor" "$STOP_ESCALATION_AUD
 grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "1354 fire 2: cursor must be benched"
 
-# Fire 3: both capable seats benched -> ladder walled -> LADDER-WALLED, exit 0
+# Fire 3: both capable seats benched -> ladder walled -> MONEY-BOUNDARY in
+# NISH (fleet-ops#1534: writer class-gate tags walled ladders), exit 0
 # (fleet-ops#623: a walled ladder is a quiet Nish escalation, not a unit
 # failure).  This is the bound: the loop does NOT keep re-picking a dead seat.
 : > "$STOP_ESCALATION_NISH"
@@ -475,8 +490,8 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "1354 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
-grep -q "LADDER-WALLED hash=$hash1354" "$STOP_ESCALATION_NISH" \
-  || fail "1354 fire 3: expected LADDER-WALLED in NISH (both seats benched)"
+grep -q "MONEY-BOUNDARY hash=$hash1354" "$STOP_ESCALATION_NISH" \
+  || fail "1354 fire 3: expected MONEY-BOUNDARY in NISH (both seats benched, fleet-ops#1534)"
 
 # Exactly 2 dispatches across 3 fires — never an unbounded same-seat loop.
 dispatch_count=$(grep -c "DISPATCH hash=$hash1354" "$STOP_ESCALATION_AUDITOR_LOG" || true)
@@ -490,8 +505,9 @@ ok "fleet-ops#1354: rc=0/empty seat benches + rotates, never unbounded loop"
 # ---------------------------------------------------------------------------
 # Invariant 11 (fleet-ops#1354): need_capable=1 excludes a tools=0 flash seat
 # at pick time, so the auditor is never dispatched to a seat that cannot drive
-# tools.  The only candidate is ollama/flash (not capable) -> LADDER-WALLED
-# immediately, no DISPATCH line written.
+# tools.  The only candidate is ollama/flash (not capable) -> MONEY-BOUNDARY
+# (fleet-ops#1534: writer class-gate tags walled ladders) immediately, no
+# DISPATCH line written.
 # ---------------------------------------------------------------------------
 : > "$STOP_ESCALATION_SEEN"
 : > "$STOP_ESCALATION_KILLS"
@@ -508,8 +524,8 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "flash: expected exit 0 (ladder walled by need_capable, quiet), got $rc"
-grep -q "LADDER-WALLED hash=$hashflash" "$STOP_ESCALATION_NISH" \
-  || fail "flash: expected LADDER-WALLED (need_capable excluded the only seat)"
+grep -q "MONEY-BOUNDARY hash=$hashflash" "$STOP_ESCALATION_NISH" \
+  || fail "flash: expected MONEY-BOUNDARY (need_capable excluded the only seat, fleet-ops#1534)"
 dispatch_count=$(grep -c "DISPATCH hash=$hashflash" "$STOP_ESCALATION_AUDITOR_LOG" || true)
 [[ "$dispatch_count" == "0" ]] \
   || fail "flash: must not dispatch to a tools=0 seat (got $dispatch_count DISPATCH lines)"
@@ -558,14 +574,15 @@ grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=cursor" "$STOP_ESCALATION_AUDI
 grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "623 fire 2: cursor must be benched"
 
-# Fire 3: both benched -> ladder walled -> LADDER-WALLED, exit 0 (quiet).
+# Fire 3: both benched -> ladder walled -> MONEY-BOUNDARY, exit 0 (quiet).
+# (fleet-ops#1534: writer class-gate tags walled ladders with MONEY-BOUNDARY.)
 : > "$STOP_ESCALATION_NISH"
 set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "623 fire 3: expected exit 0 (ladder walled, quiet), got $rc"
-grep -q "LADDER-WALLED hash=$hash623" "$STOP_ESCALATION_NISH" \
-  || fail "623 fire 3: expected LADDER-WALLED in NISH"
+grep -q "MONEY-BOUNDARY hash=$hash623" "$STOP_ESCALATION_NISH" \
+  || fail "623 fire 3: expected MONEY-BOUNDARY in NISH (fleet-ops#1534)"
 dispatch_count=$(grep -c "DISPATCH hash=$hash623" "$STOP_ESCALATION_AUDITOR_LOG" || true)
 [[ "$dispatch_count" == "2" ]] \
   || fail "623: expected exactly 2 dispatches (rotation), got $dispatch_count"
