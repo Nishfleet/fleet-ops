@@ -90,6 +90,20 @@ run_canary() {
   "$bin" 2>&1
 }
 
+# Run the canary without an explicit units file, so it falls back to
+# `systemctl --user list-units` (fleet-ops#1473). PATH carries a fake
+# systemctl for hermetic CI; live runs see the real one. We call the
+# Python script directly so the wrapper's PATH reset does not hide the fake.
+run_canary_live() {
+  FLEET_PRECEDENCE_BAND_POLICY="${1:-$scratch/policy.json}" \
+  FLEET_PRECEDENCE_BAND_PRIOR="${2:-$scratch/missing.prior.json}" \
+  PRECEDENCE_BAND_NOW="${3:-2026-08-28T03:30:00Z}" \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+  PATH="$scratch:$PATH" \
+  /usr/bin/env -u FLEET_PRECEDENCE_UNITS_FILE \
+  python3 "$lib" 2>&1
+}
+
 # --- 1. production: surge phase, 0 units ------------------------------------
 base_policy_json | clean_policy
 : >"$scratch/units.txt"
@@ -576,4 +590,33 @@ grep -q 'phase=surge' <<<"$out" \
   || fail "scenario18: pinned default must yield phase=surge, got ($out)"
 ok "scenario18: run_canary default NOW is pinned (time-invariant drill)"
 
-ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick"
+# --- 20. live-unit fallback (fleet-ops#1473) ---------------------------------
+# Without FLEET_PRECEDENCE_UNITS_FILE the canary must read live systemd units,
+# not default to /dev/null. A fake systemctl in PATH proves the fallback is
+# wired and the output is parsed correctly.
+cat >"$scratch/systemctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--user" && "$2" == "list-units" && "$3" == "pi-issue@*.service" \
+      && "$4" == "--state=active,activating" && "$5" == "--no-legend" && "$6" == "--plain" ]]; then
+  cat <<'UNITS'
+pi-issue@0509-1299.service loaded active active test
+pi-issue@0509-1302.service loaded active active test
+pi-issue@fleet-ops-1473.service loaded active active test
+pi-issue@fleet-ops-9999.service loaded active active test
+UNITS
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$scratch/systemctl"
+base_policy_json | clean_policy
+set +e
+out=$(run_canary_live "$scratch/policy.json" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario20: live fallback must detect 2/4 machinery share (50%) over 30% cap, got rc=$rc ($out)"
+grep -q 'machinery share 50% (=2/4) is over the cap 30%' <<<"$out" \
+  || fail "scenario20: must report 50% over cap (got: $out)"
+ok "scenario20: canary falls back to live systemctl units when no units file is set (fleet-ops#1473)"
+
+ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick, live-fallback"

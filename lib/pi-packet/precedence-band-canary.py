@@ -42,6 +42,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -121,10 +122,11 @@ def default_paths() -> tuple[Path, Path, Path]:
     )
     if policy is None:
         policy = checkout / "config/precedence-band.json"
-    if units is None:
-        units = Path("/dev/null")  # empty file = no live units (CI / surge)
     if prior is None:
         prior = Path("/dev/null")
+    # units=None means "read live systemd units" (fleet-ops#1473). An empty
+    # file or an explicit /dev/null passed via --units-file still means "no
+    # units" for CI/drill use; only the unset env defaults to live.
     return policy, units, prior
 
 
@@ -285,6 +287,57 @@ def check_ratchet(
     return errors
 
 
+def _parse_unit_names(text: str) -> list[tuple[str, int]]:
+    """Parse unit names like pi-issue@<repo>-<n>.service from text."""
+    out: list[tuple[str, int]] = []
+    for raw in text.splitlines():
+        name = raw.strip()
+        if not name:
+            continue
+        # systemctl --plain output is "name load active sub description";
+        # take the first whitespace-delimited token.
+        name = name.split()[0]
+        match = UNIT_RE.match(name)
+        if not match:
+            continue
+        out.append((match.group(1), int(match.group(2))))
+    return out
+
+
+def read_live_units() -> list[tuple[str, int]]:
+    """Return [(repo, issue_number)] from active/activating pi-issue@ units.
+
+    Mirrors lib/precedence-band.sh::precedence_band_read_units. A missing
+    systemctl or a failing call is non-fatal in CI; it yields an empty list
+    (same fail-safe as the old /dev/null default) while logging once so a
+    live misconfiguration is not silently ignored.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "list-units",
+                "pi-issue@*.service",
+                "--state=active,activating",
+                "--no-legend",
+                "--plain",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        log(f"WARN: cannot list live units: {exc}")
+        return []
+    if proc.returncode != 0:
+        err = proc.stderr.strip() if proc.stderr else f"exit {proc.returncode}"
+        log(f"WARN: systemctl list-units failed: {err}")
+        return []
+    return _parse_unit_names(proc.stdout)
+
+
 def read_units(path: Path) -> list[tuple[str, int]]:
     """Return [(repo, issue_number)] from a unit-name file. Test-friendly."""
     if not path.is_file():
@@ -367,7 +420,7 @@ def check_surge_phase(
 
 def run_check(
     policy_path: Path,
-    units_path: Path,
+    units_path: Path | None,
     prior_path: Path,
     triage: str | None,
     now_iso: str | None,
@@ -399,7 +452,7 @@ def run_check(
     if isinstance(prior_data, dict):
         errors.extend(check_ratchet(data, prior_data, now_dt))
     phase = phase_of(data, now_dt)
-    units = read_units(units_path)
+    units = read_live_units() if units_path is None else read_units(units_path)
     machinery_repo = str(data.get("machinery_repo") or MACHINERY_REPO_DEFAULT)
     if phase == "band":
         errors.extend(check_band_phase(data, units, machinery_repo))
