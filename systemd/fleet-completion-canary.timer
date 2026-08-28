@@ -1,0 +1,18 @@
+[Unit]
+Description=Fleet completion canary (alert-repair chain hop clocks, fleet-ops#468)
+
+# Named reason for this schedule (vault: a schedule needs a NAMED reason):
+# hop clocks are dispatch=10min, run=60min, verify=30min. A 15-minute tick
+# is half the tightest clock, so a stalled hop is seen within one tick even
+# when no new alert fires. PathChanged cannot notice "nothing happened" —
+# that is why this is a timer, not a path unit. Cadence lands on :07/:22/
+# :37/:52 so it does not collide with intake (:00/:30) or heartbeat (:17/:47).
+
+[Timer]
+OnCalendar=*:07/15
+RandomizedDelaySec=20
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
