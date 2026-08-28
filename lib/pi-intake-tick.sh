@@ -348,22 +348,34 @@ for i in "${!numbers[@]}"; do
         continue
     fi
 
-    # fleet-ops#1558: per-repo MemoryMax/MemoryHigh via per-instance drop-in
-    # before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this overrides
-    # for known repos (fleet-ops light 1536M/1G, 0509 browser 3G/2G). Missing
-    # table row = keep template. daemon-reload so the fresh drop-in is seen
-    # on the subsequent start (oneshot units are not lingering-loaded).
+    # fleet-ops#1558 + #1587: per-repo MemoryMax/MemoryHigh and worker_env
+    # via per-instance drop-in before start. Template keeps MemoryMax=6G/
+    # MemoryHigh=3G; this overrides for known repos (fleet-ops light 1536M/1G,
+    # 0509 2G/1536M + VITEST_MAX_WORKERS=1). Missing table row = keep template.
+    # daemon-reload so the fresh drop-in is seen on the subsequent start
+    # (oneshot units are not lingering-loaded).
     mem_row=$(worker_memory_for_repo "$REPO" 2>/dev/null || true)
-    if [[ -n "$mem_row" ]]; then
+    env_lines=$(worker_env_for_repo "$REPO" 2>/dev/null || true)
+    if [[ -n "$mem_row" || -n "$env_lines" ]]; then
         IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
         drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
         mkdir -p "$drop_dir"
         drop_tmp="$drop_dir/memory.conf.tmp.$$"
         {
-            printf '# fleet-ops#1558: per-repo memory cap (written by intake)\n'
+            printf '# fleet-ops#1558/#1587: per-repo memory cap + env (written by intake)\n'
             printf '[Service]\n'
             [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
             [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+            # fleet-ops#1587: per-repo env vars (e.g. VITEST_MAX_WORKERS=1 for 0509)
+            # serialize vitest so the npm test peak drops from 2.3G to 1.6G.
+            if [[ -n "$env_lines" ]]; then
+                env_str=""
+                while IFS= read -r el; do
+                    [[ -n "$el" ]] || continue
+                    env_str="${env_str:+$env_str }${el}"
+                done <<<"$env_lines"
+                [[ -n "$env_str" ]] && printf 'Environment=%s\n' "$env_str"
+            fi
         } > "$drop_tmp"
         if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
             mv -f "$drop_tmp" "$drop_dir/memory.conf"

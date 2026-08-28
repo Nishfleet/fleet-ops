@@ -769,6 +769,21 @@ worker_memory_for_repo() {
     printf '%s\t%s\n' "$max" "$high"
 }
 
+# Per-repo environment variables from seat-caps.json worker_env.<repo>.
+# Prints "KEY=VALUE\nKEY2=VALUE2..." or empty if the repo has no row.
+# fleet-ops#1587: VITEST_MAX_WORKERS=1 for 0509 serializes vitest's forks
+# pool so the npm test peak drops from 2.3G to 1.6G. The caller writes these
+# as Environment= lines into the same per-instance drop-in as worker_memory.
+worker_env_for_repo() {
+    local repo="$1" env_json
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    env_json=$(jq -r --arg r "$repo" '.worker_env[$r] // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ -n "$env_json" ]] || return 0
+    # env_json is a JSON object like {"VITEST_MAX_WORKERS":"1"}; print K=V per line.
+    jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$env_json" 2>/dev/null || true
+}
+
 # --- seat enumeration from models.json (never hardcode) ----------------------
 # Emit lines: <provider>\t<model>\t<free:1|0>\t<capable:1|0>
 # A seat is "capable" (safe for a heavy code-editing packet) iff ANY of:
