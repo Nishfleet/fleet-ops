@@ -816,6 +816,13 @@
       "proof": "decisions-ledger.md: 2026-08-28 | Clarification of the reversal above; fleet-ops#1480 acceptance criteria; existing gate + boundary-notify channels",
       "status": "queued(#1480)",
       "queued_since": "2026-08-28"
+    },
+    {
+      "id": "sr-legit-work-no-spinning-wheels",
+      "source": "global-standing-rules.md: Legit work only — no spinning wheels, fleet-wide (Nish, 2026-08-28)",
+      "mechanism": "Precedence-band empty-product surge expansion (fleet-ops#1516): when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity — BUT only for legit work (upgrade/repair per quality classification). Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The existing quality/churn metrics (upgrade/repair/churn baseline from fleet-ops#1136) are the gate.",
+      "proof": "lib/precedence-band.sh (precedence_band_classify_quality, precedence_band_is_legit_work, precedence_band_allow_claim); lib/pi-intake-tick.sh (passes title for quality check); tests/fleet-precedence-band.test.sh scenarios 17g-17z; config/precedence-band.json; fleet-ops#1516",
+      "status": "enforced"
     }
   ]
 }
