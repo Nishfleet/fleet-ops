@@ -151,6 +151,7 @@ OPUS_HB_STATE="${FLEET_RES_DRILL_OPUS_HB_STATE:-$AGENT_STATE/.res-drill-opus-hb}
 PIPELINE_REPO="${FLEET_RES_DRILL_PIPELINE_REPO:-$AGENT_STATE/.res-drill-pipeline-red}"
 BOUNDARY_DIR="${FLEET_RES_DRILL_BOUNDARY_DIR:-$AGENT_STATE/.res-drill-boundary}"
 BOUNDARY_HERMES="${FLEET_RES_DRILL_BOUNDARY_HERMES:-$BOUNDARY_DIR/hermes}"
+export BOUNDARY_HERMES  # wrapper subprocess reads ${BOUNDARY_HERMES:?}
 BOUNDARY_FILE="${FLEET_RES_DRILL_BOUNDARY_FILE:-$BOUNDARY_DIR/NISH-ESCALATIONS.md}"
 PRECEDENCE_POLICY="${FLEET_RES_DRILL_PRECEDENCE_POLICY:-$AGENT_STATE/.res-drill-precedence/policy.json}"
 PRECEDENCE_UNITS="${FLEET_RES_DRILL_PRECEDENCE_UNITS:-$AGENT_STATE/.res-drill-precedence/units.txt}"
@@ -635,7 +636,7 @@ plane_pipeline_red() {
     return 0
   fi
   mkdir -p "$repo"
-  rm -rf "$repo"/* 2>/dev/null || true
+  rm -rf "${repo:?}"/* 2>/dev/null || true
   if ! command -v git >/dev/null 2>&1; then
     record "$name" "skip" "git missing"
     return 0
@@ -737,8 +738,7 @@ WRAP
   chmod +x "$wrapper"
 
   set +e
-  out=$(BOUNDARY_HERMES="$BOUNDARY_HERMES" \
-        FLEET_RES_DRILL_BOUNDARY_HERMES_LOG="$BOUNDARY_HERMES.log" \
+  out=$(FLEET_RES_DRILL_BOUNDARY_HERMES_LOG="$BOUNDARY_HERMES.log" \
         FLEET_RES_DRILL_BOUNDARY_FALLBACK_LOG="$dir/fallback.log" \
         "$wrapper" 2>&1)
   wrap_rc=$?

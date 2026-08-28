@@ -435,8 +435,13 @@ prom="$state/fleet-resilience-drill/resilience-drill.prom"
 [[ -f "$prom" ]] || fail "missing prom file: $prom"
 grep -q '^fleet_resilience_drill_last_green_seconds [1-9][0-9]*$' "$prom" \
   || fail "prom last_green_seconds not updated on green run (got: $(grep '^fleet_resilience_drill_last_green_seconds' "$prom" || echo missing))"
-grep -q '^fleet_resilience_drill_plane_pass{plane="queue_freeze"} 1$' "$prom" \
-  || fail "prom queue_freeze pass=1 missing"
+# queue_freeze SKIPs when the opus-heartbeat launcher is not installed (CI),
+# so accept pass=1 OR skip=1 — matching the per-plane status assertion above.
+# A green run must never record fail=1 for a #1463 plane.
+if ! grep -q '^fleet_resilience_drill_plane_pass{plane="queue_freeze"} 1$' "$prom" \
+   && ! grep -q '^fleet_resilience_drill_plane_skip{plane="queue_freeze"} 1$' "$prom"; then
+  fail "prom queue_freeze neither pass=1 nor skip=1 (got: $(grep 'fleet_resilience_drill_plane_\(pass\|skip\){plane="queue_freeze"}' "$prom" || echo missing))"
+fi
 grep -q '^fleet_resilience_drill_plane_fail{plane="queue_freeze"} 0$' "$prom" \
   || fail "prom queue_freeze fail=0 missing"
 grep -q '^fleet_resilience_drill_all_pass 1$' "$prom" \
