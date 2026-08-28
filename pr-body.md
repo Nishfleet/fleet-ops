@@ -1,38 +1,40 @@
-feat(1464): GitHub push channel via Cloudflare + synthetic canary
+feat(enforcement): D1 prod migration vacation grant enforced by CI drill
 
-Implements the two patterns from fleet-ops#1464:
+## What changed
 
-1. REAL PUSH FROM GITHUB — Cloudflare Worker (`workers/github-push-forward/`) receives org-level webhooks, verifies the GitHub HMAC, and forwards the body through a Cloudflare Tunnel to `libexec/gh-webhook-receiver/serve.py` on the VPS. The receiver re-verifies HMAC (defence-in-depth), dispatches to the matching systemd unit (`pi-intake@<repo>` for `issues/labeled/agent-ready`, `fleet-deploy-check` for `workflow_run/completed/success`), and exports a Prometheus heartbeat.
+- Added `tests/fleet-d1-prod-migration-grant.test.sh`, a CI drill that:
+  - Asserts `prompts/worker.md` keeps the D1 schema rule (expand/contract, rollback-before-data, one phase per PR, banned DROP/NOT NULL without DEFAULT, real integration test, no stale API names).
+  - Rejects a `worker.md` that drops any of those needles.
+  - Asserts `config/rule-enforcement.json` has the 2026-08-27 decision as `enforced` with a mechanism and proof that name the drill, the worker prompt, and the issue.
+- Updated `config/rule-enforcement.json`: the `led-2026-08-27-d1-prod-migrations-decided` row is now `enforced` with a mechanism/proof pointing at the drill.
+- Nested the drill in `tests/rule-enforcement.test.sh` so CI runs it without a workflow edit.
 
-2. SYNTHETIC CANARY — `bin/gh-webhook-canary.py` fires every 5 min, posts a synthetic `issues/labeled/agent-ready` payload to the local receiver, and bumps the last-green metric. `bin/gh-webhook-canary-deadman.py` checks the metric and writes the alert-repair triage file (plus an optional healthchecks.io fail URL) when the series is missing or stale > 15 min.
+## Why
 
-The slow `pi-intake@<repo>.timer` cadence drops from `*/15` to `*/20` so it behaves as a reconciler, not the primary trigger. `lib/pi-intake-tick.sh` now increments `fleet_intake_reconciler_caught_total{repo="<repo>"}` per slow-poll catch so a rising count is visible.
+The rule-coverage canary (fleet-ops#383) found the 2026-08-27 D1 prod migration vacation grant had no live enforcer. This drill makes the grant fail-loud in CI if the worker prompt or matrix row is weakened, and the rule-enforcement join now reports this source as covered.
 
-New fleet organs (`gh-webhook-receiver`, `gh-webhook-canary`) are registered in `config/fleet-organs.json` with matching `absent()` rules in `config/fleet_rules.yml` (fleet-ops#1010).
+## Verification
 
-Verification:
 ```
-bash tests/gh-webhook-receiver-hmac.test.sh      # 10/10 phases green
-bash tests/gh-webhook-canary.test.sh             # 8/8 phases green
-bash tests/fleet-intake-reconciler-counter.test.sh # 8/8 phases green
-bash tests/gh-webhook-organ-heartbeat.test.sh    # 4/4 phases green
-bash tests/timer-manifest.test.sh                # all repo + live timers covered
-systemd-analyze verify --man=no systemd/*.service systemd/*.timer
-gitleaks git --redact --verbose                    # no leaks
-sgscan                                              # no new security findings
-find bin -maxdepth 1 -type f ! -name '*.py' ! -name '*.ts' -print | xargs -r shellcheck -x
-shellcheck -x install.sh
+$ bash tests/fleet-d1-prod-migration-grant.test.sh
+OK: scenario1: worker.md contains the D1 schema rule needles
+OK: scenario2: dropping 'D1 schema rule (expand/contract) ...' is rejected
+...
+OK: scenario3: matrix row is enforced with mechanism+proof
+OK: d1-prod-migration-grant: worker needles, matrix enforced, proof locked
+
+$ python3 lib/rule-enforcement.py validate-matrix --matrix config/rule-enforcement.json
+OK: matrix valid (113 rules)
+
+$ python3 lib/rule-enforcement.py join --rules /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md --ledger /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md --matrix config/rule-enforcement.json --now 2026-08-28T10:30:00Z | jq '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | D1 prod migrations — DECIDED (plain-language re-ask, informed)")'
+{
+  "id": "led-2026-08-27-d1-prod-migrations-decided",
+  "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — DECIDED (plain-language re-ask, informed)",
+  "status": "enforced",
+  "fallback_id": "led-2026-08-27-d1-prod-migrations-decided-plain-language-re-ask-"
+}
 ```
-All above passed on the VPS.
 
-run-proof: tests/gh-webhook-receiver-hmac.test.sh + tests/gh-webhook-canary.test.sh + tests/fleet-intake-reconciler-counter.test.sh + tests/timer-manifest.test.sh all passed; systemd user timers active on netcup-rs2000; gitleaks/shellcheck/sgscan clean.
+`tests/rule-enforcement.test.sh` exposes a pre-existing live vault join failure (8 uncovered 2026-08-28 standing/ledger rules already tracked in #1529 / #1537). That failure is unrelated to this PR.
 
-research: official docs and last30days-scale pass (Cloudflare Workers webhooks, GitHub org webhooks + HMAC, Cloudflare Tunnel ingress); compared a hand-built persistent daemon (rejected per no-hand-built-orchestration) and a per-repo GitHub Actions workflow (rejected: one org-level webhook beats N per-repo workflows). Adopted Cloudflare Worker + Tunnel because it keeps the Worker as dumb transport and all logic on the VPS.
-
-help-first: ran `curl --help`, `systemctl --help`, `python3 --help`, and `python3 -m http.server --help` — none can verify a GitHub HMAC signature, forward webhooks through a Cloudflare Tunnel, write a dead-man Prometheus metric, or append an alert-repair triage entry, so the existing tools do not already do this.
-
-Pre-existing (not this PR):
-- `tests/rule-enforcement.test.sh` fails locally because `config/rule-enforcement.json` is missing rows for new 2026-08-28 ledger/standing rules; the issue that owns that matrix update is unrelated.
-- `tests/ci-standards-audit.test.sh` invokes `tests/seat-health-classifier.test.sh`, which fails only on the VPS because the out-of-repo `~/.pi/agent/extensions/seat-health.ts` is installed and still marks HTTP-200/empty-body as healthy. It is the fleet-ops#1466 closure canary.
-
-Closes #1464
+Relates to #907
