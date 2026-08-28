@@ -12,7 +12,7 @@
 #       and quality-research-weekly)
 #   (e) install.sh enable --now the timer (fleet-ops#183 class)
 #   (f) prompt locks the 5-action cap, the signal-attribution rule,
-#       the blind 5-lens structure, and the "claimed work only" output
+#       the blind 6-lens structure (incl. L6 SECURITY), and the "claimed work only" output
 #   (g) role-quality-gates catalog ships the new role with the bypass
 #       check helper, and live audit is green
 #   (h) agent-cron-run with this slug succeeds on a stubbed pi (the
@@ -112,14 +112,18 @@ grep -q 'signal: wfr-action/' "$prompt" \
 grep -q 'claimed work only' "$prompt" \
   || fail "prompt must say 'claimed work only' (no Nish report)"
 grep -q -i 'blind' "$prompt" \
-  || fail "prompt must mention the blind 5-lens structure"
-grep -q '5-lens' "$prompt" \
-  || fail "prompt must name the 5 lenses"
-grep -q '5 lenses' "$prompt" \
-  || fail "prompt must enumerate the 5 lenses"
+  || fail "prompt must mention the blind 6-lens structure"
+grep -q '6-lens' "$prompt" \
+  || fail "prompt must name the 6 lenses"
+grep -q 'six lenses' "$prompt" \
+  || fail "prompt must enumerate the six lenses"
+grep -q 'L6 SECURITY' "$prompt" \
+  || fail "prompt must include the L6 SECURITY lens (fleet-ops#1146 Nish addition)"
+grep -q '"lens": "throughput|quality|machinery|truth|outside|security"' "$prompt" \
+  || fail "prompt lens enum must include security"
 grep -q 'DIGEST::' "$prompt" \
   || fail "prompt must tell the agent to emit DIGEST:: for agent-cron-run"
-ok "(f) prompt locks the 5-action cap, signal, blind structure, claimed-work-only"
+ok "(f) prompt locks the 5-action cap, signal, blind 6-lens structure (incl. SECURITY), claimed-work-only"
 
 # (g) role-quality-gates catalog + bypass check helper
 jq -e '.roles[] | select(.id == "weekly-fleet-review")' "$role_gates" >/dev/null \

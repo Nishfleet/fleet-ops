@@ -1,4 +1,4 @@
-# Weekly Fleet Review (WFR) — blind 5-lens senior research + conference
+# Weekly Fleet Review (WFR) — blind 6-lens senior research + conference
 
 This file is editable state. `agent-cron-run` pipes it into `pi --print` on
 every timer fire. Do not add a second runner.
@@ -20,12 +20,12 @@ This is **NOT** the daily quality delta sweep (fleet-ops#541). That one
 tracks frontier deltas; this one audits the fleet against its current bar
 and proposes up to 5 changes that move the bar. Same seat, different lens.
 
-## Inputs (read all five before acting)
+## Inputs (read all six before acting)
 
 1. `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md`
    — what Nish has already decided. Never re-recommend a decided item.
 2. `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md`
-   — the standing rules. The 5 lenses test the fleet against these.
+   — the standing rules. The 6 lenses test the fleet against these.
 3. `/home/nish/workspaces/agent-state/WFR/` — last week's review (if any):
    `last-actions.json` (the actions filed last week + their disposition
    this week) and `last-self-score.json` (the self-score). Phase 3 owes a
@@ -43,12 +43,12 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.
 
-## Phase 1 — BLIND 5-lens research (write each lens to its own file)
+## Phase 1 — BLIND 6-lens research (write each lens to its own file)
 
 The spec says "blind" — each lens is written **without** reading the
 others. That is the whole point: independent discovery. Write to
 `/home/nish/workspaces/agent-state/WFR/lens-<n>-<lens>.md` as you go. The
-five lenses:
+six lenses:
 
 - **L1 throughput** — issues filed vs merged vs stale, lane occupancy,
   claim-reconcile backlogs, time-to-merge, agents per seat, daily rate of
@@ -76,12 +76,23 @@ five lenses:
   that beat the current ones. Use last30days / web search / official
   changelogs. Cite a URL and a date for every finding. No finding
   without a dated source.
+- **L6 SECURITY** — a standing blind senior lens every week (Nish
+  2026-08-27 "are we doing everything" sweep). Attack surface of the
+  box: self-hosted runners executing PR code adjacent to full
+  credentials, `gha-user` isolation adequacy, token/scope hygiene
+  (worker App token scopes, expiry, rotation), public-repo workflow
+  injection surface (issue/PR-body inputs reaching a `run:` step or a
+  `gh` call), agent-permission creep (seats/units that gained new
+  write surfaces since last week), secrets in configs/logs/prompts.
+  Findings become specced issues like every other lens. Anything
+  credential- or money-boundary routes via `boundary-notify` with a
+  `Blocked on: nish-decision` line and does NOT count toward the 5.
 
 Each lens file MUST end with a `## Findings` heading and a JSON block:
 
 ```json
 {
-  "lens": "throughput|quality|machinery|truth|outside",
+  "lens": "throughput|quality|machinery|truth|outside|security",
   "findings": [
     {"claim": "specific narrow claim with evidence", "severity": "P0|P1|P2|P3"}
   ]
@@ -94,7 +105,7 @@ not invent findings to look busy; the cap of 5 is enforced in Phase 2.
 
 ## Phase 2 — senior CONFERENCE (max 5 actions, in priority order)
 
-After all five lenses are written, **read all of them in one pass** and
+After all six lenses are written, **read all of them in one pass** and
 synthesize. Apply the standing-rule strict order: quality > speed >
 efficiency. Discard any finding that breaks quality for speed. Discard
 any finding that is just a slogan. Discard any finding that is already

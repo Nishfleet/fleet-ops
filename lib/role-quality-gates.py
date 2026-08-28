@@ -179,7 +179,9 @@ def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any])
     The prompt is the only output-contract surface — a worker that drops
     the cap or the `signal: wfr-action/...` attribution can flood the
     queue or break the rolling-ratio self-score. Gate-checked here so a
-    hand-edit cannot bypass either.
+    hand-edit cannot bypass either. The 6th SECURITY lens (Nish 2026-08-27
+    "are we doing everything" sweep) is also locked here — a prompt that
+    drops it silently loses the standing security audit.
     """
     text = _read(repo / "prompts" / "weekly-fleet-review.md")
     if not text:
@@ -191,7 +193,11 @@ def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any])
     if "claimed work only" not in text:
         return "prompts/weekly-fleet-review.md drops the 'claimed work only' output rule (no Nish report)"
     if "blind" not in text.lower():
-        return "prompts/weekly-fleet-review.md drops the blind 5-lens structure"
+        return "prompts/weekly-fleet-review.md drops the blind 6-lens structure"
+    if "L6 SECURITY" not in text:
+        return "prompts/weekly-fleet-review.md drops the L6 SECURITY lens (fleet-ops#1146 Nish addition)"
+    if '"lens": "throughput|quality|machinery|truth|outside|security"' not in text:
+        return "prompts/weekly-fleet-review.md lens enum does not include security"
     return None
 
 

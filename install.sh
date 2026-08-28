@@ -501,7 +501,7 @@ if [ "$do_user_install" = 1 ]; then
     fi
   fi
   # fleet-ops#1146: Weekly Fleet Review — Sun 04:30 IST, post-vps-weekly-update.
-  # Blind 5-lens senior research + conference, output capped at 5 specced
+  # Blind 6-lens senior research + conference, output capped at 5 specced
   # actions. Same install-sh enable as #541.
   if [ -f "$here/systemd/fleet-weekly-fleet-review.timer" ]; then
     if ! is_unit_enabled fleet-weekly-fleet-review.timer; then
