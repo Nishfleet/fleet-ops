@@ -7,7 +7,7 @@
 #      reports mismatch=1 and those p95s. Does not edit ram_gb_per_worker.
 #   2. Equal metrics report mismatch=0.
 #   3. Zero units still exit 0 and write a state file.
-#   4. Admission uses ram_gb_per_worker from the cap map (0.6 as of #1168), no self-calibrate.
+#   4. Admission uses ram_gb_per_worker from the cap map (0.5 as of #1558), no self-calibrate.
 #   5. Comments that cite 35 MB must label it as process VmRSS and must
 #      also cite memory.current + fleet-ops#202 (so the class cannot
 #      silently return as "RSS means cgroup").
@@ -93,17 +93,17 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission uses cap-map ram_gb_per_worker (0.6), no self-calibrate
-#    The current measured ceiling is 0.6 GB (fleet-ops#1168 / #489).
+# 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
+#    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.6" ]] \
-    || fail "ram_gb_per_worker must be 0.6 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.5" ]] \
+    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula is 0.6 G from cap map, no self-calibrate"
+ok "4. admission formula is 0.5 G from cap map, no self-calibrate"
 
 # =========================================================================
 # 5. 35 MB cannot be cited as cgroup memory.current
