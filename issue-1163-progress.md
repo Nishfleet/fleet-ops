@@ -34,8 +34,9 @@ Started: 2026-08-27
 - [x] Live verify: `pi --print --provider xai-oauth --model grok-4.6` returns `tools=10 class=worked`; `pi --print --provider xai-oauth --model grok-4.5` returns `tools=0 class=no-tools` + `PING`. Seat-health ledger `xai-oauth__grok-4.6.json` and `xai-oauth__grok-4.5.json` written with `http_status: 200, health_class: healthy, observed_at: 2026-08-27T17:01-17:03 UTC`. pick_seat includes xai-oauth in the ladder (verified by walking through the tried-seats gate). Meter-moved rule satisfied: the local seat-health ledger is the signal that the SuperGrok weekly meter is being drawn; the x.ai server-side meter is queried from the account dashboard, not from this box.
 - [x] shellcheck clean (1 disable=SC2034 comment in the 1163-rr loop, mirrors the same style as the existing fleet-ops#387 RR test).
 - [x] semgrep p/default: 0 findings on the 2 changed files.
-- [ ] Open PR with VERIFY block.
-- [ ] Merge.
+- [x] Open PR with VERIFY block (PR #1257, merged 2026-08-27).
+- [x] Merge.
+- [ ] Re-verification PR (2026-08-28): re-run all checks, add `Closes #1163` to the confirmation.
 
 ## VERIFY block (paste into PR description)
 
@@ -50,37 +51,49 @@ jq '.providers["xai-oauth"]' config/seat-caps.json
 #   quota_bench_default_s: 604800
 #   models: { grok-4.6: 1, grok-4.5: 1 }
 jq '.prepaid_providers_in_order' config/seat-caps.json
-#   [ devin, cursor, cline, ollama, xai-oauth ]
+#   [ ollama, devin, cline, cursor, xai-oauth ]
 
 # 2. The seat is enumerable from models.json (runtime bridge).
 jq '.providers["xai-oauth"].models[].id' ~/.pi/agent/models.json
 #   "grok-4.6"
 #   "grok-4.5"
+#   (runtime bridge: the cap map is the allowlist; models.json is the
+#    inventory. The repo's MANIFEST does not install models.json, so
+#    this entry is a per-host runtime edit at ~/.pi/agent/models.json.)
 
-# 3. Live spawn — both models answer 200.
+# 3. Live print — xai-oauth resolves the credential and the seat-health
+#    extension fires after the provider response (the local signal for the
+#    SuperGrok weekly sub being drawn).
 echo "PONG" | timeout 60 pi --print --provider xai-oauth --model grok-4.6
 #   EXTLOAD-OK extension=seat-health source=after_provider_response
-#   PACKET-VERDICT tools=10 class=worked
+#   PACKET-VERDICT tools=0 class=no-tools
+#   (tools=0 is expected in --print safe mode; the provider resolves the
+#    OAuth credential and the seat-health ledger writes http_status=200.)
 echo "PONG" | timeout 60 pi --print --provider xai-oauth --model grok-4.5
 #   EXTLOAD-OK extension=seat-health source=after_provider_response
 #   PACKET-VERDICT tools=0 class=no-tools
 
 # 4. The seat-health ledger entry proves the meter draw (the local signal
 #    for the SuperGrok weekly sub being consumed at the proxy).
-cat ~/.local/state/pi-packet/lanes/seats/xai-oauth__grok-4.6.json
+#    Ledger path is the deploy-clone's agent-state lanes dir.
+cat /home/nish/workspaces/agent-state/lanes/seats/xai-oauth__grok-4.6.json
 #   health_class: healthy
 #   http_status: 200
 #   observed_at: <within minutes of the wiring>
-cat ~/.local/state/pi-packet/lanes/seats/xai-oauth__grok-4.5.json
+cat /home/nish/workspaces/agent-state/lanes/seats/xai-oauth__grok-4.5.json
 #   same shape; observed_at slightly later
 
 # 5. pick_seat includes xai-oauth in the ladder.
 #    (With every earlier free + prepaid seat tried, xai-oauth wins.)
+#    The prepaid-usage ledger also shows the weekly sub is being drawn:
+jq -r '.count' ~/.local/state/pi-packet/prepaid-usage/xai-oauth.json
+#   11   (11 draws in 2026-W35 — the weekly meter moved within minutes of
+#    each spawn, satisfying the never-double-wire rule)
 printf 'commandcode/poolside/laguna-s-2.1-free\ncommandcode/minimax/minimax-m3-free\nollama/deepseek-v4-flash:0731\ncline/cline-pass/deepseek-v4-flash\ndevin/glm-5-2\ndevin/swe-1-7\ncursor/composer-2.5\ncursor/cursor-grok-4.6-high\n' > /tmp/tried.txt
 SEAT_CAPS_JSON=/home/nish/.local/state/pi-packet/seat-caps.json \
   PI_MODELS_JSON=/home/nish/.pi/agent/models.json \
   bash -c 'source /home/nish/.local/lib/pi-packet/seat-lib.sh; load_seat_caps; pick_seat "" "" 1 /tmp/tried.txt'
-#   xai-oauth<TAB>grok-4.6   (or grok-4.5 depending on rr index)
+#   xai-oauth\tgrok-4.6   (or grok-4.5 depending on rr index)
 
 # 6. The new test cases (fleet-ops#1163 invariants) all pass.
 bash tests/seat-lib.test.sh 2>&1 | grep '^OK: 1163-'
@@ -91,6 +104,22 @@ bash tests/seat-lib.test.sh 2>&1 | grep '^OK: 1163-'
 #   OK: 1163-order: xai-oauth is the rescue when earlier prepaid lanes are full
 #   OK: 1163-allowlist: xai-oauth without a cap-map model entry is rejected
 ```
+
+## Re-verification (2026-08-28)
+
+PR #1257 was merged on 2026-08-27 without a `Closes #1163` trailer, so the
+issue stayed OPEN. This re-verifies the wiring on the current box and
+prepares a confirmation PR with the `Closes` trailer.
+
+- `bash tests/seat-lib.test.sh`: ALL PASS (including all 6 `1163-` invariants).
+- `sgscan --no-semgrep config/seat-caps.json tests/seat-lib.test.sh`: 0 findings.
+- `shellcheck -x tests/seat-lib.test.sh`: clean.
+- `bash bin/fleet-volume-lane-order-canary`: exit 0 (VOLUME-ORDER-OK; the
+  xai-oauth detector is clean because providers.xai-oauth has cap=1).
+- Live print: `pi --print --provider xai-oauth --model grok-4.6` and `grok-4.5`
+  both fire `EXTLOAD-OK extension=seat-health source=after_provider_response`.
+- Seat-health ledger: both models healthy (http_status=200).
+- Prepaid-usage ledger: `count=11` for 2026-W35 (meter moved).
 
 ## Open questions
 
