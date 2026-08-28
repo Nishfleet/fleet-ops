@@ -200,11 +200,12 @@ set +e
 "$dispatch"; rc=$?
 set -e
 [[ $rc -eq 0 ]] || fail "empty ladder: expected exit 0 (quiet walled escalation), got $rc"
-[[ -s "$STOP_ESCALATION_NISH" ]] || fail "empty ladder: NISH-ESCALATIONS should not be empty"
-grep -q 'MONEY-BOUNDARY' "$STOP_ESCALATION_NISH" || fail "empty ladder: expected MONEY-BOUNDARY in NISH (fleet-ops#1534 writer class-gate)"
-grep -q 'reason=ladder-walled' "$STOP_ESCALATION_NISH" || fail "empty ladder: MONEY-BOUNDARY line must carry reason=ladder-walled"
+# 2026-08-28 storm fix: a non-payment wall (unit-failure) must be LOUD in the
+# auditor LOG but must NOT page Nish (35-text storm). NISH stays empty here.
+[[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "empty ladder (unit-failure): must NOT write NISH — not a money page"
+grep -q 'LADDER-WALLED' "$STOP_ESCALATION_AUDITOR_LOG" || fail "empty ladder: LADDER-WALLED must land in auditor LOG (fail-loud, not silent)"
 [[ ! -s "$STOP_ESCALATION_SEEN" ]] || fail "empty ladder: must not consume dispatch budget"
-ok "fully-walled ladder -> MONEY-BOUNDARY in NISH, exit 0 (quiet, not failed)"
+ok "fully-walled ladder (unit-failure) -> auditor LOG, NISH untouched, exit 0"
 
 : > "$STOP_ESCALATION_NISH"
 
