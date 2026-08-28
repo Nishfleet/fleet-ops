@@ -800,6 +800,22 @@
       "proof": "systemd/fleet-heartbeat-failed-notify.service; MANIFEST:303; fleet-ops#1399 (durable demotion)",
       "status": "queued(#1399)",
       "queued_since": "2026-08-28"
+    },
+    {
+      "id": "led-2026-08-28-machinery-ban-mechanical",
+      "source": "decisions-ledger.md: 2026-08-28 | Machinery ban is mechanically enforced (Nish: \"It needs to be mechanical. No agent should be able to do it unless explicitly authorized by me\")",
+      "mechanism": "fleet-ops#1480 owns the mechanism design; enforcement as pipeline not prose. The by-fiat build (gate workflow, labels, conference wiring) was deleted per the REVERSAL ledger line. New machinery (unit files, MANIFEST additions) is default-DENIED via the existing fleet-ops#366 gate class extended by #1480's audit inventory. Violations self-adjudicate via senior conference (fleet-ops#1032).",
+      "proof": "decisions-ledger.md: 2026-08-28 | Clarification of the reversal above; fleet-ops#1480 acceptance criteria; existing #366 gate workflow",
+      "status": "queued(#1480)",
+      "queued_since": "2026-08-28"
+    },
+    {
+      "id": "led-2026-08-28-machinery-violations-senior-conference",
+      "source": "decisions-ledger.md: 2026-08-28 | Machinery violations self-adjudicate via senior conference (Nish: \"violations should automatically go to other senior agents to confer... most things should close on their own automatically\")",
+      "mechanism": "fleet-ops#1480 (via #366 gate class) auto-files `agent-ready` + `machinery-exception-review` issues on gate failure; convener runs TWO blind senior POVs then verdicts: MECHANICAL-INSTEAD (default on doubt), EXCEPTION-APPROVED (requires both POVs), or NISH-RESERVED (boundary-notify — the only path reaching Nish). Weekly Fleet Review audits all verdicts.",
+      "proof": "decisions-ledger.md: 2026-08-28 | Clarification of the reversal above; fleet-ops#1480 acceptance criteria; existing gate + boundary-notify channels",
+      "status": "queued(#1480)",
+      "queued_since": "2026-08-28"
     }
   ]
 }

@@ -33,6 +33,8 @@ LEDGER_RE = re.compile(
 )
 # FLAG lines in the open-questions section are not standing rules.
 FLAG_BODY_RE = re.compile(r"^FLAG\b", re.I)
+# REVERSAL lines void prior decisions; Clarification lines are meta-notes, not standalone rules.
+SKIP_TITLE_RE = re.compile(r"^(REVERSAL|Clarification of the reversal)", re.I)
 
 SIGNAL_FMT = "signal: rule-enforcement/{id}"
 
@@ -65,6 +67,8 @@ def parse_ledger(text: str) -> list[dict[str, str]]:
             match.group(3).strip(),
         )
         if FLAG_BODY_RE.match(body):
+            continue
+        if SKIP_TITLE_RE.match(title):
             continue
         key = f"{date} | {title}"
         if key in seen:

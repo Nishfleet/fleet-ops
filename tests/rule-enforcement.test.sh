@@ -200,6 +200,8 @@ cat >"$scratch/ledger.md" <<'EOF'
 - 2026-08-26 | real decision | STANDING, NON-NEGOTIABLE: a rule
 - 2026-08-26 | flag row | FLAG (not a Nish decision): skip me
 - not a decision line
+- 2026-08-28 | REVERSAL: machinery-gate builds DELETED | The two entries above are VOID - do not re-execute
+- 2026-08-28 | Clarification of the reversal above | The VOID applies to the build only
 EOF
 
 python3 - "$lib" "$scratch/rules.md" "$scratch/ledger.md" <<'PY' || fail "parser unit failed"
@@ -212,6 +214,7 @@ ledger = m.parse_ledger(open(sys.argv[3], encoding="utf-8").read())
 assert len(standing) == 2, standing
 assert standing[0]["key"] == "Real standing rule (Nish, 2026-08-26)", standing
 assert len(ledger) == 1, ledger
+assert ledger[0]["key"] == "2026-08-26 | real decision", ledger
 assert ledger[0]["key"] == "2026-08-26 | real decision", ledger
 
 src = "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable"
