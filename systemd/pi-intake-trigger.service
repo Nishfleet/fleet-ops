@@ -1,0 +1,15 @@
+[Unit]
+Description=Process pi-intake trigger files and start corresponding pi-intake@ instances
+# Event-driven: fires when trigger files appear in pi-intake-triggers/ directory.
+# The heartbeat writes trigger files when it files issues; seat-recovery already fires pi-intake directly.
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/pi-intake-trigger
+TimeoutStartSec=30
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
