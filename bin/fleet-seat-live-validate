@@ -6,6 +6,10 @@
 # is unauthenticated (403 OAuth-invalid, missing ~/.grok/auth.json, or a
 # refresh token that no longer mints). The sub then sits at 100% unused.
 #
+# The canary now mirrors the grok CLI result onto the xai-oauth provider
+# (stnly/pi-grok OAuth proxy, fleet-ops#1163): a dead grok CLI means the
+# xai-oauth SuperGrok proxy is also dead, so pick_seat must skip it.
+#
 # Official grok CLI docs (user-guide/02-authentication.md): credentials live
 # in $GROK_HOME/auth.json; the CLI refreshes silently when it runs; when
 # refresh fails, a human must `grok login --device-auth` on this headless
@@ -118,7 +122,7 @@ seat_ledger_path() {
 
 # Write one per-seat ledger record. Never includes credential material.
 write_ledger() {
-    local model="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    local provider="$1" model="$2" http_status="$3" health_class="$4" seat_dead="$5" failure_mode="$6"
     local path tmp observed retryable
     mkdir -p "$LEDGER_DIR"
     observed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -127,10 +131,10 @@ write_ledger() {
     else
         retryable=false
     fi
-    path=$(seat_ledger_path grok "$model")
+    path=$(seat_ledger_path "$provider" "$model")
     tmp="${path}.$$.tmp"
     jq -n \
-        --arg provider grok \
+        --arg provider "$provider" \
         --arg model "$model" \
         --argjson http_status "$http_status" \
         --arg health_class "$health_class" \
@@ -159,9 +163,9 @@ write_ledger() {
 }
 
 write_both_models() {
-    local http_status="$1" health_class="$2" seat_dead="$3" failure_mode="$4"
-    write_ledger "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
-    write_ledger "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
+    local provider="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    write_ledger "$provider" "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
+    write_ledger "$provider" "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
 }
 
 auth_present() {
@@ -249,16 +253,18 @@ fi
 pi_status=$(pi_auth_status)
 
 if [[ "$classify" == "healthy" ]]; then
-    write_both_models 200 healthy false none
-    log "OK grok live-valid ($reason) pi_auth_status=$pi_status"
+    write_both_models "grok" 200 healthy false none
+    write_both_models "xai-oauth" 200 healthy false none
+    log "OK SuperGrok live-valid ($reason) pi_auth_status=$pi_status; xai-oauth mirrored healthy"
     {
-        printf '\n[%s] [SEAT-LIVE-VALIDATE-OK] grok healthy (%s)\n' \
+        printf '\n[%s] [SEAT-LIVE-VALIDATE-OK] SuperGrok healthy (%s); xai-oauth mirrored healthy\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason"
     } >>"$TRIAGE" 2>/dev/null || true
     exit 0
 fi
 
-write_both_models 401 credentials_bad true credentials_bad
+write_both_models "grok" 401 credentials_bad true credentials_bad
+write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
 
 class_note=""
 if [[ "$pi_status" == "ready" ]]; then
@@ -283,7 +289,7 @@ Nish must sign in TODAY on netcup-rs2000 (he leaves tomorrow for 11 days):
 
 That is the headless device-code flow from \`grok login --help\`. Browser \`grok login --oauth\` will not work on this VPS. Do not export an x.ai API key — SuperGrok is the subscription path, and api.x.ai credits are a money line (fleet-ops#41).
 
-Until then the canary writes credentials_bad on grok/grok-4.6 and grok/grok-4.5 so pick_seat will not route to a corpse.
+Until then the canary writes credentials_bad on grok/grok-4.6, grok/grok-4.5, xai-oauth/grok-4.6, and xai-oauth/grok-4.5 so pick_seat will not route to a corpse.
 
 signal: rule-enforcement/sr-prepaid-max-util"
 
