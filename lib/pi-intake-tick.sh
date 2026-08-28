@@ -35,6 +35,10 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# SYSTEMCTL seam (fleet-ops#1546): tests inject a fake to drive the
+# start-limit healer + post-condition verification deterministically.
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
 [[ $# -ge 1 ]] || { echo "pi-intake-tick: need 1 arg: repo" >&2; exit 1; }
 REPO="$1"
 FULL="Nishfleet/${REPO}"
@@ -342,7 +346,7 @@ for i in "${!numbers[@]}"; do
     # completion and failure. If the unit is already active/activating, skip it
     # so another agent's worker is not double-started.
     unit="pi-issue@${REPO}-${N}.service"
-    pre_state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+    pre_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
     if [[ "$pre_state" == "active" || "$pre_state" == "activating" ]]; then
         echo "issue $N ($title): skipped-already-live"
         continue
@@ -396,10 +400,56 @@ for i in "${!numbers[@]}"; do
         fi
     fi
 
+    # fleet-ops#1546: start-limit lockout healer + post-condition verification.
+    # After a seat storm (402/429/503), dozens of pi-issue@ units sit in
+    # `failed` state with StartLimitBurst exhausted. `systemctl start --no-block`
+    # returns exit 0 even when the unit is in `failed`/start-limit lockout —
+    # the unit never runs, but the intake logged `claimed+spawned` (the
+    # spawn-vs-alive divergence: 56 claimed+spawned, 2 alive). Two fixes:
+    #
+    # (a) Start-limit healer: after start --no-block, check ActiveState. If
+    #     `failed`, the unit is in start-limit lockout — reset-failed (the
+    #     systemd-native way to clear it) and retry start once. This is the
+    #     mechanical clear the issue asks for ("systemd-native: OnFailure
+    #     reset, or StartLimitIntervalSec tuned"). One retry, not a loop —
+    #     a second failure is reported, not papered over.
+    # (b) Post-condition verification: only print `claimed+spawned` after
+    #     verifying the unit is active/activating AND the packet file exists
+    #     AND the claim branch exists on remote. Intentions are not success.
     start_status=0
-    start_out=$(systemctl --user start --no-block "$unit" 2>&1) || start_status=$?
+    start_out=$("$SYSTEMCTL" --user start --no-block "$unit" 2>&1) || start_status=$?
     if (( start_status != 0 )); then
         echo "issue $N ($title): spawn failed for ${REPO}-${N}: $start_status; output: $start_out"
+        continue
+    fi
+
+    # --no-block returns exit 0 even when the unit is in `failed`
+    # (start-limit lockout). Verify the unit actually activated; if it is
+    # still `failed`, reset-failed and retry once (the systemd-native
+    # start-limit clear). A second failure is reported, not logged as success.
+    post_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    if [[ "$post_state" == "failed" ]]; then
+        "$SYSTEMCTL" --user reset-failed "$unit" >/dev/null 2>&1 || true
+        "$SYSTEMCTL" --user start --no-block "$unit" >/dev/null 2>&1 || true
+        post_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    fi
+
+    # Post-condition verification (fleet-ops#1546): claimed+spawned must
+    # mean branch + packet + unit all exist, not that start --no-block
+    # returned 0. A unit that is not active/activating did not spawn.
+    if [[ "$post_state" != "active" && "$post_state" != "activating" ]]; then
+        echo "issue $N ($title): spawn failed (start-limit lockout, unit=$post_state) for ${REPO}-${N}"
+        continue
+    fi
+    [[ -f "$packet_path" ]] || {
+        echo "issue $N ($title): spawn failed (packet missing after write) for ${REPO}-${N}"
+        continue
+    }
+    # Verify the claim branch survived on the remote (post-condition, not
+    # intention). A missing branch means the push was rolled back or lost.
+    branch_check=$(git -C "$REPO_DIR" ls-remote origin "refs/heads/claim/issue-$N" 2>/dev/null || true)
+    if [[ -z "$branch_check" ]]; then
+        echo "issue $N ($title): spawn failed (claim branch missing post-spawn) for ${REPO}-${N}"
         continue
     fi
 

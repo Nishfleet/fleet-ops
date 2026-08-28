@@ -92,3 +92,9 @@ bash "$here/intake-priority.test.sh"
 # (workers cannot edit .github/workflows/ci.yml). Same bash "$here/..."
 # host pattern as the priority drill above.
 bash "$here/pi-intake-tick-seat-gate.test.sh"
+# --- 6. fleet-ops#1546 spawn post-condition + start-limit healer (CI hook) --
+# tests/pi-intake-tick-spawn-postcondition.test.sh locks the healer
+# (reset-failed on a start-limit-locked unit) and the post-condition
+# verification (branch + packet + unit exist before claimed+spawned). ci.yml
+# lists this file, so the drill runs from here instead of a new workflow line.
+bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
