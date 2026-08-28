@@ -82,6 +82,7 @@ run_drill() {
       "$SYSTEMCTL" --user stop "$HOG" 2>/dev/null || true
       fail "hog ran 240s without being killed — oomd did not fire"
     fi
+    # LEGAL-BRAKE: hardware — poll until oomd reaps the hog (not a throttle)
     sleep 5
   done
   local elapsed=$(( $(date +%s) - before ))
