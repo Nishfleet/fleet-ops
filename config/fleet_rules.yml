@@ -387,3 +387,23 @@ groups:
         annotations:
           summary: "weekly VPS asset census has not run in 14+ days"
           description: "Repair worker: fleet_asset_census_last_run_seconds is absent or older than 14d (two weekly timer cycles). The census enumerates the VPS surface and diffs against config/asset-guard-map.json; a dead census means new/unguarded assets are invisible. Check journalctl --user -u fleet-asset-census.service and systemctl --user list-timers fleet-asset-census.timer. Helper: /home/nish/.local/bin/fleet-asset-census. fleet-ops#1149."
+
+  - name: fleet_grok_token_refresh_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). grok-token-refresh writes
+      # fleet_grok_token_refresh_last_success_seconds on every successful
+      # headless OAuth refresh of ~/.grok/auth.json; a SKIP (no work) still
+      # rewrites the file with 0 so a non-zero age says "no successful
+      # refresh in N seconds". 12h is two missed 4h timer cycles plus slack
+      # for the 6h access_token lifetime — by the time the absent() rule
+      # fires the credential is provably stale.
+      - alert: FleetGrokTokenRefreshStale
+        expr: absent(fleet_grok_token_refresh_last_success_seconds) or (time() - fleet_grok_token_refresh_last_success_seconds) > 43200
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "grok-token-refresh has not succeeded in 12+ hours"
+          description: "Repair worker: fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script is the prevention side of fleet-ops#41 — it keeps ~/.grok/auth.json alive so a cap raise on the `grok` provider is not a 401 surprise. A dead refresh means the credential is silently aging toward its 6h OAuth lifetime. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. Helper: /home/nish/.local/bin/grok-token-refresh. fleet-ops#41."

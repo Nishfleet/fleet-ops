@@ -87,6 +87,17 @@
         "systemd/fleet-asset-census.timer",
         "config/asset-guard-map.json"
       ]
+    },
+    {
+      "name": "grok-token-refresh",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_grok_token_refresh_last_success_seconds",
+      "absent_alert": "FleetGrokTokenRefreshStale",
+      "files": [
+        "bin/grok-token-refresh",
+        "systemd/grok-token-refresh.service",
+        "systemd/grok-token-refresh.timer"
+      ]
     }
   ]
 }

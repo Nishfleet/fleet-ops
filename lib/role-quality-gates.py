@@ -65,6 +65,12 @@ NON_ROLE_UNIT_PREFIXES = (
     # work-producing role. It enumerates the VPS and diffs against a
     # versioned guard map before the Weekly Fleet Review.
     "fleet-asset-census",
+    # fleet-ops#41: grok-token-refresh is credential plumbing, not a
+    # work-producing role. It POSTs an OAuth refresh grant every 4h
+    # and rewrites ~/.grok/auth.json in place; its own gate is the
+    # absent() rule on fleet_grok_token_refresh_last_success_seconds
+    # plus tests/grok-token-refresh.test.sh.
+    "grok-token-refresh",
 )
 
 

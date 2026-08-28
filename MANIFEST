@@ -560,3 +560,11 @@ lib/pi-packet/asset-census.py /home/nish/.local/lib/pi-packet/asset-census.py
 config/asset-guard-map.json /home/nish/.local/state/pi-packet/asset-guard-map.json
 systemd/fleet-asset-census.service /home/nish/.config/systemd/user/fleet-asset-census.service
 systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-census.timer
+# fleet-ops#41: headless OAuth refresh of ~/.grok/auth.json (no pty). Keeps
+# the SuperGrok credential alive so a cap raise on the `grok` provider is
+# not a 401 surprise. fleet-seat-live-validate (fleet-ops#917) catches the
+# dead case; this unit is the heal path. 4 h cadence is well inside the
+# 6 h access_token lifetime. Idempotent: skip-if-fresh, persistent timer.
+bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
+systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
+systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer
