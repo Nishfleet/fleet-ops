@@ -84,6 +84,16 @@ NON_ROLE_UNIT_PREFIXES = (
     # fleet_grok_token_refresh_last_success_seconds plus
     # tests/grok-token-refresh.test.sh.
     "grok-token-refresh",
+    # fleet-ops#180 / #1557: gap-closure loop. Drill stubs + the loop
+    # oneshot are observability/orchestration plumbing (no model of their
+    # own). Auditor/conference/research prompts+units are catalogued under
+    # senior-auditor below; the remaining unit prefixes stay non-role so
+    # the live catalog does not flag them as ungated-role (pre-existing
+    # red on main after #180; blocks unrelated PRs — same class as
+    # pi-intake-trigger in #1517).
+    "fleet-gap-closure-drill",
+    "fleet-gap-closure-loop",
+    "gap-closure-drill",
 )
 
 
