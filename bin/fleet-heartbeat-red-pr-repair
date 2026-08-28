@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-heartbeat-red-pr-repair — tier1 block 11 (fleet-ops#124).
+# fleet-heartbeat-red-pr-repair — tier1 block 12 (fleet-ops#124).
 #
 # The blind spot proven 2026-08-26 ~04:15 IST: a worker opens a PR, exits,
 # and if CI comes back red the PR sits indefinitely. The claim branch blocks
