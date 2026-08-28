@@ -1,0 +1,50 @@
+name: Stop-the-line watch
+
+# Schedule + workflow_run driven watcher. GitHub Actions `workflow_run` does
+# not support wildcards, so a named list or a schedule is required. A list
+# would require updating every repo for each new workflow — the gap this
+# detector closes. A periodic sweep is the mechanical form that always
+# converges (no missed workflow_run trigger on a busy day, no silent drift
+# if a previous run died).
+#
+# Two triggers, both routed to the same reusable detector:
+#   1. workflow_run on completed CI runs on main — fast response so the
+#      freeze lands within seconds of a consecutive red pair forming.
+#   2. schedule (*/5) — backstop. Covers any rate-limit blip that ate the
+#      workflow_run tick and any case where two main pushes landed in the
+#      same lookback window with only the second one firing a workflow_run.
+#      Five minutes is the same cadence as the heartbeat's existing
+#      five-minute sweep on the VPS, so a red-CI state never sits longer
+#      than that before the freeze lands.
+#
+# Do not make this a required check. It is an actuator, not a gate.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: stop-the-line-watch-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Stop-the-line state-machine tick
+    uses: Nishfleet/fleet-ops/.github/workflows/stop-the-line-detector.yml@main
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    with:
+      target-repo: ${{ github.repository }}
+      lookback-minutes: 15

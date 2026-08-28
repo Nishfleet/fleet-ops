@@ -6,6 +6,19 @@
 #       uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@main
 #       secrets:
 #         AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}
+#
+# fleet-ops#1457 (stop-the-line): before arming, this workflow checks for an
+# open `stop-the-line` issue in the repo. The detector opens the issue when
+# the same workflow has failed on consecutive main commits (the HALT
+# condition auto-revert already publishes) and closes it on the next green
+# run of THAT workflow. While the issue is open, this step refuses to arm
+# auto-merge on any new PR — the line is mechanically frozen. CI on the PR
+# continues to run and report (no change there); only the actual merge is
+# gated. A human can still merge via the green button when the issue is
+# open, or wait for the next green run that closes the issue (no human step
+# required for the auto-unfreeze). The state of the line is visible to
+# operators in the same place every other halt already lives — the GitHub
+# issue tracker — so the alert path is unchanged.
 
 name: Reusable auto-merge arm
 
@@ -15,7 +28,8 @@ on:
       AUTO_REVERT_PAT:
         required: false
 
-permissions: {}
+permissions:
+  issues: read
 
 jobs:
   arm:
@@ -26,7 +40,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # ---- stop-the-line check (fleet-ops#1457) ----------------------------
+      # A freeze (the HALT verdict persists and no later green has cleared
+      # it) is observed by an OPEN `stop-the-line` issue. Reading the issue
+      # list is cheap and labels-first so a single query handles any number
+      # of historic halts. If we miss the issue (label never stuck, GitHub
+      # search edge case) the title-based dedup in the detector covered the
+      # same family in fleet-ops#596 and #1059; we mirror that by including
+      # the literal string "stop-the-line: " in the title search.
+      - name: Check stop-the-line (freeze gate)
+        id: freeze
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh issue list --repo "${{ github.repository }}" \
+                --state open --limit 100 \
+                --search "stop-the-line: in:title frozen in:title" \
+                --json number --jq 'length' 2>/dev/null | grep -qE '^([1-9][0-9]*)$'; then
+            echo "frozen=true" >> "$GITHUB_OUTPUT"
+            echo "stop-the-line: an open stop-the-line issue is freezing this repo (fleet-ops#1457); auto-merge arming skipped"
+            exit 0
+          fi
+          echo "frozen=false" >> "$GITHUB_OUTPUT"
+
       - name: Arm auto-merge
+        if: steps.freeze.outputs.frozen == 'false'
         env:
           GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
           PR: ${{ github.event.pull_request.number }}

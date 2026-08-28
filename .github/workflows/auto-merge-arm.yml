@@ -20,7 +20,13 @@ on:
   pull_request:
     types: [opened, ready_for_review]
 
-permissions: {}
+# fleet-ops#1457 (stop-the-line): grants `issues: read` so the reusable arm
+# workflow can probe for an open `stop-the-line` issue before arming. A
+# freeze (consecutive-commit HALT) blocks the arm step; the line stays
+# mergeable by hand and the next green run auto-clears.
+
+permissions:
+  issues: read
 
 concurrency:
   group: auto-merge-arm-${{ github.event.pull_request.number }}

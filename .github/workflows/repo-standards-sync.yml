@@ -146,14 +146,26 @@ jobs:
               return 1
             fi
           }
-          have_arm=0; have_visual=0; have_deploy=0
+          have_arm=0; have_visual=0; have_deploy=0; have_stop_line=0
           fetch ".github/workflows/auto-merge-arm.yml" "canonical/auto-merge-arm.yml" && have_arm=1
           fetch ".github/workflows/visual-check.yml"   "canonical/visual-check.yml"   && have_visual=1
           fetch ".github/workflows/deploy-production.yml" "canonical/deploy-production.yml" && have_deploy=1
+          # fleet-ops#1457: canonical stays in fleet-ops until
+          # Nishfleet/siterep-public publishes a promotion copy. Mirrors the
+          # portable-standards pattern — fleet-ops owns the file the night it
+          # lands, the cross-repo sync follows when siterep-public catches up.
+          if [ -f .github/workflows/stop-the-line-watch.yml ]; then
+            cp .github/workflows/stop-the-line-watch.yml canonical/stop-the-line-watch.yml
+            have_stop_line=1
+            echo "FETCHED .github/workflows/stop-the-line-watch.yml -> canonical/stop-the-line-watch.yml (local until siterep-public promotes it)"
+          else
+            echo "ABSENT .github/workflows/stop-the-line-watch.yml in fleet-ops — skipping #1457 sync this run"
+          fi
           {
             echo "have_arm=$have_arm"
             echo "have_visual=$have_visual"
             echo "have_deploy=$have_deploy"
+            echo "have_stop_line=$have_stop_line"
           } >> "$GITHUB_OUTPUT"
 
       - name: Generate sync.yml
@@ -161,6 +173,7 @@ jobs:
           HAVE_ARM: ${{ steps.fetch.outputs.have_arm }}
           HAVE_VISUAL: ${{ steps.fetch.outputs.have_visual }}
           HAVE_DEPLOY: ${{ steps.fetch.outputs.have_deploy }}
+          HAVE_STOP_LINE: ${{ steps.fetch.outputs.have_stop_line }}
         run: |
           set -euo pipefail
           if [ "$HAVE_ARM" != "1" ]; then
@@ -231,6 +244,22 @@ jobs:
             echo "    repos: |"
             while IFS= read -r r; do echo "      $r"; done < repos-rule-enforcement.txt
           } >> .github/sync.yml
+          # Group 6: stop-the-line-watch.yml -> Nishfleet repos EXCEPT fleet-ops
+          # (already has it; the auto-merge-arm on each repo consults the open
+          # issue this workflow writes and refuses to arm while it is open —
+          # fleet-ops#1457. The detector calls a private reusable workflow
+          # living in Nishfleet/fleet-ops, so this sync is restricted to the
+          # same Nishfleet org as the red-on-main-watch group above.
+          if [ "$HAVE_STOP_LINE" = "1" ]; then
+            grep -E '^Nishfleet/' repos-all.txt | grep -vxE 'Nishfleet/fleet-ops' > repos-stop-the-line.txt || true
+            {
+              echo "  - files:"
+              echo "      - source: canonical/stop-the-line-watch.yml"
+              echo "        dest: .github/workflows/stop-the-line-watch.yml"
+              echo "    repos: |"
+              while IFS= read -r r; do echo "      $r"; done < repos-stop-the-line.txt
+            } >> .github/sync.yml
+          fi
           echo "--- generated .github/sync.yml ---"
           cat .github/sync.yml
 
