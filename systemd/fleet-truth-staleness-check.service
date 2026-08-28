@@ -1,0 +1,7 @@
+[Unit]
+Description=Truth staleness check service (fleet-ops#1137)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/staleness-checker.py
+Environment=STALENESS_RUN_MODE=direct
