@@ -583,3 +583,21 @@ systemd/pi-intake-trigger.path /home/nish/.config/systemd/user/pi-intake-trigger
 systemd/pi-intake-trigger.service /home/nish/.config/systemd/user/pi-intake-trigger.service
 bin/pi-intake-trigger /home/nish/.local/bin/pi-intake-trigger
 systemd/timer-manifest.json /home/nish/.config/fleet-ops/timer-manifest.json
+
+# fleet-ops#1464: GitHub push channel (Webhook -> Worker -> Cloudflare Tunnel
+# -> VPS gh-webhook-receiver). VPS-side ships in this PR; the Cloudflare Worker
+# source lives at workers/github-push-forward/ and is deploy-gated on Nish
+# (PR-only, no merge/deploy without Nish). The synthetic canary is the
+# level-triggered liveness probe; the dead-man is the failure-inversion
+# alert rail. The intake timer drops from */15 to */20 to keep its
+# reconciler role sane against the faster push path.
+libexec/gh-webhook-receiver/serve.py /home/nish/.local/libexec/gh-webhook-receiver/serve.py
+bin/gh-webhook-canary.py /home/nish/.local/bin/gh-webhook-canary
+bin/gh-webhook-canary-deadman.py /home/nish/.local/bin/gh-webhook-canary-deadman
+systemd/gh-webhook-receiver.service /home/nish/.config/systemd/user/gh-webhook-receiver.service
+systemd/gh-webhook-canary.service /home/nish/.config/systemd/user/gh-webhook-canary.service
+systemd/gh-webhook-canary.timer /home/nish/.config/systemd/user/gh-webhook-canary.timer
+systemd/gh-webhook-canary-deadman.service /home/nish/.config/systemd/user/gh-webhook-canary-deadman.service
+systemd/gh-webhook-canary-deadman.timer /home/nish/.config/systemd/user/gh-webhook-canary-deadman.timer
+
+docs/github-push-channel.md /home/nish/.local/share/fleet-ops/docs/github-push-channel.md
