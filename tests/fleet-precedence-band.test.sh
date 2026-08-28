@@ -146,7 +146,7 @@ pi-issue@0509-1299.service
 pi-issue@fleet-ops-1234.service
 UNITS
 set +e
-out=$(run_canary)
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario7: surge non-leverage must exit 1, got $rc ($out)"
@@ -159,7 +159,7 @@ pi-issue@0509-1299.service
 pi-issue@fleet-ops-1223.service
 UNITS
 set +e
-out=$(run_canary)
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario8: surge leverage-only must exit 0, got $rc ($out)"
