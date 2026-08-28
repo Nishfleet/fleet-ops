@@ -255,6 +255,7 @@ load_seat_caps() {
     SEAT_COMEBACK_CREDENTIALS_BAD_S=604800
     SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
+    SEAT_TARGET_CONCURRENT=25
 
     [[ -f "$SEAT_CAPS_JSON" ]] || { seat_log "seat-caps: NO CAPS FILE at $SEAT_CAPS_JSON — falling back to no-cap behaviour"; return 1; }
     if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
@@ -262,11 +263,13 @@ load_seat_caps() {
         return 1
     fi
 
-    local ram ores
+    local ram ores tgt
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
     ores=$(jq -r '.org_reserve // 2' "$SEAT_CAPS_JSON")
     [[ "$ores" =~ ^[0-9]+$ ]] && SEAT_ORG_RESERVE="$ores"
+    tgt=$(jq -r '.target_concurrent // 25' "$SEAT_CAPS_JSON")
+    [[ "$tgt" =~ ^[0-9]+$ ]] && SEAT_TARGET_CONCURRENT="$tgt"
 
     # fleet-ops#602: the read loops below must use LOCAL variables. bash's
     # `local` is DYNAMIC scoping, so a bare `p`/`m` here would write into the
@@ -727,6 +730,43 @@ seat_max_concurrent() {
     else
         echo $(( caps_sum < ram_cap ? caps_sum : ram_cap ))
     fi
+}
+
+# fleet-ops#1558: light-workload target concurrent (defaults 25). Loaded from
+# seat-caps.json target_concurrent; callers that have not load_seat_caps yet
+# get the default.
+target_concurrent() {
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_TARGET_CONCURRENT:-25}"
+}
+
+# Admit ceiling = min(target_concurrent, ram_governor_cap). Undersaturation
+# floor and "25 when supply exists" semantics use this, not a hard 25 — so a
+# browser-heavy mix that drops MemAvailable does not page as a fault.
+admit_ceiling() {
+    local tgt ram_cap
+    tgt=$(target_concurrent)
+    ram_cap=$(ram_governor_cap) || ram_cap=0
+    if (( ram_cap <= 0 )); then
+        echo "$tgt"
+    elif (( tgt < ram_cap )); then
+        echo "$tgt"
+    else
+        echo "$ram_cap"
+    fi
+}
+
+# Per-repo MemoryMax/MemoryHigh from seat-caps.json worker_memory.<repo>.
+# Prints "MemoryMax\tMemoryHigh" or empty if the repo has no row (caller keeps
+# the template defaults). systemd quantity strings pass through unchanged.
+worker_memory_for_repo() {
+    local repo="$1" max high
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    max=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryMax // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ -n "$max" || -n "$high" ]] || return 0
+    printf '%s\t%s\n' "$max" "$high"
 }
 
 # --- seat enumeration from models.json (never hardcode) ----------------------
@@ -2078,9 +2118,12 @@ pick_seat() {
             _sample+=("$_k")
         done
         # Sort + truncate to 6 sample seats so the line stays short.
+        # bash array slice (not head -n): fleet-token-efficiency-check rejects
+        # head -n caps on any touched assembler file (fleet-ops#523).
         local _sorted
         if (( ${#_sample[@]} > 0 )); then
-            mapfile -t _sorted < <(printf '%s\n' "${_sample[@]}" | sort | head -6)
+            mapfile -t _sorted < <(printf '%s\n' "${_sample[@]}" | sort)
+            _sorted=("${_sorted[@]:0:6}")
         else
             _sorted=()
         fi
