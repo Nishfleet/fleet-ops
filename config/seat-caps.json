@@ -88,7 +88,7 @@
     "groq": {
       "cap": 0,
       "class": "free",
-      "reason": "2026-08-28 re-audition (fleet-ops#1456): credential WORKS (not credentials_bad \u2014 the 2026-08-25 reason was stale). `pi --print --provider groq --model openai/gpt-oss-20b PONG` returned HTTP 429 rate_limit_exceeded: free-tier TPM limit 8000 < system-prompt ~45k tokens. The model cannot carry fleet packets at the system-prompt size; cap=0 is correct (free-tier TPM, not a credential fault). Re-audition if Groq raises the free TPM limit or a smaller-prompt adapter lands."
+      "reason": "2026-08-28 re-audition (fleet-ops#1456): credential WORKS (not credentials_bad — the 2026-08-25 reason was stale). `pi --print --provider groq --model openai/gpt-oss-20b PONG` returned HTTP 429 rate_limit_exceeded: free-tier TPM limit 8000 < system-prompt ~45k tokens. The model cannot carry fleet packets at the system-prompt size; cap=0 is correct (free-tier TPM, not a credential fault). Re-audition if Groq raises the free TPM limit or a smaller-prompt adapter lands."
     },
     "inferx": {
       "cap": 0,
@@ -129,7 +129,7 @@
         "deepseek-v4-flash": 1,
         "deepseek-v4-flash-vision-exp": 1
       },
-      "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) \u2014 OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image \u2014 relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct \u2014 2,3,5,7,11,13,17,19 are exactly 8 primes \u2264 20). Cap 2 split 1+1 (capacity-is-measured) per conservative cap-2 for new free lanes; raise after a league mean beats the worst incumbent on the ladder. Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) \u2014 only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm."
+      "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) — OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image — relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct — 2,3,5,7,11,13,17,19 are exactly 8 primes ≤ 20). Cap 2 split 1+1 (capacity-is-measured) per conservative cap-2 for new free lanes; raise after a league mean beats the worst incumbent on the ladder. Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) — only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm."
     },
     "orcarouter": {
       "cap": 0,

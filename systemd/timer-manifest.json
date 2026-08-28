@@ -1,462 +1,462 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Fleet timer manifest \u2014 every user timer must have an entry with a named reason. CI validates live timers against this manifest.",
+  "description": "Fleet timer manifest — every user timer must have an entry with a named reason. CI validates live timers against this manifest.",
   "timers": {
     "agent-cron-0509-daily-market-signal.timer": {
-      "reason": "Daily 0509 market signal cron \u2014 true calendar job at 08:15 IST",
+      "reason": "Daily 0509 market signal cron — true calendar job at 08:15 IST",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"
     },
     "agent-governor-orphan-watchdog.timer": {
-      "reason": "5-min all-agents orphan janitor \u2014 reaps marked descendants whose supervisor is gone; 5-min bounds detection",
+      "reason": "5-min all-agents orphan janitor — reaps marked descendants whose supervisor is gone; 5-min bounds detection",
       "classification": "scheduled",
       "cadence": "5min",
       "source": "user-config"
     },
     "agent-scheduler-drift.timer": {
-      "reason": "Daily scheduler drift check \u2014 detects drift between declared and actual timer state; runs at 03:00 IST",
+      "reason": "Daily scheduler drift check — detects drift between declared and actual timer state; runs at 03:00 IST",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "user-config"
     },
     "daily-digest.timer": {
-      "reason": "9 AM IST daily digest push \u2014 live Pi-era data only (merged PRs, failed units, Prometheus alerts, seat health, disk %)",
+      "reason": "9 AM IST daily digest push — live Pi-era data only (merged PRs, failed units, Prometheus alerts, seat health, disk %)",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "user-config"
     },
     "escalation-daily-sweep.timer": {
-      "reason": "Daily dead-man floor for SENIOR-AUDITOR escalation layer \u2014 bounds max time-to-audit at 24h for failures with no dedicated tripwire",
+      "reason": "Daily dead-man floor for SENIOR-AUDITOR escalation layer — bounds max time-to-audit at 24h for failures with no dedicated tripwire",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"
     },
     "fleet-aeo-probe.timer": {
-      "reason": "Weekly AEO visibility probe \u2014 measurement window is weekly; must land before Weekly Fleet Review (Sun 04:30 IST)",
+      "reason": "Weekly AEO visibility probe — measurement window is weekly; must land before Weekly Fleet Review (Sun 04:30 IST)",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "repo"
     },
     "fleet-asset-census.timer": {
-      "reason": "Weekly VPS asset census \u2014 runs before Weekly Fleet Review so Pi review starts from enumerated, guarded surface",
+      "reason": "Weekly VPS asset census — runs before Weekly Fleet Review so Pi review starts from enumerated, guarded surface",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "repo"
     },
     "fleet-bare-metal-rebuild-drill.timer": {
-      "reason": "Weekly bare-metal rebuild drill \u2014 manifest completeness invariant is not an event signal; weekly container proof catches drift",
+      "reason": "Weekly bare-metal rebuild drill — manifest completeness invariant is not an event signal; weekly container proof catches drift",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "repo"
     },
     "fleet-blind-audit.timer": {
-      "reason": "Daily blind audit floor \u2014 unknown unknowns have no event to subscribe to; daily calendar floor is the only correct primary trigger",
+      "reason": "Daily blind audit floor — unknown unknowns have no event to subscribe to; daily calendar floor is the only correct primary trigger",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"
     },
     "fleet-completion-canary.timer": {
-      "reason": "15-min hop-clock canary \u2014 PathChanged cannot notice 'nothing happened'; this timer detects stalled alert-repair chains within one tick of the tightest clock",
+      "reason": "15-min hop-clock canary — PathChanged cannot notice 'nothing happened'; this timer detects stalled alert-repair chains within one tick of the tightest clock",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "user-config"
     },
     "fleet-console-pi.timer": {
-      "reason": "Fleet Console (Pi) page refresh \u2014 GitHub PR/CI state drifts continuously; 12-min cadence keeps page current inside API budget. CONVERTING TO PATH UNIT",
+      "reason": "Fleet Console (Pi) page refresh — GitHub PR/CI state drifts continuously; 12-min cadence keeps page current inside API budget. CONVERTING TO PATH UNIT",
       "classification": "converting",
       "cadence": "12min",
       "source": "repo"
     },
     "fleet-deploy-check.timer": {
-      "reason": "Merge-to-live deploy check \u2014 TOP GEAR: merged-but-not-live latency bound. CONVERTING TO PATH UNIT on state file changes",
+      "reason": "Merge-to-live deploy check — TOP GEAR: merged-but-not-live latency bound. CONVERTING TO PATH UNIT on state file changes",
       "classification": "converting",
       "cadence": "2min",
       "source": "repo"
     },
     "fleet-heartbeat.timer": {
-      "reason": "Orchestrator continuity across interactive-session restarts \u2014 event notifications die with sessions; this timer survives every session exit",
+      "reason": "Orchestrator continuity across interactive-session restarts — event notifications die with sessions; this timer survives every session exit",
       "classification": "scheduled",
       "cadence": "30min",
       "source": "repo"
     },
     "fleet-metrics-export.timer": {
-      "reason": "Fleet Prometheus metrics export \u2014 5-min cadence for metrics freshness; piggybacks git-mirror-update and waste-ledger. Metrics are an aggregate snapshot with no single upstream event; 5-min cadence is the scrape interval floor",
+      "reason": "Fleet Prometheus metrics export — 5-min cadence for metrics freshness; piggybacks git-mirror-update and waste-ledger. Metrics are an aggregate snapshot with no single upstream event; 5-min cadence is the scrape interval floor",
       "classification": "scheduled",
       "cadence": "5min",
       "source": "user-config"
     },
     "fleet-resilience-drill.timer": {
-      "reason": "Daily four-plane resilience drill \u2014 each plane's failure is silent without periodic proof; daily at 05:47 IST off heartbeat cluster",
+      "reason": "Daily four-plane resilience drill — each plane's failure is silent without periodic proof; daily at 05:47 IST off heartbeat cluster",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"
     },
     "fleet-restore-drill.timer": {
-      "reason": "6h control-plane restore drill \u2014 rebuild story is a continuity invariant with no event signal; 6h catches stale backup within one waking window",
+      "reason": "6h control-plane restore drill — rebuild story is a continuity invariant with no event signal; 6h catches stale backup within one waking window",
       "classification": "scheduled",
       "cadence": "6h",
       "source": "repo"
     },
     "fleet-weekly-fleet-review.timer": {
-      "reason": "Weekly Fleet Review (WFR) \u2014 mandated weekly senior review per WBR/kaizen pattern; Sun 04:30 IST post-maintenance chain",
+      "reason": "Weekly Fleet Review (WFR) — mandated weekly senior review per WBR/kaizen pattern; Sun 04:30 IST post-maintenance chain",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "repo"
     },
     "fleet2-digest.timer": {
-      "reason": "DEPRECATED: fleet2 legacy digest timer \u2014 to be removed per fleet-ops simplification",
+      "reason": "DEPRECATED: fleet2 legacy digest timer — to be removed per fleet-ops simplification",
       "classification": "deprecated",
       "cadence": "unknown",
       "source": "user-config"
     },
     "fleet2-dispatch.timer": {
-      "reason": "DEPRECATED: fleet2 legacy dispatch timer \u2014 to be removed per fleet-ops simplification",
+      "reason": "DEPRECATED: fleet2 legacy dispatch timer — to be removed per fleet-ops simplification",
       "classification": "deprecated",
       "cadence": "unknown",
       "source": "user-config"
     },
     "fleet2-events.timer": {
-      "reason": "DEPRECATED: fleet2 legacy events timer \u2014 to be removed per fleet-ops simplification",
+      "reason": "DEPRECATED: fleet2 legacy events timer — to be removed per fleet-ops simplification",
       "classification": "deprecated",
       "cadence": "unknown",
       "source": "user-config"
     },
     "gh-webhook-canary-deadman.timer": {
-      "reason": "GitHub push-channel dead-man's switch \u2014 every 5 min checks the synthetic canary's last-green metric and pages if missing/stale > 15 min (fleet-ops#1464).",
+      "reason": "GitHub push-channel dead-man's switch — every 5 min checks the synthetic canary's last-green metric and pages if missing/stale > 15 min (fleet-ops#1464).",
       "classification": "scheduled",
       "cadence": "5min",
       "source": "repo"
     },
     "gh-webhook-canary.timer": {
-      "reason": "GitHub push-channel synthetic canary \u2014 every 5 min posts a synthetic issues/labeled/agent-ready event through the local receiver and bumps the last-green metric (fleet-ops#1464).",
+      "reason": "GitHub push-channel synthetic canary — every 5 min posts a synthetic issues/labeled/agent-ready event through the local receiver and bumps the last-green metric (fleet-ops#1464).",
       "classification": "scheduled",
       "cadence": "5min",
       "source": "repo"
     },
-    "grok-token-refresh.timer": {
-      "reason": "Headless OAuth refresh of SuperGrok xai-oauth seat \u2014 access token lifetime is 6h; 4h cadence keeps ~/.pi/agent/auth.json fresh so an idle prepaid seat does not wake into a 401 (fleet-ops#41).",
-      "classification": "scheduled",
-      "cadence": "4h",
-      "source": "repo"
-    },
     "intake-reconcile.timer": {
-      "reason": "30-min backstop for intake reconciler \u2014 path unit handles synchronous file-change trips; this timer catches missed mtime bumps or masked path units",
+      "reason": "30-min backstop for intake reconciler — path unit handles synchronous file-change trips; this timer catches missed mtime bumps or masked path units",
       "classification": "scheduled",
       "cadence": "30min",
       "source": "repo"
     },
     "interactive-session-reap.timer": {
-      "reason": "Hourly stale-interactive-session reaper \u2014 idle age is a clock fact, not an event; hourly is proportionate to measured 8h idle threshold",
+      "reason": "Hourly stale-interactive-session reaper — idle age is a clock fact, not an event; hourly is proportionate to measured 8h idle threshold",
       "classification": "scheduled",
       "cadence": "hourly",
       "source": "user-config"
     },
     "nish-memory-curator.timer": {
-      "reason": "5-min shared-memory curation \u2014 compiles verified Nish captures from vault; could be event-driven on vault changes but vault churn is high",
+      "reason": "5-min shared-memory curation — compiles verified Nish captures from vault; could be event-driven on vault changes but vault churn is high",
       "classification": "scheduled",
       "cadence": "5min",
       "source": "user-config"
     },
     "open-question-sweep.timer": {
-      "reason": "Open-question stall watchdog \u2014 10-min floor catches stalls with no event; record path is event-driven, this timer only catches the no-event case. CONVERTING TO PATH UNIT",
+      "reason": "Open-question stall watchdog — 10-min floor catches stalls with no event; record path is event-driven, this timer only catches the no-event case. CONVERTING TO PATH UNIT",
       "classification": "converting",
       "cadence": "10min",
       "source": "user-config"
     },
-    "opus-heartbeat-thorough.timer": {
-      "reason": "6-hourly thorough duty-officer pass \u2014 reassess 2026-09-08; four passes per day for deep tier until return",
-      "classification": "scheduled",
-      "cadence": "6h",
-      "source": "user-config"
-    },
     "opus-heartbeat.timer": {
-      "reason": "Opus 5 fleet heartbeat \u2014 snapshot gather + duty-officer judge every 30 min at :00/:30; off-peak cadence for fleet snapshot",
+      "reason": "Opus 5 fleet heartbeat — snapshot gather + duty-officer judge every 30 min at :00/:30; off-peak cadence for fleet snapshot",
       "classification": "scheduled",
       "cadence": "30min",
       "source": "user-config"
     },
+    "opus-heartbeat-thorough.timer": {
+      "reason": "6-hourly thorough duty-officer pass — reassess 2026-09-08; four passes per day for deep tier until return",
+      "classification": "scheduled",
+      "cadence": "6h",
+      "source": "user-config"
+    },
     "pi-escalation-audit.timer": {
-      "reason": "Hourly senior escalation panel intake \u2014 escalations are rare and network-bound; hourly floor keeps time-to-panel under an hour",
+      "reason": "Hourly senior escalation panel intake — escalations are rare and network-bound; hourly floor keeps time-to-panel under an hour",
       "classification": "scheduled",
       "cadence": "hourly",
       "source": "repo"
     },
-    "pi-intake-repair@.timer": {
-      "reason": "Template repair timer for pi-intake instances \u2014 instantiated per repo by intake-reconcile",
-      "classification": "template",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@0509-telemetry.timer": {
-      "reason": "Pi intake repair for 0509-telemetry \u2014 OnFailure trigger for pi-intake@0509-telemetry",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@TinyStudio.io-public.timer": {
-      "reason": "Pi intake repair for TinyStudio.io-public \u2014 OnFailure trigger for pi-intake@TinyStudio.io-public",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@TinyStudio.io.timer": {
-      "reason": "Pi intake repair for TinyStudio.io \u2014 OnFailure trigger for pi-intake@TinyStudio.io",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@aiconverter-app.timer": {
-      "reason": "Pi intake repair for aiconverter-app \u2014 OnFailure trigger for pi-intake@aiconverter-app",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@context-hub.timer": {
-      "reason": "Pi intake repair for context-hub \u2014 OnFailure trigger for pi-intake@context-hub",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@egress-probe.timer": {
-      "reason": "Pi intake repair for egress-probe \u2014 OnFailure trigger for pi-intake@egress-probe",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@inish-site.timer": {
-      "reason": "Pi intake repair for inish-site \u2014 OnFailure trigger for pi-intake@inish-site",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
-    "pi-intake-repair@tinystudio-in.timer": {
-      "reason": "Pi intake repair for tinystudio-in \u2014 OnFailure trigger for pi-intake@tinystudio-in",
-      "classification": "scheduled",
-      "cadence": "on-failure",
-      "source": "repo"
-    },
     "pi-intake@.timer": {
-      "reason": "Template timer for pi-intake instances \u2014 instantiated per repo by intake-reconcile",
+      "reason": "Template timer for pi-intake instances — instantiated per repo by intake-reconcile",
       "classification": "template",
-      "cadence": "15min",
-      "source": "repo"
-    },
-    "pi-intake@0509-telemetry.timer": {
-      "reason": "Pi issue intake for 0509-telemetry \u2014 instantiated by intake-reconcile from config/intake-repos.json",
-      "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@0509.timer": {
-      "reason": "Pi issue intake for 0509 \u2014 15-min schedule because GitHub has no push channel to VPS; also fires on seat-recovery transitions and issue-filed-by-heartbeat. CONVERTING TO EVENT-DRIVEN",
+      "reason": "Pi issue intake for 0509 — 15-min schedule because GitHub has no push channel to VPS; also fires on seat-recovery transitions and issue-filed-by-heartbeat. CONVERTING TO EVENT-DRIVEN",
       "classification": "converting",
       "cadence": "15min",
       "source": "repo"
     },
-    "pi-intake@TinyStudio.io-public.timer": {
-      "reason": "Pi issue intake for TinyStudio.io-public \u2014 instantiated by intake-reconcile from config/intake-repos.json",
-      "classification": "scheduled",
-      "cadence": "15min",
-      "source": "repo"
-    },
-    "pi-intake@TinyStudio.io.timer": {
-      "reason": "Pi issue intake for TinyStudio.io \u2014 instantiated by intake-reconcile from config/intake-repos.json",
+    "pi-intake@0509-telemetry.timer": {
+      "reason": "Pi issue intake for 0509-telemetry — instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@aiconverter-app.timer": {
-      "reason": "Pi issue intake for aiconverter-app \u2014 instantiated by intake-reconcile from config/intake-repos.json",
+      "reason": "Pi issue intake for aiconverter-app — instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@context-hub.timer": {
-      "reason": "Pi issue intake for context-hub \u2014 instantiated by intake-reconcile from config/intake-repos.json",
+      "reason": "Pi issue intake for context-hub — instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@egress-probe.timer": {
-      "reason": "Pi issue intake for egress-probe \u2014 instantiated by intake-reconcile from config/intake-repos.json",
+      "reason": "Pi issue intake for egress-probe — instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@fleet-ops.timer": {
-      "reason": "Pi issue intake for fleet-ops \u2014 15-min schedule because GitHub has no push channel to VPS; also fires on seat-recovery transitions and issue-filed-by-heartbeat. CONVERTING TO EVENT-DRIVEN",
+      "reason": "Pi issue intake for fleet-ops — 15-min schedule because GitHub has no push channel to VPS; also fires on seat-recovery transitions and issue-filed-by-heartbeat. CONVERTING TO EVENT-DRIVEN",
       "classification": "converting",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@inish-site.timer": {
-      "reason": "Pi issue intake for inish-site \u2014 instantiated by intake-reconcile from config/intake-repos.json",
+      "reason": "Pi issue intake for inish-site — instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
     "pi-intake@tinystudio-in.timer": {
-      "reason": "Pi issue intake for tinystudio-in \u2014 instantiated by intake-reconcile from config/intake-repos.json",
+      "reason": "Pi issue intake for tinystudio-in — instantiated by intake-reconcile from config/intake-repos.json",
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
     },
-    "pi-scout-repair@.timer": {
-      "reason": "Template repair timer for pi-scout instances \u2014 instantiated per repo by intake-reconcile",
+    "pi-intake@TinyStudio.io-public.timer": {
+      "reason": "Pi issue intake for TinyStudio.io-public — instantiated by intake-reconcile from config/intake-repos.json",
+      "classification": "scheduled",
+      "cadence": "15min",
+      "source": "repo"
+    },
+    "pi-intake@TinyStudio.io.timer": {
+      "reason": "Pi issue intake for TinyStudio.io — instantiated by intake-reconcile from config/intake-repos.json",
+      "classification": "scheduled",
+      "cadence": "15min",
+      "source": "repo"
+    },
+    "pi-intake-repair@.timer": {
+      "reason": "Template repair timer for pi-intake instances — instantiated per repo by intake-reconcile",
       "classification": "template",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@0509-telemetry.timer": {
-      "reason": "Pi scout repair for 0509-telemetry \u2014 OnFailure trigger for pi-scout@0509-telemetry",
+    "pi-intake-repair@0509-telemetry.timer": {
+      "reason": "Pi intake repair for 0509-telemetry — OnFailure trigger for pi-intake@0509-telemetry",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@TinyStudio.io-public.timer": {
-      "reason": "Pi scout repair for TinyStudio.io-public \u2014 OnFailure trigger for pi-scout@TinyStudio.io-public",
+    "pi-intake-repair@aiconverter-app.timer": {
+      "reason": "Pi intake repair for aiconverter-app — OnFailure trigger for pi-intake@aiconverter-app",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@TinyStudio.io.timer": {
-      "reason": "Pi scout repair for TinyStudio.io \u2014 OnFailure trigger for pi-scout@TinyStudio.io",
+    "pi-intake-repair@context-hub.timer": {
+      "reason": "Pi intake repair for context-hub — OnFailure trigger for pi-intake@context-hub",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@aiconverter-app.timer": {
-      "reason": "Pi scout repair for aiconverter-app \u2014 OnFailure trigger for pi-scout@aiconverter-app",
+    "pi-intake-repair@egress-probe.timer": {
+      "reason": "Pi intake repair for egress-probe — OnFailure trigger for pi-intake@egress-probe",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@context-hub.timer": {
-      "reason": "Pi scout repair for context-hub \u2014 OnFailure trigger for pi-scout@context-hub",
+    "pi-intake-repair@inish-site.timer": {
+      "reason": "Pi intake repair for inish-site — OnFailure trigger for pi-intake@inish-site",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@egress-probe.timer": {
-      "reason": "Pi scout repair for egress-probe \u2014 OnFailure trigger for pi-scout@egress-probe",
+    "pi-intake-repair@tinystudio-in.timer": {
+      "reason": "Pi intake repair for tinystudio-in — OnFailure trigger for pi-intake@tinystudio-in",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@inish-site.timer": {
-      "reason": "Pi scout repair for inish-site \u2014 OnFailure trigger for pi-scout@inish-site",
+    "pi-intake-repair@TinyStudio.io-public.timer": {
+      "reason": "Pi intake repair for TinyStudio.io-public — OnFailure trigger for pi-intake@TinyStudio.io-public",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
-    "pi-scout-repair@tinystudio-in.timer": {
-      "reason": "Pi scout repair for tinystudio-in \u2014 OnFailure trigger for pi-scout@tinystudio-in",
+    "pi-intake-repair@TinyStudio.io.timer": {
+      "reason": "Pi intake repair for TinyStudio.io — OnFailure trigger for pi-intake@TinyStudio.io",
       "classification": "scheduled",
       "cadence": "on-failure",
       "source": "repo"
     },
     "pi-scout@.timer": {
-      "reason": "Template timer for pi-scout instances \u2014 instantiated per repo by intake-reconcile",
+      "reason": "Template timer for pi-scout instances — instantiated per repo by intake-reconcile",
       "classification": "template",
       "cadence": "4h",
       "source": "repo"
     },
     "pi-scout@0509.timer": {
-      "reason": "Pi product scout for 0509 \u2014 4h supply generation is inherently periodic; intake claiming stays event-gated",
+      "reason": "Pi product scout for 0509 — 4h supply generation is inherently periodic; intake claiming stays event-gated",
       "classification": "scheduled",
       "cadence": "4h",
       "source": "repo"
     },
     "pi-scout@fleet-ops.timer": {
-      "reason": "Pi product scout for fleet-ops \u2014 4h supply generation is inherently periodic; intake claiming stays event-gated",
+      "reason": "Pi product scout for fleet-ops — 4h supply generation is inherently periodic; intake claiming stays event-gated",
       "classification": "scheduled",
       "cadence": "4h",
       "source": "repo"
     },
+    "pi-scout-repair@.timer": {
+      "reason": "Template repair timer for pi-scout instances — instantiated per repo by intake-reconcile",
+      "classification": "template",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@0509-telemetry.timer": {
+      "reason": "Pi scout repair for 0509-telemetry — OnFailure trigger for pi-scout@0509-telemetry",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@aiconverter-app.timer": {
+      "reason": "Pi scout repair for aiconverter-app — OnFailure trigger for pi-scout@aiconverter-app",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@context-hub.timer": {
+      "reason": "Pi scout repair for context-hub — OnFailure trigger for pi-scout@context-hub",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@egress-probe.timer": {
+      "reason": "Pi scout repair for egress-probe — OnFailure trigger for pi-scout@egress-probe",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@inish-site.timer": {
+      "reason": "Pi scout repair for inish-site — OnFailure trigger for pi-scout@inish-site",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@tinystudio-in.timer": {
+      "reason": "Pi scout repair for tinystudio-in — OnFailure trigger for pi-scout@tinystudio-in",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@TinyStudio.io-public.timer": {
+      "reason": "Pi scout repair for TinyStudio.io-public — OnFailure trigger for pi-scout@TinyStudio.io-public",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
+    "pi-scout-repair@TinyStudio.io.timer": {
+      "reason": "Pi scout repair for TinyStudio.io — OnFailure trigger for pi-scout@TinyStudio.io",
+      "classification": "scheduled",
+      "cadence": "on-failure",
+      "source": "repo"
+    },
     "pi-transport-check.timer": {
-      "reason": "Pi transport integrity fallback heartbeat \u2014 30-min backstop for .path unit that can miss replace-by-rename or be inactive across restarts",
+      "reason": "Pi transport integrity fallback heartbeat — 30-min backstop for .path unit that can miss replace-by-rename or be inactive across restarts",
       "classification": "scheduled",
       "cadence": "30min",
       "source": "user-config"
     },
     "quality-baseline-research.timer": {
-      "reason": "Quality-baseline research refresh \u2014 one rotation cycle every 3 days via Pi worker",
+      "reason": "Quality-baseline research refresh — one rotation cycle every 3 days via Pi worker",
       "classification": "scheduled",
       "cadence": "3d",
       "source": "user-config"
     },
     "quality-research-weekly.timer": {
-      "reason": "Weekly quality>speed>efficiency research sweep \u2014 outside world changes weekly; Sunday 03:00 IST off-peak delta sweep",
+      "reason": "Weekly quality>speed>efficiency research sweep — outside world changes weekly; Sunday 03:00 IST off-peak delta sweep",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "repo"
     },
     "ready-work-recheck.timer": {
-      "reason": "15-min dependency-gated ready-work re-evaluation \u2014 dependency checks are POLLS of external state with NO local event; CONVERTING TO PATH UNIT on queue file + seat-recovery",
+      "reason": "15-min dependency-gated ready-work re-evaluation — dependency checks are POLLS of external state with NO local event; CONVERTING TO PATH UNIT on queue file + seat-recovery",
       "classification": "converting",
       "cadence": "15min",
       "source": "user-config"
     },
     "siterep-deploy.timer": {
-      "reason": "DISABLED: siterep.net autonomous deploy drift tick \u2014 deliberately NOT installed per packet p51; kept for reference",
+      "reason": "DISABLED: siterep.net autonomous deploy drift tick — deliberately NOT installed per packet p51; kept for reference",
       "classification": "disabled",
       "cadence": "5min",
       "source": "repo"
     },
     "siterep-live-canary.timer": {
-      "reason": "Hourly siterep.net live canary (T3 deep tier) \u2014 chromium+firefox layout smoke + synthetic monitor; hourly per three-tier monitoring cadence",
+      "reason": "Hourly siterep.net live canary (T3 deep tier) — chromium+firefox layout smoke + synthetic monitor; hourly per three-tier monitoring cadence",
       "classification": "scheduled",
       "cadence": "hourly",
       "source": "repo"
     },
     "siterep-pr-conflict-watchdog.timer": {
-      "reason": "PR conflict watchdog for siterep.net \u2014 detects merge conflicts on open PRs",
+      "reason": "PR conflict watchdog for siterep.net — detects merge conflicts on open PRs",
       "classification": "scheduled",
       "cadence": "unknown",
       "source": "repo"
     },
     "siterep-uptime.timer": {
-      "reason": "2-min uptime probe for siterep.net (T1) \u2014 decisive HTTP 200 + TLS + title marker; Persistent=false so missed probes don't stack on boot",
+      "reason": "2-min uptime probe for siterep.net (T1) — decisive HTTP 200 + TLS + title marker; Persistent=false so missed probes don't stack on boot",
       "classification": "scheduled",
       "cadence": "2min",
       "source": "repo"
     },
     "tinystudio-live-site-check.timer": {
-      "reason": "Nightly live-site check for tinystudio.in \u2014 soft-404, headings, tap targets, social preview, promptly support",
+      "reason": "Nightly live-site check for tinystudio.in — soft-404, headings, tap targets, social preview, promptly support",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "user-config"
     },
     "vault-conflict-resolver.timer": {
-      "reason": "10-min Syncthing conflict resolver \u2014 *.sync-conflict-* files freeze every vault writer; 10-min matches resolver's DISPATCH_COOLDOWN_SEC. CONVERTING TO PATH UNIT",
+      "reason": "10-min Syncthing conflict resolver — *.sync-conflict-* files freeze every vault writer; 10-min matches resolver's DISPATCH_COOLDOWN_SEC. CONVERTING TO PATH UNIT",
       "classification": "converting",
       "cadence": "10min",
       "source": "repo"
     },
     "vault-knowledge-format.timer": {
-      "reason": "Daily vault knowledge-format lint \u2014 daily floor catches drift in 03 Knowledge shape before monthly red-team review",
+      "reason": "Daily vault knowledge-format lint — daily floor catches drift in 03 Knowledge shape before monthly red-team review",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"
     },
     "vps-maintenance-deadman.timer": {
-      "reason": "Fail-safe resume if maintenance window never cleared pause flag \u2014 Tue 23:09 IST dead-man",
+      "reason": "Fail-safe resume if maintenance window never cleared pause flag — Tue 23:09 IST dead-man",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "user-config"
     },
     "vps-maintenance-quiesce.timer": {
-      "reason": "Weekly maintenance quiesce (T-15) \u2014 stops NEW work only; Sun 03:15 IST before vps-weekly-update",
+      "reason": "Weekly maintenance quiesce (T-15) — stops NEW work only; Sun 03:15 IST before vps-weekly-update",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "user-config"
     },
     "vps-weekly-update.timer": {
-      "reason": "Weekly VPS full-stack update \u2014 apt, npm globals, self-updaters, docker; Sun 03:30 IST after 15-min quiesce drain",
+      "reason": "Weekly VPS full-stack update — apt, npm globals, self-updaters, docker; Sun 03:30 IST after 15-min quiesce drain",
       "classification": "scheduled",
       "cadence": "weekly",
       "source": "user-config"
+    },
+    "grok-token-refresh.timer": {
+      "reason": "Headless OAuth refresh of SuperGrok xai-oauth seat — access token lifetime is 6h; 4h cadence keeps ~/.pi/agent/auth.json fresh so an idle prepaid seat does not wake into a 401 (fleet-ops#41).",
+      "classification": "scheduled",
+      "cadence": "4h",
+      "source": "repo"
     }
   }
 }
