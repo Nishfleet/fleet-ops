@@ -253,7 +253,7 @@ export STOP_ESCALATION_TEST_PI_MODE=timeout
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "timeout: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "timeout: expected exit 0, got $rc"
 grep -q 'TIMEOUT-KILL' "$STOP_ESCALATION_AUDITOR_LOG" || fail "timeout: expected TIMEOUT-KILL in AUDITOR-LOG"
 [[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "timeout: NISH must stay empty on a retryable failure"
 # Budget is the count for THIS hash, not the previous one.
@@ -272,7 +272,7 @@ export STOP_ESCALATION_TEST_PI_MODE=empty
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "empty output: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "empty output: expected exit 0, got $rc"
 grep -q 'DISPATCH-NO-BLOCK' "$STOP_ESCALATION_AUDITOR_LOG" || fail "empty output: expected DISPATCH-NO-BLOCK"
 [[ ! -s "$STOP_ESCALATION_NISH" ]] || fail "empty output: NISH must stay empty"
 count=$(awk -v h="$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')" '$1==h{print $2}' "$STOP_ESCALATION_SEEN" 2>/dev/null || true)
@@ -325,7 +325,7 @@ export STOP_ESCALATION_TEST_PI_MODE=sigterm
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "sigterm: expected exit 1 on first kill, got $rc"
+[[ $rc -eq 0 ]] || fail "sigterm: expected exit 0 on first kill, got $rc"
 grep -q "KILL-RETRY hash=$hash444" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "sigterm: expected KILL-RETRY in AUDITOR-LOG"
 if grep "hash=$hash444" "$STOP_ESCALATION_AUDITOR_LOG" | grep -q 'DISPATCH-NO-BLOCK'; then
@@ -380,7 +380,7 @@ export STOP_ESCALATION_TEST_PI_MODE=sigkill
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "sigkill: expected exit 1 on first kill, got $rc"
+[[ $rc -eq 0 ]] || fail "sigkill: expected exit 0 on first kill, got $rc"
 grep -q "KILL-RETRY hash=$hash137" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "sigkill: expected KILL-RETRY in AUDITOR-LOG"
 if grep "hash=$hash137" "$STOP_ESCALATION_AUDITOR_LOG" | grep -q 'DISPATCH-NO-BLOCK'; then
@@ -409,7 +409,7 @@ export STOP_ESCALATION_TEST_PI_MODE=timeout
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "1x-timeout: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "1x-timeout: expected exit 0, got $rc"
 grep -q 'TIMEOUT-KILL' "$STOP_ESCALATION_AUDITOR_LOG" || fail "1x-timeout: expected TIMEOUT-KILL"
 set +e
 "$dispatch"; rc=$?
@@ -451,7 +451,7 @@ export STOP_ESCALATION_TEST_PI_MODE=empty
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "1354 fire 1: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "1354 fire 1: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "1354 fire 1: expected DISPATCH-NO-BLOCK on devin"
 grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
@@ -461,7 +461,7 @@ grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "1354 fire 2: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "1354 fire 2: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash1354 provider=cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "1354 fire 2: expected DISPATCH-NO-BLOCK on cursor (rotation)"
 grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
@@ -540,7 +540,7 @@ export STOP_ESCALATION_TEST_PI_MODE=http402
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "623 fire 1: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "623 fire 1: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "623 fire 1: expected DISPATCH-NO-BLOCK on devin"
 grep -q "bench=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
@@ -552,7 +552,7 @@ grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "623 fire 2: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "623 fire 2: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hash623 provider=cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "623 fire 2: expected DISPATCH-NO-BLOCK on cursor (rotation)"
 grep -qxF "cursor/sonnet-4" "$STOP_ESCALATION_TEST_BENCH_FILE" \
@@ -592,7 +592,7 @@ export STOP_ESCALATION_TEST_PI_MODE=quota
 set +e
 "$dispatch"; rc=$?
 set -e
-[[ $rc -eq 1 ]] || fail "quota: expected exit 1, got $rc"
+[[ $rc -eq 0 ]] || fail "quota: expected exit 0, got $rc"
 grep -q "DISPATCH-NO-BLOCK hash=$hashq provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
   || fail "quota: expected DISPATCH-NO-BLOCK on devin"
 grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
@@ -601,4 +601,4 @@ grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "quota: devin must be benched"
 ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
 
-ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block fail loud, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"
+ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block quiet, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"
