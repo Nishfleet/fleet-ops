@@ -802,6 +802,51 @@ fi
 unset GH_OPEN_ISSUES
 ok "scenario22: leftover #997 and #768 both close; unrelated #42 stays (fleet-ops#997)"
 
+# --- 23. stale remote-tracking ref: fetch before fallback (fleet-ops#1118) ---
+# Reproduces the #1118 class: origin had a harness pushed AFTER the last
+# local fetch, so origin/main is stale (points at a harness-less commit).
+# The #927 / #961 origin fallback re-checked local remote-tracking refs
+# without fetching. Live: tinystudio-in origin/main lagged the merged
+# harness (Nishfleet/tinystudio-in#281) and the canary filed leftover
+# #999. The fix fetches before the fallback check so a stale ref cannot
+# file a false positive.
+: >"$gh_log"; : >"$triage"
+rm -rf "$products"; mkdir -p "$products"
+base_cfg; base_intake
+# Step 1: create origin bare with a harness-less commit.
+origin_bare="$scratch/origin-0509-23.git"
+git -c init.defaultBranch=main init -q --bare "$origin_bare"
+origin_work="$scratch/origin-work-23"
+git init -q -b main "$origin_work"
+git -C "$origin_work" config user.email t@t
+git -C "$origin_work" config user.name t
+echo "no harness yet" >"$origin_work/README"
+git -C "$origin_work" add README
+git -C "$origin_work" commit -q -m "seed without harness"
+git -C "$origin_work" remote add origin "$origin_bare"
+git -C "$origin_work" push -q origin main
+# Step 2: clone so origin/main points at the harness-less commit.
+git clone -q "$origin_bare" "$products/0509"
+git -C "$products/0509" config user.email t@t
+git -C "$products/0509" config user.name t
+# Sanity: local HEAD and origin/main both point at harness-less commit.
+harness_less_sha=$(git -C "$products/0509" rev-parse HEAD)
+git -C "$products/0509" rev-parse --verify --quiet origin/main >/dev/null \
+  || fail "scenario23: fixture must have origin/main ref"
+# Step 3: add harness to origin (push to bare). Do NOT fetch locally.
+make_valid_harness "$origin_work" 0509
+git -C "$origin_work" push -q origin main
+# origin/main in the local checkout is now STALE — still points at the
+# harness-less commit. The canary's fetch must update it.
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario23: stale-ref + origin has harness must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'VERIFY-HARNESS-OK' <<<"$env_out" || fail "scenario23: must log OK ($env_out)"
+grep -q 'stale-local: 0509' <<<"$env_out" || fail "scenario23: must log stale-local ($env_out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario23: must not file when origin was updated after clone (gh=$(cat "$gh_log"))"
+fi
+ok "scenario23: stale remote-tracking ref resolved by fetch — ok, no file (fleet-ops#1118)"
+
 # Citation lock: dropping #997 from the canary is a regression even if
 # the aiconverter-app drill still passes (same pin as #965 leftover piles).
 grep -q 'fleet-ops#812 / #999 / #997' "$bin" \
@@ -812,4 +857,4 @@ grep -q '#812 + #999 + #997' "$bin" \
   || fail "FILE_CAP comment must cite leftover pile #997 next to #812 + #999"
 ok "canary cites leftover #997 next to #812 / #999"
 
-ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty, leftover-drain, still-gap-no-close, file0-no-close, deep-list-dedup, aiconverter-leftover-drain"
+ok "fleet-verify-harness-canary: clean, missing, headings, features, deferred, dedup, watcher, skip, prod, wiring, live, stale-local, fallback-seam, nishfleet-remote, missing-nishfleet-remote, both-empty, leftover-drain, still-gap-no-close, file0-no-close, deep-list-dedup, aiconverter-leftover-drain, stale-ref-fetch"

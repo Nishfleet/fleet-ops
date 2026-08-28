@@ -34,6 +34,13 @@
 #      Nishfleet/aiconverter-app#190) — a tinystudio-in-only close
 #      leaves the aiconverter pile on the desk.
 #
+#      fleet-ops#1118: the origin fallback re-checked local remote-tracking
+#      refs without fetching. A stale origin/main ref (tinystudio-in
+#      lagged Nishfleet/tinystudio-in#281) filed leftover #999 even though
+#      HEAD on GitHub already had the harness. The fix fetches
+#      origin/nishfleet before each fallback check.
+#
+#
 # Why not wrap an existing tool:
 #   0. Read gh api --help, gh search code --help, gh issue list --help,
 #      gh issue close --help, fleet-exec-review-canary --help,
@@ -391,6 +398,12 @@ inspect_product() {
             if ! git -C "$checkout" remote get-url "$remote" >/dev/null 2>&1; then
                 continue
             fi
+            # Fetch before checking remote-tracking refs so a stale
+            # origin/main cannot file a leftover missing-harness ticket
+            # (fleet-ops#1118: the #927 / #961 origin fallback re-checked
+            # local refs without fetching; tinystudio-in origin/main
+            # lagged the merged harness and filed leftover #999).
+            git -C "$checkout" fetch "$remote" >/dev/null 2>&1 || true
             oref=$(remote_default_ref "$checkout" "$remote")
             [[ -n "$oref" ]] || continue
             opaths=$(skill_paths_on_head "$checkout" "$oref")
