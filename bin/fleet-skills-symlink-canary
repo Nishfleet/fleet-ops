@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+# fleet-skills-symlink-canary — skills are native on every harness (fleet-ops#532).
+#
+# Standing rule (Nish, 2026-08-20): if one agent has a skill, they all do.
+# ~/.claude/skills and ~/.codex/skills must carry the same SKILL.md names.
+# House-method skills already present on any of {claude, codex, pi} must be
+# present on every present surface of that set. Broken skill symlinks scream.
+#
+# Vault library entries that are on NO harness yet are a separate install
+# gap (file that as its own issue). This canary owns the "one has it, the
+# other does not" class.
+#
+# Violations go LOUD (triage + stderr) and auto-file one fleet-ops issue per
+# kind (deduped on an open issue whose body contains the marker). The canary
+# then exits 1 so fleet-heartbeat.service lands in --state=failed.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1.
+#
+# Environment seams (tests):
+#   FLEET_SKILLS_CLAUDE         claude skills dir
+#   FLEET_SKILLS_CODEX          codex skills dir
+#   FLEET_SKILLS_PI             pi skills dir (optional house-skill check)
+#   FLEET_SKILLS_VAULT          vault skills-library (optional house names)
+#   FLEET_HEARTBEAT_TRIAGE      triage file
+#   FLEET_SKILLS_CANARY_REPO    default Nishfleet/fleet-ops
+#   FLEET_SKILLS_CANARY_FILE    1 (default) file issues; 0 skip gh
+#   GH                          gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_SKILLS_CANARY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_SKILLS_CANARY_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-skills-symlink-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local kind="$1" title="$2" body="$3"
+    local marker="skills-symlink-canary: ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_SKILLS_CANARY_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+resolve_surface() {
+    local explicit="$1" agent_home="$2" default_skills="$3"
+    if [[ -n "$explicit" ]]; then
+        printf '%s\n' "$explicit"
+        return 0
+    fi
+    if [[ -d "$agent_home" ]]; then
+        printf '%s\n' "$default_skills"
+        return 0
+    fi
+    return 1
+}
+
+scan_skills() {
+    local dir="$1" names_file="$2" broken_file="$3" label="$4"
+    local child name
+    shopt -s nullglob
+    for child in "$dir"/*; do
+        name=$(basename "$child")
+        if [[ -L "$child" && ! -e "$child" ]]; then
+            printf '%s\n' "$name" >>"$broken_file"
+            continue
+        fi
+        if [[ -f "$child/SKILL.md" ]]; then
+            printf '%s\n' "$name" >>"$names_file"
+        fi
+    done
+    shopt -u nullglob
+    if [[ -s "$names_file" ]]; then
+        sort -u -o "$names_file" "$names_file"
+    else
+        : >"$names_file"
+    fi
+    if [[ -s "$broken_file" ]]; then
+        sort -u -o "$broken_file" "$broken_file"
+    fi
+    log "scanned $label dir=$dir names=$(wc -l <"$names_file" | tr -d ' ') broken=$(wc -l <"$broken_file" | tr -d ' ')"
+}
+
+list_preview() {
+    local file="$1"
+    if [[ ! -s "$file" ]]; then
+        printf '(none)'
+        return 0
+    fi
+    local count
+    count=$(wc -l <"$file" | tr -d ' ')
+    if (( count > 40 )); then
+        head -n 40 "$file" | tr '\n' ' '
+        printf '... (%s total)' "$count"
+    else
+        tr '\n' ' ' <"$file"
+        printf '(%s)' "$count"
+    fi
+}
+
+scratch=$(mktemp -d -t skills-symlink-canary.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+claude_dir=""
+codex_dir=""
+pi_dir=""
+if claude_dir=$(resolve_surface "${FLEET_SKILLS_CLAUDE:-}" "$HOME/.claude" "$HOME/.claude/skills"); then
+    :
+else
+    claude_dir=""
+fi
+if codex_dir=$(resolve_surface "${FLEET_SKILLS_CODEX:-}" "$HOME/.codex" "$HOME/.codex/skills"); then
+    :
+else
+    codex_dir=""
+fi
+if pi_dir=$(resolve_surface "${FLEET_SKILLS_PI:-}" "$HOME/.pi/agent" "$HOME/.pi/agent/skills"); then
+    :
+else
+    pi_dir=""
+fi
+
+if [[ -z "$claude_dir" && -z "$codex_dir" ]]; then
+    log "SKIP: neither claude nor codex skills surface is present (HOME=$HOME)"
+    loud "SKILLS-SYMLINK-SKIP" "neither claude nor codex skills surface is present"
+    exit 0
+fi
+
+violations=0
+
+require_dir() {
+    local label="$1" dir="$2"
+    if [[ ! -d "$dir" ]]; then
+        loud "SKILLS-SYMLINK-VIOLATION" "$label skills dir missing: $dir"
+        file_finding "missing-dir-$label" \
+            "skills-symlink: $label skills dir missing" \
+            "Harness \`${label}\` is installed but \`${dir}\` is not a directory. Skills are native: create the dir and link the catalog, or the agent cannot see skills the others have."
+        violations=$((violations + 1))
+        return 1
+    fi
+    return 0
+}
+
+if [[ -n "$claude_dir" && -z "$codex_dir" ]]; then
+    loud "SKILLS-SYMLINK-VIOLATION" "claude skills present but codex surface is absent"
+    file_finding "missing-surface-codex" \
+        "skills-symlink: Codex skills surface is absent" \
+        "Claude has a skills surface but Codex does not. Standing rule: if one agent has a skill, they all do. Create ~/.codex/skills and cross-link."
+    violations=$((violations + 1))
+fi
+if [[ -n "$codex_dir" && -z "$claude_dir" ]]; then
+    loud "SKILLS-SYMLINK-VIOLATION" "codex skills present but claude surface is absent"
+    file_finding "missing-surface-claude" \
+        "skills-symlink: Claude skills surface is absent" \
+        "Codex has a skills surface but Claude does not. Standing rule: if one agent has a skill, they all do. Create ~/.claude/skills and cross-link."
+    violations=$((violations + 1))
+fi
+
+claude_ok=0
+codex_ok=0
+pi_ok=0
+[[ -n "$claude_dir" ]] && require_dir claude "$claude_dir" && claude_ok=1
+[[ -n "$codex_dir" ]] && require_dir codex "$codex_dir" && codex_ok=1
+if [[ -n "$pi_dir" ]]; then
+    if [[ -d "$pi_dir" ]]; then
+        pi_ok=1
+    else
+        log "pi skills path set but missing ($pi_dir) — skip pi house-skill check"
+    fi
+fi
+
+claude_names="$scratch/claude.names"
+codex_names="$scratch/codex.names"
+pi_names="$scratch/pi.names"
+claude_broken="$scratch/claude.broken"
+codex_broken="$scratch/codex.broken"
+pi_broken="$scratch/pi.broken"
+: >"$claude_names"; : >"$codex_names"; : >"$pi_names"
+: >"$claude_broken"; : >"$codex_broken"; : >"$pi_broken"
+
+(( claude_ok == 1 )) && scan_skills "$claude_dir" "$claude_names" "$claude_broken" claude
+(( codex_ok == 1 )) && scan_skills "$codex_dir" "$codex_names" "$codex_broken" codex
+(( pi_ok == 1 )) && scan_skills "$pi_dir" "$pi_names" "$pi_broken" pi
+
+report_broken() {
+    local label="$1" file="$2"
+    [[ -s "$file" ]] || return 0
+    local preview
+    preview=$(list_preview "$file")
+    loud "SKILLS-SYMLINK-VIOLATION" "$label has broken skill symlink(s): $preview"
+    file_finding "broken-$label" \
+        "skills-symlink: broken $label skill symlink(s)" \
+        "Harness \`${label}\` has broken skill symlinks: ${preview}. Relink or remove them. A dangling skill is a silent miss — the agent thinks the skill exists and it does not."
+    violations=$((violations + 1))
+}
+
+report_broken claude "$claude_broken"
+report_broken codex "$codex_broken"
+report_broken pi "$pi_broken"
+
+missing_on_codex="$scratch/missing-on-codex"
+missing_on_claude="$scratch/missing-on-claude"
+: >"$missing_on_codex"; : >"$missing_on_claude"
+if (( claude_ok == 1 && codex_ok == 1 )); then
+    comm -23 "$claude_names" "$codex_names" >"$missing_on_codex" || true
+    comm -13 "$claude_names" "$codex_names" >"$missing_on_claude" || true
+fi
+
+if [[ -s "$missing_on_codex" ]]; then
+    preview=$(list_preview "$missing_on_codex")
+    loud "SKILLS-SYMLINK-VIOLATION" "skills on claude missing from codex: $preview"
+    file_finding "missing-on-codex" \
+        "skills-symlink: Claude skills missing from Codex" \
+        "These skills exist under the Claude harness but not Codex: ${preview}. Standing rule: if one agent has a skill, they all do. Cross-symlink into ~/.codex/skills."
+    violations=$((violations + 1))
+fi
+if [[ -s "$missing_on_claude" ]]; then
+    preview=$(list_preview "$missing_on_claude")
+    loud "SKILLS-SYMLINK-VIOLATION" "skills on codex missing from claude: $preview"
+    file_finding "missing-on-claude" \
+        "skills-symlink: Codex skills missing from Claude" \
+        "These skills exist under the Codex harness but not Claude: ${preview}. Standing rule: if one agent has a skill, they all do. Cross-symlink into ~/.claude/skills."
+    violations=$((violations + 1))
+fi
+
+# House-method skills: names from the vault library that already appear on
+# any present harness must appear on every present harness of {claude,codex,pi}.
+vault=""
+if [[ -n "${FLEET_SKILLS_VAULT:-}" ]]; then
+    vault="$FLEET_SKILLS_VAULT"
+elif [[ -d /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/skills-library ]]; then
+    vault=/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/skills-library
+elif [[ -d /Users/nish/dev/nish-vault/_system/shared-memory/skills-library ]]; then
+    vault=/Users/nish/dev/nish-vault/_system/shared-memory/skills-library
+fi
+
+house_missing="$scratch/house-missing"
+: >"$house_missing"
+if [[ -n "$vault" && -d "$vault" ]]; then
+    house_names="$scratch/house.names"
+    : >"$house_names"
+    shopt -s nullglob
+    for child in "$vault"/*; do
+        name=$(basename "$child")
+        if [[ -d "$child" && -f "$child/SKILL.md" ]]; then
+            printf '%s\n' "$name" >>"$house_names"
+        fi
+    done
+    shopt -u nullglob
+    if [[ -s "$house_names" ]]; then
+        sort -u -o "$house_names" "$house_names"
+    fi
+    while IFS= read -r name || [[ -n "${name:-}" ]]; do
+        [[ -n "$name" ]] || continue
+        present=0
+        missing_labels=""
+        if (( claude_ok == 1 )); then
+            if grep -Fxq "$name" "$claude_names"; then
+                present=1
+            else
+                missing_labels="${missing_labels:+$missing_labels,}claude"
+            fi
+        fi
+        if (( codex_ok == 1 )); then
+            if grep -Fxq "$name" "$codex_names"; then
+                present=1
+            else
+                missing_labels="${missing_labels:+$missing_labels,}codex"
+            fi
+        fi
+        if (( pi_ok == 1 )); then
+            if grep -Fxq "$name" "$pi_names"; then
+                present=1
+            else
+                missing_labels="${missing_labels:+$missing_labels,}pi"
+            fi
+        fi
+        if (( present == 1 )) && [[ -n "$missing_labels" ]]; then
+            printf '%s on=%s missing=%s\n' "$name" "partial" "$missing_labels" >>"$house_missing"
+        fi
+    done <"$house_names"
+fi
+
+if [[ -s "$house_missing" ]]; then
+    preview=$(list_preview "$house_missing")
+    loud "SKILLS-SYMLINK-VIOLATION" "house-method skill(s) not native on every harness: $preview"
+    file_finding "house-missing" \
+        "skills-symlink: house-method skill missing on a harness" \
+        "House-method skills from the vault library are on some harnesses but not all: ${preview}. Link the missing names. install-links.sh is the linker; this canary is the proof it ran."
+    violations=$((violations + 1))
+fi
+
+if (( violations > 0 )); then
+    log "FAIL: $violations skills-symlink violation(s)"
+    exit 1
+fi
+
+loud "SKILLS-SYMLINK-OK" "claude and codex skill names match; house skills present on every live harness; no broken skill symlinks"
+exit 0
