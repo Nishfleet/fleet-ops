@@ -247,7 +247,7 @@ def _systemctl_env():
 def _running_units():
     out = subprocess.run(
         [SYSTEMCTL, "--user", "list-units", "--type=service",
-         "--state=running", "--no-legend", "--plain"],
+         "--state=running,activating", "--no-legend", "--plain"],
         capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
         env=_systemctl_env(),
     )
@@ -365,7 +365,7 @@ def run_running_pi_execstart(tile):
     units = 0
     for name in _running_units():
         es = _show_value(name, "ExecStart")
-        if "pi --print" in es:
+        if ("pi --print" in es) or ("/pi-issue-run " in es) or ("/pi-issue-start" in es):
             units += 1
     return units
 
