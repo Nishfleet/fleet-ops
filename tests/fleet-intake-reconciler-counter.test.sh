@@ -34,8 +34,8 @@ ok "2: pi-intake@.timer cadence is */20 (slow reconciler envelope)"
 # --- 3: MANIFEST entries for the new VPS-side files are present.
 for entry in \
     "libexec/gh-webhook-receiver/serve.py" \
-    "bin/gh-webhook-canary" \
-    "bin/gh-webhook-canary-deadman" \
+    "bin/gh-webhook-canary.py" \
+    "bin/gh-webhook-canary-deadman.py" \
     "systemd/gh-webhook-receiver.service" \
     "systemd/gh-webhook-canary.service" \
     "systemd/gh-webhook-canary.timer" \

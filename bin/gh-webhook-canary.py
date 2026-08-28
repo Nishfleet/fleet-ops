@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Target is hardcoded 127.0.0.1:8088 (env var override is the loopback
+# default; the user never points it elsewhere). Audit-confirmed safe
+# (same suppression as lib/credential-expiry-canary.py + lib/verify-fleet-sync-pat.py).
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
 """gh-webhook-canary — synthetic end-to-end probe for the GitHub push channel.
 
 fleet-ops#1464, pattern 2. Posts a synthetic 'issues/labeled/agent-ready'

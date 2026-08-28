@@ -12,11 +12,6 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/1464
 # the process exits at import time with a missing-secret diagnostic.
 ConditionPathExists=%h/.config/fleet-ops/gh-webhook.secret
 
-# Restart on any failure (bind error, port conflict). 3s delay so the
-# journalctl storm is bounded; systemd caps the storm with StartLimit*.
-Restart=on-failure
-RestartSec=3s
-
 [Service]
 Type=simple
 Environment=GH_WEBHOOK_RECEIVER_BIND=127.0.0.1
@@ -26,6 +21,10 @@ Environment=GH_WEBHOOK_RECEIVER_PROM=/var/lib/prometheus/node-exporter/fleet-gh-
 # P14 systemd-analyze dodge on hosted runners that lack ~/.local. The
 # repo install.sh symlinks serve.py to ~/.local/libexec for the live box.
 ExecStart=/usr/bin/python3 %h/.local/libexec/gh-webhook-receiver/serve.py
+# Restart on any failure (bind error, port conflict). 3s delay so the
+# journalctl storm is bounded; systemd caps the storm with StartLimit*.
+Restart=on-failure
+RestartSec=3s
 TimeoutStopSec=10
 # Bound to 127.0.0.1 by default — the tunnel terminates here; never open
 # this on a public interface.

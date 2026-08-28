@@ -65,6 +65,12 @@ NON_ROLE_UNIT_PREFIXES = (
     # work-producing role. It enumerates the VPS and diffs against a
     # versioned guard map before the Weekly Fleet Review.
     "fleet-asset-census",
+    # fleet-ops#1464: the gh-webhook push channel is dumb transport
+    # (HMAC verify + forward) plus a synthetic-canary dead-man's switch.
+    # It runs no model, owns no prompt and produces no work items, so it
+    # has no role gate; its own gate is the receiver HMAC test, the
+    # canary round-trip test, and the absent() heartbeat rule.
+    "gh-webhook-",
     # pi-intake-trigger is event-driven intake plumbing (PR #1490): a
     # oneshot that fires on trigger files and starts pi-intake@ instances.
     # It runs no model, owns no prompt and produces no work items — same

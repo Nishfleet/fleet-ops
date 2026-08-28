@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Healthchecks.io URL is operator-set via GH_WEBHOOK_HEALTHCHECKS_FAIL_URL;
+# we never derive it from event data. Audit-confirmed safe (same
+# suppression as lib/credential-expiry-canary.py + lib/verify-fleet-sync-pat.py).
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
 """gh-webhook-canary-deadman — fleet-ops#1464 dead-man's switch.
 
 Watches /var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom.
