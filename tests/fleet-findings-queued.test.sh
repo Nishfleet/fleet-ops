@@ -392,16 +392,19 @@ set -e
 grep -q "FINDINGS-QUEUED-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
 ok "missing helper fails loud (guard wins over installed fallback)"
 
-# --- 7b. citation lock for #631 (missing-helper guard) -----------------------
+# --- 7b. citation lock for #609 / #631 (missing-helper guard) ----------------
 # The guard above (env-var pin wins over installed fallback) is the fix for
-# fleet-ops#631. Pin the issue number next to the guard in the bin so a future
-# refactor that removes the guard also has to remove the citation — making the
-# regression visible in review. Without this lock the guard could be silently
-# deleted and the missing-helper drill would still pass (the installed helper
-# scans clean), re-opening #631 invisibly.
+# fleet-ops#609 (the original report) and fleet-ops#631 (the duplicate that
+# shipped the guard in #1637). Pin both issue numbers next to the guard in the
+# bin so a future refactor that removes the guard also has to remove the
+# citations — making the regression visible in review. Without this lock the
+# guard could be silently deleted and the missing-helper drill would still pass
+# (the installed helper scans clean), re-opening #609 / #631 invisibly.
+grep -q 'fleet-ops#609' "$bin" \
+  || fail "bin/fleet-findings-queued must cite fleet-ops#609 next to the missing-helper guard"
 grep -q 'fleet-ops#631' "$bin" \
   || fail "bin/fleet-findings-queued must cite fleet-ops#631 next to the missing-helper guard"
-ok "citation lock: #631 pinned to the missing-helper guard in bin/fleet-findings-queued"
+ok "citation lock: #609 / #631 pinned to the missing-helper guard in bin/fleet-findings-queued"
 
 # --- 7c. observe-to-close: backticked <slug> example is NOT closed (fleet-ops#820) ---
 # A body that contains the literal text `signal: findings-queued/<slug>`
