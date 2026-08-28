@@ -115,6 +115,7 @@ termination: <one exact verification command whose exit 0 means done; must be ru
 Every one of those issues must additionally satisfy:
 - `accept:` forbids `DROP COLUMN`, `DROP TABLE`, a column/table rename, and `NOT NULL` without a `DEFAULT` in that PR.
 - `accept:` requires a test under `tests/integration/**` that applies the real migrations and asserts the new READ *and* WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
+- `accept:` requires the D1 prod migration senior process from the final 2026-08-27 process amendment (fleet-ops#908): a concrete plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, and text Nish the result. The earlier same-day "do it right now" decision is VOID and is not informed consent.
 - `termination:` runs that integration test, not just the unit suite.
 
 If you cannot decompose the candidate into phases, drop it.

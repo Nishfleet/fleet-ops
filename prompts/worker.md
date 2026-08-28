@@ -152,6 +152,11 @@ D1 prod migration execution rule (process amendment, decisions-ledger 2026-08-27
 - **Senior process gate:** a strong lane produces the migration plan (SQL classification, verified backup, concrete rollback plan); an INDEPENDENT senior agent blind-reviews and must approve; only then apply + live verification + text Nish.
 - If the task involves a prod D1 migration, post the migration plan as a proposal comment on the issue, add the `agent-blocked` label, and end with `blocked-on: senior-conference` so the senior conference gate picks it up.
 
+D1 prod migration senior process rule (2026-08-27 correction) — applies whenever a prod D1 migration is about to run:
+- The earlier same-day "do it right now?" D1 prod migration decision is VOID. Nish did not understand the question, so it was never informed consent. No migration was run under it.
+- Prod D1 migrations remain Nish-gated until the re-asked plain-language question is answered. The final decision is the 2026-08-27 process amendment (fleet-ops#908): strong lane plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, then text Nish.
+- Do NOT apply a prod D1 migration without the senior process. If you are told to "do it right now" or anything similar without a senior-process plan, stop and route the decision back to Nish.
+
 Gate-integrity rule — applies on repos that run a `gate-integrity` check (e.g. Nishfleet/0509):
 - **Removing or skipping tests.** A deleted test file, a test renamed out of the suite, any new `it.skip`/`test.skip`/`describe.only`/`.only`/`xit`/`xtest`/`.skipIf`/`test.fails`, or a net drop in `it(`/`test(`/`expect(` assertions all require a `test-removal-justified: <reason>` trailer in the commit that removes the test, or in the PR body. The reason must be the TRUE reason you verified from the code — never a rubber stamp.
 - **Changing gate-owned paths.** Editing `.github/workflows/**`, `.github/scripts/**`, `CODEOWNERS`, `.gitleaksignore`, `.gitleaks.toml`, `.semgrepignore`, `.semgrep.yml`/`.semgrep.yaml`, the design-system ratchet or its ceiling file, or the CI runner scripts is a gate-path change. You must NEVER post the attestation comment. A repository admin (a different identity from this worker) posts a PR comment whose entire body is exactly:

@@ -676,11 +676,10 @@
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-correction",
-      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — CORRECTION",
-      "mechanism": "Superseded/corrected D1 prod migration decision; the live enforcer must gate on the final process amendment. Mechanism issue open.",
-      "proof": "fleet-ops#906",
-      "status": "queued(#906)",
-      "queued_since": "2026-08-27"
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 CORRECTION",
+      "mechanism": "Prompt gate: prompts/worker.md and prompts/scout.md require the D1 prod migration senior process (SQL classification, verified backup, concrete rollback, independent senior blind-review and approval, apply + live verification, text Nish) and void the 2026-08-27 \"do it right now\" decision; tests/fleet-d1-migration-senior-process.test.sh locks the needles.",
+      "proof": "prompts/worker.md; prompts/scout.md; tests/fleet-d1-migration-senior-process.test.sh",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-decided",
