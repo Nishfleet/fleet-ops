@@ -37,9 +37,16 @@ AS=${STOP_ESCALATION_AS:-/home/nish/workspaces/agent-state}
 SR=${STOP_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
 SEEN=${STOP_ESCALATION_SEEN:-$AS/stop-escalation-seen.txt}
 KILLS=${STOP_ESCALATION_KILLS:-$AS/stop-escalation-kills.txt}
+WALLED=${STOP_ESCALATION_WALLED:-$AS/stop-escalation-walled.txt}
 NISH=${STOP_ESCALATION_NISH:-$AS/NISH-ESCALATIONS.md}
 LOG=${STOP_ESCALATION_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}
 CD=${STOP_ESCALATION_COOLDOWN:-300}
+# A fully-walled ladder is a money/billing escalation (Nish's alone).  Re-firing
+# on every STOP-REASON write spams NISH-ESCALATIONS and keeps the unit
+# churning.  Walled cooldown bounds Nish escalations to one per hash per
+# window; the daily sweep (a fresh hash) is the retry path.  Longer than CD
+# because a billing wall does not clear in 5 minutes (fleet-ops#623).
+WALLED_CD=${STOP_ESCALATION_WALLED_CD:-1800}
 PI=${STOP_ESCALATION_PI_BIN:-/home/nish/.local/bin/pi}
 DRY=${STOP_ESCALATION_DRY_RUN:-0}
 
@@ -91,6 +98,36 @@ clear_kill_count() {
   [ -f "$KILLS" ] || return 0
   grep -v -F "$h " "$KILLS" 2>/dev/null > "$KILLS.tmp" || true
   mv "$KILLS.tmp" "$KILLS"
+}
+
+# LADDER-WALLED cooldown (fleet-ops#623).  A fully-walled ladder is a Nish
+# escalation (money/billing).  Without a per-hash cooldown every STOP-REASON
+# write re-fires the path, re-walls, and spams NISH-ESCALATIONS while keeping
+# the unit churning.  Record one walled timestamp per hash; skip silently
+# inside the window.  The daily sweep writes a fresh hash so retry still lands.
+read_walled_at() {
+  local h="$1" e
+  [ -f "$WALLED" ] || { printf '0'; return; }
+  e=$(grep -F "$h " "$WALLED" | head -1 || true)
+  if [ -n "$e" ]; then
+    awk '{print $2}' <<<"$e"
+  else
+    printf '0'
+  fi
+}
+
+write_walled_at() {
+  local h="$1" ts="$2"
+  grep -v -F "$h " "$WALLED" 2>/dev/null > "$WALLED.tmp" || true
+  printf '%s %s\n' "$h" "$ts" >> "$WALLED.tmp"
+  mv "$WALLED.tmp" "$WALLED"
+}
+
+clear_walled_at() {
+  local h="$1"
+  [ -f "$WALLED" ] || return 0
+  grep -v -F "$h " "$WALLED" 2>/dev/null > "$WALLED.tmp" || true
+  mv "$WALLED.tmp" "$WALLED"
 }
 
 # Record a kill for this hash. First kill retries (exit 1). Second consecutive
@@ -161,6 +198,14 @@ if [ "$count" -ge 1 ] && [ $((now - last)) -lt "$CD" ]; then
   exit 0
 fi
 
+# LADDER-WALLED cooldown (fleet-ops#623): a hash that walled the whole ladder
+# inside the walled window skips silently.  The daily sweep (fresh hash) is the
+# retry path; re-firing the same walled hash only spams NISH-ESCALATIONS.
+walled_at=$(read_walled_at "$hash")
+if [ "$walled_at" -gt 0 ] && [ $((now - walled_at)) -lt "$WALLED_CD" ]; then
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Seat selection.  Defect #2 from fleet-ops#34: a rate_limited / retryable=true
 # / dead=false seat is a lane fault, not a Nish escalation.  Use the same
@@ -184,9 +229,15 @@ TRIED_FILE="$TRIED_DIR/$hash"
 
 seat=$(pick_seat_with_retry "$TRIED_FILE")
 if [ -z "$seat" ]; then
+  # fleet-ops#623: a fully-walled ladder is a Nish escalation (money/billing),
+  # not a unit failure.  Exit 0 so the unit is active-and-quiet between trips
+  # instead of permanently failed (alarm blindness).  Record one walled
+  # timestamp per hash so the walled cooldown above suppresses re-fire spam;
+  # the NISH-ESCALATIONS line is the actual alert.
+  write_walled_at "$hash" "$now"
   printf '%s LADDER-WALLED hash=%s reason=%s\n' "$(ts)" "$hash" "$reason" >> "$NISH"
-  echo "STOP-ESCALATION-FAULT: every seat walled or dead, Nish escalation" >&2
-  exit 1
+  echo "STOP-ESCALATION: ladder walled, Nish escalation (quiet ${WALLED_CD}s)" >&2
+  exit 0
 fi
 
 PROVIDER=$(printf '%s' "$seat" | cut -f1)
@@ -316,25 +367,45 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     finish_kill_retry "$pi_rc"
   else
     clear_kill_count "$hash"
-    # fleet-ops#1354: a seat that returns rc=0 with no diagnosis block is
-    # HTTP-healthy (200) but functionally dead for an agentic packet (the
-    # tools=0 / no-tools class).  Bench it via mark_seat_spawn_fail so
-    # pick_seat rotates to the next capable seat on the next trip/sweep,
-    # instead of re-picking the same dead seat forever (unbounded retry loop
-    # pinned to one seat).  A 200-with-empty-body is a lane fault and is
-    # recorded as one.  Best-effort: a write failure must not block the
-    # DISPATCH-NO-BLOCK record or the exit-1 retry contract.
-    if [ "$pi_rc" -eq 0 ]; then
-      mark_seat_spawn_fail "$PROVIDER" "$MODEL" "no_block" 2>/dev/null || true
+    # fleet-ops#623: bench the seat on EVERY failed dispatch, not only the
+    # rc=0/no-block class.  The live failure was a seat returning HTTP 402
+    # "Insufficient funds" (pi_rc=1): the #1354 fix only benched rc=0 seats,
+    # so a 402/429/5xx seat was never benched, pick_seat re-offered it every
+    # trip, and the unit tight-looped (6 failures / 2 min, each spawning a
+    # fresh pi process).  Mirror the pi-issue-run ladder: a quota/cap wall
+    # gets a long bench (mark_seat_quota_bench), a 503/overload wall gets an
+    # overload bench, and EVERYTHING ELSE (rc=0 no-block, rc=1 billing/402,
+    # mid-session death, generic non-zero) gets a short spawn-fail bench so
+    # pick_seat rotates to the next capable seat on the next trip.  A long
+    # bench that fails open (no reset window AND no provider default) falls
+    # through to the spawn-fail bench so the seat still rotates.  Best-effort:
+    # a write failure must not block the DISPATCH-NO-BLOCK record or the
+    # exit-1 retry contract.
+    benched=0; bench_reason="no-block"
+    if is_quota_cap_error "$combined" "" 2>/dev/null; then
+      bench_reason="quota_cap"
+      if mark_seat_quota_bench "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
+        benched=1
+      fi
     fi
-    printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" >> "$LOG"
+    if [ "$benched" -eq 0 ] && is_overload_error "$combined" "" 2>/dev/null; then
+      bench_reason="overload_503"
+      if mark_seat_overload_bench "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
+        benched=1
+      fi
+    fi
+    if [ "$benched" -eq 0 ]; then
+      bench_reason="no_block:rc=$pi_rc"
+      mark_seat_spawn_fail "$PROVIDER" "$MODEL" "$bench_reason" 2>/dev/null || true
+    fi
+    printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s bench=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" "$bench_reason" >> "$LOG"
     if [ -n "$combined" ]; then
       {
         printf '%s DISPATCH-OUTPUT hash=%s provider=%s model=%s pi_rc=%s\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc"
         printf '%s\n' "$combined"
       } >> "$LOG"
     fi
-    echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block)" >&2
+    echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block, bench=$bench_reason)" >&2
     # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
     # unchanged, so the next STOP-REASON change or daily sweep re-tries.
     exit 1
@@ -348,6 +419,7 @@ fi
 } >> "$LOG"
 
 clear_kill_count "$hash"
+clear_walled_at "$hash"
 
 nc=$((count+1))
 grep -v -F "$hash " "$SEEN" 2>/dev/null > "$SEEN.tmp" || true
