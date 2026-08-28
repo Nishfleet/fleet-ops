@@ -5,10 +5,29 @@
 # StartLimitBurst and is what released a live worker's claim (issue #26).
 # This wrapper no-ops instead of queueing another start.
 #
-# Usage: pi-issue-start <repo>-<issue>
-# Environment: SYSTEMCTL (tests)
+# fleet-ops#1451: this is also the dispatch path for re-dispatch (intake
+# re-claim, fleet-heartbeat-red-pr-repair). The reaper (pi-issue-failed-reap)
+# archives the .in packet when it releases a claim, but a re-dispatch onto a
+# SURVIVING claim branch (e.g. an open PR from claim/issue-<N>) does NOT go
+# through intake's packet-write step — so systemctl start hits a missing
+# StandardInput=file and fails 208/STDIN, tripping OnFailure + escalation on
+# every restart-ladder step. systemd opens StandardInput=file BEFORE
+# ExecStartPre, so ExecStart cannot self-heal. This wrapper regenerates the
+# .in from the worker prompt + TARGET line when it is missing, so the start
+# always has a packet to read. The unit's ConditionPathExists is the
+# belt-and-braces backstop for a raw `systemctl start` that bypasses this
+# wrapper.
 #
-# Exit: 0 = started or already-live no-op. Non-zero = systemctl start failed.
+# Usage: pi-issue-start <repo>-<issue>
+# Environment:
+#   SYSTEMCTL        defaults to systemctl (tests inject a fake)
+#   PI_ISSUES_DIR    defaults to ~/.local/state/pi-issues (tests redirect)
+#   WORKER_PROMPT    defaults to ~/.pi/agent/prompts/worker.md (tests redirect)
+#   GH               defaults to gh (tests inject a fake for keystone lookup)
+#
+# Exit: 0 = started or already-live no-op. Non-zero = systemctl start failed
+#       or the packet could not be regenerated (unparseable instance, missing
+#       worker prompt).
 
 set -euo pipefail
 
@@ -18,6 +37,9 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 instance="$1"
 unit="pi-issue@${instance}.service"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
+WORKER_PROMPT="${WORKER_PROMPT:-$HOME/.pi/agent/prompts/worker.md}"
+GH="${GH:-gh}"
 
 state="$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)"
 case "$state" in
@@ -31,6 +53,48 @@ main="$("$SYSTEMCTL" --user show -p MainPID --value "$unit" 2>/dev/null || echo 
 if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
     echo "pi-issue-start: $unit still has MainPID=$main (no-op)"
     exit 0
+fi
+
+# --- regenerate the .in packet if it is missing (fleet-ops#1451) ------------
+# The reaper archives .in/.out/.err when it releases a claim. A re-dispatch
+# onto a surviving claim branch (open PR, or intake re-claim that lost the
+# race but the branch persisted) reaches here with no .in. systemd would
+# then fail 208/STDIN. Rebuild the packet exactly as intake does
+# (prompts/intake.md step 3d): worker prompt + TARGET line, with the
+# `difficulty: keystone` marker first when the issue is a keystone.
+pkt="$PI_ISSUES_DIR/${instance}.in"
+if [[ ! -f "$pkt" ]]; then
+    repo="${instance%-*}"
+    issue="${instance##*-}"
+    if [[ -z "$repo" || -z "$issue" || ! "$issue" =~ ^[0-9]+$ ]]; then
+        echo "pi-issue-start: cannot parse repo/issue from '$instance' — cannot regenerate $pkt" >&2
+        exit 1
+    fi
+    if [[ ! -f "$WORKER_PROMPT" ]]; then
+        echo "pi-issue-start: worker prompt not found at $WORKER_PROMPT — cannot regenerate $pkt" >&2
+        exit 1
+    fi
+    mkdir -p "$PI_ISSUES_DIR"
+    full_repo="Nishfleet/${repo}"
+    unit_name="pi-issue-${instance}"
+    # Keystone routing (fleet-ops#1133): if the issue title/body/labels carry
+    # "keystone" (case-insensitive), prefix the marker so pick_seat uses
+    # reliability-first routing. This mirrors intake step 3d exactly. A gh
+    # failure is non-fatal: the packet is still written without the marker,
+    # and the worker runs with default routing rather than not at all.
+    keystone=0
+    if command -v "$GH" >/dev/null 2>&1; then
+        issue_blob="$("$GH" issue view "$issue" -R "$full_repo" --json title,body,labels 2>/dev/null || true)"
+        if [[ -n "$issue_blob" ]] && printf '%s' "$issue_blob" | grep -qi 'keystone'; then
+            keystone=1
+        fi
+    fi
+    if [[ "$keystone" == "1" ]]; then
+        { printf 'difficulty: keystone\n'; cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
+    else
+        { cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
+    fi
+    echo "pi-issue-start: REGENERATED missing packet $pkt for $full_repo#$issue"
 fi
 
 exec "$SYSTEMCTL" --user start "$unit"

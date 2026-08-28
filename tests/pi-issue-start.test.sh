@@ -15,6 +15,21 @@ ok()   { echo "OK: $*"; }
 fake="$(mktemp -d)"
 trap 'rm -rf "$fake"' EXIT
 
+# fleet-ops#1451: pi-issue-start now regenerates a missing .in before start.
+# Redirect the packet dir, worker prompt, and gh to fakes so this test never
+# touches the live ~/.local/state/pi-issues or the real gh.
+export PI_ISSUES_DIR="$fake/issues"
+mkdir -p "$PI_ISSUES_DIR"
+printf '# stub worker prompt\n' > "$fake/worker.md"
+export WORKER_PROMPT="$fake/worker.md"
+cat >"$fake/gh" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"title":"x","body":"x","labels":[]}'
+exit 0
+FAKE
+chmod +x "$fake/gh"
+export GH="$fake/gh"
+
 cat >"$fake/systemctl" <<'FAKE'
 #!/usr/bin/env bash
 shift  # --user
