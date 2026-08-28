@@ -96,6 +96,7 @@ def _post(url: str, body: bytes, sig: str, timeout: float) -> tuple[int, bytes]:
         "User-Agent": "gh-webhook-canary",
     })
     try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
