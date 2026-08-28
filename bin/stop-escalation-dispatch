@@ -281,9 +281,22 @@ if [ -z "$seat" ]; then
   # regex, so it never paged; tagging it MONEY-BOUNDARY makes it reachable
   # AND keeps it out of the auditor-only path.
   write_walled_at "$hash" "$now"
-  write_nish "MONEY-BOUNDARY" \
-    "$(printf '%s MONEY-BOUNDARY hash=%s reason=ladder-walled:%s\n' "$(ts)" "$hash" "$reason")"
-  echo "STOP-ESCALATION: ladder walled, MONEY-BOUNDARY escalation (quiet ${WALLED_CD}s)" >&2
+  # 2026-08-28 storm fix: a walled ladder is MONEY only when the wall reason
+  # carries payment evidence. Blanket MONEY tagging paged Nish 35x in 2 min
+  # for reason=unit-failure (units failing is not billing). Non-payment walls
+  # go to the auditor LOG path (write_nish routes unsanctioned classes there).
+  case "$reason" in
+    *payment*|*billing*|*402*|*quota_exhausted*|*insufficient*|*credit*|*subscription*)
+      write_nish "MONEY-BOUNDARY" \
+        "$(printf '%s MONEY-BOUNDARY hash=%s reason=ladder-walled:%s\n' "$(ts)" "$hash" "$reason")"
+      echo "STOP-ESCALATION: ladder walled (payment evidence), MONEY-BOUNDARY escalation (quiet ${WALLED_CD}s)" >&2
+      ;;
+    *)
+      write_nish "LADDER-WALLED" \
+        "$(printf '%s LADDER-WALLED hash=%s reason=%s\n' "$(ts)" "$hash" "$reason")"
+      echo "STOP-ESCALATION: ladder walled (${reason}), auditor path — not a money page (quiet ${WALLED_CD}s)" >&2
+      ;;
+  esac
   exit 0
 fi
 
