@@ -153,6 +153,17 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/dirty-worktree-audit\.test\.sh"?
   || fail "rule-enforcement.test.sh must bash-invoke dirty-worktree-audit.test.sh (fleet-ops#777)"
 ok "dirty-worktree-audit.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#777)"
 
+# fleet-ops#1460: hard-pin the host line for timer-manifest BEFORE
+# the $bad[] accounting so a future refactor that drops the host line
+# in tests/rule-enforcement.test.sh is caught by name. The test landed
+# on main via PR #1490's chain without a ci.yml listing or host; this
+# named pin is the class-prevention so the host cannot be deleted
+# without a named FAIL.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/timer-manifest\.test\.sh"?' \
+  "$here/rule-enforcement.test.sh" \
+  || fail "rule-enforcement.test.sh must bash-invoke timer-manifest.test.sh (fleet-ops#1460)"
+ok "timer-manifest.test.sh host line in rule-enforcement.test.sh is pinned (fleet-ops#1460)"
+
 # fleet-ops#1200: hard-pin the host line for pi-packet-verdict BEFORE
 # the $bad[] accounting so a future refactor that drops the host line
 # in tests/seat-lib.test.sh is caught by name. The test landed on main
