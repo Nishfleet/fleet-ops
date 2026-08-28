@@ -98,6 +98,30 @@
         "systemd/fleet-resilience-drill.service",
         "systemd/fleet-resilience-drill.timer"
       ]
+    },
+    {
+      "name": "gh-webhook-receiver",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_gh_webhook_receiver_last_green_seconds",
+      "absent_alert": "FleetGhWebhookReceiverAbsent",
+      "files": [
+        "libexec/gh-webhook-receiver/serve.py",
+        "systemd/gh-webhook-receiver.service"
+      ]
+    },
+    {
+      "name": "gh-webhook-canary",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_gh_webhook_canary_last_green_seconds",
+      "absent_alert": "FleetGhWebhookCanaryAbsent",
+      "files": [
+        "bin/gh-webhook-canary.py",
+        "bin/gh-webhook-canary-deadman.py",
+        "systemd/gh-webhook-canary.service",
+        "systemd/gh-webhook-canary.timer",
+        "systemd/gh-webhook-canary-deadman.service",
+        "systemd/gh-webhook-canary-deadman.timer"
+      ]
     }
   ]
 }

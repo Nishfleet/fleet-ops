@@ -409,3 +409,41 @@ groups:
         annotations:
           summary: "weekly VPS asset census has not run in 14+ days"
           description: "Repair worker: fleet_asset_census_last_run_seconds is absent or older than 14d (two weekly timer cycles). The census enumerates the VPS surface and diffs against config/asset-guard-map.json; a dead census means new/unguarded assets are invisible. Check journalctl --user -u fleet-asset-census.service and systemctl --user list-timers fleet-asset-census.timer. Helper: /home/nish/.local/bin/fleet-asset-census. fleet-ops#1149."
+
+  - name: fleet_gh_webhook_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR; required by fleet-ops#1464).
+      # gh-webhook-receiver writes fleet_gh_webhook_receiver_last_green_seconds
+      # on every verified+dispatched forward. It also writes the series
+      # with timestamp=0 on startup so the rule does not fire spuriously
+      # before the first event. 1h is 12 missed 5-min canary cycles — the
+      # same "two missed cycles × 6" doctrine as the scout (but at hour
+      # granularity because real webhooks are bursty, not continuous).
+      - alert: FleetGhWebhookReceiverAbsent
+        expr: absent(fleet_gh_webhook_receiver_last_green_seconds) or (time() - fleet_gh_webhook_receiver_last_green_seconds) > 3600
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "gh-webhook-receiver has not dispatched in 1+ hour OR the series is missing"
+          description: "Repair worker: the VPS-side GitHub push-channel receiver (gh-webhook-receiver.service) has gone silent. The Cloudflare Worker (workers/github-push-forward/) cannot reach this VPS through the Cloudflare Tunnel, OR the receiver service is dead, OR the HMAC secret file (~/.config/fleet-ops/gh-webhook.secret) is missing. First check: `systemctl --user status gh-webhook-receiver.service` and journalctl -u gh-webhook-receiver. Then curl http://127.0.0.1:8088/healthz. Then inspect cloudflared tunnel logs. The synthetic canary (gh-webhook-canary.timer) will likely also be red — start there. fleet-ops#1464."
+
+      # fleet-ops#1464, pattern 2: synthetic canary is the liveness probe
+      # for the entire GitHub push channel. gh-webhook-canary posts a
+      # synthetic issues/labeled/agent-ready payload every 5 min and
+      # bumps fleet_gh_webhook_canary_last_green_seconds. The canary is
+      # considered dead when the series is missing OR older than 15 min
+      # (three missed 5-min cycles). The gh-webhook-canary-deadman unit
+      # ALSO writes the alert-repair triage file when this fires, so
+      # both rails are loud.
+      - alert: FleetGhWebhookCanaryAbsent
+        expr: absent(fleet_gh_webhook_canary_last_green_seconds) or (time() - fleet_gh_webhook_canary_last_green_seconds) > 900
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "GitHub push-channel synthetic canary has not gone green in 15+ minutes"
+          description: "Repair worker: gh-webhook-canary.timer has not fired a successful probe in 15+ minutes (three missed 5-min cycles). The push channel is provably broken — either gh-webhook-receiver.service is dead, the local receiver cannot be reached (tunnel down, secret file missing, or 127.0.0.1:8088 unbound), or the canary timer itself is dead. First check `systemctl --user status gh-webhook-canary.timer` and journalctl -u gh-webhook-canary. Then `curl http://127.0.0.1:8088/healthz`. Then read the gh-webhook-canary-deadman triage file at ~/.local/state/pi-packet/alert-repair-triage.md for the dead-man’s own diagnostic. fleet-ops#1464."
