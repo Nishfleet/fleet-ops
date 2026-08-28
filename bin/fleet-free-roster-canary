@@ -27,10 +27,12 @@
 #      a. New free lane: for every free-class provider with cap>0 (ollama
 #         excluded — carve-out), a catalog slug matching the fleet free-form
 #         convention (`-free` suffix or `*-pass/` prefix, the opencode-m3 /
-#         cline-pass precedent) that is NOT in the seat-caps allowlist auto-
-#         files an "audition + wire" ticket (deduped, capped). The audition
-#         league quality bench stays a scout judgment carried in the filed
-#         ticket — same hand-off shape as paid-flash-canary.
+#         cline-pass precedent) that is NOT in the seat-caps allowlist is first
+#         probed for servability with a bounded `pi --print`. A probe that fails
+#         with a provider/transport error is skipped this tick and re-probed on
+#         the next; a passing probe auto-files an "audition + wire" ticket
+#         (deduped, capped). The audition league quality bench stays a scout
+#         judgment carried in the filed ticket — same hand-off shape as paid-flash-canary.
 #      b. Stale lane: a wired free-form slug on a free-class provider that has
 #         left the live catalog auto-files a "bench stale slug" ticket.
 #
@@ -51,6 +53,7 @@
 #   FLEET_FREE_ROSTER_REPO          default Nishfleet/fleet-ops
 #   FLEET_FREE_ROSTER_FILE          1 (default) file issues; 0 skip gh
 #   FLEET_FREE_ROSTER_CAP           per-tick file cap (default 5)
+#   FLEET_FREE_ROSTER_PROBE_TIMEOUT seconds to wait for a servability probe (default 30).
 #   GH                              gh binary (tests stub this)
 #   PI                              pi binary (tests stub this)
 
@@ -111,6 +114,29 @@ is_free_form() {
 is_ds_v4_flash() {
     local id="${1,,}"
     [[ "$id" =~ deepseek.*v4.*flash ]]
+}
+
+# Bounded servability pre-check for a new free-form slug. Uses `pi --print`
+# with a tiny no-tools prompt; any non-zero exit (provider/transport failure,
+# timeout, missing binary) means the slug is not servable right now.
+slug_is_servable() {
+    local provider="$1" slug="$2"
+    local probe_out="" probe_rc=0
+    if ! command -v "$PI" >/dev/null 2>&1; then
+        log "probe: $PI missing; cannot verify $provider/$slug"
+        return 1
+    fi
+    # </dev/null: the probe subshell must not inherit the caller's stdin
+    # (a while-read loop's here-string) — `pi --print` reads stdin and would
+    # drain the loop, ending iteration after the first slug.
+    probe_out=$(timeout "${FLEET_FREE_ROSTER_PROBE_TIMEOUT:-30}" "$PI" \
+        --print --no-tools --provider "$provider" --model "$slug" "PONG" \
+        </dev/null 2>&1) || probe_rc=$?
+    if (( probe_rc == 0 )); then
+        return 0
+    fi
+    log "probe: $provider/$slug not servable (rc=$probe_rc): $(printf '%s' "$probe_out" | head -n 1)"
+    return 1
 }
 
 norm_class() {
@@ -297,11 +323,15 @@ for pid in "${free_providers[@]}"; do
                 log "cap reached ($FILE_CAP): deferring $pid/$slug to a later tick"
                 continue
             fi
+            if ! slug_is_servable "$pid" "$slug"; then
+                log "skipping $pid/$slug: servability probe failed"
+                continue
+            fi
             loud "FREE-ROSTER-AVAILABLE" \
                 "free slug on $pid not wired: $slug — filing audition+wire"
             file_finding "${pid}:${slug}" "free-slug-available" \
                 "Audition + wire free $pid slug $slug" \
-                "fleet-free-roster-canary (fleet-ops#518) detected that \`${pid}\` (free-class, cap>0) now lists \`${slug}\` in Pi's catalog, matching the fleet free-form convention (\`-free\` suffix or \`*-pass/\` prefix). It is not in config/seat-caps.json providers.${pid}.models. Per sr-free-model-roster: every new free candidate auditions through the fleet-eval league BEFORE joining a work ladder — free but bad is still bad (league mean must beat the worst incumbent on the ladder or it stays benched). Run the scout/admission quality bench on real fleet packets, prove one live spawn through pi (switched-on-and-proven), check the meter shows zero spend, then allowlist only this slug with a dated reason (capacity-is-measured). Do not wire a billing slug."
+                "fleet-free-roster-canary (fleet-ops#518) detected that \`${pid}\` (free-class, cap>0) now lists \`${slug}\` in Pi's catalog, matching the fleet free-form convention (\`-free\` suffix or \`*-pass/\` prefix). A bounded \`pi --print\` servability probe succeeded before this ticket was filed. It is not in config/seat-caps.json providers.${pid}.models. Per sr-free-model-roster: every new free candidate auditions through the fleet-eval league BEFORE joining a work ladder — free but bad is still bad (league mean must beat the worst incumbent on the ladder or it stays benched). Run the scout/admission quality bench on real fleet packets, prove one live spawn through pi (switched-on-and-proven), check the meter shows zero spend, then allowlist only this slug with a dated reason (capacity-is-measured). Do not wire a billing slug."
             filed=$((filed + 1))
         fi
     done <<< "$cat_slugs"
