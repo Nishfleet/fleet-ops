@@ -738,10 +738,9 @@
     {
       "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)",
-      "mechanism": "Cursor $400 extra-usage opens only after included usage is exhausted; on overage use cursor-grok-4.6-high for keystone/senior-review, ~$16/day target, meter-checked. Mechanism issue open.",
-      "proof": "fleet-ops#1179",
-      "status": "queued(#1179)",
-      "queued_since": "2026-08-27"
+      "mechanism": "config/seat-caps.json cursor_overage block: opens_after_included_exhausted=true gates the $400, overage_model pins cursor-grok-4.6-high, daily_spend_target_usd=16; keystone_only_providers includes cursor with cap=1; bin/fleet-volume-lane-order-canary asserts cursor is not in the volume prefix (keystone-only).",
+      "proof": "config/seat-caps.json cursor_overage + keystone_only_providers + cursor cap=1; bin/fleet-volume-lane-order-canary; tests/fleet-volume-lane-order-canary.test.sh",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-27-quality-ratchet-nish",
