@@ -1,0 +1,79 @@
+name: Stop-the-line detector
+
+# Trunk-based CD canon (fleet-ops#1457): trunk stays green; when the pipeline
+# goes red, fixing it preempts new merges ("stop the line"). auto-revert's HALT
+# verdict (same workflow failed on consecutive commits) is detected but does
+# NOT stop the line on its own — armed auto-merge keeps merging PRs onto
+# red, each triggering a doomed deploy run + alert storm.
+#
+# This workflow is the detector. It runs as a reusable workflow_call that
+# schedules (stop-the-line-watch.yml) and a workflow_run (per-repo) invoke.
+# It samples recent main runs, classifies halt vs unfreeze, and writes/closes
+# a single stop-the-line issue in the target repo. The issue is the source of
+# truth that the auto-merge-arm workflow checks before arming.
+#
+# Two trigger shapes:
+#   - workflow_call (reusable for any repo enrolled in the auto-revert machinery)
+#   - workflow_dispatch (manual reprobe)
+#
+# Do not make this a required check. It is a state-machine driver, not a gate.
+
+on:
+  workflow_call:
+    inputs:
+      target-repo:
+        description: "Repository to analyze (owner/name). Defaults to the calling repository."
+        required: false
+        type: string
+      lookback-minutes:
+        description: "Minutes of recent main runs to sample."
+        required: false
+        default: 90
+        type: number
+  workflow_dispatch:
+    inputs:
+      target-repo:
+        description: "Repository to analyze (owner/name)."
+        required: false
+        type: string
+      lookback-minutes:
+        description: "Minutes of recent main runs to sample."
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: stop-the-line-detector-${{ github.repository }}-${{ inputs.target-repo || github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect (or clear) stop-the-line for target repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout detector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Nishfleet/fleet-ops
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Run detector
+        id: run
+        env:
+          STOP_THE_LINE_REPO: ${{ inputs.target-repo || github.repository }}
+          STOP_THE_LINE_LOOKBACK_MINUTES: ${{ inputs.lookback-minutes || 90 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/stop-the-line-detector.mjs
