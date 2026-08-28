@@ -1624,6 +1624,25 @@ fi
 grep -qE "pick_seat: at-capacity 2 seats \[xai-oauth/grok-4\.5,xai-oauth/grok-4\.6\]" "$PI_PACKET_STATE/watch.log" \
   || fail "1163-atcap-flood: must log per-pick at-capacity summary 'pick_seat: at-capacity 2 seats [...]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
 ok "1163-atcap-flood: per-seat cap-reached lines silenced (0); 1 at-capacity summary line for 2 grok models"
+# (c3) fleet-ops#1611: pin the EXACT at_capacity_events_last_2h metric
+#      predicate. opus-heartbeat-gather counts watch.log lines matching
+#      ("cap=" in l and "skipped" in l). The #1624 log-fold fix silenced
+#      the per-seat "skipped (cap=N reached)" lines, driving the metric
+#      to 0. The grep above checks "skipped (.*cap=.*reached" (requires
+#      "reached"), but the live metric predicate is BROADER — any line
+#      with both "cap=" and "skipped" counts. A defence-in-depth
+#      "skipped (provider cap=0)" line (which the pre-compute normally
+#      suppresses) would match the metric but NOT the grep above. This
+#      invariant pins the exact predicate so a future refactor that
+#      re-introduces any "cap=...skipped" line fails the test, keeping
+#      at_capacity_events_last_2h under 50 (the issue's verification
+#      target).
+metric_predicate_lines=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+metric_predicate_lines=${metric_predicate_lines:-0}
+if (( metric_predicate_lines > 0 )); then
+  fail "1163-atcap-flood (#1611): at_capacity_events metric predicate (cap= + skipped) must be 0, was $metric_predicate_lines. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1163-atcap-flood (#1611): at_capacity_events metric predicate (cap= + skipped) is 0 — under 50 verification target met"
 rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
 # restore the 1163 state dir for later 1163 tests
 export PI_PACKET_STATE="$scratch/1163/state"
