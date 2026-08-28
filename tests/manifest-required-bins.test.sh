@@ -36,6 +36,7 @@ required=(
   "bin/oomd-drill /home/nish/.local/bin/oomd-drill"
   "bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap"
   "bin/claim-reconcile /home/nish/.local/bin/claim-reconcile"
+  "bin/fleet-merged-pr-observe-close /home/nish/.local/bin/fleet-merged-pr-observe-close"
   "bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep"
   "bin/fleet-heartbeat-low-water-mark /home/nish/.local/bin/fleet-heartbeat-low-water-mark"
   "bin/fleet-heartbeat-red-pr-repair /home/nish/.local/bin/fleet-heartbeat-red-pr-repair"
@@ -66,6 +67,7 @@ helpers = {
     "BLOCKED_BIN=": "blocked-reconcile",
     "UNDERSAT_BIN=": "undersaturation",
     "CLAIM_BIN=": "claim-reconcile",
+    "MERGED_PR_CLOSE_BIN=": "merged-pr-observe-close",
     "LIFECYCLE_BIN=": "lifecycle-label-sweep",
     "LOW_WATER_BIN=": "low-water-mark",
     "AUDITOR_BIN=": "senior-auditor panel",
@@ -97,7 +99,7 @@ PY
 wiring_rc=$?
 set -e
 [[ "$wiring_rc" -eq 0 ]] || fail "one or more heartbeat helpers do not call require_manifest_helper or loud HELPER-MISSING"
-ok "all thirteen MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
+ok "all fourteen MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
 
 # --- 3-5. extract the real function and prove the three outcomes -----------
 extract_fn() {

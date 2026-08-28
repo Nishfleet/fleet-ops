@@ -653,6 +653,41 @@ done <<< "$queue_repos"
 log "2. queue pass complete: queued=$queued skipped=$skipped"
 
 # ============================================================================
+# 2b. OBSERVE-TO-CLOSE MERGED-PR ORPHANS (fleet-ops#1435)
+# ============================================================================
+# A worker-claimed issue can have a merged PR (head claim/issue-<N>) that
+# references the issue in its title/body but forgot the Closes/Fixes/Resolves
+# trailer. Without this step, the heartbeat's orphan-claim release (§3) would
+# flip the label to agent-ready and re-queue the same work.
+#
+# This pass runs BEFORE §3 so the close is observed while the issue still
+# carries agent-in-progress. It uses the same safety contract: no live worker,
+# no open claim PR, and exactly one merged PR in the lookback window
+# references the issue. Ambiguous (multiple) matches are LOUD and not closed.
+merged_pr_close_rc=0
+MERGED_PR_CLOSE_BIN="${FLEET_MERGED_PR_CLOSE:-/home/nish/.local/bin/fleet-merged-pr-observe-close}"
+if require_manifest_helper "$MERGED_PR_CLOSE_BIN"; then
+    log "2b. merged-pr-observe-close starting"
+    if MERGED_PR_CLOSE_REPOS="$(printf '%s\n' "$claim_repos")" \
+        FLEET_MERGED_PR_CLOSE_OK=1 \
+        MERGED_PR_CLOSE_TRIAGE="$TRIAGE" \
+        "$MERGED_PR_CLOSE_BIN" 2>>"$TICK_LOG"; then
+        log "2b. merged-pr-observe-close done"
+    else
+        merged_pr_close_rc=$?
+        log "2b. merged-pr-observe-close FAILED (rc=$merged_pr_close_rc)"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "merged-pr-observe-close helper missing at $MERGED_PR_CLOSE_BIN — MANIFEST dest; silent skip disabled the forgotten-close-trailer observer (fleet-ops#1435)"
+        merged_pr_close_rc=1
+    else
+        log "2b. merged-pr-observe-close helper missing at $MERGED_PR_CLOSE_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
 # 3. RELEASE ORPHANED CLAIMS
 # ============================================================================
 # Definition of orphaned claim:
@@ -2151,7 +2186,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} merged_pr_close_rc=${merged_pr_close_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} unjustified_rc=${unjustified_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -2175,6 +2210,9 @@ if [ "$undersat_rc" -ne 0 ]; then
 fi
 if [ "${claim_reconcile_rc:-0}" -ne 0 ]; then
     exit "${claim_reconcile_rc}"
+fi
+if [ "${merged_pr_close_rc:-0}" -ne 0 ]; then
+    exit "${merged_pr_close_rc}"
 fi
 if [ "${lifecycle_rc:-0}" -ne 0 ]; then
     exit "${lifecycle_rc}"
