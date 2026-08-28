@@ -14,6 +14,9 @@
 #   5. Marker files for #76 and #124 suppress the pending findings; #76 is
 #      also suppressed by observing the real delivery wiring in the repo
 #      (watchman lib + heartbeat/tier1 wiring + hc.env EnvironmentFile).
+#      #124 is also observed as wired when the helper + a non-comment
+#      tier1 invocation exist (no marker needed); missing wiring without
+#      a marker is PENDING so the two canary steps cannot disagree.
 #
 # GitHub plane:
 #   6. auto-revert.yml + red-on-main-detector.yml present -> covered.
@@ -370,6 +373,21 @@ SH
 [Service]
 EnvironmentFile=-/home/nish/.config/fleet-heartbeat/hc.env
 SVC
+}
+
+# Wire the #124 red-PR redispatch in the scratch repo so the canary's
+# block 4 sees real wiring (not just a marker). Mirrors the live layout:
+# executable helper + a non-comment invocation in fleet-heartbeat-tier1.
+wire_redpr() {
+  mkdir -p "$repo/bin"
+  cp "$repo_root/bin/fleet-heartbeat-red-pr-repair" "$repo/bin/fleet-heartbeat-red-pr-repair"
+  chmod +x "$repo/bin/fleet-heartbeat-red-pr-repair"
+  cat >"$repo/bin/fleet-heartbeat-tier1" <<'SH'
+#!/usr/bin/env bash
+# fleet-heartbeat-tier1 — block 12 delegates to the red-pr-repair helper.
+fleet-heartbeat-red-pr-repair
+SH
+  chmod +x "$repo/bin/fleet-heartbeat-tier1"
 }
 
 # ============================================================================
@@ -990,6 +1008,56 @@ grep -q 'fixture \*.sync-conflict-\* cleared' <<<"$env_out" \
   || fail "scenario21: canary must log fixture cleared (out=$env_out)"
 ! grep -q 'vault-conflict:' "$triage" || fail "scenario21: fresh handler must not raise vault-conflict"
 ok "scenario21: fixture *.sync-conflict-* cleared -> OK"
+
+# ============================================================================
+# Scenario 22: step 4 observes the #124 wiring directly (no marker needed)
+# — the two canary steps agree on a real tick (fleet-ops#124 adjudication).
+# The redispatch is delivered as heartbeat block 12; step 4 must see that
+# wiring (helper + tier1) and agree with step 7's claim_repos coverage,
+# WITHOUT the .red-ci-ownerless-guard marker.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509" "fleet-ops"
+write_claim_repos "Nishfleet/0509" "Nishfleet/fleet-ops"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+wire_redpr
+# REDCI marker deliberately absent — wiring must be observed directly.
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario22: must exit 0, got $env_rc ($env_out)"
+! grep -q 'red-CI-on-ownerless-PR coverage pending' "$triage" || fail "scenario22: step 4 must NOT report #124 PENDING when the helper is wired"
+# Step 4's "wired" line and step 7's "covered" line are log() (stderr), not
+# loud() (triage) — assert against the captured stderr.
+grep -q 'red-CI ownerless-PR coverage wired' <<<"$env_out" || fail "scenario22: stderr must show step 4 observed the wiring"
+grep -q 'covered by #124 redispatch' <<<"$env_out" || fail "scenario22: step 7 must still report claim_repos coverage"
+grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario22: triage must carry the OK line"
+grep -q 'pending=0' "$triage" || fail "scenario22: OK line must show pending=0 when #124 is observed as wired"
+ok "scenario22: #124 wiring observed directly — step 4 agrees with step 7, no marker, no PENDING"
+
+# ============================================================================
+# Scenario 23: step 4 PENDING when the helper is missing (wiring absent, no
+# marker) — proves the canary still fails loud if #124 is ever unwired.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+# No helper, no tier1 reference, no REDCI marker.
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario23: must exit 0 (PENDING not fail), got $env_rc ($env_out)"
+grep -q 'red-CI-on-ownerless-PR coverage pending' "$triage" || fail "scenario23: step 4 must report #124 PENDING when wiring is absent"
+ok "scenario23: #124 wiring absent + no marker -> PENDING (loud, not fail)"
 
 ok "escalation-coverage-canary: block 11 vault-conflict (fleet-ops#529) covered"
 
