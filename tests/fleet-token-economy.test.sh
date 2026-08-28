@@ -78,13 +78,18 @@ fi
 overage_model=$(jq -r '.cursor_overage.overage_model // empty' "$caps")
 [[ "$overage_model" == "cursor-grok-4.6-high" ]] \
   || fail "cursor overage model must be cursor-grok-4.6-high, got: $overage_model"
+
+if ! jq -e '.cursor_overage.opens_after_included_exhausted == true' "$caps" >/dev/null; then
+  fail "cursor_overage.opens_after_included_exhausted must be true (fleet-ops#1179)"
+fi
+
 included=$(jq -r '.cursor_overage.included_exhausted' "$caps")
 [[ "$included" == "false" ]] \
   || fail "cursor included_exhausted must be false until a meter check flips it, got: $included"
 daily=$(jq -r '.cursor_overage.daily_spend_target_usd // empty' "$caps")
 [[ "$daily" == "16" ]] || fail "cursor daily spend target must be 16, got: $daily"
 
-ok "cursor cap 1, keystone-only, overage model cursor-grok-4.6-high, included still open, \$16/day target"
+ok "cursor cap 1, keystone-only, overage model cursor-grok-4.6-high, opens_after_included_exhausted true, included still open, \$16/day target"
 
 # --- walled_comeback table (fleet-ops#1167) --------------------------------
 for k in min_probe_interval_s rate_limit_s daily_quota_s monthly_quota_s free_balance_exhausted_s credentials_bad_s; do
