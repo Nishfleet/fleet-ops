@@ -2458,3 +2458,6 @@ bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
 
+# fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
+# privacy guard test, because workers cannot edit .github/workflows.
+bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"

@@ -319,6 +319,10 @@ WF
   write_backup_fresh
   # Block 11 default: green vault-conflict handler + fixture resolver.
   write_vault_conflict_fresh
+  # Block 12 (fleet-ops#520): free-tier privacy guard fixtures.
+  mkdir -p "$repo/lib" "$repo/config"
+  cp "$repo_root/lib/seat-lib.sh" "$repo/lib/seat-lib.sh"
+  cp "$repo_root/config/repo-privacy.json" "$repo/config/repo-privacy.json"
 }
 
 # ============================================================================
@@ -1060,6 +1064,90 @@ grep -q 'red-CI-on-ownerless-PR coverage pending' "$triage" || fail "scenario23:
 ok "scenario23: #124 wiring absent + no marker -> PENDING (loud, not fail)"
 
 ok "escalation-coverage-canary: block 11 vault-conflict (fleet-ops#529) covered"
+
+# Scenario 24 (fleet-ops#520): privacy guard — config missing -> VIOLATION
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/config/repo-privacy.json"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario24: must exit 1 (missing privacy map), got $env_rc ($env_out)"
+grep -q 'privacy guard: config/repo-privacy.json missing' "$triage" \
+  || fail "scenario24: triage must name the missing privacy map"
+ok "scenario24: missing config/repo-privacy.json -> VIOLATION naming it"
+
+# Scenario 25 (fleet-ops#520): privacy guard — broken JSON -> VIOLATION
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+printf 'not json{' >"$repo/config/repo-privacy.json"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario25: must exit 1 (unparseable privacy map), got $env_rc ($env_out)"
+grep -q 'privacy guard: config/repo-privacy.json unparseable' "$triage" \
+  || fail "scenario25: triage must name the unparseable privacy map"
+ok "scenario25: unparseable config/repo-privacy.json -> VIOLATION naming it"
+
+# Scenario 26 (fleet-ops#520): privacy guard — default_policy widened -> VIOLATION
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+cat >"$repo/config/repo-privacy.json" <<'JSON'
+{"default_policy":"public","public":["0509","fleet-ops"],"private":[]}
+JSON
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario26: must exit 1 (widened default_policy), got $env_rc ($env_out)"
+grep -q "default_policy is not 'private'" "$triage" \
+  || fail "scenario26: triage must name the widened default_policy"
+ok "scenario26: widened default_policy -> VIOLATION"
+
+# Scenario 27 (fleet-ops#520): privacy guard — skip flag suppresses block 12
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/config/repo-privacy.json"
+export FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1
+
+run_canary
+
+unset FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD
+[[ "$env_rc" == 0 ]] || fail "scenario27: skip flag must keep exit 0, got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1)' <<<"$env_out" \
+  || fail "scenario27: canary must log the SKIP"
+! grep -q 'privacy guard' "$triage" || fail "scenario27: skip flag must suppress privacy guard"
+ok "scenario27: skip flag suppresses block 12"
+
+ok "escalation-coverage-canary: block 12 free-tier privacy guard (fleet-ops#520) covered"
+
 
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit
