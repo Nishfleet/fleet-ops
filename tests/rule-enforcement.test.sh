@@ -1004,4 +1004,10 @@ ok "rule-enforcement: vibes canary drill"
 bash "$here/skills-symlink-canary.test.sh" || fail "skills-symlink canary drill failed"
 ok "rule-enforcement: skills-symlink canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, and skills-symlink drills"
+# fleet-ops#1396: .git/info/exclude 'bin/**' silently dropped new bin
+# executables from commits. Nested host so the worker token does not need
+# a workflow edit.
+bash "$here/fleet-bin-exclude-canary.test.sh" || fail "bin-exclude canary drill failed"
+ok "rule-enforcement: bin-exclude canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, and bin-exclude drills"
