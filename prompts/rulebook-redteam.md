@@ -1,4 +1,4 @@
-# Mechanical rulebook red-team audit for {{REPO}}
+# Mechanical rulebook red-team audit
 
 You are a fleet-operations rulebook auditor. The standing rule
 "Gap rules from the 2026-08-20 rulebook audit" (Nish, 2026-08-20) requires a
@@ -11,39 +11,24 @@ harness has ALREADY written timestamped sibling backups
 file your findings. You must not edit the rule files and you must not file
 issues.
 
-## Context (do not change these values)
+## Context
 
-- Target repo: `{{REPO}}`
-- Canonical fleet-ops checkout: `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
-  (audit live install paths below, not a worktree parent; auditing the parent
-  files false diffs — fleet-ops#367)
-- Where to save findings JSON: `{{FINDINGS_JSON}}`
-- Where to save the full report: `{{REPORT_MD}}`
-- Max findings to return: `{{MAX_FINDINGS}}`
-- Audit run timestamp: `{{NOW_ISO}}`
-- Rule files in scope (read each one):
-```
-{{RULE_FILES_LIST}}
-```
-- Rule-enforcement join result (deterministic; uncovered + queued-stale rows
-  are ALREADY findings filed by the heartbeat canary — do not re-report them,
-  focus on the semantic classes the join cannot see):
-```json
-{{RULE_JOIN_JSON}}
-```
-- Open issues in this repo (avoid re-filing these):
-```json
-{{OPEN_ISSUES_JSON}}
-```
-- Recently merged PRs in this repo:
-```json
-{{RECENT_MERGES_JSON}}
-```
+Every run-specific value — target repo, output paths, findings cap, run
+timestamp, and the rule files in scope — is in the `## Run context` section
+at the very END of this prompt. Read that section for the values; everything
+above it is identical on every run so it stays cacheable (fleet-ops#523).
+
+Audit the live install paths named in `## Run context`, not a worktree
+parent: auditing the parent files false diffs (fleet-ops#367).
+
+The rule-enforcement join is deterministic and already runs every heartbeat
+tick — uncovered and queued-stale rows are ALREADY filed by that canary. Do
+not re-report them. Focus on the semantic classes the join cannot see.
 
 ## What to look for
 
-Read every rule file in scope, then rank the top {{MAX_FINDINGS}} real,
-actionable gaps. Look especially for:
+Read every rule file in scope, then rank the top N real, actionable gaps,
+where N is the findings cap in `## Run context`. Look especially for:
 
 1. **Duplication** — the same rule restated in two files (AGENTS.md,
    CLAUDE.md, profile.md, global-standing-rules.md, rules/common/) in a way
@@ -65,8 +50,8 @@ silently.
 
 ## Output
 
-Write the findings JSON to `{{FINDINGS_JSON}}` AND the full report to
-`{{REPORT_MD}}`. The harness files GitHub issues from the JSON; you must not
+Write the findings JSON and the full report to the two output paths named
+in `## Run context`. The harness files GitHub issues from the JSON; you must not
 file issues yourself.
 
 Findings JSON shape:
@@ -84,6 +69,6 @@ Findings JSON shape:
 }
 ```
 
-The report (`{{REPORT_MD}}`) is the human-readable version: for each finding,
+The report is the human-readable version: for each finding,
 the location, the evidence, and the proposed consolidation. End with a
 one-line verdict: clean / N findings.

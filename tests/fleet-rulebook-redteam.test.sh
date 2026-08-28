@@ -280,4 +280,50 @@ grep -Fq 'bash "$here/fleet-rulebook-redteam.test.sh"' "$here/rule-enforcement.t
   || fail "rule-enforcement.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "matrix enforced, §39 wired, MANIFEST, SANCTIONED_PI_RUNNERS, nested CI host"
 
+# --- 7. packet assembly survives a missing LAST rule file -----------------
+# Regression: the rule_files_list pipeline runs under `set -o pipefail`, so a
+# failing `[ -f ]` on the final entry used to kill the run right after seat
+# selection. The drill path skips packet assembly, so only a non-drill run
+# catches it. Missing rule files are a reported SKIP, never a failure.
+cat >"$scratch/fakebin/pi" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$scratch/fakebin/pi"
+cat >"$scratch/seat-lib.sh" <<'FAKE'
+pick_seat() { printf 'devin swe-1-7\n'; }
+FAKE
+rm -rf "$scratch/state-packet"
+set +e
+packet_out=$(RULEBOOK_DRY_RUN=1 \
+  RULEBOOK_STATE_DIR="$scratch/state-packet" \
+  RULEBOOK_PLAN_FILE="$plan" \
+  RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
+  RULEBOOK_RULE_FILES="$scratch/rules/standing.md
+$scratch/rules/does-not-exist.md" \
+  RULEBOOK_SEAT_LIB="$scratch/seat-lib.sh" \
+  RULEBOOK_PI_BIN="$scratch/fakebin/pi" \
+  RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
+  "$bin" 2>&1)
+packet_rc=$?
+set -e
+[[ "$packet_rc" == "0" ]] \
+  || fail "missing last rule file must not fail the run (rc=$packet_rc): $packet_out"
+grep -q 'skip missing rule file' <<<"$packet_out" \
+  || fail "a missing rule file must be reported as a SKIP: $packet_out"
+packet="$scratch/state-packet"
+pkt_file=$(find "$packet" -name packet.md -print | sort | head -1)
+[[ -n "$pkt_file" ]] || fail "packet.md was never assembled under $packet"
+grep -q '## Run context' "$pkt_file" \
+  || fail "packet must end with the volatile Run context block: $pkt_file"
+if grep -qF '{{' "$pkt_file"; then
+  fail "packet must not carry unsubstituted placeholders: $pkt_file"
+fi
+static_first=$(grep -n '^## Run context$' "$pkt_file" | tail -1 | cut -d: -f1)
+[[ -n "$static_first" ]] || fail "packet has no '## Run context' heading: $pkt_file"
+total=$(wc -l <"$pkt_file")
+[[ "$static_first" -gt $((total * 7 / 10)) ]] \
+  || fail "Run context must sit in the last 30% (line $static_first of $total)"
+ok "packet assembly: missing last rule file is a SKIP, run context is last"
+
 ok "fleet-ops#527 rulebook red-team: backups, drill, timer, cadence, heading bonus"

@@ -215,8 +215,13 @@ else
     model=$(printf '%s' "$seat" | awk '{print $2}')
     log "seat selected: $provider/$model"
 
+    # `[ -f ]` on a missing last entry would make this subshell exit
+    # non-zero and, under `set -o pipefail`, kill the whole run right
+    # after seat selection. Missing rule files are a reported SKIP, not a
+    # failure, so the loop always ends true.
     rule_files_list="$(list_rule_files | while IFS= read -r p; do
         [ -f "$p" ] && printf '%s\n' "$p"
+        true
     done)"
     pkt="$REPORT_DIR/packet.md"
     python3 - "$PROMPT" "$pkt" "$NOW_ISO" "$REPO" "$FINDINGS_JSON" \
@@ -224,17 +229,26 @@ else
 import sys
 prompt_path, out_path = sys.argv[1], sys.argv[2]
 now, repo, findings, report, max_n, rule_files = sys.argv[3:9]
+# Static prompt first, byte-identical every run; volatile run context last
+# so the prefix stays cacheable (fleet-ops#523). No in-place substitution.
 tpl = open(prompt_path, encoding="utf-8").read()
-tpl = tpl.replace("{{NOW_ISO}}", now)
-tpl = tpl.replace("{{REPO}}", repo)
-tpl = tpl.replace("{{FINDINGS_JSON}}", findings)
-tpl = tpl.replace("{{REPORT_MD}}", report)
-tpl = tpl.replace("{{MAX_FINDINGS}}", max_n)
-tpl = tpl.replace("{{RULE_FILES_LIST}}", rule_files or "(none readable)")
-tpl = tpl.replace("{{RULE_JOIN_JSON}}", "{}")
-tpl = tpl.replace("{{OPEN_ISSUES_JSON}}", "[]")
-tpl = tpl.replace("{{RECENT_MERGES_JSON}}", "[]")
-open(out_path, "w", encoding="utf-8").write(tpl)
+run_context = f"""
+## Run context
+
+These are this run's values. Do not change them.
+
+- Target repo: `{repo}`
+- Canonical fleet-ops checkout: `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
+- Where to save findings JSON: `{findings}`
+- Where to save the full report: `{report}`
+- Max findings to return: `{max_n}`
+- Audit run timestamp: `{now}`
+- Rule files in scope (read each one):
+```
+{rule_files or "(none readable)"}
+```
+"""
+open(out_path, "w", encoding="utf-8").write(tpl.rstrip("\n") + "\n" + run_context)
 PY
     if [ "$DRY_RUN" = "1" ]; then
         log "DRY RUN: would dispatch $provider/$model"
