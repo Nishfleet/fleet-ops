@@ -1979,6 +1979,18 @@ pick_seat() {
     #   3) metered last (per-token; spend after prepaid/free)
     local -a free_seats=() prepaid_seats=() metered_seats=()
 
+    # fleet-ops#1624: at-capacity (cap reached, seat busy not broken) skip
+    # counter + sample. The per-seat "skipped (provider/model cap=N reached)"
+    # lines were the remaining at_capacity_events flood source after #1449
+    # silenced cap=0/dead (1006 events/2h on 2026-08-29 against cap=1 seats).
+    # Folded into one per-pick summary line below, same pattern as #1449.
+    # A busy seat is NOT benched — it frees the instant its worker exits, so
+    # we keep re-evaluating it (count_active is cheap) but stop LOGGING it
+    # per-seat per-pick. A literal cooldown would hide a seat that frees in
+    # seconds and starve a cap=1 lane for the whole window.
+    local _at_capacity_n=0
+    local -a _at_capacity_sample=()
+
     local p m free capable p_cap m_cap p_active m_active class eff_cap
     # `free` is emitted by enumerate_seats for parity with the legacy contract;
     # the new bucketing uses class_of() instead. Unused but stable in the pipe.
@@ -2079,13 +2091,22 @@ pick_seat() {
             if _aimd_probe_admitted "$p" "$eff_cap" "$p_active"; then
                 seat_log "seat $p/$m AIMD probe admitted (provider $p cap $eff_cap -> $((eff_cap + 1)): $p_active active, zero errors, RAM headroom)"
             else
-                seat_log "seat $p/$m skipped (provider $p cap=$eff_cap reached: $p_active active)"
+                # fleet-ops#1624: silence the per-seat "skipped (provider cap
+                # reached)" line — it was the at_capacity_events flood source
+                # (1006/2h against cap=1 seats). Counted into the per-pick
+                # at-capacity summary below instead. The seat is still
+                # re-evaluated next pick (a busy seat frees when its worker
+                # exits); only the per-seat log line is dropped.
+                _at_capacity_n=$((_at_capacity_n + 1))
+                _at_capacity_sample+=("$p/$m")
                 continue
             fi
         fi
         m_active=$(count_active_on_seat "$p" "$m")
         if (( m_cap > 0 )) && (( m_active >= m_cap )); then
-            seat_log "seat $p/$m skipped (model $p/$m cap=$m_cap reached: $m_active active)"
+            # fleet-ops#1624: same flood fix for the model-cap-reached branch.
+            _at_capacity_n=$((_at_capacity_n + 1))
+            _at_capacity_sample+=("$p/$m")
             continue
         fi
 
@@ -2142,6 +2163,32 @@ pick_seat() {
             _sample_str=$(printf '%s\n' "${_sorted[@]}" | paste -sd, -)
         fi
         seat_log "pick_seat: excluded $((_excluded_cap0_n + _excluded_dead_n + _excluded_allowlist_n)) seats (cap=0: $_excluded_cap0_n; dead: $_excluded_dead_n; not-in-allowlist: $_excluded_allowlist_n) [${_sample_str}]"
+    fi
+
+    # fleet-ops#1624: ONE summary line per pick_seat call for the at-capacity
+    # seats (cap reached — busy, not broken). The per-seat "skipped (provider/
+    # model cap=N reached)" lines were the remaining at_capacity_events flood
+    # source after #1449 (1006 events/2h on 2026-08-29 against cap=1 seats
+    # like xai-oauth/grok-4.5+4.6 and commandcode/poolside/laguna-s-2.1-free).
+    # This summary replaces the N per-seat lines so the next 2h window shows
+    # the count drop, same pattern as the #1449 excluded summary above.
+    # Distinct from the excluded summary: at-capacity is DYNAMIC (a seat frees
+    # the instant its worker exits), so it is re-evaluated every pick — only
+    # the per-seat LOG line is dropped, never the cap check. A literal
+    # cooldown would hide a seat that frees in seconds and starve a cap=1
+    # lane for the whole window. Format is stable: "pick_seat: at-capacity N
+    # seats [sample]" so a future grep can pin the count.
+    if (( _at_capacity_n > 0 )); then
+        local _ac_sorted=()
+        if (( ${#_at_capacity_sample[@]} > 0 )); then
+            mapfile -t _ac_sorted < <(printf '%s\n' "${_at_capacity_sample[@]}" | sort | uniq)
+            _ac_sorted=("${_ac_sorted[@]:0:6}")
+        fi
+        local _ac_sample_str=""
+        if (( ${#_ac_sorted[@]} > 0 )); then
+            _ac_sample_str=$(printf '%s\n' "${_ac_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: at-capacity ${_at_capacity_n} seats [${_ac_sample_str}]"
     fi
 
     if [[ -n "$SEAT_FREE_ORDER" ]] && (( ${#free_seats[@]} > 0 )); then

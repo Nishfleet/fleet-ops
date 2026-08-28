@@ -1591,6 +1591,43 @@ if echo "$out" | grep -q '^xai-oauth'; then fail "1163-stack: cap=1 must keep pi
 ok "1163-stack: cap=1 blocks a second xai-oauth worker (rc=$rc, no xai-oauth in output)"
 rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
 
+# (c2) fleet-ops#1624: at-capacity skip churn flood fix. The per-seat
+#      "skipped (provider/model cap=N reached)" lines were the remaining
+#      at_capacity_events flood source after #1449 silenced cap=0/dead
+#      (1006 events/2h on 2026-08-29 against cap=1 seats). With one
+#      xai-oauth worker live and xai-oauth the only seat (cap=1), both
+#      grok models are at-capacity. The per-seat skip lines must be GONE
+#      and ONE per-pick at-capacity summary line must be present.
+#      Fresh state dir so the watch.log is clean for the assertion.
+export PI_PACKET_STATE="$scratch/1163/state-atcap-flood"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+unit="pi-test-xaistack-flood"
+jq -nc --arg p "xai-oauth" --arg m "grok-4.6" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1163-atcap-flood: cap=1 with one live worker must reject (rc=0 returned, out=$out)"
+# The per-seat "skipped (... cap=N reached)" lines must be GONE — they were
+# the at_capacity_events flood source. Count them; the test passes iff none.
+cap_reached_lines=$(grep -c "skipped (.*cap=.*reached" "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+cap_reached_lines=${cap_reached_lines:-0}
+if (( cap_reached_lines > 0 )); then
+  fail "1163-atcap-flood: per-seat 'skipped (cap reached)' lines must be silenced (was: $cap_reached_lines); the per-pick at-capacity summary replaces them. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# The new per-pick at-capacity summary line must be present. Both grok models
+# are at-capacity (provider cap=1 reached with one live worker).
+grep -qE "pick_seat: at-capacity 2 seats \[xai-oauth/grok-4\.5,xai-oauth/grok-4\.6\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1163-atcap-flood: must log per-pick at-capacity summary 'pick_seat: at-capacity 2 seats [...]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1163-atcap-flood: per-seat cap-reached lines silenced (0); 1 at-capacity summary line for 2 grok models"
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+# restore the 1163 state dir for later 1163 tests
+export PI_PACKET_STATE="$scratch/1163/state"
+
 # (d) Dead token means a dead seat: a credentials_bad ledger entry
 #     must keep pick_seat off xai-oauth (the 'never lie "ready" again'
 #     half of #1163). Without the ledger the seat would be picked
