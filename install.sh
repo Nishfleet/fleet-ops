@@ -65,9 +65,11 @@ fi
 # worktree-parent retargets every live symlink at a tree that can diverge
 # or be deleted. Refuse mutating installs from any path under
 # FLEET_OPS_WORKSPACES_ROOT that is not the canonical deploy checkout.
-# --check never refuses (auditors still need to see DIFF). Tests live under
-# /tmp, which is outside the workspaces root, so they stay allowed.
-# FLEET_OPS_ALLOW_NONCANONICAL=1 is the explicit operator override.
+# fleet-ops#369: /tmp (and /var/tmp, /dev/shm) is the same class — a leftover
+# P13 clone under /tmp/fleet-ops-p13 enabled fleet-heartbeat.timer, and
+# systemd-tmpfiles-clean would have dropped the wants-link. --check never
+# refuses (auditors still need to see DIFF). Scratch tests that must install
+# from /tmp set FLEET_OPS_ALLOW_NONCANONICAL=1.
 refuse_noncanonical_install() {
   [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" = 1 ] && return 0
   local ws_root canon got want root
@@ -81,6 +83,12 @@ refuse_noncanonical_install() {
     "$root"|"$root"/*)
       echo "install.sh: REFUSE: refusing to install from non-canonical checkout $got" >&2
       echo "install.sh: canonical checkout is $want (fleet-ops#176)" >&2
+      echo "install.sh: set FLEET_OPS_ALLOW_NONCANONICAL=1 to override" >&2
+      exit 1
+      ;;
+    /tmp|/tmp/*|/var/tmp|/var/tmp/*|/dev/shm|/dev/shm/*)
+      echo "install.sh: REFUSE: refusing to install from volatile checkout $got" >&2
+      echo "install.sh: canonical checkout is $want (fleet-ops#369)" >&2
       echo "install.sh: set FLEET_OPS_ALLOW_NONCANONICAL=1 to override" >&2
       exit 1
       ;;
@@ -126,6 +134,34 @@ is_unit_enabled() {
         enabled|enabled-runtime) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Returns 0 if a systemd enable-link (*.wants / *.requires) for $1 exists and
+# does not resolve to $2 (this checkout's unit file). Missing enable-links
+# are not stale — is_unit_enabled decides whether to enable.
+# fleet-ops#369: skipping enable because is-enabled was true left
+# fleet-heartbeat.timer's wants-link pointing at /tmp/fleet-ops-p13.
+wants_link_is_stale() {
+    local unit=$1 repo=$2
+    local base="${HOME}/.config/systemd/user"
+    local d link target
+    [ -d "$base" ] || return 1
+    for d in "$base"/*.wants "$base"/*.requires; do
+        [ -d "$d" ] || continue
+        link="$d/$unit"
+        if [ -L "$link" ]; then
+            target=$(readlink -f "$link" 2>/dev/null || true)
+            if [ -z "$target" ] || [ ! -e "$target" ] || [ "$target" != "$repo" ]; then
+                return 0
+            fi
+        elif [ -e "$link" ]; then
+            target=$(readlink -f "$link" 2>/dev/null || true)
+            if [ "$target" != "$repo" ]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
 }
 
 # Returns 0 if the installed destination already matches the repo file.
@@ -453,15 +489,24 @@ if [ "$do_user_install" = 1 ]; then
   # so its timer/path is the trigger.
   if [ "${#to_enable[@]}" -gt 0 ]; then
     for unit in "${to_enable[@]}"; do
+      repo_unit="$here/systemd/$unit"
       case "$unit" in
         *.path|*.timer)
-          if ! is_unit_enabled "$unit"; then
+          if wants_link_is_stale "$unit" "$repo_unit"; then
+            # Rewrite the wants-link only. Do not --now: this runs inside
+            # fleet-heartbeat.service and must not bounce the timer.
+            "$SYSTEMCTL" --user reenable "$unit"
+            echo "re-pointed enable-link: $unit"
+          elif ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable --now "$unit"
             echo "enabled+started: $unit"
           fi
           ;;
         *.service)
-          if ! is_unit_enabled "$unit"; then
+          if wants_link_is_stale "$unit" "$repo_unit"; then
+            "$SYSTEMCTL" --user reenable "$unit"
+            echo "re-pointed enable-link: $unit"
+          elif ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable "$unit"
             echo "enabled: $unit"
           fi
