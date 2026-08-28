@@ -21,10 +21,11 @@ Gates (fail-loud, exit 1):
      product_min_pct fell vs the prior committed value) must be backed by a
      dated wfr_waiver_on line; otherwise reject.
   3. Phase check: in the band phase, count live pi-issue@ machinery units
-     vs the cap. In the surge phase, the canary inspects the live unit list
-     for non-leverage fleet-ops claims (the orchestrator is the only way to
-     plant a non-leverage claim during the surge; the canary detects that
-     drift).
+     vs the cap. One repair lane (machinery_count <= 1) is the floor, not
+     over-cap drift (fleet-ops#1452). In the surge phase, the canary
+     inspects the live unit list for non-leverage fleet-ops claims (the
+     orchestrator is the only way to plant a non-leverage claim during the
+     surge; the canary detects that drift).
   4. product_front is well-formed (REPO#NUMBER) and the product repo is
      the only one allowed in the product lane.
 
@@ -319,6 +320,11 @@ def check_band_phase(
     share_pct = (machinery_count * 100) // total if total else 0
     cap = data.get("machinery_max_pct")
     if not isinstance(cap, int):
+        return errors
+    # Machinery floor (fleet-ops#1452): one repair lane is never "over
+    # the cap". 1 machinery + 1-2 product is 50%/33% > 30%, which is the
+    # low-n deadlock, not drift. Ratio enforcement starts at 2+ machinery.
+    if machinery_count <= 1:
         return errors
     if share_pct > cap:
         errors.append(
