@@ -56,15 +56,20 @@ grep -q 'write_nish "KILL-ESCALATION"' "$dispatch" \
   || fail "KILL-ESCALATION must NOT have a direct >> \$NISH write"
 ok "KILL-ESCALATION routed via write_nish (auditor path, not NISH)"
 
-# --- 5. LADDER-WALLED tagged MONEY-BOUNDARY via write_nish ---
+# --- 5. Walled ladder: MONEY only on payment evidence (2026-08-28 storm fix) ---
+# Blanket MONEY tagging paged Nish 35x in 2 min for reason=unit-failure.
 grep -q 'write_nish "MONEY-BOUNDARY"' "$dispatch" \
-  || fail "walled ladder must be tagged MONEY-BOUNDARY via write_nish"
-grep -q 'reason=ladder-walled' "$dispatch" \
-  || fail "MONEY-BOUNDARY line for walled ladder must carry reason=ladder-walled"
-# The old LADDER-WALLED token must NOT appear as a direct NISH write.
+  || fail "payment-evidence walls must still be tagged MONEY-BOUNDARY via write_nish"
+grep -Eq 'case "\$reason" in' "$dispatch" \
+  || fail "walled ladder must classify by wall reason (case on \$reason)"
+grep -q '\*payment\*|\*billing\*|\*402\*' "$dispatch" \
+  || fail "MONEY branch must require payment evidence in the reason"
+grep -q 'write_nish "LADDER-WALLED"' "$dispatch" \
+  || fail "non-payment walls must route via write_nish LADDER-WALLED (auditor path)"
+# Direct NISH writes remain forbidden for both branches.
 ! grep -q 'LADDER-WALLED.*>> "\$NISH"' "$dispatch" \
-  || fail "LADDER-WALLED must NOT be written directly to \$NISH (tagged MONEY-BOUNDARY now)"
-ok "walled ladder tagged MONEY-BOUNDARY via write_nish (sanctioned, pages Nish)"
+  || fail "LADDER-WALLED must NOT be written directly to \$NISH"
+ok "walled ladder: MONEY only with payment evidence; unit-failure walls stay auditor-side"
 
 # --- 6. NISH_CLASSES allowlist matches nish-boundary-notify CLASSES set ---
 # Extract NISH_CLASSES from stop-escalation-dispatch.
