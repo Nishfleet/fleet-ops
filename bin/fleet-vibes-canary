@@ -218,7 +218,7 @@ file_finding() {
         return 0
     fi
     local filed
-    filed=$(($FILED_COUNT + 0))
+    filed=$((FILED_COUNT + 0))
     if (( filed >= FILE_CAP )); then
         log "file cap reached (filed=$filed cap=$FILE_CAP) — $marker deferred to next tick"
         return 0
@@ -283,7 +283,6 @@ log "GATE: ram_gb_per_worker=$ram_gb is backed by a dated bin/... measurement ci
 
 # --- DETECTOR: per-provider caps + quota benches (observe-to-open) -----------
 
-provider_count=$(jq -r '.providers | length' "$SEAT_CAPS_JSON")
 detected=0
 
 while IFS=$'\t' read -r prov cap has_qb; do
