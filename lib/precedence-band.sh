@@ -163,6 +163,18 @@ precedence_band_allow_claim() {
     fi
     pct="$(precedence_band_max_pct)"
     precedence_band_count_live
+    # Bootstrap exception (auditor 2026-08-28, summon unit-failure
+    # fleet-heartbeat): when nothing is live (BAND_MACHINERY + BAND_PRODUCT
+    # == 0), the first claim cannot violate the machinery share — 30% of 0
+    # is 0, and the ratio constraint is meaningless with no running units.
+    # Without this, the band phase deadlocks: the first machinery claim
+    # makes it 100% > 30% → skip-band, so machinery can never start when
+    # product is all blocked-on. The ratio enforcement resumes from the
+    # second claim onward once at least one unit is live.
+    if (( BAND_MACHINERY + BAND_PRODUCT == 0 )); then
+        printf 'allow-band-bootstrap\n'
+        return 0
+    fi
     if precedence_band_over_cap "$((BAND_MACHINERY + 1))" "$((BAND_MACHINERY + BAND_PRODUCT + 1))" "$pct"; then
         if precedence_band_has_multiplier "$body"; then
             printf 'allow-multiplier\n'

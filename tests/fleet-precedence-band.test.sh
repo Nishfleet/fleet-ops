@@ -393,4 +393,21 @@ set -e
   || fail "scenario17f: expected allow-multiplier, got $reason"
 ok "scenario17f: band-multiplier lets machinery jump the cap"
 
+# scenario17g: band bootstrap — when nothing is live (0 machinery, 0 product),
+# the first machinery claim MUST be allowed. Without the bootstrap exception,
+# the first claim makes it 100% > 30% → skip-band, deadlocking the fleet
+# when product is all blocked-on (auditor 2026-08-28, summon unit-failure
+# fleet-heartbeat).
+cat >"$scratch/units-empty.txt" <<'UNITS'
+UNITS
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-empty.txt"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 9999 "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17g: bootstrap must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-bootstrap" ]] \
+  || fail "scenario17g: expected allow-band-bootstrap, got $reason"
+ok "scenario17g: band bootstrap allows first claim when nothing is live"
+
 ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick"

@@ -75,7 +75,15 @@ fi
 . "$PRECEDENCE_BAND_LIB"
 
 # Step 1: list ready work
-issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 50 2>&1) || {
+# Limit 250 (auditor 2026-08-28, summon unit-failure fleet-heartbeat): the
+# prior --limit 50 returned only the 50 NEWEST agent-ready issues (gh issue
+# list sorts by creation desc). With 221 ready issues, the older
+# surge_leverage_issues (#1010-#1146) fell beyond position 50 and were
+# invisible to the tick — the surge phase then had nothing to dispatch
+# (all visible issues were non-leverage → skip-surge-leverage), causing
+# fleet starvation (222 ready, 0 running). 250 covers the observed ceiling
+# with headroom; the early surge skip below keeps the tick fast.
+issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 250 2>&1) || {
     echo "gh issue list failed: $issues_json" >&2
     exit 1
 }
@@ -155,6 +163,11 @@ mkdir -p "$ISSUE_STATE_DIR"
 mapfile -t numbers < <(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")
 mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
 
+# Cache the precedence-band phase once (auditor 2026-08-28): with 221 ready
+# issues, calling precedence_band_phase per-issue would re-read the JSON 221
+# times. The phase cannot change mid-tick (it is a clock comparison).
+_band_phase="$(precedence_band_phase 2>/dev/null || echo unknown)"
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -162,6 +175,21 @@ for i in "${!numbers[@]}"; do
     if (( slots <= 0 )); then
         echo "issue $N ($title): skipped-capacity"
         continue
+    fi
+
+    # Early surge-phase skip (auditor 2026-08-28, summon unit-failure
+    # fleet-heartbeat): during surge, only surge_leverage_issues are
+    # claimable. Checking this BEFORE the body fetch avoids 200+ gh issue
+    # view + git fetch + git ls-remote calls for non-leverage issues that
+    # would be skipped anyway. The body is only needed for the blocker
+    # filter (both phases) and the band-multiplier check (band phase only).
+    # Product repos are never gated (allow-product) so this only applies to
+    # the machinery repo (fleet-ops).
+    if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
+        if ! precedence_band_is_leverage_issue "$N" 2>/dev/null; then
+            echo "issue $N ($title): skipped-precedence-band (skip-surge-leverage)"
+            continue
+        fi
     fi
 
     # Per-issue fetch (keeps origin/main fresh)
