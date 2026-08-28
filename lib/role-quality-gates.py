@@ -77,6 +77,13 @@ NON_ROLE_UNIT_PREFIXES = (
     # class as intake-reconcile above. The planner role gate already
     # covers pi-intake@.service and pi-intake-repair@.service.
     "pi-intake-trigger",
+    # fleet-ops#41: grok-token-refresh is credential plumbing, not a
+    # work-producing role. It POSTs an OAuth refresh grant every 4h
+    # and rewrites ~/.pi/agent/auth.json["xai-oauth"] in place; its
+    # own gate is the absent() rule on
+    # fleet_grok_token_refresh_last_success_seconds plus
+    # tests/grok-token-refresh.test.sh.
+    "grok-token-refresh",
 )
 
 

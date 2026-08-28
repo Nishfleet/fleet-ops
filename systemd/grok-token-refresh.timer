@@ -1,0 +1,19 @@
+[Unit]
+Description=Headless OAuth refresh of SuperGrok xai-oauth seat — 4 h cycle (fleet-ops#41)
+# Named reason: SuperGrok's OAuth access token has a 6 h lifetime. A
+# stale token makes the seat LOOK ready (pi auth check tests presence
+# only) and 401 the moment a worker picks it. 4 h is well inside the
+# access-token lifetime; Persistent=true so a sleeping box catches up on
+# resume. The script itself is idempotent (skip-if-fresh) so a tick
+# that races the previous run is a no-op, not a duplicate grant.
+# OnFailure on the .service is wired by the global
+# service.d/10-escalate.conf drop-in.
+
+[Timer]
+OnCalendar=*-*-* 00/4:00:00
+RandomizedDelaySec=10min
+Persistent=true
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target

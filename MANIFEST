@@ -605,3 +605,12 @@ systemd/gh-webhook-canary-deadman.service /home/nish/.config/systemd/user/gh-web
 systemd/gh-webhook-canary-deadman.timer /home/nish/.config/systemd/user/gh-webhook-canary-deadman.timer
 
 docs/github-push-channel.md /home/nish/.local/share/fleet-ops/docs/github-push-channel.md
+
+# fleet-ops#41: headless OAuth refresh of the live SuperGrok seat
+# (~/.pi/agent/auth.json["xai-oauth"]). 4h timer keeps the prepaid
+# credential from aging into a 401; fleet-seat-live-validate catches
+# the dead case but does not heal it. Cap on the legacy `grok` entry
+# stays 0 — the live seat is xai-oauth (fleet-ops#1163).
+bin/grok-token-refresh /home/nish/.local/bin/grok-token-refresh
+systemd/grok-token-refresh.service /home/nish/.config/systemd/user/grok-token-refresh.service
+systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refresh.timer

@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# grok-token-refresh — headless OAuth refresh of the live SuperGrok seat
+# credential in ~/.pi/agent/auth.json (provider key: xai-oauth).
+# (fleet-ops#41; supersedes the earlier ~/.grok/auth.json draft.)
+#
+# Class this prevents: a prepaid SuperGrok credential that LOOKS ready
+# because ~/.pi/agent/auth.json is non-empty and `pi auth check` only
+# tests presence / invalid_state, while the stored access token has
+# silently expired. The seat then 401s the moment a worker picks it.
+# fleet-seat-live-validate (fleet-ops#917 / #1450) catches the dead
+# case every heartbeat tick but does not HEAL it; this script is the
+# heal path that runs on a 4 h timer.
+#
+# Why this file, not ~/.grok/auth.json?
+#   The live SuperGrok seat is `xai-oauth` (stnly/pi-grok, fleet-ops#1163).
+#   It stores credentials under ~/.pi/agent/auth.json["xai-oauth"].
+#   The legacy `grok` models.json entry (api.x.ai + !jq of ~/.grok/auth.json)
+#   stays cap=0 — SuperGrok does not cover the raw x.ai API, and
+#   ~/.grok/auth.json is currently absent on this host. Refreshing a
+#   missing CLI file would not keep the seat answering.
+#
+# Why not just rely on pi-grok's in-process refreshToken?
+#   pi-grok DOES refresh on use (oauth.refresh via refreshToken()). That
+#   is the call-time path. This timer is the out-of-band heal so a seat
+#   that sits idle for >6 h does not wake up into a 401, and so a
+#   refresh failure is loud via the absent() organ rule instead of
+#   silent until the next worker pick.
+#
+# Why a 4 h cadence?
+#   The OAuth response carries expires_in (measured 21600 = 6 h) and
+#   may rotate refresh. 4 h is well inside the 6 h access-token
+#   lifetime. Persistent=true so a sleeping box catches up on resume.
+#
+# Skip / REJECT discipline:
+#   0  SKIP (no work): auth.json missing, no xai-oauth entry, no
+#                     refresh field, or access still has more than
+#                     TOKEN_TTL_S of life left (default 1800 = 30 min
+#                     safety margin). Exit 0 so a healthy system is
+#                     silent. last_success metric is PRESERVED (never
+#                     zeroed on skip — that would false-alarm the
+#                     absent() rule).
+#   1  REJECT:        refresh grant fails (HTTP non-2xx, malformed
+#                     JSON, or missing access_token / expires_in).
+#                     auth.json is NOT modified. Exits 1. last_success
+#                     preserved; outcome=reject.
+#   2  usage error.
+#
+# Side effects on success:
+#   - ~/.pi/agent/auth.json is rewritten in place via tmp+mv. Only the
+#     xai-oauth.access / .refresh / .expires / .tokenType fields change;
+#     sibling providers and xai-oauth sibling fields (idToken,
+#     tokenEndpoint, baseUrl, type, discovery) are kept untouched.
+#   - /var/lib/prometheus/node-exporter/fleet-grok-token-refresh.prom
+#     is updated (textfile collector) with:
+#       fleet_grok_token_refresh_last_success_seconds <epoch>
+#       fleet_grok_token_refresh_outcome{outcome="success|skipped|reject"} <1>
+#     Metrics never carry credential contents.
+#
+# Idempotency: re-running after a successful refresh is a SKIP until the
+# new access token is within TOKEN_TTL_S of expiry.
+#
+# Security:
+#   - No token value is ever printed. The script logs field names and a
+#     SHA-256 prefix of the new access token for cross-run correlation.
+#   - auth.json is rewritten with chmod 600 + umask 077.
+#   - Locked-write via mkdir(1) on a fleet-owned lock dir (does NOT
+#     collide with pi's proper-lockfile .auth.json.lock). A parallel
+#     refresh blocks for LOCK_TIMEOUT_S then exits 1.
+#
+# Environment seams (tests):
+#   PI_AGENT_AUTH_JSON              override the auth.json path
+#   GROK_TOKEN_REFRESH_PROVIDER     provider key (default xai-oauth)
+#   GROK_TOKEN_REFRESH_TOKEN_URL    override the OAuth endpoint
+#   GROK_TOKEN_REFRESH_CLIENT_ID    override the client id
+#   GROK_TOKEN_REFRESH_TIMEOUT      seconds (default 20)
+#   GROK_TOKEN_REFRESH_TOKEN_TTL_S  skip-if-fresh window (default 1800)
+#   GROK_TOKEN_REFRESH_LOCK_TIMEOUT_S  lock wait (default 30)
+#   GROK_TOKEN_REFRESH_TEXTFILE     override the prom textfile path
+#   GROK_TOKEN_REFRESH_CURL_BIN     override curl (tests use a stub)
+#   FLEET_GROK_REFRESH_TRIAGE       triage file (heartbeat)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
+PROVIDER="${GROK_TOKEN_REFRESH_PROVIDER:-xai-oauth}"
+# Fleet-owned lock dir — must NOT be `$AUTH_JSON.lock` (that is pi's
+# proper-lockfile path). Colliding would deadlock against live pi seats.
+LOCK_DIR="${AUTH_JSON}.fleet-refresh.lock.d"
+TOKEN_URL="${GROK_TOKEN_REFRESH_TOKEN_URL:-https://auth.x.ai/oauth2/token}"
+CLIENT_ID="${GROK_TOKEN_REFRESH_CLIENT_ID:-b1a00492-073a-47ea-816f-4c329264a828}"
+TIMEOUT="${GROK_TOKEN_REFRESH_TIMEOUT:-20}"
+TOKEN_TTL_S="${GROK_TOKEN_REFRESH_TOKEN_TTL_S:-1800}"
+LOCK_TIMEOUT_S="${GROK_TOKEN_REFRESH_LOCK_TIMEOUT_S:-30}"
+TEXTFILE="${GROK_TOKEN_REFRESH_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-grok-token-refresh.prom}"
+TRIAGE="${FLEET_GROK_REFRESH_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+CURL_BIN="${GROK_TOKEN_REFRESH_CURL_BIN:-curl}"
+# Match pi-grok REFRESH_SKEW_MS (5 min) so the written expires is the
+# same shape the extension would write on its own refresh.
+REFRESH_SKEW_S=300
+
+log() {
+    printf '[%s] [grok-token-refresh] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >>"$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: grok-token-refresh [--help]
+  Headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"] against
+  https://auth.x.ai/oauth2/token. Safe to run from a systemd timer.
+  Keeps the live SuperGrok seat (fleet-ops#1163) from aging into a 401.
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage; exit 0 ;;
+        *) printf 'grok-token-refresh: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
+# Read prior last_success so SKIP/REJECT never zero the organ heartbeat.
+read_prior_success() {
+    if [[ -f "$TEXTFILE" ]]; then
+        awk '/^fleet_grok_token_refresh_last_success_seconds / {print $2; found=1} END{if(!found) print 0}' "$TEXTFILE" 2>/dev/null || echo 0
+    else
+        echo 0
+    fi
+}
+
+write_metric() {
+    local outcome="$1" success_epoch="$2"
+    local dir tmp
+    dir="$(dirname "$TEXTFILE")"
+    if [[ ! -d "$dir" ]]; then
+        return 0
+    fi
+    tmp="${TEXTFILE}.$$.tmp"
+    {
+        printf '# HELP fleet_grok_token_refresh_last_success_seconds Unix epoch of the last successful grok-token-refresh, or 0.\n'
+        printf '# TYPE fleet_grok_token_refresh_last_success_seconds gauge\n'
+        printf 'fleet_grok_token_refresh_last_success_seconds %s\n' "$success_epoch"
+        printf '# HELP fleet_grok_token_refresh_outcome 1 for the most recent run, labelled by outcome.\n'
+        printf '# TYPE fleet_grok_token_refresh_outcome gauge\n'
+        printf 'fleet_grok_token_refresh_outcome{outcome="success"} %s\n' "$([[ "$outcome" == "success" ]] && echo 1 || echo 0)"
+        printf 'fleet_grok_token_refresh_outcome{outcome="skipped"} %s\n' "$([[ "$outcome" == "skipped" ]] && echo 1 || echo 0)"
+        printf 'fleet_grok_token_refresh_outcome{outcome="reject"} %s\n' "$([[ "$outcome" == "reject" ]] && echo 1 || echo 0)"
+    } >"$tmp"
+    mv -f "$tmp" "$TEXTFILE" 2>/dev/null || true
+}
+
+acquire_lock() {
+    local waited=0
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        if (( waited >= LOCK_TIMEOUT_S )); then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+    return 0
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+    loud "GROK-TOKEN-REFRESH-WATCHER-BROKEN" "jq missing on PATH"
+    exit 1
+fi
+if ! command -v "$CURL_BIN" >/dev/null 2>&1; then
+    loud "GROK-TOKEN-REFRESH-WATCHER-BROKEN" "curl missing: $CURL_BIN"
+    exit 1
+fi
+
+PRIOR_SUCCESS="$(read_prior_success)"
+
+if [[ ! -s "$AUTH_JSON" ]]; then
+    log "SKIP: auth.json missing or empty at $AUTH_JSON — no credential to refresh"
+    write_metric "skipped" "$PRIOR_SUCCESS"
+    exit 0
+fi
+
+if ! jq -e --arg p "$PROVIDER" 'has($p)' "$AUTH_JSON" >/dev/null 2>&1; then
+    log "SKIP: no provider key '$PROVIDER' in $AUTH_JSON"
+    write_metric "skipped" "$PRIOR_SUCCESS"
+    exit 0
+fi
+
+refresh_token="$(jq -r --arg p "$PROVIDER" '.[$p].refresh // empty' "$AUTH_JSON" 2>/dev/null || true)"
+if [[ -z "$refresh_token" ]]; then
+    log "SKIP: no refresh under $PROVIDER in auth.json — interactive /login xai-oauth required"
+    write_metric "skipped" "$PRIOR_SUCCESS"
+    exit 0
+fi
+
+# Skip-if-fresh. expires is ms epoch (pi-grok / OAuthCredentials shape).
+# Tolerate a stringified number (observed live on this host).
+now_epoch="$(date -u +%s)"
+now_ms=$((now_epoch * 1000))
+expires_raw="$(jq -r --arg p "$PROVIDER" '.[$p].expires // empty' "$AUTH_JSON" 2>/dev/null || true)"
+if [[ -n "$expires_raw" && "$expires_raw" =~ ^[0-9]+$ ]]; then
+    # Heuristic: values > 1e12 are ms; smaller are seconds.
+    if (( expires_raw > 1000000000000 )); then
+        expires_ms="$expires_raw"
+    else
+        expires_ms=$((expires_raw * 1000))
+    fi
+    remaining_s=$(( (expires_ms - now_ms) / 1000 ))
+    if (( remaining_s > TOKEN_TTL_S )); then
+        log "SKIP: access still has ${remaining_s}s of life (TTL_S=$TOKEN_TTL_S)"
+        write_metric "skipped" "$PRIOR_SUCCESS"
+        exit 0
+    fi
+    log "refresh needed: access expires in ${remaining_s}s (TTL_S=$TOKEN_TTL_S)"
+else
+    log "refresh needed: no usable expires under $PROVIDER"
+fi
+
+if ! acquire_lock; then
+    loud "GROK-TOKEN-REFRESH-LOCK-BUSY" "could not acquire $LOCK_DIR within ${LOCK_TIMEOUT_S}s"
+    write_metric "reject" "$PRIOR_SUCCESS"
+    exit 1
+fi
+
+tmp_body="$(mktemp -t grok-refresh-body.XXXXXX)"
+trap 'rm -f "$tmp_body" "${tmp_body}.code"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+
+set +e
+"$CURL_BIN" --silent --show-error --max-time "$TIMEOUT" \
+    --request POST "$TOKEN_URL" \
+    --header 'Content-Type: application/x-www-form-urlencoded' \
+    --header 'Accept: application/json' \
+    --data-urlencode "grant_type=refresh_token" \
+    --data-urlencode "client_id=$CLIENT_ID" \
+    --data-urlencode "refresh_token=$refresh_token" \
+    --output "$tmp_body" \
+    --write-out '%{http_code}' \
+    >"${tmp_body}.code"
+http_rc=$?
+set -e
+http_code="$(cat "${tmp_body}.code" 2>/dev/null || echo 0)"
+
+if (( http_rc != 0 )) || [[ -z "$http_code" || "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    body_class=""
+    if [[ -s "$tmp_body" ]]; then
+        body_class="$(jq -r '.error // .error_code // empty' "$tmp_body" 2>/dev/null || true)"
+    fi
+    loud "GROK-TOKEN-REFRESH-REJECT" "HTTP $http_code (curl_rc=$http_rc) error=$body_class — auth.json not modified"
+    write_metric "reject" "$PRIOR_SUCCESS"
+    exit 1
+fi
+
+new_access="$(jq -r '.access_token // empty' "$tmp_body" 2>/dev/null || true)"
+# Rotation is optional: match pi-grok (keep previous refresh when omitted).
+new_refresh="$(jq -r '.refresh_token // empty' "$tmp_body" 2>/dev/null || true)"
+token_type="$(jq -r '.token_type // empty' "$tmp_body" 2>/dev/null || true)"
+expires_in="$(jq -r '.expires_in // empty' "$tmp_body" 2>/dev/null || true)"
+
+if [[ -z "$new_access" ]]; then
+    loud "GROK-TOKEN-REFRESH-REJECT" "HTTP $http_code but no access_token in body"
+    write_metric "reject" "$PRIOR_SUCCESS"
+    exit 1
+fi
+if [[ -z "$expires_in" || ! "$expires_in" =~ ^[0-9]+$ ]]; then
+    loud "GROK-TOKEN-REFRESH-REJECT" "HTTP $http_code but expires_in missing/non-numeric: $expires_in"
+    write_metric "reject" "$PRIOR_SUCCESS"
+    exit 1
+fi
+
+if [[ -z "$new_refresh" ]]; then
+    new_refresh="$refresh_token"
+    refresh_note="refresh unchanged"
+else
+    refresh_note="refresh rotated"
+fi
+if [[ -z "$token_type" ]]; then
+    token_type="Bearer"
+fi
+
+# expires = now_ms + expires_in*1000 - REFRESH_SKEW (same as pi-grok).
+new_expires=$(( now_ms + expires_in * 1000 - REFRESH_SKEW_S * 1000 ))
+
+tmp_auth="$(mktemp -t grok-auth.XXXXXX)"
+umask_orig="$(umask)"
+umask 077
+jq -S \
+    --arg p "$PROVIDER" \
+    --arg access "$new_access" \
+    --arg refresh "$new_refresh" \
+    --arg token_type "$token_type" \
+    --argjson expires "$new_expires" \
+    '
+    .[$p].access = $access
+    | .[$p].refresh = $refresh
+    | .[$p].expires = $expires
+    | .[$p].tokenType = $token_type
+    ' "$AUTH_JSON" >"$tmp_auth"
+chmod 600 "$tmp_auth" 2>/dev/null || true
+mv -f "$tmp_auth" "$AUTH_JSON"
+umask "$umask_orig"
+
+prefix="$(printf '%s' "$new_access" | sha256sum | awk '{print substr($1, 1, 16)}')"
+log "OK access rotated, ${refresh_note}, expires_in=${expires_in}s, access_sha256_prefix=$prefix"
+
+write_metric "success" "$now_epoch"
+exit 0
