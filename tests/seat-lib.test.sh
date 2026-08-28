@@ -2106,6 +2106,9 @@ bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger test
 # fleet-ops#535: session-close lint for swallowed non-zero. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
+# fleet-ops#522: session-close lint for debug playbook notes. Same CI
+# constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-debug-playbook.test.sh" || fail "fleet-debug-playbook tests failed"
 # fleet-ops#1097 / #1099: bare `cat` of the stale
 #   /home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged
 # path (canonical is tooling/fleet-ops-deploy-clone/bin/...) returned
