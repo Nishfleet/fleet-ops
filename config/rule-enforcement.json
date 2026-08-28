@@ -796,10 +796,9 @@
     {
       "id": "led-2026-08-28-relic-pager-masked-emergency",
       "source": "decisions-ledger.md: 2026-08-28 | Relic pager masked (emergency, 01:05 IST)",
-      "mechanism": "fleet-heartbeat-failed-notify.service must not text-storm Nish during a failure cascade; proper 3-consecutive-failures demotion (rate-limited page) is the durable fix, with the escalation matrix + Prometheus last-resort as failure coverage. Current naive every-failure page is not durably masked (deploy re-links it from MANIFEST).",
-      "proof": "systemd/fleet-heartbeat-failed-notify.service; MANIFEST:303; fleet-ops#1399 (durable demotion)",
-      "status": "queued(#1399)",
-      "queued_since": "2026-08-28"
+      "mechanism": "fleet-heartbeat-failed-notify.service now pages only after FLEET_HEARTBEAT_FAILED_NOTIFY_THRESHOLD consecutive failures of the same unit within the configured window (default 3 within 15 minutes), using per-unit state in ~/.local/state/fleet-heartbeat/failed-notify. The escalation matrix (unit-escalation@) and Prometheus last-resort remain the primary failure coverage.",
+      "proof": "systemd/fleet-heartbeat-failed-notify.service; lib/fleet-heartbeat-failed-notify.py; MANIFEST; tests/fleet-heartbeat-failed-notify-shape.test.sh",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-28-machinery-ban-mechanical",

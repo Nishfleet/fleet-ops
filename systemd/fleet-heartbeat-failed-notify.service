@@ -1,11 +1,15 @@
 [Unit]
-Description=Loud Telegram page when a fleet unit fails (OnFailure= target)
+Description=Telegram page after N consecutive failures of a fleet unit (OnFailure= target)
 
 [Service]
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 # MONITOR_UNIT is set by systemd for OnFailure= activations (v250+).
-# Hostname is resolved at send time — never hard-code a migration-era host literal.
-ExecStart=/bin/sh -c '/home/nish/.local/bin/hermes send -t telegram "FLEET UNIT FAILED: ${MONITOR_UNIT:-unknown unit} on $(hostname -s) — check: systemctl --user status ${MONITOR_UNIT:-}"'
+# Per-unit state tracks consecutive failures; only pages after the threshold.
+Environment=FLEET_HEARTBEAT_FAILED_NOTIFY_THRESHOLD=3
+Environment=FLEET_HEARTBEAT_FAILED_NOTIFY_WINDOW=900
+Environment=FLEET_HEARTBEAT_FAILED_NOTIFY_STATE_DIR=/home/nish/.local/state/fleet-heartbeat/failed-notify
+Environment=HERMES_URGENT=1
+ExecStart=/bin/sh -c 'exec /usr/bin/python3 /home/nish/.local/lib/pi-packet/fleet-heartbeat-failed-notify.py'
 TimeoutStartSec=60

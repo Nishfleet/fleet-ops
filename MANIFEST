@@ -48,6 +48,10 @@ config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
+# fleet-ops#1399: rate-limit the OnFailure Telegram page so it only fires
+# after N consecutive failures of the same unit (per-unit state in
+# ~/.local/state/fleet-heartbeat/failed-notify).
+lib/fleet-heartbeat-failed-notify.py /home/nish/.local/lib/pi-packet/fleet-heartbeat-failed-notify.py
 # fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
 lib/blind-audit-cadence.sh /home/nish/.local/lib/pi-packet/blind-audit-cadence.sh
 bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
