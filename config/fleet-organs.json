@@ -13,7 +13,7 @@
       "kind": "canary",
       "heartbeat_metric": "fleet_chain_open",
       "absent_alert": "FleetCompletionCanaryAbsent",
-      "files": []
+      "files": ["bin/fleet-completion-canary.py", "systemd/fleet-completion-canary.service", "systemd/fleet-completion-canary.timer"]
     },
     {
       "name": "undersaturation-guard",
