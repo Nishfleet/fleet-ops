@@ -275,7 +275,7 @@ def _running_units():
     env = dict(os.environ, XDG_RUNTIME_DIR=XDG)
     out = subprocess.run(
         ["systemctl", "--user", "list-units", "--type=service",
-         "--state=running", "--no-legend", "--plain"],
+         "--state=running,activating", "--no-legend", "--plain"],
         capture_output=True, text=True, timeout=8, env=env,
     )
     if out.returncode != 0:
