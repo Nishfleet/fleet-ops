@@ -95,9 +95,14 @@ ok "3. zero units exit 0 and write state"
 # =========================================================================
 # 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
 #    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
+#    Coupling rule (fleet-ops#1190, the #1168 drift that broke this test): the
+#    "0.5" below is a deliberate lock. When you change ram_gb_per_worker in
+#    config/seat-caps.json, update this assertion and the ok line below in the
+#    SAME commit/PR. The config value is the source of truth; this test exists
+#    to catch a config change that forgets its measurement doc.
 # =========================================================================
 [[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.5" ]] \
-    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
+    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
