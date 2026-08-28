@@ -1,0 +1,64 @@
+# Alertmanager routing — repo-sourced (fleet-ops#1534).
+#
+# This is the ONE mechanical policy for the alertmanager phone path. The
+# other phone path is the hermes outbound gate (bin/hermes): only Nish-reserved
+# boundary classes + the two digests may pass --urgent. Together these two
+# gates are the single policy: no other path can text Nish's phone.
+#
+# Routing matrix (the contract this file locks):
+#   severity=page      -> telegram (the phone), stop.   [e.g. RepairDispatchDown]
+#   severity=critical  -> repair-dispatch, continue.    [no phone]
+#   severity=warning   -> repair-dispatch, continue.    [no phone]
+#   severity=none      -> default receiver repair-dispatch (or 'null' for
+#                         Watchdog, which is matched first). [no phone]
+#   default (no match) -> repair-dispatch.
+#
+# Only severity=page reaches the phone. critical/warning/none reach
+# repair-dispatch (alert-repair-dispatch), which spawns a repair worker or
+# skips (SKIP_SET: Watchdog, FleetTestAlert, LoadStorm, CanaryDrill,
+# WasteRatioRising). A repair worker never texts Nish; its outcome folds into
+# the daily digest. A page is reserved for the one meta-alert that means the
+# repair path itself is down (RepairDispatchDown) — the last resort.
+#
+# Repo-ized so a hand-edit cannot drift the routing back to "everything pages"
+# (the 2026-08-28 leak this file replaced). install.sh --system deploys to
+# /etc/prometheus/alertmanager.yml; fleet-ops-deploy reloads alertmanager.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: repair-dispatch
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 6h
+  routes:
+    - matchers:
+        - alertname="Watchdog"
+      receiver: 'null'
+      continue: false
+    - matchers:
+        - severity="critical"
+      receiver: repair-dispatch
+      continue: true
+    - matchers:
+        - severity="page"
+      receiver: telegram
+      continue: false
+    - matchers:
+        - severity="warning"
+      receiver: repair-dispatch
+      continue: true
+
+receivers:
+  - name: 'null'
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /etc/prometheus/telegram_bot_token
+        chat_id: 1144372019
+        message: '[{{ .Status }}] {{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        send_resolved: true
+  - name: repair-dispatch
+    webhook_configs:
+      - url: 'http://127.0.0.1:9095/'
+        send_resolved: false

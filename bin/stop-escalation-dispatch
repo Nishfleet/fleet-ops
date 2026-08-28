@@ -41,6 +41,35 @@ KILLS=${STOP_ESCALATION_KILLS:-$AS/stop-escalation-kills.txt}
 WALLED=${STOP_ESCALATION_WALLED:-$AS/stop-escalation-walled.txt}
 NISH=${STOP_ESCALATION_NISH:-$AS/NISH-ESCALATIONS.md}
 LOG=${STOP_ESCALATION_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}
+# fleet-ops#1534: writer class-gate. Only Nish-reserved boundary classes may
+# be written to NISH-ESCALATIONS.md (the file nish-boundary-notify scans for
+# classes that page Nish). A non-boundary escalation (CAP-REACHED,
+# KILL-ESCALATION) is an auditor-path outcome, not a Nish-reserved decision —
+# it goes to AUDITOR-LOG.md only and folds into the daily digest. This stops
+# the 2026-08-28 leak class: a CAP-REACHED/KILL-ESCALATION line in
+# NISH-ESCALATIONS.md that nish-boundary-notify cannot match against its
+# CLASSES regex (so it never pages) but that pollutes the file and obscures
+# the real boundary entries. The allowlist is the same set nish-boundary-notify
+# honours (MONEY-BOUNDARY, LEGAL-BOUNDARY, etc.) plus the boundary-prefixed
+# LADDER-WALLED form used here.
+NISH_CLASSES="${STOP_ESCALATION_NISH_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
+
+# write_nish <class> <line>
+# Writes <line> to NISH only if <class> is a sanctioned boundary class.
+# Otherwise writes to LOG (auditor path) and prints a notice. The class is
+# the second whitespace field of the line (the same field nish-boundary-notify
+# greps). Refusing a non-boundary write here is the chokepoint: it makes
+# CAP-REACHED/KILL-ESCALATION structurally incapable of reaching NISH.
+write_nish() {
+  local class="$1" line="$2"
+  if printf '%s\n' "$NISH_CLASSES" | tr '|' '\n' | grep -qxF "$class"; then
+    printf '%s\n' "$line" >> "$NISH"
+    return 0
+  fi
+  # Non-boundary class: auditor path only. Do not write to NISH.
+  printf '%s\n' "$line" >> "$LOG"
+  echo "write_nish: class '$class' is not Nish-reserved -> AUDITOR-LOG only (not NISH)" >&2
+}
 CD=${STOP_ESCALATION_COOLDOWN:-300}
 # A fully-walled ladder is a money/billing escalation (Nish's alone).  Re-firing
 # on every STOP-REASON write spams NISH-ESCALATIONS and keeps the unit
@@ -142,10 +171,15 @@ finish_kill_retry() {
   write_kill_count "$hash" "$kc"
   echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$rc, has_block=$has_block)" >&2
   if [ "$kc" -ge 2 ]; then
+    # fleet-ops#1534: KILL-ESCALATION is an auditor-path outcome (2
+    # consecutive kills), not a Nish-reserved decision. Route to AUDITOR-LOG
+    # only via write_nish — it folds into the daily digest, not the phone.
+    # The detailed line stays in LOG; write_nish adds the short form there too.
     printf '%s KILL-ESCALATION hash=%s provider=%s model=%s pi_rc=%s signal=%s consecutive=%s (not burning a 3rd seat)\n' \
       "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$rc" "$sig" "$kc" >> "$LOG"
-    printf '%s KILL-ESCALATION hash=%s provider=%s model=%s pi_rc=%s signal=%s consecutive=%s\n' \
-      "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$rc" "$sig" "$kc" >> "$NISH"
+    write_nish "KILL-ESCALATION" \
+      "$(printf '%s KILL-ESCALATION hash=%s provider=%s model=%s pi_rc=%s signal=%s consecutive=%s\n' \
+        "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$rc" "$sig" "$kc")"
     echo "STOP-ESCALATION: KILL-ESCALATION hash=$hash consecutive=$kc" >&2
     exit 0
   fi
@@ -180,9 +214,14 @@ if [ -f "$SEEN" ]; then
 fi
 
 # Already hit the 2-dispatch cap for this hash.  The auditor had two real
-# attempts and could not clear the cause.  This is the genuine Nish escalation.
+# attempts and could not clear the cause.  fleet-ops#1534: this is an
+# auditor-path outcome, NOT a Nish-reserved decision — route to AUDITOR-LOG
+# only via write_nish. It folds into the daily digest, not the phone. The
+# old comment ("genuine Nish escalation") was the leak: CAP-REACHED is not a
+# boundary class, so nish-boundary-notify never matched it, but it polluted
+# NISH-ESCALATIONS.md and obscured the real boundary entries.
 if [ "$count" -ge 2 ]; then
-  printf '%s CAP-REACHED hash=%s count=%s\n' "$(ts)" "$hash" "$count" >> "$NISH"
+  write_nish "CAP-REACHED" "$(printf '%s CAP-REACHED hash=%s count=%s\n' "$(ts)" "$hash" "$count")"
   exit 0
 fi
 
@@ -230,14 +269,21 @@ TRIED_FILE="$TRIED_DIR/$hash"
 
 seat=$(pick_seat_with_retry "$TRIED_FILE")
 if [ -z "$seat" ]; then
-  # fleet-ops#623: a fully-walled ladder is a Nish escalation (money/billing),
-  # not a unit failure.  Exit 0 so the unit is active-and-quiet between trips
-  # instead of permanently failed (alarm blindness).  Record one walled
-  # timestamp per hash so the walled cooldown above suppresses re-fire spam;
-  # the NISH-ESCALATIONS line is the actual alert.
+  # fleet-ops#623: a fully-walled ladder is a money/billing escalation
+  # (Nish's alone), not a unit failure.  Exit 0 so the unit is
+  # active-and-quiet between trips instead of permanently failed (alarm
+  # blindness).  Record one walled timestamp per hash so the walled cooldown
+  # above suppresses re-fire spam; the NISH-ESCALATIONS line is the actual
+  # alert.
+  # fleet-ops#1534: tag as MONEY-BOUNDARY so write_nish's class-gate honours
+  # the write (a walled ladder is a payment/billing wall — Nish-reserved).
+  # The old LADDER-WALLED token was not in nish-boundary-notify's CLASSES
+  # regex, so it never paged; tagging it MONEY-BOUNDARY makes it reachable
+  # AND keeps it out of the auditor-only path.
   write_walled_at "$hash" "$now"
-  printf '%s LADDER-WALLED hash=%s reason=%s\n' "$(ts)" "$hash" "$reason" >> "$NISH"
-  echo "STOP-ESCALATION: ladder walled, Nish escalation (quiet ${WALLED_CD}s)" >&2
+  write_nish "MONEY-BOUNDARY" \
+    "$(printf '%s MONEY-BOUNDARY hash=%s reason=ladder-walled:%s\n' "$(ts)" "$hash" "$reason")"
+  echo "STOP-ESCALATION: ladder walled, MONEY-BOUNDARY escalation (quiet ${WALLED_CD}s)" >&2
   exit 0
 fi
 

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Outbound gate shim — installed as /home/nish/.local/bin/hermes.
+#
+# Repo-sourced (fleet-ops#1534): every fleet-originated message ends at
+# `hermes send`, so this wrapper is the single enforcement point for the
+# "only Nish-reserved classes + the digests reach the phone" policy. The
+# alertmanager telegram receiver is the OTHER phone path; it is gated by
+# alertmanager routing (severity=page only). Together those two gates are
+# the one mechanical policy — no other path can text Nish.
+#
+# Packet "one rate limit at the outbound chokepoint, not per-caller"
+# (2026-08-12): non-send hermes commands pass through untouched; `send` is
+# gated here inline (global 3/24h ceiling, urgent bypass, always-on ledger).
+#
+# The standalone outbound_gate.py was deleted 2026-08-23 ("Everything runs
+# through Pi, directly. No launchers."). Enforcement now lives in this wrapper
+# itself — a minimal deterministic JSON ledger under flock. No external
+# services, no polling, no hand-built orchestration beyond this file.
+#
+# The real console script was renamed to venv/bin/hermes.orig so calling the
+# "underlying binary directly" at its old path fails loudly (no silent
+# bypass). If a future `hermes update` recreates venv/bin/hermes, re-run the
+# rename.
+#
+# Urgent class-gate (fleet-ops#1534, 2026-08-28): `--urgent` bypasses the
+# 3/24h ceiling but is ONLY honoured when the caller declares a sanctioned
+# class via `--class <CLASS>` (or HERMES_CLASS). Sanctioned classes are the
+# Nish-reserved boundary classes (money/legal/creds/product/customer-data/
+# one-shot-public) plus the two digests (daily-digest, weekly-digest). A
+# process that passes `--urgent` without a sanctioned class is REFUSED —
+# that is the chokepoint: a rogue worker cannot text Nish's phone by
+# appending --urgent. Non-urgent sends remain ceiling-bound (3/24h) and
+# fold into the next digest (over-ceiling = refused = not on the phone).
+# A change waiting for Nish's approval is NOT urgent.
+set -Eeuo pipefail
+
+unset PYTHONPATH PYTHONHOME
+
+# Env-overridable for tests (HERMES_REAL); default is the renamed real binary
+# so calling the old venv/bin/hermes path fails loudly (no silent bypass).
+REAL="${HERMES_REAL:-/home/nish/.hermes/hermes-agent/venv/bin/hermes.orig}"
+
+# --- Config (env-overridable for tests) -------------------------------------
+LEDGER="${HERMES_OUTBOUND_LEDGER:-/home/nish/workspaces/agent-state/lanes/outbound-gate/ledger.json}"
+LOG="${HERMES_OUTBOUND_LOG:-/home/nish/workspaces/agent-state/lanes/outbound-gate/actions.log}"
+CEILING="${HERMES_OUTBOUND_CEILING:-3}"
+WINDOW="${HERMES_OUTBOUND_WINDOW:-86400}"   # seconds (24h)
+DRY_RUN="${HERMES_OUTBOUND_DRY_RUN:-0}"
+URGENT_ENV="${HERMES_URGENT:-0}"
+# Sanctioned urgent classes: Nish-reserved boundary classes + the digests.
+# Env-overridable for tests (HERMES_OUTBOUND_CLASSES). Pipe-separated; the
+# gate matches the declared class exactly (case-sensitive) against this set.
+CLASSES="${HERMES_OUTBOUND_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION|daily-digest|weekly-digest}"
+
+# --- Non-send commands: pass through untouched ------------------------------
+# `send --list` / `send -l` lists targets without messaging — also passthrough.
+if [[ "${1:-}" != "send" ]]; then
+  exec "$REAL" "$@"
+fi
+
+# From here, first arg is "send". Inspect the rest for --list / -l, --urgent,
+# and --class. --class and --urgent are stripped before the real binary sees
+# them (the real hermes send does not understand --class).
+shift
+shift_args=()
+urgent=0
+class=""
+while [ $# -gt 0 ]; do
+  a="$1"
+  case "$a" in
+    --urgent)
+      urgent=1
+      ;;
+    --class)
+      shift
+      [ $# -gt 0 ] || { echo "hermes: --class requires a value" >&2; exit 6; }
+      class="$1"
+      ;;
+    --class=*)
+      class="${a#--class=}"
+      ;;
+    *)
+      shift_args+=("$a")
+      ;;
+  esac
+  shift
+done
+if [[ "$URGENT_ENV" == "1" ]]; then
+  urgent=1
+fi
+# HERMES_CLASS env lets a caller declare the class without the flag (used by
+# callers that wrap hermes send in a way that cannot easily inject a flag).
+class="${HERMES_CLASS:-$class}"
+
+# List-targets query: no message leaves the box, do not gate or ledger.
+for a in "${shift_args[@]}"; do
+  if [[ "$a" == "-l" || "$a" == "--list" ]]; then
+    exec "$REAL" send "${shift_args[@]}"
+  fi
+done
+
+# --- Urgent class-gate ------------------------------------------------------
+# The chokepoint (fleet-ops#1534): --urgent is only honoured for sanctioned
+# classes. Without a sanctioned class the send is REFUSED — it does not
+# bypass the ceiling and it does not reach the phone. The caller must either
+# declare a boundary/digest class or drop --urgent (ceiling-bound, folds into
+# the next digest). Refusal is loud (exit 7) and ledgered so a misconfigured
+# caller is visible, not silent.
+gate_class_ok() {
+  local c="$1"
+  [ -n "$c" ] || return 1
+  printf '%s\n' "$CLASSES" | tr '|' '\n' | grep -qxF "$c"
+}
+
+if [ "$urgent" = 1 ]; then
+  if ! gate_class_ok "$class"; then
+    msg="hermes: urgent class-gate refused: --urgent requires a sanctioned --class (one of: ${CLASSES//|/, }), got '${class:-<none>}'"
+    echo "$msg" >&2
+    mkdir -p "$(dirname "$LOG")"
+    printf '%s REFUSE-CLASS %s\n' "$(date -Is)" "$msg" >> "$LOG" 2>/dev/null || true
+    exit 7
+  fi
+fi
+
+# --- Dry-run: log audit trail but do NOT touch the ledger --------------------
+# Dry-runs are recorded in the audit log but never consume a ceiling slot.
+# The early exit BEFORE the gate ensures the ledger is never modified.
+if [[ "$DRY_RUN" == "1" ]]; then
+  printf '%s DRY_RUN would exec %s send %s\n' "$(date -Is)" "$REAL" "${shift_args[*]}" >> "$LOG" 2>/dev/null || true
+  echo "hermes: DRY RUN — would exec $REAL send ${shift_args[*]} (skipped: ceiling not consumed)" >&2
+  exit 0
+fi
+
+# --- Ensure ledger dir exists -----------------------------------------------
+mkdir -p "$(dirname "$LEDGER")" "$(dirname "$LOG")"
+
+# --- Gate: count + append under flock, refuse over ceiling ------------------
+# Python does the read-prune-count-decide-append-write atomically inside the
+# flock so concurrent senders cannot race past the ceiling.
+gate_rc=0
+gate_decision=$(flock -x "$LEDGER" /usr/bin/python3 - "$LEDGER" "$CEILING" "$WINDOW" "$urgent" <<'PY'
+import json, os, sys, time
+ledger, ceiling, window, urgent = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == "1"
+now = time.time()
+try:
+    with open(ledger) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {"sends": []}
+sends = [s for s in data.get("sends", []) if now - float(s["ts"]) < window]
+non_urgent_in_window = sum(1 for s in sends if not bool(s.get("urgent")))
+if not urgent and non_urgent_in_window >= ceiling:
+    print(f"REFUSE {non_urgent_in_window}/{ceiling} non-urgent sends in the last {window}s")
+    sys.exit(3)
+sends.append({"ts": now, "urgent": urgent})
+data["sends"] = sends
+tmp = ledger + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.replace(tmp, ledger)
+print(f"OK {non_urgent_in_window + (0 if urgent else 1)}/{ceiling} urgent={urgent}")
+PY
+) || gate_rc=$?
+
+if [[ $gate_rc -ne 0 ]]; then
+  msg="hermes: outbound gate refused: ${gate_decision}"
+  echo "$msg" >&2
+  printf '%s %s\n' "$(date -Is)" "$msg" >> "$LOG" 2>/dev/null || true
+  exit "$gate_rc"
+fi
+
+# Ledger the acceptance.
+printf '%s ACCEPT %s class=%s\n' "$(date -Is)" "$gate_decision" "${class:-none}" >> "$LOG" 2>/dev/null || true
+
+# --- Execute the real send --------------------------------------------------
+exec "$REAL" send "${shift_args[@]}"

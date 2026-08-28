@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# daily-digest — generate and send Nish's 9 AM IST digest on Telegram.
+#
+# Replaces the Hermes cron job c9b2a4c49870 that the 2026-08-26 Hermes cron
+# purge deleted. Driven now by ~/.config/systemd/user/daily-digest.{timer,service}.
+#
+# Reports ONLY live Pi-era reality (no fleet2, no deleted-machinery queues):
+#   - merged PRs per repo in the last 24h (gh)
+#   - failed user+system units count
+#   - Prometheus alerts currently firing (9090 /api/v1/alerts)
+#   - repair-dispatch SKIP / DISPATCH events from alert-repair/actions.log
+#   - seat health: healthy / dead / stale count from lanes/seats/*.json
+#   - disk % on /
+#
+# Delivery: the SAME sanctioned texter the nish-boundary-notify path unit uses
+# (`hermes send -t telegram --urgent ...`). No new channel. The --urgent flag
+# bypasses the 3/24h ceiling (still ledgered) because a daily digest is by
+# definition Nish's morning update, not a routine notification.
+#
+# Plain language, short: contract is "one of the two sanctioned digests".
+
+set -Eeuo pipefail
+
+# --- Section 1: merged PRs per repo (last 24h) ------------------------------
+# `gh search prs` does not take --state merged; it uses --merged-at instead.
+# Author is @me so this is Nish's own PRs across the org (fleet-ops / 0509).
+cutoff="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+pr_json="$(gh search prs --merged-at ">=$cutoff" --author @me \
+            --json repository,number,title,closedAt --limit 200 2>/dev/null || echo '[]')"
+pr_total=$(PR_JSON="$pr_json" python3 -c '
+import json, os, collections
+try:
+    data = json.loads(os.environ.get("PR_JSON") or "[]")
+except Exception:
+    data = []
+counts = collections.Counter(d["repository"]["nameWithOwner"].split("/")[-1] for d in data)
+print("%d|%s" % (len(data), json.dumps(dict(counts))))
+')
+pr_n="${pr_total%%|*}"
+pr_breakdown="${pr_total#*|}"
+if [ "$pr_n" = "0" ] || [ -z "$pr_n" ]; then
+  pr_line="• No PRs merged in the last 24 hours."
+else
+  pr_line="• $pr_n PRs merged in the last 24 hours:"
+  while IFS='|' read -r name count; do
+    [ -z "$name" ] && continue
+    pr_line="$pr_line
+  - $name: $count"
+  done < <(printf '%s' "$pr_breakdown" | python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    d = {}
+for k, v in sorted(d.items(), key=lambda kv: -kv[1]):
+    print(f"{k}|{v}")')
+fi
+
+# --- Section 2: failed units (user + system) --------------------------------
+user_failed=$(systemctl --user --failed --no-pager --plain 2>/dev/null \
+                | awk 'NR>1 && /failed/ {c++} END {print c+0}')
+system_failed=$(systemctl --failed --no-pager --plain 2>/dev/null \
+                 | awk 'NR>1 && /failed/ {c++} END {print c+0}')
+total_failed=$((user_failed + system_failed))
+if [ "$total_failed" = "0" ]; then
+  fail_line="• No failed units on this machine."
+else
+  fail_line="• Failed units — user: $user_failed, system: $system_failed (total $total_failed). Get the names with: systemctl --failed"
+fi
+
+# --- Section 3: Prometheus alerts currently firing --------------------------
+prom_url="http://localhost:9090"
+firing=$(curl -sS --max-time 5 "$prom_url/api/v1/alerts" 2>/dev/null \
+          | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read() or '{}')
+except Exception:
+    d = {}
+alerts = [a for a in d.get('data',{}).get('alerts',[])
+          if a.get('state') == 'firing'
+          and a.get('labels',{}).get('alertname') != 'Watchdog']
+print(f'{len(alerts)}|{[a[\"labels\"][\"alertname\"] for a in alerts]}')" 2>/dev/null \
+          || echo "0|[]")
+firing_n="${firing%%|*}"
+firing_list="${firing#*|}"
+firing_list="${firing_list#\[}"
+firing_list="${firing_list%\]}"
+if [ "$firing_n" = "0" ] || [ -z "$firing_n" ]; then
+  prom_line="• No Prometheus alerts firing."
+else
+  prom_line="• $firing_n Prometheus alert(s) firing: $firing_list"
+fi
+
+# --- Section 4: repair-dispatch events (last 24h) ----------------------------
+actions_log=/home/nish/workspaces/agent-state/alert-repair/actions.log
+if [ -f "$actions_log" ]; then
+  events=$(python3 - "$actions_log" <<'PY'
+import re, sys, time
+from datetime import datetime
+path = sys.argv[1]
+cutoff = time.time() - 86400
+disp = skip = 0
+try:
+    with open(path) as f:
+        for line in f:
+            m = re.match(r"^\[(\d{4}-\d{2}-\d{2}T[\d:]+)Z\] (DISPATCH|SKIP) ", line)
+            if not m:
+                continue
+            ts = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").timestamp()
+            if ts < cutoff:
+                continue
+            if m.group(2) == "DISPATCH":
+                disp += 1
+            else:
+                skip += 1
+except FileNotFoundError:
+    pass
+print(f"{disp}|{skip}")
+PY
+)
+  disp_n="${events%%|*}"; skip_n="${events#*|}"
+  if [ "$disp_n" = "0" ] && [ "$skip_n" = "0" ]; then
+    repair_line="• No repair dispatches or skips in the last 24 hours."
+  else
+    repair_line="• Repair pipeline last 24h — $disp_n dispatched, $skip_n skipped."
+  fi
+else
+  repair_line="• Repair actions log not found."
+fi
+
+# --- Section 5: seat health (lanes/seats/*.json) -----------------------------
+seat_summary=$(python3 <<'PY'
+import json, glob, time
+from datetime import datetime, timezone
+seats = sorted(glob.glob("/home/nish/workspaces/agent-state/lanes/seats/*.json"))
+now = time.time()
+healthy = dead = stale = 0
+last_observed = None
+for p in seats:
+    try:
+        d = json.load(open(p))
+    except Exception:
+        stale += 1
+        continue
+    oa = d.get("observed_at")
+    if oa:
+        try:
+            t = datetime.fromisoformat(oa.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            t = 0
+        if last_observed is None or t > last_observed:
+            last_observed = t
+        if now - t > 12 * 3600:
+            stale += 1
+            continue
+    if d.get("seat_dead") or d.get("health_class") in ("dead", "unhealthy"):
+        dead += 1
+    else:
+        healthy += 1
+print(f"{healthy}|{dead}|{stale}")
+PY
+)
+healthy_n="${seat_summary%%|*}"
+rest="${seat_summary#*|}"
+dead_n="${rest%%|*}"
+stale_n="${rest#*|}"
+seat_line="• Seats — $healthy_n healthy, $dead_n dead, $stale_n stale (>12h unobserved). Total seen: $((healthy_n+dead_n+stale_n))."
+
+# --- Section 6: disk usage on / ----------------------------------------------
+disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
+disk_line="• Disk on / — ${disk_pct}% used."
+
+# --- Compose ------------------------------------------------------------------
+# Plain language. No jargon. Short. Header names what it is and when.
+# (datestr is 09:00 IST of the trigger day, or NOW for an ad-hoc run.)
+now_ist="$(TZ=Asia/Kolkata date +'%A %-d %B %Y, %H:%M IST')"
+header="Good morning, Nish. Your daily digest for $now_ist."
+
+body="$header
+
+$pr_line
+
+$fail_line
+$prom_line
+$repair_line
+$seat_line
+$disk_line
+
+Reply to this message if you want anything investigated. Otherwise, on to the day."
+
+# Send via the sanctioned texter (same path as nish-boundary-notify).
+# --urgent bypasses the 3/24h ceiling because this is the morning digest,
+# not a routine notification. The send is still ledgered.
+# --class daily-digest declares the sanctioned class so the outbound gate's
+# urgent class-gate honours the bypass (fleet-ops#1534): only boundary
+# classes + the digests may text Nish's phone; everything else folds into
+# the next digest.
+# --json so we capture the Telegram message_id for the systemd journal
+# (proof of delivery; never print the bot token).
+exec /home/nish/.local/bin/hermes send -t telegram --urgent --class daily-digest --json "$body" </dev/null

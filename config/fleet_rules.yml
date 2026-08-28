@@ -99,6 +99,25 @@ groups:
           summary: "Fleet monitoring test alert"
           description: "Synthetic alert for end-to-end proof."
 
+      # fleet-ops#1534: the one meta-alert that pages Nish. severity=page is
+      # the ONLY alertmanager route that reaches the phone (config/alertmanager.yml).
+      # Fires when the am-executor webhook receiver (prometheus-am-executor.service,
+      # 127.0.0.1:9095) is down — the repair path itself is broken, so no
+      # critical/warning alert can spawn a repair worker. This is the last
+      # resort: if it is silent, the repair path is healthy; if it fires,
+      # Nish must intervene manually because the automatic repair path is dead.
+      # 2m for: am-executor restarts on transient errors; only a sustained
+      # outage pages. Scraped by the am-executor job in config/prometheus.yml.
+      - alert: RepairDispatchDown
+        expr: up{job="am-executor"} == 0
+        for: 2m
+        labels:
+          severity: page
+          service: fleet
+        annotations:
+          summary: "alert-repair-dispatch webhook receiver is down — the repair path is broken"
+          description: "prometheus-am-executor.service (127.0.0.1:9095) has been down for 2+ minutes. No critical/warning alert can spawn a repair worker while this is down. Nish must restart it manually: systemctl --user restart prometheus-am-executor."
+
   - name: host_and_system
     rules:
       - alert: SystemUnitFailed
