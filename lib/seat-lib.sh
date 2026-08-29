@@ -1361,6 +1361,10 @@ PI_SEAT_LIB_CHECK_SYSTEMD="${PI_SEAT_LIB_CHECK_SYSTEMD:-1}"
 # ground truth for how long it has been trying to start.
 PI_SEAT_ACTIVATING_MAX_S="${PI_SEAT_ACTIVATING_MAX_S:-3300}"  # 55 min > unit 45 min
 
+# fleet-ops#1361: shorter threshold for units stuck in activating without ever
+# launching their process (ExecMainStartTimestampMonotonic=0). 5 min is enough
+# to detect a unit that will never start its process.
+PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S="${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}"  # 5 min
 # True if the registry file's unit is still a live pi worker unit.
 # Non-zero (stale) when the unit is dead, missing, or not a pi unit name.
 #
@@ -1410,15 +1414,49 @@ _seat_registry_unit_live() {
     # so it is nonzero for every activating oneshot with a live process —
     # and treat an unparseable/0 timestamp as live (a young unit that
     # systemd has not yet stamped is not wedged).
+    #
+    # fleet-ops#1361 (2026-08-29): When ExecMainStartTimestampMonotonic=0
+    # (process never started), the unit is stuck in activating without ever
+    # launching pi. Use ActiveEnterTimestampMonotonic (when the unit entered
+    # activating state) with a shorter threshold (5 min) since a unit that
+    # hasn't started its process after 5 min in activating is clearly broken.
+    # Also: when ExecMainStartTimestampMonotonic>0 but SubState="start"
+    # (process started but unit stuck in startup phase), use a shorter
+    # threshold (5 min) since a real worker transitions to active/running
+    # within seconds.
     active_since=$(systemctl --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || echo 0)
     # Both timestamps are in MICROSECONDS since boot; /proc/uptime is in
     # SECONDS. Compare in seconds to avoid ms/us mixing.
     if [[ "$active_since" =~ ^[0-9]+$ ]] && (( active_since > 0 )); then
         now_s=$(awk '{print int($1)}' /proc/uptime)
         age_s=$(( now_s - active_since / 1000000 ))
-        if (( age_s > PI_SEAT_ACTIVATING_MAX_S )); then
-            seat_log "seat registry: unit $sysunit stuck activating ${age_s}s (> ${PI_SEAT_ACTIVATING_MAX_S}s) — wedged pi, reaping seat"
+        # Check SubState: if stuck in "start" phase, use shorter threshold.
+        local sub_state
+        sub_state=$(systemctl --user show "$sysunit" --property=SubState --value 2>/dev/null || echo "")
+        local max_s=${PI_SEAT_ACTIVATING_MAX_S}
+        if [[ "$sub_state" == "start" ]]; then
+            # Process started but unit stuck in startup phase — use 5 min threshold.
+            max_s=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
+        fi
+        if (( age_s > max_s )); then
+            seat_log "seat registry: unit $sysunit stuck activating ${age_s}s (SubState=$sub_state, threshold=${max_s}s) — wedged pi, reaping seat"
             return 1
+        fi
+    else
+        # Process never started (ExecMainStartTimestampMonotonic=0). Check how
+        # long the unit has been in activating state using ActiveEnterTimestampMonotonic.
+        # A unit stuck in activating without launching its process for >5 min is wedged.
+        local active_enter
+        active_enter=$(systemctl --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+        if [[ "$active_enter" =~ ^[0-9]+$ ]] && (( active_enter > 0 )); then
+            now_s=$(awk '{print int($1)}' /proc/uptime)
+            age_s=$(( now_s - active_enter / 1000000 ))
+            # Shorter threshold for units that never started their process: 5 min.
+            local no_process_max_s=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
+            if (( age_s > no_process_max_s )); then
+                seat_log "seat registry: unit $sysunit stuck activating ${age_s}s without process launch (> ${no_process_max_s}s) — wedged pi, reaping seat"
+                return 1
+            fi
         fi
     fi
     return 0
