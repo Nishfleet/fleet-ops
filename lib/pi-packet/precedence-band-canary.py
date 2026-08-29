@@ -346,6 +346,7 @@ def check_band_phase(
     if not units:
         return errors
     machinery_count = sum(1 for repo, _ in units if repo == machinery_repo)
+    product_count = sum(1 for repo, _ in units if repo != machinery_repo)
     total = len(units)
     share_pct = (machinery_count * 100) // total if total else 0
     cap = data.get("machinery_max_pct")
@@ -355,6 +356,22 @@ def check_band_phase(
     # the cap". 1 machinery + 1-2 product is 50%/33% > 30%, which is the
     # low-n deadlock, not drift. Ratio enforcement starts at 2+ machinery.
     if machinery_count <= 1:
+        return errors
+    # Empty-product-band exemption (fleet-ops#1421): the rent-paying band
+    # is a RATIO among live units — machinery must leave room for product's
+    # share. When zero product units are live there is no product share to
+    # protect, so 100% machinery is the only possible value and the ratio
+    # is undefined. Flagging "100% > 30%" here is the same disease as the
+    # surge-leverage-exhaustion false positive (#1431): a watcher misreading
+    # a legitimate intake state (all product work blocked-on / between
+    # intake ticks) as drift. The canary's job is ratio enforcement among
+    # LIVE units, which requires both sides live; "is product intake
+    # healthy / is claimable product being starved" is the undersaturation
+    # watchdog's job (it pages on ready supply vs running workers), not
+    # this canary's. Without this exemption the canary cried wolf for ~1h
+    # on 2026-08-29 (10 machinery / 0 product, all 7 0509 agent-ready
+    # issues blocked-on) and would auto-file a false starvation cluster.
+    if product_count == 0:
         return errors
     if share_pct > cap:
         errors.append(
