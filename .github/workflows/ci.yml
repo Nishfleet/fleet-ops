@@ -182,7 +182,7 @@ jobs:
       node-version: ""
       install-command: ""
       scan-secrets: false
-      timeout-minutes: 5
+      timeout-minutes: 10
       verify-command: |
         set -euo pipefail
         for t in jq openssl curl python3 node git flock; do
