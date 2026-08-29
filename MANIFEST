@@ -16,7 +16,13 @@ systemd/siterep-live-canary.service /home/nish/.config/systemd/user/siterep-live
 systemd/siterep-live-canary.timer /home/nish/.config/systemd/user/siterep-live-canary.timer
 systemd/fleet-console-pi.service /home/nish/.config/systemd/user/fleet-console-pi.service
 systemd/fleet-console-pi.timer /home/nish/.config/systemd/user/fleet-console-pi.timer
-systemd/fleet-console-pi.path /home/nish/.config/systemd/user/fleet-console-pi.path
+# fleet-console-pi.path REMOVED (fleet-ops#1460 class): it watched
+# fleet.prom (rewritten every 5 min by the exporter) + pi-seat-health.json
+# (touched on every Pi seat response) via PathChanged, so each atomic
+# replace-by-rename fanned into multiple inotify events, retriggering the
+# service dozens of times in minutes and hitting start-limit-hit. The 12-min
+# fleet-console-pi.timer already covers freshness; the .path added no real
+# event value, only a self-retriggering feedback loop.
 # fleet-ops#1157: self-auditing console. Generator + verify + shell live in
 # fleet-ops so the tile truth-check is version-controlled. push.sh still
 # runs on the existing 12-min timer (no new timer). verify.py writes
@@ -662,7 +668,15 @@ systemd/standing-rules-render.path /home/nish/.config/systemd/user/standing-rule
 bin/fleet-deploy-check /home/nish/.local/bin/fleet-deploy-check
 systemd/fleet-deploy-check.service /home/nish/.config/systemd/user/fleet-deploy-check.service
 systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-check.timer
-systemd/fleet-deploy-check.path /home/nish/.config/systemd/user/fleet-deploy-check.path
+# fleet-deploy-check.path REMOVED (fleet-ops#1460 class): it watched
+# refs/remotes/origin/main via PathChanged+PathExists, but every `git fetch`
+# (this service's own fetch, the heartbeat's, or the timer's) rewrites that
+# ref via replace-by-rename, fanning into multiple inotify events per fetch.
+# The .path retriggered the service hundreds of times per hour (703 starts
+# in 1h observed 2026-08-30) until start-limit-hit, which then escalated to
+# the senior auditor. The 2-min fleet-deploy-check.timer already bounds
+# merge->live to ~2-3 min (inside the 5-min TOP GEAR budget); the .path was
+# a self-retriggering feedback loop, not a true merge-event trigger.
 # fleet-ops#468 TOP GEAR: seat recovery fires intake instantly. A systemd
 # .path watcher on the seat ledger (event-driven, no polling) fires
 # fleet-seat-recovery.service, which starts pi-intake@<repo> on the
