@@ -33,6 +33,17 @@ SEAT_HEALTH = Path(
 SEAT_LEDGER = Path(
     "/home/nish/workspaces/agent-state/lanes/seats"
 )
+# seat-caps.json is the enrollment authority. A dead-credential seat only
+# needs re-auth if the fleet actually routes to it (cap > 0). cap=0 seats
+# (grok/* dead_decoy superseded by xai-oauth; opencode stale free models;
+# groq/inferx/orcarouter cap-0 reasons) are deliberately NOT picked, so a
+# 401 on them is noise, not a re-auth action (fleet-ops#1445 + #1941).
+SEAT_CAPS_JSON = Path(
+    os.environ.get(
+        "PI_SEAT_CAPS_JSON",
+        "/home/nish/.local/state/pi-packet/seat-caps.json",
+    )
+)
 HC_URL_FILE = Path(
     "/home/nish/.config/fleet-healthchecks/fleet-timer-liveness.url"
 )
@@ -460,6 +471,40 @@ def _read_seat():
     return healthy, epoch
 
 
+def _enrolled_seats():
+    """Return the set of (provider, model) seats the fleet actually routes to.
+
+    Enrollment = a cap > 0 in seat-caps.json for BOTH the provider and (when
+    the provider carries a model map) the model. A provider-level cap>0 with no
+    model map enrolls the provider (so every model it exposes is live). cap=0
+    rows — intentional dead_decoy/money_only or stale — are not enrolled, so a
+    dead credential on them must not surface as a re-auth alert (fleet-ops#1445
+    + #1941).
+
+    Returns a set of tuples. On missing/unparseable seat-caps.json, returns
+    None (caller fails OPEN to the old behaviour so the alert still fires on a
+    genuinely dead enrolled seat even if the caps file is transiently broken).
+    """
+    try:
+        data = json.loads(SEAT_CAPS_JSON.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    enrolled = set()
+    for p, v in (data.get("providers") or {}).items():
+        cap = v if isinstance(v, (int, float)) else v.get("cap", 0)
+        if cap <= 0:
+            continue
+        models = v.get("models") if isinstance(v, dict) else None
+        if not models:
+            enrolled.add((p, ".*"))  # provider-level enrollment (all models)
+        else:
+            for mk, mv in models.items():
+                mcap = mv if isinstance(mv, (int, float)) else mv.get("cap", 0)
+                if mcap > 0:
+                    enrolled.add((p, mk))
+    return enrolled
+
+
 def _read_dead_credentials():
     """Scan the per-seat health ledger for dead-credential seats.
 
@@ -470,10 +515,18 @@ def _read_dead_credentials():
     per-pick "excluded ... dead: D" fold or re-logged every cycle by the seat
     loop.
 
+    Only ENROLLED seats (cap > 0 in seat-caps.json) are counted. A cap=0 seat
+    (legacy grok/* dead_decoy, stale opencode free models, groq/inferx/orcarouter
+    cap-0) is never picked by pick_seat, so a dead credential on it is noise, not
+    a re-auth action — counting it trips FleetDeadCredentialSeats on a seat the
+    fleet does not route to (the fleap that sent the prior repair to quarantine
+    files the writer re-creates each tick; fleet-ops#1941).
+
     Returns (count, [ {provider, model, http_status}, ... ]). Always a
     (count, list) pair — never raises on a missing/unreadable ledger.
     """
     seats = []
+    enrolled = _enrolled_seats()
     if not SEAT_LEDGER.is_dir():
         return 0, seats
     try:
@@ -487,9 +540,18 @@ def _read_dead_credentials():
             if not isinstance(data, dict):
                 continue
             if data.get("seat_dead") is True and data.get("health_class") == "credentials_bad":
+                provider = data.get("provider", "")
+                model = data.get("model", "")
+                # Fail open (fall through) when enrollment is unknown.
+                if enrolled is not None:
+                    if not (
+                        (provider, model) in enrolled
+                        or (provider, ".*") in enrolled
+                    ):
+                        continue
                 seats.append({
-                    "provider": data.get("provider", ""),
-                    "model": data.get("model", ""),
+                    "provider": provider,
+                    "model": model,
                     "http_status": data.get("http_status"),
                 })
     except OSError:
