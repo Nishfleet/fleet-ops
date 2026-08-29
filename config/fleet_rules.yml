@@ -287,6 +287,24 @@ groups:
           summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
           description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
 
+  - name: fleet_queue_composition
+    rules:
+      # Queue composition metrics (fleet-ops#1136 scope addition).
+      # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
+      # (enrolled repos only). The 64% fleet2 death-number is the tripwire.
+      # TREND alert on 7-day window (offset 7d), not a level — levels are
+      # Nish's policy; trends are physics. Severity=warning feeds the Weekly
+      # Review scoring and the precedence-sunset question.
+      - alert: FleetQueueSelfMaintenanceRatioHigh
+        expr: (fleet_queue_self_maintenance_ratio - fleet_queue_self_maintenance_ratio offset 7d) > 0.64
+        for: 1w
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "queue {{ $labels.queue }} self-maintenance ratio exceeded 64% (fleet2 death-number) for a week"
+          description: "fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"} has been above 0.64 (the fleet2 death-number) for 7+ days. This is a TREND alert on the 7-day window (offset 7d), not a level threshold. The ratio itself is exported only when total>0. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
+
   - name: fleet_waste
     rules:
       # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is
