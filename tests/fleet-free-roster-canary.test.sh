@@ -548,4 +548,48 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario17: production seat-caps keep muse-spark-1.2-contributor-free benched at cap=0 with dated reason and no billing sibling"
 
-ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean"
+# --- 19. production lock: deepseek-v4-flash-free stay-benched (fleet-ops#744) --
+# The class prevention for "free slug silently unwired after a failed live
+# spawn" specific to #744: the canary's freshness detector 2a
+# (free-slug-available) only stops re-filing the ticket while the slug
+# remains in the seat-caps allowlist. A later PR that drops the cap=0 row
+# (because the API returns HTTP 400) would re-arm the canary to file a
+# duplicate on every tick. The cap=0 row + dated reason is the
+# production-lock answer. fleet-ops#1432: cap values can be a plain
+# number (legacy) or an object {"cap": N, "intentional_cap_zero": "..."}.
+dvf_cap=$(jq -r '(.providers.opencode.models["deepseek-v4-flash-free"] // "missing") | if type == "object" then .cap else . end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$dvf_cap" == "missing" ]]; then
+  fail "scenario19: production seat-caps must keep a deepseek-v4-flash-free row (cap=0 bench, fleet-ops#744)"
+fi
+if [[ "$dvf_cap" != "0" ]]; then
+  fail "scenario19: production deepseek-v4-flash-free must be capped 0 while the API returns HTTP 400 (got $dvf_cap, fleet-ops#744)"
+fi
+# Dated reason field required: the cap=0 row is the bench, the dated reason
+# is the audit trail. The reason must cite fleet-ops#744 and a date.
+reason=$(jq -r '.providers.opencode._deepseek_v4_flash_free // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario19: production seat-caps must carry _deepseek_v4_flash_free dated reason (fleet-ops#744)"
+fi
+if ! grep -qE 'fleet-ops#744' <<<"$reason"; then
+  fail "scenario19: _deepseek_v4_flash_free must cite fleet-ops#744 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario19: _deepseek_v4_flash_free must start with an ISO date (got: $reason)"
+fi
+# No billing sibling (deepseek-v4-flash, without the -free suffix) on the
+# opencode allowlist: free-form is the only path; a billing row would be a
+# money lane on a free-class provider. Exclude the free-form slug itself
+# and any other free-form variant.
+while IFS= read -r k; do
+  lk="${k,,}"
+  case "$lk" in
+    deepseek-v4-flash-free|deepseek-*-free|deepseek-*/*) : ;;  # free-form variants allowed
+    deepseek-v4-flash|deepseek-*|*/deepseek|*/deepseek-*)
+      fail "scenario19: production opencode allowlists a non-free deepseek slug: $k" ;;
+  esac
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario19: production seat-caps keep deepseek-v4-flash-free benched at cap=0 with dated reason and no billing sibling"
+
+ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean, deepseek-v4-flash-free bench lock"
