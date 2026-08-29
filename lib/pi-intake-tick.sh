@@ -56,7 +56,11 @@ fi
 # ISSUE_STATE_DIR is used for the worker packet written for pi-issue-run.
 # It must NOT be named STATE_DIR: seat-lib.sh redefines that for its own
 # pi-packet state (watch.log, active-seats, attempts) when it is sourced below.
-ISSUE_STATE_DIR="/home/nish/.local/state/pi-issues"
+# Overridable for tests (like SEAT_LIB / PRECEDENCE_BAND_LIB / the other
+# PI_INTAKE_* knobs): a test drives the tick down its low=0 claim path, and
+# a hardcoded /home/nish path crashes `set -e` with exit 1 on a GitHub-hosted
+# runner where the runner user cannot create /home/nish (fleet-ops#1407).
+ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
