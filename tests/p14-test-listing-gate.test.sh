@@ -199,6 +199,25 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-packet-verdict\.test\.sh"?' \
   || fail "pi-packet-verdict.test.sh must not be a known orphan (fleet-ops#1200)"
 ok "pi-packet-verdict.test.sh is pinned in the P14 reachable set (fleet-ops#1200)"
 
+# fleet-ops#1309: hard-pin the host line for alert-repair-claim-mutex
+# BEFORE the $bad[] accounting so a future refactor that drops the host
+# line in tests/seat-lib.test.sh is caught by name. The test landed on
+# main via fleet-ops#1199 (PR #1280) without a ci.yml listing or host;
+# seat-lib.test.sh grew the invoke as a side effect of PR #1288
+# (fleet-ops#1288, which pinned its sibling pi-packet-verdict). This
+# named pin is the class-prevention so the host line cannot be dropped
+# and the test cannot be parked on known_orphans to silence $bad[].
+# fleet-ops#1279 stays open as the ci.yml-line follow-up (needs
+# workflow scope).
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-claim-mutex\.test\.sh"?' \
+  "$here/seat-lib.test.sh" \
+  || fail "seat-lib.test.sh must bash-invoke alert-repair-claim-mutex.test.sh (fleet-ops#1309)"
+[[ -n "${reachable[alert-repair-claim-mutex.test.sh]:-}" ]] \
+  || fail "alert-repair-claim-mutex.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1309)"
+[[ -z "${known_orphan_set[alert-repair-claim-mutex.test.sh]:-}" ]] \
+  || fail "alert-repair-claim-mutex.test.sh must not be a known orphan (fleet-ops#1309)"
+ok "alert-repair-claim-mutex.test.sh is pinned in the P14 reachable set (fleet-ops#1309)"
+
 # fleet-ops#1152: hard-pin the host line for standing-rules-drift. The test
 # landed on main as `test_standing_rules_drift.sh` — a name this gate does
 # not scan (`*.test.sh` only), so it ran nowhere in CI while looking like a
@@ -351,6 +370,17 @@ ok "dirty-worktree-audit.test.sh is in the P14 reachable set, not parked on know
 [[ -z "${known_orphan_set[pi-packet-verdict.test.sh]:-}" ]] \
   || fail "pi-packet-verdict.test.sh must not be a known orphan (fleet-ops#1200)"
 ok "pi-packet-verdict.test.sh is in the P14 reachable set, not parked on known_orphans (fleet-ops#1200)"
+
+# fleet-ops#1309: bypass-class after $bad[] — parking the test on
+# known_orphans to silence the generic "1 test file(s) are neither..."
+# message must fail by name. The early pin above is the loud named
+# failure; these checks are the second line so a future worker who
+# comments out the early pin still cannot park the test.
+[[ -n "${reachable[alert-repair-claim-mutex.test.sh]:-}" ]] \
+  || fail "alert-repair-claim-mutex.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1309)"
+[[ -z "${known_orphan_set[alert-repair-claim-mutex.test.sh]:-}" ]] \
+  || fail "alert-repair-claim-mutex.test.sh must not be a known orphan (fleet-ops#1309)"
+ok "alert-repair-claim-mutex.test.sh is in the P14 reachable set, not parked on known_orphans (fleet-ops#1309)"
 
 # Self-check: this file is hosted by ci-standards-audit, not by ci.yml.
 grep -Fq 'bash "$here/p14-test-listing-gate.test.sh"' "$here/ci-standards-audit.test.sh" \
