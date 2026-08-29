@@ -29,10 +29,14 @@
 #
 # For xai-oauth: the token in ~/.pi/agent/auth.json carries a JWT `exp`
 # claim and the extension auto-refreshes on 401 (fleet-ops#1163). The
-# canary validates the xai-oauth seat by making a cheap live call to
-# api.x.ai/v1/models (see validate_xai_oauth) rather than trusting
-# presence. A persistent 401 from that call is the dead-credential case
-# this row is wired to catch.
+# canary validates the xai-oauth seat by making a cheap live call to the
+# subscription proxy cli-chat-proxy.grok.com/v1/models (see
+# validate_xai_oauth) rather than trusting presence. The extension routes
+# every xai-oauth model through that proxy (models.ts CLI_PROXY_BASE_URL),
+# NOT api.x.ai — the token is a SuperGrok subscription credential, so
+# api.x.ai/v1/models returns 403 spending-limit even when the seat is
+# alive (fleet-ops#1441). A persistent non-200 from the proxy is the
+# dead-credential case this row is wired to catch.
 #
 # Running `grok models` every heartbeat tick IS the refresh wiring: if a
 # refresh_token is still stored, the CLI mints a new access token into
@@ -55,6 +59,7 @@ GH="${GH:-gh}"
 ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 GROK="${FLEET_GROK_BIN:-${GROK:-grok}}"
 PI="${FLEET_PI_BIN:-${PI:-pi}}"
+CURL="${FLEET_CURL_BIN:-curl}"
 GROK_HOME="${GROK_HOME:-$HOME/.grok}"
 AUTH_JSON="$GROK_HOME/auth.json"
 # xai-oauth extension stores its own OAuth credentials separately from the
@@ -184,12 +189,22 @@ auth_present() {
 # ~/.pi/agent/auth.json — a separate store from the grok CLI's
 # ~/.grok/auth.json. A dead grok CLI does NOT mean xai-oauth is dead.
 #
-# Proves liveness with a cheap live call to api.x.ai/v1/models. Tests
-# override via FLEET_XAI_OAUTH_PROBE fixture (a file whose first line is
-# "ok" or "dead") so no network is needed in CI.
+# Proves liveness with a cheap live call to the SUBSCRIPTION proxy the
+# extension actually routes through: cli-chat-proxy.grok.com/v1/models.
+# The extension (stnly/pi-grok models.ts rebuildModelsForOAuth) stamps
+# every xai-oauth model's baseUrl to CLI_PROXY_BASE_URL and sends the
+# proxy identity headers (User-Agent, x-grok-client-*). The token is a
+# SuperGrok subscription credential, NOT an api.x.ai API-key credit, so
+# probing api.x.ai/v1/models returns 403 spending-limit even when the
+# subscription seat is fully alive — that false negative produced the
+# fleet-ops#1441 "all four Grok seats 401 credentials_bad" report while
+# the proxy returned 200. Probe the proxy, not the API-credit endpoint.
+#
+# Tests override via FLEET_XAI_OAUTH_PROBE fixture (a file whose first line
+# is "ok" or "dead") so no network is needed in CI.
 # Returns 0 if healthy, 1 if dead, 2 if no token present at all.
 validate_xai_oauth() {
-    local token resp_code
+    local token resp_code probe_url
     if [[ -n "${FLEET_XAI_OAUTH_PROBE:-}" ]]; then
         # Test seam: fixture file's first non-empty line is "ok" or "dead".
         if [[ -f "$FLEET_XAI_OAUTH_PROBE" ]]; then
@@ -210,17 +225,29 @@ validate_xai_oauth() {
         log "xai-oauth: no access token in $PI_AGENT_AUTH_JSON"
         return 2
     fi
-    # Burn one cheap call. We do NOT print the token or any response body
-    # that might carry it. Only the HTTP status is inspected.
-    resp_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    # The subscription proxy the extension routes through (models.ts
+    # CLI_PROXY_BASE_URL). Override via FLEET_XAI_OAUTH_PROBE_URL for tests
+    # that want to assert the probe target without a real network call.
+    probe_url="${FLEET_XAI_OAUTH_PROBE_URL:-https://cli-chat-proxy.grok.com/v1/models}"
+    # Burn one cheap call against the subscription proxy with the same
+    # identity headers the extension sends (buildProxyHeaders in models.ts).
+    # We do NOT print the token or any response body that might carry it.
+    # Only the HTTP status is inspected.
+    resp_code=$("$CURL" -sS -o /dev/null -w '%{http_code}' \
         --max-time 15 \
         -H "Authorization: Bearer ${token}" \
-        'https://api.x.ai/v1/models' 2>/dev/null || true)
+        -H "User-Agent: ${FLEET_XAI_OAUTH_UA:-grok-shell/0.2.101 (linux; x86_64)}" \
+        -H "x-grok-client-identifier: ${FLEET_XAI_OAUTH_CLIENT:-grok-shell}" \
+        -H "x-grok-client-version: ${FLEET_XAI_OAUTH_VERSION:-0.2.101}" \
+        -H "x-grok-client-mode: interactive" \
+        -H "X-XAI-Token-Auth: xai-grok-cli" \
+        -H "x-authenticateresponse: authenticate-response" \
+        "$probe_url" 2>/dev/null || true)
     if [[ "$resp_code" == "200" ]]; then
-        log "xai-oauth: api.x.ai/v1/models returned 200 — token valid"
+        log "xai-oauth: ${probe_url} returned 200 — subscription token valid"
         return 0
     fi
-    log "xai-oauth: api.x.ai/v1/models returned ${resp_code:-<none>} — token dead"
+    log "xai-oauth: ${probe_url} returned ${resp_code:-<none>} — token dead"
     return 1
 }
 
@@ -277,8 +304,8 @@ xai-oauth result: $( (( xai_rc == 0 )) && echo healthy || echo dead ).
 The canary could not run \`$GROK\`. Restore the grok CLI.
 
 ### xai-oauth
-The xai-oauth token in ~/.pi/agent/auth.json was probed against
-api.x.ai/v1/models. Status: $( (( xai_rc == 0 )) && echo "200 (token still valid)" || echo "non-200 or missing (token dead or absent)" ).
+The xai-oauth token in ~/.pi/agent/auth.json was probed against the
+subscription proxy cli-chat-proxy.grok.com/v1/models. Status: $( (( xai_rc == 0 )) && echo "200 (token still valid)" || echo "non-200 or missing (token dead or absent)" ).
 
 Nish action:
 - If only grok CLI is missing, restore the grok CLI (\`grok login --device-auth\` on a headless box).
@@ -377,16 +404,17 @@ if [[ "$classify" == "healthy" ]]; then
         } >>"$TRIAGE" 2>/dev/null || true
         if (( xai_rc == 1 )); then
             # grok CLI is healthy but xai-oauth is independently dead
-            # (token present but api.x.ai returned non-200). Mark xai-oauth
-            # dead and file a finding so the seat gets a fresh ticket.
+            # (token present but the subscription proxy returned non-200).
+            # Mark xai-oauth dead and file a finding so the seat gets a
+            # fresh ticket.
             write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
             log "WARN: grok CLI healthy but xai-oauth independently dead — marking xai-oauth credentials_bad"
             file_finding \
                 "SuperGrok grok CLI healthy but xai-oauth token dead" \
                 "fleet-seat-live-validate: grok CLI is authenticated (healthy) but the
-xai-oauth extension token in ~/.pi/agent/auth.json is dead (api.x.ai returned
-non-200). These are separate OAuth clients — the xai-oauth seat must be
-re-authenticated independently.
+xai-oauth extension token in ~/.pi/agent/auth.json is dead (the subscription
+proxy cli-chat-proxy.grok.com returned non-200). These are separate OAuth
+clients — the xai-oauth seat must be re-authenticated independently.
 
 Nish action: re-authenticate xai-oauth via the pi-grok extension device flow:
 
@@ -420,8 +448,8 @@ if (( xai_rc == 0 )); then
     file_finding \
         "SuperGrok seat dead: grok CLI unauthenticated; xai-oauth is healthy" \
         "fleet-seat-live-validate (fleet-ops#917) found the grok CLI dead but the
-xai-oauth extension token in ~/.pi/agent/auth.json is still valid (api.x.ai
-returned 200).
+xai-oauth extension token in ~/.pi/agent/auth.json is still valid (the
+subscription proxy cli-chat-proxy.grok.com returned 200).
 
 This is the #1450 case: the previous canary blindly mirrored the grok
 dead-class onto xai-oauth, marking xai-oauth seats credentials_bad even
@@ -436,9 +464,9 @@ refresh). There is nothing left to mint from: either \`~/.grok/auth.json\`
 is missing, or the stored refresh token was rejected.
 
 ### xai-oauth
-The xai-oauth token in ~/.pi/agent/auth.json was probed against
-api.x.ai/v1/models and returned 200. The seat is healthy — only the grok
-CLI is the broken path.
+The xai-oauth token in ~/.pi/agent/auth.json was probed against the
+subscription proxy cli-chat-proxy.grok.com/v1/models and returned 200.
+The seat is healthy — only the grok CLI is the broken path.
 
 Nish must sign in TODAY on netcup-rs2000:
 
@@ -470,9 +498,10 @@ Nish action (headless device flow):
 signal: rule-enforcement/sr-prepaid-max-util" \
         || true
 elif (( xai_rc == 1 )); then
-    # xai-oauth token exists but is dead (non-200 from api.x.ai).
+    # xai-oauth token exists but is dead (non-200 from the subscription
+    # proxy).
     write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
-    log "xai-oauth: token dead (api.x.ai returned non-200) — marking credentials_bad"
+    log "xai-oauth: token dead (subscription proxy returned non-200) — marking credentials_bad"
     file_finding \
         "SuperGrok seat dead: grok CLI unauthenticated AND xai-oauth token dead" \
         "fleet-seat-live-validate (fleet-ops#917) found BOTH the grok CLI and the
@@ -486,9 +515,10 @@ refresh). There is nothing left to mint from: either \`~/.grok/auth.json\`
 is missing, or the stored refresh token was rejected.
 
 ### xai-oauth
-The xai-oauth token in ~/.pi/agent/auth.json was probed against
-api.x.ai/v1/models and returned non-200. The pi-grok extension auto-refreshes
-on 401, so a persistent failure means the refresh token is exhausted or revoked.
+The xai-oauth token in ~/.pi/agent/auth.json was probed against the
+subscription proxy cli-chat-proxy.grok.com/v1/models and returned non-200.
+The pi-grok extension auto-refreshes on 401, so a persistent failure means
+the refresh token is exhausted or revoked.
 
 Nish must sign in TODAY on netcup-rs2000 (he leaves tomorrow for 11 days):
 
