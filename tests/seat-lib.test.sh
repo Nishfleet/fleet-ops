@@ -1788,6 +1788,76 @@ rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
 # restore the 1163 state dir for later 1163 tests
 export PI_PACKET_STATE="$scratch/1163/state"
 
+# (c4) fleet-ops#1415: pin the exact at-capacity seat named in the dispatch-
+#      starvation window — commandcode/poolside/laguna-s-2.1-free (cap=1).
+#      In the 2026-08-27 19:30-21:30Z window (222 ready, 1 dispatch, 10691
+#      at-capacity skips) this seat sat at model cap alongside opencode/
+#      nemotron-3-ultra-free, and pick_seat logged it per-pick. The #1624
+#      fold must keep the opus at_capacity_events metric predicate
+#      ("cap=" AND "skipped") at 0 and emit exactly ONE per-pick
+#      "pick_seat: at-capacity" summary — never a per-seat flood. Uses a
+#      fresh fixture where laguna-s-2.1-free is the only routable seat and
+#      is already at its model cap of 1.
+mkdir -p "$scratch/1415"
+export PI_PACKET_STATE="$scratch/1415/state-atcap"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+cat >"$scratch/1415/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": { "cap": 2, "class": "free", "models": {
+        "poolside/laguna-s-2.1-free": 1
+    } }
+  }
+}
+JSON
+export SEAT_CAPS_JSON="$scratch/1415/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1415/ledger"
+# The model INVENTORY drives enumerate_seats (the cap map only allowlists
+# what the inventory emits). Prior 1163 blocks left PI_MODELS_JSON pointing
+# at a fixture with only ollama/xai-oauth models, so assert this seat's
+# inventory explicitly. No apiKey field -> provider_has_credential fails
+# open (the reactive seat-health ledger is the offline backstop).
+cat >"$scratch/1415/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": { "models": [ { "id": "poolside/laguna-s-2.1-free" } ] }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1415/models.json"
+unit="pi-test-1415-laguna"
+jq -nc --arg p "commandcode" --arg m "poolside/laguna-s-2.1-free" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -x -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/tmp/1415-xtrace.txt)
+rc=$?
+set -e
+echo "DEBUG1415XT rc=$rc" >&2
+tail -40 /tmp/1415-xtrace.txt >&2
+# laguna model cap=1 is reached by the one live worker -> no alternate, rc!=0
+[[ "$rc" != "0" ]] || fail "1415-atcap: cap=1 laguna with one live worker must reject (rc=0 returned, out=$out)"
+# at_capacity_events metric predicate (cap= + skipped) must be 0 — no per-seat
+# 'skipped (... cap=...)' line leaked past the #1624 fold. This is the exact
+# predicate the opus-heartbeat gather rolls up into at_capacity_events_last_2h.
+_1415_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1415_pred=${_1415_pred:-0}
+if (( _1415_pred > 0 )); then
+  fail "1415-atcap: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1415_pred — the #1624 per-pick fold regressed for commandcode/poolside/laguna-s-2.1-free. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# exactly ONE per-pick at-capacity summary (never a flood)
+_1415_sum=$(grep -c "^pick_seat: at-capacity" "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+_1415_sum=${_1415_sum:-0}
+if (( _1415_sum != 1 )); then
+  fail "1415-atcap: expected exactly 1 per-pick at-capacity summary line for the single pick, got $_1415_sum. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1415-atcap: commandcode/poolside/laguna-s-2.1-free at cap emits 0 metric-predicate flood lines and 1 per-pick at-capacity summary"
+rm -rf "$PI_PACKET_STATE/active-seats"
+
 # (d) Dead token means a dead seat: a credentials_bad ledger entry
 #     must keep pick_seat off xai-oauth (the 'never lie "ready" again'
 #     half of #1163). Without the ledger the seat would be picked
