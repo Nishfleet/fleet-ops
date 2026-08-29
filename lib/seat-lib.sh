@@ -1204,7 +1204,7 @@ seat_usable() {
     fi
     f=$(seat_ledger_path "$p" "$m")
     if [[ ! -f "$f" ]]; then
-        seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
         return 0
     fi
     # Unit-separator join (not TSV): bash `read` treats tab as IFS whitespace
@@ -1216,21 +1216,21 @@ seat_usable() {
         jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
     )
     if [[ -z "$hc" ]]; then
-        seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
         return 0
     fi
     # quota_bench BEFORE stale-observed_at: bench_until is the source of truth
     # for the advertised reset window, which can outlive STALE_SECS.
     if [[ "$hc" == "quota_bench" ]]; then
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
             return 1
         fi
         if [[ -n "$bench_until" ]]; then
             seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
         return 1
     fi
     # fleet-ops #652 hot-patch: overload_bench (503 / upstream-overload) is
@@ -1243,14 +1243,14 @@ seat_usable() {
     # overload_bench distinction.
     if [[ "$hc" == "overload_bench" ]]; then
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            seat_log "seat $p/$m: benched until $bench_until (overload_bench)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (overload_bench)"
             return 1
         fi
         if [[ -n "$bench_until" ]]; then
             seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
         return 1
     fi
     # Auditor 2026-08-27: hang_bench (model accepted request but never
@@ -1259,14 +1259,14 @@ seat_usable() {
     # is not starved if the hang self-clears.
     if [[ "$hc" == "hang_bench" ]]; then
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            seat_log "seat $p/$m: benched until $bench_until (hang_bench)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (hang_bench)"
             return 1
         fi
         if [[ -n "$bench_until" ]]; then
             seat_log "seat $p/$m: hang bench expired ($bench_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
         return 1
     fi
     if ! _seat_observed_fresh "$observed"; then
@@ -1274,11 +1274,11 @@ seat_usable() {
         return 0
     fi
     if [[ "$dead" == "true" ]]; then
-        seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
         return 1
     fi
     if [[ "$hc" == "quota_exhausted" || "$hc" == "credentials_bad" ]]; then
-        seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
         return 1
     fi
     # rate_limited: trust only while the marker is fresh (<30 min) AND usable_at
@@ -1287,14 +1287,14 @@ seat_usable() {
     # limit may have reset -> retry (usable).
     if [[ "$hc" == "rate_limited" ]]; then
         if _seat_rate_limit_fresh "$observed" && [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
-            seat_log "seat $p/$m: UNUSABLE (rate_limited until $usable_at, observed ${observed:-<empty>})"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (rate_limited until $usable_at, observed ${observed:-<empty>})"
             return 1
         fi
         seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s or usable_at passed) — assuming usable"
         return 0
     fi
     if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
-        seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc)"
         return 1
     fi
     return 0
@@ -2290,6 +2290,18 @@ pick_seat() {
     # condition clears). Surfaced in the summary so the operator sees at a
     # glance which cap=0 seats are by-design vs which warrant re-audition.
     local _excluded_cap0_intentional_n=0 _excluded_cap0_stale_n=0
+
+    # fleet-ops#1409: fold seat_usable() per-seat UNUSABLE log lines into a
+    # per-pick summary. A permanently-benched seat (e.g. cline-pass minimax-m3
+    # quota_bench until Sep 19) was logged N times per pick_seat call by every
+    # concurrent worker — the remaining flood source after #1449's cap=0/dead
+    # fold and #1624's at-capacity fold (rate_limited, quota_bench,
+    # overload_bench, hang_bench, quota_exhausted, credentials_bad, backoff).
+    # When _SEAT_USABLE_SILENT is set, seat_usable() skips the per-seat log
+    # and the caller tallies the count + sample for ONE per-pick summary.
+    local _SEAT_USABLE_SILENT=1
+    local _seat_unusable_n=0
+    local -a _seat_unusable_sample=()
     local _p _m _er
     if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
         while IFS=$'\t' read -r _p _m; do
@@ -2472,7 +2484,11 @@ pick_seat() {
             continue
         fi
         if ! seat_usable "$p" "$m"; then
-            # seat_usable already logged the UNUSABLE reason from the ledger.
+            # fleet-ops#1409: seat_usable runs silent (per-seat log suppressed)
+            # when _SEAT_USABLE_SILENT=1. Count the UNUSABLE seat + keep a
+            # sample for the per-pick summary emitted below.
+            _seat_unusable_n=$((_seat_unusable_n + 1))
+            _seat_unusable_sample+=("$p/$m")
             continue
         fi
         # fleet-ops#1379: once a provider is at effective cap for this pick,
@@ -2744,13 +2760,40 @@ pick_seat() {
         return 0
     fi
 
+    # fleet-ops#1409: per-pick summary for the seat_usable UNUSABLE seats folded
+    # during the loop above. Same pattern as the excluded/at-capacity/static
+    # summaries — replaces N per-seat "UNUSABLE (…)" / "benched until (…)" log
+    # lines with ONE per-pick line. Format is stable: "pick_seat: unusable N
+    # seats [sample]" so a future grep can pin the count.
+    if (( _seat_unusable_n > 0 )); then
+        local _su_sorted=()
+        if (( ${#_seat_unusable_sample[@]} > 0 )); then
+            mapfile -t _su_sorted < <(printf '%s\n' "${_seat_unusable_sample[@]}" | sort | uniq)
+            _su_sorted=("${_su_sorted[@]:0:6}")
+        fi
+        local _su_sample_str=""
+        if (( ${#_su_sorted[@]} > 0 )); then
+            _su_sample_str=$(printf '%s\n' "${_su_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: unusable ${_seat_unusable_n} seats [${_su_sample_str}]"
+    fi
+
     # P15: loud stall beats a garbage seat. Every allowlisted seat was dead or
     # capped — return 1 (caller must not spawn anything) and say so, rather
     # than falling back to a non-allowlisted model.
+    # fleet-ops#1409: cooldown before returning when no seat is available —
+    # prevents the systemd RestartSec timer from immediately re-firing another
+    # full pick_seat pass against an already walled fleet (the per-second
+    # thrash loop: pick_seat → NO USABLE SEAT → exit 1 → restart → pick_seat).
     if [[ "$privacy" == "private" ]]; then
         seat_log "pick_seat: NO USABLE SEAT — every non-free allowlisted seat is dead/capped/rate-limited, and free-class lanes are blocked for this private-repo target (free-tier privacy line, fleet-ops#520). Refusing to route outside the cap map or to a free lane."
     else
         seat_log "pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map."
+    fi
+    local _cooldown="${PI_SEAT_NOUSABLE_COOLDOWN_S:-5}"
+    [[ "$_cooldown" =~ ^[0-9]+$ ]] || _cooldown=5
+    if (( _cooldown > 0 )); then
+        sleep "$_cooldown"
     fi
     return 1
 }
