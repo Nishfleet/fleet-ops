@@ -28,7 +28,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -37,7 +36,6 @@ from pathlib import Path
 # --- Config ----------------------------------------------------------------
 
 HOME = Path.home()
-OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
 FINDINGS_DIR = HOME / "workspaces/agent-state/staleness-findings"
 PR_CACHE_DIR = HOME / "workspaces/agent-state/fleet-metrics"
 FINDINGS_CACHE = PR_CACHE_DIR / "staleness-findings-cache.json"
@@ -558,41 +556,12 @@ def main():
                 print(f"  filed issue #{iss}: {f['claim'].get('raw', f['claim']['value'])}",
                       file=sys.stderr)
 
-    # 6. Export to Prometheus textfile
-    lines = [
-        "# HELP fleet_truth_staleness_last_run_seconds Epoch(s) of the last staleness checker run.",
-        "# TYPE fleet_truth_staleness_last_run_seconds gauge",
-        f"fleet_truth_staleness_last_run_seconds {start_time:.3f}",
-        "",
-        "# HELP fleet_truth_staleness_total_claims Total verifiable claims extracted this run.",
-        "# TYPE fleet_truth_staleness_total_claims gauge",
-        f"fleet_truth_staleness_total_claims {len(unique_claims)}",
-        "",
-        "# HELP fleet_truth_staleness_mismatches_by_kind Count of mismatches found, by claim kind.",
-        "# TYPE fleet_truth_staleness_mismatches_by_kind gauge",
-    ]
-    kind_counts = {}
-    for f in findings:
-        kind = f["claim"]["type"]
-        kind_counts[kind] = kind_counts.get(kind, 0) + 1
-    for kind in ("path", "unit", "issue"):
-        lines.append(f'fleet_truth_staleness_mismatches_by_kind{{kind="{kind}"}} {kind_counts.get(kind, 0)}')
-
-    body = "\n".join(lines) + "\n"
-    try:
-        OUT.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix="staleness.", suffix=".tmp",
-                                    dir=str(OUT.parent))
-        with os.fdopen(fd, "w") as fh:
-            fh.write(body)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, str(OUT))
-        os.chmod(OUT, 0o644)
-        print(f"Exported staleness metrics to {OUT}", file=sys.stderr)
-    except OSError as exc:
-        print(f"Export failed: {exc}", file=sys.stderr)
-        # Non-fatal: the direct run still reports results
+    # 6. Prometheus export is owned by fleet-metrics-export.py.
+    # This checker only writes its JSON cache (step 4). fleet-metrics-export.py
+    # is the SINGLE writer of /var/lib/prometheus/node-exporter/fleet.prom and
+    # reads this cache to emit the fleet_truth_staleness_* gauges. Writing
+    # fleet.prom here too clobbered every other metric family between exporter
+    # runs (fleet_escalations_24h, fleet_main_ci_green, ...).
 
     # 7. Summary
     print(f"\nStaleness check complete: {docs_scanned} docs, "
