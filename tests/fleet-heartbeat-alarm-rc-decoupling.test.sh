@@ -239,30 +239,30 @@ printf '%s\n' "$out" | grep -qE "tier 1 complete:" \
     || fail "scenario 4: all-cans-pass did not log 'tier 1 complete:' line. output: $out"
 ok "scenario 4: all-cans-pass baseline: propagation exits 0, logs 'tier 1 complete:'"
 
-# --- source gate (D): the six rc-propagation guards MUST be -ge 2 ----------
+# --- source gate (D): the six rc-propagation guards MUST use _propagate_crash ----------
 # The class lock says the six integration points MUST only propagate rc
 # when the helper CRASHED (rc >= 2). This is the shape-lock. We grep
-# the source for the six -ge 2 lines and assert they are present, and
-# we grep the rest of the file to ensure the OLD `-ne 0` shape is not
+# the source for the _propagate_crash calls and assert they are present,
+# and we grep the rest of the file to ensure the OLD `-ne 0` shape is not
 # reintroduced for those six vars.
 declare -a D_VARS=(deploy_rc redpr_rc canary_rc decisions_ledger_rc failed_command_rc unjustified_rc)
 D_PASS=0
 D_TOTAL=0
 for v in "${D_VARS[@]}"; do
     D_TOTAL=$((D_TOTAL + 1))
-    # The -ge 2 line for $v must exist
-    if ! grep -qE "if \\[ \"?\\\${?${v}:?-?0?\\}?:?0?\"? -ge 2 \\]; then" "$tier1"; then
-        fail "source gate: $v does not have a -ge 2 rc-propagation guard. The alarm-vs-failure separation is missing for this detector."
+    # The _propagate_crash call for $v must exist
+    if ! grep -qE "_propagate_crash ${v} \|\| exit" "$tier1"; then
+        fail "source gate: $v does not have a _propagate_crash rc-propagation guard. The alarm-vs-failure separation is missing for this detector."
     fi
     D_PASS=$((D_PASS + 1))
     # And the OLD `-ne 0` shape for $v must NOT exist (would mean we
-    # added -ge 2 but forgot to remove -ne 0 — both fire and the unit
+    # added _propagate_crash but forgot to remove -ne 0 — both fire and the unit
     # still fails on rc=1)
     if grep -nE "if \\[ \"?\\\${?${v}:?-?0?\\}?:?0?\"? -ne 0 \\]; then" "$tier1" | grep -q .; then
-        fail "source gate: $v still has a -ne 0 rc-propagation guard — alarm-vs-failure separation is leaking. The shape-lock requires ONLY -ge 2 for these six."
+        fail "source gate: $v still has a -ne 0 rc-propagation guard — alarm-vs-failure separation is leaking. The shape-lock requires ONLY _propagate_crash for these six."
     fi
 done
-ok "source gate: $D_PASS/$D_TOTAL detector rc-propagation guards are -ge 2 (no -ne 0 leak)"
+ok "source gate: $D_PASS/$D_TOTAL detector rc-propagation guards use _propagate_crash (no -ne 0 leak)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-alarm-rc-decoupling.test.sh"' "$here/seat-lib.test.sh" \

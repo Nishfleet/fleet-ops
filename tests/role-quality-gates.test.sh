@@ -480,8 +480,8 @@ grep -F 'fleet-role-gate-audit' "$tier1" >/dev/null \
   || fail "tier1 must invoke fleet-role-gate-audit"
 grep -F 'role_gate_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture role_gate_rc"
-grep -F -- 'exit "$role_gate_rc"' "$tier1" >/dev/null \
-  || fail "tier1 must exit non-zero when the auditor is broken"
+grep -q '_propagate_crash role_gate_rc' "$tier1" \
+  || fail "tier1 must use _propagate_crash for role_gate_rc (alarm-vs-failure separation)"
 grep -q 'bin/fleet-role-gate-audit' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-role-gate-audit"
 grep -F 'observe-to-close' "$bin" >/dev/null \

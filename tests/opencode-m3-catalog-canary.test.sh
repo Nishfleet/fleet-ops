@@ -229,11 +229,11 @@ grep -F 'opencode-m3-catalog-canary' "$tier1" >/dev/null \
   || fail "tier1 must invoke opencode-m3-catalog-canary"
 grep -F 'opencode_m3_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture opencode_m3_canary_rc"
-grep -F -- 'exit "$opencode_m3_canary_rc"' "$tier1" >/dev/null \
-  || fail "tier1 must exit non-zero when the billing gate fails loud"
+grep -q '_propagate_crash opencode_m3_canary_rc' "$tier1" \
+  || fail "tier1 must use _propagate_crash for opencode_m3_canary_rc (alarm-vs-failure separation)"
 grep -q 'bin/opencode-m3-catalog-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/opencode-m3-catalog-canary"
-ok "scenario8: heartbeat-tier1 wires the canary, fail-loud on billing, MANIFEST installs it"
+ok "scenario8: heartbeat-tier1 wires the canary, uses _propagate_crash (alarm-vs-failure separation), MANIFEST installs it"
 
 write_cc_catalog() {
   cat >"$scratch/cc-catalog.json"
