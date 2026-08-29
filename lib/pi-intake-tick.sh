@@ -84,8 +84,10 @@ fi
 }
 
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$SEAT_LIB"
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$PRECEDENCE_BAND_LIB"
 # Each tick starts with a clean floor latch. The file is keyed on $$ so a
 # leftover from a recycled PID cannot freeze the floor for this tick
@@ -199,7 +201,9 @@ fi
 _reconciler_new_total=$(( _reconciler_prev_total + reconciler_caught ))
 
 mkdir -p "$(dirname "$reconciler_prom")" 2>/dev/null || true
-{
+# Best-effort prom export: an if/then (not A && B || C) keeps set -e from
+# killing the tick on a transient prom-write failure (SC2015-safe).
+if {
     printf '# HELP fleet_intake_reconciler_caught_total Cumulative number of agent-ready issues the slow poll caught that the GitHub webhook did not catch first (fleet-ops#1464).\n'
     printf '# TYPE fleet_intake_reconciler_caught_total counter\n'
     printf 'fleet_intake_reconciler_caught_total{repo="%s"} %d\n' "$REPO" "$_reconciler_new_total"
@@ -209,7 +213,9 @@ mkdir -p "$(dirname "$reconciler_prom")" 2>/dev/null || true
     printf '# HELP fleet_intake_reconciler_last_count Number of agent-ready issues found by the most recent slow poll (per repo).\n'
     printf '# TYPE fleet_intake_reconciler_last_count gauge\n'
     printf 'fleet_intake_reconciler_last_count{repo="%s"} %d\n' "$REPO" "$reconciler_caught"
-} > "$reconciler_prom.tmp" 2>/dev/null && mv "$reconciler_prom.tmp" "$reconciler_prom" 2>/dev/null || true
+} > "$reconciler_prom.tmp" 2>/dev/null; then
+    mv "$reconciler_prom.tmp" "$reconciler_prom" 2>/dev/null || true
+fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
