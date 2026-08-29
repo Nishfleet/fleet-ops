@@ -363,4 +363,81 @@ grep -q 'bin/fleet-seat-live-validate' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-seat-live-validate"
 ok "scenario11: heartbeat-tier1 wires the canary, fail-loud on watcher-broken, MANIFEST installs it"
 
-echo "OK: fleet-seat-live-validate: watcher-broken, unauthenticated, healthy, refresh-failed, dedup, class, timeout, grok-dead+xai-ok, grok-ok+xai-dead, heartbeat wiring"
+# --- 12. THE #1441 FIX: probe the subscription proxy, not api.x.ai --------
+# The original bug: validate_xai_oauth probed api.x.ai/v1/models, the
+# API-credit endpoint. The xai-oauth token is a SuperGrok SUBSCRIPTION
+# credential that the extension routes through cli-chat-proxy.grok.com,
+# so api.x.ai returns 403 spending-limit even when the seat is alive.
+# The canary falsely marked all four Grok seats credentials_bad while the
+# proxy returned 200 (fleet-ops#1441).
+#
+# The fix: probe cli-chat-proxy.grok.com/v1/models with the proxy identity
+# headers (buildProxyHeaders in models.ts). This scenario uses a fake curl
+# that records the URL + headers it was called with and returns 200, then
+# asserts the canary hit the proxy (never api.x.ai) and marked xai-oauth
+# healthy. unset FLEET_XAI_OAUTH_PROBE so the real probe path runs.
+: >"$gh_log"; : >"$triage"
+mkdir -p "$GROK_HOME"
+printf '%s\n' "{\"dummy\":{\"key\":\"$FAKE_TOKEN\"}}" >"$AUTH_JSON"
+chmod 600 "$AUTH_JSON"
+printf '%s\n' "You are logged in with grok.com." >"$scratch/models.txt"
+export GROK_MODELS_FIXTURE="$scratch/models.txt"
+export GROK_MODELS_RC=0
+unset FLEET_XAI_OAUTH_PROBE
+# validate_xai_oauth reads the xai-oauth token from PI_AGENT_AUTH_JSON
+# (default ~/.pi/agent/auth.json), NOT the grok CLI's $GROK_HOME/auth.json.
+# Point it at a file carrying an xai-oauth access token so the probe
+# reaches the curl call the fake intercepts.
+pi_auth_json="$scratch/pi-auth.json"
+printf '%s\n' "{\"xai-oauth\":{\"access\":\"$FAKE_TOKEN\",\"refresh\":\"r\",\"type\":\"oauth\"}}" >"$pi_auth_json"
+chmod 600 "$pi_auth_json"
+export PI_AGENT_AUTH_JSON="$pi_auth_json"
+
+curl_log="$scratch/curl.log"
+curl_fake="$scratch/bin/curl"
+cat >"$curl_fake" <<'FAKE'
+#!/usr/bin/env bash
+# Record every arg so the test can assert the probe URL + headers.
+printf '%s\n' "$*" >>"${CURL_LOG:-/dev/null}"
+# Return 200 for the subscription proxy, 403 for api.x.ai (the spending-
+# limit false-negative the fix removes). Inspect the last argv for the URL.
+for a in "$@"; do :; done
+case "$a" in
+  *cli-chat-proxy.grok.com*) printf '200'; exit 0 ;;
+  *api.x.ai*) printf '403'; exit 0 ;;
+  *) printf '200'; exit 0 ;;
+esac
+FAKE
+chmod +x "$curl_fake"
+export CURL_LOG="$curl_log"
+# The canary hardcodes PATH and resolves curl via FLEET_CURL_BIN (mirrors
+# FLEET_GROK_BIN / FLEET_PI_BIN), so override the binary directly rather
+# than relying on PATH.
+export FLEET_CURL_BIN="$curl_fake"
+
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario12: expected rc=0, got $env_rc ($env_out)"
+# The probe MUST hit the subscription proxy, never api.x.ai.
+grep -q 'cli-chat-proxy.grok.com/v1/models' "$curl_log" \
+  || fail "scenario12: probe must call cli-chat-proxy.grok.com ($curl_log)"
+! grep -q 'api.x.ai/v1/models' "$curl_log" \
+  || fail "scenario12: probe must NOT call api.x.ai (the #1441 false negative)"
+# The proxy identity headers the extension sends must be present.
+grep -q 'x-grok-client-identifier: grok-shell' "$curl_log" \
+  || fail "scenario12: probe must send x-grok-client-identifier"
+grep -q 'X-XAI-Token-Auth: xai-grok-cli' "$curl_log" \
+  || fail "scenario12: probe must send X-XAI-Token-Auth"
+# A 200 from the proxy marks xai-oauth healthy — the seat is alive.
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "healthy" ]] \
+  || fail "scenario12: xai-oauth/grok-4.6 must be healthy when proxy returns 200 (the #1441 fix)"
+[[ "$(xai_oauth_ledger_class grok-4.5)" == "healthy" ]] \
+  || fail "scenario12: xai-oauth/grok-4.5 must be healthy when proxy returns 200"
+jq -e '.seat_dead == false' "$PI_SEAT_HEALTH_LEDGER_DIR/xai-oauth__grok-4.6.json" >/dev/null \
+  || fail "scenario12: xai-oauth seat_dead must be false"
+assert_no_token_leak
+ok "scenario12: probe hits cli-chat-proxy.grok.com (not api.x.ai), 200 marks xai-oauth healthy (the #1441 fix)"
+unset CURL_LOG
+unset FLEET_CURL_BIN
+unset PI_AGENT_AUTH_JSON
+
+echo "OK: fleet-seat-live-validate: watcher-broken, unauthenticated, healthy, refresh-failed, dedup, class, timeout, grok-dead+xai-ok, grok-ok+xai-dead, heartbeat wiring, proxy-probe (#1441)"
