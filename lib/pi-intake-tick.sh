@@ -85,6 +85,10 @@ fi
 # leftover from a recycled PID cannot freeze the floor for this tick
 # (fleet-ops#1452). The flock above already serializes fleet-ops ticks.
 precedence_band_pending_clear
+# Same for the starvation floor latch (fleet-ops#1448): both one-lane
+# reservations must start unspent each tick, else a recycled PID leaves the
+# starvation floor frozen for the whole tick.
+precedence_band_pending_starvation_clear
 
 # Step 1: list ready work
 # Limit 250 (auditor 2026-08-28, summon unit-failure fleet-heartbeat): the
