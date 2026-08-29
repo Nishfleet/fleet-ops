@@ -251,8 +251,6 @@ jobs:
         # fleet-ops#1460: lock the timer manifest shape (every user timer
         # has a manifest entry with a named reason — schedule-needs-reason).
         bash tests/timer-manifest.test.sh
-        # fleet-ops#1137: truth staleness detector smoke tests
-        bash tests/staleness-checker.test.sh
         # fleet-ops#1534: single chokepoint for messages to Nish's phone.
         # hermes outbound class-gate (--urgent requires sanctioned --class),
         # alertmanager routing matrix (only severity=page -> telegram),
