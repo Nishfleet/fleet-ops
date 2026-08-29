@@ -399,8 +399,8 @@ for i in "${!numbers[@]}"; do
     edit_out=""
     edit_rc=0
     for _ in 1 2 3; do
-        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1)
-        edit_rc=$?
+        edit_rc=0
+        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
             *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
@@ -424,8 +424,8 @@ for i in "${!numbers[@]}"; do
     comment_out=""
     comment_rc=0
     for _ in 1 2 3; do
-        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1)
-        comment_rc=$?
+        comment_rc=0
+        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
             *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
