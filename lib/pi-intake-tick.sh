@@ -253,10 +253,20 @@ for i in "${!numbers[@]}"; do
     # filter (both phases) and the band-multiplier check (band phase only).
     # Product repos are never gated (allow-product) so this only applies to
     # the machinery repo (fleet-ops).
+    #
+    # Surge legit-work fallback (fleet-ops#1377): non-leverage issues that
+    # are legit work (repair/upgrade by title) fall through to the body
+    # fetch + allow_claim path so the fleet does not idle when leverage
+    # issues are exhausted. Title-only classification here (no body fetch
+    # yet) — prefixed titles are authoritative; unprefixed titles without a
+    # repair signal in the title stay skipped to preserve the body-fetch
+    # avoidance. Churn is always skipped.
     if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
         if ! precedence_band_is_leverage_issue "$N" 2>/dev/null; then
-            echo "issue $N ($title): skipped-precedence-band (skip-surge-leverage)"
-            continue
+            if ! precedence_band_is_legit_work "$title" 2>/dev/null; then
+                echo "issue $N ($title): skipped-precedence-band (skip-surge-leverage)"
+                continue
+            fi
         fi
     fi
 

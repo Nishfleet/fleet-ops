@@ -53,6 +53,19 @@ MACHINERY_REPO_DEFAULT = "fleet-ops"
 SKIP_NAME_RE = re.compile(r"precedence-band", re.I)
 UNIT_RE = re.compile(r"^pi-issue@([\w.-]+)-(\d+)\.service$")
 
+# Repair-signal regex (ported from precedence-band.sh PRECEDENCE_BAND_REPAIR_SIGNALS).
+# Used by the surge legit-work fallback (fleet-ops#1377) to classify
+# non-leverage fleet-ops claims as repair vs churn so the canary does not
+# flag legit-work claims as drift.
+REPAIR_SIGNALS_RE = re.compile(
+    r"\b(red|fail(s|ed|ing)?|broken|down|absent|stall(s|ed|ing)?|stuck"
+    r"|starv[a-z]*|outages?|regressions?|leak[a-z]*|crash[a-z]*"
+    r"|hang(s|ed|ing)?|timeouts?|deadlock|block(s|ed|ing)?|frozen"
+    r"|exhaust(s|ed|ion)?|dead|wedg(e|es|ed|ing)?|drift(s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+PREFIX_RE = re.compile(r"^\s*([A-Za-z]+)(\([^)]*\))?!?\s*:")
+
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -334,6 +347,66 @@ def check_band_phase(
     return errors
 
 
+def classify_quality(title: str) -> str:
+    """Classify an issue title as upgrade | repair | churn.
+
+    Ported from precedence-band.sh precedence_band_classify_quality.
+    Prefixed titles are classified by their type token alone (content-blind).
+    Unprefixed titles are classified on the title text: a repair-signal hit
+    is repair; anything else is churn.
+    """
+    match = PREFIX_RE.match(title)
+    if match:
+        prefix = match.group(1).lower()
+        if prefix == "feat":
+            return "upgrade"
+        if prefix in ("fix", "test"):
+            return "repair"
+        return "churn"
+    if REPAIR_SIGNALS_RE.search(title):
+        return "repair"
+    return "churn"
+
+
+def is_legit_work(title: str) -> bool:
+    """Legit work = upgrade or repair (not churn). fleet-ops#1377."""
+    quality = classify_quality(title)
+    return quality in ("upgrade", "repair")
+
+
+def _issue_title(repo: str, number: int) -> str | None:
+    """Fetch an issue title via gh, or from a test seam file.
+
+    FLEET_PRECEDENCE_TITLES_FILE (test-only) is a JSON object mapping
+    str(issue_number) -> title. In production, gh issue view is called.
+    Returns None when the title is unavailable (fail-closed: the caller
+    treats an unknown title as churn/drift, not legit work).
+    """
+    titles_file = os.environ.get("FLEET_PRECEDENCE_TITLES_FILE")
+    if titles_file and Path(titles_file).is_file():
+        try:
+            data = json.loads(Path(titles_file).read_text(encoding="utf-8"))
+            val = data.get(str(number))
+            if isinstance(val, str):
+                return val
+        except (OSError, json.JSONDecodeError):
+            pass
+        return None
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(number), "-R", f"Nishfleet/{repo}",
+             "--json", "title", "--jq", ".title"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def check_surge_phase(
     data: dict[str, Any],
     units: list[tuple[str, int]],
@@ -347,6 +420,14 @@ def check_surge_phase(
     A claim that landed before now - 2h is no longer the orchestrator's
     fault (surge rolled forward, the unit just hasn't retired) — we
     ignore units older than 2h.
+
+    Surge legit-work fallback (fleet-ops#1377): a non-leverage claim
+    whose issue title classifies as legit work (repair/upgrade) is NOT
+    drift — the intake tick allows it to prevent starvation when leverage
+    issues are exhausted. Churn-class non-leverage claims are still drift.
+    When the title is unavailable (no gh, test without a titles file),
+    fail-closed: treat as drift so the canary never silently greenlights
+    an unclassifiable claim.
     """
     errors: list[str] = []
     leverage = set(data.get("surge_leverage_issues") or [])
@@ -356,6 +437,9 @@ def check_surge_phase(
         if repo != machinery_repo:
             continue
         if number in leverage:
+            continue
+        title = _issue_title(repo, number)
+        if title is not None and is_legit_work(title):
             continue
         errors.append(
             f"surge-phase non-leverage fleet-ops claim: "
