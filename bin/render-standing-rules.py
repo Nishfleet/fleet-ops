@@ -22,6 +22,11 @@
 #   {{OLD_LAUNCHER_BLOCK}}          per-surface old-launcher paragraph
 #     (empty for Claude, full for Codex)
 #   {{SOL_IDENTITY_BLOCK}}          per-surface Sol/identity paragraph
+#   {{FAILURE_RESPONSE_BLOCK}}      the failure-response bullet; present in the
+#     shared-memory-loop region of one surface (Claude) and empty for the
+#     other (Codex keeps it hand-written in its Safety section). Mirrors
+#     {{OLD_LAUNCHER_BLOCK}} — a block of content present in one surface's
+#     region and absent in the other's.
 #
 # Modes:
 #   default (no args)  --check mode: exits nonzero if any target drifts
@@ -62,6 +67,7 @@ DEFAULT_TARGETS = [
         "seat_check_phrase": "carries the\nlast observed provider/model, HTTP status and `health_class`.",
         "old_launcher_block": "",
         "sol_identity_block": "\nSol still orchestrates only and never implements. Exact model identity stays\nfail-closed: no silent substitution.",
+        "failure_response_block": "- **Failure response is #1 (Nish, 2026-08-08):** any detected fleet-infrastructure failure gets automatic, autonomous, INSTANT repair dispatch - trace line in the console actions.log, then the VPS repair ladder (DeepSeek for deeply-scoped fixes, Grok/Sol/Opus flagships for broad or high-stakes; one live flagship, throttled, fail-loud when repair is impossible). Never a quiet degraded mode, never 'flag for Nish'. Mac agents dispatch to the VPS, never repair locally. Canonical text: vault memory `failure-response-standing-order`.\n\n",
     },
     {
         "path": Path("/home/nish/.codex/AGENTS.md"),
@@ -71,6 +77,7 @@ DEFAULT_TARGETS = [
         "seat_check_phrase": "holds the\nlast observed provider/model, HTTP status and `health_class`. Confirm `observed_at` is recent before trusting it.",
         "old_launcher_block": "\n\nThe old DeepSeek/MiniMax/Luna launcher ladder and `_system/shared-memory/codex-model-routing.md` are SUPERSEDED - history only.",
         "sol_identity_block": "\nSol at `medium` is orchestration/integration/review/proof only and performs **no** implementation edits. Default orchestrator identity is `gpt-5.6-sol` at `medium`. Sol has no Pi transport and still launches through the `codex` wrapper.\n\nExact model/effort identity is fail-closed: prove host, provider, model, role and effort from runtime evidence before launch. Missing proof means no launch. No silent substitution.",
+        "failure_response_block": "",
     },
 ]
 
@@ -140,6 +147,7 @@ def render_section(body: str, target: dict) -> str:
         "{{SEAT_CHECK_PHRASE}}": target.get("seat_check_phrase", ""),
         "{{OLD_LAUNCHER_BLOCK}}": target.get("old_launcher_block", ""),
         "{{SOL_IDENTITY_BLOCK}}": target.get("sol_identity_block", ""),
+        "{{FAILURE_RESPONSE_BLOCK}}": target.get("failure_response_block", ""),
     }
     out = body
     for token, value in declared.items():
@@ -273,7 +281,7 @@ def main(argv: list[str]) -> int:
             parts = spec.split("|")
             if len(parts) < 4:
                 raise ValueError(
-                    f"target spec must be path|surface|label|phrase[|seat|old|sol]; got {spec!r}"
+                    f"target spec must be path|surface|label|phrase[|seat|old|sol|failure]; got {spec!r}"
                 )
             target: dict = {
                 "path": Path(parts[0]),
@@ -287,6 +295,8 @@ def main(argv: list[str]) -> int:
                 target["old_launcher_block"] = parts[5]
             if len(parts) > 6:
                 target["sol_identity_block"] = parts[6]
+            if len(parts) > 7:
+                target["failure_response_block"] = parts[7]
             targets.append(target)
     else:
         targets = DEFAULT_TARGETS

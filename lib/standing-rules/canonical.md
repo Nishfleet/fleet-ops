@@ -72,3 +72,40 @@ Check the seat before routing: `agent-state/lanes/pi-seat-health.json` {{SEAT_CH
 **Compute rule:** prefer event-driven over scheduled every time. The old fleet burned money polling; a schedule now needs a named reason.{{OLD_LAUNCHER_BLOCK}}
 {{SOL_IDENTITY_BLOCK}}
 <!-- END SECTION: shared-fleet-routing -->
+
+<!-- SECTION: never-relay-finding -->
+## Never relay a finding you could act on (Nish, 2026-08-09)
+
+**"Why come to me when you know the answer?"** An agent that finds a problem,
+diagnoses it, then hands the diagnosis to Nish has done the hard 90% and stopped
+at the part that costs him attention. A finding is a WORK ITEM, not a message.
+Find it, fix it, verify it, log it - then report the result.
+
+- **Audit/review output belongs to whoever commissioned it.** Sol, Grok,
+  CodeRabbit, Greptile, any sub-agent: their findings land in your queue, never
+  in Nish's inbox. "Sol found 3 blockers" is not a deliverable; "Sol found 3
+  blockers, here is the fix and the proof" is.
+- A sub-agent's failure is escalated by fixing or re-routing it, not forwarding it.
+- If a later shift could do it, this shift could have done it.
+- Close with a result, never an offer.
+
+Reaches Nish and nothing else: money, pricing, legal, brand, product direction,
+customer-data deletion, and authority he has explicitly reserved - plus the
+standing exception that an unrepairable failure must fail LOUD, never degrade
+silently.
+
+Corollary: **if a human had to notice it by hand, that blind spot is the real
+bug.** Fix the instance AND the detector. Canonical text:
+`nish-vault/_system/shared-memory/agent-contract.md`.
+<!-- END SECTION: never-relay-finding -->
+
+<!-- SECTION: shared-memory-loop -->
+## Automatic shared-memory loop
+
+{{FAILURE_RESPONSE_BLOCK}}- Non-negotiable response style: default to concise ELI5 language with plain words and the direct answer first. Add depth only when Nish explicitly asks or when essential safety or verification details cannot be omitted.
+- Before meaningful work, run `/home/nish/.local/bin/memoryctl context --agent {{SURFACE_AGENT}} --query "<task in one sentence>" --repo "$PWD"` and use only the relevant returned notes. Re-verify live state before acting.
+- After meaningful work, run `/home/nish/.local/bin/memoryctl outcome --agent {{SURFACE_AGENT}} --goal "<goal>" --result "<result>" --repo "$PWD" --proof "Command: <exact replay/inspection command>; observed: <what it printed>; observed-at: <UTC ISO8601>" --source "<vault path, credential-free URL, or git:repo@sha reference>" --verified-by "{{SURFACE_AGENT}}"`. Project scope is derived from `--repo`. Add `--promote` only for reusable, evidence-backed knowledge. The promotion gate hard-rejects any proof that does not start with `Command:` — prose proofs never compile (101 denials accumulated by 2026-08-28 from this mistake). For a VERIFIED outcome, additionally mint an execution receipt first — `memoryctl proof-run --for-memory-id <id> --for-goal <goal> -- <argv...>` — then pass the SAME id via `--memory-id` plus `--proof-receipt <printed path>`; without a receipt the outcome is stored but marked unverified.
+- If a retrieved memory materially helped or harmed the task, run `/home/nish/.local/bin/memoryctl feedback --agent {{SURFACE_AGENT}} --context-id "<packet context receipt>" --target-ref "<exact packet feedback ref>" --effect helped|harmed --proof "<observable effect>" --source "<portable evidence>" --verified-by "{{SURFACE_AGENT}}"`. Feedback must bind to the exact packet receipt and memory digest; do not rate unused memories.
+- To remember a reusable fact Nish confirmed, use `/home/nish/.local/bin/memoryctl capture` with a stable `--memory-id`, portable evidence `--source`, `--verified-by user-confirmed`, and `--promote`. `--verified-by user-confirmed` is REJECTED unless Nish mints a live consent receipt via `memoryctl confirm` (interactive TTY) and you pass it with `--consent-receipt`; without one, use your own agent identity as verifier. The exact digest must also pass the local acceptance workflow before compilation.
+- The deterministic VPS curator may update only compiled memory and promotion proposals. It never edits durable decisions or playbooks.
+<!-- END SECTION: shared-memory-loop -->
