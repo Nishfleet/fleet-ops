@@ -1,49 +1,62 @@
-Raise free-lane caps and add GitHub API rate limit as a concurrency governor (fleet-ops#1350).
+## What & why
 
-## What changed
+Issue #1424 is the `escalate-senior` wrapper for the 0509 scout-futility
+signal. It is supposed to be adjudicated by the senior-auditor panel
+(`pi-escalation-audit` -> three POVs -> `pi-escalation-audit-tally`, which
+files a fix issue on 2-of-3 PASS or closes on 2-of-3 FAIL).
 
-- `config/seat-caps.json`: raised free-lane caps and AIMD probe ceilings from live concurrency-tolerance probes.
-  - `bai` cap 2 -> 4 (deepseek-v4-flash, measured clean to n=5).
-  - `commandcode` cap 2 -> 4 (minimax-m3-free, measured clean to n=5).
-  - `opencode` cap 1 -> 3 (hy3-free, measured clean to n=5).
-  - `hetzner` cap stays 2 (concurrent probes timeout; re-probe before raising).
-  - Cursor stays 1 (known single-flight).
-- `libexec/fleet-metrics-export.py`: fetches `gh api rate_limit` once per run, emits `fleet_gh_rate_limit_*` Prometheus metrics, and writes a side-car JSON state file for the intake throttle.
-- `lib/pi-intake-tick.sh`: gates issue claims on the side-car state; holds claims this tick when any consumed resource (core/search/graphql) is below 20%. Missing or stale state fail-open (and now logs that it is failing open) so a dead exporter does not freeze the fleet.
-- `config/fleet_rules.yml`: adds `FleetGhRateLimitAbsent` (organ heartbeat) and `FleetGhRateLimitLowSustained` (6h trend) alerts.
-- `tests/seat-lib-aimd.test.sh`: updated AIMD ceiling assertions to match the raised free-lane caps.
-- `tests/fleet-gh-rate-limit.test.sh` + `tests/pi-intake-gh-rate-limit.test.sh` (CI-hosted by `fleet-metrics-export.test.sh` and `pi-intake-run.test.sh`): offline coverage for the rate-limit metrics and the intake throttle.
+But the panel for #1424 was **permanently wedged**: `devin` voted FAIL,
+`free-glm-5-3` voted PASS, and `straitly` returned **SKIP** (a transient
+provider failure from 2026-08-27 that `pi-audit-run` writes as exit 0 and
+promises to "retry next tick"). Because a SKIP verdict counts as neither
+PASS nor FAIL, the tally was stuck at PASS=1 FAIL=1 with no way to reach
+2-of-3. The orchestrator treated the existing SKIP vote file as "present"
+(`continue` in `process_escalation`) and never re-ran that role, so the
+wedge was permanent. It was also *silent*: the tally path reset the pending
+stamp every tick, so the `PANEL-PENDING` alarm never fired.
 
-## Target state
+Root cause: a transient provider wall on one panel seat wedges the whole
+escalation panel forever, leaving an escalate-senior issue unresolved
+indefinitely — the exact kind of green-and-silent stall #1424 exposed.
 
-- 15-25 concurrent workers, load <12, zero 429-storms.
-- GitHub API budget is a soft ceiling: intake throttles before the remaining core/search/graphql budget drops below 20%, and a sustained-low trend alert fires if any resource stays under 20% for 6+ hours.
+For an `escalate-senior` issue, the escalation panel IS the disposition
+path. This change makes that path able to actually reach a decision.
+
+## Change
+
+`bin/pi-escalation-audit`: in `process_escalation`, a vote file whose
+verdict is not a real `PASS` or `FAIL` (e.g. a `SKIP` written on a transient
+provider failure) is now discarded and that role re-run, instead of being
+treated as a completed vote. The existing unit template's seat-health
+preflight re-screens the seat before the next call, so a still-broken seat
+keeps being retried and, if it never recovers, the `PANEL-PENDING` alarm now
+actually fires (the pending stamp is no longer reset by a dead-end tally).
+
+`tests/pi-escalation-audit.test.sh`: new scenario 6 — a role whose vote is
+SKIP is discarded and re-run, and the tally is not called while a SKIP vote
+is in place. This is the regression guard that proves the mechanism fires
+(required by the mechanical-fix rule, fleet-ops#366).
 
 ## Verification
 
-run-proof: tests/fleet-gh-rate-limit.test.sh
+`bash tests/pi-escalation-audit.test.sh` -> `all pi-escalation-audit cases passed` (scenarios 1-7 green, including the new SKIP-wedge scenario).
 
-```
-$ cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1350
-$ bash tests/fleet-gh-rate-limit.test.sh
-OK: healthy rate-limit emits metrics + sidecar; low=0, binding floor=20/30
-OK: exhausted rate-limit (<20% on search) sets low=1, sidecar=5/30
-OK: fleet-ops#1350 gh rate-limit metrics + sidecar verified
+test-run: reproduced the exact live #1424 wedge state (`devin=FAIL`,
+`free-glm-5-3=PASS`, `straitly=SKIP`) and ran the fixed script against it:
+it logs `fleet-ops/#1424: discarding incomplete/SKIP vote ... will re-run
+straitly`, starts `pi-escalation-audit@fleet-ops--1424--straitly.service`,
+does NOT call the tally, and the stale `straitly.vote` is gone.
 
-$ bash tests/pi-intake-gh-rate-limit.test.sh
-OK: low=1 holds claims and exits 0
-OK: low=0 continues without holding
-OK: missing gh rate-limit state is fail-open
+`bash -n bin/pi-escalation-audit` -> OK
+`escalation-units-shape`, `escalation-coverage-canary` -> green
+`sgscan` -> No new security findings.
 
-$ bash tests/seat-lib-aimd.test.sh
-All AIMD invariants passed.
+run-proof: none of the three Fleet-file gates apply here (no new bin/ file,
+no unit/timer/workflow). The repo test suite above is the run.
 
-$ bash tests/pi-intake-run.test.sh
-ALL OK: intake-tick spawn post-condition + start-limit healer
+research: n/a (no new bin/ file added; this edits an existing script).
 
-$ bash tests/fleet-metrics-export.test.sh
-ALL OK: fleet-metrics-export #1136 logic pinned
+help-first: n/a (no new bin/ file; reused the existing `vote_path`/JSON
+conventions already in the file).
 
-$ bash tests/seat-lib.test.sh
-ALL OK
-```
+Closes #1424
