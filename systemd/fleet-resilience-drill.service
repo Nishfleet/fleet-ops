@@ -15,6 +15,7 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=FLEET_RES_DRILL_PROM_FILE=/var/lib/prometheus/node-exporter/fleet-resilience-drill.prom
 WorkingDirectory=/home/nish
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-resilience-drill'
 TimeoutStartSec=3min
