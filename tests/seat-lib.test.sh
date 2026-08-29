@@ -2522,3 +2522,12 @@ bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests 
 # fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
 # privacy guard test, because workers cannot edit .github/workflows.
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
+
+# fleet-ops#902: empty-run verdict detection (tools=0, no final text) in
+# pi-issue-run + mark_seat_empty_run bench (15-min empty_run cooldown) +
+# pick_seat re-route. Hosted here (not ci-standards-audit) because this
+# file is listed directly in ci.yml and runs independent of the
+# p14-test-listing-gate, so the regression test runs even while pre-existing
+# orphan-listing gaps keep that gate red. The noop-bench test exercises
+# mark_seat_empty_run + pick_seat from lib/seat-lib.sh.
+bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
