@@ -143,20 +143,25 @@ fi
 # Test 8: Real-doc upstream-ref filter (fleet-ops#1674)
 # The real global-standing-rules.md cites systemd/systemd#33486. An earlier
 # version of the checker mis-parsed that as Nishfleet/fleet-ops#33486 and filed
-# a false-positive staleness issue. This test loads the ACTUAL doc and asserts
-# the upstream ref is filtered out — a synthetic string cannot pin this.
-echo "[8] Real global-standing-rules.md filters upstream issue refs"
-REAL_DOC="$HOME/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md"
-PY_RESULT2=$(python3 <<PYEOF
+# a false-positive staleness issue. This test loads a verbatim excerpt of the
+# real doc (vendored in-repo) and asserts the upstream ref is filtered out — a
+# synthetic string cannot pin this. The excerpt is a faithful copy of the
+# actual source text (see tests/fixtures/staleness-checker/README.md); it is
+# vendored in-repo so the test runs on CI runners where $HOME=/home/runner and
+# the vault path ~/workspaces/tooling/nish-vault/... does not exist
+# (fleet-ops#1919: the previous version read $HOME/.../global-standing-rules.md
+# directly and broke main CI the moment it merged untested against main).
+echo "[8] Real global-standing-rules.md excerpt filters upstream issue refs"
+REAL_DOC="tests/fixtures/staleness-checker/global-standing-rules-excerpt.md"
+if [[ ! -f "$REAL_DOC" ]]; then
+  fail "fixture missing: $REAL_DOC"
+else
+  PY_RESULT2=$(python3 <<PYEOF
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.py")
 sc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sc)
-try:
-    text = open("$REAL_DOC").read()
-except OSError as e:
-    print("DOC_READ_FAIL: " + str(e), file=sys.stderr)
-    sys.exit(1)
+text = open("$REAL_DOC").read()
 issues = sc._extract_issues(text)
 nums = sorted(n for _, n in issues)
 if 33486 in nums:
@@ -165,10 +170,11 @@ if 33486 in nums:
 print("OK: " + ",".join(str(n) for n in nums))
 PYEOF
 ) || PY_RESULT2=""
-if [[ "$PY_RESULT2" == OK:* ]]; then
-  pass "Real doc does not leak systemd/systemd#33486 as fleet-ops (got: ${PY_RESULT2#OK: })"
-else
-  fail "Real-doc upstream filter failed: $PY_RESULT2"
+  if [[ "$PY_RESULT2" == OK:* ]]; then
+    pass "Real-doc excerpt does not leak systemd/systemd#33486 as fleet-ops (got: ${PY_RESULT2#OK: })"
+  else
+    fail "Real-doc upstream filter failed: $PY_RESULT2"
+  fi
 fi
 
 # Test 9: Script runs without error (dry check, --no-file to avoid filing real issues)

@@ -255,3 +255,14 @@ bash "$here/fleet-help-flag-runs-live.test.sh"
 # host; hosted here so P14 runs it without a workflow-file edit and the
 # p14-test-listing-gate accounts for it (fleet-ops#1622).
 bash "$here/sgscan.test.sh"
+
+# fleet-ops#1919: two tests landed on main without a ci.yml listing or a
+# host, so the p14-test-listing-gate failed (masked behind the staleness
+# Test 8 failure that aborted the P14 script early via set -e). Hosted
+# here so P14 runs them without a workflow-file edit (the worker App
+# cannot push .github/workflows/**) and the listing gate accounts for
+# them. Both are offline (scratch dirs + mock gh / mock issue-file bin).
+#   - seat-walled-probe.test.sh: landed via PR #1996 (fleet-ops#1348).
+#   - fleet-merged-pr-close.test.sh: landed via PR #2028 (fleet-ops#1435).
+bash "$here/seat-walled-probe.test.sh"
+bash "$here/fleet-merged-pr-close.test.sh"
