@@ -414,8 +414,27 @@ main() {
 
     local seat provider model
     if ! seat=$(resolve_seat "$role"); then
-        log "no usable seat for role $role"
-        exit 1
+        # fleet-ops#146 (binding addendum): an auditor seat wall is a LANE
+        # FAULT, not a runner failure. "Auditor seat walled/timeout = lane fault
+        # per the standing rule: bounded retry through the ladder, never charged
+        # to the candidate. If the panel cannot convene 2-of-3, the candidate
+        # stays PENDING — admission fails closed, never open."
+        #
+        # Exiting 1 here made every heartbeat tick that re-starts this unit
+        # (vote missing -> fleet-heartbeat-auditor start_audit/recover_failed)
+        # fail the unit -> OnFailure -> a NEW STOP-REASON hash -> a fresh
+        # auditor summon, while the seat stays walled (2026-08-29: 73 pi-audit
+        # straitly unit failures in one day, 228 journal lines on #1440 alone).
+        # Same NO-USABLE-SEAT escalation-loop class as free-glm-5-3 on 2026-08-27
+        # (0aa146c).
+        #
+        # Fix: exit 0 WITHOUT writing a vote. The vote stays missing, so the
+        # heartbeat-auditor re-starts this unit next tick; when the wall clears
+        # the seat resolves, a real PASS/FAIL vote lands, and the panel convenes.
+        # No unit failure -> no StartLimitBurst -> no escalation storm. The
+        # candidate stays PENDING (fails closed) until then.
+        log "no usable seat for role $role (lane fault: walled seat; no vote written, heartbeat retries next tick)"
+        exit 0
     fi
     provider=$(printf '%s\n' "$seat" | cut -f1)
     model=$(printf '%s\n' "$seat" | cut -f2)
