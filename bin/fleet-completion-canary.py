@@ -35,6 +35,21 @@ DISPATCH + dead unit and takes the STOP-REASON / REDISPATCH-log ladder.
 Unit-escalation plane: observe only (open/stalled gauges). Ladder stays
 with fleet-escalation-completion (24h cycle budget, wired into heartbeat).
 
+Dispatch plane (fleet-ops#1009): pi-systemd-run appends one JSONL entry
+per dispatch to $AGENT_STATE/dispatch-ledger.jsonl. This canary walks
+open entries each tick:
+  in-flight unit (active/activating)     -> leave open
+  unit finished (Result or journal)      -> close completed/{success,failed}
+  orphan past deadline, retries < 2      -> re-dispatch SAME packet file
+                                           on the next healthy seat
+  orphan past deadline, retries >= 2     -> STOP-REASON reason=dispatch-orphan
+                                           (senior conference)
+  orphan, no packet file, retries < 2    -> fail-loud (exit 1)
+A systemd-run --collect unit unloads after it exits; LoadState=loaded is
+required before Result/ExecMainStatus count, otherwise the journal is the
+only receipt and silence is an orphan. Re-dispatch goes through
+pi-systemd-run (anti-recursion: this bin creates no unit of its own).
+
 Anti-recursion: this bin never creates an alert-repair-* unit of its own.
 Its service inherits service.d/10-escalate.conf; a genuine fail-loud exit
 climbs that ladder. After STOP-REASON is written, subsequent ticks only
@@ -45,9 +60,12 @@ Environment seams (tests):
   FLEET_COMPLETION_PROM, FLEET_COMPLETION_ALERTS_JSON,
   FLEET_COMPLETION_PROM_URL, FLEET_COMPLETION_NOW,
   FLEET_COMPLETION_DISPATCHER, FLEET_COMPLETION_SYSTEMCTL,
-  FLEET_STOP_REASON, FLEET_COMPLETION_TRIAGE,
+  FLEET_COMPLETION_JOURNALCTL, FLEET_STOP_REASON, FLEET_COMPLETION_TRIAGE,
   FLEET_COMPLETION_CLOCK_DISPATCH/RUN/VERIFY,
-  FLEET_ESCALATION_COMPLETION_BUDGET
+  FLEET_ESCALATION_COMPLETION_BUDGET,
+  FLEET_DISPATCH_LEDGER, FLEET_DISPATCH_PACKET_DIR,
+  FLEET_COMPLETION_PI_SYSTEMD_RUN, FLEET_DISPATCH_MAX_RETRIES,
+  FLEET_DISPATCH_CANARY_SEAT_MODE (healthy = stub seat, skip dispatcher)
 """
 from __future__ import annotations
 
@@ -81,12 +99,34 @@ DISPATCHER = os.environ.get(
     f"{HOME}/.local/libexec/alert-repair-dispatch",
 )
 SYSTEMCTL = os.environ.get("FLEET_COMPLETION_SYSTEMCTL", "systemctl")
+JOURNALCTL = os.environ.get("FLEET_COMPLETION_JOURNALCTL", "journalctl")
 STOP_REASON = Path(os.environ.get("FLEET_STOP_REASON", str(AS / "STOP-REASON.json")))
 TRIAGE = Path(os.environ.get(
     "FLEET_COMPLETION_TRIAGE",
     str(AS / "FLEET-HEARTBEAT-TRIAGE.md"),
 ))
 NOW_ISO = os.environ.get("FLEET_COMPLETION_NOW", "")
+
+# Dispatch plane (fleet-ops#1009): pi-systemd-run appends one JSONL entry per
+# dispatch to this ledger. This canary walks open entries each tick, closes
+# completed ones, re-dispatches orphans past deadline, escalates after
+# DISPATCH_MAX_RETRIES. Re-dispatch goes through pi-systemd-run (anti-
+# recursion: no unit created directly here).
+DISPATCH_LEDGER = Path(os.environ.get(
+    "FLEET_DISPATCH_LEDGER", str(AS / "dispatch-ledger.jsonl"),
+))
+DISPATCH_PKT_DIR = Path(os.environ.get(
+    "FLEET_DISPATCH_PACKET_DIR", str(AS / "dispatch-packets"),
+))
+PI_SYSTEMD_RUN = os.environ.get(
+    "FLEET_COMPLETION_PI_SYSTEMD_RUN",
+    f"{HOME}/.local/bin/pi-systemd-run",
+)
+DISPATCH_MAX_RETRIES = int(os.environ.get("FLEET_DISPATCH_MAX_RETRIES", "2"))
+DISPATCH_FAILED_RESULTS = {
+    "exit-code", "signal", "core-dump", "oom-kill",
+    "timeout", "resources", "exit-signal",
+}
 
 CLOCK_DISPATCH = int(os.environ.get("FLEET_COMPLETION_CLOCK_DISPATCH", "600"))
 CLOCK_RUN = int(os.environ.get("FLEET_COMPLETION_CLOCK_RUN", "3600"))
@@ -538,7 +578,8 @@ def observe_unit_escalation(now: datetime) -> tuple[int, int]:
 
 
 def emit_metrics(open_hops: dict, stalled_hops: dict, ue_open: int, ue_stalled: int,
-                 cycles: list[tuple[str, str, int]], now: datetime) -> None:
+                 cycles: list[tuple[str, str, int]], now: datetime,
+                 dispatch_counts: dict | None = None) -> None:
     lines = [
         "# HELP fleet_chain_open Open failure chains not yet at a legal terminal.",
         "# TYPE fleet_chain_open gauge",
@@ -548,6 +589,11 @@ def emit_metrics(open_hops: dict, stalled_hops: dict, ue_open: int, ue_stalled: 
             f'fleet_chain_open{{plane="alert-repair",hop="{hop}"}} {open_hops[hop]}'
         )
     lines.append(f'fleet_chain_open{{plane="unit-escalation",hop="trip"}} {ue_open}')
+    if dispatch_counts:
+        disp_open = dispatch_counts.get("in_flight", 0) + dispatch_counts.get("waiting", 0)
+        lines.append(f'fleet_chain_open{{plane="dispatch",hop="run"}} {disp_open}')
+    else:
+        lines.append('fleet_chain_open{plane="dispatch",hop="run"} 0')
     lines += [
         "# HELP fleet_chain_stalled Chains past their hop clock.",
         "# TYPE fleet_chain_stalled gauge",
@@ -559,6 +605,13 @@ def emit_metrics(open_hops: dict, stalled_hops: dict, ue_open: int, ue_stalled: 
     lines.append(
         f'fleet_chain_stalled{{plane="unit-escalation",hop="trip"}} {ue_stalled}'
     )
+    if dispatch_counts:
+        disp_stalled = (dispatch_counts.get("redispatched", 0)
+                        + dispatch_counts.get("escalated", 0)
+                        + dispatch_counts.get("fail_loud", 0))
+        lines.append(f'fleet_chain_stalled{{plane="dispatch",hop="run"}} {disp_stalled}')
+    else:
+        lines.append('fleet_chain_stalled{plane="dispatch",hop="run"} 0')
     lines += [
         "# HELP fleet_chain_cycle_seconds Failure-to-fix cycle time.",
         "# TYPE fleet_chain_cycle_seconds gauge",
@@ -711,6 +764,303 @@ def classify(name: str, rec: dict, firing: dict[str, datetime], now: datetime) -
     return out
 
 
+# ---------------------------------------------------------------------------
+# Dispatch plane (fleet-ops#1009)
+# ---------------------------------------------------------------------------
+
+def show_prop(unit: str, prop: str) -> str:
+    """Return a single systemctl --user show --property value."""
+    try:
+        r = subprocess.run(
+            [SYSTEMCTL, "--user", "show", f"--property={prop}",
+             "--value", unit if unit.endswith(".service") else f"{unit}.service"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (r.stdout or "").strip()
+
+
+def journal_text(unit: str) -> str:
+    """Return last 20 journal lines for a unit (cat format)."""
+    try:
+        r = subprocess.run(
+            [JOURNALCTL, "--user", "-u",
+             unit if unit.endswith(".service") else f"{unit}.service",
+             "-o", "cat", "-n", "20"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout or ""
+
+
+def journal_verdict(text: str) -> str | None:
+    """Return 'success' / 'failed' from journal text, or None."""
+    if re.search(r"\bSucceeded\b", text):
+        return "success"
+    if re.search(r"\bFailed\b", text):
+        return "failed"
+    return None
+
+
+def classify_dispatch(rec: dict) -> str:
+    """Return in-flight | completed-success | completed-failed | orphan.
+
+    A systemd-run --collect unit unloads after it exits. systemctl show then
+    returns LoadState=not-found and the *default* Result=success. Treating
+    that default as a real success would close every missing unit and never
+    re-dispatch. LoadState=loaded is required before Result counts; otherwise
+    the journal is the only receipt, and silence is an orphan.
+    """
+    unit = rec.get("unit") or ""
+    if not unit:
+        return "orphan"
+    load = show_prop(unit, "LoadState")
+    active = show_prop(unit, "ActiveState")
+    if load == "loaded" and active in {"active", "activating"}:
+        return "in-flight"
+    if load == "loaded":
+        result = show_prop(unit, "Result")
+        if result in DISPATCH_FAILED_RESULTS or active == "failed":
+            return "completed-failed"
+        return "completed-success"
+    # LoadState=not-found (or missing): --collect unloaded the unit.
+    # The journal is the only receipt.
+    verdict = journal_verdict(journal_text(unit))
+    if verdict == "success":
+        return "completed-success"
+    if verdict == "failed":
+        return "completed-failed"
+    return "orphan"
+
+
+def dispatch_past_deadline(rec: dict, now: datetime) -> bool:
+    deadline = rec.get("deadline_ts") or ""
+    if deadline:
+        try:
+            return now >= parse_iso(str(deadline))
+        except (ValueError, TypeError):
+            log(f"WARN: bad deadline_ts={deadline!r} id={rec.get('id')}")
+    try:
+        start = parse_iso(str(rec.get("ts") or ""))
+        minutes = int(rec.get("deadline_min") or 90)
+        return (now - start).total_seconds() >= minutes * 60
+    except (ValueError, TypeError):
+        return False
+
+
+def load_dispatch_latest() -> dict[str, dict]:
+    """Return last record per id from the dispatch ledger."""
+    latest: dict[str, dict] = {}
+    if not DISPATCH_LEDGER.is_file():
+        return latest
+    try:
+        with DISPATCH_LEDGER.open() as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                rec_id = rec.get("id")
+                if rec_id:
+                    latest[str(rec_id)] = rec
+    except OSError:
+        pass
+    return latest
+
+
+def append_dispatch_line(rec: dict) -> None:
+    """Append a closing/redispatch line to the dispatch ledger."""
+    try:
+        DISPATCH_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with DISPATCH_LEDGER.open("a") as f:
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        log(f"WARN: dispatch ledger append failed: {exc}")
+
+
+def close_dispatch_entry(rec: dict, status: str, **extra: object) -> None:
+    out = dict(rec)
+    out["status"] = status
+    out.update(extra)
+    out["closed_ts"] = iso(now_dt())
+    append_dispatch_line(out)
+
+
+def write_dispatch_stop_reason(rec: dict) -> None:
+    body = {
+        "reason": "dispatch-orphan",
+        "detail": {
+            "chain_id": rec.get("chain_id") or "",
+            "retries": int(rec.get("retries") or 0),
+            "hop": int(rec.get("hop") or 0),
+            "unit": rec.get("unit") or "",
+            "packet_path": rec.get("packet_path") or "",
+            "provider": rec.get("provider") or "",
+            "model": rec.get("model") or "",
+            "source": "fleet-completion-canary",
+        },
+        "timestamp": iso(now_dt()),
+        "extension": "fleet-completion-canary",
+        "source": "fleet-completion-canary",
+    }
+    atomic_write(STOP_REASON, json.dumps(body, indent=2) + "\n")
+    log(
+        f"STOP-REASON written reason=dispatch-orphan "
+        f"chain={body['detail']['chain_id']} "
+        f"retries={body['detail']['retries']} path={STOP_REASON}"
+    )
+
+
+def dispatch_pick_seat(exclude_provider: str) -> tuple[str, str, str] | None:
+    """Pick a healthy seat for re-dispatch. SEAT_MODE=healthy returns a stub."""
+    seat_mode = os.environ.get("FLEET_DISPATCH_CANARY_SEAT_MODE", "")
+    if seat_mode == "healthy":
+        return ("commandcode", "minimax-m3-free", "healthy-stub")
+    argv = [DISPATCHER, "--print-seat"]
+    if exclude_provider:
+        argv += ["--exclude", exclude_provider]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"WARN: dispatch --print-seat failed: {exc}")
+        return None
+    if r.returncode != 0:
+        log(f"WARN: dispatch --print-seat rc={r.returncode}")
+        return None
+    lines = (r.stdout or "").strip().splitlines()
+    if not lines:
+        return None
+    parts = lines[-1].split("\t")
+    if len(parts) < 2:
+        return None
+    reason = parts[2] if len(parts) > 2 else ""
+    return (parts[0], parts[1], reason)
+
+
+def dispatch_redispatch(rec: dict, provider: str, model: str) -> int:
+    """Re-dispatch the SAME packet file via pi-systemd-run."""
+    unit = rec.get("unit") or "pi-job"
+    retries = int(rec.get("retries") or 0)
+    hop = int(rec.get("hop") or 0)
+    new_unit = f"{unit}-r{retries + 1}"
+    deadline_min = str(int(rec.get("deadline_min") or 90))
+    chain_id = str(rec.get("chain_id") or rec.get("id") or "")
+    packet = str(rec.get("packet_path") or "")
+    cmd = [
+        PI_SYSTEMD_RUN,
+        "--unit", new_unit,
+        "--stdin", packet,
+        "--deadline", deadline_min,
+        "--provider", provider,
+        "--model", model,
+        "--chain-id", chain_id,
+        "--hop", str(hop + 1),
+        "--",
+        "pi", "--print",
+        "--provider", provider,
+        "--model", model,
+    ]
+    log(f"REDISPATCH unit={new_unit} chain={chain_id} hop={hop + 1} "
+        f"seat={provider}/{model}")
+    try:
+        r = subprocess.run(cmd, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"ERROR: redispatch failed: {exc}")
+        return 1
+    return r.returncode
+
+
+def process_dispatch_plane(now: datetime) -> dict:
+    """Walk open dispatch-ledger entries. Return counts dict."""
+    latest = load_dispatch_latest()
+    open_recs = [r for r in latest.values() if r.get("status") == "open"]
+    counts = {
+        "open": len(open_recs),
+        "in_flight": 0,
+        "closed": 0,
+        "waiting": 0,
+        "redispatched": 0,
+        "escalated": 0,
+        "fail_loud": 0,
+    }
+    if not open_recs:
+        return counts
+    open_recs.sort(key=lambda r: (str(r.get("ts") or ""), str(r.get("id") or "")))
+    for rec in open_recs:
+        kind = classify_dispatch(rec)
+        unit = rec.get("unit") or ""
+        if kind == "in-flight":
+            log(f"dispatch in-flight unit={unit} id={rec.get('id')}")
+            counts["in_flight"] += 1
+            continue
+        if kind == "completed-success":
+            exit_status = show_prop(unit, "ExecMainStatus") or "0"
+            close_dispatch_entry(rec, "completed", verdict="success",
+                                 result="success", exit_status=exit_status)
+            log(f"dispatch closed/success unit={unit} id={rec.get('id')}")
+            counts["closed"] += 1
+            continue
+        if kind == "completed-failed":
+            result = show_prop(unit, "Result") or "exit-code"
+            exit_status = show_prop(unit, "ExecMainStatus") or "1"
+            close_dispatch_entry(rec, "completed", verdict="failed",
+                                 result=result, exit_status=exit_status)
+            log(f"dispatch closed/failed unit={unit} result={result}")
+            counts["closed"] += 1
+            continue
+        # orphan
+        if not dispatch_past_deadline(rec, now):
+            log(f"dispatch orphan waiting (before deadline) unit={unit} "
+                f"id={rec.get('id')}")
+            counts["waiting"] += 1
+            continue
+        retries = int(rec.get("retries") or 0)
+        if retries >= DISPATCH_MAX_RETRIES:
+            write_dispatch_stop_reason(rec)
+            close_dispatch_entry(rec, "escalated", verdict="orphan")
+            loud(
+                "DISPATCH-ORPHAN",
+                f"unit={unit} chain={rec.get('chain_id')} retries={retries} "
+                "— STOP-REASON dispatch-orphan (senior conference)",
+            )
+            counts["escalated"] += 1
+            continue
+        packet = str(rec.get("packet_path") or "")
+        if not packet or not Path(packet).is_file():
+            log(f"dispatch orphan no packet file unit={unit} path={packet!r}")
+            loud(
+                "DISPATCH-ORPHAN-NO-PACKET",
+                f"unit={unit} chain={rec.get('chain_id')} retries={retries} "
+                "packet missing; cannot re-dispatch",
+            )
+            counts["fail_loud"] += 1
+            continue
+        picked = dispatch_pick_seat(str(rec.get("provider") or ""))
+        if not picked:
+            log(f"dispatch no healthy seat unit={unit} — fail-loud")
+            counts["fail_loud"] += 1
+            continue
+        provider, model, _reason = picked
+        rc = dispatch_redispatch(rec, provider, model)
+        if rc != 0:
+            log(f"dispatch re-dispatch failed rc={rc} unit={unit}")
+            counts["fail_loud"] += 1
+            continue
+        close_dispatch_entry(
+            rec, "redispatched", verdict="orphan",
+            new_unit=f"{unit}-r{retries + 1}",
+            seat=f"{provider}/{model}",
+        )
+        counts["redispatched"] += 1
+    return counts
+
+
 def main() -> int:
     from datetime import timedelta
     STATE.mkdir(parents=True, exist_ok=True)
@@ -836,17 +1186,23 @@ def main() -> int:
             log(f"in-flight alertname={name} hop={hop} age={decision['age']}s")
 
     ue_open, ue_stalled = observe_unit_escalation(now)
+    dispatch_counts = process_dispatch_plane(now)
     cycles = load_ledger_cycles()
-    emit_metrics(open_hops, stalled_hops, ue_open, ue_stalled, cycles, now)
+    emit_metrics(open_hops, stalled_hops, ue_open, ue_stalled, cycles, now,
+                 dispatch_counts)
 
     log(
         f"tick open_ar={dict(open_hops)} stalled_ar={dict(stalled_hops)} "
         f"ue_open={ue_open} ue_stalled={ue_stalled} "
-        f"laddered={laddered_this_tick} firing={sorted(firing)}"
+        f"laddered={laddered_this_tick} firing={sorted(firing)} "
+        f"dispatch={dispatch_counts}"
     )
     # Exit 0: ladder taken or nothing stalled. Fail-loud (1) only when a
     # stalled chain could not be laddered (no dispatcher, unwritable STOP-REASON)
-    # — the unit then climbs service.d/10-escalate.conf.
+    # — the unit then climbs service.d/10-escalate.conf. A dispatch-plane
+    # fail-loud (no packet file, no seat, redispatch rc!=0) also exits 1.
+    if dispatch_counts.get("fail_loud"):
+        return 1
     return 0
 
 

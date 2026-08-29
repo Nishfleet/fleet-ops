@@ -18,6 +18,14 @@
 #   7. Unit-escalation STOP-REASON within 24h budget → open, not stalled,
 #      and this canary does not overwrite it.
 #   8. MANIFEST + timer named-reason + nested from coverage canary.
+#  10. Dispatch plane (fleet-ops#1009): orphan past deadline, retries < 2 →
+#      re-dispatch via pi-systemd-run with --chain-id --hop+1, ledger closed
+#      redispatched, SAME packet file re-issued.
+#  11. Dispatch plane: orphan past deadline, retries >= 2 → STOP-REASON
+#      reason=dispatch-orphan, no re-dispatch.
+#  12. Dispatch plane: completed-success (journal) → close green.
+#  13. Dispatch plane: in-flight (active) → leave open.
+#  14. Dispatch plane: orphan before deadline → waiting, no re-dispatch.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -45,17 +53,35 @@ case "$cmd" in
     case "$cmd" in
       show)
         unit=""
+        want_value=0
+        props=()
         for a in "$@"; do
           case "$a" in
-            --property=*) ;;
-            --value) ;;
+            --property=*) props+=("${a#--property=}") ;;
+            --value) want_value=1 ;;
+            -*) ;;
             *) [ -z "$unit" ] && unit="$a" ;;
           esac
         done
-        result="missing"; active="inactive"
+        result="missing"; active="inactive"; load="not-found"
         [ -f "$store/$unit.result" ] && result=$(cat "$store/$unit.result")
         [ -f "$store/$unit.active" ] && active=$(cat "$store/$unit.active")
-        printf 'Result=%s\nActiveState=%s\n' "$result" "$active"
+        # LoadState: loaded if we have any state file for this unit
+        if [ -f "$store/$unit.result" ] || [ -f "$store/$unit.active" ]; then
+          load="loaded"
+        fi
+        if [ "$want_value" -eq 1 ]; then
+          for p in "${props[@]}"; do
+            case "$p" in
+              Result) printf '%s\n' "$result" ;;
+              ActiveState) printf '%s\n' "$active" ;;
+              LoadState) printf '%s\n' "$load" ;;
+              ExecMainStatus) printf '%s\n' "0" ;;
+            esac
+          done
+        else
+          printf 'Result=%s\nActiveState=%s\nLoadState=%s\n' "$result" "$active" "$load"
+        fi
         if [ ! -f "$store/$unit.result" ] && [ ! -f "$store/$unit.active" ]; then
           exit 1
         fi
@@ -68,6 +94,31 @@ case "$cmd" in
 esac
 FAKE
 chmod +x "$scratch/systemctl"
+
+# Fake journalctl for the dispatch plane (fleet-ops#1009).
+cat >"$scratch/journalctl" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+store="${SYSCTL_STORE:?}"
+unit=""
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *.service) unit="$a" ;;
+  esac
+done
+[ -f "$store/$unit.journal" ] && cat "$store/$unit.journal"
+exit 0
+FAKE
+chmod +x "$scratch/journalctl"
+
+# Fake pi-systemd-run for the dispatch plane re-dispatch (fleet-ops#1009).
+cat >"$scratch/pi-systemd-run" <<'FAKE'
+#!/usr/bin/env bash
+echo "pi-systemd-run: $*" >>"${REDISPATCH_LOG:?}"
+exit 0
+FAKE
+chmod +x "$scratch/pi-systemd-run"
 
 cat >"$scratch/dispatcher" <<'FAKE'
 #!/usr/bin/env bash
@@ -111,11 +162,16 @@ run_bin() {
   FLEET_COMPLETION_ALERTS_JSON="$scratch/alerts.json" \
   FLEET_COMPLETION_DISPATCHER="$scratch/dispatcher" \
   FLEET_COMPLETION_SYSTEMCTL="$scratch/systemctl" \
+  FLEET_COMPLETION_JOURNALCTL="$scratch/journalctl" \
+  FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch/pi-systemd-run" \
+  FLEET_DISPATCH_LEDGER="$scratch/dispatch-ledger.jsonl" \
+  FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
   FLEET_STOP_REASON="$scratch/STOP-REASON.json" \
   FLEET_COMPLETION_TRIAGE="$scratch/triage.md" \
   FLEET_COMPLETION_NOW="${1:?}" \
   SYSCTL_STORE="$scratch/sysctl" \
   DISPATCH_LOG="$scratch/dispatch.log" \
+  REDISPATCH_LOG="$scratch/redispatch.log" \
   HOME="$scratch" \
     python3 "$bin" >/dev/null 2>"$scratch/err.log"
   local rc=$?
@@ -401,4 +457,310 @@ grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-
 
 ok "verify stall deadline → detector-red terminal + cooldown gate (fleet-ops#1610)"
 
-echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline"
+# ============================================================================
+# Dispatch plane (fleet-ops#1009)
+# ============================================================================
+# Helper: write one open dispatch-ledger entry to a given ledger path.
+write_dispatch_entry() {
+  local ledger="$1" id="$2" chain="$3" hop="$4" unit="$5" pkt="$6" retries="$7" ts="$8" deadline_ts="$9"
+  python3 -c "
+import json, sys
+entry = {
+    'id': sys.argv[1], 'chain_id': sys.argv[2], 'hop': int(sys.argv[3]),
+    'ts': sys.argv[4], 'unit': sys.argv[5], 'packet_path': sys.argv[6],
+    'provider': 'devin', 'model': 'glm-5-2',
+    'deadline_min': 5, 'deadline_ts': sys.argv[7],
+    'status': 'open', 'retries': int(sys.argv[8]),
+}
+print(json.dumps(entry))
+" "$id" "$chain" "$hop" "$ts" "$unit" "$pkt" "$deadline_ts" "$retries" \
+    >>"$ledger"
+}
+
+# --- 10. orphan past deadline, retries < 2 → re-dispatch -------------------
+scratch2="$(mktemp -d -t dispatch-canary.XXXXXX)"
+# Reuse the same fakes by symlinking.
+ln -s "$scratch/systemctl" "$scratch2/systemctl"
+ln -s "$scratch/journalctl" "$scratch2/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch2/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch2/dispatcher"
+mkdir -p "$scratch2/sysctl" "$scratch2/as/dispatch-packets"
+
+pkt10="$scratch2/as/dispatch-packets/synth-10.md"
+echo "synthetic packet 10" > "$pkt10"
+: > "$scratch2/dispatch-ledger.jsonl"
+: > "$scratch2/redispatch.log"
+
+write_dispatch_entry "$scratch2/dispatch-ledger.jsonl" "id-10" "chain-10" 0 "synth-10" "$pkt10" 0 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch2/as" \
+FLEET_COMPLETION_STATE="$scratch2/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch2/actions.log" \
+FLEET_COMPLETION_PROM="$scratch2/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch2/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch2/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch2/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch2/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch2/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch2/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch2/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch2/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch2/sysctl" \
+DISPATCH_LOG="$scratch2/dispatch.log" \
+REDISPATCH_LOG="$scratch2/redispatch.log" \
+HOME="$scratch2" \
+  python3 "$bin" >/dev/null 2>"$scratch2/err.log"
+rc10=$?
+set -e
+[[ "$rc10" == "0" ]] || fail "dispatch test 10 rc=$rc10"
+
+# Re-dispatch must have been called with --chain-id chain-10 --hop 1.
+grep -q -- "--chain-id chain-10" "$scratch2/redispatch.log" \
+  || fail "redispatch must pass --chain-id chain-10"
+grep -q -- "--hop 1" "$scratch2/redispatch.log" \
+  || fail "redispatch must pass --hop 1"
+grep -q -- "--stdin $pkt10" "$scratch2/redispatch.log" \
+  || fail "redispatch must re-issue the SAME packet file"
+
+# Ledger must have a closing line with status=redispatched.
+tail -1 "$scratch2/dispatch-ledger.jsonl" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); assert d['status']=='redispatched', d; assert d['new_unit']=='synth-10-r1', d" \
+  || fail "ledger must close with status=redispatched and new_unit=synth-10-r1"
+
+ok "dispatch plane: orphan past deadline → re-dispatch with chain-id/hop+1 (fleet-ops#1009)"
+
+# --- 11. orphan past deadline, retries >= 2 → STOP-REASON ------------------
+scratch3="$(mktemp -d -t dispatch-canary3.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch3/systemctl"
+ln -s "$scratch/journalctl" "$scratch3/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch3/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch3/dispatcher"
+mkdir -p "$scratch3/sysctl" "$scratch3/as/dispatch-packets"
+
+pkt11="$scratch3/as/dispatch-packets/synth-11.md"
+echo "synthetic packet 11" > "$pkt11"
+: > "$scratch3/dispatch-ledger.jsonl"
+: > "$scratch3/redispatch.log"
+
+write_dispatch_entry "$scratch3/dispatch-ledger.jsonl" "id-11" "chain-11" 2 "synth-11" "$pkt11" 2 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch3/as" \
+FLEET_COMPLETION_STATE="$scratch3/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch3/actions.log" \
+FLEET_COMPLETION_PROM="$scratch3/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch3/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch3/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch3/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch3/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch3/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch3/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch3/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch3/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch3/sysctl" \
+DISPATCH_LOG="$scratch3/dispatch.log" \
+REDISPATCH_LOG="$scratch3/redispatch.log" \
+HOME="$scratch3" \
+  python3 "$bin" >/dev/null 2>"$scratch3/err.log"
+rc11=$?
+set -e
+[[ "$rc11" == "0" ]] || fail "dispatch test 11 rc=$rc11"
+
+# STOP-REASON must be dispatch-orphan.
+python3 -c \
+  "import json; d=json.load(open('$scratch3/STOP-REASON.json')); assert d['reason']=='dispatch-orphan', d; assert d['detail']['retries']==2, d" \
+  || fail "STOP-REASON must be dispatch-orphan with retries=2"
+
+# No re-dispatch must have happened.
+[[ ! -s "$scratch3/redispatch.log" ]] \
+  || fail "redispatch must NOT be called when retries >= 2"
+
+# Ledger must have status=escalated.
+tail -1 "$scratch3/dispatch-ledger.jsonl" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); assert d['status']=='escalated', d" \
+  || fail "ledger must close with status=escalated"
+
+ok "dispatch plane: retries >= 2 → STOP-REASON dispatch-orphan, no re-dispatch (fleet-ops#1009)"
+
+# --- 12. completed-success (journal) → close green -------------------------
+scratch4="$(mktemp -d -t dispatch-canary4.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch4/systemctl"
+ln -s "$scratch/journalctl" "$scratch4/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch4/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch4/dispatcher"
+mkdir -p "$scratch4/sysctl" "$scratch4/as/dispatch-packets"
+
+pkt12="$scratch4/as/dispatch-packets/synth-12.md"
+echo "synthetic packet 12" > "$pkt12"
+: > "$scratch4/dispatch-ledger.jsonl"
+: > "$scratch4/redispatch.log"
+
+# No systemctl state files → LoadState=not-found. Journal says Succeeded.
+echo "Succeeded" > "$scratch4/sysctl/synth-12.service.journal"
+
+write_dispatch_entry "$scratch4/dispatch-ledger.jsonl" "id-12" "chain-12" 0 "synth-12" "$pkt12" 0 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch4/as" \
+FLEET_COMPLETION_STATE="$scratch4/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch4/actions.log" \
+FLEET_COMPLETION_PROM="$scratch4/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch4/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch4/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch4/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch4/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch4/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch4/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch4/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch4/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch4/sysctl" \
+DISPATCH_LOG="$scratch4/dispatch.log" \
+REDISPATCH_LOG="$scratch4/redispatch.log" \
+HOME="$scratch4" \
+  python3 "$bin" >/dev/null 2>"$scratch4/err.log"
+rc12=$?
+set -e
+[[ "$rc12" == "0" ]] || fail "dispatch test 12 rc=$rc12"
+
+# Ledger must have status=completed, verdict=success.
+tail -1 "$scratch4/dispatch-ledger.jsonl" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); assert d['status']=='completed', d; assert d['verdict']=='success', d" \
+  || fail "ledger must close with status=completed verdict=success"
+
+# No re-dispatch.
+[[ ! -s "$scratch4/redispatch.log" ]] \
+  || fail "redispatch must NOT be called on completed-success"
+
+ok "dispatch plane: completed-success (journal) → close green (fleet-ops#1009)"
+
+# --- 13. in-flight (active) → leave open -----------------------------------
+scratch5="$(mktemp -d -t dispatch-canary5.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch5/systemctl"
+ln -s "$scratch/journalctl" "$scratch5/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch5/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch5/dispatcher"
+mkdir -p "$scratch5/sysctl" "$scratch5/as/dispatch-packets"
+
+pkt13="$scratch5/as/dispatch-packets/synth-13.md"
+echo "synthetic packet 13" > "$pkt13"
+: > "$scratch5/dispatch-ledger.jsonl"
+: > "$scratch5/redispatch.log"
+
+# Unit is active → LoadState=loaded, ActiveState=active.
+echo "success" > "$scratch5/sysctl/synth-13.service.result"
+echo "active" > "$scratch5/sysctl/synth-13.service.active"
+
+write_dispatch_entry "$scratch5/dispatch-ledger.jsonl" "id-13" "chain-13" 0 "synth-13" "$pkt13" 0 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch5/as" \
+FLEET_COMPLETION_STATE="$scratch5/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch5/actions.log" \
+FLEET_COMPLETION_PROM="$scratch5/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch5/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch5/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch5/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch5/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch5/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch5/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch5/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch5/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch5/sysctl" \
+DISPATCH_LOG="$scratch5/dispatch.log" \
+REDISPATCH_LOG="$scratch5/redispatch.log" \
+HOME="$scratch5" \
+  python3 "$bin" >/dev/null 2>"$scratch5/err.log"
+rc13=$?
+set -e
+[[ "$rc13" == "0" ]] || fail "dispatch test 13 rc=$rc13"
+
+# Ledger must still be 1 line (left open).
+lines13=$(wc -l < "$scratch5/dispatch-ledger.jsonl")
+[[ "$lines13" == "1" ]] || fail "in-flight must leave ledger at 1 line, got $lines13"
+
+# No re-dispatch.
+[[ ! -s "$scratch5/redispatch.log" ]] \
+  || fail "redispatch must NOT be called on in-flight"
+
+# Metrics: dispatch open=1, stalled=0.
+grep -q 'fleet_chain_open{plane="dispatch",hop="run"} 1' "$scratch5/fleet-chains.prom" \
+  || fail "dispatch open must be 1 for in-flight"
+grep -q 'fleet_chain_stalled{plane="dispatch",hop="run"} 0' "$scratch5/fleet-chains.prom" \
+  || fail "dispatch stalled must be 0 for in-flight"
+
+ok "dispatch plane: in-flight (active) → leave open (fleet-ops#1009)"
+
+# --- 14. orphan before deadline → waiting ----------------------------------
+scratch6="$(mktemp -d -t dispatch-canary6.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch6/systemctl"
+ln -s "$scratch/journalctl" "$scratch6/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch6/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch6/dispatcher"
+mkdir -p "$scratch6/sysctl" "$scratch6/as/dispatch-packets"
+
+pkt14="$scratch6/as/dispatch-packets/synth-14.md"
+echo "synthetic packet 14" > "$pkt14"
+: > "$scratch6/dispatch-ledger.jsonl"
+: > "$scratch6/redispatch.log"
+
+# No state files → orphan. But deadline is in the FUTURE.
+write_dispatch_entry "$scratch6/dispatch-ledger.jsonl" "id-14" "chain-14" 0 "synth-14" "$pkt14" 0 \
+    "2026-08-29T00:58:00Z" "2026-08-29T01:03:00Z"
+
+set +e
+AGENT_STATE="$scratch6/as" \
+FLEET_COMPLETION_STATE="$scratch6/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch6/actions.log" \
+FLEET_COMPLETION_PROM="$scratch6/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch6/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch6/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch6/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch6/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch6/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch6/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch6/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch6/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch6/sysctl" \
+DISPATCH_LOG="$scratch6/dispatch.log" \
+REDISPATCH_LOG="$scratch6/redispatch.log" \
+HOME="$scratch6" \
+  python3 "$bin" >/dev/null 2>"$scratch6/err.log"
+rc14=$?
+set -e
+[[ "$rc14" == "0" ]] || fail "dispatch test 14 rc=$rc14"
+
+# Ledger must still be 1 line (waiting, not closed).
+lines14=$(wc -l < "$scratch6/dispatch-ledger.jsonl")
+[[ "$lines14" == "1" ]] || fail "waiting must leave ledger at 1 line, got $lines14"
+
+# No re-dispatch.
+[[ ! -s "$scratch6/redispatch.log" ]] \
+  || fail "redispatch must NOT be called before deadline"
+
+# Metrics: dispatch open=1 (waiting counts as open), stalled=0.
+grep -q 'fleet_chain_open{plane="dispatch",hop="run"} 1' "$scratch6/fleet-chains.prom" \
+  || fail "dispatch open must be 1 for waiting"
+grep -q 'fleet_chain_stalled{plane="dispatch",hop="run"} 0' "$scratch6/fleet-chains.prom" \
+  || fail "dispatch stalled must be 0 for waiting"
+
+ok "dispatch plane: orphan before deadline → waiting, no re-dispatch (fleet-ops#1009)"
+
+# Cleanup dispatch-plane scratch dirs.
+rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6"
+
+echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane"
