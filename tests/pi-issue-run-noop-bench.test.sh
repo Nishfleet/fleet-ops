@@ -151,6 +151,11 @@ mark_seat_empty_run() {
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
 
+# fleet-ops#1378: the default in-process retry loop would try the second seat
+# before exiting 1. Set EMPTY_RUN_RETRY_MAX=0 to preserve the original
+# single-attempt behaviour for the provider-no-op and empty-run bench tests.
+export EMPTY_RUN_RETRY_MAX=0
+
 inst="fleet-ops-378"
 printf 'Implement one GitHub issue: fleet-ops#378.\n' >"$ISSUES_DIR/${inst}.in"
 
@@ -287,3 +292,71 @@ next2_nm=$(printf '%s' "$next2" | cut -f2)
 ok "pick_seat skips the empty-run seat and re-routes to $next2_np/$next2_nm"
 
 ok "empty-run (tools=0 + no final text) fails loudly, benches 15 min, re-routes to the next seat"
+
+# =============================================================================
+# fleet-ops#1378: in-process no-op retry — when a seat produces a provider
+# no-op (0B stdout, healthy seat), the script must re-run on a different seat
+# INSIDE the same invocation instead of exiting 1 and consuming a systemd
+# StartLimitBurst slot. The script exits 0 when the second seat succeeds, so
+# no StartLimitBurst slot is consumed. A 0B provider no-op is a lane fault, not
+# a seat fault, so the first seat is NOT benched.
+# =============================================================================
+# Set EMPTY_RUN_RETRY_MAX=1 so the script retries once before giving up.
+export EMPTY_RUN_RETRY_MAX=1
+
+# Reset ledgers and mark logs so both seats are usable and scenario 3 is clean.
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+# Clear tried-seats from prior scenarios.
+: >"$STATE_DIR/attempts/pi-issue-fleet-ops-378.tried-seats" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-fleet-ops-902.tried-seats" 2>/dev/null || true
+
+# Model-aware pi stub: glm-5-2 produces no output (provider no-op), swe-1-7 succeeds.
+# This is deterministic and doesn't rely on temp-file state.
+# pick_seat returns glm-5-2 first (scenario 1 confirmed this order).
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+    *glm-5-2*)
+        # Provider no-op — 0 bytes stdout
+        exit 0
+        ;;
+    *)
+        printf 'Real output: fixed the issue, opened PR #9999.\n'
+        exit 0
+        ;;
+esac
+STUB
+chmod +x "$stub_bin/pi"
+
+inst3="fleet-ops-1378"
+printf 'Implement one GitHub issue: fleet-ops#1378.\n' >"$ISSUES_DIR/${inst3}.in"
+
+set +e
+bash "$bin" "$inst3" >"$scratch/run3.out" 2>"$scratch/run3.err"
+rc3=$?
+set -e
+
+[[ "$rc3" == "0" ]] \
+  || fail "in-process retry must exit 0 (second seat succeeded), got rc=$rc3 err=$(cat "$scratch/run3.err")"
+
+# Verify the output file contains real output from the second seat.
+out3=$(cat "$PI_ISSUES_DIR/${inst3}.out" 2>/dev/null || true)
+echo "$out3" | grep -qF 'Real output' \
+  || fail "output file should contain 'Real output' from second seat, got: $out3"
+ok "in-process retry: first seat no-op (0B), script re-seated in-process, second seat succeeded, exited 0"
+
+# The first seat was a provider no-op (healthy seat) — it must NOT have been
+# benched. The tried-seats file for the successful run should be reset.
+tried3="$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats"
+[[ -s "$tried3" ]] && fail "successful run must reset tried-seats, got: $(cat "$tried3")"
+ok "tried-seats reset after successful in-process retry"
+
+# Either mark log must not contain the first no-op seat (devin/glm-5-2).
+if grep -qF 'devin/glm-5-2' "$scratch/mark_calls" 2>/dev/null \
+    || grep -qF 'devin/glm-5-2' "$scratch/mark_empty_calls" 2>/dev/null; then
+    fail "first no-op seat (devin/glm-5-2) must NOT be benched (provider no-op is a lane fault)"
+fi
+ok "first no-op seat was NOT benched (lane fault, healthy seat)"
+
+ok "fleet-ops#1378: in-process no-op retry works — item is never charged for a lane flake"
