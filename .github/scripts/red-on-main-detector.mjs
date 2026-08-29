@@ -19,11 +19,17 @@ const LABEL = "red-on-main";
 const COMMENT_MARKER_PREFIX = "<!-- red-on-main-detector:";
 
 // The detector workflow itself should not alert on its own failures.
+// "Auto revert" is skipped too: its job is to revert a red commit or halt
+// (exit 1 by design, filing a HALT issue) when a revert is unsafe. That red
+// is an expected halt signal, not a workflow regression on main; flagging it
+// spawns recurring noise (fleet-ops#155, #596, #1482). The halt issue itself
+// is the loud surface.
 const SKIP_WORKFLOWS = new Set([
   "Red on main detector",
   "red-on-main-detector",
   "Red on main watch",
   "red-on-main-watch",
+  "Auto revert",
 ]);
 
 /**
