@@ -57,7 +57,7 @@ this probe runs on its own 15min timer rather than being called from the census.
 ```
 bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
 systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # warnings only (unused vars in fallback defaults)
+shellcheck -x bin/seat-walled-probe  # clean (exit 0)
 sgscan  # no new security findings
 ```
 
@@ -65,15 +65,9 @@ run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run se
 real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
 systemd unit validity + timer-manifest entry.
 
-research: official docs (systemd.timer(5), systemd.service(5)), last30days-scale pass
-for probe-style free-seat recovery patterns; compared polling to a systemd path-unit
-trigger on the ledger directory (rejected — path unit fires on every write, which is
-every few seconds; polling every 15min is simpler and lower CPU). Adopted systemd timer +
-bash script because it runs on the existing fleet timer pattern with no new machinery.
+research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help` — none can
-read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback
-durations, or file agent-ready issues via fleet-issue-file.
+help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
 
 organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
 not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to

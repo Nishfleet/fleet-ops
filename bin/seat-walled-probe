@@ -54,10 +54,6 @@ load_walled_comeback_config() {
         return 1
     fi
     MIN_PROBE_INTERVAL_S=$(jq -r '.min_probe_interval_s // 900' <<<"$wc")
-    RATE_LIMIT_S=$(jq -r '.rate_limit_s // 900' <<<"$wc")
-    DAILY_QUOTA_S=$(jq -r '.daily_quota_s // 3600' <<<"$wc")
-    MONTHLY_QUOTA_S=$(jq -r '.monthly_quota_s // 86400' <<<"$wc")
-    FREE_BALANCE_EXHAUSTED_S=$(jq -r '.free_balance_exhausted_s // 86400' <<<"$wc")
     CREDENTIALS_BAD_S=$(jq -r '.credentials_bad_s // 604800' <<<"$wc")
 }
 
@@ -267,10 +263,6 @@ EOF
     if ! load_walled_comeback_config; then
         seat_log "failed to load walled_comeback config, using defaults"
         MIN_PROBE_INTERVAL_S=900
-        RATE_LIMIT_S=900
-        DAILY_QUOTA_S=3600
-        MONTHLY_QUOTA_S=86400
-        FREE_BALANCE_EXHAUSTED_S=86400
         CREDENTIALS_BAD_S=604800
     fi
 
@@ -287,15 +279,13 @@ EOF
     for f in "$LEDGER_DIR"/*__*.json; do
         [[ -f "$f" ]] || continue
 
-        local provider model failure_mode usable_at observed_at consecutive_failures health_class seat_dead
+        local provider model failure_mode usable_at observed_at consecutive_failures
         provider=$(jq -r '.provider // ""' "$f" 2>/dev/null || echo "")
         model=$(jq -r '.model // ""' "$f" 2>/dev/null || echo "")
         failure_mode=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || echo "")
         usable_at=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || echo "")
         observed_at=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || echo "")
         consecutive_failures=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
-        health_class=$(jq -r '.health_class // ""' "$f" 2>/dev/null || echo "")
-        seat_dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || echo "false")
 
         [[ -n "$provider" && -n "$model" ]] || continue
         [[ -n "$usable_at" && "$usable_at" != "null" ]] || continue
@@ -329,11 +319,11 @@ EOF
 
             # For credentials_bad, if this is a weekly probe that failed, file an agent-ready issue
             if [[ "$failure_mode" == "credentials_bad" ]]; then
-                local observed_s now_s
+                local observed_s now_epoch
                 observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
-                now_s=$(now_s)
+                now_epoch=$(now_s)
                 if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
-                    local time_since_observed=$((now_s - observed_s))
+                    local time_since_observed=$((now_epoch - observed_s))
                     if (( time_since_observed >= CREDENTIALS_BAD_S )); then
                         if file_credentials_issue "$provider" "$model" "$consecutive_failures"; then
                             ((issued++)) || true
