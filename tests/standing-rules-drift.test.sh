@@ -50,6 +50,12 @@ INTENTIONAL PLACEHOLDER FOR nish-preimplementation-contract BODY
 <!-- BEGIN GENERATED: shared-fleet-routing -->
 INTENTIONAL PLACEHOLDER FOR shared-fleet-routing BODY
 <!-- END GENERATED: shared-fleet-routing -->
+<!-- BEGIN GENERATED: never-relay-finding -->
+INTENTIONAL PLACEHOLDER FOR never-relay-finding BODY
+<!-- END GENERATED: never-relay-finding -->
+<!-- BEGIN GENERATED: shared-memory-loop -->
+INTENTIONAL PLACEHOLDER FOR shared-memory-loop BODY
+<!-- END GENERATED: shared-memory-loop -->
 # Claude tail (hand-written)
 CL
 
@@ -70,13 +76,16 @@ INTENTIONAL PLACEHOLDER FOR nish-preimplementation-contract BODY
 <!-- BEGIN GENERATED: shared-fleet-routing -->
 INTENTIONAL PLACEHOLDER FOR shared-fleet-routing BODY
 <!-- END GENERATED: shared-fleet-routing -->
+<!-- BEGIN GENERATED: shared-memory-loop -->
+INTENTIONAL PLACEHOLDER FOR shared-memory-loop BODY
+<!-- END GENERATED: shared-memory-loop -->
 # Codex tail (hand-written)
 CO
 
 run_gen() {
   python3 "$gen" \
     --canonical "$canonical" \
-    --targets "$target_claude|claude-vps|Claude|Claude and every Claude subagent|SEATCLAUDE||SOLCLAUDE,$target_codex|codex-vps|Codex|every Codex agent and subagent|SEATCODEX|OLDCODEX|SOLCODEX" \
+    --targets "$target_claude|claude-vps|Claude|Claude and every Claude subagent|SEATCLAUDE||SOLCLAUDE|FAILCLAUDE,$target_codex|codex-vps|Codex|every Codex agent and subagent|SEATCODEX|OLDCODEX|SOLCODEX|" \
     "$@"
 }
 
@@ -130,6 +139,40 @@ grep -q "SOLCLAUDE" "$target_claude" || fail "claude target missing its Sol bloc
 grep -q "SOLCODEX" "$target_codex" || fail "codex target missing its Sol block"
 echo "OK 4: templating applied per surface (claude vs codex)"
 
+# --- Assertion 4b: never-relay-finding + shared-memory-loop de-dup (slice 2, #1153).
+# The codex surface keeps no never-relay-finding region (it stays hand-written),
+# so the section must render into claude only.
+if grep -q "BEGIN GENERATED: never-relay-finding" "$target_codex"; then
+  fail "codex target got a never-relay-finding region it should not have"
+fi
+grep -q "BEGIN GENERATED: never-relay-finding" "$target_claude" \
+  || fail "claude target missing its never-relay-finding region"
+# shared-memory-loop render carries the per-surface --agent token.
+grep -q -- "--agent claude-vps" "$target_claude" || fail "claude --agent token not substituted"
+grep -q -- "--agent codex-vps" "$target_codex" || fail "codex --agent token not substituted"
+if grep -q -- "--agent claude-vps" "$target_codex"; then
+  fail "codex target leaked claude --agent token"
+fi
+if grep -q -- "--agent codex-vps" "$target_claude"; then
+  fail "claude target leaked codex --agent token"
+fi
+# --verified-by uses the same surface token.
+grep -q -- '--verified-by "claude-vps"' "$target_claude" \
+  || fail "claude --verified-by token not substituted"
+grep -q -- '--verified-by "codex-vps"' "$target_codex" \
+  || fail "codex --verified-by token not substituted"
+# The failure-response block must render into claude only (codex keeps it
+# hand-written in its Safety section, so its shared-memory-loop is empty).
+grep -q "FAILCLAUDE" "$target_claude" || fail "claude failure-response block missing"
+if grep -q "FAILCLAUDE" "$target_codex"; then
+  fail "codex target leaked claude failure-response block"
+fi
+# No undeclared token may survive into either surface.
+if grep -q -- '{{' "$target_claude" "$target_codex"; then
+  fail "a literal {{token}} survived render into a target"
+fi
+echo "OK 4b: never-relay/shared-memory-loop de-dup + failure-response bound to claude"
+
 # --- Assertion 5: hand-edit -> drift -> --render restores.
 snapshot_claude="$(mktemp)"
 snapshot_codex="$(mktemp)"
@@ -164,7 +207,7 @@ echo "OK 6: markers persist across renders"
 
 # --- Assertion 7: canonical-only sections (no target reference) -> exit 1.
 # Build a target that has NO BEGIN/END markers at all. The canonical
-# declares three sections, so unused-sections check must trip.
+# declares five sections, so unused-sections check must trip.
 empty_target="$work/empty.md"
 echo "no markers here" > "$empty_target"
 set +e
