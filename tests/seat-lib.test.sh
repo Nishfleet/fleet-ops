@@ -398,6 +398,76 @@ ok "notcap: heavy pick folds per-seat 'not capable for heavy task' lines into on
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
+# --- fleet-ops#1297: per-pick_seat active-count cache -----------------------
+# count_active_on_provider / count_active_on_seat were called PER non-excluded
+# seat in the pick_seat loop, each re-reading the whole active-seats registry
+# (jq + systemctl per file) + legacy unit list (systemctl per unit). At 7
+# registry files + 8 live units and ~10 seats that was ~690 subprocess spawns
+# per pick_seat call (~4.4s measured) — the direct cause of load1=148 on
+# 2026-08-29 with 13520 at-capacity skips in 2h. The fix: _build_pick_active_cache
+# reads the registry + legacy list ONCE per pick_seat and the count functions
+# consult the cached counts. This pins the contract: the cached counts MUST
+# equal the uncached counts for provider, seat, issue and org, and pick_seat
+# MUST build the cache (so the loop pays the registry read once, not per seat).
+_cache_dir="$scratch/active-cache"
+mkdir -p "$_cache_dir/active-seats"
+export PI_PACKET_STATE="$_cache_dir"
+# Seed a mix of issue + packet registry entries across two providers.
+jq -nc --arg p "devin" --arg m "glm-5-2" --arg u "pi-issue-fleet-ops-1297" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T00:00:00Z"}' \
+    > "$_cache_dir/active-seats/pi-issue-fleet-ops-1297.json"
+jq -nc --arg p "devin" --arg m "swe-1-7" --arg u "pi-issue-fleet-ops-1300" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T00:00:00Z"}' \
+    > "$_cache_dir/active-seats/pi-issue-fleet-ops-1300.json"
+jq -nc --arg p "commandcode" --arg m "poolside" --arg u "pi-packet-alert-1" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T00:00:00Z"}' \
+    > "$_cache_dir/active-seats/pi-packet-alert-1.json"
+# Uncached counts (cache not built yet — PI_SEAT_LIB_CHECK_SYSTEMD=0 so the
+# legacy systemctl path is empty and only the registry files count).
+_unc_total=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_total' "$lib" 2>/dev/null)
+_unc_issue=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_issue' "$lib" 2>/dev/null)
+_unc_org=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_org' "$lib" 2>/dev/null)
+_unc_prov_devin=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_on_provider devin' "$lib" 2>/dev/null)
+_unc_prov_cc=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_on_provider commandcode' "$lib" 2>/dev/null)
+_unc_seat=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_on_seat devin glm-5-2' "$lib" 2>/dev/null)
+# Cached counts: pick_seat builds the cache, then the count functions consult it.
+_cach_out=$(bash -c '
+  source "$0"; load_seat_caps 2>/dev/null
+  _PICK_ACTIVE_CACHE_BUILT=0; _build_pick_active_cache 2>/dev/null
+  printf "%s\n%s\n%s\n%s\n%s\n%s\n" \
+    "$(count_active_total)" "$(count_active_issue)" "$(count_active_org)" \
+    "$(count_active_on_provider devin)" "$(count_active_on_provider commandcode)" \
+    "$(count_active_on_seat devin glm-5-2)"
+' "$lib" 2>/dev/null)
+_c_total=$(sed -n '1p' <<<"$_cach_out")
+_c_issue=$(sed -n '2p' <<<"$_cach_out")
+_c_org=$(sed -n '3p' <<<"$_cach_out")
+_c_prov_devin=$(sed -n '4p' <<<"$_cach_out")
+_c_prov_cc=$(sed -n '5p' <<<"$_cach_out")
+_c_seat=$(sed -n '6p' <<<"$_cach_out")
+[[ "$_unc_total" == "$_c_total" ]] \
+  || fail "1297-cache: total mismatch uncached=$_unc_total cached=$_c_total"
+[[ "$_unc_issue" == "$_c_issue" ]] \
+  || fail "1297-cache: issue mismatch uncached=$_unc_issue cached=$_c_issue"
+[[ "$_unc_org" == "$_c_org" ]] \
+  || fail "1297-cache: org mismatch uncached=$_unc_org cached=$_c_org"
+[[ "$_unc_prov_devin" == "$_c_prov_devin" ]] \
+  || fail "1297-cache: devin provider mismatch uncached=$_unc_prov_devin cached=$_c_prov_devin"
+[[ "$_unc_prov_cc" == "$_c_prov_cc" ]] \
+  || fail "1297-cache: commandcode provider mismatch uncached=$_unc_prov_cc cached=$_c_prov_cc"
+[[ "$_unc_seat" == "$_c_seat" ]] \
+  || fail "1297-cache: devin/glm-5-2 seat mismatch uncached=$_unc_seat cached=$_c_seat"
+# Sanity: the seeded counts are the expected values (2 issue + 1 org, 2 devin,
+# 1 commandcode, 1 devin/glm-5-2). count_active_total = issue + min(org, reserve).
+[[ "$_c_issue" == "2" ]] || fail "1297-cache: expected 2 issue workers, got $_c_issue"
+[[ "$_c_org" == "1" ]] || fail "1297-cache: expected 1 org worker, got $_c_org"
+[[ "$_c_prov_devin" == "2" ]] || fail "1297-cache: expected 2 devin workers, got $_c_prov_devin"
+[[ "$_c_prov_cc" == "1" ]] || fail "1297-cache: expected 1 commandcode worker, got $_c_prov_cc"
+[[ "$_c_seat" == "1" ]] || fail "1297-cache: expected 1 devin/glm-5-2 worker, got $_c_seat"
+ok "1297-cache: per-pick_seat active-count cache returns identical counts to uncached path (total=$_c_total issue=$_c_issue org=$_c_org devin=$_c_prov_devin cc=$_c_prov_cc seat=$_c_seat)"
+unset _cache_dir _unc_total _unc_issue _unc_org _unc_prov_devin _unc_prov_cc _unc_seat
+unset _cach_out _c_total _c_issue _c_org _c_prov_devin _c_prov_cc _c_seat
+
 # --- invariant 4: free lanes before prepaid on an empty (usable) ledger ---
 # Every allowlisted model has no health file -> usable. commandcode is free;
 # cursor/cline are prepaid-quota (subscription alias). Free wins.
