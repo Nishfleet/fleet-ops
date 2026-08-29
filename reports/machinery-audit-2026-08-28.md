@@ -147,7 +147,7 @@ criteria; no blind mass-delete.
 | ready-work | 2026-08-25 | dispatcher ("one continuation packet per firing") | #1493 |
 | open-question-sweep | 2026-08-24 | watchdog / poller ("re-drive stalled open questions") | #1494 |
 | agent-scheduler-drift | 2026-08-25 | watchdog ("enforce agent-agnostic scheduling rule") | #1495 |
-| siterep-pr-conflict-watchdog | 2026-08-24 | watchdog ("conflicting open-PR pile exceeds cap") | #1496 |
+| siterep-pr-conflict-watchdog | 2026-08-24 | watchdog ("conflicting open-PR pile exceeds cap") | #1496 — **ADJUDICATED 2026-08-29: MECHANICAL-INSTEAD** (GH Actions workflow `pr-conflict-watchdog.yml` in `nish3451/siterep` already provides this check via the sanctioned repo channel; VPS timer was a hand-placed redundant duplicate, already disabled; live unit + script deleted; cost concern is Nish's money decision) |
 | quality-baseline-research | 2026-08-25 | dispatcher ("research refresh via Pi worker") | #1497 |
 | memory-index-autocompact | 2026-08-24 | (borderline b/c — filed for adjudication) | #1498 |
 

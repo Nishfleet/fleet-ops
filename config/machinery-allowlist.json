@@ -69,8 +69,10 @@
     {"unit": "ready-work", "banned_class": "dispatcher", "follow_up": "filed"},
     {"unit": "open-question-sweep", "banned_class": "watchdog/poller", "follow_up": "filed"},
     {"unit": "agent-scheduler-drift", "banned_class": "watchdog", "follow_up": "filed"},
-    {"unit": "siterep-pr-conflict-watchdog", "banned_class": "watchdog", "follow_up": "filed"},
     {"unit": "quality-baseline-research", "banned_class": "dispatcher", "follow_up": "filed"},
     {"unit": "memory-index-autocompact", "banned_class": "borderline b/c", "follow_up": "filed"}
+  ],
+  "adjudicated": [
+    {"unit": "siterep-pr-conflict-watchdog", "verdict": "MECHANICAL-INSTEAD", "issue": 1496, "date": "2026-08-29", "rationale": "The GH Actions workflow pr-conflict-watchdog.yml in nish3451/siterep already provides this check (same gh call, cap=3, cron '23 * * * *') through the sanctioned repo channel. The VPS timer was a hand-placed redundant duplicate that bypassed the repo; timer was already disabled. Live unit + script deleted. The Actions-minutes cost concern is a Nish money decision, separate from this adjudication."}
   ]
 }
