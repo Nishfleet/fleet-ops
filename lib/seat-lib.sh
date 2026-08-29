@@ -1179,6 +1179,29 @@ PI_SEAT_CREDENTIAL_PRECHECK="${PI_SEAT_CREDENTIAL_PRECHECK:-1}"
 # a provider with several models is resolved once, not once per model.
 declare -A _cred_cache=()
 
+# Per-pick_seat call cache for active-seats counts (fleet-ops#1297).
+# count_active_on_provider and count_active_on_seat are called PER non-
+# excluded seat in the pick_seat loop, and each re-read the entire
+# active-seats registry (jq + systemctl per file) plus the legacy unit
+# list (systemctl per unit). At 7 registry files + 8 live units and ~10
+# non-excluded seats that is ~690 subprocess spawns per pick_seat call
+# (~4.4s measured), and pick_seat runs thousands of times per 2h window
+# under a seat storm — the direct cause of load1=148 on 2026-08-29 with
+# 13520 at-capacity skips in 2h. The registry does not change during a
+# single pick_seat pass, so _build_pick_active_cache reads it ONCE and
+# the count functions below consult these cached counts instead of
+# re-spawning jq/systemctl per seat.
+declare -A _PICK_REG_PROVIDER_COUNT=()
+declare -A _PICK_REG_SEAT_COUNT=()
+declare -A _PICK_LEG_PROVIDER_COUNT=()
+declare -A _PICK_LEG_SEAT_COUNT=()
+declare -A _PICK_REG_SEEN_BASE=()
+_PICK_REG_ISSUE_N=0
+_PICK_REG_ORG_N=0
+_PICK_LEG_ISSUE_N=0
+_PICK_LEG_ORG_N=0
+_PICK_ACTIVE_CACHE_BUILT=0
+
 # Returns 0 if provider $1 has a resolvable credential, 1 if it positively
 # does not. See the block comment above for the resolution rules and the
 # fail-open policy for providers with no apiKey field.
@@ -1447,8 +1470,94 @@ _seat_live_registry_files() {
     done
 }
 
+# Build the per-pick_seat active-seats count cache (fleet-ops#1297).
+# Reads _seat_live_registry_files ONCE (jq per file) and _seat_list_pi_exec
+# ONCE (systemctl show per unit), pre-computing the per-provider, per-seat,
+# issue and org counts that count_active_on_provider / count_active_on_seat /
+# count_active_issue / count_active_org consult below. Without this, each of
+# those functions re-read the registry + legacy unit list on every call, and
+# the two per-seat functions are called once per non-excluded seat in the
+# pick_seat loop — the ~4.4s/call cost that drove load1=148. Called once at
+# the start of pick_seat; _PICK_ACTIVE_CACHE_BUILT is reset there so a
+# multi-call process (tests) rebuilds per pass.
+_build_pick_active_cache() {
+    _PICK_REG_PROVIDER_COUNT=()
+    _PICK_REG_SEAT_COUNT=()
+    _PICK_LEG_PROVIDER_COUNT=()
+    _PICK_LEG_SEAT_COUNT=()
+    _PICK_REG_SEEN_BASE=()
+    _PICK_REG_ISSUE_N=0
+    _PICK_REG_ORG_N=0
+    _PICK_LEG_ISSUE_N=0
+    _PICK_LEG_ORG_N=0
+
+    local f p m unit base
+    # Registry pass: ONE jq per file (was: jq per file PER count function).
+    while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        IFS=$'\x1f'$'\n' read -r p m unit < <(
+            jq -r '[(.provider//""),(.model//""),(.unit//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        [[ -n "$p" ]] || continue
+        base="${f##*/}"; base="${base%.json}"
+        _PICK_REG_PROVIDER_COUNT[$p]=$(( ${_PICK_REG_PROVIDER_COUNT[$p]:-0} + 1 ))
+        _PICK_REG_SEAT_COUNT[$p/$m]=$(( ${_PICK_REG_SEAT_COUNT[$p/$m]:-0} + 1 ))
+        _PICK_REG_SEEN_BASE[$base]=1
+        case "$base" in
+            pi-packet-*) _PICK_REG_ORG_N=$((_PICK_REG_ORG_N + 1)) ;;
+            *)           _PICK_REG_ISSUE_N=$((_PICK_REG_ISSUE_N + 1)) ;;
+        esac
+    done < <(_seat_live_registry_files)
+
+    # Legacy pass: ONE systemctl show per unit (was: per count function).
+    # _seat_list_unit == _seat_list_org_unit == _seat_list_pi_exec, so a
+    # single read covers both count_active_issue and count_active_org.
+    local u cmd instance
+    declare -A _leg_seen=()
+    while IFS= read -r u; do
+        [[ -n "$u" ]] || continue
+        cmd=$(systemctl --user show "$u" --property=ExecStart --value 2>/dev/null || true)
+        _parse_exec_provider_model "$cmd"
+        # count_active_on_provider / count_active_on_seat legacy: NO dedup
+        # against the registry (matches the uncached functions exactly).
+        if [[ -n "$_exec_p" ]]; then
+            _PICK_LEG_PROVIDER_COUNT[$_exec_p]=$(( ${_PICK_LEG_PROVIDER_COUNT[$_exec_p]:-0} + 1 ))
+            [[ -n "$_exec_m" ]] && _PICK_LEG_SEAT_COUNT[$_exec_p/$_exec_m]=$(( ${_PICK_LEG_SEAT_COUNT[$_exec_p/$_exec_m]:-0} + 1 ))
+        fi
+        # count_active_issue legacy: pi-issue@* NOT already in the registry.
+        case "$u" in
+            pi-issue@*.service)
+                instance="${u#pi-issue@}"; instance="${instance%.service}"
+                [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${instance}.json" ]] && continue
+                _PICK_LEG_ISSUE_N=$((_PICK_LEG_ISSUE_N + 1))
+                continue
+                ;;
+        esac
+        # count_active_org legacy: non-pi-issue units, deduped against the
+        # registry (pi-packet@* by seen-base + file check) and within the
+        # loop (_leg_seen). Matches count_active_org's exact dedup logic.
+        [[ -n "${_leg_seen[$u]:-}" ]] && continue
+        case "$u" in
+            pi-packet@*.service)
+                instance="${u#pi-packet@}"; instance="${instance%.service}"
+                [[ -n "${_PICK_REG_SEEN_BASE[pi-packet-${instance}]:-}" ]] && continue
+                [[ -f "$ACTIVE_SEATS_DIR/pi-packet-${instance}.json" ]] && continue
+                ;;
+        esac
+        _leg_seen[$u]=1
+        _PICK_LEG_ORG_N=$((_PICK_LEG_ORG_N + 1))
+    done < <(_seat_list_pi_exec)
+
+    _PICK_ACTIVE_CACHE_BUILT=1
+}
+
 count_active_on_seat() {
     local prov="$1" mdl="$2"
+    # fleet-ops#1297: O(1) lookup when the per-pick_seat cache is built.
+    if (( _PICK_ACTIVE_CACHE_BUILT )); then
+        echo $(( ${_PICK_REG_SEAT_COUNT[$prov/$mdl]:-0} + ${_PICK_LEG_SEAT_COUNT[$prov/$mdl]:-0} ))
+        return
+    fi
     local n=0
     # State-dir based (new path)
     local f fp fm
@@ -1472,6 +1581,11 @@ count_active_on_seat() {
 # Count currently active workers on a given provider (sum across models).
 count_active_on_provider() {
     local prov="$1"
+    # fleet-ops#1297: O(1) lookup when the per-pick_seat cache is built.
+    if (( _PICK_ACTIVE_CACHE_BUILT )); then
+        echo $(( ${_PICK_REG_PROVIDER_COUNT[$prov]:-0} + ${_PICK_LEG_PROVIDER_COUNT[$prov]:-0} ))
+        return
+    fi
     local n=0
     # State-dir based (new path) — sum all models for the provider
     local f fp
@@ -1494,6 +1608,11 @@ count_active_on_provider() {
 
 # Issue-work units (pi-issue-*). These are what intake spends slots on.
 count_active_issue() {
+    # fleet-ops#1297: O(1) lookup when the per-pick_seat cache is built.
+    if (( _PICK_ACTIVE_CACHE_BUILT )); then
+        echo $(( _PICK_REG_ISSUE_N + _PICK_LEG_ISSUE_N ))
+        return
+    fi
     local n=0 f base u cmd instance
     while IFS= read -r f; do
         base=$(basename "$f" .json)
@@ -1526,6 +1645,11 @@ count_active_issue() {
 # pi-job-*, and ad-hoc pi-systemd-run units with odd names).
 # fleet-ops#1155: enumerated by ExecStart content, not unit-name patterns.
 count_active_org() {
+    # fleet-ops#1297: O(1) lookup when the per-pick_seat cache is built.
+    if (( _PICK_ACTIVE_CACHE_BUILT )); then
+        echo $(( _PICK_REG_ORG_N + _PICK_LEG_ORG_N ))
+        return
+    fi
     local n=0 f base u instance
     declare -A seen=()
     while IFS= read -r f; do
@@ -2007,6 +2131,15 @@ pick_seat() {
         return 1
     fi
 
+    # fleet-ops#1297: build the active-seats count cache ONCE for this pass.
+    # count_active_on_provider / count_active_on_seat are called per non-
+    # excluded seat in the loop below, and count_active_total (via the AIMD
+    # probe) per at-capacity seat; without the cache each re-read the whole
+    # registry + legacy unit list (~4.4s/call measured). Reset forces a
+    # rebuild so a multi-call process (tests) sees fresh state per pass.
+    _PICK_ACTIVE_CACHE_BUILT=0
+    _build_pick_active_cache
+
     # Buckets (fleet-ops#387):
     #   1) free lanes first (true free — never a prepaid seat mislabeled free)
     #   2) prepaid-quota, alternating across live prepaid so one weekly-quota
@@ -2025,6 +2158,17 @@ pick_seat() {
     # seconds and starve a cap=1 lane for the whole window.
     local _at_capacity_n=0
     local -a _at_capacity_sample=()
+
+    # fleet-ops#1297: fold the STATIC heavy-pick skip classes too. A model's
+    # `capable` flag for a given difficulty and the quality-routing ban do not
+    # change while a heavy pick runs, so re-logging each per-seat line on every
+    # pick is pure churn (28,243 "not capable for heavy task" lines in 2h on
+    # 2026-08-29 while the fleet was heavy-only with no capable seat). Count
+    # them into ONE per-pick summary, same pattern as #1449/#1624. Unlike
+    # at-capacity (a busy seat frees), these are static for the pick, so the
+    # skip is genuinely cheap — the per-seat detail adds nothing.
+    local _notcap_n=0 _qban_n=0
+    local -a _notcap_sample=()
 
     local p m free capable p_cap m_cap p_active m_active class eff_cap
     # `free` is emitted by enumerate_seats for parity with the legacy contract;
@@ -2106,11 +2250,16 @@ pick_seat() {
             fi
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
-            seat_log "seat $p/$m skipped (not capable for heavy task)"
+            # fleet-ops#1297: silence the per-seat "not capable for heavy task"
+            # line — it was the dominant watch.log flood (28k/2h) when a heavy
+            # pick had no capable seat. Counted into the per-pick summary below.
+            _notcap_n=$((_notcap_n + 1))
+            _notcap_sample+=("$p/$m")
             continue
         fi
         if (( need_capable )) && [[ -n "${QUALITY_HEAVY_BAN[$p/$m]:-}" ]]; then
-            seat_log "seat $p/$m skipped (quality-routing: over threshold, light work only)"
+            # fleet-ops#1297: same fold for the quality-routing ban line.
+            _qban_n=$((_qban_n + 1))
             continue
         fi
         if ! seat_usable "$p" "$m"; then
@@ -2225,6 +2374,28 @@ pick_seat() {
             _ac_sample_str=$(printf '%s\n' "${_ac_sorted[@]}" | paste -sd, -)
         fi
         seat_log "pick_seat: at-capacity ${_at_capacity_n} seats [${_ac_sample_str}]"
+    fi
+
+    # fleet-ops#1297: ONE summary line per pick_seat call for the folded STATIC
+    # heavy-pick skips (not-capable-for-heavy and quality-routing-ban). Same
+    # pattern as the #1449/#1624 summaries. The per-seat "skipped (not capable
+    # for heavy task)" lines were the dominant watch.log flood source (28,243
+    # lines in 2h on 2026-08-29) when a heavy-only fleet had no capable seat.
+    # A model's capable flag and the routing ban are static for a pick, so no
+    # information is lost by collapsing them. Format is stable: "pick_seat:
+    # filtered-static N seats (not-capable: C; quality-ban: Q) [sample]" so a
+    # future grep can pin the count.
+    if (( _notcap_n + _qban_n > 0 )); then
+        local _nc_sorted=()
+        if (( ${#_notcap_sample[@]} > 0 )); then
+            mapfile -t _nc_sorted < <(printf '%s\n' "${_notcap_sample[@]}" | sort | uniq)
+            _nc_sorted=("${_nc_sorted[@]:0:6}")
+        fi
+        local _nc_sample_str=""
+        if (( ${#_nc_sorted[@]} > 0 )); then
+            _nc_sample_str=$(printf '%s\n' "${_nc_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: filtered-static $((_notcap_n + _qban_n)) seats (not-capable: $_notcap_n; quality-ban: $_qban_n) [${_nc_sample_str}]"
     fi
 
     if [[ -n "$SEAT_FREE_ORDER" ]] && (( ${#free_seats[@]} > 0 )); then
