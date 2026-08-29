@@ -209,16 +209,18 @@ ok "reference matcher is exact-number (#11352 / claim/issue-1135 do not match 11
 set_fixtures \
   '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
   '[{"number":1429,"title":"feat: x (fleet-ops#1135)","body":"See fleet-ops#1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1429"}]'
-mkdir -p "$scratch/nogh"
-# A minimal PATH with the core tools the script needs but WITHOUT gh, so
-# the gh-missing crash path fires (if we emptied PATH entirely, bash/env
-# themselves would be unfindable and the launcher returns rc 127 instead).
-minpath=$(dirname "$(command -v bash)")
-for t in env jq date grep sed awk; do
-  p=$(dirname "$(command -v "$t")")
-  case ":$minpath:" in *":$p:"*) ;; *) minpath="$minpath:$p" ;; esac
+# An isolated tool dir built from symlinks to ONLY the commands the script
+# needs, so `gh` is genuinely unresolvable regardless of where it lives on
+# the runner. On GitHub-hosted runners gh shares a directory with bash, so
+# a PATH filtered only by "dirname of the core tools" still resolves gh and
+# the gh-missing crash path never fires (fleet-ops#1919). Symlinking each
+# needed tool into one fresh dir makes the crash path deterministic: gh is
+# absent there by construction, and the script's tools are all present.
+mkdir -p "$scratch/minbin"
+for t in bash env id jq date grep sed awk; do
+  ln -sf "$(command -v "$t")" "$scratch/minbin/$t"
 done
-out=$(env PATH="$minpath" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
+out=$(env PATH="$scratch/minbin" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
   MERGED_PR_CLOSE_NOW="2026-08-28T00:53:00Z" MERGED_PR_CLOSE_TRIAGE="$scratch/triage.md" \
   "$bin" 2>&1; echo "rc=$?")
 grep -q 'rc=2' <<<"$out" || fail "gh-missing must exit rc 2: $out"
