@@ -66,6 +66,13 @@ NON_ROLE_UNIT_PREFIXES = (
     # tests/standing-rules-drift.test.sh.
     "standing-rules-render",
     "fleet-aeo",
+    # fleet-ops#1150: 0509-surface-probe is a deterministic Playwright
+    # matrix probe (routes × viewports × themes × fixture tiers) that runs
+    # no model, owns no work-producing prompt, and produces no work items.
+    # Its own gate is the SurfaceProbeFailing + SurfaceProbe0509Absent
+    # absent() rules plus the organ-heartbeat invariant. Same class as
+    # siterep- (a live canary) and fleet-aeo (a measurement probe).
+    "0509-surface-probe",
     # fleet-ops#1149: asset census is observability plumbing, not a
     # work-producing role. It enumerates the VPS and diffs against a
     # versioned guard map before the Weekly Fleet Review.
