@@ -727,7 +727,6 @@ systemd/fleet-asset-census.timer /home/nish/.config/systemd/user/fleet-asset-cen
 # adjudicated MECHANICAL-INSTEAD; the Weekly Fleet Review + blind audit
 # carry the watch lens (docs/organ-catalog.md). The hand-placed .service
 # and .timer were deleted from the live box in the same turn.
-systemd/ready-work-recheck.path /home/nish/.config/systemd/user/ready-work-recheck.path
 systemd/pi-intake-trigger.path /home/nish/.config/systemd/user/pi-intake-trigger.path
 systemd/pi-intake-trigger.service /home/nish/.config/systemd/user/pi-intake-trigger.service
 bin/pi-intake-trigger /home/nish/.local/bin/pi-intake-trigger
