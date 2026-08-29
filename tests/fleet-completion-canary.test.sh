@@ -457,6 +457,78 @@ grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-
 
 ok "verify stall deadline → detector-red terminal + cooldown gate (fleet-ops#1577/#1610)"
 
+# --- 9b. TWO concurrent verify-stall chains both drain (fleet-ops#1623) --
+# #1623 is the "1.0 -> 2.0" re-fire of #1610: chain_stalled_total had TWO
+# rows at hop=verify plane=alert-repair. This pins that exact twin shape:
+# a fresh (never-laddered) verify stall, not the pre-existing-laddered drain
+# path test 9 covers. Both must ladder on tick 1, then BOTH terminate as
+# detector-red at the verify deadline so verify open/stalled return to 0.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+
+# Two alertnames firing, both with a SUCCEEDED unit still firing -> verify-stall.
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "BridgeSelfTest"},
+   "activeAt": "2026-08-28T10:00:00Z"},
+  {"state": "firing", "labels": {"alertname": "VerifySink"},
+   "activeAt": "2026-08-28T10:05:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-28T10:02:00Z] DISPATCH alertname=BridgeSelfTest seat=a/Model unit=u-B-20260828T100200Z
+[2026-08-28T10:07:00Z] DISPATCH alertname=VerifySink seat=a/Model unit=u-V-20260828T100700Z
+PYEND
+# Both repair units already SUCCEEDED; both alerts still firing -> verify-stall.
+printf '%s\n' "success" >"$scratch/sysctl/u-B-20260828T100200Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/u-B-20260828T100200Z.active"
+printf '%s\n' "success" >"$scratch/sysctl/u-V-20260828T100700Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/u-V-20260828T100700Z.active"
+
+# Tick 1: both ladder (stop-reason) and set verify_deadline_ts.
+rc=$(run_bin "2026-08-28T12:05:00Z")
+[[ "$rc" == "0" ]] || fail "9b tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+for name in BridgeSelfTest VerifySink; do
+  f="$scratch/state/open/$name.json"
+  [[ -f "$f" ]] || fail "9b tick-1: missing open state for $name"
+  python3 -c "import json,sys; d=json.load(open('$f')); \
+    assert d.get('verify_deadline_ts'), d; assert d.get('hop')=='verify', d" \
+    || fail "9b tick-1: $name must be laddered at verify with a deadline"
+done
+# The #1623 twin stall is visible: BOTH rows at hop=verify are stalled=2.
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 2' "$scratch/fleet-chains.prom" \
+  || fail "9b tick-1: verify stalled must be 2 (twin #1623 shape), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+# Tick 2: now == deadline (12:05 + VERIFY_DEADLINE 60m) -> BOTH detector-red.
+rc=$(run_bin "2026-08-28T13:05:00Z")
+[[ "$rc" == "0" ]] || fail "9b tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# Only cooldown markers remain in open/ (dead_until on each).
+(
+  cd "$scratch/state/open"
+  for f in *.json; do
+    python3 -c "import json,sys; d=json.load(open('$f')); \
+      assert d.get('dead_until'), 'missing dead_until in '+str(d); \
+      assert d.get('terminal')=='detector-red', d"
+  done
+) || fail "9b tick-2: both chains must be detector-red cooldown markers"
+
+# Ledger: both closed detector-red.
+grep -q 'BridgeSelfTest.*detector-red' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9b tick-2: BridgeSelfTest must be detector-red in ledger"
+grep -q 'VerifySink.*detector-red' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9b tick-2: VerifySink must be detector-red in ledger"
+
+# Both verify rows drained to 0. This is the issue's acceptance criterion:
+# chain_stalled_total back to 0 with verify no longer holding either item.
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9b tick-2: fleet_chain_open verify must be 0, got: $(grep verify "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9b tick-2: fleet_chain_stalled verify must be 0, got: $(grep verify "$scratch/fleet-chains.prom")"
+
+ok "two concurrent verify-stall chains both drain via deadline (fleet-ops#1623)"
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================
