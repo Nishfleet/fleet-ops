@@ -796,12 +796,28 @@ def journal_text(unit: str) -> str:
 
 
 def journal_verdict(text: str) -> str | None:
-    """Return 'success' / 'failed' from journal text, or None."""
+    """Return 'success' / 'failed' from journal text, or None.
+
+    A systemd-run --collect unit unloads after exit. For successful units the
+    journal may only contain the "Started" line -- the "Succeeded" summary is
+    emitted as part of the unload and can be suppressed. Absence of "Failed"
+    on a journal that has "Started" is treated as success elsewhere.
+    """
     if re.search(r"\bSucceeded\b", text):
         return "success"
     if re.search(r"\bFailed\b", text):
         return "failed"
     return None
+
+
+def journal_has_started(text: str) -> bool:
+    """Return True if the journal text contains a unit start line.
+
+    A --collect unit that was loaded and started but whose "Succeeded" line
+    was suppressed still leaves a "Started <unit>.service" line. Its presence
+    means the unit loaded and ran to completion without a failure log.
+    """
+    return bool(re.search(r"Started .+\.service", text))
 
 
 def classify_dispatch(rec: dict) -> str:
@@ -811,7 +827,15 @@ def classify_dispatch(rec: dict) -> str:
     returns LoadState=not-found and the *default* Result=success. Treating
     that default as a real success would close every missing unit and never
     re-dispatch. LoadState=loaded is required before Result counts; otherwise
-    the journal is the only receipt, and silence is an orphan.
+    the journal is the only receipt.
+
+    Gap (fleet-ops#1295): --collect units that exited successfully may not
+    have a "Succeeded" journal line (it is suppressed during unload), so
+    journal_verdict returns None and the unit is misclassified as "orphan"
+    -- leaving the dispatch ledger entry open until the deadline fires. When
+    the journal has a "Started" line but no "Failed", the unit loaded and
+    ran to completion: classify as completed-success. A truly empty journal
+    (unit never started) remains an orphan.
     """
     unit = rec.get("unit") or ""
     if not unit:
@@ -827,11 +851,17 @@ def classify_dispatch(rec: dict) -> str:
         return "completed-success"
     # LoadState=not-found (or missing): --collect unloaded the unit.
     # The journal is the only receipt.
-    verdict = journal_verdict(journal_text(unit))
+    jtext = journal_text(unit)
+    verdict = journal_verdict(jtext)
     if verdict == "success":
         return "completed-success"
     if verdict == "failed":
         return "completed-failed"
+    # No verdict from standard strings. A --collect unit that was loaded and
+    # started (journal has "Started <unit>.service") but never logged
+    # "Succeeded" (common with --collect) completed without a failure log.
+    if journal_has_started(jtext):
+        return "completed-success"
     return "orphan"
 
 
@@ -1007,7 +1037,12 @@ def process_dispatch_plane(now: datetime) -> dict:
             counts["closed"] += 1
             continue
         if kind == "completed-failed":
+            # For --collect units (LoadState=not-found), systemctl show
+            # Result is the default "success" and misleading. The verdict
+            # came from journal "Failed", so record journal-derived result.
             result = show_prop(unit, "Result") or "exit-code"
+            if show_prop(unit, "LoadState") == "not-found":
+                result = "exit-code"
             exit_status = show_prop(unit, "ExecMainStatus") or "1"
             close_dispatch_entry(rec, "completed", verdict="failed",
                                  result=result, exit_status=exit_status)

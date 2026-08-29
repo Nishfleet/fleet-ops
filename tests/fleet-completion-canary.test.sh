@@ -748,19 +748,72 @@ set -e
 lines14=$(wc -l < "$scratch6/dispatch-ledger.jsonl")
 [[ "$lines14" == "1" ]] || fail "waiting must leave ledger at 1 line, got $lines14"
 
-# No re-dispatch.
-[[ ! -s "$scratch6/redispatch.log" ]] \
-  || fail "redispatch must NOT be called before deadline"
+# --- 15. --collect unit, journal has "Started" but no "Succeeded"/"Failed" -> completed-success (fleet-ops#1295) ----
+scratch7="$(mktemp -d -t dispatch-canary7.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch7/systemctl"
+ln -s "$scratch/journalctl" "$scratch7/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch7/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch7/dispatcher"
+mkdir -p "$scratch7/sysctl" "$scratch7/as/dispatch-packets"
 
-# Metrics: dispatch open=1 (waiting counts as open), stalled=0.
-grep -q 'fleet_chain_open{plane="dispatch",hop="run"} 1' "$scratch6/fleet-chains.prom" \
-  || fail "dispatch open must be 1 for waiting"
-grep -q 'fleet_chain_stalled{plane="dispatch",hop="run"} 0' "$scratch6/fleet-chains.prom" \
-  || fail "dispatch stalled must be 0 for waiting"
+pkt15="$scratch7/as/dispatch-packets/synth-15.md"
+echo "synthetic packet 15" > "$pkt15"
+: > "$scratch7/dispatch-ledger.jsonl"
+: > "$scratch7/redispatch.log"
 
-ok "dispatch plane: orphan before deadline → waiting, no re-dispatch (fleet-ops#1009)"
+# No state files -> LoadState=not-found (simulate a --collect unit that exited).
+# Journal has "Started" but NO "Succeeded" and NO "Failed" -- the gap (fleet-ops#1295).
+echo "Started synth-15.service - Synthetic test unit." > "$scratch7/sysctl/synth-15.service.journal"
+
+write_dispatch_entry "$scratch7/dispatch-ledger.jsonl" "id-15" "chain-15" 0 "synth-15" "$pkt15" 0 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch7/as" \
+FLEET_COMPLETION_STATE="$scratch7/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch7/actions.log" \
+FLEET_COMPLETION_PROM="$scratch7/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch7/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch7/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch7/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch7/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch7/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch7/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch7/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch7/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch7/sysctl" \
+DISPATCH_LOG="$scratch7/dispatch.log" \
+REDISPATCH_LOG="$scratch7/redispatch.log" \
+HOME="$scratch7" \
+  python3 "$bin" >/dev/null 2>"$scratch7/err.log"
+rc15=$?
+set -e
+[[ "$rc15" == "0" ]] || fail "dispatch test 15 rc=$rc15 stderr=$(cat "$scratch7/err.log")"
+
+# Before the fix: the unit would be orphaned and left open (waiting past deadline
+# -> re-dispatch or escalation). After the fix: journal_has_started detects the
+# "Started" line and classifies as completed-success -> ledger closed, no re-dispatch.
+tail -1 "$scratch7/dispatch-ledger.jsonl" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); assert d['status']=='completed', d; assert d['verdict']=='success', d" \
+  || fail "ledger must close with status=completed verdict=success (not orphaned/re-dispatched); stderr=$(cat "$scratch7/err.log")"
+
+# No re-dispatch must have happened (unit completed, not orphaned).
+[[ ! -s "$scratch7/redispatch.log" ]] \
+  || fail "redispatch must NOT be called on a completed --collect unit (fleet-ops#1295)"
+
+# No STOP-REASON must have been written.
+[[ ! -f "$scratch7/STOP-REASON.json" ]] \
+  || fail "STOP-REASON must NOT be written for a completed unit"
+
+# Metrics: dispatch open must be 0 (the only open dispatch entry was closed).
+grep -q 'fleet_chain_open{plane="dispatch",hop="run"} 0' "$scratch7/fleet-chains.prom" \
+  || fail "dispatch open must be 0 after closing the --collect success entry"
+
+ok "dispatch plane: --collect unit with Started-only journal -> completed-success, not orphaned (fleet-ops#1295)"
 
 # Cleanup dispatch-plane scratch dirs.
-rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6"
+rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6" "$scratch7"
 
-echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane"
+echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane, --collect success"
