@@ -98,6 +98,7 @@ run_tick() {
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="$max_age" \
+        PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
         SEAT_LIB="$stubs" \
         PRECEDENCE_BAND_LIB="$stubs" \
         FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
@@ -117,7 +118,13 @@ out="$(run_tick 0 120)"
 rc=$?
 [[ "$rc" == "0" ]] || fail "low=0 tick must exit 0, got rc=$rc"
 echo "$out" | grep -qF 'holding claims this tick' && fail "low=0 must NOT hold claims: $out" || true
+# fleet-ops#1407: the tick's low=0 claim path mkdirs ISSUE_STATE_DIR. It must
+# honor the PI_INTAKE_ISSUE_STATE_DIR override (its own env knob, like
+# SEAT_LIB / PI_INTAKE_LOCKDIR) so it writes under scratch, never a
+# /home/nish path the GitHub-hosted runner user cannot create under set -e.
+[[ -d "$scratch/pi-issues" ]] || fail "low=0 tick must create ISSUE_STATE_DIR under scratch (env override), not /home/nish"
 ok "low=0 continues without holding"
+ok "low=0 writes ISSUE_STATE_DIR under PI_INTAKE_ISSUE_STATE_DIR (no /home/nish dependency)"
 
 # Test 3: missing state fail-open (no gh sidecar, no claim made because stub ls-remote says branch exists)
 out="$(run_tick missing 120)"
