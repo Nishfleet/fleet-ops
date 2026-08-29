@@ -98,3 +98,8 @@ bash "$here/pi-intake-tick-seat-gate.test.sh"
 # verification (branch + packet + unit exist before claimed+spawned). ci.yml
 # lists this file, so the drill runs from here instead of a new workflow line.
 bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
+# --- 7. fleet-ops#1377 intake-tick drop-in wiring (CI hook; keep this call) -
+# tests/pi-intake-tick-dropin.test.sh locks the pi-intake@.service drop-in
+# that runs lib/pi-intake-tick.sh.  ci.yml lists this file, so the drop-in
+# shape test runs from here instead of a new workflow line.
+bash "$here/pi-intake-tick-dropin.test.sh"

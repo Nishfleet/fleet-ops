@@ -242,6 +242,16 @@ precedence_band_allow_claim() {
             printf 'allow-surge-leverage\n'
             return 0
         fi
+        # Surge legit-work fallback (fleet-ops#1377): when leverage issues
+        # are exhausted (all already claimed/in-progress), legit work
+        # (repair/upgrade) fills capacity instead of idling seats while
+        # hundreds of ready items wait. Churn is still skipped — surge
+        # stays leverage-first, but no longer starves. Mirrors the
+        # band-phase legit-work guard (fleet-ops#1516).
+        if precedence_band_is_legit_work "$title" "$body"; then
+            printf 'allow-surge-legit\n'
+            return 0
+        fi
         printf 'skip-surge-leverage\n'
         return 1
     fi
