@@ -67,6 +67,7 @@ AUTH_JSON="$GROK_HOME/auth.json"
 # pi-grok extension actually uses for xai-oauth provider calls.
 PI_AGENT_AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+MODELS_JSON="${FLEET_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_SEAT_LIVE_VALIDATE_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_SEAT_LIVE_VALIDATE_FILE:-1}"
@@ -174,8 +175,29 @@ write_ledger() {
     chmod 600 "$path" 2>/dev/null || true
 }
 
+# Is `grok` still an enumerated seat (present as a provider in models.json)?
+# fleet-ops#1380 prunes the grok dead-decoy provider from the live seat list
+# (it is superseded by xai-oauth, which carries grok-4.5/4.6 on the healthy
+# subscription proxy path). Once pruned, grok is no longer emitted by
+# enumerate_seats, so painting a `grok__grok-*` ledger entry each tick only
+# reports phantom walled capacity in health counts. When a human re-wires
+# grok (`grok login --device-auth` + re-adding it to models.json), painting
+# resumes automatically. If models.json is missing/unreadable we fail open
+# (paint as before) so the dead-decoy watch is never silently dropped.
+grok_enumerated() {
+    if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
+        jq -e '.providers.grok != null' "$MODELS_JSON" >/dev/null 2>&1
+    else
+        return 0
+    fi
+}
+
 write_both_models() {
     local provider="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    if [[ "$provider" == "grok" ]] && ! grok_enumerated; then
+        log "grok decoy pruned from models.json (fleet-ops#1380): skipping grok__grok-* ledger write; health-count phantom not re-painted (triage/auto-file still fire)"
+        return 0
+    fi
     write_ledger "$provider" "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
     write_ledger "$provider" "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
 }
