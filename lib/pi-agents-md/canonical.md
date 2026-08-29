@@ -124,7 +124,6 @@ Read these rather than guessing. They are canonical and they change.
 | Pre-implementation contract | `~/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md` |
 | House method skills | `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/` |
 | Durable memories (index first) | `~/.claude/projects/-home-nish/memory/MEMORY.md` |
-| Fleet simplification mandate | `~/workspaces/agent-state/SIMPLIFY-MANDATE.md` |
 | Current fleet state / handoff | `~/workspaces/agent-state/OVERNIGHT.md` |
 
 Memories reflect what was true when written. If one names a file, function, or
