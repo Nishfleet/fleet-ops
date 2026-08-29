@@ -55,7 +55,11 @@ log() {
     printf '[%s] git-mirror-update: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# readlink -f follows the ~/.local/bin symlink so repo_root is the real
+# fleet-ops checkout, not the symlink's directory. Otherwise BASH_SOURCE
+# reports the symlink path and the canonical intake file is looked up at
+# ~/.local/config/intake-repos.json (fleet-ops#1390).
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 
 root="${GIT_MIRROR_ROOT:-/home/nish/workspaces/.mirrors}"
