@@ -101,6 +101,47 @@ got=$(bash -c 'source "$0"; packet_difficulty "$1"' "$lib" "$pkt_flag")
 [[ "$got" == "keystone" ]] || fail "1c: keystone: true expected keystone, got $got"
 ok "1c: packet_difficulty accepts keystone: true"
 
+# --- 1d. fleet-ops#1383: phases manifest => keystone routing ---------------
+# A packet with a phases manifest is treated as keystone-class: capable seat
+# first, two-strike escalation to senior conference. The manifest is
+# declarative — it folds into the existing difficulty gate, not a new router.
+pkt_phases="$scratch/pkt-phases.txt"
+printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable\nImplement the keystone build.\n' >"$pkt_phases"
+got=$(bash -c 'source "$0"; packet_difficulty "$1"' "$lib" "$pkt_phases")
+[[ "$got" == "keystone" ]] || fail "1d: phases manifest expected keystone, got $got"
+ok "1d: packet_difficulty returns keystone for a phases manifest"
+
+# packet_has_phases detects and echoes the manifest line.
+manifest=$(bash -c 'source "$0"; packet_has_phases "$1"' "$lib" "$pkt_phases")
+[[ "$manifest" == "phases: plan=capable,work=commodity,critique=capable,promote=capable" ]] \
+  || fail "1d: packet_has_phases expected the manifest line, got: $manifest"
+ok "1d: packet_has_phases echoes the phases manifest line"
+
+# packet_has_phases returns 1 (and prints nothing) on a packet without one.
+pkt_no_phases="$scratch/pkt-no-phases.txt"
+printf 'hello probe\n' >"$pkt_no_phases"
+set +e
+no_manifest=$(bash -c 'source "$0"; packet_has_phases "$1"' "$lib" "$pkt_no_phases"; echo "rc=$?")
+no_rc=$(echo "$no_manifest" | tail -1 | sed 's/.*rc=//')
+set -e
+[[ "$no_rc" == "1" ]] || fail "1d: packet_has_phases should return 1 without a manifest, got rc=$no_rc"
+ok "1d: packet_has_phases returns 1 without a phases manifest"
+
+# packet_phases strips the prefix and returns the value; "none" when absent.
+got=$(bash -c 'source "$0"; packet_phases "$1"' "$lib" "$pkt_phases")
+[[ "$got" == "plan=capable,work=commodity,critique=capable,promote=capable" ]] \
+  || fail "1e: packet_phases expected stripped value, got: $got"
+ok "1e: packet_phases returns the stripped manifest value"
+got=$(bash -c 'source "$0"; packet_phases "$1"' "$lib" "$pkt_no_phases")
+[[ "$got" == "none" ]] || fail "1e: packet_phases on no-manifest expected none, got: $got"
+ok "1e: packet_phases returns none without a manifest"
+
+# A phases manifest still triggers keystone two-strike escalation.
+key_manifest=$(pick 1 keystone) || fail "1d: phases-keystone pick must succeed"
+[[ "$key_manifest" == "cursor	cursor-grok-4.6-high" ]] \
+  || fail "1d: phases manifest keystone expected cursor-grok-4.6-high, got: $key_manifest"
+ok "1d: phases manifest routes keystone to prepaid grok first"
+
 # --- 2. fallback to task_weight -------------------------------------------
 pkt_light="$scratch/pkt-light.txt"
 printf 'hello probe\n' >"$pkt_light"
@@ -194,8 +235,8 @@ grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-grep -Fq "printf 'difficulty: keystone" "$repo_root/prompts/intake.md" \
-  || fail "prompts/intake.md must write difficulty: keystone as packet line 1"
+grep -Fq "printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable" "$repo_root/prompts/intake.md" \
+  || fail "prompts/intake.md must write the phases manifest as packet line 1 (fleet-ops#1383)"
 grep -Fq '} > /home/nish/.local/state/pi-issues/<repo>-N.in' "$repo_root/prompts/intake.md" \
   || fail "prompts/intake.md must still overwrite the packet with >"
 if grep -qE 'worker\.md.*>> /home/nish/.local/state/pi-issues' "$repo_root/prompts/intake.md"; then

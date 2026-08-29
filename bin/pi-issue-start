@@ -61,7 +61,7 @@ fi
 # race but the branch persisted) reaches here with no .in. systemd would
 # then fail 208/STDIN. Rebuild the packet exactly as intake does
 # (prompts/intake.md step 3d): worker prompt + TARGET line, with the
-# `difficulty: keystone` marker first when the issue is a keystone.
+# `phases:` manifest first when the issue is a keystone (fleet-ops#1383).
 pkt="$PI_ISSUES_DIR/${instance}.in"
 if [[ ! -f "$pkt" ]]; then
     repo="${instance%-*}"
@@ -90,7 +90,12 @@ if [[ ! -f "$pkt" ]]; then
         fi
     fi
     if [[ "$keystone" == "1" ]]; then
-        { printf 'difficulty: keystone\n'; cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
+        # fleet-ops#1383: phases manifest (replaces the older difficulty:
+        # only marker). packet_difficulty treats a phases manifest as
+        # keystone-class; the manifest is richer — it declares the
+        # Fryxell harness-loop routing so the seat ledger (#1211) can
+        # attribute frontier-token share to capable phases vs commodity.
+        { printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable\n'; cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
     else
         { cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
     fi
