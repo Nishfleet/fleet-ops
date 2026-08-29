@@ -42,8 +42,8 @@ Steps:
       `gh issue comment N -R Nishfleet/<repo> --body "claimed by pi-issue-<repo>-N at $(date -u +%FT%TZ)"`
    d. Write the worker prompt to a packet file so pi-issue-run (the seat-rotating wrapper) can pick its own seat at run time:
       `mkdir -p /home/nish/.local/state/pi-issues`
-      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with the marker as line 1 so pick_seat uses reliability-first routing (fleet-ops#1133). Always overwrite (`>`), never append:
-      `{ printf 'difficulty: keystone\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
+      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with the phase-routing manifest as line 1 so pick_seat uses reliability-first routing (fleet-ops#1133 / #1383). The `phases:` line declares the Fryxell harness-loop routing: PLAN and CRITIQUE/PROMOTE phases need a capable (frontier) seat, WORK runs on commodity free lanes. `packet_difficulty` treats a phases manifest as keystone-class — capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
+      `{ printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
       Otherwise write as today (no marker):
       `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
    e. Activate the template unit via `pi-issue-start` (never a raw

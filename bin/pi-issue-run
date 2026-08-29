@@ -155,6 +155,15 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
+# fleet-ops#1383: capture the packet phases manifest so record_seat_selection
+# in pick_seat can attribute the frontier-token share (#1211) to capable
+# phases vs the commodity work phase. No-arg when the packet has none.
+pi_phases=""
+if declare -f packet_phases >/dev/null 2>&1; then
+    pi_phases=$(packet_phases "$pkt" 2>/dev/null || true)
+fi
+export PI_PACKET_PHASES="${pi_phases:-none}"
+
 # Free-tier privacy line (fleet-ops#520): a private-repo target never routes
 # to a free-class lane. Derive the repo from the packet's TARGET line and
 # resolve its visibility via config/repo-privacy.json (fail-closed: an
