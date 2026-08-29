@@ -386,7 +386,7 @@ grep -F 'fleet-completion-canary.test.sh' "$here/escalation-coverage-canary.test
   || fail "must be nested from escalation-coverage-canary.test.sh (CI-listed)"
 ok "MANIFEST + named-reason timer + nested CI wiring"
 
-# --- 9. verify stall deadline → detector-red terminal (fleet-ops#1610) -----
+# --- 9. verify stall deadline → detector-red terminal (fleet-ops#1577/#1610) -
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 
 # Fire BridgeSelfTest: the repair unit ALREADY SUCCEEDED but the alert is
@@ -455,7 +455,7 @@ rc=$(run_bin "2026-08-28T12:06:00Z")
 grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
   || fail "verify open must stay 0 during cooldown"
 
-ok "verify stall deadline → detector-red terminal + cooldown gate (fleet-ops#1610)"
+ok "verify stall deadline → detector-red terminal + cooldown gate (fleet-ops#1577/#1610)"
 
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
