@@ -121,6 +121,31 @@ case "$1" in
     printf '%s\n' "$*" >>"$FAKE_DIR/labels.log"
     exit 0
     ;;
+  pr)
+    case "$2" in
+      list)
+        # fleet-ops#1083: class_lock_pr_merged probes
+        # `gh pr list --head claim/issue-<N> --state merged`. The fake
+        # returns a fixture file per issue number if present, else [].
+        head=""
+        prev=""
+        for a in "$@"; do
+          case "$prev" in
+            --head) head="$a"; break ;;
+          esac
+          prev="$a"
+        done
+        num="${head#claim/issue-}"
+        if [[ -f "$FAKE_DIR/merged-${num}.json" ]]; then
+          cat "$FAKE_DIR/merged-${num}.json"
+        else
+          echo '[]'
+        fi
+        exit 0
+        ;;
+      *) echo "unexpected gh pr $*" >&2; exit 1 ;;
+    esac
+    ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac
 FAKE
@@ -348,5 +373,86 @@ out=$("$bin" 2>"$scratch/err11c.txt")
 grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
   || fail "normal fleet-ops issue must still become agent-ready: $(cat "$scratch/edits.log")"
 ok "normal fleet-ops unlabeled issue still → agent-ready"
+
+# Case 12: decisions-ledger observe-to-close classify (fleet-ops#1083).
+got=$("$bin" --classify "fix(decisions-ledger): 01a03e61 — decided question was re-asked")
+[[ "$got" == "observe-to-close" ]] || fail "decisions-ledger offline classify: $got"
+ok "fix(decisions-ledger) title → observe-to-close"
+
+# Case 13: a fix(failed-command) issue labelled agent-ready whose class-lock
+# PR has merged is reclassified to observe-to-close (fleet-ops#1083). This
+# is the live #958 loop: PR #1066 merged with `Relates to #958`, the release
+# path flipped it back to agent-ready, intake re-claimed it every tick.
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":958,"title":"fix(failed-command): 01a03e61 — failed command walked past, never flagged","body":"signal: failed-command-flagged/01a03e61","labels":[{"name":"agent-ready"}]}]
+JSON
+printf '[{"number":1066}]' >"$scratch/merged-958.json"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err13.txt")
+grep -q 'reclassified=1' <<<"$out" || fail "class-lock reclassified: $out"
+grep -q -- '--remove-label agent-ready' "$scratch/edits.log" \
+  || fail "class-lock must drop agent-ready: $(cat "$scratch/edits.log")"
+grep -q -- '--add-label observe-to-close' "$scratch/edits.log" \
+  || fail "class-lock must add observe-to-close: $(cat "$scratch/edits.log")"
+grep -q 'class-lock PR merged' "$scratch/comments.log" \
+  || fail "class-lock comment: $(cat "$scratch/comments.log")"
+ok "agent-ready class-lock issue with merged PR → observe-to-close (fleet-ops#1083)"
+
+# Case 13b: same issue but the class-lock PR has NOT merged → left alone.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":959,"title":"fix(failed-command): 01a03e62 — failed command walked past, never flagged","body":"signal: failed-command-flagged/01a03e62","labels":[{"name":"agent-ready"}]}]
+JSON
+rm -f "$scratch/merged-959.json"
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err13b.txt")
+grep -q 'reclassified=0' <<<"$out" || fail "no-merge reclassified: $out"
+[[ -s "$scratch/edits.log" ]] && fail "no-merge must not edit: $(cat "$scratch/edits.log")"
+ok "agent-ready class-lock issue with NO merged PR → left alone"
+
+# Case 13c: a fix(decisions-ledger) issue labelled agent-in-progress whose
+# class-lock PR merged → observe-to-close (fleet-ops#1083 / #1138).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1138,"title":"fix(decisions-ledger): 01a03e63 — decided question was re-asked","body":"signal: decisions-ledger/01a03e63","labels":[{"name":"agent-in-progress"}]}]
+JSON
+printf '[{"number":2000}]' >"$scratch/merged-1138.json"
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err13c.txt")
+grep -q 'reclassified=1' <<<"$out" || fail "decisions-ledger reclassified: $out"
+grep -q -- '--remove-label agent-in-progress' "$scratch/edits.log" \
+  || fail "decisions-ledger must drop agent-in-progress: $(cat "$scratch/edits.log")"
+grep -q -- '--add-label observe-to-close' "$scratch/edits.log" \
+  || fail "decisions-ledger must add observe-to-close: $(cat "$scratch/edits.log")"
+ok "agent-in-progress decisions-ledger issue with merged PR → observe-to-close"
+
+# Case 13d: a non-class-lock issue labelled agent-ready is never probed for
+# a merged PR (the reclassification pass only runs on class-lock titles).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":500,"title":"feat(quality): inescapable per-role gates","body":"- required: a named gate / CI check / drill\n","labels":[{"name":"agent-ready"}]}]
+JSON
+rm -f "$scratch/merged-500.json"
+: >"$scratch/edits.log"
+: >"$scratch/gh.log"
+out=$("$bin" 2>"$scratch/err13d.txt")
+grep -q 'reclassified=0' <<<"$out" || fail "non-class-lock reclassified: $out"
+if grep -q 'pr list' "$scratch/gh.log"; then
+  fail "non-class-lock must not probe pr list: $(grep 'pr list' "$scratch/gh.log")"
+fi
+ok "non-class-lock agent-ready issue is not probed for a merged PR"
+
+# Case 13e: a class-lock issue already under observe-to-close with a merged
+# PR is left alone (idempotent — observe-to-close is not in the reclassify
+# candidate set).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":960,"title":"fix(failed-command): 01a03e64 — failed command walked past, never flagged","body":"signal: failed-command-flagged/01a03e64","labels":[{"name":"observe-to-close"}]}]
+JSON
+printf '[{"number":1067}]' >"$scratch/merged-960.json"
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err13e.txt")
+grep -q 'reclassified=0' <<<"$out" || fail "observe-to-close reclassified: $out"
+[[ -s "$scratch/edits.log" ]] && fail "observe-to-close must not edit: $(cat "$scratch/edits.log")"
+ok "class-lock issue already under observe-to-close is left alone (idempotent)"
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
 echo "all lifecycle-label-sweep cases passed"
