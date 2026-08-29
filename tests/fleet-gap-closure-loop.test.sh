@@ -488,6 +488,67 @@ PI_AUDIT_DRY_RUN=1 PI_AUDIT_INSTANCE=dry-token GAP_LOOP_STATE_DIR="$state_dir" \
   || fail "fleet-gap-closure-auditor dry-run must write DONE JSON, got $(cat "$scratch/pkt/out.json")"
 ok "fleet-gap-closure-auditor dry-run writes a JSON verdict"
 
+# ---------------------------------------------------------------------------
+# fleet-ops#1593: seat preflight refuses dead or absent seats before launch.
+# ---------------------------------------------------------------------------
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mkdir -p "$state_dir/seats"
+fake_pi="$scratch/bin/fake-pi"
+cat >"$fake_pi" <<'FAKE'
+#!/usr/bin/env bash
+printf '{"vote":"DONE","reason":"ok"}\n'
+FAKE
+chmod +x "$fake_pi"
+
+# 1. dead straitly/ds4-pro (seat_dead=true, credentials_bad).
+jobdir="$state_dir/pi-audit-jobs/dead-token"
+mkdir -p "$jobdir"
+cat >"$state_dir/seats/straitly__deepseek_deepseek-v4-pro.json" <<EOF
+{"provider":"straitly","model":"deepseek/deepseek-v4-pro","health_class":"credentials_bad","seat_dead":true,"observed_at":"$NOW"}
+EOF
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/dead.json" \
+  '{token:"dead-token",provider:"straitly",model:"deepseek/deepseek-v4-pro",packet:$packet,stdout:$stdout,mode:"termination",round:"1",auditor:"ds4-pro"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=dead-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN=/bin/false "$audit_run" dead-token
+[[ "$(jq -r '.vote' "$scratch/pkt/dead.json")" == "NOT-DONE" ]] \
+  || fail "dead seat must be refused, got $(cat "$scratch/pkt/dead.json")"
+[[ "$(jq -r '._seat_preflight' "$scratch/pkt/dead.json")" == "true" ]] \
+  || fail "dead seat refusal must be flagged as preflight"
+ok "fleet-gap-closure-auditor refuses dead seat"
+
+# 2. absent zenmux/glm-5.3-free (no ledger, no global match).
+jobdir="$state_dir/pi-audit-jobs/absent-token"
+mkdir -p "$jobdir"
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/absent.json" \
+  '{token:"absent-token",provider:"zenmux",model:"z-ai/glm-5.3-free",packet:$packet,stdout:$stdout,mode:"termination",round:"1",auditor:"glm-5-3"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=absent-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN=/bin/false "$audit_run" absent-token
+[[ "$(jq -r '.vote' "$scratch/pkt/absent.json")" == "NOT-DONE" ]] \
+  || fail "absent seat must be refused, got $(cat "$scratch/pkt/absent.json")"
+[[ "$(jq -r '._seat_preflight' "$scratch/pkt/absent.json")" == "true" ]] \
+  || fail "absent seat refusal must be flagged as preflight"
+ok "fleet-gap-closure-auditor refuses absent seat"
+
+# 3. healthy devin/glm-5-2 runs the fake pi and returns DONE.
+jobdir="$state_dir/pi-audit-jobs/healthy-token"
+mkdir -p "$jobdir"
+cat >"$state_dir/seats/devin__glm-5-2.json" <<EOF
+{"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"observed_at":"$NOW"}
+EOF
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/healthy.json" \
+  '{token:"healthy-token",provider:"devin",model:"glm-5-2",packet:$packet,stdout:$stdout,mode:"termination",round:"1",auditor:"glm-5-2"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=healthy-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN="$fake_pi" "$audit_run" healthy-token
+[[ "$(jq -r '.vote' "$scratch/pkt/healthy.json")" == "DONE" ]] \
+  || fail "healthy seat must run and return DONE, got $(cat "$scratch/pkt/healthy.json")"
+ok "fleet-gap-closure-auditor runs healthy seat"
+
 # Drill dry-run writes all_pass results (the deliverable).
 GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" "$drill"
 [[ "$(jq -r '.all_pass' "$state_dir/drill-results.json")" == "true" ]] \
