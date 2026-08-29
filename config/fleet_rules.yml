@@ -431,6 +431,50 @@ groups:
           summary: "gh-derived Prometheus families stale for 45+ minutes"
           description: "Repair worker: run the exporter (`systemctl --user start fleet-metrics-export.service`), check gh auth/rate limit (`gh auth status`; `gh api rate_limit`), and fix the refresh path in fleet-metrics-export.py (`_cached_json` / PR_CACHE_TTL=30m). 45m is 1.5x the cache cadence so routine expiry never fires."
 
+      # GitHub API rate-limit governor (fleet-ops#1350). The fleet's
+      # 5000 req/hr shared budget is a real box ceiling next to RAM.
+      # At 25 workers × ~10 req each, the budget is exhausted in ~20
+      # issues. fleet_gh_api_pct_remaining < 20 means intake MUST
+      # throttle — do not claim new issues when this fires. Two tiers:
+      #   - warning at < 25%: heads-up for the digest.
+      #   - critical at < 10%: auto-throttle (intake should skip).
+      # The gone() alert replaces absent() here: the metric can be 0
+      # legitimately during a rate-limit window rollover (reset).
+      - alert: FleetGhApiRemainingLow
+        expr: fleet_gh_api_pct_remaining < 25
+        for: 10m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "GitHub API budget {{ $value }}% remaining (limit={{ with query \"fleet_gh_api_limit\" }}{{ . | first | value }}{{ end }})"
+          description: "GitHub API rate limit is below 25% (fleet-ops#1350 governor). Intake should skip claiming new work when < 20%. Check `gh api rate_limit` for the reset window. Sustained exhaustion means the fleet is API-bound — add a second box or reduce worker count."
+
+      - alert: FleetGhApiRemainingCritical
+        expr: fleet_gh_api_pct_remaining < 10
+        for: 5m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "GitHub API budget critically low: {{ $value }}% remaining"
+          description: "GitHub API rate limit below 10%. Intake MUST throttle — the fleet has exceeded 90% of the 5000/hr budget and is likely API-bound. The go-gone fire is the mechanical protection; the human path is to check `gh api rate_limit` for the remaining window and wait for the reset. Sustained exhaustion → second GitHub App installation or reduce concurrency."
+
+      # fleet-ops#1350: fleet_gh_api_remaining metric is always emitted by
+      # the exporter when gh is reachable. gone() fires when the metric is
+      # absent for a full export cycle — the exporter itself is down or gh
+      # is unreachable. This gates the throttle: a missing metric cannot
+      # prove the budget is fine, so intake should hold claims.
+      - alert: FleetGhApiRemainingGone
+        expr: gone(fleet_gh_api_remaining)
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "GitHub API remaining metric gone for 15+ minutes"
+          description: "The fleet_gh_api_remaining gauge has disappeared — the exporter may be down or gh is unreachable. No governor signal; intake should hold new claims until the metric returns. Check `systemctl --user status fleet-metrics-export.service` and `gh api rate_limit`."
+
   - name: fleet_scout_supply
     rules:
       # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ

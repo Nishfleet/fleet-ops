@@ -219,6 +219,36 @@ if ! heavy_seat=$(pick_seat "" "" 1 2>/dev/null); then
     exit 0
 fi
 
+# GitHub API remaining governor (fleet-ops#1350): export the rate-limit budget
+# via the existing Prometheus exporter and throttle intake when remaining < 20%.
+# One cheap `gh api rate_limit` call per intake tick — no GraphQL, no
+# pagination. The exporter runs on its own 5-min timer and exports the gauge;
+# the intake reads the LIVE rate-limit window so a stale exporter cache cannot
+# mask a real exhaustion. < 20% remaining → hold all claims. < 10% → hold +
+# log a loud warning. A failed gh call is fail-open (skip claims) — a dead
+# gh means the fleet cannot push claim branches anyway.
+gh_rl=$(gh api rate_limit --jq '.rate' 2>/dev/null) || true
+if [[ -n "$gh_rl" ]]; then
+    gh_remaining=$(jq -r '.remaining // 0' <<<"$gh_rl" 2>/dev/null || echo 0)
+    gh_limit=$(jq -r '.limit // 5000' <<<"$gh_rl" 2>/dev/null || echo 5000)
+    if (( gh_limit > 0 )); then
+        gh_pct=$(( gh_remaining * 100 / gh_limit ))
+        if (( gh_pct < 10 )); then
+            echo "GH API budget critically low: ${gh_remaining}/${gh_limit} (${gh_pct}%) — holding ALL claims this tick (fleet-ops#1350)" >&2
+            exit 0
+        fi
+        if (( gh_pct < 20 )); then
+            echo "GH API budget low: ${gh_remaining}/${gh_limit} (${gh_pct}%) — holding all claims this tick (fleet-ops#1350)" >&2
+            exit 0
+        fi
+    fi
+else
+    # gh api rate_limit failed — fail-open, skip claims. A dead gh means
+    # claim pushes will also fail; skip rather than fail the tick.
+    echo "GH API rate-limit check failed — holding all claims this tick (fleet-ops#1350)" >&2
+    exit 0
+fi
+
 # Pre-fetch origin once before the loop
 git -C "$REPO_DIR" fetch origin 2>&1 || {
     echo "git fetch origin failed" >&2

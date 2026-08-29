@@ -80,21 +80,21 @@
       "503_bench_default_s": 600,
       "models": {
         "deepseek/deepseek-v4-flash": 2,
-        "minimax/minimax-m3-free": 1,
-        "poolside/laguna-s-2.1-free": 1
+        "minimax/minimax-m3-free": 2,
+        "poolside/laguna-s-2.1-free": 2
       },
       "_comment_m3": "2026-08-27: MiniMax M3 on CommandCode (fleet-ops#545). Live models.json lists minimax/minimax-m3-free at cost 0. Do not allowlist a billing slug (minimax-m3 / minimax/minimax-m3). bin/opencode-m3-catalog-canary fail-louds a billing allowlist and a free-form slug whose models.json cost is non-zero, and auto-files when a -free or *-pass/ MiniMax M3 slug appears in Pi's commandcode catalog. Wiring requires a live spawn + meter check (fail closed if it bills) plus a dated seat-caps row (capacity-is-measured).",
       "_comment_minimax_m3_free": "2026-08-27 07:17 UTC: live spawn on commandcode/minimax/minimax-m3-free returned HTTP 200, seat-health healthy, models.json cost input/output/cache 0, no prepaid-usage/commandcode.json. Cap 1 for measured admission; raise after league mean beats worst incumbent.",
       "_comment_laguna": "2026-08-27: poolside/laguna-s-2.1-free on CommandCode (fleet-ops#638). Live spawn through pi returned LAGUNA_SPAWN_OK; usage.cost.total=0 (input 376, output 8). CommandCode pricing-limits: laguna-s-2.1-free costs no credits while capacity lasts ($0.00 / 1M in, out, cache). Do not allowlist the billing sibling poolside/laguna-s-2.1. Quality: same fleet-shaped is_free_form packet ALL_OK on laguna and on the commandcode incumbent deepseek/deepseek-v4-flash; published Terminal-Bench 2.1 70.2% beats DeepSeek-V4-Pro Max 64.0% so it clears the worst-incumbent bar. cap=1 to start (capacity-is-measured); provider cap stays 2. fleet-free-roster-canary observe-to-close: wiring this slug stops the free-slug-available ticket."
     },
     "hetzner": {
-      "cap": 2,
+      "cap": 4,
       "class": "free",
       "max_probe_ceiling": 4,
       "models": {
-        "Qwen/Qwen3.6-35B-A3B-FP8": 2
+        "Qwen/Qwen3.6-35B-A3B-FP8": 4
       },
-      "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist."
+      "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist. 2026-08-29 fleet-ops#1350: concurrency probe clean at 4."
     },
     "zenmux": {
       "cap": 2,
@@ -119,15 +119,15 @@
       "reason": "2026-08-28 re-audition (fleet-ops#1456): `pi --print --provider inferx --model deepseek-v4-flash PONG` returned HTTP 404 'endpoint not found'. The endpoint does not resolve; cap=0 is correct. Re-audition if the provider advertises a live endpoint."
     },
     "opencode": {
-      "cap": 1,
+      "cap": 2,
       "class": "free",
-      "max_probe_ceiling": 2,
+      "max_probe_ceiling": 4,
       "quota_bench_default_s": 900,
       "models": {
-        "hy3-free": 1,
-        "mimo-v2.5-free": 1,
-        "nemotron-3.5-lightning-free": 1,
-        "nemotron-3-ultra-free": 1,
+        "hy3-free": 2,
+        "mimo-v2.5-free": 2,
+        "nemotron-3.5-lightning-free": 2,
+        "nemotron-3-ultra-free": 2,
         "deepseek-v4-flash-free": 0,
         "x-preview-f-free": 0,
         "muse-spark-1.2-contributor-free": 0
@@ -147,12 +147,12 @@
       "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane."
     },
     "bai": {
-      "cap": 2,
+      "cap": 4,
       "class": "free",
       "max_probe_ceiling": 4,
       "models": {
-        "deepseek-v4-flash": 1,
-        "deepseek-v4-flash-vision-exp": 1
+        "deepseek-v4-flash": 3,
+        "deepseek-v4-flash-vision-exp": 2
       },
       "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) \u2014 OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image \u2014 relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct \u2014 2,3,5,7,11,13,17,19 are exactly 8 primes \u2264 20). Cap 2 split 1+1 (capacity-is-measured) per conservative cap-2 for new free lanes; raise after a league mean beats the worst incumbent on the ladder. Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) \u2014 only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm."
     },

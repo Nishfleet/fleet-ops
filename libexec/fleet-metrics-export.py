@@ -1305,6 +1305,65 @@ def _verified_merges(detail):
     }
 
 
+# --- GitHub API rate-limit governor (fleet-ops#1350) ----------------------
+
+HELP_GH_LIMIT = "# HELP fleet_gh_api_limit GitHub API rate limit (max requests/hour)."
+TYPE_GH_LIMIT = "# TYPE fleet_gh_api_limit gauge"
+HELP_GH_REMAINING = "# HELP fleet_gh_api_remaining GitHub API remaining requests in the current window."
+TYPE_GH_REMAINING = "# TYPE fleet_gh_api_remaining gauge"
+HELP_GH_USED = "# HELP fleet_gh_api_used GitHub API requests used in the current window."
+TYPE_GH_USED = "# TYPE fleet_gh_api_used gauge"
+HELP_GH_RESET = "# HELP fleet_gh_api_reset_seconds Epoch (s) when the GitHub API rate-limit window resets."
+TYPE_GH_RESET = "# TYPE fleet_gh_api_reset_seconds gauge"
+HELP_GH_PCT = "# HELP fleet_gh_api_pct_remaining GitHub API remaining as percentage of limit (0-100)."
+TYPE_GH_PCT = "# TYPE fleet_gh_api_pct_remaining gauge"
+
+
+def _gh_rate_limit():
+    """Return dict with limit/remaining/used/reset, or None on failure.
+
+    One cheap `gh api rate_limit` call (no GraphQL, no pagination) returns
+    the per-hour REST API budget. The GitHub API is the fleet's box ceiling
+    next to RAM — 5000 req/hr shared across all workers (issue lists, PR
+    checks, GraphQL queries). At 25 workers × ~10 req/issue, the budget
+    would be exhausted in ~20 issues without governing.
+
+    The fleet under 25 workers uses ~1000-2000 req/hr; the 20% threshold
+    (~1000 remaining) is the governor's tripwire in Prometheus.
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api", "rate_limit", "--jq", ".rate"],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"gh rate_limit failed: {exc}", file=sys.stderr)
+        return None
+    if r.returncode != 0:
+        print(f"gh rate_limit rc={r.returncode}: {r.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return None
+    try:
+        data = json.loads(r.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        print(f"gh rate_limit json: {exc}", file=sys.stderr)
+        return None
+    limit = int(data.get("limit") or 0)
+    remaining = int(data.get("remaining") or 0)
+    used = int(data.get("used") or 0)
+    reset_val = int(data.get("reset") or 0)
+    if limit <= 0:
+        return None
+    return {
+        "limit": limit,
+        "remaining": remaining,
+        "used": used,
+        "reset": reset_val,
+        "pct": round(remaining / limit * 100, 1),
+    }
+
+
 # --- Main ------------------------------------------------------------------
 
 def main():
@@ -1521,6 +1580,35 @@ def main():
     lines.append(HELP_MAINT)
     lines.append(TYPE_MAINT)
     lines.append(f"fleet_maintenance_quiescing {_maintenance_quiescing()}")
+
+    # --- GitHub API rate limit (fleet-ops#1350) ---
+    # One cheap `gh api rate_limit` call — no GraphQL, no pagination.
+    # The gauge family is always emitted; the gone() alert fires when
+    # the exporter is dead, and the FleetGhApiRemainingLow alert fires
+    # when remaining < 20%. This is the governor metric that intake
+    # should check before claiming new issues.
+    rl = _gh_rate_limit()
+    if rl is not None:
+        lines.append("")
+        lines.append(HELP_GH_LIMIT)
+        lines.append(TYPE_GH_LIMIT)
+        lines.append(f"fleet_gh_api_limit {rl['limit']}")
+        lines.append("")
+        lines.append(HELP_GH_REMAINING)
+        lines.append(TYPE_GH_REMAINING)
+        lines.append(f"fleet_gh_api_remaining {rl['remaining']}")
+        lines.append("")
+        lines.append(HELP_GH_USED)
+        lines.append(TYPE_GH_USED)
+        lines.append(f"fleet_gh_api_used {rl['used']}")
+        lines.append("")
+        lines.append(HELP_GH_RESET)
+        lines.append(TYPE_GH_RESET)
+        lines.append(f"fleet_gh_api_reset_seconds {rl['reset']}")
+        lines.append("")
+        lines.append(HELP_GH_PCT)
+        lines.append(TYPE_GH_PCT)
+        lines.append(f"fleet_gh_api_pct_remaining {rl['pct']}")
 
     # --- Keystone routing (fleet-ops#1133) ---
     # Counters are always exported (0 when the ledger is empty/missing — a
