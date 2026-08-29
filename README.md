@@ -350,7 +350,6 @@ silent reversions that prompted this issue have no recurrence path.
 
 ## Excluded pending manual review
 
-- `inish-publish-on-token.path`
 - `backlog-console-refresh.service.retired-20260819`
 
 ## Live paths are NOT touched by this repo

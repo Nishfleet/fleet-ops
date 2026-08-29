@@ -370,6 +370,27 @@
       "issue": 1496,
       "date": "2026-08-29",
       "rationale": "The GH Actions workflow pr-conflict-watchdog.yml in nish3451/siterep already provides this check (same gh call, cap=3, cron '23 * * * *') through the sanctioned repo channel. The VPS timer was a hand-placed redundant duplicate that bypassed the repo; timer was already disabled. Live unit + script deleted. The Actions-minutes cost concern is a Nish money decision, separate from this adjudication."
+    },
+    {
+      "unit": "fleet2.slice",
+      "verdict": "DELETED",
+      "issue": 2073,
+      "date": "2026-08-29",
+      "rationale": "Banned second-fleet artifact. The 'One fleet' standing rule (vault global-standing-rules.md) forbids a second dispatcher ever; fleet2.slice was the cgroup root of the deleted fleet2 control plane. Inactive (dead) since 2026-08-25; file deleted and daemon-reloaded this date. Recorded against the One-fleet rule so re-creation is a standing-rule violation, not just allowlist drift."
+    },
+    {
+      "unit": "fleet-steer-onland.path",
+      "verdict": "DELETED",
+      "issue": 2073,
+      "date": "2026-08-29",
+      "rationale": "Orphaned path unit: disabled, referenced fleet-steer-onland.service which does not exist. Journal showed 'Failed to queue unit startup job: Unit fleet-steer-onland.service not found' / 'Failed with result resources'. The fleet-steer phase-gate mechanism was deleted with the 2026-08-23 control-plane deletion; this fragment was left behind. Live file deleted and daemon-reloaded this date."
+    },
+    {
+      "unit": "inish-publish-on-token.path",
+      "verdict": "DELETED",
+      "issue": 2073,
+      "date": "2026-08-29",
+      "rationale": "Orphaned path unit: disabled, referenced inish-publish-on-token.service which was not loaded. Journal showed 'Refusing to start, unit inish-publish-on-token.service to trigger not loaded'. The inish publish-on-token trigger was retired; this fragment was left behind and was the last entry in README 'Excluded pending manual review'. Live file deleted and daemon-reloaded this date; README entry removed."
     }
   ]
 }
