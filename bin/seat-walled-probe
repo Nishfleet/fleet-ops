@@ -56,15 +56,21 @@ load_walled_comeback_config() {
     MIN_PROBE_INTERVAL_S=$(jq -r '.min_probe_interval_s // 900' <<<"$wc")
     RATE_LIMIT_S=$(jq -r '.rate_limit_s // 900' <<<"$wc")
     DAILY_QUOTA_S=$(jq -r '.daily_quota_s // 3600' <<<"$wc")
-    MONTHLY_QUOTA_S=$(jq -r '.monthly_quota_s // 86400' <<<"$wc")
-    FREE_BALANCE_EXHAUSTED_S=$(jq -r '.free_balance_exhausted_s // 86400' <<<"$wc")
     CREDENTIALS_BAD_S=$(jq -r '.credentials_bad_s // 604800' <<<"$wc")
+}
+
+seat_ledger_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
 }
 
 seat_log() {
     local line ts
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     printf -v line '[%s] [seat-walled-probe] %s\n' "$ts" "$*"
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
     printf '%s' "$line" >>"$LOG_FILE"
     printf '%s' "$line" >&2
 }
@@ -79,12 +85,66 @@ actions_log() {
 
 now_s() { date -u +%s; }
 
+# Backoff to use when the probe fails before seat-health can write the ledger.
+# Matches the fallback order in seat-health.ts (fleet-ops#1348).
+fallback_backoff_for() {
+    case "$1" in
+        rate_limit)       echo "$RATE_LIMIT_S" ;;
+        quota_exhausted)  echo "$DAILY_QUOTA_S" ;;
+        credentials_bad)  echo "$CREDENTIALS_BAD_S" ;;
+        *)                echo "$MIN_PROBE_INTERVAL_S" ;;
+    esac
+}
+
+# If the probe completed without seat-health updating the ledger (e.g. timeout,
+# CLI spawn failure, or extension not loaded), refresh observed_at/usable_at so
+# the next pass respects the configured comeback window and never hammers.
+mark_probe_attempt() {
+    local provider="$1" model="$2" probe_rc="$3" failure_mode="$4"
+    local f now_s now_iso observed_at observed_s backoff usable_at count
+    f=$(seat_ledger_path "$provider" "$model")
+    [[ -f "$f" ]] || return 0
+
+    now_s=$(now_s)
+    now_iso=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+    observed_at=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    [[ -n "$observed_at" ]] || return 0
+    observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
+    [[ "$observed_s" =~ ^[0-9]+$ ]] || observed_s=0
+
+    # seat-health already wrote a fresh observation; do not clobber it.
+    if (( observed_s >= SEAT_PROBE_STARTED_AT )); then
+        return 0
+    fi
+
+    if (( probe_rc == 0 )); then
+        jq -n --slurpfile entry "$f" \
+            --arg observed "$now_iso" \
+            --argjson count 0 \
+            '($entry[0]) | .observed_at = $observed | .health_class = "healthy" | .failure_mode = "none" | .seat_dead = false | del(.usable_at) | .consecutive_failure_count = $count' \
+            > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+        return 0
+    fi
+
+    count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    count=$((count + 1))
+    backoff=$(fallback_backoff_for "$failure_mode")
+    usable_at=$(date -u -d "@$((now_s + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_iso")
+    jq -n --slurpfile entry "$f" \
+        --arg observed "$now_iso" \
+        --arg usable "$usable_at" \
+        --argjson count "$count" \
+        '($entry[0]) | .observed_at = $observed | .usable_at = $usable | .consecutive_failure_count = $count' \
+        > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+}
+
 # Check if a seat should be probed (respect min_probe_interval_s between probes)
 # The ledger entry tracks the last probe time via a custom field or we infer
 # from observed_at. For simplicity, we check if usable_at has passed and if
 # enough time has passed since the last probe.
 should_probe_seat() {
-    local provider="$1" model="$2" failure_mode="$3" usable_at="$4" observed_at="$5" consecutive_failures="$6"
+    local provider="$1" model="$2" failure_mode="$3" usable_at="$4" observed_at="$5"
     local now
     now=$(now_s)
 
@@ -241,12 +301,12 @@ Options:
   --help       Show this help
 
 Environment:
-  LEDGER_DIR         Seat ledger directory (default: /home/nish/workspaces/agent-state/lanes/seats)
-  SEAT_CAPS_JSON     Path to seat-caps.json (default: /home/nish/.local/state/pi-packet/seat-caps.json)
-  PI_BIN             Path to pi binary (default: /home/nish/.local/bin/pi)
-  FLEET_ISSUE_FILE_BIN  Path to fleet-issue-file (default: deploy-clone/bin/fleet-issue-file)
-  FLEET_ISSUE_REPO   Repo for credentials_bad issues (default: Nishfleet/fleet-ops)
-  PI_PACKET_STATE    State dir for watch.log + actions.log
+  PI_SEAT_HEALTH_LEDGER_DIR  Seat ledger directory (default: /home/nish/workspaces/agent-state/lanes/seats)
+  SEAT_CAPS_JSON             Path to seat-caps.json (default: /home/nish/.local/state/pi-packet/seat-caps.json)
+  PI_BIN                     Path to pi binary (default: /home/nish/.local/bin/pi)
+  FLEET_ISSUE_FILE_BIN       Path to fleet-issue-file (default: /home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-issue-file)
+  FLEET_ISSUE_REPO           Repo for credentials_bad issues (default: Nishfleet/fleet-ops)
+  PI_PACKET_STATE            State dir for watch.log + actions.log
 
 Exit codes:
   0  Success (probes sent, or nothing to probe)
@@ -265,38 +325,34 @@ EOF
         MIN_PROBE_INTERVAL_S=900
         RATE_LIMIT_S=900
         DAILY_QUOTA_S=3600
-        MONTHLY_QUOTA_S=86400
-        FREE_BALANCE_EXHAUSTED_S=86400
         CREDENTIALS_BAD_S=604800
     fi
 
     seat_log "starting probe sweep (min_probe_interval=${MIN_PROBE_INTERVAL_S}s)"
+    mkdir -p "$STATE_DIR"
 
     if [[ ! -d "$LEDGER_DIR" ]]; then
         seat_log "ledger directory not found: $LEDGER_DIR"
         return 1
     fi
 
-    local probed=0 succeeded=0 failed=0 issued=0
+    local probed=0 succeeded=0 failed=0 issued=0 probe_rc
 
     # Iterate over all ledger files
     for f in "$LEDGER_DIR"/*__*.json; do
         [[ -f "$f" ]] || continue
 
-        local provider model failure_mode usable_at observed_at consecutive_failures health_class seat_dead
+        local provider model failure_mode usable_at observed_at consecutive_failures
         provider=$(jq -r '.provider // ""' "$f" 2>/dev/null || echo "")
         model=$(jq -r '.model // ""' "$f" 2>/dev/null || echo "")
         failure_mode=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || echo "")
         usable_at=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || echo "")
         observed_at=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || echo "")
         consecutive_failures=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
-        health_class=$(jq -r '.health_class // ""' "$f" 2>/dev/null || echo "")
-        seat_dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || echo "false")
 
         [[ -n "$provider" && -n "$model" ]] || continue
         [[ -n "$usable_at" && "$usable_at" != "null" ]] || continue
 
-        # Determine if this is a walled failure mode we should probe
         local is_walled=0
         case "$failure_mode" in
             rate_limit|quota_exhausted|credentials_bad|empty_run)
@@ -307,23 +363,20 @@ EOF
             continue
         fi
 
-        # Check if we should probe this seat
-        if ! should_probe_seat "$provider" "$model" "$failure_mode" "$usable_at" "$observed_at" "$consecutive_failures"; then
+        if ! should_probe_seat "$provider" "$model" "$failure_mode" "$usable_at" "$observed_at"; then
             continue
         fi
 
         ((probed++)) || true
 
-        # Send the probe
+        SEAT_PROBE_STARTED_AT=$(now_s)
         if probe_seat "$provider" "$model"; then
+            probe_rc=0
             ((succeeded++)) || true
-            # The probe succeeded — the seat-health extension will record a healthy
-            # observation when the response comes back, which will clear usable_at.
-            # We don't need to manually clear the ledger here.
         else
+            probe_rc=1
             ((failed++)) || true
 
-            # For credentials_bad, if this is a weekly probe that failed, file an agent-ready issue
             if [[ "$failure_mode" == "credentials_bad" ]]; then
                 local observed_s now_s
                 observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
@@ -337,6 +390,10 @@ EOF
                     fi
                 fi
             fi
+        fi
+
+        if (( ! DRY_RUN )); then
+            mark_probe_attempt "$provider" "$model" "$probe_rc" "$failure_mode"
         fi
     done
 

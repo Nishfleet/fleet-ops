@@ -28,11 +28,21 @@ bin="$repo_root/bin/seat-walled-probe"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
+cleanup() {
+    rm -rf "$scratch" 2>/dev/null || true
+    if (( cleanup_installed_bin )); then
+        rm -f "$installed_bin" 2>/dev/null || true
+    fi
+}
+
+cleanup_installed_bin=0
+installed_bin="/home/nish/.local/bin/seat-walled-probe"
+
 [[ -f "$bin" ]] || fail "seat-walled-probe not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 
 scratch="$(mktemp -d -t seatwallprobe.XXXXXX)"
-trap 'rm -rf "$scratch"' EXIT INT TERM
+trap 'cleanup' EXIT INT TERM
 
 ledger="$scratch/seats"
 mkdir -p "$ledger"
@@ -197,6 +207,14 @@ ok "default mode skips non-walled failure modes"
 
 # --- Test 5: systemd unit validity + timer manifest entry ---
 if command -v systemd-analyze >/dev/null 2>&1; then
+    # systemd-analyze verify checks that ExecStart points at an executable.
+    # The unit points at the installed path; create a temporary symlink for
+    # the test, then remove it (the real install is fleet-ops#1348's job).
+    if [[ ! -e "$installed_bin" ]]; then
+        mkdir -p "$(dirname "$installed_bin")"
+        ln -s "$bin" "$installed_bin"
+        cleanup_installed_bin=1
+    fi
     systemd-analyze verify "$repo_root/systemd/seat-walled-probe.service" \
         "$repo_root/systemd/seat-walled-probe.timer" 2>&1 | grep -q "seat-walled-probe" \
         && fail "systemd-analyze reported seat-walled-probe unit errors" || true
