@@ -119,6 +119,13 @@ systemctl --user daemon-reload
 `install.sh` symlinks the user units and copies the system-scope entries. It
 enables non-template timers and services that have `[Install]`.
 
+`fleet-bare-metal-rebuild --apply` also masks every unit listed in the
+manifest's `masked_units` (fleet-ops#2122). These are system units that drive
+hardware the VPS does not have — `openipmi.service` on a box with no IPMI BMC.
+Masking at provision time stops the unit re-entering failed state and paging
+`SystemUnitFailed` every alert cycle. `fleet-bare-metal-rebuild --check`
+verifies each is still masked, so drift is caught.
+
 ### 8. Verify the live state
 
 Run the drills:

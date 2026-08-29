@@ -89,10 +89,15 @@ fi
 # 5. Manifest JSON shape.
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 jq -e . "$manifest_json" >/dev/null || fail "bare-metal-rebuild-manifest.json is not valid JSON"
-for key in version title description target packages manual_tools repositories install_manifest env_files secrets_locations backup; do
+for key in version title description target packages manual_tools repositories install_manifest env_files secrets_locations backup masked_units; do
   jq -e ".${key}" "$manifest_json" >/dev/null || fail "manifest missing required key: $key"
 done
 ok "bare-metal-rebuild-manifest.json has required keys"
+
+# 5b. masked_units names openipmi.service with a reason (fleet-ops#2122).
+jq -e '.masked_units.units[] | select(.name=="openipmi.service") | .reason' "$manifest_json" >/dev/null \
+  || fail "manifest masked_units must name openipmi.service with a reason"
+ok "manifest masked_units declares openipmi.service"
 
 # 6. Rebuild script --manifest-check passes on the real repo.
 "$rebuild" --manifest-check || fail "rebuild --manifest-check failed"
@@ -135,6 +140,40 @@ set -e
 [[ "$check_rc" -eq 0 ]] || fail "drill --check should exit 0, rc=$check_rc out=$check_out"
 echo "$check_out" | grep -q 'ready' || fail "--check must report ready, got: $check_out"
 ok "drill --check reports ready"
+
+# 8b. count_unmasked_units: 0 when masked, 1 when not (fleet-ops#2122).
+masked_lib="$repo_root/lib/bare-metal-masked-units.sh"
+[[ -f "$masked_lib" ]] || fail "missing lib: $masked_lib"
+
+# Stub systemctl: prints a fixed is-enabled result for the named unit.
+stubctl="$scratch/stub-systemctl"
+cat >"$stubctl" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "is-enabled" ]]; then
+  echo "${STUB_IS_ENABLED_STATE:-masked}"
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$stubctl"
+
+# Source the lib with a no-op log and call count_unmasked_units. The lib
+# depends only on $MANIFEST_JSON, $SYSTEMCTL and a `log` function.
+run_count() {
+  local state="$1"
+  STUB_IS_ENABLED_STATE="$state" SYSTEMCTL="$stubctl" MANIFEST_JSON="$manifest_json" \
+    bash -c 'source "$1"; log() { :; }; count_unmasked_units' _ "$masked_lib"
+}
+
+masked_count="$(run_count masked)"
+[[ "$masked_count" == "0" ]] \
+  || fail "count_unmasked_units should be 0 when masked, got $masked_count"
+ok "count_unmasked_units returns 0 when openipmi.service is masked"
+
+masked_count="$(run_count enabled)"
+[[ "$masked_count" == "1" ]] \
+  || fail "count_unmasked_units should be 1 when not masked, got $masked_count"
+ok "count_unmasked_units returns 1 when openipmi.service is not masked"
 
 # 9. Container proof path is exercised with a mocked Docker and local image.
 mkdir -p "$scratch/bin"

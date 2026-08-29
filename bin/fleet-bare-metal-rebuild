@@ -33,6 +33,12 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 APT="${APT:-apt-get}"
 SKIP_LIVE="${FLEET_BARE_METAL_REBUILD_SKIP_LIVE:-0}"
 
+# Source the masked-units verifier (fleet-ops#2122). Tests may override the
+# path; the directive points at the canonical source for static analysis.
+MASKED_UNITS_LIB="${FLEET_BARE_METAL_MASKED_UNITS_LIB:-$FLEET_OPS_REPO/lib/bare-metal-masked-units.sh}"
+# shellcheck source=../lib/bare-metal-masked-units.sh source-path=SCRIPTDIR
+source "$MASKED_UNITS_LIB"
+
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 
 mode=""
@@ -124,7 +130,7 @@ load_manifest() {
   if ! jq -e . "$MANIFEST_JSON" >/dev/null 2>&1; then
     fail "manifest is not valid JSON: $MANIFEST_JSON"
   fi
-  for key in version title description target packages manual_tools repositories install_manifest env_files secrets_locations backup; do
+  for key in version title description target packages manual_tools repositories install_manifest env_files secrets_locations backup masked_units; do
     if ! jq -e ".${key}" "$MANIFEST_JSON" >/dev/null 2>&1; then
       fail "manifest missing required key: $key"
     fi
@@ -187,6 +193,12 @@ print_manifest() {
   printf '  tool: %s\n' "$(manifest_value '.backup.tool')"
   printf '  sources: %s\n' "$(manifest_value '.backup.sources | join(", ")')"
   printf '  repo env: %s\n' "$(manifest_value '.backup.repo_env')"
+
+  printf '\nMasked units (hardware absent on this host, masked at provision):\n'
+  while IFS=$'\t' read -r name reason; do
+    [[ -z "$name" ]] && continue
+    printf '  - %s: %s\n' "$name" "$reason"
+  done < <(jq -r '.masked_units.units[] | "\(.name)\t\(.reason)"' "$MANIFEST_JSON" 2>/dev/null || true)
 
   printf '\nRunbook: %s\n' "$(manifest_value '.runbook_path')"
 }
@@ -274,6 +286,17 @@ manifest_check() {
     log "manifest-check: env_files.paths is empty"
     violations=$((violations + 1))
   fi
+
+  # 3b. masked_units: every entry has a non-empty name and reason.
+  local mu_name mu_reason
+  while IFS= read -r mu_name; do
+    [[ -z "$mu_name" ]] && continue
+    mu_reason="$(jq -r --arg n "$mu_name" '.masked_units.units[] | select(.name==$n) | .reason // empty' "$MANIFEST_JSON" 2>/dev/null || true)"
+    if [[ -z "$mu_reason" ]]; then
+      log "manifest-check: masked_units entry missing reason: $mu_name"
+      violations=$((violations + 1))
+    fi
+  done < <(manifest_array '.masked_units.units[].name')
 
   # 4. Runbook file exists.
   local runbook
@@ -385,6 +408,11 @@ live_check() {
         violations=$((violations + 1))
       fi
     fi
+
+    # 9. Hardware-absent system units are masked (fleet-ops#2122).
+    local mu_unmasked
+    mu_unmasked="$(count_unmasked_units)"
+    violations=$((violations + mu_unmasked))
   else
     log "check: SKIP_LIVE=1 — skipping live package/tool/unit checks"
   fi
@@ -488,6 +516,23 @@ apply_rebuild() {
   # 5. Install fleet-ops.
   run_step "install-user" bash -c "cd '$canon' && ./install.sh"
   run_step "install-system" bash -c "cd '$canon' && sudo ./install.sh --system"
+
+  # 5b. Mask hardware-absent system units at provision time (fleet-ops#2122).
+  #     A unit listed in masked_units can never start on this host (e.g. IPMI
+  #     on a VPS); masking at provision stops it re-entering failed state and
+  #     paging SystemUnitFailed every alert cycle. disable --now first stops
+  #     any running instance; mask is idempotent and supersedes enable.
+  local mu_unit
+  while IFS= read -r mu_unit; do
+    [[ -z "$mu_unit" ]] && continue
+    if [[ "$dry_run" == 1 ]]; then
+      log "DRY-RUN: mask-unit: $mu_unit"
+    else
+      log "mask-unit: $mu_unit"
+      sudo -n "$SYSTEMCTL" disable --now "$mu_unit" >/dev/null 2>&1 || true
+      sudo -n "$SYSTEMCTL" mask "$mu_unit"
+    fi
+  done < <(manifest_array '.masked_units.units[].name')
 
   # 6. Product repos and mirrors.
   local products_root mirrors_root intake_repos repo_name
