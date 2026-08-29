@@ -11,16 +11,16 @@
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), exit non-zero so systemd's Restart= treats it as a failure
-#      and re-seats. A provider no-op (pi ran, exited 0, produced nothing)
-#      is a LANE FAULT, not a seat fault — the seat is healthy. We do NOT
-#      write a per-seat ledger marker; the PER-UNIT tried-seats file already
-#      records the seat and prevents immediate re-pick on the next Restart.
-#      An intake re-spawn (fresh claim, empty tried-seats) may re-pick the
-#      same seat, which is intentional: the seat is healthy, so trying it
-#      again after a short wait is fine (fleet-ops#1416). 20 B is enough
-#      for a GitHub PR URL or a short status like 'blocked: proposal posted'
-#      (26 B).
+#      to stdout), re-seat in-process via continue (fleet-ops#1378).
+#      A provider no-op (pi ran, exited 0, produced < 20 B) is a LANE
+#      FAULT, not a seat fault — the seat is healthy — so we do NOT mark
+#      the seat; the tried-seats file already records it for this unit and
+#      prevents an immediate re-pick on the next in-process attempt
+#      (fleet-ops#1416). A verdict-based empty run (tools=0, no final text)
+#      is a SEAT FAULT and is benched via mark_seat_empty_run before
+#      re-seating in-process (fleet-ops#902). In both cases the in-process
+#      retry loop avoids burning the item's StartLimitBurst dispatch budget
+#      (only exits 1 after EMPTY_RUN_RETRY_MAX consecutive empty runs).
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
@@ -67,7 +67,7 @@
 #
 # Exit codes:
 #   0 = pi ran and produced real output (success — systemd will not restart)
-#   1 = pi failed, OR pi exited 0 but produced no output (no-op)
+#   1 = pi failed OR empty-run in-process retries exhausted
 #        -> systemd Restart=on-failure re-runs this script, which picks a
 #           different seat. After StartLimitBurst, OnFailure= escalates.
 #
@@ -116,6 +116,13 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 source "$SEAT_LIB"
 
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
+# fleet-ops#1378: no-op in-process retry limit. A provider no-op (pi exits 0
+# with < OUT_MIN stdout) is a lane fault; a verdict-based empty run
+# (tools=0, no final text) is a seat fault. Both are re-seated in-process
+# up to EMPTY_RUN_RETRY_MAX times (default 2) before exiting 1 and letting
+# systemd Restart= count it toward StartLimitBurst. This keeps empty runs
+# from burning the item's dispatch budget.
+EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
 
 # is_mid_session_death — true when the captured stderr shows the provider
 # process was killed mid-session by a signal (SIGTERM=143, SIGKILL=137,
@@ -177,6 +184,15 @@ if [[ -n "$pkt_repo" ]]; then
     pkt_privacy=$(repo_privacy "$pkt_repo")
 fi
 seat_log "pi-issue-run: $inst target repo=${pkt_repo:-<none>} privacy=$pkt_privacy"
+
+# fleet-ops#1378: empty-run in-process retry loop. The no-op guard below
+# wraps the entire seat→run→check cycle in a while loop so empty runs
+# re-seat and re-run INSIDE this invocation instead of consuming a systemd
+# StartLimitBurst restart slot.
+# Set the active-seat cleanup trap once for the whole invocation.
+trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
+empty_run_attempt=0
+while true; do
 
 # First attempt: no exclusions. Subsequent attempts (after a restart) carry
 # the previously-tried seats in $tried_file; pick_seat excludes them all.
@@ -243,35 +259,39 @@ printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
 printf '%s/%s\n' "$np" "$nm" >"$ATTEMPTS_DIR/pi-issue-${inst}.seat" 2>/dev/null || true
 
 # Register the seat so cap accounting reflects this worker. Cleared on exit.
+# Clear any prior registration from a previous retry iteration first.
+clear_active_seat "pi-issue-${inst}" 2>/dev/null || true
 register_active_seat "pi-issue-${inst}" "$np" "$nm"
-trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
 
 seat_log "pi-issue-run: $inst running on $np/$nm (weight=$difficulty, tried: $(wc -l < "$tried_file") seat(s))"
 
 # --- P14: mint a short-lived nishfleet-worker installation token ------------
 # The App creds file must exist. Creds present and mint fails → scream, do not
 # impersonate the human account (fleet-ops#413 / #440).
+# Token mint only on the first iteration; empty-run re-seats reuse the token.
 WORKER_CREDS_FILE="${WORKER_APP_CREDS_FILE:-$HOME/.config/fleet-worker/nishfleet-worker.env}"
 if [[ -f "$WORKER_CREDS_FILE" ]]; then
   WORKER_TOKEN_BIN="${WORKER_TOKEN_BIN:-$HOME/.local/bin/worker-token}"
   if [[ -x "$WORKER_TOKEN_BIN" ]]; then
-    if worker_tok_out="$("$WORKER_TOKEN_BIN" --print 2>/tmp/pi-issue-run-worker-token.err)"; then
-      # shellcheck disable=SC2162
-      eval "$worker_tok_out"
-      seat_log "pi-issue-run: $inst rotated to nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
-      worker_tok_out=""
-    else
-      mint_rc=$?
-      seat_log "pi-issue-run: $inst DEAD APP IDENTITY — worker-token mint failed (exit $mint_rc); refusing human-gh-auth fallback"
-      seat_log "pi-issue-run: $inst worker-token stderr: $(tr '\n' ' ' </tmp/pi-issue-run-worker-token.err 2>/dev/null)"
+    if (( empty_run_attempt == 0 )); then
+      if worker_tok_out="$("$WORKER_TOKEN_BIN" --print 2>/tmp/pi-issue-run-worker-token.err)"; then
+        # shellcheck disable=SC2162
+        eval "$worker_tok_out"
+        seat_log "pi-issue-run: $inst rotated to nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
+        worker_tok_out=""
+      else
+        mint_rc=$?
+        seat_log "pi-issue-run: $inst DEAD APP IDENTITY — worker-token mint failed (exit $mint_rc); refusing human-gh-auth fallback"
+        seat_log "pi-issue-run: $inst worker-token stderr: $(tr '\n' ' ' </tmp/pi-issue-run-worker-token.err 2>/dev/null)"
+        rm -f /tmp/pi-issue-run-worker-token.err
+        exit 1
+      fi
       rm -f /tmp/pi-issue-run-worker-token.err
-      exit 1
     fi
   else
     seat_log "pi-issue-run: $inst DEAD APP IDENTITY — $WORKER_TOKEN_BIN not found; refusing human-gh-auth fallback"
     exit 1
   fi
-  rm -f /tmp/pi-issue-run-worker-token.err
 else
   seat_log "pi-issue-run: $inst DEAD APP IDENTITY — no nishfleet-worker creds file at $WORKER_CREDS_FILE; refusing human-gh-auth fallback"
   exit 1
@@ -453,27 +473,47 @@ if (( out_bytes < OUT_MIN )); then
     # fleet-ops#1416: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
     # is a LANE FAULT, not a seat fault. The seat is healthy — it accepted
     # the work and ran pi. We do NOT write a per-seat ledger marker; the
-    # tried-seats file already records this seat for THIS unit, and
-    # systemd restart will pick a different one. An intake re-spawn
-    # (fresh claim with empty tried-seats) may re-pick this seat, which
-    # is intentional: the seat is healthy and may work on the next attempt.
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, exiting 1 so systemd re-seats (seat NOT marked; healthy seat, lane fault)"
-    exit 1
+    # tried-seats file already records this seat for THIS unit, so the next
+    # in-process iteration will pick a different seat. An intake re-spawn
+    # (fresh claim with empty tried-seats) may re-pick this seat, which is
+    # intentional: the seat is healthy and may work on the next attempt.
+    # fleet-ops#1378: re-seat in-process (continue) instead of exit 1 so
+    # provider no-ops don't burn the item's StartLimitBurst dispatch budget.
+    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, re-seating in-process (seat NOT marked; healthy seat, lane fault)"
+    empty_run_attempt=$((empty_run_attempt + 1))
+    if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
+        seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+        exit 1
+    fi
+    seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (provider no-op, stdout=${out_bytes}B) — re-seating in-process on a different seat"
+    continue
 fi
 if is_empty_run "$out_file"; then
     noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
-    seat_log "pi-issue-run: $inst pi exited 0 but ${noop_reason} — no-op, exiting 1 so systemd re-seats"
-    # fleet-ops#902: an empty-run (verdict tools=0, no final text) benches
-    # via mark_seat_empty_run (15 min, empty_run mode) matching the
-    # seat-health.ts extension's classification.
+    # fleet-ops#902: an empty-run (verdict tools=0, no final text) is a SEAT
+    # FAULT; bench it via mark_seat_empty_run (15 min, empty_run mode) before
+    # re-seating in-process. fleet-ops#1378: the in-process continue still
+    # avoids consuming a systemd StartLimitBurst slot for the first empty run.
     if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
-        seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via pick_seat (excluded by usable_at in the future)"
+        seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat"
     else
-        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
+        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
     fi
-    exit 1
+    empty_run_attempt=$((empty_run_attempt + 1))
+    if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
+        seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+        exit 1
+    fi
+    seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
+    continue
 fi
 
+# Success: the no-op check above did not continue, so this seat produced real
+# output. break out of the retry loop to the success path (fleet-ops#1378).
+break
+done  # fleet-ops#1378 empty-run retry while loop
+
+# --- success path (reached via break above) ---
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
 # Reset the tried-seats file: this run succeeded, so a future re-trigger of
 # the same issue (intake re-claim -> pi-issue-start -> systemctl start) starts

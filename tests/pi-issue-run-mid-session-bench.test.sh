@@ -136,7 +136,12 @@ EOF
 export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
 
 inst="0509-974"
-printf 'Implement one GitHub issue: Nishfleet/0509#974 (BET 3 Offer Timeline).\n' >"$ISSUES_DIR/${inst}.in"
+# fleet-ops#1167: cursor is keystone/senior-review only, so the packet must be
+# keystone-class for this test to exercise a cursor mid-session death.
+{
+  printf 'difficulty: keystone\n'
+  printf 'Implement one GitHub issue: Nishfleet/0509#974 (BET 3 Offer Timeline).\n'
+} >"$ISSUES_DIR/${inst}.in"
 
 set +e
 bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"
