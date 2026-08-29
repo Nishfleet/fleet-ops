@@ -2812,3 +2812,8 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # the same reason as the noop-bench test above (listed in ci.yml, runs
 # independent of the p14-test-listing-gate).
 bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
+
+# fleet-ops#859: data-driven lane-fault dispatch (dispatch_lane_faults). Hosted
+# here because the file is not yet in .github/workflows/ci.yml and the listing
+# gate requires each test file to be invoked from a listed test.
+bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
