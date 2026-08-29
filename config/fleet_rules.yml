@@ -287,6 +287,24 @@ groups:
           summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
           description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
 
+  - name: fleet_queue_composition
+    rules:
+      # Queue composition metrics (fleet-ops#1136 scope addition).
+      # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
+      # (enrolled repos only). The 64% fleet2 death-number is the tripwire.
+      # TREND alert on 7-day window (offset 7d), not a level — levels are
+      # Nish's policy; trends are physics. Severity=warning feeds the Weekly
+      # Review scoring and the precedence-sunset question.
+      - alert: FleetQueueSelfMaintenanceRatioHigh
+        expr: (fleet_queue_self_maintenance_ratio - fleet_queue_self_maintenance_ratio offset 7d) > 0.64
+        for: 1w
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "queue {{ $labels.queue }} self-maintenance ratio exceeded 64% (fleet2 death-number) for a week"
+          description: "fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"} has been above 0.64 (the fleet2 death-number) for 7+ days. This is a TREND alert on the 7-day window (offset 7d), not a level threshold. The ratio itself is exported only when total>0. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
+
   - name: fleet_waste
     rules:
       # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is
@@ -408,6 +426,25 @@ groups:
         annotations:
           summary: "pi-scout@{{ $labels.repo }} has not actually begun in 8+ hours"
           description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 8h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
+
+      # Organ heartbeat (fleet-ops#1137 standing pattern). The truth
+      # staleness checker exports fleet_truth_staleness_last_run_seconds on
+      # every run (both the weekly timer and the exporter-piggyback
+      # ExecStartPost). 25h = just over one missed weekly cycle, so a
+      # routine skip never fires but a dead checker does. absent() catches
+      # a missing file; time()-timestamp catches a frozen file (textfile
+      # collector keeps last scrape). No new timer needed for the heartbeat
+      # — the checker piggybacks the existing 5-min exporter tick via
+      # ExecStartPost.
+      - alert: TruthStalenessAbsent
+        expr: absent(fleet_truth_staleness_last_run_seconds) or (time() - fleet_truth_staleness_last_run_seconds) > 90000
+        for: 12h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "truth-staleness-checker organ absent — the standing-doc checker is missing or dead"
+          description: "Repair worker: fleet_truth_staleness_last_run_seconds is absent or older than 25h (one missed weekly cycle). The truth-staleness-checker (fleet-ops#1137) cross-checks standing docs against live state; if this is silent, standing truth can silently rot without detection. Check: (1) `systemctl --user list-timers fleet-truth-staleness-check.timer` is present; (2) the weekly timer fired successfully; (3) `cat ~/.local/libexec/staleness-checker.py` is intact; (4) `systemctl --user status fleet-metrics-export.service` (the checker piggybacks the exporter via ExecStartPost). Helper: /home/nish/.local/libexec/staleness-checker.py. fleet-ops#1137."
 
 
   - name: fleet_asset_census_supply
