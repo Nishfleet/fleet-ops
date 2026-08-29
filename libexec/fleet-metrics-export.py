@@ -212,6 +212,77 @@ GH_TIMEOUT = 45          # gh can be slow; exporter must finish < 60s
 JOURNAL_TIMEOUT = 20
 GH_PAGES = 10
 
+# GitHub API rate-limit metrics (fleet-ops#1350). The 5000/hr core budget is
+# the next binding constraint past RAM (Nish 2026-08-27 #1167 ceiling addendum),
+# so the exporter pulls `gh api rate_limit` once per run and emits the
+# remaining/limit/reset for the three resources the fleet actually consumes:
+# core (REST), search (REST search), graphql (the merged-PR / repo-snapshot
+# path). reset is an epoch-seconds gauge so a dashboard can plot "time
+# until next reset" with time() - fleet_gh_rate_limit_reset{resource=...}.
+# The `fleet_gh_rate_limit_fetched_seconds` gauge is the organ heartbeat
+# (fleet-ops#1010): the absent() rule in fleet_rules.yml fires when the
+# exporter stops pulling the limit. fleet_gh_rate_limit_low{resource=...} is
+# 1 when remaining < 20% of limit, the threshold pi-intake-tick.sh uses to
+# hold claims this tick. A failing gh call OMITS the family (no frozen
+# "0 remaining" that would falsely trigger the throttle).
+HELP_GHRL = (
+    "# HELP fleet_gh_rate_limit_remaining "
+    "GitHub API requests remaining in the current window per resource. "
+    "Omitted when the rate_limit fetch fails (never a frozen value)."
+)
+TYPE_GHRL = "# TYPE fleet_gh_rate_limit_remaining gauge"
+HELP_GHRLIM = (
+    "# HELP fleet_gh_rate_limit_limit "
+    "GitHub API requests limit per resource (the window maximum)."
+)
+TYPE_GHRLIM = "# TYPE fleet_gh_rate_limit_limit gauge"
+HELP_GHRSET = (
+    "# HELP fleet_gh_rate_limit_reset "
+    "Epoch (s) when the GitHub API window resets for the resource. "
+    "time() - fleet_gh_rate_limit_reset is the seconds-to-reset."
+)
+TYPE_GHRSET = "# TYPE fleet_gh_rate_limit_reset gauge"
+HELP_GHLOW = (
+    "# HELP fleet_gh_rate_limit_low "
+    "1 when remaining < 20% of limit (the throttle threshold in "
+    "pi-intake-tick.sh, fleet-ops#1350). 0 when remaining >= 20%. "
+    "Omitted when the rate_limit fetch fails."
+)
+TYPE_GHLOW = "# TYPE fleet_gh_rate_limit_low gauge"
+HELP_GHFT = (
+    "# HELP fleet_gh_rate_limit_fetched_seconds "
+    "Epoch (s) of the last successful gh rate_limit fetch. Organ "
+    "heartbeat (fleet-ops#1010): the FleetGhRateLimitAbsent absent() rule "
+    "fires when this gauge disappears, not when it goes stale-by-value."
+)
+TYPE_GHFT = "# TYPE fleet_gh_rate_limit_fetched_seconds gauge"
+# Cache file for the rate_limit family. Separate from PR_CACHE so the
+# exporter can serve a stale value up to GH_RATE_LIMIT_STALE (2h) on a gh
+# hiccup; the heartbeat gauge is omitted when the cache itself is missing
+# (the FleetGhRateLimitAbsent rule fires). 60s TTL is a balance: the
+# resource counters move every minute at most, and the throttle wants
+# fresh data but a runaway exporter must not melt the API budget.
+GH_RATE_LIMIT_CACHE = PR_CACHE_DIR / "gh-rate-limit-cache.json"
+GH_RATE_LIMIT_TTL = 60
+GH_RATE_LIMIT_STALE = 7200
+# The throttle threshold: when any resource's remaining < 20% of its limit,
+# pi-intake-tick.sh holds claims this tick. Documented in the help text
+# above so the metric's value and the tick gate stay in lock-step.
+GH_RATE_LIMIT_LOW_PCT = 0.20
+# The three resources the fleet actually consumes. `core` is REST, `search`
+# is the gh search issues / search prs family, `graphql` is the merged-PR
+# / repo-snapshot path. Other resources (scim, audit_log, etc.) are not
+# used by the fleet and are omitted to keep the family small.
+GH_RATE_LIMIT_RESOURCES = ("core", "search", "graphql")
+# Side-car state file for pi-intake-tick.sh (fleet-ops#1350). The tick
+# runs from a fleet-ops worker unit and may not have a Prometheus client
+# handy; a JSON file with {low: 0|1, remaining, limit, reset, fetched_at}
+# is the minimum it needs. The path is fixed (not a fleet variable) so
+# the tick script can `cat` it without an env dance.
+GH_RATE_LIMIT_STATE = Path(
+    "/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json"
+)
+
 # Undersaturation-guard config.
 WORKER_UNIT_PREFIXES = ("pi-", "alert-repair-")
 MAINTENANCE_FLAG = Path(
@@ -634,6 +705,162 @@ def _gh_graphql(query, cursor=None):
     except json.JSONDecodeError as exc:
         print(f"gh graphql json: {exc}", file=sys.stderr)
         return None
+
+
+# --- GitHub rate limit (fleet-ops#1350) -----------------------------------
+# One `gh api rate_limit` per run, cached to GH_RATE_LIMIT_TTL. A failing
+# call serves the cache up to GH_RATE_LIMIT_STALE; beyond that, the family
+# is omitted so the throttle never freezes on a stale "0 remaining".
+# `_gh_rate_limit_now` does the live fetch. `_gh_rate_limit` is the
+# caller-facing wrapper that handles the TTL/stale envelope.
+def _gh_rate_limit_now():
+    """Return parsed JSON from `gh api rate_limit` or None on failure."""
+    try:
+        r = subprocess.run(
+            ["gh", "api", "rate_limit"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"gh rate_limit failed: {exc}", file=sys.stderr)
+        return None
+    if r.returncode != 0:
+        print(f"gh rate_limit rc={r.returncode}: {r.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return None
+    try:
+        return json.loads(r.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        print(f"gh rate_limit json: {exc}", file=sys.stderr)
+        return None
+
+
+def _gh_rate_limit():
+    """Return dict[resource] = {remaining, limit, reset, low} or None.
+
+    `low` is the precomputed throttle boolean (remaining < 20% of limit) so
+    the throttle and the metric stay in lock-step — a single source of
+    truth for the 20% threshold.
+
+    Fresh cache (≤60s) skips gh. A failing call serves the cache up to 2h.
+    Beyond 2h, the family is omitted (caller treats None as "throttle gate
+    undecided, do not block on it"). The cache is NOT a slot in the global
+    `_GH_FETCHED_THIS_RUN` gate because rate_limit is a cheap 1-call-per-
+    minute read, not the multi-second paginated GraphQL fetch those
+    families do — and a stuck exporter can still write the heartbeat
+    gauge on a TTL miss.
+    """
+    cached, cache_age = _read_cache(GH_RATE_LIMIT_CACHE)
+    if cache_age is not None and cache_age <= GH_RATE_LIMIT_TTL and cached is not None:
+        return _shape_rate_limit(cached)
+    data = _gh_rate_limit_now()
+    if data is not None:
+        _write_cache(GH_RATE_LIMIT_CACHE, data)
+        return _shape_rate_limit(data)
+    if cached is not None and cache_age is not None and cache_age <= GH_RATE_LIMIT_STALE:
+        print(f"gh_rate_limit gh failed, serving stale cache (age={int(cache_age)}s)",
+              file=sys.stderr)
+        return _shape_rate_limit(cached)
+    return None
+
+
+def _shape_rate_limit(payload):
+    """Project the gh `rate_limit` payload to the three resources the
+    fleet consumes (core/search/graphql). Other resources are dropped to
+    keep the metric family small — the fleet never hits scim, audit_log,
+    etc. Returns {resource: {remaining, limit, reset, low}} or None when
+    the payload is missing the resources section.
+    """
+    if not isinstance(payload, dict):
+        return None
+    resources = payload.get("resources")
+    if not isinstance(resources, dict):
+        return None
+    out = {}
+    for r in GH_RATE_LIMIT_RESOURCES:
+        row = resources.get(r)
+        if not isinstance(row, dict):
+            continue
+        try:
+            remaining = int(row.get("remaining", 0))
+            limit = int(row.get("limit", 0))
+            reset = int(row.get("reset", 0))
+        except (TypeError, ValueError):
+            continue
+        # The low flag is the throttle threshold (fleet-ops#1350). Compute
+        # here, not in the exporter loop, so the metric value and the
+        # tick gate can never drift.
+        low = 1 if (limit > 0 and remaining < limit * GH_RATE_LIMIT_LOW_PCT) else 0
+        out[r] = {
+            "remaining": remaining,
+            "limit": limit,
+            "reset": reset,
+            "low": low,
+        }
+    return out or None
+
+
+def _write_gh_rate_limit_state(rl):
+    """Write the side-car state file pi-intake-tick.sh reads (fleet-ops#1350).
+
+    Aggregates across the three consumed resources to a single
+    {low, remaining, limit, reset, fetched_at} so the tick gate has ONE
+    decision to make, not three. `low` is the OR of per-resource low
+    flags (any resource below threshold → throttle). `remaining` /
+    `limit` are the MIN of the three (the binding floor — the fleet is
+    as exhausted as its tightest resource). `reset` is the MAX of the
+    three reset epochs (the longest wait until all resources recover).
+
+    Atomic write (temp + rename, fsync) so a concurrent tick never reads
+    a half-written file. The state dir lives in agent-state/pi-intake so
+    it survives across worktrees; the parent dir is created on demand.
+    A write failure logs and returns — the metric family has already
+    succeeded, and the throttle is a soft gate, not a blocker.
+    """
+    if not rl:
+        return
+    low = 0
+    remaining_min = None
+    limit_floor = None
+    reset_max = 0
+    for r in GH_RATE_LIMIT_RESOURCES:
+        row = rl.get(r)
+        if row is None:
+            continue
+        if row.get("low"):
+            low = 1
+        rem = int(row.get("remaining", 0))
+        lim = int(row.get("limit", 0))
+        rst = int(row.get("reset", 0))
+        if remaining_min is None or rem < remaining_min:
+            remaining_min = rem
+        if limit_floor is None or (lim > 0 and lim < limit_floor):
+            limit_floor = lim
+        if rst > reset_max:
+            reset_max = rst
+    state = {
+        "low": low,
+        "remaining": remaining_min if remaining_min is not None else 0,
+        "limit": limit_floor if limit_floor is not None else 0,
+        "reset": reset_max,
+        "fetched_at": time.time(),
+        "resources": {r: rl[r] for r in GH_RATE_LIMIT_RESOURCES if r in rl},
+    }
+    try:
+        GH_RATE_LIMIT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=GH_RATE_LIMIT_STATE.name + ".",
+            suffix=".tmp",
+            dir=str(GH_RATE_LIMIT_STATE.parent),
+        )
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, GH_RATE_LIMIT_STATE)
+        os.chmod(GH_RATE_LIMIT_STATE, 0o644)
+    except OSError as exc:
+        print(f"gh_rate_limit state write: {exc}", file=sys.stderr)
 
 
 def _gh_latest_ci_verdict(repo_full, branch):
@@ -1344,6 +1571,52 @@ def main():
     lines.append(
         f"fleet_test_alert {1 if TEST_ALERT_FILE.exists() else 0}"
     )
+
+    # --- GitHub rate limit (fleet-ops#1350) ---
+    # Emitted BEFORE the merged-PR family so the throttle (which gates
+    # pi-intake-tick.sh claims) has a fresh value when the next tick fires.
+    # The family is omitted entirely on failure; the heartbeat gauge is
+    # always emitted when the family emits, so FleetGhRateLimitAbsent
+    # catches a dead path, not a quiet day.
+    rl = _gh_rate_limit()
+    if rl is not None:
+        lines.append("")
+        lines.append(HELP_GHRL)
+        lines.append(TYPE_GHRL)
+        lines.append(HELP_GHRLIM)
+        lines.append(TYPE_GHRLIM)
+        lines.append(HELP_GHRSET)
+        lines.append(TYPE_GHRSET)
+        lines.append(HELP_GHLOW)
+        lines.append(TYPE_GHLOW)
+        for r in GH_RATE_LIMIT_RESOURCES:
+            row = rl.get(r)
+            if row is None:
+                continue
+            lines.append(
+                f'fleet_gh_rate_limit_remaining{{resource="{_prom_label(r)}"}} {row["remaining"]}'
+            )
+            lines.append(
+                f'fleet_gh_rate_limit_limit{{resource="{_prom_label(r)}"}} {row["limit"]}'
+            )
+            lines.append(
+                f'fleet_gh_rate_limit_reset{{resource="{_prom_label(r)}"}} {row["reset"]}'
+            )
+            lines.append(
+                f'fleet_gh_rate_limit_low{{resource="{_prom_label(r)}"}} {row["low"]}'
+            )
+        lines.append("")
+        lines.append(HELP_GHFT)
+        lines.append(TYPE_GHFT)
+        lines.append(f"fleet_gh_rate_limit_fetched_seconds {time.time():.3f}")
+        # Side-car state file for pi-intake-tick.sh throttle (fleet-ops#1350).
+        # The throttle needs a non-Prometheus-readable view: a single bool
+        # and the smallest of remaining/limit across the consumed resources.
+        # Written atomically (temp + rename) so a concurrent tick never
+        # reads a half-written JSON. Missing or unparseable → tick treats
+        # the gate as undecided and proceeds (fail-open), never blocking
+        # the fleet on a stale file.
+        _write_gh_rate_limit_state(rl)
 
     # --- Self-observation ---
     # gh-derived families are omitted entirely if gh fails AND cache is >2h.

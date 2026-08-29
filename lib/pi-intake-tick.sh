@@ -202,6 +202,41 @@ if (( slots <= 0 )); then
     exit 0
 fi
 
+# GitHub API rate-limit gate (fleet-ops#1350, 2026-08-27 #1167 ceiling
+# addendum). The 5000/hr core budget is the next binding constraint past
+# RAM: claiming N more issues this tick would burn N claim-pushes + N
+# issue-view body fetches + N future worker draws against the budget, and
+# a rate-limited fleet is slower than a governed one. The exporter writes
+# a side-car state file (agent-state/pi-intake/gh-rate-limit.json) every
+# 60s; we read it here and hold claims when ANY of the three consumed
+# resources (core/search/graphql) is below the 20% threshold. A missing
+# or unparseable file fails OPEN: the throttle is a soft gate, not a
+# blocker, and a dead exporter must not silently freeze the fleet. The
+# fetched_at age check (120s = 2x the 60s TTL) catches a stale file
+# without preventing the first run after a fresh start.
+gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+if [[ -r "$gh_rl_path" ]]; then
+    _gh_rl_json=$(cat "$gh_rl_path" 2>/dev/null) || _gh_rl_json=
+    if [[ -n "$_gh_rl_json" ]]; then
+        _gh_rl_low=$(printf '%s' "$_gh_rl_json" | jq -r '.low // 0' 2>/dev/null) || _gh_rl_low=0
+        _gh_rl_fetched=$(printf '%s' "$_gh_rl_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_fetched=0
+        _gh_rl_now=$(date +%s)
+        _gh_rl_age=$(( _gh_rl_now - ${_gh_rl_fetched%.*} ))
+        if (( _gh_rl_age > gh_rl_max_age )); then
+            echo "gh rate-limit state stale (age=${_gh_rl_age}s > max=${gh_rl_max_age}s); ignoring — gate: gh_rate_limit stale"
+        elif (( _gh_rl_low == 1 )); then
+            _gh_rl_remaining=$(printf '%s' "$_gh_rl_json" | jq -r '.remaining // 0' 2>/dev/null) || _gh_rl_remaining=0
+            _gh_rl_limit=$(printf '%s' "$_gh_rl_json" | jq -r '.limit // 0' 2>/dev/null) || _gh_rl_limit=0
+            _gh_rl_reset=$(printf '%s' "$_gh_rl_json" | jq -r '.reset // 0' 2>/dev/null) || _gh_rl_reset=0
+            _gh_rl_wait=$(( _gh_rl_reset - _gh_rl_now ))
+            (( _gh_rl_wait < 0 )) && _gh_rl_wait=0
+            echo "gh rate-limit low (remaining=${_gh_rl_remaining}/${_gh_rl_limit}, resets in ${_gh_rl_wait}s); holding claims this tick — gate: gh_rate_limit low"
+            exit 0
+        fi
+    fi
+fi
+
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
 # capacity slots are NOT proof a worker can run. With every allowlisted
 # heavy-capable seat benched/quota-exhausted, a claimed issue spawns a
