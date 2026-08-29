@@ -2672,6 +2672,39 @@ SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"  # 5 min — longer than
 # the seat-health.ts default 60s because spawn ETIMEDOUT is the devin-503
 # signature, and 60s would let the same dead seat be picked 4x in 5 min.
 SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+# fleet-ops#1408: a seat that no-ops or spawn-fails in a loop must NOT re-enter
+# rotation at the base backoff every cycle. Escalate the bench by
+# consecutive_failure_count so each repeated failure benches longer, breaking
+# the re-seat loop (12 no-ops in 2h on opencode/nemotron-3-ultra-free at a flat
+# 300s bench, count hit 16). Doubles per consecutive failure, capped so a
+# recovered seat is never walled permanently — seat_usable fail-opens after
+# usable_at regardless of count, and seat-health.ts resets the count to 0 on a
+# healthy in-session observation, so the escalation is fair.
+SPAWN_FAIL_BACKOFF_CAP_S="${SPAWN_FAIL_BACKOFF_CAP_S:-3600}"  # 1 h
+
+# _escalated_backoff base count [cap]
+# Compute a backoff that doubles per consecutive failure, capped at <cap>.
+#   count=1 -> base (one-off flake: short bench, quick retry)
+#   count=2 -> base * 2
+#   count=3 -> base * 4
+#   count>=k -> cap
+# Defensive: non-numeric inputs fall back to base / count=1.
+_escalated_backoff() {
+    local base="${1:-300}" count="${2:-1}" cap="${3:-3600}"
+    [[ "$base" =~ ^[0-9]+$ ]] || base=300
+    [[ "$count" =~ ^[0-9]+$ ]] || count=1
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=3600
+    (( count < 1 )) && count=1
+    (( cap < base )) && cap="$base"
+    local b="$base" i=1
+    while (( i < count )); do
+        b=$(( b * 2 ))
+        if (( b >= cap )); then b="$cap"; break; fi
+        i=$(( i + 1 ))
+    done
+    (( b > cap )) && b="$cap"
+    printf '%s' "$b"
+}
 
 # Returns 0 if the worker output looks like a spawn-phase failure (ETIMEDOUT
 # pattern from devin/cursor CLI shims). Strict enough to require the
@@ -2709,10 +2742,6 @@ mark_seat_spawn_fail() {
     local tmp="$path.spawn.$$.$RANDOM.tmp"
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    local backoff="$SPAWN_FAIL_BACKOFF_S"
-    # Compute usable_at = now + backoff (ISO 8601, bash portable: -d @ + offsets).
-    local usable_at
-    usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # Merge consecutive_failure_count from any existing entry (so a real
     # session-time 429 resetting later doesn't briefly flip us back to 0).
@@ -2722,6 +2751,14 @@ mark_seat_spawn_fail() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#1408: escalate the bench by consecutive_failure_count so a
+    # seat that no-ops or spawn-fails in a loop stays benched longer each
+    # cycle instead of re-entering rotation every base-backoff seconds.
+    local backoff
+    backoff=$(_escalated_backoff "$SPAWN_FAIL_BACKOFF_S" "$merged_count" "$SPAWN_FAIL_BACKOFF_CAP_S")
+    # Compute usable_at = now + backoff (ISO 8601, bash portable: -d @ + offsets).
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg reason "$reason" \
@@ -2775,6 +2812,10 @@ mark_seat_spawn_fail() {
 # SeatLedgerEntry (seat-health.ts); seat_usable skips via the generic
 # usable_at check and fail-opens after.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
+# fleet-ops#1408: escalate the empty-run bench by consecutive_failure_count,
+# same ladder as spawn-fail but with a higher cap (empty runs waste a full
+# session's tokens for nothing, so a repeat offender stays benched longer).
+EMPTY_RUN_BACKOFF_CAP_S="${EMPTY_RUN_BACKOFF_CAP_S:-7200}"  # 2 h
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -2784,10 +2825,6 @@ mark_seat_empty_run() {
     local tmp="$path.empty.$$.$RANDOM.tmp"
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    local backoff="$EMPTY_RUN_BACKOFF_S"
-    # Compute usable_at = now + backoff (ISO 8601, bash portable).
-    local usable_at
-    usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # Merge consecutive_failure_count from any existing entry (same policy
     # as mark_seat_spawn_fail: a real session-time 429 resetting later does
@@ -2798,6 +2835,12 @@ mark_seat_empty_run() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#1408: escalate the bench by consecutive_failure_count.
+    local backoff
+    backoff=$(_escalated_backoff "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$EMPTY_RUN_BACKOFF_CAP_S")
+    # Compute usable_at = now + backoff (ISO 8601, bash portable).
+    local usable_at
+    usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg reason "$reason" \
