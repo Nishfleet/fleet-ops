@@ -158,12 +158,6 @@
       "cadence": "5min",
       "source": "user-config"
     },
-    "open-question-sweep.timer": {
-      "reason": "Open-question stall watchdog — 10-min floor catches stalls with no event; record path is event-driven, this timer only catches the no-event case. CONVERTING TO PATH UNIT",
-      "classification": "converting",
-      "cadence": "10min",
-      "source": "user-config"
-    },
     "opus-heartbeat.timer": {
       "reason": "Opus 5 fleet heartbeat — snapshot gather + duty-officer judge every 30 min at :00/:30; off-peak cadence for fleet snapshot",
       "classification": "scheduled",

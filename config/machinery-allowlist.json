@@ -67,7 +67,7 @@
   "pending_adjudication_class_c": [
     {"unit": "auditor-stdio-test", "banned_class": "test debris", "follow_up": "filed"},
     {"unit": "ready-work", "banned_class": "dispatcher", "follow_up": "filed"},
-    {"unit": "open-question-sweep", "banned_class": "watchdog/poller", "follow_up": "filed"},
+    {"unit": "open-question-sweep", "banned_class": "watchdog/poller", "follow_up": "filed", "adjudicated": "MECHANICAL-INSTEAD", "verdict": "deleted; watch lens owned by WFR + blind-audit (docs/organ-catalog.md)", "resolved_by": "#1494"},
     {"unit": "agent-scheduler-drift", "banned_class": "watchdog", "follow_up": "filed"},
     {"unit": "quality-baseline-research", "banned_class": "dispatcher", "follow_up": "filed"},
     {"unit": "memory-index-autocompact", "banned_class": "borderline b/c", "follow_up": "filed"}
