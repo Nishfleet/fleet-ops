@@ -51,7 +51,7 @@ fi
 # Restart=always; that intentional kill is the drill working, not a fault
 # (a real drill failure escalates normally via the drill unit itself).
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|gap-closure-drill-stub*)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger)" >&2
     exit 0
     ;;
