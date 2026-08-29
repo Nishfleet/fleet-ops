@@ -7,6 +7,7 @@
 #   3. Skill on codex missing from claude -> exit 1, files missing-on-claude.
 #   4. Broken skill symlink -> exit 1, files broken-claude.
 #   5. House-method skill on claude/codex missing from pi -> exit 1.
+#   5b. House-method skill on claude/pi missing from codex -> exit 1.
 #   6. Dedup: an open issue already carrying the marker -> no second create.
 #   7. Neither surface present -> SKIP exit 0 (CI without agent homes).
 #   8. Heartbeat-tier1 wires the canary and propagates fail-loud.
@@ -151,6 +152,22 @@ grep -q 'house-method skill' "$triage" || fail "scenario5: must name the house-s
 grep -q 'unslop' "$triage" || fail "scenario5: must name unslop"
 grep -q 'pi' "$triage" || fail "scenario5: must name the missing pi surface"
 ok "scenario5: house skill missing from pi screams"
+
+# --- 5b. house skill missing from codex -------------------------------------
+# Regression for fleet-ops#628: github-actions-minutes was in the vault but
+# install-links.sh only linked claude + pi, leaving codex without it.
+reset_catalogs
+mk_skill "$scratch/claude" unslop
+mkdir -p "$scratch/vault/unslop"
+printf '# unslop\n' >"$scratch/vault/unslop/SKILL.md"
+# codex dir exists but does not have unslop (claude + pi have it)
+mk_skill "$scratch/pi" unslop
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario5b: expected rc=1, got $env_rc ($env_out)"
+grep -q 'house-method skill' "$triage" || fail "scenario5b: must name the house-skill gap"
+grep -q 'unslop' "$triage" || fail "scenario5b: must name unslop"
+grep -q 'codex' "$triage" || fail "scenario5b: must name the missing codex surface"
+ok "scenario5b: house skill missing from codex screams"
 
 # --- 6. dedup ---------------------------------------------------------------
 reset_catalogs
