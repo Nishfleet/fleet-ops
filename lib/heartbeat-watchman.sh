@@ -196,6 +196,113 @@ PY
     return 0
 }
 
+# Prune dead seat ledger files whose provider/model is no longer allowlisted
+# or is cap=0. The out-of-repo opus-heartbeat-gather counts every file under
+# lanes/seats/, so stale dead files (wrong/old slugs, benched models) inflate
+# seats_walled and phantom capacity. pick_seat already rejects these seats;
+# this cleanup keeps the ledger directory honest. Never deletes healthy or
+# allowlisted dead files.
+heartbeat_seat_ledger_prune() {
+    local cap_json ledger_dir real cap1 cap2 deleted n
+    cap_json="${SEAT_CAPS_JSON:-}"
+    if [[ -z "$cap_json" ]]; then
+        real=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+        cap1="$(cd "$(dirname "$real")/.." 2>/dev/null && pwd)/config/seat-caps.json"
+        cap2="$HOME/.local/state/pi-packet/seat-caps.json"
+        if [[ -f "$cap1" ]]; then
+            cap_json="$cap1"
+        elif [[ -f "$cap2" ]]; then
+            cap_json="$cap2"
+        fi
+    fi
+    ledger_dir="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+    if [[ ! -f "$cap_json" ]]; then
+        _watchman_log "seat-ledger-prune: cap map not found, skipping"
+        return 0
+    fi
+    if [[ ! -d "$ledger_dir" ]]; then
+        _watchman_log "seat-ledger-prune: ledger dir not found at $ledger_dir, skipping"
+        return 0
+    fi
+
+    deleted=$(python3 - "$cap_json" "$ledger_dir" <<'PY'
+import json, sys
+from pathlib import Path
+
+cap_path, ledger_dir = sys.argv[1], sys.argv[2]
+try:
+    with open(cap_path, encoding="utf-8") as f:
+        caps = json.load(f)
+except (OSError, json.JSONDecodeError) as e:
+    print(f"cap-unparseable {e}", file=sys.stderr)
+    print("[]")
+    sys.exit(0)
+
+providers = caps.get("providers", {})
+allow = set()
+provider_zero = set()
+
+for p, v in providers.items():
+    if isinstance(v, dict):
+        p_cap = v.get("cap", 0)
+        if not isinstance(p_cap, int):
+            p_cap = 0
+        if p_cap == 0:
+            provider_zero.add(p)
+            continue
+        models = v.get("models", {})
+        if not models:
+            # provider has a cap but no models map: no model is allowlisted
+            continue
+        for m, mc in models.items():
+            if isinstance(mc, dict):
+                mc = mc.get("cap", 0)
+            if not isinstance(mc, int):
+                mc = 0
+            if p_cap > 0 and mc > 0:
+                allow.add((p, m))
+    elif isinstance(v, int):
+        if v == 0:
+            provider_zero.add(p)
+
+deleted = []
+for p in Path(ledger_dir).glob("*.json"):
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        continue
+    if not d.get("seat_dead") and d.get("health_class") != "credentials_bad":
+        continue
+    prov = d.get("provider")
+    model = d.get("model")
+    if not prov or not model:
+        continue
+    if prov in provider_zero:
+        pass
+    elif (prov, model) not in allow:
+        pass
+    else:
+        continue
+    try:
+        p.unlink()
+        deleted.append(f"{prov}/{model}")
+    except OSError:
+        pass
+
+print(json.dumps(deleted))
+PY
+) || {
+        _watchman_log "seat-ledger-prune: prune run failed"
+        return 0
+    }
+    n=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$deleted" 2>/dev/null || echo 0)
+    if (( n > 0 )); then
+        _watchman_log "seat-ledger-prune: removed $n phantom dead seat file(s)"
+    fi
+    return 0
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -euo pipefail
     cmd="${1:-}"
@@ -203,8 +310,9 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         ping) heartbeat_ping_deadman ;;
         process-failed) heartbeat_process_failed_units ;;
         seat-health) heartbeat_seat_health_check ;;
+        prune) heartbeat_seat_ledger_prune ;;
         *)
-            printf 'usage: %s ping|process-failed|seat-health\n' "$0" >&2
+            printf 'usage: %s ping|process-failed|seat-health|prune\n' "$0" >&2
             exit 2
             ;;
     esac

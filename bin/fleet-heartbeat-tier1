@@ -1413,6 +1413,16 @@ heartbeat_seat_health_check
 log "13. seat-health freshness done"
 
 # ============================================================================
+# 13b. SEAT-LEDGER PRUNE (fleet-ops#1380)
+# ============================================================================
+# Stale dead seat files for unwired / cap=0 models inflate the out-of-repo
+# heartbeat gather's seats_walled count. Remove them so the dashboard reports
+# real capacity. pick_seat already rejects these seats; this is a cleanup.
+log "13b. seat-ledger prune starting"
+heartbeat_seat_ledger_prune
+log "13b. seat-ledger prune done"
+
+# ============================================================================
 # 14. RAM MEASUREMENT (fleet-ops#45) + metric compare (fleet-ops#202)
 # ============================================================================
 # Mechanical re-measurement of peak RSS across fleet worker units. The

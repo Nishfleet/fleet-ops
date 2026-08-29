@@ -254,6 +254,68 @@ grep -q "SEAT-HEALTH" "$triage" || fail "missing file must report"
 ok "seat-health: missing file -> trigger + report"
 
 # ============================================================================
+# 3b. Seat-ledger prune
+# ============================================================================
+# fleet-ops#1380: the heartbeat must remove dead seat ledger files for
+# provider/model pairs that are no longer allowlisted or are cap=0, while
+# preserving healthy or allowlisted (cap>0) dead files.
+seat_caps="$scratch/seat-caps.json"
+seat_dir="$scratch/seats"
+mkdir -p "$seat_dir"
+python3 - "$seat_caps" <<'PY'
+import json, pathlib
+caps = {
+    "providers": {
+        "grok": {"cap": 0, "class": "prepaid-quota"},
+        "xai-oauth": {"cap": 1, "class": "prepaid-quota", "models": {"grok-4.5": 1, "grok-4.6": 1}},
+        "opencode": {"cap": 1, "class": "free", "models": {"hy3-free": 1, "deepseek-v4-flash-free": 0}},
+        "commandcode": {"cap": 2, "class": "free", "models": {"deepseek/deepseek-v4-flash": 0, "minimax/minimax-m3-free": 1}},
+        "bai": {"cap": 2, "class": "free", "models": {"deepseek-v4-flash": 1}}
+    }
+}
+pathlib.Path(__import__('sys').argv[1]).write_text(json.dumps(caps))
+PY
+
+write_seat() {
+    local name="$1" p="$2" m="$3" dead="$4" cls="$5"
+    python3 - "$seat_dir/$name" "$p" "$m" "$dead" "$cls" <<'PY'
+import json, pathlib, sys
+path, p, m, dead, cls = sys.argv[1:]
+pathlib.Path(path).write_text(json.dumps({
+    "provider": p, "model": m, "seat_dead": dead == "true",
+    "health_class": cls, "http_status": 401 if cls == "credentials_bad" else 200,
+    "observed_at": "2026-08-29T04:00:00Z"
+}))
+PY
+}
+
+write_seat "grok__grok-4.5.json"          grok        "grok-4.5"                true  credentials_bad
+write_seat "xai-oauth__grok-4.5.json"     xai-oauth   "grok-4.5"                true  credentials_bad
+write_seat "opencode__deepseek-v4-flash-free.json" opencode "deepseek-v4-flash-free" true credentials_bad
+write_seat "opencode__claude-sonnet-4-5.json"     opencode "claude-sonnet-4-5"      true credentials_bad
+write_seat "opencode__hy3-free.json"      opencode    "hy3-free"                true  credentials_bad
+write_seat "commandcode__deepseek_deepseek-v4-flash.json" commandcode "deepseek/deepseek-v4-flash" true credentials_bad
+write_seat "commandcode__minimax_minimax-m3-free.json"    commandcode "minimax/minimax-m3-free"    true credentials_bad
+write_seat "bai__deepseek-v4-flash.json"  bai         "deepseek-v4-flash"       false healthy
+
+export SEAT_CAPS_JSON="$seat_caps"
+export PI_SEAT_HEALTH_LEDGER_DIR="$seat_dir"
+run_wm prune
+
+[[ -f "$seat_dir/grok__grok-4.5.json" ]] && fail "prune must delete cap=0 provider dead seat"
+[[ -f "$seat_dir/opencode__deepseek-v4-flash-free.json" ]] && fail "prune must delete cap=0 model dead seat"
+[[ -f "$seat_dir/opencode__claude-sonnet-4-5.json" ]] && fail "prune must delete unlisted model dead seat"
+[[ -f "$seat_dir/commandcode__deepseek_deepseek-v4-flash.json" ]] && fail "prune must delete model benched to cap=0"
+
+[[ -f "$seat_dir/xai-oauth__grok-4.5.json" ]] || fail "prune must keep allowlisted cap>0 dead seat"
+[[ -f "$seat_dir/opencode__hy3-free.json" ]] || fail "prune must keep allowlisted cap>0 dead seat"
+[[ -f "$seat_dir/commandcode__minimax_minimax-m3-free.json" ]] || fail "prune must keep allowlisted cap>0 dead seat"
+[[ -f "$seat_dir/bai__deepseek-v4-flash.json" ]] || fail "prune must keep healthy seat"
+ok "seat-ledger-prune: removes phantom dead seats, preserves allowlisted dead and healthy"
+
+unset SEAT_CAPS_JSON PI_SEAT_HEALTH_LEDGER_DIR
+
+# ============================================================================
 # 4. fleet-heartbeat wrapper: ping on exit 0, not on failure
 # ============================================================================
 hb="$repo_root/bin/fleet-heartbeat"

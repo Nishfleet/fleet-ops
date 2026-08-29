@@ -79,10 +79,12 @@
       "max_probe_ceiling": 4,
       "503_bench_default_s": 600,
       "models": {
-        "deepseek/deepseek-v4-flash": 2,
+        "deepseek/deepseek-v4-flash": 0,
         "minimax/minimax-m3-free": 1,
         "poolside/laguna-s-2.1-free": 1
       },
+      "_comment_deepseek_v4_flash": "2026-08-29: commandcode/deepseek/deepseek-v4-flash benched at cap=0. Live pi --print spawn returns HTTP 400 'insufficient credits' (and the seat-health ledger reports 401/credentials_bad) while the same CommandCode account's other free models (minimax-m3-free, laguna-s-2.1-free) continue to respond. This is a dead model, not a recoverable credential. Re-audition with a passing live spawn + meter check before raising the cap.",
+      "_deepseek/deepseek-v4-flash": "2026-08-29: commandcode/deepseek/deepseek-v4-flash benched at cap=0. Live pi --print spawn returns HTTP 400 'insufficient credits' (seat-health ledger: 401/credentials_bad); sibling free models minimax-m3-free and laguna-s-2.1-free still respond. Re-audition with a passing live spawn + meter check before raising the cap.",
       "_comment_m3": "2026-08-27: MiniMax M3 on CommandCode (fleet-ops#545). Live models.json lists minimax/minimax-m3-free at cost 0. Do not allowlist a billing slug (minimax-m3 / minimax/minimax-m3). bin/opencode-m3-catalog-canary fail-louds a billing allowlist and a free-form slug whose models.json cost is non-zero, and auto-files when a -free or *-pass/ MiniMax M3 slug appears in Pi's commandcode catalog. Wiring requires a live spawn + meter check (fail closed if it bills) plus a dated seat-caps row (capacity-is-measured).",
       "_comment_minimax_m3_free": "2026-08-27 07:17 UTC: live spawn on commandcode/minimax/minimax-m3-free returned HTTP 200, seat-health healthy, models.json cost input/output/cache 0, no prepaid-usage/commandcode.json. Cap 1 for measured admission; raise after league mean beats worst incumbent.",
       "_comment_laguna": "2026-08-27: poolside/laguna-s-2.1-free on CommandCode (fleet-ops#638). Live spawn through pi returned LAGUNA_SPAWN_OK; usage.cost.total=0 (input 376, output 8). CommandCode pricing-limits: laguna-s-2.1-free costs no credits while capacity lasts ($0.00 / 1M in, out, cache). Do not allowlist the billing sibling poolside/laguna-s-2.1. Quality: same fleet-shaped is_free_form packet ALL_OK on laguna and on the commandcode incumbent deepseek/deepseek-v4-flash; published Terminal-Bench 2.1 70.2% beats DeepSeek-V4-Pro Max 64.0% so it clears the worst-incumbent bar. cap=1 to start (capacity-is-measured); provider cap stays 2. fleet-free-roster-canary observe-to-close: wiring this slug stops the free-slug-available ticket."
