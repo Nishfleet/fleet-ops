@@ -218,4 +218,32 @@ grep -qi 'never push' "$repo_root/prompts/heartbeat.md" \
     || fail "heartbeat.md must say never push to a mirror"
 ok "MANIFEST, prompts, pi-systemd-run, and README name the clone convention"
 
+# --- 11. symlink invocation resolves repo_root (fleet-ops#1390) -------------
+# Installed as ~/.local/bin/git-mirror-update -> <repo>/bin/git-mirror-update.
+# BASH_SOURCE[0] reports the symlink path, so repo_root must be derived via
+# readlink -f or the canonical config/intake-repos.json is looked up at the
+# symlink's directory (~/.local/config/...) and missing.
+# Hermetic: run a copy of the real script through a symlink in a different
+# directory, with the intended checkout's config present and GIT_MIRROR_INTAKE
+# unset so the default resolution is exercised.
+sym_root="$scratch/altrepo"
+sym_bin="$sym_root/bin/git-mirror-update"
+mkdir -p "$sym_root/bin" "$sym_root/config" "$scratch/symlink-dir"
+cp "$bin" "$sym_bin"
+chmod +x "$sym_bin"
+ln -sf "$sym_bin" "$scratch/symlink-dir/git-mirror-update"
+printf '{"checkout_root":"%s","repos":[]}' "$scratch/checkouts" \
+    > "$sym_root/config/intake-repos.json"
+set +e
+sym_out="$(env -u GIT_MIRROR_INTAKE "$scratch/symlink-dir/git-mirror-update" 2>&1)"
+sym_rc=$?
+set -e
+[[ "$sym_rc" == "0" ]] \
+    || fail "symlink invocation must exit 0, got $sym_rc: $sym_out"
+printf '%s\n' "$sym_out" | grep -q 'no enrolled repos' \
+    || fail "symlink invocation must read the altrepo config, got: $sym_out"
+printf '%s\n' "$sym_out" | grep -q 'intake file missing' \
+    && fail "symlink invocation must NOT resolve intake to the symlink dir: $sym_out"
+ok "symlink invocation resolves repo_root via readlink -f (no intake-file-missing)"
+
 echo "ALL git-mirror-update tests passed"
