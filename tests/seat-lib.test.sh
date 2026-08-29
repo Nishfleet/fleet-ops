@@ -2421,6 +2421,9 @@ bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
 # pre-existing red catalog (fleet-ops#1563) cannot skip the AIMD drill.
 # Workers cannot add a P14 line in .github/workflows/ci.yml.
 bash "$here/seat-lib-aimd.test.sh" || fail "AIMD learned-cap tests failed"
+# fleet-ops#859: data-driven lane-fault dispatch. Hosted here for the same
+# CI constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
 # fleet-ops#457: per-role gate audit. rule-enforcement.test.sh currently
 # fails validate-matrix on a pre-existing duplicate-source pair, so this
 # file is the listed CI host.
