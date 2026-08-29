@@ -388,11 +388,21 @@ for i in "${!numbers[@]}"; do
         exit 1
     fi
 
-    # Mark the issue
-    edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || {
+    # Mark the issue — retry on GitHub secondary rate limits (same as comment below)
+    edit_out=""
+    edit_rc=1
+    for _ in 1 2 3; do
+        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
+        if [[ $edit_rc -eq 0 ]]; then break; fi
+        case "$edit_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *) break ;;
+        esac
+    done
+    if [[ $edit_rc -ne 0 ]]; then
         echo "gh issue edit failed for $N: $edit_out" >&2
         exit 1
-    }
+    fi
 
     # GitHub secondary rate limits on addComment ("submitted too quickly")
     # are transient — retry with backoff (fleet-ops#1350 pattern). A
