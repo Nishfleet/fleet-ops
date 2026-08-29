@@ -1,0 +1,17 @@
+# Agent-agnostic scheduling rule — mechanical enforcement layer 3
+# (vault global-standing-rules.md "Standing machinery is agent-agnostic").
+# This unit is the NAMED drift detector for that endorsed rule; migrated
+# from a hand-placed file into the repo per fleet-ops#1495 (adjudication of
+# the #1480 machinery audit, which had classed it (c) by "hand-placed" alone
+# — the rule endorsement makes it sanctioned, class (a)).
+[Unit]
+Description=Agent-scheduler drift detector — enforce agent-agnostic scheduling rule
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2min
+ExecStart=/home/nish/.local/bin/agent-scheduler-drift-check
+# Fail loud: no restart, unit stays FAILED on drift. No paging, no auto-delete.
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
