@@ -66,7 +66,14 @@ fi
 
 # Test 6: Staleness metrics in fleet-metrics-export.py
 echo "[6] Staleness metrics in fleet-metrics-export.py"
-if grep -q "fleet_truth_staleness_last_run_seconds" ~/.local/libexec/fleet-metrics-export.py 2>/dev/null; then
+# fleet-ops#1136: the exporter source is now in-repo (libexec/), not just
+# installed at ~/.local/libexec/. Check the repo file first; fall back to the
+# installed file for local runs against the live install.
+EXPORTER="libexec/fleet-metrics-export.py"
+if ! [[ -f "$EXPORTER" ]]; then
+  EXPORTER="$HOME/.local/libexec/fleet-metrics-export.py"
+fi
+if grep -q "fleet_truth_staleness_last_run_seconds" "$EXPORTER" 2>/dev/null; then
   pass "Staleness metrics present in fleet-metrics-export.py"
 else
   fail "Staleness metrics missing from fleet-metrics-export.py"

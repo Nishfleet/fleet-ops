@@ -287,6 +287,46 @@ groups:
           summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
           description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
 
+      # Verified-merges regression TREND (fleet-ops#1136 objective decision,
+      # 2026-08-28). The fleet's single optimization target is max
+      # quality-throughput: verified, live-proven merged product work per day.
+      # Raw merge counts stay on the console; the WFR ratchets against the
+      # verified number. A 20-point drop versus yesterday's 24h window is the
+      # fleet merging a growing share of unverified work (null diff or no
+      # delivery evidence). Trend, not level — the acceptable verified ratio
+      # is policy (baseline established on the first instrumented week). The
+      # ratio is omitted on a no-merge day, so a quiet day never trips this.
+      - alert: FleetVerifiedMergeRegression
+        expr: (fleet_verified_merge_ratio - fleet_verified_merge_ratio offset 24h) < -0.20
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "verified-merge ratio fell 20+ points versus yesterday's 24h window"
+          description: "fleet_verified_merge_ratio dropped by more than 0.20 compared to its value 24h ago, sustained 6h. TREND alert (delta), not a level. A merged PR is verified when it has a non-null effective diff AND delivery evidence on closure (run-proof:/Verification: run-cue, per lib/exec-review-receipt.py). The WFR ratchets against this verified number, not raw merge counts. A sustained drop means the fleet is merging a growing share of unverified work. Inspect fleet_verified_merges_24h{kind=\"verified\"|\"unverified\"} and recent merge bodies."
+
+  - name: fleet_queue_composition
+    rules:
+      # Queue composition metrics (fleet-ops#1136 scope addition).
+      # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
+      # (enrolled repos only). The 64% fleet2 death-number is the tripwire
+      # (Nish, 2026-08-27 scope addition): warning when any queue's ratio
+      # exceeds 64% for a week. A level sustained for a week is the physics
+      # signal — a momentary spike is absorbed by the 1w `for`. The ratio is
+      # exported only when total>0, so an empty queue never trips this.
+      # Severity=warning feeds the Weekly Review scoring and the
+      # precedence-sunset question.
+      - alert: FleetQueueSelfMaintenanceRatioHigh
+        expr: fleet_queue_self_maintenance_ratio > 0.64
+        for: 1w
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "queue {{ $labels.queue }} self-maintenance ratio exceeded 64% (fleet2 death-number) for a week"
+          description: "fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"} has been above 0.64 (the fleet2 death-number) for 7+ days. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
+
   - name: fleet_waste
     rules:
       # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is
