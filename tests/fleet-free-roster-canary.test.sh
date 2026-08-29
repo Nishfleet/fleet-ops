@@ -409,11 +409,17 @@ ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slu
 # reason without a passing re-audition fails this lock. The cap=0 row is
 # required so the canary stops re-filing "free-slug-available" on every
 # tick while the slug sits in the catalog but the API rejects it.
-xpf_cap=$(jq -r '.providers.opencode.models["x-preview-f-free"] // "missing"' \
+xpf_raw=$(jq -r '.providers.opencode.models["x-preview-f-free"] // "missing"' \
     "$repo_root/config/seat-caps.json")
-if [[ "$xpf_cap" == "missing" ]]; then
+if [[ "$xpf_raw" == "missing" ]]; then
   fail "scenario14: production seat-caps must keep an x-preview-f-free row (cap=0 bench, fleet-ops#811)"
 fi
+# cap=0 rows are structured objects {cap, intentional_cap_zero} (fleet-ops#1432);
+# bare 0 is the legacy shape. Extract the numeric cap either way.
+xpf_cap=$(jq -r '
+  .providers.opencode.models["x-preview-f-free"] |
+  if type == "object" then .cap else . end
+' "$repo_root/config/seat-caps.json")
 if [[ "$xpf_cap" != "0" ]]; then
   fail "scenario14: production x-preview-f-free must be capped 0 while the API returns 401 (got $xpf_cap, fleet-ops#811)"
 fi
@@ -508,11 +514,17 @@ ok "scenario16: production seat-caps keep nemotron-3-ultra-free and no billing s
 # reason without a passing re-audition fails this lock. The cap=0 row is
 # required so the canary stops re-filing "free-slug-available" on every
 # tick while the slug sits in the catalog but the API returns HTTP 500.
-msf_cap=$(jq -r '.providers.opencode.models["muse-spark-1.2-contributor-free"] // "missing"' \
+msf_raw=$(jq -r '.providers.opencode.models["muse-spark-1.2-contributor-free"] // "missing"' \
     "$repo_root/config/seat-caps.json")
-if [[ "$msf_cap" == "missing" ]]; then
+if [[ "$msf_raw" == "missing" ]]; then
   fail "scenario17: production seat-caps must keep a muse-spark-1.2-contributor-free row (cap=0 bench, fleet-ops#1224)"
 fi
+# cap=0 rows are structured objects {cap, intentional_cap_zero} (fleet-ops#1432);
+# bare 0 is the legacy shape. Extract the numeric cap either way.
+msf_cap=$(jq -r '
+  .providers.opencode.models["muse-spark-1.2-contributor-free"] |
+  if type == "object" then .cap else . end
+' "$repo_root/config/seat-caps.json")
 if [[ "$msf_cap" != "0" ]]; then
   fail "scenario17: production muse-spark-1.2-contributor-free must be capped 0 while the API returns HTTP 500 (got $msf_cap, fleet-ops#1224)"
 fi
