@@ -491,9 +491,12 @@ if (( out_bytes < OUT_MIN )) || is_empty_run "$out_file"; then
     continue
 fi
 
+# Success: the no-op check above did not continue, so this seat produced real
+# output. break out of the retry loop to the success path (fleet-ops#1378).
+break
 done  # fleet-ops#1378 empty-run retry while loop
 
-# --- success path (normal flow exits the while loop here) ---
+# --- success path (reached via break above) ---
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
 # Reset the tried-seats file: this run succeeded, so a future re-trigger of
 # the same issue (intake re-claim -> pi-issue-start -> systemctl start) starts
