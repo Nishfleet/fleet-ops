@@ -149,6 +149,17 @@ OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # from burning the item's dispatch budget.
 EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
 
+# fleet-ops#2005: debug-playbook gate. A session with two or more real
+# failed attempts and no four-heading vault playbook is blocked from closing.
+#   FLEET_DEBUG_PLAYBOOK_GATE=0    disable (tests)
+#   FLEET_DEBUG_PLAYBOOK_GATE=1    enforce, fail if gate/helper missing
+#   unset / "auto"                 enforce only if helper is on PATH
+#   FLEET_DEBUG_PLAYBOOK_BIN       override the gate binary location
+#   FLEET_DEBUG_PLAYBOOK_SESSION_DIR override where pi writes the session file
+DEBUG_PLAYBOOK_GATE="${FLEET_DEBUG_PLAYBOOK_GATE:-auto}"
+DEBUG_PLAYBOOK_BIN="${FLEET_DEBUG_PLAYBOOK_BIN:-}"
+DEBUG_PLAYBOOK_SESSION_DIR="${FLEET_DEBUG_PLAYBOOK_SESSION_DIR:-}"
+
 # is_mid_session_death — true when the captured stderr shows the provider
 # process was killed mid-session by a signal (SIGTERM=143, SIGKILL=137,
 # OOM "Killed") rather than a quota wall or a spawn-phase ETIMEDOUT. The
@@ -216,6 +227,16 @@ seat_log "pi-issue-run: $inst target repo=${pkt_repo:-<none>} privacy=$pkt_priva
 # StartLimitBurst restart slot.
 # Set the active-seat cleanup trap once for the whole invocation.
 trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
+
+# fleet-ops#2005: isolate this unit's session files so the debug-playbook gate
+# can find the one written by the final successful pi run.
+if [[ -n "$DEBUG_PLAYBOOK_SESSION_DIR" ]]; then
+    session_dir="$DEBUG_PLAYBOOK_SESSION_DIR"
+else
+    session_dir="${HOME}/.pi/agent/sessions/pi-issue-${inst}"
+fi
+mkdir -p "$session_dir"
+
 empty_run_attempt=0
 while true; do
 
@@ -349,7 +370,10 @@ PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=
 spawn_start_s=$(date -u +%s)
 rc=0
 pi_rc=0
-if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file"; then
+# fleet-ops#2005: pin this attempt's session file so the debug-playbook gate
+# can evaluate the exact session that just closed.
+session_id="${inst}-$(date -u +%s%N)"
+if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --session-dir "$session_dir" --session-id "$session_id" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file"; then
     rc=0
     pi_rc=0
 else
@@ -515,6 +539,42 @@ done  # fleet-ops#1378 empty-run retry while loop
 
 # --- success path (reached via break above) ---
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
+
+# fleet-ops#2005: session-close gate. A multi-attempt debug without a
+# four-heading vault playbook is not allowed to close successfully.
+if [[ "$DEBUG_PLAYBOOK_GATE" != "0" ]]; then
+    gate_bin="$DEBUG_PLAYBOOK_BIN"
+    if [[ -z "$gate_bin" ]]; then
+        gate_bin=$(command -v fleet-debug-playbook 2>/dev/null || true)
+    fi
+    if [[ -n "$gate_bin" ]]; then
+        session_file=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+        if [[ -n "$session_file" ]]; then
+            set +e
+            "$gate_bin" gate "$session_file"
+            gate_rc=$?
+            set -e
+            if [[ "$gate_rc" -ne 0 ]]; then
+                seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BLOCK $session_file (rc=$gate_rc) — a multi-attempt debug closed without a vault playbook note"
+                exit 1
+            fi
+            seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-OK $session_file"
+        else
+            if [[ "$DEBUG_PLAYBOOK_GATE" == "1" ]]; then
+                seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BROKEN no session file found in $session_dir (gate enforced)"
+                exit 1
+            fi
+            seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-SKIP no session file found in $session_dir (gate=auto)"
+        fi
+    else
+        if [[ "$DEBUG_PLAYBOOK_GATE" == "1" ]]; then
+            seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BROKEN fleet-debug-playbook not found (gate enforced)"
+            exit 1
+        fi
+        seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-SKIP fleet-debug-playbook not on PATH (gate=auto)"
+    fi
+fi
+
 # Reset the tried-seats file: this run succeeded, so a future re-trigger of
 # the same issue (intake re-claim -> pi-issue-start -> systemctl start) starts
 # with the full seat pool, not the stale list of seats that failed before the
