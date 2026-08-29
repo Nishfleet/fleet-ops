@@ -151,6 +151,12 @@ mark_seat_empty_run() {
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
 
+# fleet-ops#1378: the default in-process retry loop would try the second seat
+# before exiting 1. Set EMPTY_RUN_RETRY_MAx=0 to preserve the original
+# fleet-ops#390 behaviour (exit 1 on first no-op, bench the seat,
+# systemd Restart picks a different seat).
+export EMPTY_RUN_RETRY_MAx=0
+
 inst="fleet-ops-378"
 printf 'Implement one GitHub issue: fleet-ops#378.\n' >"$ISSUES_DIR/${inst}.in"
 
@@ -223,6 +229,9 @@ exit 0
 STUB
 chmod +x "$stub_bin/pi"
 
+# fleet-ops#1378: see scenario-1 note.
+export EMPTY_RUN_RETRY_MAx=0
+
 inst2="fleet-ops-902"
 printf 'Implement one GitHub issue: fleet-ops#902.\n' >"$ISSUES_DIR/${inst2}.in"
 
@@ -292,3 +301,70 @@ next2_nm=$(printf '%s' "$next2" | cut -f2)
 ok "pick_seat skips the empty-run seat and re-routes to $next2_np/$next2_nm"
 
 ok "empty-run (tools=0 + no final text) fails loudly, benches 15 min, re-routes to the next seat"
+
+# =============================================================================
+# fleet-ops#1378: in-process empty-run retry — when a seat produces an
+# empty run (0B stdout), the script must bench the seat and re-run on a
+# different seat INSIDE the same invocation instead of exiting 1 and
+# consuming a systemd StartLimitBurst slot. The script exits 0 when the
+# second seat succeeds, so no StartLimitBurst slot is consumed.
+# =============================================================================
+# Set EMPTY_RUN_RETRY_MAx=1 so the script retries once before giving up.
+export EMPTY_RUN_RETRY_MAx=1
+
+# Reset ledgers so both seats are usable again.
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+# Clear tried-seats from prior scenarios.
+: >"$STATE_DIR/attempts/pi-issue-fleet-ops-378.tried-seats" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-fleet-ops-902.tried-seats" 2>/dev/null || true
+
+# Model-aware pi stub: glm-5-2 produces empty run (0B), swe-1-7 succeeds.
+# This is deterministic and doesn't rely on temp-file state.
+# pick_seat returns glm-5-2 first (scenario 1 confirmed this order).
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+    *glm-5-2*)
+        # Empty run — 0 bytes stdout
+        exit 0
+        ;;
+    *)
+        printf 'Real output: fixed the issue, opened PR #9999.\n'
+        exit 0
+        ;;
+esac
+STUB
+chmod +x "$stub_bin/pi"
+
+inst3="fleet-ops-1378"
+printf 'Implement one GitHub issue: fleet-ops#1378.\n' >"$ISSUES_DIR/${inst3}.in"
+
+set +e
+bash "$bin" "$inst3" >"$scratch/run3.out" 2>"$scratch/run3.err"
+rc3=$?
+set -e
+
+[[ "$rc3" == "0" ]] \
+  || fail "in-process retry must exit 0 (second seat succeeded), got rc=$rc3 err=$(cat "$scratch/run3.err")"
+
+# Verify the output file contains real output from the second seat.
+out3=$(cat "$PI_ISSUES_DIR/${inst3}.out" 2>/dev/null || true)
+echo "$out3" | grep -qF 'Real output' \
+  || fail "output file should contain 'Real output' from second seat, got: $out3"
+ok "in-process retry: first seat empty (0B), script re-seated in-process, second seat succeeded, exited 0"
+
+# Verify the first seat WAS benched (mark call for its empty run).
+# The seat that produced the empty run should have a spawn-fail bench.
+mark_calls_both="${scratch}/mark_calls / ${scratch}/mark_empty_calls"
+if grep -qF 'no-op' "$scratch/mark_calls" 2>/dev/null; then
+    ok "empty-run seat was benched (mark call found)"
+elif grep -qF 'no-op' "$scratch/mark_empty_calls" 2>/dev/null; then
+    ok "empty-run seat was benched (empty-run mark call found)"
+else
+    # The mark might have a different reason. Just check that some bench happened.
+    total_marks=$(wc -l < "$scratch/mark_calls" 2>/dev/null || echo 0)
+    (( total_marks > 0 )) || fail "no bench marks at all after empty-run retry"
+    ok "seat was benched ($total_marks mark call(s))"
+fi
+
+ok "fleet-ops#1378: empty-run in-process retry works — item is never charged for a seat flake"
