@@ -438,12 +438,21 @@ signal_cleared() {
     [[ -n "$pid" && -n "$slug" ]] || return 1
     # Recompute allowlist for pid and the live catalog presence.
     local is_allow="0"
+    local is_wired="0"
     local cap_val
+    # Normalize both scalar (legacy) and object {"cap": N, ...} forms to
+    # the numeric cap value, so a cap=0 bench row is NOT treated as wired.
     cap_val=$(jq -r --arg id "$pid" --arg s "$slug" \
-        '.providers[$id].models[$s] // "missing"' \
+        '.providers[$id].models[$s] // "missing"
+         | if type == "object" then (.cap // 0) else . end' \
         "$SEAT_CAPS_JSON" 2>/dev/null || echo "missing")
     if [[ "$cap_val" != "missing" && "$cap_val" != "null" ]]; then
         is_allow="1"
+    fi
+    # is_wired: slug is allowlisted with a positive cap (a working lane).
+    # A cap=0 bench row means the audition FAILED — allowlisted but not wired.
+    if [[ "$is_allow" == "1" && "$cap_val" =~ ^[0-9]+$ ]] && (( cap_val > 0 )); then
+        is_wired="1"
     fi
     local cat_present="0"
     if printf '%s\n' "${catalog_models[$pid]:-}" | grep -qxF "$slug"; then
@@ -451,9 +460,13 @@ signal_cleared() {
     fi
     case "$kind" in
         free-slug-available)
-            # Original signal: slug in catalog, not allowlisted. Cleared if
-            # now allowlisted OR not in catalog.
-            if [[ "$is_allow" == "1" || "$cat_present" == "0" ]]; then
+            # Original signal: slug in catalog, not wired (cap>0). Cleared
+            # only when the slug is now wired (cap>0) OR no longer in the
+            # live catalog. A cap=0 bench row means the audition FAILED — the
+            # slug is allowlisted but still needs work, so the ticket stays
+            # open (production lock: cap=0 bench must not close the
+            # audition+wire ticket — fleet-ops#1224, #811, #744).
+            if [[ "$is_wired" == "1" || "$cat_present" == "0" ]]; then
                 return 0
             fi
             ;;

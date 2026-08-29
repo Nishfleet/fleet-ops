@@ -657,11 +657,14 @@ grep -q '^42$' "$scratch/closed.log" \
   || fail "scenario20: closed issue ledger must record 42 (got $(cat "$scratch/closed.log"))"
 ok "scenario20: free-slug-available clears when wired, closes the stale issue"
 
-# --- 21. observe-to-close: free-slug-available clears at cap=0 bench ------
-# A wired free slug that fails the audition is benched at cap=0 with a dated
-# reason (the fleet-ops#811 / #640 / #910 / #911 lock). The canary's
-# auto-filed ticket must clear when the bench row lands so it does not
-# re-file on every tick.
+# --- 21. observe-to-close: free-slug-available does NOT clear at cap=0 bench ---
+# A free slug that fails the live audition is benched at cap=0 with a dated
+# reason (the fleet-ops#1224 / #811 / #744 lock). The canary's auto-filed
+# audition+wire ticket must NOT close — the cap=0 bench means the audition
+# FAILED, the slug is allowlisted but not wired, and the ticket must stay
+# open so a human can re-attempt when the provider fixes the model.
+# Closing it prematurely (the old behavior) left the slug silently unwired
+# with no ticket to track the re-audition (fleet-ops#1245).
 : >"$gh_log"; : >"$triage"; : >"$scratch/closed.log"
 export GH_OPEN_ISSUES="$scratch/open.json"
 export GH_CLOSED_ISSUES="$scratch/closed.log"
@@ -679,11 +682,11 @@ TSV
 touch_sentinel
 FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 run_canary
 [[ "$env_rc" == "0" ]] || fail "scenario21: clean tick must stay rc=0, got $env_rc ($env_out)"
-grep -q 'observe-to-close: CLOSED issue #51' <<<"$env_out" \
-  || fail "scenario21: must close #51 (the cap=0 bench case), env_out=$env_out"
-grep -q '^51$' "$scratch/closed.log" \
-  || fail "scenario21: closed issue ledger must record 51 (got $(cat "$scratch/closed.log"))"
-ok "scenario21: free-slug-available clears at cap=0 bench (production lock answer)"
+grep -q 'observe-to-close: keep #51' <<<"$env_out" \
+  || fail "scenario21: must keep #51 open (cap=0 bench does not clear), env_out=$env_out"
+[[ ! -s "$scratch/closed.log" ]] \
+  || fail "scenario21: must not close issue #51 (got: $(cat "$scratch/closed.log"))"
+ok "scenario21: free-slug-available stays open at cap=0 bench (audition failed, not wired)"
 
 # --- 22. observe-to-close: free-slug-available clears when slug leaves catalog
 # A free slug that appeared briefly in the catalog and disappeared: the
