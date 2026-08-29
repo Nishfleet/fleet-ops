@@ -84,6 +84,38 @@ def is_match(title, candidates):
     return None
 
 
+# fleet-ops#1708: a seam whose title names an explicit issue reference (e.g.
+# "(fleet-ops#1083)" or "#358") is already queued as that mechanism. Match it
+# to the open issue by number so the lens does not re-file it as a fresh
+# gap-audit duplicate. Without this, a seam that is literally about an
+# already-filed mechanism gets classified "no matching mechanism" and filed.
+ISSUE_REF_RE = re.compile(r"(?:[A-Za-z0-9._-]+/)?(?:[A-Za-z0-9._-]+)?#(\d+)")
+
+
+def ref_match(seam, candidates):
+    """Return the open-issue candidate whose number appears as an explicit
+    `#NNN` / `repo#NNN` reference in the seam title, or None."""
+    if not seam:
+        return None
+    by_number = {}
+    for c in candidates or []:
+        try:
+            num = int(c.get("number"))
+        except (TypeError, ValueError):
+            continue
+        by_number[num] = c
+    if not by_number:
+        return None
+    for m in ISSUE_REF_RE.finditer(str(seam)):
+        try:
+            num = int(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if num in by_number:
+            return by_number[num]
+    return None
+
+
 def load_json(path, default):
     if not path:
         return default
@@ -324,7 +356,7 @@ def classify(candidates, findings_doc, open_issues, now_iso):
                 }
             )
             continue
-        matched = is_match(seam, open_issues)
+        matched = ref_match(seam, open_issues) or is_match(seam, open_issues)
         if matched:
             num = matched.get("number")
             mech = f"#{num}" if num else (matched.get("title") or "open issue")
