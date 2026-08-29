@@ -96,6 +96,28 @@ grep -q 'manual seam: hand-filed twelve issues' "$scratch/findings.json" \
   || fail "unmatched seam was not queued as a finding"
 ok "enumerator matches, files, and accepts-as-manual"
 
+# fleet-ops#1708: a seam whose title carries an explicit issue reference (e.g.
+# "(fleet-ops#1083)") must match the already-filed open mechanism by number
+# instead of being re-filed as a fresh gap-audit duplicate. The seam below
+# names open issue #358 directly; the lens must call it "matched", never file.
+mkdir -p "$scratch/ref"
+printf '%s\n' '{"since":"2026-08-26T12:00:00Z","now":"2026-08-26T16:00:00Z","candidates":[{"seam":"re-classify the first blind-audit run after its class-lock PR merged (fleet-ops#358)","source":"memoryctl","when":"2026-08-26T15:50:00Z","evidence":"memory"}]}' >"$scratch/ref/candidates.json"
+printf '%s\n' '[{"number":358,"title":"hand-started the first blind-audit run / fleet-blind-audit.service"}]' >"$scratch/ref/open.json"
+printf '%s\n' '{"findings":[],"seams":[]}' >"$scratch/ref/findings.json"
+: >"$scratch/ref/report.md"
+python3 "$lens" close \
+  --candidates "$scratch/ref/candidates.json" \
+  --findings "$scratch/ref/findings.json" \
+  --open-issues "$scratch/ref/open.json" \
+  --report "$scratch/ref/report.md" \
+  --seams-out "$scratch/ref/seams.json" \
+  --now "2026-08-26T16:00:00Z" >"$scratch/ref/close.json"
+jq -e '.filed == 0 and .matched == 1 and .added == 0' "$scratch/ref/close.json" >/dev/null \
+  || fail "explicit #ref seam should match, got: $(cat "$scratch/ref/close.json")"
+jq -e '.seams[0].disposition == "matched" and .seams[0].mechanism == "#358"' "$scratch/ref/seams.json" >/dev/null \
+  || fail "explicit #ref seam should map to #358: $(cat "$scratch/ref/seams.json")"
+ok "seam naming an explicit issue ref matches the queued mechanism (fleet-ops#1708)"
+
 # Worker-claim comments and timer-parent starts must not become seams.
 mkdir -p "$scratch/mem"
 cat >"$scratch/actions.log" <<'LOG'

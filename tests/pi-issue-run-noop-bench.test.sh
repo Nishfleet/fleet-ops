@@ -300,6 +300,10 @@ for other in "devin/glm-5-2" "devin/swe-1-7"; do
     o_p="${other%%/*}"; o_m="${other#*/}"
     o_ledger="$LEDGER/${o_p//[^A-Za-z0-9._-]/_}__${o_m//[^A-Za-z0-9._-]/_}.json"
     rm -f "$o_ledger" 2>/dev/null || true
+    # fleet-ops#1512: also clear the clobber-proof spawn-bench marker so the
+    # other seat is fully usable (seat_usable checks it before the ledger).
+    o_sbench="$LEDGER/${o_p//[^A-Za-z0-9._-]/_}__${o_m//[^A-Za-z0-9._-]/_}.spawn-bench.json"
+    rm -f "$o_sbench" 2>/dev/null || true
 done
 if seat_usable "$np2" "$nm2"; then
     fail "seat_usable $np2/$nm2 returned usable after empty-run bench"
@@ -329,6 +333,7 @@ export EMPTY_RUN_RETRY_MAX=1
 
 # Reset ledgers and mark logs so both seats are usable and scenario 3 is clean.
 rm -f "$LEDGER"/*.json 2>/dev/null || true
+rm -f "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
 # Clear tried-seats from prior scenarios.
 : >"$STATE_DIR/attempts/pi-issue-fleet-ops-378.tried-seats" 2>/dev/null || true

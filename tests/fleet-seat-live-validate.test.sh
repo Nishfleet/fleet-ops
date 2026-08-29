@@ -441,3 +441,47 @@ unset FLEET_CURL_BIN
 unset PI_AGENT_AUTH_JSON
 
 echo "OK: fleet-seat-live-validate: watcher-broken, unauthenticated, healthy, refresh-failed, dedup, class, timeout, grok-dead+xai-ok, grok-ok+xai-dead, heartbeat wiring, proxy-probe (#1441)"
+
+# --- 13. THE #1380 PRUNE: grok decoy pruned from models.json -> no phantom ---
+# fleet-ops#1380 deletes the grok dead-decoy from the seat list: grok is
+# superseded by xai-oauth (which carries grok-4.5/4.6 on the healthy
+# subscription proxy path), so keeping a `grok__grok-*` ledger entry each
+# tick only reports phantom walled capacity. When models.json has grok
+# pruned but xai-oauth present, the canary must NOT write the grok__grok-*
+# decoy ledger (no phantom), while the xai-oauth ledger is still written.
+# This is the regression guard for the phantom-capacity class.
+: >"$gh_log"; : >"$triage"
+rm -f "$AUTH_JSON"
+printf '%s\n' "You are not authenticated." >"$scratch/models.txt"
+printf '%s\n' "Default model: xai-oauth/grok-4.6" >>"$scratch/models.txt"
+printf '%s\n' "Available models:" >>"$scratch/models.txt"
+printf '%s\n' "  * xai-oauth/grok-4.6 (default)" >>"$scratch/models.txt"
+export GROK_MODELS_FIXTURE="$scratch/models.txt"
+export GROK_MODELS_RC=0
+# Fixture: live models.json with the grok provider pruned (xai-oauth only).
+export FLEET_MODELS_JSON="$scratch/models.json"
+jq -n '{"providers":{"xai-oauth":{"models":[{"id":"grok-4.6"},{"id":"grok-4.5"}]}}}' \
+  >"$FLEET_MODELS_JSON"
+write_xai_probe ok
+# The grok__grok-* decoy ledger may still hold stale entries from earlier
+# scenarios in this same ledger dir. Remove them, then assert the pruned
+# canary run does NOT re-create them (the phantom would otherwise return).
+rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/grok__grok-4.6.json" \
+      "$PI_SEAT_HEALTH_LEDGER_DIR/grok__grok-4.5.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario13: expected rc=0, got $env_rc ($env_out)"
+grep -q 'grok decoy pruned from models.json' <<<"$env_out" \
+  || fail "scenario13: must log the grok-decoy-pruned skip ($env_out)"
+# The grok__grok-* decoy ledger must NOT exist (phantom gone).
+if [[ -f "$PI_SEAT_HEALTH_LEDGER_DIR/grok__grok-4.6.json" ]] \
+   || [[ -f "$PI_SEAT_HEALTH_LEDGER_DIR/grok__grok-4.5.json" ]]; then
+    fail "scenario13: pruned grok decoy must NOT be re-painted to the ledger"
+fi
+# xai-oauth is still painted (the live seat): here the grok CLI is dead so
+# the canary writes healthy on xai-oauth only when the independent probe ok.
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "healthy" ]] \
+  || fail "scenario13: xai-oauth/grok-4.6 must still be written (healthy via independent probe)"
+[[ "$(xai_oauth_ledger_class grok-4.5)" == "healthy" ]] \
+  || fail "scenario13: xai-oauth/grok-4.5 must still be written"
+ok "scenario13: grok decoy pruned from models.json => no grok__grok-* phantom ledger; xai-oauth still written (the #1380 prune)"
+unset FLEET_MODELS_JSON

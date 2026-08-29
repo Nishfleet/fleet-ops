@@ -31,6 +31,16 @@
 #      the same no-op'ing seat and burned 8 runs/2h on
 #      straitly/deepseek-v4-pro. The escalating bench breaks the loop
 #      without walling a recovered seat (fail-open after usable_at).
+#      fleet-ops#1873 determination (window 2026-08-29T02:30-04:30Z: 14
+#      empty runs vs 3 dispatches, ready_work=119, samples fleet-ops-1360/
+#      -628/-1350/-1390 on straitly/deepseek-v4-pro, openrouter/deepseek-
+#      v4-flash-0731, commandcode/poolside/laguna-s-2.1-free): same
+#      provider-empty-run class as devin-empty-run-known-fault (vault
+#      2026-08-27). Packet-render RULED OUT — all four sample issues have
+#      well-formed bodies (331-885 B). Context-limit RULED OUT — the fault
+#      is intermittent across four distinct seats, not deterministic per
+#      seat/issue. The bench (#1416) + in-process re-seat (#1378) mechanism
+#      covers this window; pinned by tests/pi-issue-run-noop-bench.test.sh.
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.

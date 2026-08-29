@@ -762,3 +762,10 @@ systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refr
 # fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
+
+# fleet-ops#1348: polite 1-token "reply OK" probe for walled seats whose
+# usable_at has passed; weekly credentials_bad probe files an agent-ready issue.
+# Coordinates with fleet-asset-census (#1149) — no second sweeper.
+bin/seat-walled-probe /home/nish/.local/bin/seat-walled-probe
+systemd/seat-walled-probe.service /home/nish/.config/systemd/user/seat-walled-probe.service
+systemd/seat-walled-probe.timer /home/nish/.config/systemd/user/seat-walled-probe.timer

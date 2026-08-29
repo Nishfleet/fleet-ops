@@ -260,6 +260,62 @@ set -e
 grep -q 'over the cap' <<<"$out" || fail "scenario10d: must name over the cap ($out)"
 ok "scenario10d: canary still rejects a second repair lane at low-n"
 
+# --- 10e. band phase, all-machinery with ZERO live product is NOT drift ------
+# fleet-ops#1421: the rent-paying band is a RATIO among live units. When zero
+# product units are live (all product work blocked-on / between intake ticks)
+# there is no product share to protect, so 100% machinery is the only possible
+# value and the ratio is undefined. Flagging "100% > 30%" here is the same
+# disease as the surge-leverage-exhaustion false positive (#1431): a watcher
+# misreading a legitimate intake state as drift. The live trip on 2026-08-29
+# (10 machinery / 0 product, all 7 0509 agent-ready issues blocked-on) cried
+# wolf for ~1h and would have auto-filed a false starvation cluster. Product
+# intake health is the undersaturation watchdog's job, not this canary's.
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@fleet-ops-1421.service
+pi-issue@fleet-ops-1431.service
+pi-issue@fleet-ops-1448.service
+pi-issue@fleet-ops-1452.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+pi-issue@fleet-ops-104.service
+pi-issue@fleet-ops-105.service
+pi-issue@fleet-ops-106.service
+UNITS
+# 10 machinery / 0 product = 100% machinery > 30% cap, but product_count == 0
+# so the ratio is undefined -> legitimate, must exit 0.
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario10e: all-machinery + 0 live product must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario10e: must log OK ($out)"
+ok "scenario10e: canary accepts 100% machinery when zero product is live (ratio undefined, fleet-ops#1421)"
+
+# --- 10f. band phase, machinery crowding out LIVE product is still drift -----
+# Negative control for 10e: the moment even ONE product unit is live, the
+# ratio is defined and 100%-ish machinery over the cap is real drift again.
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1421.service
+pi-issue@fleet-ops-1431.service
+pi-issue@fleet-ops-1448.service
+pi-issue@fleet-ops-1452.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+pi-issue@fleet-ops-104.service
+pi-issue@fleet-ops-105.service
+UNITS
+# 9 machinery / 10 total = 90% > 30% cap, product_count == 1 -> real drift.
+set +e
+out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario10f: 9 machinery + 1 live product must exit 1, got $rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario10f: must name over the cap ($out)"
+ok "scenario10f: canary still rejects machinery crowding out LIVE product (10e does not weaken ratio enforcement)"
+
 # --- 11. ratchet: loosening without wfr_waiver_on ---------------------------
 base_policy_json | jq '.machinery_max_pct = 30' | clean_policy
 cat >"$scratch/prior.json" <<'JSON'
