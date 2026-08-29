@@ -1,49 +1,50 @@
-Raise free-lane caps and add GitHub API rate limit as a concurrency governor (fleet-ops#1350).
+test(completion-canary): pin twin verify-stall drain regression (fleet-ops#1623)
 
-## What changed
+## What / why
 
-- `config/seat-caps.json`: raised free-lane caps and AIMD probe ceilings from live concurrency-tolerance probes.
-  - `bai` cap 2 -> 4 (deepseek-v4-flash, measured clean to n=5).
-  - `commandcode` cap 2 -> 4 (minimax-m3-free, measured clean to n=5).
-  - `opencode` cap 1 -> 3 (hy3-free, measured clean to n=5).
-  - `hetzner` cap stays 2 (concurrent probes timeout; re-probe before raising).
-  - Cursor stays 1 (known single-flight).
-- `libexec/fleet-metrics-export.py`: fetches `gh api rate_limit` once per run, emits `fleet_gh_rate_limit_*` Prometheus metrics, and writes a side-car JSON state file for the intake throttle.
-- `lib/pi-intake-tick.sh`: gates issue claims on the side-car state; holds claims this tick when any consumed resource (core/search/graphql) is below 20%. Missing or stale state fail-open (and now logs that it is failing open) so a dead exporter does not freeze the fleet.
-- `config/fleet_rules.yml`: adds `FleetGhRateLimitAbsent` (organ heartbeat) and `FleetGhRateLimitLowSustained` (6h trend) alerts.
-- `tests/seat-lib-aimd.test.sh`: updated AIMD ceiling assertions to match the raised free-lane caps.
-- `tests/fleet-gh-rate-limit.test.sh` + `tests/pi-intake-gh-rate-limit.test.sh` (CI-hosted by `fleet-metrics-export.test.sh` and `pi-intake-run.test.sh`): offline coverage for the rate-limit metrics and the intake throttle.
+#1623 is the re-fire of #1610: `chain_stalled_total` went 1.0 -> 2.0 in the
+16:30Z->17:30Z window, with BOTH rows `hop=verify plane=alert-repair`, and
+FleetChainStalled critical since 2026-08-28T10:22:34Z. The verify hop holds a
+SUCCEEDED repair unit whose alert is still firing, so the alert chain stays
+open at `hop=verify` until a mechanical break terminates it.
 
-## Target state
+The mechanical stall-break already exists on `main` (shipped by #1610, PR
+#1689, commit 36f51c8): a laddered verify chain gets a `verify_deadline_ts`
+and, once `now >= deadline`, terminates as `detector-red` and writes a
+cooldown state so the chain cannot hold the FleetChainStalled rail open
+indefinitely. This issue's live incident (two stalled verify rows) is drained
+by that same mechanism — there is no remaining code gap, verify cannot hold an
+item indefinitely.
 
-- 15-25 concurrent workers, load <12, zero 429-storms.
-- GitHub API budget is a soft ceiling: intake throttles before the remaining core/search/graphql budget drops below 20%, and a sustained-low trend alert fires if any resource stays under 20% for 6+ hours.
+What was missing was regression coverage for the exact #1623 re-fire shape:
+TWO concurrent, never-laddered verify-stall chains. Existing test 9 covers the
+pre-existing-laddered (zero-grace) drain path; this PR adds a 9b block that
+injects two firing alerts whose repair units already SUCCEEDED, asserts both
+ladder on tick 1 with a verify deadline and `fleet_chain_stalled{...verify} 2`,
+then drains BOTH as detector-red at the deadline so verify open/stalled return
+to 0 and the ledger records both detector-red closes.
+
+Mechanical-fix rule (fleet-ops#366): this is a failure-fix (detector re-fire).
+The prevention mechanism is the regression test that proves the guard fires
+and drains the twin shape — a future refactor that lets verify hold a chain
+indefinitely fails the test.
 
 ## Verification
 
-run-proof: tests/fleet-gh-rate-limit.test.sh
+Ran the repo's own completion-canary test suite (the execution-is-the-review
+inner loop) on the exact diff; it is green, including the new 9b block:
 
 ```
-$ cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1350
-$ bash tests/fleet-gh-rate-limit.test.sh
-OK: healthy rate-limit emits metrics + sidecar; low=0, binding floor=20/30
-OK: exhausted rate-limit (<20% on search) sets low=1, sidecar=5/30
-OK: fleet-ops#1350 gh rate-limit metrics + sidecar verified
-
-$ bash tests/pi-intake-gh-rate-limit.test.sh
-OK: low=1 holds claims and exits 0
-OK: low=0 continues without holding
-OK: missing gh rate-limit state is fail-open
-
-$ bash tests/seat-lib-aimd.test.sh
-All AIMD invariants passed.
-
-$ bash tests/pi-intake-run.test.sh
-ALL OK: intake-tick spawn post-condition + start-limit healer
-
-$ bash tests/fleet-metrics-export.test.sh
-ALL OK: fleet-metrics-export #1136 logic pinned
-
-$ bash tests/seat-lib.test.sh
-ALL OK
+$ bash tests/fleet-completion-canary.test.sh
+OK: verify stall deadline → detector-red terminal + cooldown gate (fleet-ops#1577/#1610)
+OK: two concurrent verify-stall chains both drain via deadline (fleet-ops#1623)
+OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane, --collect success
 ```
+
+`sgscan tests/fleet-completion-canary.test.sh` -> "No new security findings."
+
+No new bin/ file, no new organ, no systemd/workflow change -> no
+research:/help-first:, no absent-rule/organ registry entry, no run-proof unit
+needed for this test-only diff.
+
+Closes #1623
