@@ -1085,6 +1085,13 @@ ok "rule-enforcement: siterep live canary pin drill"
 
 ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard-stash-readonly, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills"
 
+# fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
+# (the staleness canary sat dead: enabled, NextElapse=infinity, never
+# scheduled). Nested host so the worker token does not edit
+# .github/workflows/**.
+bash "$here/install-enabled-but-inactive-timer.test.sh" || fail "install enabled-but-inactive timer self-heal drill failed"
+ok "rule-enforcement: install enabled-but-inactive timer self-heal drill"
+
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
 bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
