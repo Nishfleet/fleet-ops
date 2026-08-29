@@ -116,6 +116,7 @@ required = (
     "fleet-gap-closure-drill",
     "fleet-gap-closure-loop",
     "gap-closure-drill",
+    "seat-walled-probe",
 )
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
@@ -136,13 +137,14 @@ leaked = [
         "fleet-gap-closure-loop.service",
         "gap-closure-drill-stub-fail.service",
         "gap-closure-drill-stub-mask.service",
+        "seat-walled-probe.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1152, #1236, #180, #1513)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop, seat-walled-probe (fleet-ops#1180, #1152, #1236, #180, #1513, #1348)"
 
 # fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
 # standing-rules-render.service on disk (the canonical-render unit that
@@ -344,8 +346,37 @@ for u in fleet-gap-closure-loop.service fleet-gap-closure-drill.service gap-clos
 done
 ok "behaviour lock: gap-closure loop/drill/stub units are not flagged (fleet-ops#1563)"
 
+# fleet-ops#1348: behaviour-locked. Build a scratch repo with the real
+# seat-walled-probe.service on disk and prove the audit emits no
+# `unit:seat-walled-probe.service` finding. The structural-prefix test above
+# would still pass if a future refactor moved the skip out of
+# NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1348=$(mktemp -d -t role-gates-1348.XXXXXX)
+trap 'rm -rf "$scratch1348" "$scratch1563" "$scratch1513"' EXIT INT TERM
+mkdir -p "$scratch1348/systemd" "$scratch1348/prompts" "$scratch1348/bin" "$scratch1348/config" "$scratch1348/tests"
+cat >"$scratch1348/systemd/seat-walled-probe.service" <<'UNIT'
+[Unit]
+Description=Walled-seat comeback probe (fixture for fleet-ops#1348)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/seat-walled-probe
+UNIT
+cp "$catalog" "$scratch1348/config/role-quality-gates.json"
+audit1348_out=$(python3 "$lib" audit --repo-root "$scratch1348" --catalog "$scratch1348/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1348_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1348_out"
+if echo "$audit1348_out" | jq -e '.findings[] | select(.id == "unit:seat-walled-probe.service")' >/dev/null; then
+  fail "fleet-ops#1348 regression: seat-walled-probe.service leaked into ungated-role findings: $(echo "$audit1348_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line CI reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit1348_out" | jq -e '.findings[] | select(.detail | test("seat-walled-probe.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1348 regression: exact issue symptom re-appeared: $(echo "$audit1348_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: seat-walled-probe.service is not flagged (fleet-ops#1348)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
-trap 'rm -rf "$scratch1563" "$scratch1513" "$scratch"' EXIT INT TERM
+trap 'rm -rf "$scratch1348" "$scratch1563" "$scratch1513" "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
 : >"$scratch/triage.md"
 : >"$scratch/gh.log"
