@@ -1916,6 +1916,98 @@ if (( _1432_pred > 0 )); then
   fail "1432-capclass: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1432_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
 fi
 ok "1432-capclass: cap=0 classification (1 intentional / 1 stale) folded into the excluded summary; metric predicate 0"
+
+# (c6) fleet-ops#1418: dispatcher idle with 219 ready, 0 dispatches, 9229
+#      at-capacity skips. The window combined (a) a stale cap=0 quota seat,
+#      (b) a healthy provider absent from the cap map, (c) a light-only
+#      healthy seat, and (d) a single heavy-capable seat that was already
+#      at its model cap. The fix must (i) keep the at_capacity_events metric
+#      predicate at 0 (no per-seat 'skipped (cap=...)' flood), (ii) emit ONE
+#      per-pick excluded + at-capacity + filtered-static summary, and
+#      (iii) pick the heavy-capable seat the instant its single live worker
+#      frees, proving the dispatcher is not permanently wedged.
+mkdir -p "$scratch/1418"
+export PI_PACKET_STATE="$scratch/1418/state"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1418/ledger"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+cat >"$scratch/1418/models.json" <<'JSON'
+{
+  "providers": {
+    "heavyfree": {
+      "models": [ { "id": "heavy", "reasoning": true, "contextWindow": 250000 } ]
+    },
+    "lightfree": {
+      "models": [ { "id": "light", "contextWindow": 16000 } ]
+    },
+    "staleco": {
+      "models": [ { "id": "stale-model", "contextWindow": 250000 } ]
+    },
+    "notwired": {
+      "models": [ { "id": "new-model", "reasoning": true, "contextWindow": 250000 } ]
+    }
+  }
+}
+JSON
+cat >"$scratch/1418/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["heavyfree", "lightfree"],
+  "providers": {
+    "heavyfree": { "cap": 1, "class": "free", "models": { "heavy": 1 } },
+    "lightfree": { "cap": 2, "class": "free", "models": { "light": 2 } },
+    "staleco":   { "cap": 0, "class": "free", "intentional_cap_zero": "stale", "reason": "fleet-ops#1418 stale quota seat" }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1418/models.json"
+export SEAT_CAPS_JSON="$scratch/1418/caps.json"
+# healthy ledger for every inventory seat, including the absent-cap-map notwired.
+for _p in heavyfree lightfree staleco notwired; do
+  _m="heavy"; [[ "$_p" == "lightfree" ]] && _m="light"; [[ "$_p" == "staleco" ]] && _m="stale-model"; [[ "$_p" == "notwired" ]] && _m="new-model"
+  _obs=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -nc --arg p "$_p" --arg m "$_m" --arg obs "$_obs" \
+      '{provider:$p, model:$m, health_class:"healthy", seat_dead:false, observed_at:$obs, source:"after_provider_response"}' \
+      > "$PI_SEAT_HEALTH_LEDGER_DIR/${_p}__${_m}.json"
+done
+# one live heavyfree/heavy worker: the single heavy-capable seat is saturated.
+unit="pi-test-1418-heavy"
+jq -nc --arg p "heavyfree" --arg m "heavy" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1418-idle: with the only heavy-capable seat saturated, heavy pick must return empty (rc=0 returned, out=$out)"
+[[ -z "$out" ]] || fail "1418-idle: heavy pick must return empty stdout when no seat is available, got: $out"
+# Metric predicate "cap=" AND "skipped" must remain 0 — no per-seat flood.
+_1418_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1418_pred=${_1418_pred:-0}
+if (( _1418_pred > 0 )); then
+  fail "1418-idle: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1418_pred — per-seat 'skipped (... cap=...)' lines leaked. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# Exactly one per-pick excluded summary, naming both stale cap=0 and not-in-allowlist.
+grep -qE "pick_seat: excluded 2 seats \(cap=0: 1; dead: 0; not-in-allowlist: 1\) \[cap0-intentional: 0; cap0-stale: 1\] \[notwired/new-model,staleco/stale-model\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected excluded summary 'cap=0: 1; not-in-allowlist: 1 [cap0-intentional: 0; cap0-stale: 1] [notwired/new-model,staleco/stale-model]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Exactly one per-pick at-capacity summary for heavyfree/heavy.
+grep -qE "pick_seat: at-capacity 1 seats \[heavyfree/heavy\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected at-capacity summary for heavyfree/heavy, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Exactly one filtered-static summary for the light-only seat.
+grep -qE "pick_seat: filtered-static 1 seats \(not-capable: 1; quality-ban: 0\) \[lightfree/light\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected filtered-static summary for lightfree/light, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1418-idle: heavy-capable seat saturated + stale/not-in-allowlist healthy -> rc!=0, 0 per-seat flood, 3 per-pick summaries"
+# When the heavy-capable worker frees, the dispatcher must pick it immediately.
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1418-recover: freed heavy seat must be pickable, got rc=$rc"
+[[ "$out" == "heavyfree"$'\t'"heavy" ]] || fail "1418-recover: expected heavyfree/heavy, got: $out"
+ok "1418-recover: freed heavy-capable seat is picked, proving a real dispatch can land"
 # restore the env the following (d) 1163-dead test expects: the 1163 model
 # inventory + the 1415 caps map that c4 left in effect.
 export PI_MODELS_JSON="$scratch/1163/models.json"
@@ -2812,3 +2904,16 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # the same reason as the noop-bench test above (listed in ci.yml, runs
 # independent of the p14-test-listing-gate).
 bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
+
+# fleet-ops#859 (fleet-ops#2001): tests/seat-lib-dispatch.test.sh is a seat
+# lane-fault dispatch regression test landed on main that was never listed in
+# ci.yml nor hosted by a listed test, leaving the P14 test-listing gate red on
+# main. Workers cannot edit .github/workflows/**, so host it here from this
+# already-listed seat-lib test to bring the gate back green.
+bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
+
+# fleet-ops#1362 (fleet-ops#1964): tests/seat-failure-ceiling.test.sh is the park-
+# past-failure-ceiling regression test landed on main in #2003 that was never
+# wired into ci.yml. Host it here from this already-listed seat-lib test so the
+# P14 test-listing gate goes green without a workflow edit.
+bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
