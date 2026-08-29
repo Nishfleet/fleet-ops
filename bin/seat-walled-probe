@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# seat-walled-probe — probe walled seats whose usable_at has passed.
+#
+# Fleet-ops#1348: when a walled seat's usable_at expires, send a polite
+# 1-token "reply OK" probe. If the probe succeeds, the seat re-enters the
+# ladder at its cap. Log to pi-seat-health + actions log.
+#
+# For credentials_bad: probe weekly and file an agent-ready issue if still
+# bad (needs fixing, not waiting).
+#
+# Coordinates with the census sweep (fleet-ops#1149) — does not build a
+# second sweeper; this script is called by the census sweep and/or a
+# periodic timer.
+#
+# Usage:
+#   seat-walled-probe [--dry-run] [--probe-all] [--help]
+#
+# Exit codes:
+#   0  success (probes sent, or no seats needed probing — not a failure)
+#   2  internal error
+#
+# A run that finds no seats to probe exits 0: a periodic probe with nothing
+# to do is the common case, not a failed unit (cf. fleet-seat-recovery).
+
+set -Eeuo pipefail
+
+# shellcheck shell=bash
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Configuration
+LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-/home/nish/.local/state/pi-packet/seat-caps.json}"
+PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+ISSUE_FILE_BIN="${FLEET_ISSUE_FILE_BIN:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-issue-file}"
+ISSUE_REPO="${FLEET_ISSUE_REPO:-Nishfleet/fleet-ops}"
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+LOG_FILE="$STATE_DIR/watch.log"
+ACTIONS_LOG="$STATE_DIR/actions.log"
+DRY_RUN=0
+PROBE_ALL=0
+
+# Load walled_comeback config from seat-caps.json
+load_walled_comeback_config() {
+    if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+        echo "seat-walled-probe: seat-caps.json not found at $SEAT_CAPS_JSON" >&2
+        return 1
+    fi
+    local wc
+    wc=$(jq -r '.walled_comeback // {}' "$SEAT_CAPS_JSON" 2>/dev/null || echo '{}')
+    if [[ "$wc" == "{}" || -z "$wc" ]]; then
+        echo "seat-walled-probe: walled_comeback not found in seat-caps.json" >&2
+        return 1
+    fi
+    MIN_PROBE_INTERVAL_S=$(jq -r '.min_probe_interval_s // 900' <<<"$wc")
+    RATE_LIMIT_S=$(jq -r '.rate_limit_s // 900' <<<"$wc")
+    DAILY_QUOTA_S=$(jq -r '.daily_quota_s // 3600' <<<"$wc")
+    MONTHLY_QUOTA_S=$(jq -r '.monthly_quota_s // 86400' <<<"$wc")
+    FREE_BALANCE_EXHAUSTED_S=$(jq -r '.free_balance_exhausted_s // 86400' <<<"$wc")
+    CREDENTIALS_BAD_S=$(jq -r '.credentials_bad_s // 604800' <<<"$wc")
+}
+
+seat_log() {
+    local line ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf -v line '[%s] [seat-walled-probe] %s\n' "$ts" "$*"
+    printf '%s' "$line" >>"$LOG_FILE"
+    printf '%s' "$line" >&2
+}
+
+actions_log() {
+    local line ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf -v line '[%s] [actions] %s\n' "$ts" "$*"
+    mkdir -p "$(dirname "$ACTIONS_LOG")"
+    printf '%s' "$line" >>"$ACTIONS_LOG"
+}
+
+now_s() { date -u +%s; }
+
+# Check if a seat should be probed (respect min_probe_interval_s between probes)
+# The ledger entry tracks the last probe time via a custom field or we infer
+# from observed_at. For simplicity, we check if usable_at has passed and if
+# enough time has passed since the last probe.
+should_probe_seat() {
+    local provider="$1" model="$2" failure_mode="$3" usable_at="$4" observed_at="$5" consecutive_failures="$6"
+    local now
+    now=$(now_s)
+
+    local usable_at_s
+    usable_at_s=$(date -u -d "$usable_at" +%s 2>/dev/null || echo 0)
+    [[ "$usable_at_s" =~ ^[0-9]+$ ]] || return 1
+
+    # usable_at must be in the past
+    (( usable_at_s <= now )) || return 1
+
+    # For credentials_bad, also check if we've already probed this week
+    if [[ "$failure_mode" == "credentials_bad" ]]; then
+        local observed_s
+        observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
+        if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
+            local time_since_observed=$((now - observed_s))
+            # Only probe if it's been at least CREDENTIALS_BAD_S since last observation
+            (( time_since_observed >= CREDENTIALS_BAD_S )) || return 1
+        fi
+    fi
+
+    # Respect min_probe_interval_s since last probe/observation
+    # We use observed_at as the last check time
+    local observed_s
+    observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
+    if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
+        local time_since_observed=$((now - observed_s))
+        (( time_since_observed >= MIN_PROBE_INTERVAL_S )) || return 1
+    fi
+
+    return 0
+}
+
+# Send a 1-token "reply OK" probe to a seat
+# Returns 0 if probe succeeded (seat is healthy), 1 if failed
+probe_seat() {
+    local provider="$1" model="$2"
+    local tmp_out tmp_err rc
+
+    tmp_out=$(mktemp)
+    tmp_err=$(mktemp)
+
+    # Use pi with a minimal prompt that should return a quick "OK"
+    # The --print flag makes pi output just the response
+    # We use a very short prompt to keep it to ~1 token
+    if (( DRY_RUN )); then
+        seat_log "DRY-RUN: would probe $provider/$model with 'reply OK'"
+        rm -f "$tmp_out" "$tmp_err"
+        return 0
+    fi
+
+    seat_log "probing $provider/$model with 'reply OK'"
+    actions_log "seat-probe: $provider/$model probe sent"
+
+    # Run pi with a 30-second timeout to avoid hanging
+    timeout 30 "$PI_BIN" --print --provider "$provider" --model "$model" "Reply with exactly: OK" \
+        >"$tmp_out" 2>"$tmp_err"
+    rc=$?
+
+    local out err
+    out=$(cat "$tmp_out" 2>/dev/null || true)
+    err=$(cat "$tmp_err" 2>/dev/null || true)
+
+    rm -f "$tmp_out" "$tmp_err"
+
+    if (( rc == 0 )); then
+        # Check if the output contains "OK" (case-insensitive)
+        if grep -qi "OK" <<<"$out"; then
+            seat_log "probe $provider/$model SUCCEEDED"
+            actions_log "seat-probe: $provider/$model probe SUCCEEDED"
+            return 0
+        else
+            seat_log "probe $provider/$model returned exit 0 but no OK in output: ${out:0:200}"
+            actions_log "seat-probe: $provider/$model probe returned exit 0 but unexpected output"
+            return 1
+        fi
+    elif (( rc == 124 )); then
+        seat_log "probe $provider/$model TIMED OUT after 30s"
+        actions_log "seat-probe: $provider/$model probe TIMED OUT"
+        return 1
+    else
+        seat_log "probe $provider/$model FAILED (exit $rc): ${err:0:500}"
+        actions_log "seat-probe: $provider/$model probe FAILED (exit $rc)"
+        return 1
+    fi
+}
+
+# File an agent-ready issue for credentials_bad seats that fail their weekly probe
+file_credentials_issue() {
+    local provider="$1" model="$2" consecutive_failures="$3"
+    local title body issue_url
+
+    title="agent-ready: credentials_bad for $provider/$model after $consecutive_failures consecutive failures"
+    body=$(
+        cat <<EOF
+The seat-walled-probe (fleet-ops#1348) detected that $provider/$model has been in credentials_bad state for $consecutive_failures consecutive weekly probes.
+
+This seat requires human intervention to repair credentials — it will not self-heal.
+
+**Seat details:**
+- Provider: $provider
+- Model: $model
+- Failure mode: credentials_bad
+- Consecutive failures: $consecutive_failures
+- Last probe: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+**Next steps:**
+1. Check the credential configuration for $provider in ~/.pi/agent/models.json and ~/.config/*/
+2. Verify the API key/token is valid and has not expired
+3. If using OAuth (e.g. xai-oauth), run the token refresh manually
+4. Once fixed, the seat will automatically become usable on the next probe
+
+This issue was auto-filed by the seat-walled-probe mechanism. Do not close without verifying the credential is repaired.
+EOF
+    )
+
+    if (( DRY_RUN )); then
+        seat_log "DRY-RUN: would file agent-ready issue for $provider/$model credentials_bad"
+        return 0
+    fi
+
+    # Use fleet-issue-file if available, otherwise gh issue create
+    if [[ -x "$ISSUE_FILE_BIN" ]]; then
+        issue_url=$("$ISSUE_FILE_BIN" file -R "$ISSUE_REPO" --title "$title" --body "$body" --label agent-ready 2>&1 | tail -1)
+    else
+        issue_url=$(gh issue create -R "$ISSUE_REPO" --title "$title" --body "$body" --label agent-ready 2>&1 | tail -1)
+    fi
+
+    if [[ -n "$issue_url" ]]; then
+        seat_log "filed agent-ready issue for $provider/$model credentials_bad: $issue_url"
+        actions_log "seat-probe: filed agent-ready issue for $provider/$model credentials_bad: $issue_url"
+        return 0
+    else
+        seat_log "FAILED to file agent-ready issue for $provider/$model credentials_bad"
+        return 1
+    fi
+}
+
+main() {
+    # Parse arguments
+    while (( $# > 0 )); do
+        case "$1" in
+            --dry-run) DRY_RUN=1 ;;
+            --probe-all) PROBE_ALL=1 ;;
+            --help|-h)
+                cat <<EOF
+seat-walled-probe — probe walled seats whose usable_at has passed
+
+Usage: seat-walled-probe [--dry-run] [--probe-all]
+
+Options:
+  --dry-run    Log what would be done without sending probes or filing issues
+  --probe-all  Probe all seats with expired usable_at (default: only walled failure modes)
+  --help       Show this help
+
+Environment:
+  LEDGER_DIR         Seat ledger directory (default: /home/nish/workspaces/agent-state/lanes/seats)
+  SEAT_CAPS_JSON     Path to seat-caps.json (default: /home/nish/.local/state/pi-packet/seat-caps.json)
+  PI_BIN             Path to pi binary (default: /home/nish/.local/bin/pi)
+  FLEET_ISSUE_FILE_BIN  Path to fleet-issue-file (default: deploy-clone/bin/fleet-issue-file)
+  FLEET_ISSUE_REPO   Repo for credentials_bad issues (default: Nishfleet/fleet-ops)
+  PI_PACKET_STATE    State dir for watch.log + actions.log
+
+Exit codes:
+  0  Success (probes sent, or nothing to probe)
+  2  Internal error
+EOF
+                return 0
+                ;;
+            *) echo "Unknown option: $1" >&2; return 2 ;;
+        esac
+        shift
+    done
+
+    # Load configuration
+    if ! load_walled_comeback_config; then
+        seat_log "failed to load walled_comeback config, using defaults"
+        MIN_PROBE_INTERVAL_S=900
+        RATE_LIMIT_S=900
+        DAILY_QUOTA_S=3600
+        MONTHLY_QUOTA_S=86400
+        FREE_BALANCE_EXHAUSTED_S=86400
+        CREDENTIALS_BAD_S=604800
+    fi
+
+    seat_log "starting probe sweep (min_probe_interval=${MIN_PROBE_INTERVAL_S}s)"
+
+    if [[ ! -d "$LEDGER_DIR" ]]; then
+        seat_log "ledger directory not found: $LEDGER_DIR"
+        return 1
+    fi
+
+    local probed=0 succeeded=0 failed=0 issued=0
+
+    # Iterate over all ledger files
+    for f in "$LEDGER_DIR"/*__*.json; do
+        [[ -f "$f" ]] || continue
+
+        local provider model failure_mode usable_at observed_at consecutive_failures health_class seat_dead
+        provider=$(jq -r '.provider // ""' "$f" 2>/dev/null || echo "")
+        model=$(jq -r '.model // ""' "$f" 2>/dev/null || echo "")
+        failure_mode=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || echo "")
+        usable_at=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || echo "")
+        observed_at=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || echo "")
+        consecutive_failures=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+        health_class=$(jq -r '.health_class // ""' "$f" 2>/dev/null || echo "")
+        seat_dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || echo "false")
+
+        [[ -n "$provider" && -n "$model" ]] || continue
+        [[ -n "$usable_at" && "$usable_at" != "null" ]] || continue
+
+        # Determine if this is a walled failure mode we should probe
+        local is_walled=0
+        case "$failure_mode" in
+            rate_limit|quota_exhausted|credentials_bad|empty_run)
+                is_walled=1 ;;
+        esac
+
+        if (( ! PROBE_ALL && ! is_walled )); then
+            continue
+        fi
+
+        # Check if we should probe this seat
+        if ! should_probe_seat "$provider" "$model" "$failure_mode" "$usable_at" "$observed_at" "$consecutive_failures"; then
+            continue
+        fi
+
+        ((probed++)) || true
+
+        # Send the probe
+        if probe_seat "$provider" "$model"; then
+            ((succeeded++)) || true
+            # The probe succeeded — the seat-health extension will record a healthy
+            # observation when the response comes back, which will clear usable_at.
+            # We don't need to manually clear the ledger here.
+        else
+            ((failed++)) || true
+
+            # For credentials_bad, if this is a weekly probe that failed, file an agent-ready issue
+            if [[ "$failure_mode" == "credentials_bad" ]]; then
+                local observed_s now_s
+                observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
+                now_s=$(now_s)
+                if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
+                    local time_since_observed=$((now_s - observed_s))
+                    if (( time_since_observed >= CREDENTIALS_BAD_S )); then
+                        if file_credentials_issue "$provider" "$model" "$consecutive_failures"; then
+                            ((issued++)) || true
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    done
+
+    seat_log "probe sweep complete: probed=$probed succeeded=$succeeded failed=$failed issues_filed=$issued"
+    actions_log "seat-probe sweep complete: probed=$probed succeeded=$succeeded failed=$failed issues_filed=$issued"
+
+    return 0
+}
+
+main "$@"

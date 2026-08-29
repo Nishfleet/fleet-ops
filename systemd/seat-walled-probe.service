@@ -1,0 +1,23 @@
+# seat-walled-probe.service — probe walled seats whose usable_at has passed
+# fleet-ops#1348
+#
+# Part of the seat health comeback mechanism. Runs periodically to check
+# seats whose backoff window has expired and send a polite 1-token probe.
+# For credentials_bad seats, files an agent-ready issue on weekly probe
+# failure. A run that finds no seats to probe exits 0 (not a failure).
+
+[Unit]
+Description=Probe walled seats whose usable_at has passed
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/1348
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/seat-walled-probe
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=10min
