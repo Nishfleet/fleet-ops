@@ -233,6 +233,13 @@ rc=$(run_bin)
 [[ "$rc" == "1" ]] || fail "illegal STOP-REASON reason should exit 1 (got $rc)"
 grep -q "mystery-wait" "$scratch/err.log" || fail "missing reason mention"
 ok "illegal STOP-REASON reason is flagged"
+# alert-repair-stalled is a sanctioned fleet-completion-canary escalation hop
+# (writes STOP-REASON itself; carries its own hop budget clock). Must be legal.
+printf '%s\n' '{"reason":"alert-repair-stalled","detail":{"hop":"verify"}}' >"$scratch/STOP-REASON.json"
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || fail "alert-repair-stalled should be a legal terminal state (got rc=$rc)"
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || fail "alert-repair-stalled missing OK line"
+ok "alert-repair-stalled (completion-canary hop) is a legal terminal state"
 printf '%s\n' '{"reason":"unit-failure","detail":{}}' >"$scratch/STOP-REASON.json"
 
 # --- 7. stalled READY-WORK claim (audit-only, REPAIR=0) ----------------------

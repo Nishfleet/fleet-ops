@@ -260,11 +260,17 @@ audit_stop_reason() {
     local reason
     reason=$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)
     case "$reason" in
-        ""|unit-failure|daily-sweep|boundary:*|cooldown_active|auditor-resolved)
+        ""|unit-failure|daily-sweep|boundary:*|cooldown_active|auditor-resolved|alert-repair-stalled)
             # unit-failure / daily-sweep = actively being worked by the
             # escalation chain (each has its own trip + dispatch budget);
             # boundary:* = Nish-reserved gate; cooldown_active = circuit
-            # holding with its own clock; auditor-resolved = closed.
+            # holding with its own clock; auditor-resolved = closed;
+            # alert-repair-stalled = fleet-completion-canary escalation hop
+            # (writes STOP-REASON itself; carries its own hop budget +
+            # verify_deadline_ts clock — see fleet-completion-canary.py
+            # observe_unit_escalation, which treats it as active, not
+            # terminal). Without this entry the canary fires UNJUSTIFIED-WAIT
+            # on its own sibling's sanctioned state (fleet-ops#2094).
             echo 0
             return 0
             ;;
