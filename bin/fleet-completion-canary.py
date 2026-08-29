@@ -337,7 +337,18 @@ def parse_actions(path: Path) -> dict[str, dict]:
 
 
 def unit_status(unit: str | None) -> tuple[str, str]:
-    """Return (result, active_state). Missing unit → ("missing", "inactive")."""
+    """Return (result, active_state). Missing unit → ("missing", "inactive").
+
+    A systemd-run --collect unit unloads after exit; systemctl show then
+    returns LoadState=not-found with the *default* Result=success. Treating
+    that default as a real success pins alert-repair chains at hop=verify on
+    a dead unit that actually failed (fleet-ops#2100: FleetDeadCredentialSeats
+    unit exited exit-code but --collect unloaded it, so classify saw
+    unit_success and stalled at verify forever). When LoadState=not-found,
+    fall back to the journal — the same receipt classify_dispatch uses
+    (fleet-ops#1295). "Failed" → exit-code; "Succeeded"/"Started"-only →
+    success; empty journal → missing (never started).
+    """
     if not unit:
         return "missing", "inactive"
     for prefix in SELF_UNITS:
@@ -346,12 +357,13 @@ def unit_status(unit: str | None) -> tuple[str, str]:
     try:
         r = subprocess.run(
             [SYSTEMCTL, "--user", "show", unit,
-             "--property=Result", "--property=ActiveState"],
+             "--property=Result", "--property=ActiveState",
+             "--property=LoadState"],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "missing", "inactive"
-    result, active = "missing", "inactive"
+    result, active, load = "missing", "inactive", "not-found"
     for line in (r.stdout or "").splitlines():
         if line.startswith("Result="):
             val = line.split("=", 1)[1].strip()
@@ -359,7 +371,24 @@ def unit_status(unit: str | None) -> tuple[str, str]:
         elif line.startswith("ActiveState="):
             val = line.split("=", 1)[1].strip()
             active = val or "inactive"
+        elif line.startswith("LoadState="):
+            val = line.split("=", 1)[1].strip()
+            load = val or "not-found"
     if r.returncode != 0 and result == "missing":
+        return "missing", "inactive"
+    # --collect unloaded the unit: Result=success is the default, not a real
+    # verdict. The journal is the only receipt (fleet-ops#1295/#2100).
+    if load == "not-found":
+        jtext = journal_text(unit)
+        verdict = journal_verdict(jtext)
+        if verdict == "failed":
+            return "exit-code", "inactive"
+        if verdict == "success":
+            return "success", "inactive"
+        if journal_has_started(jtext):
+            # Loaded and ran to completion; no "Failed" line (fleet-ops#1295).
+            return "success", "inactive"
+        # No journal at all — the unit never started under this name.
         return "missing", "inactive"
     return result, active
 
@@ -716,6 +745,26 @@ def classify(name: str, rec: dict, firing: dict[str, datetime], now: datetime) -
                 rec = dict(rec)
                 rec["dispatch_ts"] = None
                 rec["dispatch_unit"] = None
+    # A dispatch can only belong to a trip that was firing at dispatch time.
+    # If the current fire started AFTER the dispatch (firing[name] > disp_ts),
+    # the dispatch is from a prior trip that already terminated — keeping it
+    # pins the chain to a dead unit at hop=verify forever (fleet-ops#2100:
+    # FleetMainRed re-fired at 18:35:56 but disp_ts stayed 00:16:09 from the
+    # prior green chain, so classify saw the stale unit's success and stalled
+    # at verify through endless detector-red → cooldown → re-ladder cycles).
+    # Clear it so the re-fire starts at hop=dispatch and gets a fresh worker.
+    if is_firing and disp_ts is not None and not unit_running(result, active):
+        fire_start = firing.get(name)
+        if fire_start is not None and epoch(disp_ts) < epoch(fire_start):
+            disp_ts = None
+            rec = dict(rec)
+            rec["dispatch_ts"] = None
+            rec["dispatch_unit"] = None
+            unit = None
+            out["dispatch_ts"] = None
+            out["dispatch_unit"] = None
+            out["result"] = "missing"
+            out["active"] = "inactive"
     if not synthetic and not is_firing and disp_ts is not None:
         # Alert left 9090. Legal terminal: detector-green.
         if unit_success(result, active) or result in {"missing", "ignored"}:
