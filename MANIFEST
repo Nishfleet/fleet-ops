@@ -621,6 +621,7 @@ systemd/system/user-1000.slice.d/50-ram-governor.conf /etc/systemd/system/user-1
 systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf
 # fleet-ops#1145 slice 1: standing-rules generator + canonical source
 bin/render-standing-rules.py /home/nish/.local/bin/render-standing-rules.py
+bin/render-pi-agents-md.py /home/nish/.local/bin/render-pi-agents-md.py
 lib/standing-rules/canonical.md /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.canonical.md
 # fleet-ops#1537 P1: rule-debt consolidation inventory tool (live join analyzer)
 bin/rule-debt-inventory.py /home/nish/.local/bin/rule-debt-inventory
