@@ -153,8 +153,8 @@
     "opencode-anthropic": {
       "cap": 0,
       "class": "metered",
-      "intentional_cap_zero": "dead_decoy",
-      "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane."
+      "intentional_cap_zero": "money_only",
+      "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane. fleet-ops#1432: intentional hard-conserve cap (money only), so the operator never re-audits it — unlike the stale cap=0 seats (groq TPM, inferx 404 endpoint, orcarouter quota) that warrant re-audition when the external condition clears."
     },
     "bai": {
       "cap": 4,
