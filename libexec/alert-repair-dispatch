@@ -54,10 +54,20 @@ SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill", "WasteRati
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed
 # within 30 min; otherwise fall back through the canonical free/prepaid
 # ladder (fleet-ops prompts/heartbeat.md). Known-walled providers are
-# never used. SEAT_HEALTH_FILE override exists for self-tests only.
+# never used. A seat is also excluded when its per-seat ledger marks it
+# walled (usable_at in the future, seat_dead, hard-fail health class) —
+# fleet-ops#1556: the verify hop was redispatched onto devin/glm-5-2
+# (rate_limited, usable_at in the future) and parked the chain. When the
+# fallback ladder is exhausted the selection re-selects from the per-seat
+# ledger rather than parking on a walled seat.
+# SEAT_HEALTH_FILE / SEAT_LEDGER_DIR overrides exist for self-tests only.
 SEAT_HEALTH_FILE = os.environ.get(
     "SEAT_HEALTH_FILE",
     "/home/nish/workspaces/agent-state/lanes/pi-seat-health.json",
+)
+SEAT_LEDGER_DIR = os.environ.get(
+    "SEAT_LEDGER_DIR",
+    "/home/nish/workspaces/agent-state/lanes/seats",
 )
 FALLBACK_LADDER = [
     ("devin", "glm-5-2"),
@@ -139,8 +149,90 @@ def _acquire_alert_repair_claim(alertnames, repo, log):
     return True
 
 
-def _pick_seat():
-    """Return (provider, model, reason). No probing, no retries."""
+def _sanitise(s):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", s)
+
+
+def _in_future(ts):
+    if not ts:
+        return False
+    try:
+        return time.time() < calendar.timegm(
+            time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return False
+
+
+def _fresh(ts):
+    if not ts:
+        return False
+    try:
+        return 0 <= time.time() - calendar.timegm(
+            time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) <= 1800
+    except ValueError:
+        return False
+
+
+def _seat_walled(provider, model):
+    """Return True if the per-seat ledger marks this seat walled (unusable).
+
+    Mirrors lib/seat-lib.sh seat_usable(): seat_dead, hard-fail health
+    classes, bench classes while bench_until is in the future, a fresh
+    rate_limited marker with usable_at in the future, and any usable_at in
+    the future. No ledger file / unparseable -> assume usable (fail-open),
+    so a missing ledger never bricks the ladder.
+    """
+    f = Path(SEAT_LEDGER_DIR) / f"{_sanitise(provider)}__{_sanitise(model)}.json"
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if d.get("seat_dead") is True:
+        return True
+    hc = d.get("health_class") or ""
+    if hc in {"credentials_bad", "quota_exhausted"}:
+        return True
+    bench = d.get("bench_until") or ""
+    if hc in {"quota_bench", "overload_bench", "hang_bench"}:
+        # Bench classes are walled while bench_until is in the future;
+        # once it passes the seat is retried (fail-open).
+        return _in_future(bench)
+    if hc == "rate_limited":
+        # Trust the marker only while fresh AND usable_at is in the future.
+        return _fresh(d.get("observed_at")) and _in_future(d.get("usable_at") or "")
+    return _in_future(d.get("usable_at") or "")
+
+
+def _enumerate_ledger_seats():
+    """Yield (provider, model) pairs from the per-seat ledger directory.
+
+    Reads the raw provider/model from each ledger file (not the sanitised
+    filename) so the returned model is dispatch-correct.
+    """
+    try:
+        entries = sorted(Path(SEAT_LEDGER_DIR).iterdir())
+    except OSError:
+        return
+    for f in entries:
+        if not f.is_file() or not f.name.endswith(".json"):
+            continue
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        p, m = d.get("provider"), d.get("model")
+        if p and m:
+            yield p, m
+
+
+def _select_seat(exclude):
+    """Return (provider, model, reason) or None.
+
+    Excludes seats that are walled (per-seat ledger) or on a walled /
+    excluded provider. Re-selects from the per-seat ledger rather than
+    parking on a walled seat (fleet-ops#1556).
+    """
+    # 1. Recorded seat (pi-seat-health.json) wins if healthy, fresh, usable.
     try:
         d = json.loads(Path(SEAT_HEALTH_FILE).read_text())
         obs = d.get("observed_at")
@@ -153,13 +245,29 @@ def _pick_seat():
                 fresh = False
         p, m = d.get("provider"), d.get("model")
         if (d.get("health_class") == "healthy" and fresh and p and m
-                and p not in WALLED_PROVIDERS):
+                and p not in WALLED_PROVIDERS and p not in exclude
+                and not _seat_walled(p, m)):
             return p, m, "healthy"
     except (OSError, json.JSONDecodeError):
         pass
+    # 2. Fallback ladder, skipping walled seats and excluded providers.
     for p, m in FALLBACK_LADDER:
-        if p not in WALLED_PROVIDERS:
+        if (p not in WALLED_PROVIDERS and p not in exclude
+                and not _seat_walled(p, m)):
             return p, m, "fallback"
+    # 3. Re-select from the per-seat ledger rather than park on a walled seat.
+    for p, m in _enumerate_ledger_seats():
+        if (p not in WALLED_PROVIDERS and p not in exclude
+                and not _seat_walled(p, m)):
+            return p, m, "re-selected"
+    return None
+
+
+def _pick_seat():
+    """Return (provider, model, reason). No probing, no retries."""
+    seat = _select_seat(set())
+    if seat:
+        return seat
     return FALLBACK_LADDER[0][0], FALLBACK_LADDER[0][1], "fallback"
 
 
@@ -186,22 +294,15 @@ def main():
                 excl = {p for p in sys.argv[i + 1].split(",") if p}
         except ValueError:
             pass
-        prov, mod, reason = _pick_seat()
-        if prov in excl:
-            # Recorded seat is on an excluded provider (the canary's typical
-            # case: the original dispatch landed here; the canary asks for
-            # a different lane). Walk the fallback ladder.
-            for fp, fm in FALLBACK_LADDER:
-                if fp not in WALLED_PROVIDERS and fp not in excl:
-                    print(f"{fp}\t{fm}\tfallback-excluded")
-                    return 0
-            # No seat available in the requested exclusions — exit 2 so the
-            # caller can decide (the canary falls back to a STOP-REASON
-            # write rather than dispatching into a wall).
-            print("WALLED\t-\tall-fallback-seats-excluded", file=sys.stderr)
-            return 2
-        print(f"{prov}\t{mod}\t{reason}")
-        return 0
+        seat = _select_seat(excl)
+        if seat:
+            print(f"{seat[0]}\t{seat[1]}\t{seat[2]}")
+            return 0
+        # No seat available in the requested exclusions — exit 2 so the
+        # caller can decide (the canary falls back to a STOP-REASON
+        # write rather than dispatching into a wall).
+        print("WALLED\t-\tall-seats-walled-or-excluded", file=sys.stderr)
+        return 2
 
     PACKET_DIR.mkdir(parents=True, exist_ok=True)
     status = os.environ.get("AMX_STATUS", "")
