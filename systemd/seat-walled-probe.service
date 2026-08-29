@@ -14,7 +14,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/nish/.local/bin/seat-walled-probe
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/seat-walled-probe'
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
