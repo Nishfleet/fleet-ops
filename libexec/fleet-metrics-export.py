@@ -25,6 +25,14 @@ OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
 SEAT_HEALTH = Path(
     "/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"
 )
+# Per-seat health ledger written by the pi seat-health extension. Each file is
+# <sanitised-provider>__<sanitised-model>.json. We scan it to surface
+# dead-credential seats (seat_dead=true, health_class=credentials_bad) as a
+# distinct heartbeat signal (fleet-ops#1445) instead of them being buried in
+# pick_seat's per-pick cap/dead fold or silently re-logged every cycle.
+SEAT_LEDGER = Path(
+    "/home/nish/workspaces/agent-state/lanes/seats"
+)
 HC_URL_FILE = Path(
     "/home/nish/.config/fleet-healthchecks/fleet-timer-liveness.url"
 )
@@ -42,6 +50,10 @@ HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0.
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
 HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
+HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true and health_class=credentials_bad (HTTP 401/403) that need re-auth and will not recover until re-authenticated (fleet-ops#1445)."
+TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
+HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat needing re-auth (fleet-ops#1445)."
+TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -446,6 +458,43 @@ def _read_seat():
         except ValueError:
             epoch = None
     return healthy, epoch
+
+
+def _read_dead_credentials():
+    """Scan the per-seat health ledger for dead-credential seats.
+
+    A dead-credential seat is seat_dead=true with health_class=credentials_bad
+    (HTTP 401/403): it will never recover until the provider credential is
+    re-authenticated (fleet-ops#1445). These are surfaced once per 5-min export
+    tick as a distinct metric + alert, rather than being buried in pick_seat's
+    per-pick "excluded ... dead: D" fold or re-logged every cycle by the seat
+    loop.
+
+    Returns (count, [ {provider, model, http_status}, ... ]). Always a
+    (count, list) pair — never raises on a missing/unreadable ledger.
+    """
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("seat_dead") is True and data.get("health_class") == "credentials_bad":
+                seats.append({
+                    "provider": data.get("provider", ""),
+                    "model": data.get("model", ""),
+                    "http_status": data.get("http_status"),
+                })
+    except OSError:
+        return 0, []
+    return len(seats), seats
 
 
 def _atomic_write(path, text):
@@ -1564,6 +1613,26 @@ def main():
         lines.append(TYPE_OBS)
         lines.append(
             f"fleet_pi_seat_observed_seconds {observed_epoch}"
+        )
+    # fleet-ops#1445: surface dead-credential seats once per tick as a distinct
+    # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403)
+    # and need human re-auth; the total gauge drives the alert rule and the
+    # per-seat series names each seat needing re-auth.
+    _dc_n, _dc = _read_dead_credentials()
+    lines.append("")
+    lines.append(HELP_DCT)
+    lines.append(TYPE_DCT)
+    lines.append(f"fleet_pi_seat_dead_credential_total {_dc_n}")
+    lines.append("")
+    lines.append(HELP_DC)
+    lines.append(TYPE_DC)
+    for _s in _dc:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _st = _prom_label(str(_s.get("http_status") or ""))
+        lines.append(
+            f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)

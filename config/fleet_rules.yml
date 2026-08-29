@@ -79,6 +79,16 @@ groups:
           summary: "Pi seat unhealthy for 30+ minutes"
           description: "pi-seat-health.json reports a non-healthy seat class."
 
+      - alert: FleetDeadCredentialSeats
+        expr: fleet_pi_seat_dead_credential_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "dead-credential seats need re-auth"
+          description: "One or more seats are seat_dead=true with health_class=credentials_bad (HTTP 401/403) and will not recover until their provider credential is re-authenticated (fleet-ops#1445). The per-seat fleet_pi_seat_dead_credential series names each seat. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats and re-auth each dead seat, or remove it from config/seat-caps.json."
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h
