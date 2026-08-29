@@ -197,6 +197,7 @@ jobs:
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
         bash tests/ci-failure-escalation-detector.test.sh
+        bash tests/staleness-checker.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/pi-packet-guard.test.sh
         bash tests/pi-systemd-run.test.sh
@@ -205,6 +206,7 @@ jobs:
         bash tests/pi-issue-start-packet-regen.test.sh
         bash tests/pi-issue-failed-reap.test.sh
         bash tests/repair-rotation.test.sh
+        bash tests/alert-repair-seat-walled.test.sh
         bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
         bash tests/seat-lib.test.sh
@@ -228,6 +230,7 @@ jobs:
         bash tests/codex-orphan-reap.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
         bash tests/orphan-workflow-detector.test.sh
+        bash tests/open-question-sweep-deleted.test.sh
         bash tests/escalation-coverage-canary.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
