@@ -2904,3 +2904,16 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # the same reason as the noop-bench test above (listed in ci.yml, runs
 # independent of the p14-test-listing-gate).
 bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
+
+# fleet-ops#859 (fleet-ops#2001): tests/seat-lib-dispatch.test.sh is a seat
+# lane-fault dispatch regression test landed on main that was never listed in
+# ci.yml nor hosted by a listed test, leaving the P14 test-listing gate red on
+# main. Workers cannot edit .github/workflows/**, so host it here from this
+# already-listed seat-lib test to bring the gate back green.
+bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
+
+# fleet-ops#1362 (fleet-ops#1964): tests/seat-failure-ceiling.test.sh is the park-
+# past-failure-ceiling regression test landed on main in #2003 that was never
+# wired into ci.yml. Host it here from this already-listed seat-lib test so the
+# P14 test-listing gate goes green without a workflow edit.
+bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
