@@ -174,38 +174,59 @@ seat_line=$(head -n1 "$tried")
 np="${seat_line%%/*}"
 nm="${seat_line#*/}"
 
-# (a) fleet-ops#1416: provider no-ops (stdout < OUT_MIN, exit 0) do NOT
-# bench the seat. The seat is healthy — pi ran and exited 0. The tried-seats
-# file already records this seat for THIS unit, and systemd Restart will
-# pick a different one. No mark_seat_spawn_fail or mark_seat_empty_run
-# call should be made.
+# (a) fleet-ops#1298: provider no-ops (stdout < OUT_MIN, exit 0) ARE seat
+# faults — same class as the verdict tools=0 empty-run (fleet-ops#902).
+# The seat is benched via mark_seat_empty_run (escalating backoff,
+# fleet-ops#1408) so pick_seat skips it on the next intake re-spawn and
+# reroutes to a healthy seat. #1298 reversed the #1416 "lane fault, no
+# bench" decision: without a bench, an intake re-spawn (fresh claim, empty
+# tried-seats) re-picked the same no-op'ing seat and burned 8 runs/2h on
+# straitly/deepseek-v4-pro. mark_seat_spawn_fail must NOT be called (the
+# flat 300s spawn-fail bench is the wrong class — empty_run escalates).
 if [[ -f "$scratch/mark_calls" ]]; then
-    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must NOT mark a healthy seat (calls: $(cat "$scratch/mark_calls"))"
+    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must use mark_seat_empty_run (empty_run class, escalating), not spawn-fail (calls: $(cat "$scratch/mark_calls"))"
 fi
-if [[ -f "$scratch/mark_empty_calls" ]] && grep -qF "$np/$nm" "$scratch/mark_empty_calls"; then
-    fail "mark_seat_empty_run was called for stdout < OUT_MIN — must NOT mark a healthy seat (calls: $(cat "$scratch/mark_empty_calls"))"
-fi
-ok "provider no-op (stdout < OUT_MIN) -> NO seat marker written (healthy seat, lane fault)"
+[[ -f "$scratch/mark_empty_calls" ]] \
+  || fail "mark_seat_empty_run was NOT called for stdout < OUT_MIN — provider no-op must bench the seat (fleet-ops#1298)"
+grep -qF "$np/$nm" "$scratch/mark_empty_calls" \
+  || fail "mark_seat_empty_run not called for $np/$nm; calls: $(cat "$scratch/mark_empty_calls")"
+grep -qF "provider-no-op" "$scratch/mark_empty_calls" \
+  || fail "mark_seat_empty_run reason must mention provider-no-op; calls: $(cat "$scratch/mark_empty_calls")"
+ok "provider no-op (stdout < OUT_MIN) -> mark_seat_empty_run called for $np/$nm (seat fault, escalating bench)"
 
-# (b) seat_usable must still return true — the seat is healthy, no penalty.
+# (b) per-seat ledger: failure_mode=empty_run, usable_at ~900s (15 min) ahead.
+ledger1="$LEDGER/${np//[^A-Za-z0-9._-]/_}__${nm//[^A-Za-z0-9._-]/_}.json"
+[[ -f "$ledger1" ]] || fail "per-seat ledger missing at $ledger1"
+mode1=$(jq -r '.failure_mode // empty' "$ledger1")
+[[ "$mode1" == "empty_run" ]] \
+  || fail "ledger failure_mode must be empty_run, got '$mode1': $(cat "$ledger1")"
+usable1=$(jq -r '.usable_at // empty' "$ledger1")
+[[ -n "$usable1" ]] || fail "ledger has no usable_at: $(cat "$ledger1")"
+usable1_epoch=$(date -u -d "$usable1" +%s)
+now1_epoch=$(date -u +%s)
+delta1=$((usable1_epoch - now1_epoch))
+(( delta1 >= 840 && delta1 <= 960 )) \
+  || fail "provider no-op usable_at should be ~900s (15 min) ahead, got ${delta1}s: $(cat "$ledger1")"
+ok "ledger failure_mode=empty_run usable_at=+${delta1}s (~15 min cooldown, base of the escalation ladder)"
+
+# (c) seat_usable rejects the benched seat; pick_seat with empty tried-seats
+# (the intake re-spawn case) re-routes to a DIFFERENT seat — the #1298 fix.
 # shellcheck disable=SC1091
 source "$repo_root/lib/seat-lib.sh"
-if ! seat_usable "$np" "$nm"; then
-    fail "seat_usable $np/$nm returned UNUSABLE after provider no-op — should be usable (healthy seat, no penalty)"
+if seat_usable "$np" "$nm"; then
+    fail "seat_usable $np/$nm returned usable after provider no-op bench — should be benched"
 fi
-ok "seat_usable $np/$nm still USABLE after provider no-op"
-
-# (c) pick_seat with empty tried-seats WILL re-select the same seat on
-# intake re-spawn. This is intentional: the seat is healthy, so trying
-# it again is fine (the provider may produce output on the next attempt).
+ok "seat_usable $np/$nm UNUSABLE after provider no-op (reroutes on next pick)"
 : >"$tried"
 next=$(pick_seat "" "" 0 "" || true)
-[[ -n "$next" ]] || fail "pick_seat returned empty after provider no-op"
-# Just verify pick_seat works; it may pick the same or a different seat.
-# Either is acceptable — the seat is not penalised.
-ok "pick_seat returned a seat after provider no-op (may be same or different)"
+[[ -n "$next" ]] || fail "pick_seat returned empty after provider no-op bench"
+next_np=$(printf '%s' "$next" | cut -f1)
+next_nm=$(printf '%s' "$next" | cut -f2)
+[[ "$next_np/$next_nm" != "$np/$nm" ]] \
+  || fail "pick_seat re-selected the no-op seat $np/$nm on intake re-spawn (empty tried-seats) — must reroute to a healthy seat (fleet-ops#1298)"
+ok "pick_seat reroutes intake re-spawn to $next_np/$next_nm (skips benched $np/$nm)"
 
-ok "pi-issue-run provider no-op exits 1, no marker, seat stays usable"
+ok "pi-issue-run provider no-op exits 1, benches seat (empty_run, escalating), reroutes to a healthy seat"
 
 # =============================================================================
 # fleet-ops#902: verdict-based EMPTY RUN — pi exits 0 and the ONLY stdout is
@@ -295,11 +316,13 @@ ok "empty-run (tools=0 + no final text) fails loudly, benches 15 min, re-routes 
 
 # =============================================================================
 # fleet-ops#1378: in-process no-op retry — when a seat produces a provider
-# no-op (0B stdout, healthy seat), the script must re-run on a different seat
-# INSIDE the same invocation instead of exiting 1 and consuming a systemd
+# no-op (0B stdout), the script must re-run on a different seat INSIDE the
+# same invocation instead of exiting 1 and consuming a systemd
 # StartLimitBurst slot. The script exits 0 when the second seat succeeds, so
-# no StartLimitBurst slot is consumed. A 0B provider no-op is a lane fault, not
-# a seat fault, so the first seat is NOT benched.
+# no StartLimitBurst slot is consumed. Per fleet-ops#1298 the first no-op
+# seat IS now benched (empty_run, escalating) so an intake re-spawn skips
+# it — but the in-process retry still fires immediately on a different
+# seat, so the item is never charged a StartLimitBurst slot for the flake.
 # =============================================================================
 # Set EMPTY_RUN_RETRY_MAX=1 so the script retries once before giving up.
 export EMPTY_RUN_RETRY_MAX=1
@@ -346,17 +369,20 @@ echo "$out3" | grep -qF 'Real output' \
   || fail "output file should contain 'Real output' from second seat, got: $out3"
 ok "in-process retry: first seat no-op (0B), script re-seated in-process, second seat succeeded, exited 0"
 
-# The first seat was a provider no-op (healthy seat) — it must NOT have been
-# benched. The tried-seats file for the successful run should be reset.
+# The tried-seats file for the successful run should be reset.
 tried3="$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats"
 [[ -s "$tried3" ]] && fail "successful run must reset tried-seats, got: $(cat "$tried3")"
 ok "tried-seats reset after successful in-process retry"
 
-# Either mark log must not contain the first no-op seat (devin/glm-5-2).
-if grep -qF 'devin/glm-5-2' "$scratch/mark_calls" 2>/dev/null \
-    || grep -qF 'devin/glm-5-2' "$scratch/mark_empty_calls" 2>/dev/null; then
-    fail "first no-op seat (devin/glm-5-2) must NOT be benched (provider no-op is a lane fault)"
+# fleet-ops#1298: the first no-op seat (devin/glm-5-2) IS now benched via
+# mark_seat_empty_run (empty_run, escalating) so an intake re-spawn skips
+# it. The spawn-fail marker (mark_seat_spawn_fail) must NOT be used — the
+# empty_run class is the correct one and it escalates.
+if grep -qF 'devin/glm-5-2' "$scratch/mark_calls" 2>/dev/null; then
+    fail "first no-op seat (devin/glm-5-2) must use mark_seat_empty_run, not mark_seat_spawn_fail (calls: $(cat "$scratch/mark_calls"))"
 fi
-ok "first no-op seat was NOT benched (lane fault, healthy seat)"
+grep -qF 'devin/glm-5-2' "$scratch/mark_empty_calls" 2>/dev/null \
+  || fail "first no-op seat (devin/glm-5-2) must be benched via mark_seat_empty_run (fleet-ops#1298); empty calls: $(cat "$scratch/mark_empty_calls" 2>/dev/null || true)"
+ok "first no-op seat (devin/glm-5-2) benched via mark_seat_empty_run (empty_run, escalating) — intake re-spawn will skip it"
 
-ok "fleet-ops#1378: in-process no-op retry works — item is never charged for a lane flake"
+ok "fleet-ops#1378: in-process no-op retry still works alongside the #1298 bench — item is never charged a StartLimitBurst slot for the flake"

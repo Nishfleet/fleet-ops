@@ -11,23 +11,26 @@
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), re-seat in-process via continue (fleet-ops#1378).
-#      A provider no-op (pi ran, exited 0, produced < 20 B) is a LANE
-#      FAULT, not a seat fault — the seat is healthy — so we do NOT mark
-#      the seat; the tried-seats file already records it for this unit and
-#      prevents an immediate re-pick on the next in-process attempt
-#      (fleet-ops#1416). A verdict-based empty run (tools=0, no final text)
-#      is a SEAT FAULT and is benched via mark_seat_empty_run before
-#      re-seating in-process (fleet-ops#902). In both cases the in-process
-#      retry loop avoids burning the item's StartLimitBurst dispatch budget
-#      (only exits 1 after EMPTY_RUN_RETRY_MAX consecutive empty runs).
-#      Root cause (fleet-ops#1378 determination, snapshot 2026-08-27): the
-#      empty runs were LANE FAULTS on free seats (opencode/nemotron-3-ultra-
-#      free, straitly/deepseek/deepseek-v4-pro returned < 20 B stdout), NOT
-#      unworkable issue bodies — the three target issues (fleet-ops#1249,
-#      #1252, #1223) were well-formed detector findings. The in-process
-#      re-seat is the correct response: the item is never charged for a
-#      provider flake on a healthy seat.
+#      to stdout), re-seat in-process via continue (fleet-ops#1378) AND
+#      bench the seat via mark_seat_empty_run so pick_seat skips it on the
+#      next intake re-spawn and reroutes to a healthy seat (fleet-ops#1298).
+#      A provider no-op (pi ran, exited 0, produced < 20 B) is a SEAT
+#      FAULT — same class as a verdict-based empty run (tools=0, no final
+#      text, fleet-ops#902) — so both are benched via mark_seat_empty_run
+#      before re-seating in-process. The bench escalates by
+#      consecutive_failure_count (fleet-ops#1408) so a repeat offender
+#      stays benched longer each cycle, and seat-health.ts resets the count
+#      on a healthy observation so a recovered seat is re-tried at the base
+#      backoff. The in-process retry loop avoids burning the item's
+#      StartLimitBurst dispatch budget (only exits 1 after
+#      EMPTY_RUN_RETRY_MAX consecutive empty runs).
+#      History: fleet-ops#1416 treated a provider no-op as a LANE fault
+#      (no bench) on the theory that a single 0B stdout was a provider
+#      hiccup on a healthy seat. fleet-ops#1298 reversed that: without a
+#      bench, an intake re-spawn (fresh claim, empty tried-seats) re-picked
+#      the same no-op'ing seat and burned 8 runs/2h on
+#      straitly/deepseek-v4-pro. The escalating bench breaks the loop
+#      without walling a recovered seat (fail-open after usable_at).
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
@@ -124,9 +127,11 @@ source "$SEAT_LIB"
 
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # fleet-ops#1378: no-op in-process retry limit. A provider no-op (pi exits 0
-# with < OUT_MIN stdout) is a lane fault; a verdict-based empty run
-# (tools=0, no final text) is a seat fault. Both are re-seated in-process
-# up to EMPTY_RUN_RETRY_MAX times (default 2) before exiting 1 and letting
+# with < OUT_MIN stdout) and a verdict-based empty run (tools=0, no final
+# text) are both SEAT FAULTS (fleet-ops#1298 reversed the #1416 lane-fault
+# split for the provider no-op). Both are benched via mark_seat_empty_run
+# (escalating backoff, fleet-ops#1408) and re-seated in-process up to
+# EMPTY_RUN_RETRY_MAX times (default 2) before exiting 1 and letting
 # systemd Restart= count it toward StartLimitBurst. This keeps empty runs
 # from burning the item's dispatch budget.
 EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
@@ -477,16 +482,29 @@ is_empty_run() {
 }
 
 if (( out_bytes < OUT_MIN )); then
-    # fleet-ops#1416: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
-    # is a LANE FAULT, not a seat fault. The seat is healthy — it accepted
-    # the work and ran pi. We do NOT write a per-seat ledger marker; the
-    # tried-seats file already records this seat for THIS unit, so the next
-    # in-process iteration will pick a different seat. An intake re-spawn
-    # (fresh claim with empty tried-seats) may re-pick this seat, which is
-    # intentional: the seat is healthy and may work on the next attempt.
+    # fleet-ops#1298: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
+    # is a SEAT FAULT, same class as the verdict tools=0 empty-run
+    # (fleet-ops#902). Bench it via mark_seat_empty_run so pick_seat skips
+    # it on the next intake re-spawn (fresh claim, empty tried-seats) and
+    # reroutes to a healthy seat. The bench escalates by
+    # consecutive_failure_count (fleet-ops#1408) so a repeat offender
+    # stays benched longer each cycle, and seat-health.ts resets the count
+    # on a healthy observation so a recovered seat is re-tried at the base
+    # backoff (fail-open after usable_at). The tried-seats file still
+    # records this seat for THIS unit so the next in-process iteration
+    # picks a different seat immediately.
     # fleet-ops#1378: re-seat in-process (continue) instead of exit 1 so
     # provider no-ops don't burn the item's StartLimitBurst dispatch budget.
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, re-seating in-process (seat NOT marked; healthy seat, lane fault)"
+    # History: fleet-ops#1416 made this a lane fault (no bench) on the
+    # theory a single 0B stdout was a provider hiccup on a healthy seat;
+    # without the bench an intake re-spawn re-picked the same no-op'ing
+    # seat and burned 8 runs/2h on straitly/deepseek-v4-pro (#1298).
+    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, escalating backoff) and re-seating in-process"
+    if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
+        seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
+    else
+        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
+    fi
     empty_run_attempt=$((empty_run_attempt + 1))
     if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
         seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
