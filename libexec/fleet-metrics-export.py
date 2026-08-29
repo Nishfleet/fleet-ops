@@ -1449,26 +1449,39 @@ def main():
     # (enrolled repos only). Both export total, self-maintenance count, and
     # ratio (omitted when total=0). The 64% fleet2 death-number tripwire
     # is a TREND alert (offset 7d), not a level.
+    # HELP/TYPE is emitted once per metric name; the per-queue samples
+    # follow. Duplicate HELP/TYPE lines make the textfile unparseable
+    # (promtool rejects them), so they must stay outside the loop.
     qc = _queue_composition()
     if qc is not None:
+        lines.append("")
+        lines.append(HELP_QT)
+        lines.append(TYPE_QT)
+        for queue in ("agent-ready", "ready-work"):
+            lines.append(
+                f'fleet_queue_total{{queue="{queue}"}} {qc[queue]["total"]}'
+            )
+        lines.append("")
+        lines.append(HELP_QSM)
+        lines.append(TYPE_QSM)
+        for queue in ("agent-ready", "ready-work"):
+            lines.append(
+                f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {qc[queue]["self"]}'
+            )
+        ratio_lines = []
         for queue in ("agent-ready", "ready-work"):
             q = qc[queue]
             total = q["total"]
-            self_n = q["self"]
-            lines.append("")
-            lines.append(HELP_QT)
-            lines.append(TYPE_QT)
-            lines.append(f'fleet_queue_total{{queue="{queue}"}} {total}')
-            lines.append("")
-            lines.append(HELP_QSM)
-            lines.append(TYPE_QSM)
-            lines.append(f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {self_n}')
             if total > 0:
-                ratio = self_n / total
-                lines.append("")
-                lines.append(HELP_QSMR)
-                lines.append(TYPE_QSMR)
-                lines.append(f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}')
+                ratio = q["self"] / total
+                ratio_lines.append(
+                    f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}'
+                )
+        if ratio_lines:
+            lines.append("")
+            lines.append(HELP_QSMR)
+            lines.append(TYPE_QSMR)
+            lines.extend(ratio_lines)
         fresh_kinds.append("queue_composition")
 
     if fresh_kinds:
