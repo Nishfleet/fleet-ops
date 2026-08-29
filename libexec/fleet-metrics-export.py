@@ -125,6 +125,27 @@ TYPE_PQ = "# TYPE fleet_pr_quality_24h gauge"
 HELP_PQS = "# HELP fleet_pr_quality_share class count / total merged PRs, trailing 24h. 0..1. Omitted when total=0. Trend alerts ride the 24h-offset delta, never a level."
 TYPE_PQS = "# TYPE fleet_pr_quality_share gauge"
 
+# Verified-merges numerator (fleet-ops#1136 objective decision, 2026-08-28).
+# The fleet's single optimization target is max quality-throughput: verified,
+# live-proven merged product work per day. A merged PR counts as "verified" when
+# it passes BOTH gates the objective named:
+#   (a) non-null effective diff  — additions+deletions > 0 (a squash that landed
+#       no net change is a null diff; the merge-trample gate's null-diff class).
+#   (b) delivery evidence on closure — a `run-proof:` line OR a Verification:
+#       section carrying a run-cue (journalctl/systemctl/url/exit/rc/fence/
+#       ALL PHASES PASSED/$ prompt/ok: N). Same cues as lib/exec-review-receipt.py
+#       (the closure-evidence detector from 0509#1365's fixes); inlined here so
+#       the exporter stays stdlib-only with no repo-checkout import dependency.
+# `fleet_verified_merges_24h{kind="verified|unverified|total"}` — counts.
+# `fleet_verified_merge_ratio` — verified/total, 0..1; omitted when total=0.
+# Raw merge counts (fleet_merged_prs_24h) stay on the console; the WFR ratchets
+# against THIS verified number. Baseline established on the first instrumented
+# week. Trend alert on the 24h-offset delta, never a level (levels are policy).
+HELP_VM = "# HELP fleet_verified_merges_24h Merged-PR count in the trailing 24h by verification kind. kind=verified: non-null effective diff AND delivery evidence (run-proof:/Verification: run-cue). kind=unverified: failed one or both gates. kind=total: verified+unverified. Always emitted when the merged-PR fetch succeeded."
+TYPE_VM = "# TYPE fleet_verified_merges_24h gauge"
+HELP_VMR = "# HELP fleet_verified_merge_ratio verified merges / total merges, trailing 24h. 0..1. Omitted when total=0. The WFR ratchets against this number, not raw merge counts."
+TYPE_VMR = "# TYPE fleet_verified_merge_ratio gauge"
+
 # Keystone routing metrics (fleet-ops#1133: reliability-first routing for
 # keystone builds). seat-lib pick_seat appends a `routed` event when it sends
 # a keystone packet to a strong seat; pi-packet-run / pi-issue-run append an
@@ -245,6 +266,34 @@ query($cursor: String) {
 }
 """
 
+# fleet-ops#1136: one paginated GraphQL `search` call fetches every PR merged
+# across the org in one pass with the fields the self-maintenance ratio, the
+# upgrade/repair/churn classification, AND the verified-merges numerator all
+# need (repo, title, body, additions, deletions, changedFiles, mergedAt). The
+# REST `gh search prs --json` surface omits additions/deletions/changedFiles,
+# so the non-null-diff gate cannot be evaluated from it. GraphQL search returns
+# PullRequest nodes for an ISSUE-typed query; `sort:updated-desc` + a 24h
+# mergedAt cutoff in the client keeps the page count bounded (a busy day is
+# ~50-100 merges; GH_PAGES=10 × first=100 covers 1000).
+MERGED_PRS_SEARCH_QUERY = """
+query($cursor: String) {
+  search(query: "org:Nishfleet is:pr is:merged sort:updated-desc", type: ISSUE, first: 100, after: $cursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        title
+        body
+        additions
+        deletions
+        changedFiles
+        mergedAt
+        repository { nameWithOwner }
+      }
+    }
+  }
+}
+"""
+
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -358,9 +407,8 @@ def _watchdog_firing():
     of silently passing.
     """
     try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:9090/api/v1/alerts", timeout=10
-        ) as r:
+        # Hardcoded localhost URL (not user-controlled); false positive.
+        with urllib.request.urlopen("http://127.0.0.1:9090/api/v1/alerts", timeout=10) as r:  # nosemgrep
             payload = json.load(r)
     except (urllib.error.URLError, urllib.error.HTTPError,
             OSError, json.JSONDecodeError, ValueError) as exc:
@@ -392,7 +440,8 @@ def _ping_healthcheck():
         branch = "dead-man"
     try:
         req = urllib.request.Request(target, method="GET")
-        with urllib.request.urlopen(req, timeout=10) as r:
+        # target is a healthcheck URL from a config file (not user input).
+        with urllib.request.urlopen(req, timeout=10) as r:  # nosemgrep
             print(f"hc ping branch={branch} status={r.status}", file=sys.stderr)
             return r.status
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
@@ -484,14 +533,32 @@ def _merged_prs_24h():
 
 
 def _merged_prs_detail():
-    """Cached list of {repo, title} for PRs merged in the trailing 24h, or None.
+    """Cached list of merged-PR records for the trailing 24h, or None.
 
-    One gh call fetches repository + closedAt + title. The per-repo
-    fleet_merged_prs_24h family, the self-maintenance ratio, and the
-    upgrade/repair/churn classification all derive from this single fetch
-    (fleet-ops#1136) — no extra gh call per exporter run.
+    One GraphQL `search` call fetches repository + mergedAt + title + body +
+    additions + deletions + changedFiles. The per-repo fleet_merged_prs_24h
+    family, the self-maintenance ratio, the upgrade/repair/churn
+    classification, AND the verified-merges numerator all derive from this
+    single fetch (fleet-ops#1136) — no extra gh call per exporter run.
     """
-    return _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs_detail")
+    detail = _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs_detail")
+    # Shape guard: a cache written by the pre-#1136-verified exporter has only
+    # {repo, title} (no body/additions/deletions/changed_files). The verified-
+    # merges numerator would see all-zero diff stats and classify every PR as
+    # unverified. Delete the stale-shape cache and re-fetch with the full field
+    # set (one-time transition on deploy; the _GH_FETCHED_THIS_RUN guard is
+    # reset so the re-fetch is allowed this run).
+    if detail and not any("additions" in r for r in detail):
+        print("merged_prs_detail: cache has pre-verified-merges shape; re-fetching",
+              file=sys.stderr)
+        global _GH_FETCHED_THIS_RUN
+        _GH_FETCHED_THIS_RUN = False
+        try:
+            DETAIL_CACHE.unlink()
+        except OSError:
+            pass
+        detail = _cached_json(DETAIL_CACHE, _gh_merged_prs_raw, "merged_prs_detail")
+    return detail
 
 
 def _gh_merged_prs():
@@ -500,48 +567,49 @@ def _gh_merged_prs():
 
 
 def _gh_merged_prs_raw():
-    """One cheap gh call across all Nishfleet repos.
+    """One paginated GraphQL search call across all Nishfleet repos.
 
-    Returns a list of {"repo": "Nishfleet/<name>", "title": "..."} for PRs
-    merged in the trailing 24h, or None on failure.
+    Returns a list of {"repo", "title", "body", "additions", "deletions",
+    "changed_files"} for PRs merged in the trailing 24h, or None on failure.
+    The diff-stat + body fields power the verified-merges numerator
+    (fleet-ops#1136 objective decision); the REST `gh search prs --json`
+    surface omits additions/deletions/changedFiles, so GraphQL search is
+    required.
     """
-    try:
-        r = subprocess.run(
-            [
-                "gh", "search", "prs",
-                "--owner", GH_OWNER,
-                "--merged",
-                "--json", "repository,closedAt,title",
-                "--limit", "500",
-            ],
-            capture_output=True, text=True, timeout=GH_TIMEOUT,
-            env={**os.environ, "GH": "/usr/bin/gh"},
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"gh search prs failed: {exc}", file=sys.stderr)
-        return None
-    if r.returncode != 0:
-        print(f"gh search prs rc={r.returncode}: {r.stderr.strip()[:200]}",
-              file=sys.stderr)
-        return None
-    try:
-        rows = json.loads(r.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        print(f"gh search prs json: {exc}", file=sys.stderr)
-        return None
     cutoff_epoch = time.time() - 86400
     out = []
-    for row in rows:
-        repo = (row.get("repository") or {}).get("nameWithOwner") or \
-               (row.get("repository") if isinstance(row.get("repository"), str)
-                else "")
-        merged = row.get("closedAt") or ""
-        if not repo:
-            continue
-        ep = _parse_iso_utc(merged)
-        if ep is None or ep < cutoff_epoch:
-            continue
-        out.append({"repo": repo, "title": row.get("title") or ""})
+    cursor = None
+    for _ in range(GH_PAGES):
+        payload = _gh_graphql(MERGED_PRS_SEARCH_QUERY, cursor)
+        if payload is None:
+            return None
+        if payload.get("errors"):
+            print(f"gh graphql errors: {payload['errors'][:1]}", file=sys.stderr)
+            return None
+        conn = ((payload.get("data") or {}).get("search") or {})
+        for node in conn.get("nodes") or []:
+            repo = (node.get("repository") or {}).get("nameWithOwner") or ""
+            if not repo:
+                continue
+            merged = node.get("mergedAt") or ""
+            ep = _parse_iso_utc(merged)
+            if ep is None or ep < cutoff_epoch:
+                continue
+            out.append({
+                "repo": repo,
+                "title": node.get("title") or "",
+                "body": node.get("body") or "",
+                "additions": int(node.get("additions") or 0),
+                "deletions": int(node.get("deletions") or 0),
+                "changed_files": int(node.get("changedFiles") or 0),
+            })
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return out
+        cursor = page.get("endCursor")
+        if not cursor:
+            return out
+    print("gh merged-prs search: hit page cap", file=sys.stderr)
     return out
 
 
@@ -1149,6 +1217,94 @@ def _self_maintenance_and_quality(detail):
     }
 
 
+# --- Verified-merges numerator (fleet-ops#1136 objective decision) ---------
+
+# Delivery-evidence detection — SAME cues as lib/exec-review-receipt.py
+# (the closure-evidence detector whose fixes 0509#1365 landed). Inlined here
+# so the exporter stays stdlib-only with no repo-checkout import dependency;
+# the canonical detector remains lib/exec-review-receipt.py and these regexes
+# are kept in lock-step with it. A body has a receipt when EITHER:
+#   1. a `run-proof:` line with a non-empty value, OR
+#   2. a Verification: section (heading / bold / inline) carrying a run-cue:
+#      journalctl, systemctl, http(s)://, exit N, rc=N, a fenced code block,
+#      ALL PHASES PASSED, a `$ ` prompt line, or `ok: N`.
+_RUN_PROOF_RE = re.compile(r"^[\t ]*run-proof:[\t ]+\S+", re.M)
+_VERIFICATION_RE = re.compile(
+    r"(?:^#+\s+[Vv]erification:?[\t ]*\*?[\t ]*$"
+    r"|\*{2}[\t ]*[Vv]erification:?[\t ]*\*{0,2}[\t ]*$"
+    r"|(?:^|[\t ])[Vv]erification:[\t ]*)"
+)
+_JOURNALCTL_RE = re.compile(r"(^|[^A-Za-z0-9_])journalctl([^A-Za-z0-9_]|$)")
+_SYSTEMCTL_RE = re.compile(r"(^|[^A-Za-z0-9_])systemctl([^A-Za-z0-9_]|$)")
+_EXIT_RE = re.compile(r"exit[\t ]+[0-9]")
+_RC_RE = re.compile(r"rc=[0-9]")
+_PROMPT_RE = re.compile(r"^[\t ]*\$ ")
+_OK_N_RE = re.compile(r"ok: [0-9]")
+
+
+def _has_delivery_evidence(body):
+    """True when a PR body carries a run-proof: line or a Verification: run-cue.
+
+    Mirrors lib/exec-review-receipt.py:has_receipt exactly (fleet-ops#1136
+    objective decision: delivery evidence on closure, per 0509#1365's fixes).
+    """
+    text = body or ""
+    if _RUN_PROOF_RE.search(text):
+        return True
+    in_v = False
+    for line in text.splitlines():
+        if _VERIFICATION_RE.search(line):
+            in_v = True
+        if not in_v:
+            continue
+        if (
+            _JOURNALCTL_RE.search(line)
+            or _SYSTEMCTL_RE.search(line)
+            or "http://" in line
+            or "https://" in line
+            or _EXIT_RE.search(line)
+            or _RC_RE.search(line)
+            or "```" in line
+            or "ALL PHASES PASSED" in line
+            or _PROMPT_RE.match(line)
+            or _OK_N_RE.search(line)
+        ):
+            return True
+    return False
+
+
+def _verified_merges(detail):
+    """Derive the verified-merges numerator (fleet-ops#1136 objective decision).
+
+    A merged PR is "verified" when it passes BOTH gates:
+      (a) non-null effective diff — additions + deletions > 0 (a squash that
+          landed no net change is a null diff).
+      (b) delivery evidence on closure — _has_delivery_evidence(body).
+    Input: list of {"repo", "title", "body", "additions", "deletions",
+    "changed_files"} from _merged_prs_detail(). Returns:
+      {"verified": n, "unverified": n, "total": n, "ratio": float|None}
+    ratio is None when total == 0 (caller omits the gauge).
+    """
+    verified = unverified = 0
+    for row in detail or []:
+        adds = int(row.get("additions") or 0)
+        dels = int(row.get("deletions") or 0)
+        non_null_diff = (adds + dels) > 0
+        evidence = _has_delivery_evidence(row.get("body") or "")
+        if non_null_diff and evidence:
+            verified += 1
+        else:
+            unverified += 1
+    total = verified + unverified
+    ratio = (verified / total) if total > 0 else None
+    return {
+        "verified": verified,
+        "unverified": unverified,
+        "total": total,
+        "ratio": ratio,
+    }
+
+
 # --- Main ------------------------------------------------------------------
 
 def main():
@@ -1240,6 +1396,25 @@ def main():
                 lines.append(
                     f'fleet_pr_quality_share{{class="{cls}"}} {sm['share'][cls]:.6f}'
                 )
+
+        # --- Verified-merges numerator (fleet-ops#1136 objective decision) ---
+        # A merged PR is verified when it has a non-null effective diff AND
+        # delivery evidence on closure. Raw merge counts stay on the console;
+        # the WFR ratchets against this verified number. Always emitted when
+        # the merged-PR fetch succeeded (counts 0 on a no-merge day; ratio
+        # omitted). kind="total" mirrors the self-maintenance heartbeat shape.
+        vm = _verified_merges(detail)
+        lines.append("")
+        lines.append(HELP_VM)
+        lines.append(TYPE_VM)
+        lines.append(f'fleet_verified_merges_24h{{kind="verified"}} {vm["verified"]}')
+        lines.append(f'fleet_verified_merges_24h{{kind="unverified"}} {vm["unverified"]}')
+        lines.append(f'fleet_verified_merges_24h{{kind="total"}} {vm["total"]}')
+        if vm["ratio"] is not None:
+            lines.append("")
+            lines.append(HELP_VMR)
+            lines.append(TYPE_VMR)
+            lines.append(f"fleet_verified_merge_ratio {vm['ratio']:.6f}")
 
     snap = _repo_snapshot()
     if snap is not None:

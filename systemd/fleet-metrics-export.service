@@ -1,0 +1,6 @@
+[Unit]
+Description=Fleet Prometheus metrics exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-metrics-export.py

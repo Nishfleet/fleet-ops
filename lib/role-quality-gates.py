@@ -99,6 +99,11 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-gap-closure-drill",
     "fleet-gap-closure-loop",
     "gap-closure-drill",
+    # fleet-ops#1495: agent-scheduler-drift is a mechanical drift detector
+    # (standing-rules enforcement layer 3). It runs no model, owns no prompt
+    # and produces no work items — same class as fleet-aeo-probe. Its own
+    # gate is the drift --check plus tests/agent-scheduler-drift.test.sh.
+    "agent-scheduler-drift",
 )
 
 

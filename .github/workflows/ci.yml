@@ -249,6 +249,11 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
+        # classification, queue composition, and verified-merges numerator
+        # (non-null diff AND delivery evidence) in the metrics exporter, plus
+        # the absent/trend alert rules and the self-maintenance config shape.
+        bash tests/fleet-metrics-export.test.sh
         # fleet-ops#1235: lock the /etc/default/prometheus retention
         # override (40d) and the deploy restart-vs-reload + headroom guard.
         bash tests/prometheus-retention-40d.test.sh

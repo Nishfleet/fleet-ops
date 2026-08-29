@@ -6,7 +6,7 @@
       "kind": "exporter",
       "heartbeat_metric": "node_textfile_mtime_seconds",
       "absent_alert": "FleetMetricsExportMissing",
-      "files": []
+      "files": ["libexec/fleet-metrics-export.py", "systemd/fleet-metrics-export.service", "systemd/fleet-metrics-export.timer"]
     },
     {
       "name": "completion-canary",

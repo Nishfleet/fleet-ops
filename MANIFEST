@@ -29,6 +29,17 @@ bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-trut
 # fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
 # install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
 config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
+# fleet-ops#1136: live self-maintenance ratio + upgrade/repair/churn quality
+# + queue composition + verified-merges numerator. The exporter is the
+# canonical source for fleet_self_maintenance_*, fleet_pr_quality_*,
+# fleet_queue_*, and fleet_verified_merges_* families. The base service +
+# timer + drop-ins (10-git-mirrors, staleness-checker, waste-ledger) are all
+# listed here so install.sh converges the whole unit. The self-maintenance
+# repo set is PR-tunable without an exporter code change.
+libexec/fleet-metrics-export.py /home/nish/.local/libexec/fleet-metrics-export.py
+systemd/fleet-metrics-export.service /home/nish/.config/systemd/user/fleet-metrics-export.service
+systemd/fleet-metrics-export.timer /home/nish/.config/systemd/user/fleet-metrics-export.timer
+config/self-maintenance-repos.json /home/nish/workspaces/tooling/fleet-ops/config/self-maintenance-repos.json
 # fleet-ops#1534: repo-ize alertmanager routing so the severity=page-only
 # phone path is PR-reviewed and cannot drift back to "everything pages"
 # (the 2026-08-28 leak this file replaces). install.sh --system deploys to
