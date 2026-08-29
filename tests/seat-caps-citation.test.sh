@@ -161,7 +161,21 @@ while IFS=$'\t' read -r prov model; do
     tokens=$(printf '%s' "$model" \
         | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
         | sort -rn | cut -f2)
-    [[ -n "$tokens" ]] || { echo "  $prov/$model: no >=4-char token to match a reason field" >&2; mbad=$((mbad+1)); continue; }
+    # Fallback for short-hyphenated slugs whose every [-._] part is < 4 chars
+    # (e.g. swe-1-7 -> swe,1,7 all dropped): use the sanitised full slug
+    # ([-._] stripped) as a single token when it is itself >= 4 chars. The
+    # sanitised slug is the MOST distinctive token possible, so this does not
+    # weaken the contract — it closes the gap for slugs the part-splitter
+    # could not tokenise (fleet-ops#2102).
+    if [[ -z "$tokens" ]]; then
+        slug=$(printf '%s' "$model" | tr -d -- '-._')
+        if [[ ${#slug} -ge 4 ]]; then
+            tokens="$slug"
+        else
+            echo "  $prov/$model: no >=4-char token to match a reason field" >&2
+            mbad=$((mbad+1)); continue
+        fi
+    fi
     # Dated _* reason field names on this provider. Reason fields are
     # _<sanitised-model> (NOT _comment_* — those are general provider
     # notes), and must carry a YYYY-MM-DD date.
