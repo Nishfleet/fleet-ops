@@ -1232,3 +1232,39 @@ groups:
         annotations:
           summary: "observe-to-close metric family vanished"
           description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."
+
+  - name: fleet_0509_surface_probe
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). 0509-surface-probe writes
+      # fleet_surface_probe_last_run_seconds on EVERY run (green or red),
+      # so absent() fires only when the timer/organ is dead — not on a
+      # failing probe (a failing probe still writes the timestamp and
+      # trips SurfaceProbeFailing below). 40m is >3 timer cycles (10 min)
+      # so a single missed run never pages; three missed cycles means the
+      # organ is provably dead.
+      - alert: SurfaceProbe0509Absent
+        expr: absent(fleet_surface_probe_last_run_seconds{probe="0509-surface"}) or (time() - fleet_surface_probe_last_run_seconds{probe="0509-surface"}) > 2400
+        for: 5m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "0509 surface-matrix probe organ is missing or dead"
+          description: "Repair worker: fleet_surface_probe_last_run_seconds{probe=\"0509-surface\"} is absent or older than 40m (three missed 10-min timer cycles). The probe organ is dead — either 0509-surface-probe.timer is not running, the service is stuck, or the dedicated checkout at /home/nish/workspaces/0509-probe is gone. Check `systemctl --user status 0509-surface-probe.timer` and `journalctl --user -u 0509-surface-probe.service -n 80`. Then re-provision per the repair prompt at ~/.pi/agent/prompts/0509-surface-probe-repair.md. fleet-ops#1150."
+
+      # ProbeFailing (fleet-ops#1150): 2 consecutive fails = critical, rides
+      # the repair-dispatch rail. The consecutive-failure gauge is written by
+      # the probe itself (reset to 0 on green, incremented on each fail), so
+      # this rule is deterministic and does not depend on a Prometheus
+      # counter rate. A single flake never fires; two in a row is a real
+      # regression on shipped 0509 main.
+      - alert: SurfaceProbeFailing
+        expr: fleet_surface_probe_consecutive_failures{probe="0509-surface"} >= 2
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "0509 surface-matrix probe failed 2+ consecutive runs — a real regression shipped to 0509 main"
+          description: "Repair worker: the 0509 authenticated surface matrix (routes × {390,1440,2000} × {light,dark} × {free,scout,starter,agency,expired}) failed 2+ consecutive runs. This is the outermost outcome net for 0509 (fleet-ops#1150) — a failure means a real defect shipped to 0509 main that the matrix catches (contrast, control-row alignment, gutter, overflow, tap target, or focus-ring). Read the run log at /tmp/0509-surface-probe-run.log for the failing cell and rule, then file the defect as a NEW issue in Nishfleet/0509 (do NOT fix it from fleet-ops). Full diagnostic in the repair prompt at ~/.pi/agent/prompts/0509-surface-probe-repair.md. fleet-ops#1150."
