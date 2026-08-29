@@ -40,6 +40,7 @@
     {"unit": "vault-conflict-resolver", "class": "a", "source": "repo"},
     {"unit": "vault-knowledge-format", "class": "a", "source": "repo"},
     {"unit": "agent-cron-0509-daily-market-signal", "class": "b", "source": "repo"},
+    {"unit": "agent-scheduler-drift", "class": "a", "source": "repo", "endorsement": "vault global-standing-rules.md: named mechanical enforcement (layer 3) for the endorsed 'standing machinery is agent-agnostic' rule; migrated to repo per fleet-ops#1495"},
     {"unit": "oomd-drill-hog", "class": "a", "source": "repo"},
     {"unit": "resilience-drill-stub-restart", "class": "a", "source": "repo"},
     {"unit": "opus-heartbeat", "class": "a", "source": "hand-placed", "endorsement": "ledger: Nish-ordered watch during absence"},
@@ -68,7 +69,6 @@
     {"unit": "auditor-stdio-test", "banned_class": "test debris", "follow_up": "filed"},
     {"unit": "ready-work", "banned_class": "dispatcher", "follow_up": "filed"},
     {"unit": "open-question-sweep", "banned_class": "watchdog/poller", "follow_up": "filed", "adjudicated": "MECHANICAL-INSTEAD", "verdict": "deleted; watch lens owned by WFR + blind-audit (docs/organ-catalog.md)", "resolved_by": "#1494"},
-    {"unit": "agent-scheduler-drift", "banned_class": "watchdog", "follow_up": "filed"},
     {"unit": "quality-baseline-research", "banned_class": "dispatcher", "follow_up": "filed"},
     {"unit": "memory-index-autocompact", "banned_class": "borderline b/c", "follow_up": "filed"}
   ],

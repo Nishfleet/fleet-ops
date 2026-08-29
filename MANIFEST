@@ -163,6 +163,16 @@ bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 bin/agent-cron-run /home/nish/.local/bin/agent-cron-run
 systemd/agent-cron-0509-daily-market-signal.service /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.service
 systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer
+# fleet-ops#1495: agent-scheduler drift detector — the named mechanical
+# enforcement (layer 3) for the endorsed "standing machinery is
+# agent-agnostic" rule (vault global-standing-rules.md). Migrated from a
+# hand-placed file into the repo per the #1480 audit adjudication: the rule
+# IS endorsed, so this is sanctioned class (a), not the class (c) the audit
+# flagged by "hand-placed" alone. Fail-loud watchdog (no heartbeat metric,
+# not an organ). install.sh symlinks over the live file in place.
+bin/agent-scheduler-drift-check /home/nish/.local/bin/agent-scheduler-drift-check
+systemd/agent-scheduler-drift.service /home/nish/.config/systemd/user/agent-scheduler-drift.service
+systemd/agent-scheduler-drift.timer /home/nish/.config/systemd/user/agent-scheduler-drift.timer
 # fleet-ops#317: the daily market-signal prompt must live in the repo and be
 # installed by MANIFEST, otherwise a missing untracked prompt causes every
 # scheduled timer fire to FATAL immediately.
