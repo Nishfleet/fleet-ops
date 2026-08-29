@@ -63,11 +63,11 @@ if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
 PY
 ok "catalog: researcher role is gated (fleet-ops#592)"
 
-# fleet-ops#592 / #636 / #1180: session-reap, vault-conflict-resolver, the
-# vault knowledge-format lint timer, and the fleet-metrics-export Prometheus
-# textfile exporter are plumbing, not work-producing roles. Dropping any
-# prefix re-reds the audit (the live catalog test is not enough if the
-# unit file is also gone).
+# fleet-ops#592 / #636 / #1180 / #1513: session-reap, vault-conflict-resolver,
+# the vault knowledge-format lint timer, the fleet-metrics-export Prometheus
+# textfile exporter, and the pi-intake-trigger oneshot are plumbing, not
+# work-producing roles. Dropping any prefix re-reds the audit (the live
+# catalog test is not enough if the unit file is also gone).
 python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
 import importlib.util
 import sys
@@ -83,6 +83,7 @@ required = (
     "fleet-metrics-export",
     "standing-rules-render",
     "fleet-aeo",
+    "pi-intake-trigger",
     "fleet-gap-closure-drill",
     "fleet-gap-closure-loop",
     "gap-closure-drill",
@@ -101,6 +102,7 @@ leaked = [
         "fleet-metrics-export.service",
         "standing-rules-render.service",
         "fleet-aeo-probe.service",
+        "pi-intake-trigger.service",
         "fleet-gap-closure-drill.service",
         "fleet-gap-closure-loop.service",
         "gap-closure-drill-stub-fail.service",
@@ -111,7 +113,7 @@ leaked = [
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, gap-closure-drill/loop (fleet-ops#1180, #1152, #1236, #180)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1152, #1236, #180, #1513)"
 
 # fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
 # standing-rules-render.service on disk (the canonical-render unit that
@@ -232,8 +234,38 @@ if [[ "$detail_hit" == "yes" ]]; then
 fi
 ok "behaviour lock: fleet-metrics-export.service is not flagged (fleet-ops#1180)"
 
+# fleet-ops#1513: behaviour-locked. Build a scratch repo with a real
+# pi-intake-trigger.service on disk and prove the audit emits no
+# `unit:pi-intake-trigger.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1513=$(mktemp -d -t role-gates-1513.XXXXXX)
+trap 'rm -rf "$scratch1180" "$scratch1513"' EXIT INT TERM
+mkdir -p "$scratch1513/systemd" "$scratch1513/prompts" "$scratch1513/bin" "$scratch1513/config" "$scratch1513/tests"
+cat >"$scratch1513/systemd/pi-intake-trigger.service" <<'UNIT'
+[Unit]
+Description=Event-driven intake trigger (fixture for fleet-ops#1513)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/pi-intake-trigger
+UNIT
+# Minimal catalog so the auditor can parse it.
+cp "$catalog" "$scratch1513/config/role-quality-gates.json"
+audit1513_out=$(python3 "$lib" audit --repo-root "$scratch1513" --catalog "$scratch1513/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1513_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1513_out"
+if echo "$audit1513_out" | jq -e '.findings[] | select(.id == "unit:pi-intake-trigger.service")' >/dev/null; then
+  fail "fleet-ops#1513 regression: pi-intake-trigger.service leaked into ungated-role findings: $(echo "$audit1513_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line the issue reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit1513_out" | jq -e '.findings[] | select(.detail | test("pi-intake-trigger.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1513 regression: exact issue symptom re-appeared: $(echo "$audit1513_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: pi-intake-trigger.service is not flagged (fleet-ops#1513)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
-trap 'rm -rf "$scratch"' EXIT INT TERM
+trap 'rm -rf "$scratch1513" "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
 : >"$scratch/triage.md"
 : >"$scratch/gh.log"
