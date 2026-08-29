@@ -62,6 +62,15 @@ fi
 # runner where the runner user cannot create /home/nish (fleet-ops#1407).
 ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
+# CLAIMS_LOG (fleet-ops#1455): the claims index read by opus-heartbeat-gather
+# (claims_last_2h) and fleet-restore-drill (B.2 — a restored fleet tells which
+# issues are claimed from this file). The tick is the ONLY writer on the claim
+# path; without an append here the log stays empty, the heartbeat snapshot
+# reports claims_last_2h=0 even while claims are happening (visible in the
+# journal as `claimed+spawned`), and watchers auto-file false "Intake
+# starvation" issues (#1455, #1377, #1448). Overridable for tests via
+# PI_INTAKE_CLAIMS_LOG, same convention as ISSUE_STATE_DIR.
+CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
@@ -560,6 +569,16 @@ for i in "${!numbers[@]}"; do
     fi
 
     echo "issue $N ($title): claimed+spawned"
+    # fleet-ops#1455: append a claim record to the claims index so
+    # opus-heartbeat-gather (claims_last_2h) and fleet-restore-drill (B.2)
+    # see real claim counts. Without this the log stays empty, the heartbeat
+    # reports claims_last_2h=0 while claims are happening, and watchers
+    # auto-file false "Intake starvation" issues. Format matches both
+    # consumers: ISO-8601 Z timestamp + space + "claimed" keyword (the
+    # heartbeat predicate) + parseable tail (the restore-drill regex).
+    _claims_dir="$(dirname "$CLAIMS_LOG")"
+    mkdir -p "$_claims_dir" 2>/dev/null || true
+    printf '%s claimed line=%s repo=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$N" "$REPO" >> "$CLAIMS_LOG" 2>/dev/null || true
     slots=$(( slots - 1 ))
 done
 

@@ -102,3 +102,10 @@ bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
 # tests/pi-intake-gh-rate-limit.test.sh locks the side-car throttle in
 # lib/pi-intake-tick.sh. ci.yml lists this file, so the drill runs here.
 bash "$here/pi-intake-gh-rate-limit.test.sh"
+# --- 8. fleet-ops#1455 claims-index write (CI hook) -----------------------
+# tests/pi-intake-tick-claims-log.test.sh locks the append to
+# ready-work-claims.log on each successful claim+spawn. Without it the
+# heartbeat reports claims_last_2h=0 while claims are happening, and
+# watchers auto-file false "Intake starvation" issues. ci.yml lists this
+# file, so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-claims-log.test.sh"
