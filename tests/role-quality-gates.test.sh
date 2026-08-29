@@ -264,8 +264,59 @@ if [[ "$detail_hit" == "yes" ]]; then
 fi
 ok "behaviour lock: pi-intake-trigger.service is not flagged (fleet-ops#1513)"
 
+# fleet-ops#1563: behaviour-locked. Build a scratch repo with the real
+# gap-closure plumbing/fixture units on disk (the loop oneshot, the drill
+# runner, and the two throwaway stubs the live audit flagged in #1563) and
+# prove the audit emits no `unit:<name>` finding for any of them. The
+# structural-prefix test above would still pass if a future refactor moved
+# the skip out of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+# Covers all three skip prefixes: fleet-gap-closure-loop,
+# fleet-gap-closure-drill, gap-closure-drill. The work-producing
+# fleet-gap-closure-auditor@/conference units are catalogued under
+# senior-auditor (PR #1601) and are covered by the live-catalog check above.
+scratch1563=$(mktemp -d -t role-gates-1563.XXXXXX)
+trap 'rm -rf "$scratch1563" "$scratch1513"' EXIT INT TERM
+mkdir -p "$scratch1563/systemd" "$scratch1563/prompts" "$scratch1563/bin" "$scratch1563/config" "$scratch1563/tests"
+cat >"$scratch1563/systemd/fleet-gap-closure-loop.service" <<'UNIT'
+[Unit]
+Description=Fleet gap-closure loop (one phase transition per start)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-gap-closure-loop
+UNIT
+cat >"$scratch1563/systemd/fleet-gap-closure-drill.service" <<'UNIT'
+[Unit]
+Description=Fleet gap-closure detector drills (stub units only)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-gap-closure-drill
+UNIT
+cat >"$scratch1563/systemd/gap-closure-drill-stub-fail.service" <<'UNIT'
+[Unit]
+Description=Throwaway failing stub for gap-closure detector drills
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+UNIT
+cat >"$scratch1563/systemd/gap-closure-drill-stub-mask.service" <<'UNIT'
+[Unit]
+Description=Throwaway service for the mask-detection drill timer
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+UNIT
+cp "$catalog" "$scratch1563/config/role-quality-gates.json"
+audit1563_out=$(python3 "$lib" audit --repo-root "$scratch1563" --catalog "$scratch1563/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1563_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1563_out"
+for u in fleet-gap-closure-loop.service fleet-gap-closure-drill.service gap-closure-drill-stub-fail.service gap-closure-drill-stub-mask.service; do
+  if echo "$audit1563_out" | jq -e --arg u "unit:$u" '.findings[] | select(.id == $u)' >/dev/null; then
+    fail "fleet-ops#1563 regression: $u leaked into ungated-role findings: $(echo "$audit1563_out" | jq -c '.findings')"
+  fi
+done
+ok "behaviour lock: gap-closure loop/drill/stub units are not flagged (fleet-ops#1563)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
-trap 'rm -rf "$scratch1513" "$scratch"' EXIT INT TERM
+trap 'rm -rf "$scratch1563" "$scratch1513" "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
 : >"$scratch/triage.md"
 : >"$scratch/gh.log"
