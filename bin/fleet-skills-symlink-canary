@@ -10,6 +10,10 @@
 # gap (file that as its own issue). This canary owns the "one has it, the
 # other does not" class.
 #
+# It also owns the "name is present but the content diverged" class: a
+# house-method skill whose SKILL.md SHA-256 does not match the vault
+# canonical is a silent fork, even if the file is present on every harness.
+#
 # Violations go LOUD (triage + stderr) and auto-file one fleet-ops issue per
 # kind (deduped on an open issue whose body contains the marker). The canary
 # then exits 1 so fleet-heartbeat.service lands in --state=failed.
@@ -319,6 +323,15 @@ if [[ -n "$vault" && -d "$vault" ]]; then
     done <"$house_names"
 fi
 
+hash_skill() {
+    local file="$1"
+    if [[ -f "$file" ]]; then
+        sha256sum "$file" 2>/dev/null | awk '{print $1}'
+    else
+        printf 'missing\n'
+    fi
+}
+
 if [[ -s "$house_missing" ]]; then
     preview=$(list_preview "$house_missing")
     loud "SKILLS-SYMLINK-VIOLATION" "house-method skill(s) not native on every harness: $preview"
@@ -328,10 +341,60 @@ if [[ -s "$house_missing" ]]; then
     violations=$((violations + 1))
 fi
 
+# House-method skill content: a real-dir copy that differs from the vault
+# canonical is a silent fork, even if the name is present everywhere. Compare
+# SHA-256 of SKILL.md for every vault-listed skill against each live harness.
+# This catches the blast-radius / unslop / why class where a pstack install
+# left a real directory behind while Claude and Codex already symlink the vault.
+house_drift="$scratch/house-drift"
+: >"$house_drift"
+if [[ -n "$vault" && -d "$vault" && -s "$house_names" ]]; then
+    while IFS= read -r name || [[ -n "${name:-}" ]]; do
+        [[ -n "$name" ]] || continue
+        expected=$(hash_skill "$vault/$name/SKILL.md")
+        [[ "$expected" != "missing" ]] || continue
+        drift_labels=""
+        if (( claude_ok == 1 )); then
+            got=$(hash_skill "$claude_dir/$name/SKILL.md")
+            if [[ "$got" != "$expected" ]]; then
+                drift_labels="${drift_labels:+$drift_labels,}claude:${got}"
+            fi
+        fi
+        if (( codex_ok == 1 )); then
+            got=$(hash_skill "$codex_dir/$name/SKILL.md")
+            if [[ "$got" != "$expected" ]]; then
+                drift_labels="${drift_labels:+$drift_labels,}codex:${got}"
+            fi
+        fi
+        if (( pi_ok == 1 )); then
+            got=$(hash_skill "$pi_dir/$name/SKILL.md")
+            if [[ "$got" != "$expected" ]]; then
+                drift_labels="${drift_labels:+$drift_labels,}pi:${got}"
+            fi
+        fi
+        if [[ -n "$drift_labels" ]]; then
+            printf '%s expected=%s got=%s\n' "$name" "$expected" "$drift_labels" >>"$house_drift"
+        fi
+    done <"$house_names"
+fi
+
+if [[ -s "$house_drift" ]]; then
+    preview=$(list_preview "$house_drift")
+    loud "SKILLS-SYMLINK-VIOLATION" "house-method skill(s) drifted from vault canonical: $preview"
+    while IFS= read -r line; do
+        name="${line%% *}"
+        [[ -n "$name" ]] || continue
+        file_finding "house-drift-${name}" \
+            "skills-symlink: house skill ${name} content drift" \
+            "Skill \`${name}\` on a live harness does not match the vault canonical. A forked local copy silently diverges from the house delta. Re-sync with install-links.sh (or promote the vault change if it is the new upstream). ${line}"
+    done <"$house_drift"
+    violations=$((violations + 1))
+fi
+
 if (( violations > 0 )); then
     log "FAIL: $violations skills-symlink violation(s)"
     exit 1
 fi
 
-loud "SKILLS-SYMLINK-OK" "claude and codex skill names match; house skills present on every live harness; no broken skill symlinks"
+loud "SKILLS-SYMLINK-OK" "claude and codex skill names match; house skills present on every live harness; no broken skill symlinks or house drift"
 exit 0

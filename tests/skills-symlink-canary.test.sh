@@ -233,4 +233,19 @@ set -e
 [[ "$live_rc" == "0" ]] || fail "scenario10: live VPS catalogs must currently match, got rc=$live_rc ($live_out)"
 ok "scenario10: live VPS claude/codex catalogs match"
 
-ok "skills-symlink-canary: missing names, broken links, house gap, dedup, skip, live clean"
+# --- 11. house skill content drift on pi ------------------------------------
+reset_catalogs
+mk_skill "$scratch/vault" blast-radius
+mk_skill "$scratch/claude" blast-radius
+mk_skill "$scratch/codex" blast-radius
+mk_skill "$scratch/pi" blast-radius
+printf '# blast-radius (forked)\n' >"$scratch/pi/blast-radius/SKILL.md"
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario11: expected rc=1, got $env_rc ($env_out)"
+grep -q 'drifted from vault canonical' "$triage" || fail "scenario11: must name the house-drift gap"
+grep -q 'blast-radius' "$triage" || fail "scenario11: must name blast-radius"
+grep -q 'issue create' "$gh_log" || fail "scenario11: must auto-file"
+grep -q 'skills-symlink-canary: house-drift-blast-radius' "$gh_log" || fail "scenario11: must dedupe on per-skill drift marker"
+ok "scenario11: house skill content drift on pi screams and auto-files"
+
+ok "skills-symlink-canary: missing names, broken links, house gap, dedup, skip, live clean, house drift"
