@@ -1,0 +1,17 @@
+[Unit]
+Description=Run the 0509 authenticated surface-matrix probe every 10 min
+# Named reason (fleet-ops#1150): the issue asks for 5-15 min cadence. The
+# matrix run measures ~200s (server boot + D1 seed + 4 routes × 3 viewports ×
+# 2 themes × 5 fixture tiers) plus an incremental npm install, so 10 min is
+# the headroom floor — a 5 min timer would overlap a slow run. 10 min catches
+# a dark-mode/paid-tier regression within two cycles, well inside the
+# SurfaceProbeFailing 2-consecutive-fail gate.
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=0509-surface-probe.service
+
+[Install]
+WantedBy=timers.target

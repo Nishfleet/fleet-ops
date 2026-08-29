@@ -2,6 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Fleet timer manifest — every user timer must have an entry with a named reason. CI validates live timers against this manifest.",
   "timers": {
+    "0509-surface-probe.timer": {
+      "reason": "10-min authenticated surface-matrix probe for 0509 (fleet-ops#1150) — routes × {390,1440,2000} × {light,dark} × {free,scout,starter,agency,expired}; the only harness that renders 0509 logged-in, dark, wide, as a paying tier. 10 min is the headroom floor over a ~200s matrix run; catches a dark-mode/paid-tier regression within two cycles",
+      "classification": "scheduled",
+      "cadence": "10min",
+      "source": "repo"
+    },
     "agent-cron-0509-daily-market-signal.timer": {
       "reason": "Daily 0509 market signal cron — true calendar job at 08:15 IST",
       "classification": "scheduled",

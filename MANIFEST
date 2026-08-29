@@ -762,3 +762,14 @@ systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refr
 # fleet-ops#516 sr-max-speed: hunt artificial limiters (not money/safety/hardware).
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
+# fleet-ops#1150 synthetic user-journey probes for 0509: the authenticated
+# surface matrix (routes × {390,1440,2000} × {light,dark} ×
+# {free,scout,starter,agency,expired}) runs every 10 min against a dedicated
+# 0509-probe checkout reset to origin/main. Exports fleet_probe_success +
+# latency + consecutive-failures + last-run heartbeat to the textfile
+# collector; SurfaceProbeFailing (2 consecutive fails, critical) and
+# SurfaceProbe0509Absent (organ heartbeat) ride the repair-dispatch rail.
+bin/0509-surface-probe /home/nish/.local/bin/0509-surface-probe
+systemd/0509-surface-probe.service /home/nish/.config/systemd/user/0509-surface-probe.service
+systemd/0509-surface-probe.timer /home/nish/.config/systemd/user/0509-surface-probe.timer
+prompts/0509-surface-probe-repair.md /home/nish/.pi/agent/prompts/0509-surface-probe-repair.md
