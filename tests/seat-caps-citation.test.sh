@@ -191,3 +191,29 @@ done < <(jq -r '
 [[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing a dated _* reason field — audit durability gap (fleet-ops#1456)"
 
 ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 reasons pinned"
+
+# 8. OpenRouter paid flash lane (fleet-ops#384): the cheapest+best of
+#    Qwen 3.8 flash / GLM 5.3 flash / DeepSeek V4 flash is wired as a
+#    metered model row with a dated, measured citation. Pins the lane so a
+#    future revert (dropping the models map back to empty) is caught before
+#    push, not on the next heartbeat tick. The #384 canary header claims the
+#    lane is wired; this test is the local proof that the config actually
+#    carries the row (the prior 2026-08-26 attempt wrote the canary claim but
+#    never landed the seat-caps models map — fleet-ops#436).
+echo "--- scenario 8: OpenRouter paid flash lane wired with dated measured citation ---"
+or_models=$(jq -r '.providers.openrouter.models | length' "$caps")
+[[ "$or_models" -ge 1 ]] || fail "openrouter must have a non-empty models map (the #384 paid flash lane). Got: $or_models"
+or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] // empty' "$caps")
+[[ -n "$or_dsv4f" ]] || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
+[[ "$or_dsv4f" != "0" ]] || fail "openrouter deepseek/deepseek-v4-flash-0731 cap must be >0 (wired, not parked)"
+or_class=$(jq -r '.providers.openrouter.class // empty' "$caps")
+[[ "$or_class" == "metered" ]] || fail "openrouter class must be metered (paid lane — spend after free+prepaid). Got: $or_class"
+or_cite=$(jq -r '.providers.openrouter._comment_384 // ""' "$caps")
+[[ -n "$or_cite" ]] || fail "openrouter must carry a _comment_384 citation for the paid flash lane"
+grep -qE "$date_pat" <<<"$or_cite" || fail "openrouter _comment_384 must name a YYYY-MM-DD date"
+# measurement marker: a live price figure ($0.x) and a pi --list-models / catalog probe reference
+grep -qE '\$0\.[0-9]' <<<"$or_cite" || fail "openrouter _comment_384 must name a live price figure (\$0.x/M)"
+grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _comment_384 must name the probe source (pi --list-models or /models catalog)"
+# cheapest+best evidence: the citation must name DeepSeek V4 flash as cheapest vs the two alternatives
+grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
+ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered, cap=$or_dsv4f) with dated measured _comment_384 citation"

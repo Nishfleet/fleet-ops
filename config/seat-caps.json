@@ -102,7 +102,11 @@
     },
     "openrouter": {
       "cap": 2,
-      "class": "metered"
+      "class": "metered",
+      "models": {
+        "deepseek/deepseek-v4-flash-0731": 2
+      },
+      "_comment_384": "2026-08-29: paid flash lane wired (fleet-ops#384). Live OpenRouter /api/v1/models pricing probed 2026-08-29: deepseek/deepseek-v4-flash-0731 $0.045/M in, $0.09/M out, $0.009/M cache-read — cheapest of the three candidates (z-ai/glm-5.3-flash $0.075/$0.25; qwen/qwen3.8-flash $0.15/$0.47). Quality: deepseek-v4-flash is the proven fleet workhorse on 4 free lanes (bai, commandcode, ollama, cline) so cheapest AND best — no cheapest!=best override needed. Slug confirmed in pi --list-models (openrouter deepseek/deepseek-v4-flash-0731, 1.3M ctx, 32.8K out) and in the OpenRouter /models catalog. ZenMux deepseek/deepseek-v4-flash exists but ZenMux is credit-based ($5 flat per models.json note; /models API returns no per-token pricing) so OpenRouter wins on price transparency and per-token cheapness. Metered class — last-resort overflow after free + prepaid lanes (free lanes stay ahead of metered in the ladder order). cap=2 per metered discipline; AIMD raises only with evidence. Fail-closed: this is a metered lane, spend starts only after Nish merges this PR — never a slug that can bill credits before that. Resolves #1749 (GLM 5.3 flash revisit: wired free on cline #1739, paid lane not needed — DeepSeek V4 flash is cheaper+best)."
     },
     "groq": {
       "cap": 0,
