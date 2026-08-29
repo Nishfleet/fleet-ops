@@ -140,23 +140,39 @@ else
   fail "Extraction test failed: $PY_RESULT"
 fi
 
-# Test 8: Real-doc upstream-ref filter (fleet-ops#1674)
+# Test 8: Upstream-ref filter (fleet-ops#1674)
 # The real global-standing-rules.md cites systemd/systemd#33486. An earlier
 # version of the checker mis-parsed that as Nishfleet/fleet-ops#33486 and filed
-# a false-positive staleness issue. This test loads the ACTUAL doc and asserts
-# the upstream ref is filtered out — a synthetic string cannot pin this.
-echo "[8] Real global-standing-rules.md filters upstream issue refs"
-REAL_DOC="$HOME/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md"
-PY_RESULT2=$(python3 <<PYEOF
-import importlib.util, sys
+# a false-positive staleness issue. We always pin the function with a synthetic
+# string, then load the ACTUAL doc when it is available (VPS) to catch doc-level
+# regressions. If the vault is not mounted (GitHub Actions CI), the synthetic
+# pin still prevents the upstream-ref leak from recurring.
+echo "[8] Upstream issue-ref filter (real doc + synthetic fallback)"
+PY_RESULT2=$(python3 <<'PYEOF'
+import importlib.util, sys, os
 spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.py")
 sc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sc)
-try:
-    text = open("$REAL_DOC").read()
-except OSError as e:
-    print("DOC_READ_FAIL: " + str(e), file=sys.stderr)
+
+# Synthetic pin: same function, controlled input.
+synthetic = 'fleet-ops#1137 also see #522 and systemd/systemd#33486'
+issues = sc._extract_issues(synthetic)
+nums = sorted(n for _, n in issues)
+if 33486 in nums:
+    print("UPSTREAM_LEAK_SYNTHETIC: 33486 extracted as fleet-ops issue: " + str(nums), file=sys.stderr)
     sys.exit(1)
+if nums != [522, 1137]:
+    print("SYNTHETIC_FAIL: expected [522, 1137], got " + str(nums), file=sys.stderr)
+    sys.exit(1)
+
+REAL_DOC = os.path.expanduser("~/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md")
+try:
+    with open(REAL_DOC) as f:
+        text = f.read()
+except OSError:
+    print("OK: synthetic-only (real doc not available)")
+    sys.exit(0)
+
 issues = sc._extract_issues(text)
 nums = sorted(n for _, n in issues)
 if 33486 in nums:
@@ -166,9 +182,9 @@ print("OK: " + ",".join(str(n) for n in nums))
 PYEOF
 ) || PY_RESULT2=""
 if [[ "$PY_RESULT2" == OK:* ]]; then
-  pass "Real doc does not leak systemd/systemd#33486 as fleet-ops (got: ${PY_RESULT2#OK: })"
+  pass "Upstream refs filtered (${PY_RESULT2#OK: })"
 else
-  fail "Real-doc upstream filter failed: $PY_RESULT2"
+  fail "Upstream-ref filter failed: $PY_RESULT2"
 fi
 
 # Test 9: Script runs without error (dry check, --no-file to avoid filing real issues)
