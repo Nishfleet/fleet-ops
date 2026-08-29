@@ -388,11 +388,15 @@ for i in "${!numbers[@]}"; do
         exit 1
     fi
 
-    # Mark the issue — retry on GitHub secondary rate limits (same as comment below)
+    # Mark the issue — retry on GitHub secondary rate limits.
+    # Tolerate permanent label-state errors (agent-ready already removed
+    # by a prior tick/auditor): if agent-in-progress is already set and
+    # agent-ready is gone, the issue is in the desired state — no-op.
     edit_out=""
-    edit_rc=1
+    edit_rc=0
     for _ in 1 2 3; do
-        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
+        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1)
+        edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
             *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
@@ -400,8 +404,13 @@ for i in "${!numbers[@]}"; do
         esac
     done
     if [[ $edit_rc -ne 0 ]]; then
-        echo "gh issue edit failed for $N: $edit_out" >&2
-        exit 1
+        labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
+        if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
+            echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
+        else
+            echo "gh issue edit failed for $N: $edit_out" >&2
+            exit 1
+        fi
     fi
 
     # GitHub secondary rate limits on addComment ("submitted too quickly")
@@ -409,9 +418,10 @@ for i in "${!numbers[@]}"; do
     # permanent failure (auth, 404, etc.) still exits 1 after exhaustion.
     comment_body="claimed by pi-issue-${REPO}-${N} at $(date -u +%FT%TZ)"
     comment_out=""
-    comment_rc=1
+    comment_rc=0
     for _ in 1 2 3; do
-        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
+        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1)
+        comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
             *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
