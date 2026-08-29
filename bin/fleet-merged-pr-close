@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# fleet-merged-pr-close — observe-to-close an open issue that a merged PR
+# shipped but forgot to close (fleet-ops#1435).
+#
+# The class: a merged PR that references an open issue by #<N> (in its title
+# or body) but omits the `Closes #<N>` trailer leaves that issue OPEN and
+# the heartbeat keeps re-queuing it — a worker is dispatched again to re-do
+# already-merged work (the live #1135 accident: PR #1429 merged the work on
+# 2026-08-28 but omitted `Closes #1135`, so #1135 cycled through 5+
+# claim/release rounds before the mistake was noticed).
+#
+# No existing heartbeat tier closed it: tier1 §3 / claim-reconcile release
+# claims but never close issues; observe-to-close is gated to the
+# findings-queued signal class. This detector is the mechanical prevention:
+# once a merged PR has shipped the work, the issue is closed with evidence.
+#
+# Observable, deterministic, no LLM. Runs under fleet-heartbeat-tier1 every
+# tick. For each enrolled repo, for each OPEN issue labelled
+# agent-in-progress or critical-path:
+#   1. Skip if there is an open PR on its claim/issue-<N> branch (work in
+#      flight — the queue pass owns it).
+#   2. Skip if the claim/issue-<N> branch still exists on origin (work may
+#      still be in a worktree; claim-reconcile owns cleaning orphan branches).
+#   3. Skip if a live pi-issue worker is running for that issue (actively
+#      being worked).
+#   4. List merged PRs in the last MERGED_PR_CLOSE_WINDOW_DAYS (default 7).
+#      If exactly one references the issue (#<N>, <repo>#<N>) in its title
+#      or body, the work is presumed delivered — close it with a comment
+#      citing the merged PR URL and the verification (the fleet merge queue
+#      only merges when every required check is green).
+#      If MORE than one merged PR references the issue, the signal is
+#      ambiguous — LOUD SKIP, defer to a human, never close.
+#
+# Observe-to-close is opt-in via FLEET_MERGED_PR_CLOSE_OK=1 (mirrors
+# FLEET_FINDINGS_QUEUED_OK_TO_CLOSE, fleet-ops#820). The close path is
+# destructive against the live repo, so only the production heartbeat —
+# which sets the flag — is trusted to close. A test or one-off invocation
+# with a mocked gh that sees a merged PR reference must not close the live
+# issue, so the default is close-OFF.
+#
+# Environment seams (tests override all of these):
+#   MERGED_PR_CLOSE_REPOS          newline-separated owner/name list
+#   MERGED_PR_CLOSE_INTAKE_JSON    default repo list (intake-repos.json)
+#   FLEET_MERGED_PR_CLOSE_OK       0 (default — close OFF) / 1 (heartbeat
+#                                  opts in; required to actually close)
+#   MERGED_PR_CLOSE_WINDOW_DAYS    default 7
+#   MERGED_PR_CLOSE_NOW            ISO-8601 UTC clock (window edge)
+#   MERGED_PR_CLOSE_TRIAGE         triage file for LOUD (default heartbeat)
+#   GH                             gh binary
+#
+# Exit 0 on a clean sweep, a gated-off pass, or after closing candidates.
+# Exit 2 on a crash (jq/gh missing, intake JSON missing/invalid).
+# The heartbeat propagates only rc >= 2 — a found candidate is normal
+# operation (it closes), not an invariant violation.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+OK_TO_CLOSE="${FLEET_MERGED_PR_CLOSE_OK:-0}"
+WINDOW_DAYS="${MERGED_PR_CLOSE_WINDOW_DAYS:-7}"
+NOW_ISO="${MERGED_PR_CLOSE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+TRIAGE="${MERGED_PR_CLOSE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+INTAKE_JSON="${MERGED_PR_CLOSE_INTAKE_JSON:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json}"
+
+log() {
+    printf '[%s] [fleet-merged-pr-close] %s\n' "$NOW_ISO" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$NOW_ISO" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+command -v "$GH" >/dev/null 2>&1 || { loud "MERGED-PR-CLOSE-BROKEN" "gh missing at $GH"; exit 2; }
+command -v jq >/dev/null 2>&1 || { loud "MERGED-PR-CLOSE-BROKEN" "jq missing"; exit 2; }
+
+# Repos: explicit env wins; else project from intake-repos.json.
+if [[ -n "${MERGED_PR_CLOSE_REPOS:-}" ]]; then
+    repos="$MERGED_PR_CLOSE_REPOS"
+elif [[ -f "$INTAKE_JSON" ]]; then
+    if ! jq empty "$INTAKE_JSON" >/dev/null 2>&1; then
+        loud "MERGED-PR-CLOSE-BROKEN" "invalid intake JSON: $INTAKE_JSON"
+        exit 2
+    fi
+    if ! repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_JSON" 2>/dev/null); then
+        loud "MERGED-PR-CLOSE-BROKEN" "could not read repos from $INTAKE_JSON"
+        exit 2
+    fi
+else
+    loud "MERGED-PR-CLOSE-BROKEN" "no MERGED_PR_CLOSE_REPOS and intake JSON missing: $INTAKE_JSON"
+    exit 2
+fi
+
+# Window cutoff as an ISO-8601 UTC string. mergedAt from gh is ISO-8601
+# UTC with integer seconds, so a lexicographic string comparison against
+# this cutoff is exact and has no date-parse failure mode. NOW must be
+# ISO-8601 UTC; if it cannot be shifted, fail closed (do not close) rather
+# than close old work by accident.
+window_iso=${NOW_ISO%\.*}
+if ! window_start=$(date -u -d "$window_iso - $WINDOW_DAYS days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null); then
+    loud "MERGED-PR-CLOSE-BROKEN" "could not shift NOW_ISO=$NOW_ISO by $WINDOW_DAYS days"
+    exit 2
+fi
+
+# Fast-fail on a bad WINDOW_DAYS so we never compare against a negative edge.
+if ! [ "$WINDOW_DAYS" -ge 0 ] 2>/dev/null; then
+    loud "MERGED-PR-CLOSE-BROKEN" "invalid MERGED_PR_CLOSE_WINDOW_DAYS=$WINDOW_DAYS"
+    exit 2
+fi
+
+# has_live_worker REPO N — is a fleet worker actively working this issue?
+# Mirrors heartbeat tier1 §3: the pi-issue@<short>-<N> unit active, or any
+# transient fable-p*/pi-issue worker whose name carries <short>-<N>.
+has_live_worker() {
+    local repo="$1" n="$2"
+    local short="${repo#Nishfleet/}"
+    local unit="pi-issue@${short}-${n}.service"
+    if systemctl --user list-units "$unit" --state=active,activating --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -qx "$unit"; then
+        return 0
+    fi
+    if systemctl --user list-units --no-legend --type=service --state=running 2>/dev/null \
+        | awk '{print $1}' | grep -E "(fable-p|pi-issue)" | grep -q "${short}-${n}"; then
+        return 0
+    fi
+    return 1
+}
+
+# references_issue TEXT N — does TEXT reference issue N (#N, <repo>#N)?
+# Issue matches are exact-number: #1135 must not match #11352. The optional
+# prefix covers the bare form (<repo>#N, e.g. fleet-ops#1135) and the fully
+# qualified form (Nishfleet/fleet-ops#1135). A preceding/following letter
+# or digit bounds the token so #1135abc or #11352 do not match.
+references_issue() {
+    local text="$1" n="$2"
+    printf '%s' "$text" \
+        | grep -Eq "(^|[^0-9A-Za-z])([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#${n}([^0-9A-Za-z]|$)"
+}
+
+log "merged-pr observe-to-close starting (close=${OK_TO_CLOSE}, window=${WINDOW_DAYS}d)"
+scanned=0
+candidates=0
+closed=0
+skipped_live=0
+skipped_open_pr=0
+skipped_branch=0
+skipped_ambiguous=0
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    log "repo $repo"
+
+    # Open issues carrying agent-in-progress or critical-path.
+    if ! list_json=$("$GH" issue list -R "$repo" --state open \
+        --json number,title,labels,body --limit 500 2>/dev/null); then
+        loud "MERGED-PR-CLOSE-GH" "$repo: gh issue list failed — skip (next tick retries)"
+        continue
+    fi
+
+    # Recent merged PRs (title+body + number+url + mergedAt) in one fetch,
+    # filtered to the window in jq. `gh pr list` has no --sort; length is
+    # enough for a 7-day window on the fleet's merge volume.
+    if ! merged_json=$("$GH" pr list -R "$repo" --state merged --limit 300 \
+        --json number,title,body,mergedAt,url 2>/dev/null); then
+        loud "MERGED-PR-CLOSE-GH" "$repo: gh pr list merged failed — skip (next tick retries)"
+        continue
+    fi
+    if ! in_window=$(printf '%s' "$merged_json" | jq -r --arg ws "$window_start" '
+        [ .[] | select((.mergedAt // "") != "") | select(.mergedAt >= $ws)
+          | [.number, .title, (.body // ""), .url] | @tsv ] | .[]' 2>/dev/null); then
+        loud "MERGED-PR-CLOSE-BROKEN" "$repo: jq window filter failed — skip (next tick retries)"
+        continue
+    fi
+
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+
+        # Restrict to the two lifecycle labels this detector owns:
+        # agent-in-progress (a worker may still be on it) or critical-path.
+        if ! printf '%s' "$labels_json" \
+            | jq -e 'map(.name) | index("agent-in-progress") != null or index("critical-path") != null' >/dev/null 2>&1; then
+            continue
+        fi
+        scanned=$((scanned + 1))
+
+        # --- Safety guards, all fail-closed ---
+        # 1. Open PR on the claim branch → work in flight; queue pass owns it.
+        if open_pr=$("$GH" pr list -R "$repo" --head "claim/issue-${num}" \
+            --state open --json number 2>/dev/null) \
+            && printf '%s' "$open_pr" | jq -e 'length > 0' >/dev/null 2>&1; then
+            log "  $repo#$num: open claim PR — skip (in flight)"
+            skipped_open_pr=$((skipped_open_pr + 1))
+            continue
+        fi
+        # 2. Claim branch still present → work may be in a worktree.
+        if "$GH" api "repos/${repo}/git/refs/heads/claim/issue-${num}" >/dev/null 2>&1; then
+            log "  $repo#$num: claim/issue-${num} branch still exists — skip (may be in a worktree)"
+            skipped_branch=$((skipped_branch + 1))
+            continue
+        fi
+        # 3. Live worker → actively being worked.
+        if has_live_worker "$repo" "$num"; then
+            log "  $repo#$num: live worker active — skip"
+            skipped_live=$((skipped_live + 1))
+            continue
+        fi
+
+        # 4. How many merged PRs in the window reference this issue?
+        matches=()
+        while IFS=$'\t' read -r mnum mtitle mbody murl; do
+            [ -z "$mnum" ] && continue
+            if references_issue "$mtitle" "$num" || references_issue "$mbody" "$num"; then
+                matches+=("$mnum|$murl")
+            fi
+        done <<< "$in_window"
+
+        nmatches=${#matches[@]}
+        if [ "$nmatches" -eq 0 ]; then
+            log "  $repo#$num: no merged PR references it — leave open"
+            continue
+        fi
+        if [ "$nmatches" -gt 1 ]; then
+            loud "MERGED-PR-CLOSE-AMBIGUOUS" "$repo#$num: $nmatches merged PRs reference it — SKIP, defer to human (${matches[*]})"
+            skipped_ambiguous=$((skipped_ambiguous + 1))
+            continue
+        fi
+
+        # Exactly one merged PR delivered this issue. Close it (gated).
+        candidates=$((candidates + 1))
+        mp=$(printf '%s\n' "${matches[0]}")
+        mnum="${mp%%|*}"
+        murl="${mp#*|}"
+        ts="$NOW_ISO"
+
+        if [ "$OK_TO_CLOSE" != "1" ]; then
+            log "  $repo#$num: CANDIDATE (merged PR #$mnum) but FLEET_MERGED_PR_CLOSE_OK != 1 — close skipped"
+            continue
+        fi
+
+        comment="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) references this issue but shipped without a \`Closes #${num}\` trailer, so this issue stayed open and kept re-queuing. The work is delivered (the fleet merge queue only merges with every required check green — that is the verification) and no open PR, live worker, or claim branch remains for this issue, so the heartbeat closes it at ${ts}."
+
+        if ! "$GH" issue close "$num" -R "$repo" --comment "$comment" >/dev/null 2>&1; then
+            loud "MERGED-PR-CLOSE-ERR" "$repo#$num: gh issue close failed — will retry next tick"
+            continue
+        fi
+        closed=$((closed + 1))
+        log "  $repo#$num: CLOSED (delivered by merged PR #$mnum)"
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+done <<< "$repos"
+
+log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous"
+exit 0

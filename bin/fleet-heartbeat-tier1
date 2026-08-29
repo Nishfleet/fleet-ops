@@ -1560,6 +1560,34 @@ else
 fi
 
 # ============================================================================
+# 19. MERGED-PR OBSERVE-TO-CLOSE (fleet-ops#1435)
+# ============================================================================
+# The mechanical prevention for the "forgotten close trailer" class: a
+# merged PR that references an open #<N> but omits `Closes #<N>` leaves the
+# issue OPEN and the heartbeat re-queues it forever (PR #1429 merged the
+# #1135 work but left #1135 cycling through 5+ claim/release rounds). This
+# step closes an open agent-in-progress/critical-path issue once a merged PR
+# has shipped its work and no open PR / live worker / claim branch remains.
+# Close is gated behind FLEET_MERGED_PR_CLOSE_OK=1 so only the production
+# heartbeat closes against the live repo; a found candidate is normal
+# operation (it closes), so only a helper crash (rc >= 2) fails the tick.
+MERGED_PR_CLOSE_BIN="${FLEET_MERGED_PR_CLOSE:-/home/nish/.local/bin/fleet-merged-pr-close}"
+merged_pr_close_rc=0
+if [ -x "$MERGED_PR_CLOSE_BIN" ]; then
+    log "19. merged-pr observe-to-close starting"
+    if MERGED_PR_CLOSE_REPOS="$(printf '%s\n' "$claim_repos")" \
+        FLEET_MERGED_PR_CLOSE_OK=1 \
+        "$MERGED_PR_CLOSE_BIN" 2>>"$TICK_LOG"; then
+        log "19. merged-pr observe-to-close complete"
+    else
+        merged_pr_close_rc=$?
+        log "19. merged-pr observe-to-close rc=$merged_pr_close_rc — helper did not exit clean"
+    fi
+else
+    log "19. merged-pr-close helper missing at $MERGED_PR_CLOSE_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
 # ============================================================================
 # Every tick, prove "deferral requires a named clock": every benched seat,
@@ -2535,6 +2563,13 @@ fi
 # unit on the backlog (fleet-ops#1116).
 if [ "${debug_playbook_rc:-0}" -ge 2 ]; then
     exit "$debug_playbook_rc"
+fi
+# merged-pr observe-to-close: only propagate when the helper CRASHED
+# (rc >= 2). A found candidate is normal operation — the helper closes the
+# issue with evidence; landing the unit in --state=failed for doing its
+# observe-to-close job is a trip-loop (fleet-ops#1116 pattern).
+if [ "${merged_pr_close_rc:-0}" -ge 2 ]; then
+    exit "$merged_pr_close_rc"
 fi
 # unjustified-wait: only propagate when the helper CRASHED (rc >= 2).
 # exit 1 means "TOP GEAR invariant violated" — already loud + auto-
