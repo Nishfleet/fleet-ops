@@ -54,6 +54,26 @@
 #   FLEET_FREE_ROSTER_FILE          1 (default) file issues; 0 skip gh
 #   FLEET_FREE_ROSTER_CAP           per-tick file cap (default 5)
 #   FLEET_FREE_ROSTER_PROBE_TIMEOUT seconds to wait for a servability probe (default 30).
+#   FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE
+#                                  0 (default) — do not auto-close. The
+#                                    production heartbeat sets this as a
+#                                    per-call env (=1) on the same line it
+#                                    invokes the canary, so a worker run
+#                                    from a worktree against the worker gh
+#                                    credentials can never auto-close a
+#                                    real issue. This was the live 2026-08-27
+#                                    failure: an in-flight worker run
+#                                    inherited gh credentials and closed 13
+#                                    stale duplicates including the very
+#                                    ticket it was supposed to fix.
+#   FLEET_FREE_ROSTER_OBSERVE_SENTINEL
+#                                  path to a freshness sentinel file the
+#                                    production heartbeat touches each tick
+#                                    (default /run/user/$(id -u)/fleet-free-
+#                                    roster-trusted). The close path requires
+#                                    env=1 AND a sentinel owned by the
+#                                    current uid AND <300s old — not env=1
+#                                    alone.
 #   GH                              gh binary (tests stub this)
 #   PI                              pi binary (tests stub this)
 
@@ -354,6 +374,177 @@ for pid in "${free_providers[@]}"; do
     done
     unset allow_set
 done
+
+# ---- OBSERVE-TO-CLOSE: re-evaluate open auto-filed tickets ----------------
+# Each detector 2a / 2b ticket carries a marker line of the form
+# `free-roster-canary: <pid>:<slug> <kind>`. The signal that filed it is
+# re-checked here; when the signal has cleared, the issue is closed with a
+# dated `observe-to-close:` comment and a pointer to the live catalog /
+# seat-caps state.
+#
+# Gate findings (`carve-out-violation`, `missing-from-free-order`) are class
+# violations and are NEVER auto-closed — the merged PR that fixes the gate
+# is the close path, same shape as `bin/opencode-m3-catalog-canary`.
+#
+# SAFETY (fleet-ops#995): the production heartbeat is the only caller that
+# should close stale tickets. The canary defaults to skip and only runs the
+# close path when FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1. A worker run from a
+# worktree that exports GH_TOKEN but does not set the env will see the canary
+# no-op. Tests cover the default-off / opt-in-on pair (scenarios below).
+parse_marker() {
+    # Marker is the LAST line of the body. Tolerant of leading whitespace
+    # and a trailing newline. Returns "<kind>|<id_part>" on stdout; empty
+    # on no match.
+    local body="$1"
+    local last
+    last=$(printf '%s' "$body" | awk 'END{print}')
+    case "$last" in
+        *"free-roster-canary:"*)
+            # "free-roster-canary: <id_part> <kind>"
+            local stripped
+            stripped=$(printf '%s' "$last" | sed -E 's/.*free-roster-canary:[[:space:]]+//')
+            local kind id_part
+            kind=$(printf '%s' "$stripped" | awk '{print $NF}')
+            id_part=$(printf '%s' "$stripped" | sed -E 's/[[:space:]]+[^[:space:]]+$//')
+            printf '%s|%s\n' "$kind" "$id_part"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# signal_cleared — re-evaluate the signal for a marker. Returns 0 (true) if
+# the original detection condition no longer holds. Gate findings always
+# return 1 (never clear).
+#
+#   free-slug-available <pid>:<slug>  clears when the slug is now allowlisted
+#                                     (any cap, including the cap=0 bench
+#                                     row production locks #811 / #640 /
+#                                     #910 / #911 require) OR no longer in
+#                                     the live catalog.
+#   stale-slug           <pid>:<slug> clears when the slug is no longer
+#                                     allowlisted (removed from the models
+#                                     map) OR has reappeared in the live
+#                                     catalog.
+signal_cleared() {
+    local kind="$1" id_part="$2"
+    case "$kind" in
+        carve-out-violation|missing-from-free-order)
+            return 1
+            ;;
+    esac
+    local pid slug
+    pid=$(printf '%s' "$id_part" | awk -F: '{print $1}')
+    slug=$(printf '%s' "$id_part" | awk -F: '{print $2}')
+    [[ -n "$pid" && -n "$slug" ]] || return 1
+    # Recompute allowlist for pid and the live catalog presence.
+    local is_allow="0"
+    local cap_val
+    cap_val=$(jq -r --arg id "$pid" --arg s "$slug" \
+        '.providers[$id].models[$s] // "missing"' \
+        "$SEAT_CAPS_JSON" 2>/dev/null || echo "missing")
+    if [[ "$cap_val" != "missing" && "$cap_val" != "null" ]]; then
+        is_allow="1"
+    fi
+    local cat_present="0"
+    if printf '%s\n' "${catalog_models[$pid]:-}" | grep -qxF "$slug"; then
+        cat_present="1"
+    fi
+    case "$kind" in
+        free-slug-available)
+            # Original signal: slug in catalog, not allowlisted. Cleared if
+            # now allowlisted OR not in catalog.
+            if [[ "$is_allow" == "1" || "$cat_present" == "0" ]]; then
+                return 0
+            fi
+            ;;
+        stale-slug)
+            # Original signal: slug allowlisted, not in catalog. Cleared if
+            # no longer allowlisted OR has reappeared.
+            if [[ "$is_allow" == "0" || "$cat_present" == "1" ]]; then
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+observe_to_close() {
+    if [[ "${FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE:-0}" != "1" ]]; then
+        log "observe-to-close: skipped (FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE != 1; the production heartbeat is trusted to close)"
+        return 0
+    fi
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "observe-to-close: skipped (FLEET_FREE_ROSTER_FILE=$FILE_ISSUES)"
+        return 0
+    fi
+    # The opt-in env is necessary but not sufficient. A sentinel file at
+    # $FLEET_FREE_ROSTER_OBSERVE_SENTINEL (default
+    # /run/user/$(id -u)/fleet-free-roster-trusted) must exist AND be <300s
+    # old. The production heartbeat creates this file on every tick; a
+    # worker run from a worktree cannot rely on a stale sentinel. The
+    # combined guard means "env=1 AND a fresh sentinel from the trusted
+    # caller" is the close path — not "env=1 alone".
+    local sentinel="${FLEET_FREE_ROSTER_OBSERVE_SENTINEL:-/run/user/$(id -u)/fleet-free-roster-trusted}"
+    if [[ ! -f "$sentinel" ]]; then
+        log "observe-to-close: skipped (sentinel missing: $sentinel; the production heartbeat is trusted to close)"
+        return 0
+    fi
+    local sentinel_age
+    sentinel_age=$(( $(date +%s) - $(stat -c %Y "$sentinel" 2>/dev/null || echo 0) ))
+    if (( sentinel_age > 300 )); then
+        log "observe-to-close: skipped (sentinel stale: $sentinel_age s old; the production heartbeat is trusted to close)"
+        return 0
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: gh missing, skip"
+        return 0
+    fi
+    local open_json=""
+    local list_rc=0
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 200 \
+        --json number,body 2>/dev/null) || list_rc=$?
+    if [[ "$list_rc" -ne 0 || -z "$open_json" ]]; then
+        log "observe-to-close: gh issue list failed (rc=$list_rc), skip"
+        return 0
+    fi
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "observe-to-close: gh issue list returned non-JSON, skip"
+        return 0
+    fi
+    local closed=0
+    local row num body parsed kind id_part comment close_rc
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row" 2>/dev/null) || continue
+        body=$(jq -r '.body // ""' <<<"$row" 2>/dev/null) || continue
+        [[ -n "$num" && -n "$body" ]] || continue
+        parsed=$(parse_marker "$body" 2>/dev/null) || continue
+        kind=$(printf '%s' "$parsed" | awk -F'|' '{print $1}')
+        id_part=$(printf '%s' "$parsed" | awk -F'|' '{print $2}')
+        [[ -n "$kind" && -n "$id_part" ]] || continue
+        if ! signal_cleared "$kind" "$id_part"; then
+            log "observe-to-close: keep #$num (kind=$kind id=$id_part)"
+            continue
+        fi
+        local ts
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        comment="observe-to-close: free-roster-canary/${kind} ${id_part} no longer reported on heartbeat tick at ${ts}. The original signal (catalog presence vs seat-caps allowlist) has cleared."
+        close_rc=0
+        "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1 || close_rc=$?
+        if [[ "$close_rc" -eq 0 ]]; then
+            log "observe-to-close: CLOSED issue #$num (kind=$kind id=$id_part)"
+            closed=$((closed + 1))
+        else
+            log "observe-to-close: failed to close #$num (rc=$close_rc)"
+        fi
+    done < <(printf '%s' "$open_json" | jq -c '.[]' 2>/dev/null)
+    if (( closed > 0 )); then
+        loud "FREE-ROSTER-CLOSED" "$closed stale auto-filed ticket(s) closed by observe-to-close"
+    fi
+    return 0
+}
+
+observe_to_close
 
 if (( filed > 0 )); then
     loud "FREE-ROSTER-FILED" "$filed freshness ticket(s) filed; gates clean; tick stays green"
