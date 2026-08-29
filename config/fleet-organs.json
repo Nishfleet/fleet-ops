@@ -145,6 +145,15 @@
         "systemd/fleet-truth-staleness-check.timer",
         "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
       ]
+    },
+    {
+      "name": "gh-rate-limit",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_gh_rate_limit_fetched_seconds",
+      "absent_alert": "FleetGhRateLimitAbsent",
+      "files": [
+        "libexec/fleet-metrics-export.py"
+      ]
     }
   ]
 }
