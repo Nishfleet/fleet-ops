@@ -179,7 +179,30 @@ grep -q 'issue create' "$scratch/gh5.log" && fail "scenario5: closed guard must 
 ok "scenario5: already-closed wrapper is not re-filed (double-file guard)"
 
 # =============================================================================
-# Scenario 6: contracts — MANIFEST installs the new files.
+# Scenario 6: orchestrator re-runs a role whose vote is a SKIP, instead of
+# treating it as present and calling the tally (fleet-ops#1424 wedge: a
+# transient provider SKIP counted as neither PASS nor FAIL and left the
+# panel stuck at 1-1 forever).
+# =============================================================================
+rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/tally6.log" "$scratch/sys6.log"
+mk_gh "$scratch/gh6.log"
+mk_systemctl "$scratch/sys6.log"; mk_tally_stub "$scratch/tally6.log"
+write_vote fleet-ops 456 devin PASS "no duplicate; durable fix needed"
+write_vote fleet-ops 456 free-glm-5-3 FAIL "duplicate of open issue"
+write_vote fleet-ops 456 straitly SKIP "provider returned exit 1: transient failure"
+AUDIT_GH="$scratch/gh" SYSTEMCTL="$scratch/systemctl" AUDIT_TALLY_BIN="$scratch/tally" \
+    "$audit" >/dev/null 2>&1
+[[ -s "$scratch/sys6.log" ]] || fail "scenario6: orchestrator must act on the SKIP'd role"
+grep -q 'start --no-block pi-escalation-audit@fleet-ops--456--straitly.service' "$scratch/sys6.log" \
+    || fail "scenario6: must re-run the SKIP'd straitly role: $(cat "$scratch/sys6.log")"
+[[ -s "$scratch/tally6.log" ]] && fail "scenario6: must NOT tally with a SKIP vote in place: $(cat "$scratch/tally6.log")"
+# And the SKIP vote file must be gone so it cannot wedge a later tally.
+[ -f "$AUDIT_STATE_DIR/fleet-ops/456/straitly.vote" ] \
+    && fail "scenario6: SKIP vote must be discarded, not left in place"
+ok "scenario6: SKIP vote is discarded and the role re-run instead of wedging the panel"
+
+# =============================================================================
+# Scenario 7: contracts — MANIFEST installs the new files.
 # =============================================================================
 grep -q 'bin/pi-escalation-audit ' "$repo_root/MANIFEST" \
     || fail "MANIFEST must install bin/pi-escalation-audit"

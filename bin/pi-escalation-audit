@@ -98,6 +98,24 @@ vote_path() {
     printf '%s/%s/%s/%s.vote\n' "$STATE_DIR" "$repo" "$candidate" "$role"
 }
 
+# A vote only counts as PRESENT for the tally when it carries a real PASS or
+# FAIL verdict. pi-audit-run writes a SKIP vote (exit 0) on a transient
+# seat-health refusal or provider wall, promising "retry next tick" (#146);
+# if the orchestrator treated that SKIP as present, the tally would count it
+# as neither PASS nor FAIL, the panel would wedge at 1-1 forever with all
+# votes "present", the tally path would reset the pending stamp every tick
+# (so PANEL-PENDING never fires), and an escalate-senior issue could sit
+# unresolved indefinitely -- the #1424 live wedge. Re-run the SKIP'd role so
+# the vote is re-collected fresh and a genuinely stuck panel can escalate.
+vote_is_complete() {
+    local v="$1" verdict
+    verdict=$(jq -r '.verdict // ""' "$v" 2>/dev/null || printf '')
+    case "$verdict" in
+        PASS|FAIL) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 pending_stamp() {
     local repo="$1" candidate="$2"
     printf '%s/%s/%s/.pending\n' "$STATE_DIR" "$repo" "$candidate"
@@ -167,7 +185,17 @@ process_escalation() {
     for role in "${ROLES[@]}"; do
         v=$(vote_path "$repo" "$candidate" "$role")
         if [ -f "$v" ]; then
-            continue
+            # fleet-ops#1424: a SKIP / incomplete vote (e.g. transient provider
+            # failure that pi-audit-run wrote as exit 0) is NOT a completed
+            # vote -- it counts as neither PASS nor FAIL and wedges the panel
+            # at 1-1 forever if left in place. Drop it and re-run that role so
+            # the vote is re-collected; the unit template's seat-health
+            # preflight re-screens the seat before the next call.
+            if vote_is_complete "$v"; then
+                continue
+            fi
+            log "$repo/#$candidate: discarding incomplete/SKIP vote $v; will re-run $role"
+            rm -f "$v"
         fi
         unit=$(unit_name "$repo" "$candidate" "$role")
         state=$(unit_state "$unit")
