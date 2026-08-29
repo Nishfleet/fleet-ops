@@ -380,6 +380,12 @@ push_line=$(grep -n 'push --force-with-lease' "$tick" | head -1 | cut -d: -f1)
   || fail "allow_claim (line $allow_line) must run before claim push (line $push_line)"
 ok "scenario16: intake-tick sources the band and skips before the claim push"
 
+grep -F '_surge_has_leverage' "$tick" >/dev/null \
+  || fail "intake-tick must carry the surge-exhaustion probe (fleet-ops#1431)"
+grep -F 'surge floor can admit' "$tick" >/dev/null \
+  || fail "intake-tick must relax the skip to reach the surge floor (fleet-ops#1431)"
+ok "scenario16b: intake-tick relaxes the surge skip when surge work is exhausted (fleet-ops#1431)"
+
 # --- 17. allow_claim: surge / product / band / multiplier -------------------
 # shellcheck source=/dev/null
 . "$shlib"
@@ -392,13 +398,42 @@ rm -f "$BAND_PENDING_FILE"
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units.txt"
 
 set +e
+# 17a: non-leverage WITH a live machinery worker running is still surge-skipped
+# (the fleet-ops queue is not hard-stalled — a machinery lane is in flight).
+: >"$scratch/units.txt"; printf 'pi-issue@fleet-ops-101.service\n' >>"$scratch/units.txt"
 reason=$(precedence_band_allow_claim fleet-ops 9999 "")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage must rc=1, got $rc ($reason)"
+[[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage with live machinery must rc=1, got $rc ($reason)"
 [[ "$reason" == "skip-surge-leverage" ]] \
   || fail "scenario17a: expected skip-surge-leverage, got $reason"
-ok "scenario17a: surge skips a non-leverage fleet-ops claim"
+ok "scenario17a: surge skips a non-leverage fleet-ops claim when a machinery lane is already live"
+
+# 17a2 (fleet-ops#1431): surge non-leverage with ZERO live machinery gets exactly
+# one floor lane (the surge floor) so the queue can never hard-stall through a
+# surge window when no surge_leverage_issue is claimable.
+set +e
+export BAND_PENDING_FILE="$scratch/pending.latch"
+rm -f "$BAND_PENDING_FILE"
+: >"$scratch/units.txt"
+reason=$(precedence_band_allow_claim fleet-ops 9998 "")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17a2: surge floor must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-surge-floor" ]] \
+  || fail "scenario17a2: expected allow-surge-floor, got $reason"
+ok "scenario17a2: surge admits one repair lane when no machinery is live (floor)"
+
+# 17a3: the surge floor is latched — a SECOND non-leverage claim in the same
+# tick is refused (exactly one lane, not a drain of the overnight queue).
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 9997 "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17a3: surge floor latch must refuse the second claim, got $rc ($reason)"
+[[ "$reason" == "skip-surge-leverage" ]] \
+  || fail "scenario17a3: expected skip-surge-leverage after the floor, got $reason"
+ok "scenario17a3: surge floor is latched — one lane per tick, then skip"
 
 set +e
 reason=$(precedence_band_allow_claim fleet-ops 1223 "")

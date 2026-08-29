@@ -242,6 +242,24 @@ precedence_band_allow_claim() {
             printf 'allow-surge-leverage\n'
             return 0
         fi
+        # Surge floor (fleet-ops#1431): the surge hold is leverage-only, so
+        # when no surge_leverage_issue is still claimable (all claimed / blocked
+        # / done) a pure skip leaves the fleet-ops queue at 0 dispatches for up
+        # to the whole surge window. Watchers read that hard 0-outflow as
+        # "dispatcher starvation" and auto-file a false issue cluster. Mirror
+        # the band-phase machinery floor (#1452/#1474): allow exactly one
+        # machinery/repair lane when live machinery == 0, latched for the rest
+        # of the tick, so the queue can never hard-stall through a surge.
+        # Leverage issues still take strict precedence; the floor only opens
+        # when there is no surge work left, and grants ONE lane, not the 30%
+        # band share — a deliberate surge hold stays a hold otherwise.
+        precedence_band_count_live
+        BAND_PENDING_MACHINERY="$(precedence_band_pending_get)"
+        if (( BAND_MACHINERY == 0 && BAND_PENDING_MACHINERY == 0 )); then
+            precedence_band_pending_set
+            printf 'allow-surge-floor\n'
+            return 0
+        fi
         printf 'skip-surge-leverage\n'
         return 1
     fi

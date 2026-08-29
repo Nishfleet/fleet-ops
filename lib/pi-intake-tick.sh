@@ -275,6 +275,26 @@ mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
 # times. The phase cannot change mid-tick (it is a clock comparison).
 _band_phase="$(precedence_band_phase 2>/dev/null || echo unknown)"
 
+# fleet-ops#1431: surge-exhaustion probe. During the precedence-band surge
+# phase, fleet-ops intake claims only surge_leverage_issues. When NONE of
+# those are currently agent-ready (all claimed / blocked / done), a pure skip
+# leaves the queue at 0 dispatches for up to the whole surge window, which
+# watchers misread as "dispatcher starvation" and auto-file a false issue
+# cluster. The ready set is already in hand, so detect exhaustion ONCE here
+# and let the early surge skip below fall through to `precedence_band_allow_claim`,
+# whose surge floor admits exactly one machinery/repair lane so the queue can
+# never hard-stall. `precedence_band_is_leverage_issue` is a cheap jq probe on
+# the same policy JSON already loaded by precedence_band_phase.
+_surge_has_leverage=0
+if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
+    for _probe in "${numbers[@]}"; do
+        if precedence_band_is_leverage_issue "$_probe" 2>/dev/null; then
+            _surge_has_leverage=1
+            break
+        fi
+    done
+fi
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -292,7 +312,13 @@ for i in "${!numbers[@]}"; do
     # filter (both phases) and the band-multiplier check (band phase only).
     # Product repos are never gated (allow-product) so this only applies to
     # the machinery repo (fleet-ops).
-    if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
+    # fleet-ops#1431: when surge work is exhausted (no leverage issue in the
+    # ready set), the early skip is RELAXED so the ordinary
+    # precedence_band_allow_claim path runs and its surge floor can admit one
+    # repair lane — the queue must never hard-stall at 0 dispatches through a
+    # surge window. Leverage work, when present, keeps strict priority (skip
+    # everything non-leverage cheaply, claim the leverage issues).
+    if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" && "$_surge_has_leverage" == "1" ]]; then
         if ! precedence_band_is_leverage_issue "$N" 2>/dev/null; then
             echo "issue $N ($title): skipped-precedence-band (skip-surge-leverage)"
             continue
