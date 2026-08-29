@@ -218,6 +218,15 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-claim-mutex\.test\.
   || fail "alert-repair-claim-mutex.test.sh must not be a known orphan (fleet-ops#1309)"
 ok "alert-repair-claim-mutex.test.sh is pinned in the P14 reachable set (fleet-ops#1309)"
 
+# fleet-ops#1331 is a duplicate of #1309, filed 3 minutes later
+# (2026-08-27T18:36:29Z vs #1309 at 18:33:00Z) while #1309 was still
+# open. The same fix — host line in tests/seat-lib.test.sh (PR #1288
+# leftover) plus this named pin (PR #1833, merged 2026-08-29T03:12:24Z)
+# — closes both. No new code; this comment plus the closing PR is the
+# receipt, same shape as the #831/#799 duplicate receipts above.
+# Verified: `bash tests/ci-standards-audit.test.sh` no longer reports
+# alert-repair-claim-mutex.test.sh as an unhosted orphan on origin/main.
+
 # fleet-ops#1152: hard-pin the host line for standing-rules-drift. The test
 # landed on main as `test_standing_rules_drift.sh` — a name this gate does
 # not scan (`*.test.sh` only), so it ran nowhere in CI while looking like a
