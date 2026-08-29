@@ -287,6 +287,31 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly
   || fail "fleet-spawn-guard-stash-readonly.test.sh must not be a known orphan (fleet-ops#308)"
 ok "fleet-spawn-guard-stash-readonly.test.sh is pinned in the P14 reachable set (fleet-ops#308)"
 
+# fleet-ops#2071: hard-pin the host lines for the two intake-tick tests that
+# PR #2068 hosted from tests/pi-intake-run.test.sh (already listed in ci.yml)
+# without adding named pins. The blind-audit report at 2026-08-29T15:26:31Z
+# caught the transient red (the host landed 2 minutes later at 15:28:30Z), but
+# the class-prevention was missing: a future drop of either host line could
+# park the test on known_orphans to silence the generic $bad[] message. These
+# named pins fail by name first, same shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-escalate-senior-exclusion\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-escalate-senior-exclusion.test.sh (fleet-ops#2071)"
+[[ -n "${reachable[pi-intake-tick-escalate-senior-exclusion.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-escalate-senior-exclusion.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2071)"
+[[ -z "${known_orphan_set[pi-intake-tick-escalate-senior-exclusion.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-escalate-senior-exclusion.test.sh must not be a known orphan (fleet-ops#2071)"
+ok "pi-intake-tick-escalate-senior-exclusion.test.sh is pinned in the P14 reachable set (fleet-ops#2071)"
+
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-claim-set-e-guard\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-claim-set-e-guard.test.sh (fleet-ops#2071)"
+[[ -n "${reachable[pi-intake-tick-claim-set-e-guard.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-claim-set-e-guard.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2071)"
+[[ -z "${known_orphan_set[pi-intake-tick-claim-set-e-guard.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-claim-set-e-guard.test.sh must not be a known orphan (fleet-ops#2071)"
+ok "pi-intake-tick-claim-set-e-guard.test.sh is pinned in the P14 reachable set (fleet-ops#2071)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
