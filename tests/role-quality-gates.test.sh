@@ -264,8 +264,69 @@ if [[ "$detail_hit" == "yes" ]]; then
 fi
 ok "behaviour lock: pi-intake-trigger.service is not flagged (fleet-ops#1513)"
 
+# fleet-ops#1563: behaviour-locked. The gap-closure machinery from #1557
+# (4 prompts, 6 units) reddened main until #1601 catalogued the
+# work-producing items under senior-auditor and marked the drill/loop
+# stubs as NON_ROLE plumbing. Build a scratch repo with all 10 items on
+# disk and prove the audit emits zero findings — the exact signal that
+# auto-reverted every PR on 2026-08-28 must never return.
+scratch1563=$(mktemp -d -t role-gates-1563.XXXXXX)
+trap 'rm -rf "$scratch1180" "$scratch1513" "$scratch1563"' EXIT INT TERM
+mkdir -p "$scratch1563/systemd" "$scratch1563/prompts" "$scratch1563/bin" "$scratch1563/config" "$scratch1563/tests"
+# 4 prompts from #1557
+for p in gap-closure-conference.md gap-closure-conference-round2.md gap-closure-research.md gap-closure-research-round2.md; do
+  echo "# placeholder for $p (fixture for fleet-ops#1563)" >"$scratch1563/prompts/$p"
+done
+# 4 work-producing or plumbing units
+for u in fleet-gap-closure-auditor@.service fleet-gap-closure-conference.service fleet-gap-closure-drill.service fleet-gap-closure-loop.service; do
+  cat >"$scratch1563/systemd/$u" <<UNIT
+[Unit]
+Description=$u (fixture for fleet-ops#1563)
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+UNIT
+done
+# 2 drill stub units
+for u in gap-closure-drill-stub-fail.service gap-closure-drill-stub-mask.service; do
+  cat >"$scratch1563/systemd/$u" <<UNIT
+[Unit]
+Description=$u (fixture for fleet-ops#1563)
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+UNIT
+done
+cp "$catalog" "$scratch1563/config/role-quality-gates.json"
+audit1563_out=$(python3 "$lib" audit --repo-root "$scratch1563" --catalog "$scratch1563/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1563_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1563_out"
+# All 4 prompts must not appear as ungated-role findings.
+for p_name in gap-closure-conference.md gap-closure-conference-round2.md gap-closure-research.md gap-closure-research-round2.md; do
+  if echo "$audit1563_out" | jq -e ".findings[] | select(.id == \"prompt:$p_name\")" >/dev/null; then
+    fail "fleet-ops#1563 regression: prompt $p_name leaked into ungated-role findings"
+  fi
+done
+# All 6 units must not appear as ungated-role findings.
+for u_name in fleet-gap-closure-auditor@.service fleet-gap-closure-conference.service fleet-gap-closure-drill.service fleet-gap-closure-loop.service gap-closure-drill-stub-fail.service gap-closure-drill-stub-mask.service; do
+  if echo "$audit1563_out" | jq -e ".findings[] | select(.id == \"unit:$u_name\")" >/dev/null; then
+    fail "fleet-ops#1563 regression: unit $u_name leaked into ungated-role findings"
+  fi
+done
+# Mirror the exact detail line the issue reported so future refactors see the
+# exact failure mode if the catalog row or plumbing skip is ever dropped.
+for sig in "gap-closure-conference.md is not in the role-quality-gates catalog" \
+          "fleet-gap-closure-auditor@.service is not in the role-quality-gates catalog" \
+          "fleet-gap-closure-loop.service is not in the role-quality-gates catalog" \
+          "gap-closure-drill-stub-fail.service is not in the role-quality-gates catalog"; do
+  detail_hit=$(echo "$audit1563_out" | jq -e ".findings[] | select(.detail | test(\"$sig\"))" >/dev/null && echo yes || echo no)
+  if [[ "$detail_hit" == "yes" ]]; then
+    fail "fleet-ops#1563 regression: exact issue symptom re-appeared: $(echo "$audit1563_out" | jq -c '.findings')"
+  fi
+done
+ok "behaviour lock: gap-closure prompts and units are not flagged (fleet-ops#1563)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
-trap 'rm -rf "$scratch1513" "$scratch"' EXIT INT TERM
+trap 'rm -rf "$scratch1513" "$scratch1563" "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
 : >"$scratch/triage.md"
 : >"$scratch/gh.log"
