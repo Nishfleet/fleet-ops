@@ -392,6 +392,7 @@ for i in "${!numbers[@]}"; do
     edit_out=""
     edit_rc=1
     for _ in 1 2 3; do
+        edit_rc=0
         edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
@@ -411,6 +412,7 @@ for i in "${!numbers[@]}"; do
     comment_out=""
     comment_rc=1
     for _ in 1 2 3; do
+        comment_rc=0
         comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
