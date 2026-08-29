@@ -111,6 +111,24 @@ do
   esac
 done
 
+# fleet-ops#1403: the four 2026-08-27/28 ledger decisions must each have a
+# matrix entry with a valid status (enforced | queued(#N) |
+# advisory(reason)). The rows were added by PR #1400 (closing #1371), but
+# only the live-vault join covered them, which CI skips. Assert directly
+# against the matrix so they hold on CI too, in the same class as #1371/#1529.
+for src in \
+  $'decisions-ledger.md: 2026-08-27 | Free lanes auto-retry after cooldowns (Nish: "since they\'re free, we can keep trying")' \
+  'decisions-ledger.md: 2026-08-27 | Opus duty-officer heartbeat: HOURLY (Nish, via Telegram)' \
+  'decisions-ledger.md: 2026-08-27 | Heartbeat made exhaustive (Nish)' \
+  'decisions-ledger.md: 2026-08-28 | Relic pager masked (emergency, 01:05 IST)'
+do
+  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
+  case "$status" in
+    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1403)" ;;
+    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1403)" ;;
+  esac
+done
+
 # fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
 # vault join so a busy board of other uncovered sibling ledger lines
 # cannot skip this drill (the live join still asserts our covered_rows).
