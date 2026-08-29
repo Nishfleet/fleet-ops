@@ -81,6 +81,14 @@ live_skip[pi-worker-execstart-live.test.sh]=1
 live_skip[opus-heartbeat-allowlist-gate.test.sh]=1
 live_skip[opus-heartbeat-follow-through.test.sh]=1
 live_skip[opus-heartbeat-replayed-frozen-snapshot.test.sh]=1
+# fleet-ops#1137: staleness-checker reads VPS-local standing docs and the
+# live fleet-metrics-export.py (Test 6 asserts the fleet_truth_staleness_*
+# gauges are emitted there). It cannot run in hosted CI.
+live_skip[staleness-checker.test.sh]=1
+# fleet-ops#1535: gh-webhook-receiver-live-e2e posts a real canary webhook
+# to the live receiver and queries live Prometheus. It skips gracefully in
+# hosted CI (no live receiver), so it is a live/VPS-only test.
+live_skip[gh-webhook-receiver-live-e2e.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.
