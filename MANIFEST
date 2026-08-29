@@ -120,6 +120,10 @@ bin/fleet-failed-command-flagged /home/nish/.local/bin/fleet-failed-command-flag
 # multi-attempt debug that skipped the four-heading vault note.
 lib/debug-playbook.py /home/nish/.local/lib/pi-packet/debug-playbook.py
 bin/fleet-debug-playbook /home/nish/.local/bin/fleet-debug-playbook
+# fleet-ops#1435: observe-to-close an open issue that a merged PR shipped
+# but forgot to close (the forgotten-Closes-trailer class). Heartbeat-tier1;
+# close gated behind FLEET_MERGED_PR_CLOSE_OK=1.
+bin/fleet-merged-pr-close /home/nish/.local/bin/fleet-merged-pr-close
 # fleet-ops#457: per-role quality gates + quality-weighted seat routing.
 config/role-quality-gates.json /home/nish/.local/state/pi-packet/role-quality-gates.json
 config/quality-routing.json /home/nish/.local/state/pi-packet/quality-routing.json
