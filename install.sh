@@ -458,6 +458,16 @@ if [ "$do_user_install" = 1 ]; then
           if ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable --now "$unit"
             echo "enabled+started: $unit"
+          elif ! "$SYSTEMCTL" --user is-active --quiet "$unit" 2>/dev/null; then
+            # Enabled but not active/running: a prior enable landed without
+            # --now (or the start was lost), so the generic loop above used
+            # to skip this unit forever (fleet-ops#2089: staleness timer was
+            # enabled but inactive, NextElapse=infinity, never scheduled).
+            # `enable --now` on an already-enabled unit starts it; this
+            # self-heals the whole enabled-but-inactive class, not just one
+            # timer.
+            "$SYSTEMCTL" --user enable --now "$unit"
+            echo "started: $unit (was enabled but inactive)"
           fi
           ;;
         *.service)
