@@ -63,7 +63,11 @@ case "$cmd" in
             *) [ -z "$unit" ] && unit="$a" ;;
           esac
         done
-        result="missing"; active="inactive"; load="not-found"
+        # Real systemd defaults: LoadState=not-found → Result=success (the
+        # default), ActiveState=inactive, exit 0. A --collect unit that
+        # unloaded looks exactly like this — the bug in fleet-ops#2100 was
+        # that unit_status trusted that default Result=success.
+        result="success"; active="inactive"; load="not-found"
         [ -f "$store/$unit.result" ] && result=$(cat "$store/$unit.result")
         [ -f "$store/$unit.active" ] && active=$(cat "$store/$unit.active")
         # LoadState: loaded if we have any state file for this unit
@@ -82,9 +86,8 @@ case "$cmd" in
         else
           printf 'Result=%s\nActiveState=%s\nLoadState=%s\n' "$result" "$active" "$load"
         fi
-        if [ ! -f "$store/$unit.result" ] && [ ! -f "$store/$unit.active" ]; then
-          exit 1
-        fi
+        # Real systemd: systemctl show always exits 0 (even for not-found
+        # units). The old fake exited 1 for not-found, masking the #2100 bug.
         exit 0
         ;;
       *) exit 1 ;;
@@ -528,6 +531,107 @@ grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fle
   || fail "9b tick-2: fleet_chain_stalled verify must be 0, got: $(grep verify "$scratch/fleet-chains.prom")"
 
 ok "two concurrent verify-stall chains both drain via deadline (fleet-ops#1623)"
+
+# --- 9c. stale dispatch from prior green chain cleared on re-fire (fleet-ops#2100) --
+# #2100 Bug A: FleetMainRed terminated green (start=00:16:09), then re-fired at
+# 18:35:56. parse_actions still carried dispatch_ts=00:16:09 from the prior
+# chain. classify's stale-resolve fallthrough did NOT clear it (resolved_ts was
+# older than disp_ts), so the chain pinned to the dead unit at hop=verify with
+# a huge age, cycling detector-red → cooldown → re-ladder forever. The fix: a
+# dispatch can only belong to a trip firing at dispatch time; if the current
+# fire started AFTER the dispatch and the unit is no longer running, the
+# dispatch is stale → clear it → hop=dispatch → fresh worker.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+
+# Prior chain: DISPATCH at 00:16:09, unit succeeded, alert left 9090 → green.
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-29T00:16:09Z] DISPATCH alertname=StaleDispatch seat=a/Model unit=u-SD-20260829T001609Z
+PYEND
+# The prior unit succeeded and --collect unloaded it (no state files = not-found).
+# Seed a "Started" journal so unit_status's journal fallback sees it as success
+# for the not-firing tick (proving the prior chain closes green).
+printf 'Started u-SD-20260829T001609Z.service\n' >"$scratch/sysctl/u-SD-20260829T001609Z.journal"
+
+# Tick 1: alert NOT firing, dispatch_ts=00:16:09, unit success → green terminal.
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": []}}, open(sys.argv[1], "w"))
+PY
+rc=$(run_bin "2026-08-29T00:32:44Z")
+[[ "$rc" == "0" ]] || fail "9c tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q 'StaleDispatch.*green' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9c tick-1: prior chain must terminate green, got: $(cat "$scratch/state/chains.terminated.jsonl")"
+
+# Tick 2: alert RE-FIRED at 18:35:56. dispatch_ts is still 00:16:09 (stale).
+# Before the fix: classify sees unit_success on the stale unit → hop=verify,
+# age=67851s, stalled → ladders stop-reason, cycles forever.
+# After the fix: disp_ts(00:16:09) < fire_start(18:35:56) and unit not running
+# → disp_ts cleared → hop=dispatch → AMX redispatch for the fresh fire.
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "StaleDispatch"},
+   "activeAt": "2026-08-29T18:35:56Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+rc=$(run_bin "2026-08-29T19:07:00Z")
+[[ "$rc" == "0" ]] || fail "9c tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# The chain must be at hop=dispatch (not verify), waiting for a fresh worker.
+grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 1' "$scratch/fleet-chains.prom" \
+  || fail "9c tick-2: re-fire must be at hop=dispatch (stale disp cleared), got: $(grep -E 'hop="(dispatch|verify)"' "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9c tick-2: verify must be 0 (no stale unit pin), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+# The dispatcher must have been invoked for the re-fire (AMX redispatch).
+grep -q "dispatch AMX_ALERT_1_LABEL_alertname=StaleDispatch" "$scratch/dispatch.log" \
+  || fail "9c tick-2: dispatcher must be invoked for fresh dispatch, got: $(cat "$scratch/dispatch.log")"
+
+ok "stale dispatch from prior green chain cleared on re-fire → hop=dispatch (fleet-ops#2100)"
+
+# --- 9d. --collect failed unit not misclassified as verify success (fleet-ops#2100) --
+# #2100 Bug B: FleetDeadCredentialSeats unit exited exit-code, but --collect
+# unloaded it so systemctl show returned LoadState=not-found + Result=success
+# (the default). unit_status returned ("success", "inactive"), classify saw
+# unit_success → hop=verify, and the chain stalled at verify on a dead unit
+# that actually FAILED. The fix: unit_status checks LoadState and falls back
+# to the journal for not-found units (mirrors classify_dispatch #1295).
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+
+# Current trip: alert firing, dispatched, unit FAILED and --collect unloaded.
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "FailedCollect"},
+   "activeAt": "2026-08-29T17:20:34Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-29T17:25:44Z] DISPATCH alertname=FailedCollect seat=a/Model unit=u-FC-20260829T172544Z
+PYEND
+# No .result/.active files → LoadState=not-found, Result=success (default).
+# Journal shows the real failure.
+printf 'Main process exited, code=exited, status=1/FAILURE\nu-FC-20260829T172544Z.service: Failed with result exit-code.\n' \
+  >"$scratch/sysctl/u-FC-20260829T172544Z.journal"
+
+rc=$(run_bin "2026-08-29T19:07:00Z")
+[[ "$rc" == "0" ]] || fail "9d rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# Before the fix: hop=verify (false success), stalled, ladder stop-reason.
+# After the fix: unit_status sees LoadState=not-found + journal "Failed" →
+# ("exit-code", "inactive") → not unit_success → hop=run → AMX redispatch.
+grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 1' "$scratch/fleet-chains.prom" \
+  || fail "9d: failed --collect unit must be hop=run (not verify), got: $(grep -E 'hop="(run|verify)"' "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9d: verify must be 0 (failed unit not misclassified as success), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+# The dispatcher must have been invoked (re-dispatch for the failed unit).
+grep -q "dispatch AMX_ALERT_1_LABEL_alertname=FailedCollect" "$scratch/dispatch.log" \
+  || fail "9d: dispatcher must re-dispatch the failed unit, got: $(cat "$scratch/dispatch.log")"
+
+ok "--collect failed unit → hop=run via journal fallback, not verify false-success (fleet-ops#2100)"
 
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
