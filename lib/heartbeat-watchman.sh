@@ -78,10 +78,26 @@ heartbeat_list_failed_units() {
         printf '%s\n' "$unit"
     done < <("$SYSTEMCTL" --user list-units --state=failed --no-legend --plain 2>/dev/null \
                 | awk '{print $1}' || true)
+
+    # fleet-ops#1570: also list --system failed units so unit-escalation
+    # drop-ins (which run as root) can see and repair them. Prefixed with
+    # "system:" so callers know these cannot be reset+started without sudo.
+    while IFS= read -r unit; do
+        [ -z "$unit" ] && continue
+        printf 'system:%s\n' "$unit"
+    done < <("$SYSTEMCTL" --system list-units --state=failed --no-legend --plain 2>/dev/null \
+                | awk '{print $1}' || true)
 }
 
 heartbeat_repair_unit() {
     local unit="$1"
+    # fleet-ops#1570: system-scope units need sudo for reset-failed + start.
+    # Best we can do is surface them; the unit-escalation@ drop-in (root)
+    # can repair them.
+    if [[ "$unit" == system:* ]]; then
+        _watchman_log "repair: skip system-scope ${unit#system:} (no sudo, surface-only)"
+        return 0
+    fi
     "$SYSTEMCTL" --user reset-failed "$unit" >/dev/null 2>&1 || true
     "$SYSTEMCTL" --user start "$unit" >/dev/null 2>&1 || true
 }
@@ -115,8 +131,14 @@ heartbeat_process_failed_units() {
     fi
 
     for unit in "${failed[@]}"; do
-        excerpt=$("$JOURNALCTL" --user -u "$unit" -n 5 --no-pager -q 2>/dev/null \
-                    | tr '\n' ' ' | head -c 400 || true)
+        if [[ "$unit" == system:* ]]; then
+            # fleet-ops#1570: journal may require group membership; best-effort.
+            excerpt=$("$JOURNALCTL" --system -u "${unit#system:}" -n 5 --no-pager -q 2>/dev/null \
+                        | tr '\n' ' ' | head -c 400 || true)
+        else
+            excerpt=$("$JOURNALCTL" --user -u "$unit" -n 5 --no-pager -q 2>/dev/null \
+                        | tr '\n' ' ' | head -c 400 || true)
+        fi
         _watchman_log "failed-units: repairing $unit :: ${excerpt:-<no-journal>}"
         heartbeat_repair_unit "$unit"
     done
