@@ -373,6 +373,8 @@ grep -F 'skipped-precedence-band' "$tick" >/dev/null \
   || fail "intake-tick must log skipped-precedence-band"
 grep -F 'precedence_band_pending_clear' "$tick" >/dev/null \
   || fail "intake-tick must clear the floor latch at start (fleet-ops#1452)"
+grep -F 'precedence_band_pending_starvation_clear' "$tick" >/dev/null \
+  || fail "intake-tick must clear the starvation floor latch at start (fleet-ops#1448)"
 allow_line=$(grep -n 'precedence_band_allow_claim' "$tick" | head -1 | cut -d: -f1)
 push_line=$(grep -n 'push --force-with-lease' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$allow_line" && -n "$push_line" ]] || fail "intake-tick must contain allow_claim and claim push"
