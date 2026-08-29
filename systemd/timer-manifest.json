@@ -475,6 +475,12 @@
       "classification": "scheduled",
       "cadence": "4h",
       "source": "repo"
+    },
+    "fleet-truth-staleness-check.timer": {
+      "reason": "Weekly truth staleness checker — cross-checks standing docs against live state (fleet-ops#1137). Docs rot slowly; weekly cadence catches stale paths, units, and issue refs.",
+      "classification": "scheduled",
+      "cadence": "weekly",
+      "source": "repo"
     }
   }
 }
