@@ -150,48 +150,50 @@ def session_slug(path: str) -> str:
     return (slug or "session")[:80]
 
 
-def scan_session(path: str) -> dict[str, str] | None:
+def _read_session(path: str) -> tuple[list[str], list[str]]:
+    """Read a session JSONL and return (failures, blobs). Raises OSError."""
     calls: dict[str, str] = {}
     failures: list[str] = []
     blobs: list[str] = []
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                msg = obj.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                role = msg.get("role")
-                content = msg.get("content")
-                if role == "assistant":
-                    blobs.append(_text_chunks(content))
-                    if isinstance(content, list):
-                        for chunk in content:
-                            if not isinstance(chunk, dict):
-                                continue
-                            if chunk.get("type") != "toolCall":
-                                continue
-                            cid = str(chunk.get("id") or "")
-                            args = chunk.get("arguments")
-                            if cid:
-                                calls[cid] = _command_from_args(args)
-                            blobs.append(_blob_from_args(args))
-                elif role == "toolResult":
-                    # Reads (standing-rules, prior notes) must not count as
-                    # filing. Only assistant text and toolCall arguments do.
-                    tid = str(msg.get("toolCallId") or "")
-                    command = calls.get(tid, "")
-                    failed, fail_text = result_failed(msg, command)
-                    if failed:
-                        failures.append(snippet_for(fail_text or command or msg.get("toolName") or "tool"))
-    except OSError:
-        return None
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = obj.get("message")
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "assistant":
+                blobs.append(_text_chunks(content))
+                if isinstance(content, list):
+                    for chunk in content:
+                        if not isinstance(chunk, dict):
+                            continue
+                        if chunk.get("type") != "toolCall":
+                            continue
+                        cid = str(chunk.get("id") or "")
+                        args = chunk.get("arguments")
+                        if cid:
+                            calls[cid] = _command_from_args(args)
+                        blobs.append(_blob_from_args(args))
+            elif role == "toolResult":
+                # Reads (standing-rules, prior notes) must not count as
+                # filing. Only assistant text and toolCall arguments do.
+                tid = str(msg.get("toolCallId") or "")
+                command = calls.get(tid, "")
+                failed, fail_text = result_failed(msg, command)
+                if failed:
+                    failures.append(snippet_for(fail_text or command or msg.get("toolName") or "tool"))
+    return failures, blobs
+
+
+def _make_finding(path: str, failures: list[str], blobs: list[str]) -> dict[str, str] | None:
     if len(failures) < 2:
         return None
     if has_playbook_shape("\n".join(blobs)):
@@ -202,6 +204,28 @@ def scan_session(path: str) -> dict[str, str] | None:
         "snippet": failures[0],
         "attempts": str(len(failures)),
     }
+
+
+def scan_session(path: str) -> dict[str, str] | None:
+    try:
+        failures, blobs = _read_session(path)
+    except OSError:
+        return None
+    return _make_finding(path, failures, blobs)
+
+
+def gate_session(path: str) -> tuple[dict[str, str] | None, str | None]:
+    """Fail-closed single-session check.
+
+    Returns (None, None) when the session is clean or has <2 real failures.
+    Returns (finding, None) when the session is missing the playbook note.
+    Returns (None, error_message) when the session file cannot be read.
+    """
+    try:
+        failures, blobs = _read_session(path)
+    except OSError as e:
+        return None, str(e)
+    return _make_finding(path, failures, blobs), None
 
 
 def iter_session_files(root: str) -> list[str]:
@@ -229,6 +253,7 @@ def scan(
     skipped_old = 0
     skipped_grace = 0
     skipped_unreadable = 0
+    skipped_grace_slugs: list[str] = []
 
     for path in iter_session_files(root):
         try:
@@ -242,6 +267,7 @@ def scan(
             continue
         if age < grace_s:
             skipped_grace += 1
+            skipped_grace_slugs.append(session_slug(path))
             continue
         scanned += 1
         finding = scan_session(path)
@@ -254,6 +280,7 @@ def scan(
         "skipped_old": skipped_old,
         "skipped_grace": skipped_grace,
         "skipped_unreadable": skipped_unreadable,
+        "skipped_grace_slugs": skipped_grace_slugs,
         "root": root,
     }
 
@@ -266,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     scan_p.add_argument("--now", default="")
     scan_p.add_argument("--window-hours", type=float, default=24.0)
     scan_p.add_argument("--grace-minutes", type=float, default=20.0)
+    gate_p = sub.add_parser("gate", help="fail-closed check on one Pi session JSONL")
+    gate_p.add_argument("--path", required=True, help="session JSONL file to evaluate")
     args = parser.parse_args(argv)
 
     if args.cmd == "scan":
@@ -278,6 +307,17 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(report, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
+    if args.cmd == "gate":
+        finding, error = gate_session(args.path)
+        if error:
+            print(f"DEBUG-PLAYBOOK-GATE-BROKEN: {error}", file=sys.stderr)
+            return 2
+        if finding is None:
+            print("DEBUG-PLAYBOOK-GATE-OK: no missing playbook")
+            return 0
+        json.dump(finding, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 1
     return 2
 
 

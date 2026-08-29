@@ -12,6 +12,10 @@
 # (LOUD + auto-filed, deduped by signal: debug-playbook/<slug>).
 # Exit 1 also if the helper itself is broken (missing python/lib).
 #
+# Subcommands:
+#   (default) / canary   heartbeat canary (fail-loud)
+#   gate <session.jsonl> fail-closed single-session check
+#
 # Environment seams (tests override all of these):
 #   FLEET_DEBUG_PLAYBOOK_SESSIONS   default ~/.pi/agent/sessions
 #   FLEET_DEBUG_PLAYBOOK_LIB        python helper
@@ -20,7 +24,9 @@
 #   FLEET_DEBUG_PLAYBOOK_NOW        ISO timestamp
 #   FLEET_DEBUG_PLAYBOOK_FILE_ISSUES    1 (default) / 0
 #   FLEET_DEBUG_PLAYBOOK_ISSUE_REPO     default Nishfleet/fleet-ops
-#   FLEET_DEBUG_PLAYBOOK_CAP            default 5
+#   FLEET_DEBUG_PLAYBOOK_CAP            default 5 (per tick)
+#   FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP default 20 (open issue total)
+#   FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE    0 (default) / 1 (production heartbeat)
 #   FLEET_HEARTBEAT_TRIAGE
 #   GH
 
@@ -45,6 +51,8 @@ NOW_ISO="${FLEET_DEBUG_PLAYBOOK_NOW:-}"
 FILE_ISSUES="${FLEET_DEBUG_PLAYBOOK_FILE_ISSUES:-1}"
 ISSUE_REPO="${FLEET_DEBUG_PLAYBOOK_ISSUE_REPO:-Nishfleet/fleet-ops}"
 CAP="${FLEET_DEBUG_PLAYBOOK_CAP:-5}"
+CUMULATIVE_CAP="${FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP:-20}"
+OK_TO_CLOSE="${FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE:-0}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 
 log() {
@@ -61,6 +69,37 @@ loud() {
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
+
+# --- gate subcommand: fail-closed single-session check ----------------------
+if [[ "${1:-}" == "gate" ]]; then
+    shift
+    if [[ $# -lt 1 ]]; then
+        echo "usage: fleet-debug-playbook gate <session.jsonl>" >&2
+        exit 2
+    fi
+    session_path="$1"
+    if [[ ! -f "$session_path" ]]; then
+        loud "DEBUG-PLAYBOOK-GATE-BROKEN" "session file missing: $session_path"
+        exit 2
+    fi
+    set +e
+    finding=$(python3 "$LIB" gate --path "$session_path" 2>/tmp/debug-playbook-gate.err)
+    gate_rc=$?
+    set -e
+    if [[ "$gate_rc" -ne 0 ]] && [[ "$gate_rc" -ne 1 ]]; then
+        loud "DEBUG-PLAYBOOK-GATE-BROKEN" "helper crashed (rc=$gate_rc) for $session_path: $(tr '\n' ' ' </tmp/debug-playbook-gate.err 2>/dev/null)"
+        exit 2
+    fi
+    if [[ "$gate_rc" -eq 1 ]]; then
+        slug=$(jq -r '.slug' <<<"$finding")
+        attempts=$(jq -r '.attempts' <<<"$finding")
+        snippet=$(jq -r '.snippet' <<<"$finding")
+        loud "DEBUG-PLAYBOOK-GATE-BLOCK" "session=$slug attempts=$attempts snippet=$snippet"
+        exit 1
+    fi
+    log "DEBUG-PLAYBOOK-GATE-OK" "session clean: $session_path"
+    exit 0
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
     loud "DEBUG-PLAYBOOK-BROKEN" "python3 missing — cannot lint sessions"
@@ -90,11 +129,6 @@ finding_count=$(jq '.findings | length' <<<"$report")
 scanned=$(jq -r '.scanned' <<<"$report")
 log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skipped_grace <<<"$report") findings=$finding_count"
 
-if [[ "$finding_count" == "0" ]]; then
-    loud "DEBUG-PLAYBOOK-OK" "no missing debug playbooks in window (scanned=$scanned)"
-    exit 0
-fi
-
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     set +e
@@ -102,6 +136,51 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     set -e
     open_json="${open_json:-[]}"
 fi
+
+current_slugs=$(jq -r '.findings[].slug' <<<"$report" 2>/dev/null | sort -u)
+protected_slugs=$( { printf '%s\n' "$current_slugs"; jq -r '.skipped_grace_slugs[] // empty' <<<"$report" 2>/dev/null; } | sort -u)
+
+# --- observe-to-close (fleet-ops#2005) ------------------------------------
+# Close auto-filed debug-playbook issues whose slug is no longer reported as a
+# finding and is not currently in the grace period. The detector filed these;
+# it closes them when the signal is clean on a real heartbeat tick.
+closed=0
+if [[ "$OK_TO_CLOSE" == "1" ]] && [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    while IFS=$'\t' read -r num slug; do
+        [[ -n "$num" && -n "$slug" ]] || continue
+        if ! grep -qxF "$slug" <<<"$protected_slugs"; then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: signal: debug-playbook/${slug} no longer reported as a finding on heartbeat tick at $ts."
+            set +e
+            "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" 2>/dev/null
+            close_rc=$?
+            set -e
+            if [[ "$close_rc" -eq 0 ]]; then
+                log "observe-to-close: CLOSED issue #$num (slug=$slug no longer in findings)"
+                closed=$((closed + 1))
+            else
+                log "observe-to-close: failed to close issue #$num (rc=$close_rc)"
+            fi
+        fi
+    done < <(printf '%s' "$open_json" | jq -r '
+        .[] | .number as $n | (.body // "") as $b |
+        select($b | contains("signal: debug-playbook/")) |
+        (try ($b | capture("signal: debug-playbook/(?<slug>[^\\s`]+)") | .slug) catch null) as $slug |
+        select($slug != null and $slug != "<slug>") |
+        "\($n)\t\($slug)"
+    ' 2>/dev/null)
+fi
+
+if [[ "$finding_count" == "0" ]]; then
+    loud "DEBUG-PLAYBOOK-OK" "no missing debug playbooks in window (scanned=$scanned closed=$closed)"
+    exit 0
+fi
+
+# --- cumulative cap: count open debug-playbook issues -----------------------
+open_debug_count=$(printf '%s' "$open_json" | jq -r --arg prefix "signal: debug-playbook/" '
+    [ .[] | select((.body // "") | contains($prefix)) ] | length
+' 2>/dev/null)
+open_debug_count="${open_debug_count:-0}"
 
 filed=0
 while IFS= read -r row; do
@@ -114,6 +193,12 @@ while IFS= read -r row; do
 
     [[ "$FILE_ISSUES" == "1" ]] || continue
     [[ "$filed" -lt "$CAP" ]] || continue
+    # Cumulative cap across ticks: prevent unbounded issue flood.
+    remaining=$((CUMULATIVE_CAP - open_debug_count - filed))
+    if [[ "$remaining" -le 0 ]]; then
+        log "auto-file: cumulative cap reached (open=$open_debug_count cap=$CUMULATIVE_CAP); not filing $slug"
+        continue
+    fi
     command -v "$GH" >/dev/null 2>&1 || continue
 
     signal="signal: debug-playbook/${slug}"
@@ -147,5 +232,5 @@ $signal"
     fi
 done < <(jq -c '.findings[]' <<<"$report")
 
-loud "DEBUG-PLAYBOOK-FAIL" "missing playbooks=$finding_count — a multi-attempt debug never filed the vault note; LOUD + auto-filed, observe-to-close"
+loud "DEBUG-PLAYBOOK-FAIL" "missing playbooks=$finding_count — a multi-attempt debug never filed the vault note; LOUD + auto-filed, observe-to-close, cumulative-cap=$CUMULATIVE_CAP"
 exit 1

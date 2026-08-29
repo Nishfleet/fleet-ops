@@ -120,8 +120,8 @@
     {
       "id": "sr-debug-playbook",
       "source": "global-standing-rules.md: Debugging sessions end with a playbook note (Nish, 2026-08-19)",
-      "mechanism": "Heartbeat session-close lint: Pi JSONL sessions with two or more real failed toolResults and no four-heading vault playbook (SIGNATURE / ROOT CAUSE / FIX THAT WORKED / DEAD ENDS) are LOUD + auto-filed. grep/rg/diff exit 1 is POSIX no-match and is skipped. A single failure is not this rule (#535).",
-      "proof": "bin/fleet-debug-playbook; lib/debug-playbook.py; tests/fleet-debug-playbook.test.sh; fleet-heartbeat-tier1 block 18; fleet-ops#522",
+      "mechanism": "Session-close gate in pi-issue-run: each successful Pi worker session is blocked from exiting if its JSONL has two or more real failed toolResults and no four-heading vault playbook (SIGNATURE / ROOT CAUSE / FIX THAT WORKED / DEAD ENDS). Heartbeat canary remains the detector: it files missing-playbook issues with a per-tick cap and a cross-tick cumulative cap, and observes-to-close when the detector reports clean.",
+      "proof": "bin/fleet-debug-playbook (canary + gate); lib/debug-playbook.py; bin/pi-issue-run; tests/fleet-debug-playbook.test.sh; tests/pi-issue-run-debug-playbook-gate.test.sh; fleet-heartbeat-tier1 block 18; fleet-ops#522; fleet-ops#2005",
       "status": "enforced"
     },
     {

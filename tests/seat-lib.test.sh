@@ -2975,6 +2975,12 @@ bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed
 # mark_seat_empty_run + pick_seat from lib/seat-lib.sh.
 bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
 
+# fleet-ops#2005: a successful pi worker session is blocked from closing if its
+# JSONL has two or more real failed attempts and no four-heading vault playbook.
+# The gate lives in bin/fleet-debug-playbook (session-close gate subcommand)
+# and is enforced by bin/pi-issue-run on the success path.
+bash "$here/pi-issue-run-debug-playbook-gate.test.sh" || fail "pi-issue-run-debug-playbook-gate tests failed"
+
 # fleet-ops#1408: a seat that no-ops or spawn-fails repeatedly must NOT re-enter
 # rotation at the base backoff every cycle. mark_seat_spawn_fail and
 # mark_seat_empty_run escalate the bench by consecutive_failure_count so each

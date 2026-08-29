@@ -76,6 +76,20 @@ case "$cmd" in
         done
         printf '\n]\n'
         ;;
+      close)
+        num=""
+        for arg in "$@"; do
+          case "$arg" in
+            [0-9]*) num="$arg"; break ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        # Rename the issue body file so a subsequent list no longer sees it.
+        if [ -f "$store/issue-$num.body" ]; then
+          mv "$store/issue-$num.body" "$store/closed-$num.body" 2>/dev/null || true
+        fi
+        echo "closed #$num"
+        ;;
       *) exit 1 ;;
     esac
     ;;
@@ -237,6 +251,95 @@ grep -rl "signal: debug-playbook/" "$scratch/gh-issues" | wc -l | grep -q "^1$" 
   || fail "signal key filed more than once (dedupe broken)"
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/swallowed.jsonl"
+
+# --- 8b. cumulative cap bounds total open issues -----------------------------
+rm -rf "$gh_store"/*
+mkdir -p "$gh_store"
+for i in one two three four five; do
+  write_session "cap-$i" "$FAIL_TWO
+{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"
+done
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP=3 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-cap.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "cumulative-cap run should exit 1 (got $rc)"
+n_filed=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_filed" -eq 3 ]] || fail "cumulative cap should file exactly 3 issues, got $n_filed"
+grep -q "cumulative cap reached" "$scratch/err-cap.log" || fail "cumulative cap log line missing"
+ok "cumulative cap bounds total filed issues at 3"
+for i in one two three four five; do rm -f "$sessions/cap-$i.jsonl"; done
+
+# --- 8c. observe-to-close closes stale issues -------------------------------
+rm -rf "$gh_store"/*
+mkdir -p "$gh_store"
+# Pre-create two open issues: one for a session still in findings, one stale.
+# The gh stub lists and renumbers *.body files sequentially, so use 1/2.
+cat >"$gh_store/issue-1.body" <<'BODY'
+title
+fix(debug-playbook): stale-session — multi-attempt debug with no playbook note
+
+signal: debug-playbook/stale-session
+BODY
+cat >"$gh_store/issue-2.body" <<'BODY'
+title
+fix(debug-playbook): live-session — multi-attempt debug with no playbook note
+
+signal: debug-playbook/live-session
+BODY
+write_session "live-session" "$FAIL_TWO
+{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-close.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "observe-to-close run should exit 1 for live finding (got $rc)"
+[[ -f "$gh_store/closed-1.body" ]] || fail "stale issue #1 should be closed"
+[[ -f "$gh_store/issue-2.body" ]] || fail "live issue #2 should stay open"
+grep -q "CLOSED issue #1" "$scratch/err-close.log" || fail "close log missing for #1"
+ok "observe-to-close closes stale debug-playbook issues only"
+rm -f "$sessions/live-session.jsonl"
+
+# --- 8d. gate subcommand -----------------------------------------------------
+good_session='{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"ok","name":"bash","arguments":{"command":"true"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"ok","toolName":"bash","isError":false,"content":[{"type":"text","text":"ok"}]}}'
+printf '%s\n' "$good_session" >"$scratch/good.jsonl"
+set +e
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" "$bin" gate "$scratch/good.jsonl" >/dev/null 2>"$scratch/err-gate-good.log"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "gate should exit 0 for clean session (got $rc)"
+write_session "bad-gate" "$FAIL_TWO"
+set +e
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" "$bin" gate "$sessions/bad-gate.jsonl" >/dev/null 2>"$scratch/err-gate-bad.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "gate should exit 1 for missing playbook (got $rc)"
+grep -q "DEBUG-PLAYBOOK-GATE-BLOCK" "$scratch/err-gate-bad.log" || fail "gate block tag missing"
+ok "gate subcommand blocks missing-playbook sessions"
+rm -f "$sessions/bad-gate.jsonl"
 
 # --- 9. missing helper fails loud -------------------------------------------
 set +e
