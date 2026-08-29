@@ -1,5 +1,5 @@
 <!-- CANONICAL: Pi AGENTS.md shared body.
-<!-- Edit this file and run `bin/render-pi-agents-md.py --render` to
+     Edit this file and run `bin/render-pi-agents-md.py --render` to
      propagate changes to ~/AGENTS.md and ~/.pi/agent/AGENTS.md. -->
 
 ## READ FIRST — BEFORE BUILDING ANYTHING NEW (Nish, 2026-08-28, on top for ALL agents)
