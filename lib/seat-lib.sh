@@ -2364,6 +2364,9 @@ pick_seat() {
     # seconds and starve a cap=1 lane for the whole window.
     local _at_capacity_n=0
     local -a _at_capacity_sample=()
+    # fleet-ops#1379: remember providers whose effective cap is reached this
+    # pick so the remaining models are not re-polled.
+    local -A _at_cap_provider=()
 
     # fleet-ops#1297: fold the STATIC heavy-pick skip classes too. A model's
     # `capable` flag for a given difficulty and the quality-routing ban do not
@@ -2472,6 +2475,15 @@ pick_seat() {
             # seat_usable already logged the UNUSABLE reason from the ledger.
             continue
         fi
+        # fleet-ops#1379: once a provider is at effective cap for this pick,
+        # all of its remaining models share that provider-wide cap. Back off
+        # instead of re-running count_active / effective_provider_cap / AIMD
+        # probe for each one. The per-pick at-capacity summary still counts them.
+        if [[ -n "${_at_cap_provider[$p]:-}" ]]; then
+            _at_capacity_n=$((_at_capacity_n + 1))
+            _at_capacity_sample+=("$p/$m")
+            continue
+        fi
         # P4-A + AIMD (#217/#424): honour the learned effective cap, and
         # admit one additive probe when exactly saturated with room below
         # the ceiling. cap=0 walled rows stay skipped via provider_cap above.
@@ -2481,12 +2493,16 @@ pick_seat() {
             if _aimd_probe_admitted "$p" "$eff_cap" "$p_active"; then
                 seat_log "seat $p/$m AIMD probe admitted (provider $p cap $eff_cap -> $((eff_cap + 1)): $p_active active, zero errors, RAM headroom)"
             else
-                # fleet-ops#1624: silence the per-seat "skipped (provider cap
-                # reached)" line — it was the at_capacity_events flood source
-                # (1006/2h against cap=1 seats). Counted into the per-pick
-                # at-capacity summary below instead. The seat is still
+                # fleet-ops#1624/#1379: silence the per-seat "skipped (provider
+                # cap reached)" line — it was the at_capacity_events flood
+                # source (1006/2h against cap=1 seats). Counted into the
+                # per-pick at-capacity summary below instead, and the provider's
+                # remaining models are not re-polled this pick. The seat is still
                 # re-evaluated next pick (a busy seat frees when its worker
-                # exits); only the per-seat log line is dropped.
+                # exits); only the per-seat log line is dropped. A literal
+                # cooldown would hide a seat that frees in seconds and starve a
+                # cap=1 lane for the whole window.
+                _at_cap_provider[$p]=1
                 _at_capacity_n=$((_at_capacity_n + 1))
                 _at_capacity_sample+=("$p/$m")
                 continue

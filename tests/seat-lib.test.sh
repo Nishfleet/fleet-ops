@@ -2010,6 +2010,68 @@ set -e
 ok "1418-recover: freed heavy-capable seat is picked, proving a real dispatch can land"
 # restore the env the following (d) 1163-dead test expects: the 1163 model
 # inventory + the 1415 caps map that c4 left in effect.
+
+# --- fleet-ops#1379: provider at-capacity short-circuit ----------------------
+# When a provider is already at its effective cap, every remaining model of
+# that provider is also at that provider-wide cap. The per-pick summary must
+# still count them, but pick_seat must NOT re-run count_active / effective_cap
+# / _aimd_probe_admitted for each one. We prove this by overriding
+# _aimd_probe_admitted to count calls and return 1 (probe rejected). With one
+# active worker on atcapco (cap=1) and two models, only the first model may
+# trigger _aimd_probe_admitted; the second must be short-circuited.
+mkdir -p "$scratch/1379"
+export PI_PACKET_STATE="$scratch/1379/state"
+export PI_MODELS_JSON="$scratch/1379/models.json"
+export SEAT_CAPS_JSON="$scratch/1379/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1379/ledger"
+mkdir -p "$PI_PACKET_STATE/active-seats" "$PI_SEAT_HEALTH_LEDGER_DIR"
+cat >"$PI_MODELS_JSON" <<'JSON'
+{
+  "providers": {
+    "atcapco": { "models": [ { "id": "m1" }, { "id": "m2" } ] },
+    "freeco": { "models": [ { "id": "free1" } ] }
+  }
+}
+JSON
+cat >"$SEAT_CAPS_JSON" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["freeco", "atcapco"],
+  "providers": {
+    "atcapco": { "cap": 1, "class": "free", "models": { "m1": 1, "m2": 1 } },
+    "freeco": { "cap": 1, "class": "free", "models": { "free1": 1 } }
+  }
+}
+JSON
+jq -nc --arg p "atcapco" --arg m "m1" --arg u "pi-issue-1379" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T10:00:00Z"}' \
+    >"$PI_PACKET_STATE/active-seats/pi-issue-1379.json"
+set +e
+out=$(bash -c '
+    source "$0"
+    load_seat_caps
+    aimd_calls=0
+    _aimd_probe_admitted() { aimd_calls=$((aimd_calls + 1)); return 1; }
+    pick_seat "" "" 0 >"$PI_PACKET_STATE/picked.txt" 2>/dev/null
+    rc=$?
+    seat=$(cat "$PI_PACKET_STATE/picked.txt" 2>/dev/null || true)
+    printf "rc=%s\nseat=%s\naimd=%s\n" "$rc" "$seat" "$aimd_calls"
+' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1379-shortcircuit: runner failed (rc=$rc): $out"
+[[ "$out" == *"rc=0"* ]] || fail "1379-shortcircuit: expected pick rc=0, got: $out"
+[[ "$out" == *"seat=freeco"$'\t'"free1"* ]] || fail "1379-shortcircuit: expected freeco/free1, got: $out"
+[[ "$out" == *"aimd=1"* ]] || fail "1379-shortcircuit: _aimd_probe_admitted must be called once for the first at-cap model only, got: $out"
+grep -qE "pick_seat: at-capacity 2 seats \[atcapco/m1,atcapco/m2\]" "$PI_PACKET_STATE/watch.log" \
+    || fail "1379-shortcircuit: expected at-capacity 2-seat summary for atcapco, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+_1379_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1379_pred=${_1379_pred:-0}
+if (( _1379_pred > 0 )); then
+  fail "1379-shortcircuit: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1379_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1379-shortcircuit: provider at-capacity backs off after first model; _aimd_probe_admitted called once"
+# restore the env the following (d) 1163-dead test expects.
 export PI_MODELS_JSON="$scratch/1163/models.json"
 export SEAT_CAPS_JSON="$scratch/1415/caps.json"
 rm -rf "$PI_PACKET_STATE/active-seats"
