@@ -208,6 +208,13 @@ past_iso=$(date -u -d '@0' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T0
 tmp=$(mktemp)
 jq --arg u "$past_iso" --arg b "$past_iso" '.usable_at = $u | .bench_until = $b' "$lf" >"$tmp" 2>/dev/null \
     && mv "$tmp" "$lf"
+# fleet-ops#1512: the bench now also lives in the clobber-proof spawn-bench
+# marker, so age that surface too (in production real time passing ages both).
+sb_marker="$LEDGER/${p//[^A-Za-z0-9._-]/_}__${m//[^A-Za-z0-9._-]/_}.spawn-bench.json"
+if [[ -f "$sb_marker" ]]; then
+    tmp=$(mktemp)
+    jq --arg u "$past_iso" '.usable_at = $u' "$sb_marker" >"$tmp" 2>/dev/null && mv "$tmp" "$sb_marker"
+fi
 if ! seat_usable "$p" "$m"; then
     fail "seat_usable returned unusable after park wall expired — fail-open is broken (recovered seat walled)"
 fi
