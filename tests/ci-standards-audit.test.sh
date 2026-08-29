@@ -200,6 +200,12 @@ bash "$here/merge-trample-gate.test.sh"
 # .github/workflows/**).
 bash "$here/machinery-authorization-gate.test.sh"
 
+# fleet-ops#1493 (fleet-ops#2020): tests/ready-work-deleted.test.sh pins the deletion
+# of the hand-placed ready-work dispatcher and checks the allowlist / MANIFEST /
+# organ-catalog. Host it here from this already-listed ci-standards-audit test so
+# the P14 test-listing gate goes green without a workflow edit.
+bash "$here/ready-work-deleted.test.sh"
+
 # fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/console-tile-verify.test.sh"
