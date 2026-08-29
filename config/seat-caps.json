@@ -74,15 +74,16 @@
       "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387)."
     },
     "commandcode": {
-      "cap": 2,
+      "cap": 4,
       "class": "free",
-      "max_probe_ceiling": 4,
+      "max_probe_ceiling": 6,
       "503_bench_default_s": 600,
       "models": {
         "deepseek/deepseek-v4-flash": 2,
-        "minimax/minimax-m3-free": 1,
+        "minimax/minimax-m3-free": 2,
         "poolside/laguna-s-2.1-free": 1
       },
+      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 5 simultaneous pi --print --provider commandcode --model minimax/minimax-m3-free 'reply PONG' probes, all rc=0 + PONG, zero 429, p95 ~3.5s (n=5: 3.1/3.1/3.4/3.5/3.1s). Measured tolerance >=5 on the free m3 lane; cap raised 2->4, max_probe_ceiling 4->6, m3-free 1->2. NOTE: deepseek/deepseek-v4-flash returned HTTP 400 'insufficient credits' on 2026-08-29 (paid slug \u2014 no cost field in models.json \u2014 credit-exhausted); filed as a separate issue, pre-existing and out of scope here. The free m3-free + laguna lanes carry the raised cap; deepseek-v4-flash stays at model cap 2 for when its credits recover.",
       "_comment_m3": "2026-08-27: MiniMax M3 on CommandCode (fleet-ops#545). Live models.json lists minimax/minimax-m3-free at cost 0. Do not allowlist a billing slug (minimax-m3 / minimax/minimax-m3). bin/opencode-m3-catalog-canary fail-louds a billing allowlist and a free-form slug whose models.json cost is non-zero, and auto-files when a -free or *-pass/ MiniMax M3 slug appears in Pi's commandcode catalog. Wiring requires a live spawn + meter check (fail closed if it bills) plus a dated seat-caps row (capacity-is-measured).",
       "_comment_minimax_m3_free": "2026-08-27 07:17 UTC: live spawn on commandcode/minimax/minimax-m3-free returned HTTP 200, seat-health healthy, models.json cost input/output/cache 0, no prepaid-usage/commandcode.json. Cap 1 for measured admission; raise after league mean beats worst incumbent. 2026-08-29 fleet-ops#742 admission bench (sr-free-model-roster): same fleet-shaped tool-using packet (bash tool, compute 6*7, reply ANSWER=<n>) returned ANSWER=42 with PACKET-VERDICT tools=1 class=worked and usage.cost.total=0 (input 15 output 4 cacheRead 12694) on minimax/minimax-m3-free. The commandcode incumbent deepseek/deepseek-v4-flash failed the same packet with a 400 insufficient-credits error (PACKET-VERDICT tools=0 class=no-tools) — filed as fleet-ops#1890, out of #742 scope. The candidate clears the worst-incumbent bar (incumbent not servable this tick); cap stays 1 (capacity-is-measured) until a live league mean beats a servable incumbent. Do not allowlist a billing slug.",
       "_comment_laguna": "2026-08-27: poolside/laguna-s-2.1-free on CommandCode (fleet-ops#638). Live spawn through pi returned LAGUNA_SPAWN_OK; usage.cost.total=0 (input 376, output 8). CommandCode pricing-limits: laguna-s-2.1-free costs no credits while capacity lasts ($0.00 / 1M in, out, cache). Do not allowlist the billing sibling poolside/laguna-s-2.1. Quality: same fleet-shaped is_free_form packet ALL_OK on laguna and on the commandcode incumbent deepseek/deepseek-v4-flash; published Terminal-Bench 2.1 70.2% beats DeepSeek-V4-Pro Max 64.0% so it clears the worst-incumbent bar. cap=1 to start (capacity-is-measured); provider cap stays 2. fleet-free-roster-canary observe-to-close: wiring this slug stops the free-slug-available ticket."
@@ -94,7 +95,8 @@
       "models": {
         "Qwen/Qwen3.6-35B-A3B-FP8": 2
       },
-      "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist."
+      "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist.",
+      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised \u2014 stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue."
     },
     "zenmux": {
       "cap": 2,
@@ -119,9 +121,9 @@
       "reason": "2026-08-28 re-audition (fleet-ops#1456): `pi --print --provider inferx --model deepseek-v4-flash PONG` returned HTTP 404 'endpoint not found'. The endpoint does not resolve; cap=0 is correct. Re-audition if the provider advertises a live endpoint."
     },
     "opencode": {
-      "cap": 1,
+      "cap": 3,
       "class": "free",
-      "max_probe_ceiling": 2,
+      "max_probe_ceiling": 5,
       "quota_bench_default_s": 900,
       "models": {
         "hy3-free": 1,
@@ -132,6 +134,7 @@
         "x-preview-f-free": 0,
         "muse-spark-1.2-contributor-free": 0
       },
+      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 5 simultaneous pi --print --provider opencode --model hy3-free 'reply PONG' probes, all rc=0 + PONG, zero 429, p95 ~4.1s (n=5: 4.1/4.1/3.9/4.0/4.0s). Measured tolerance >=5; cap raised 1->3 (headroom below the 5-clean floor), max_probe_ceiling 2->5 so AIMD can probe toward 4-5 if 3 stays clean. Per-model caps stay 1 (only hy3-free was concurrency-probed; the other free models share the provider concurrency budget via model diversity).",
       "_comment_nemotron": "2026-08-27 fleet-ops#911: OpenCode nemotron-3.5-lightning-free. Catalog cost input/output/cache 0. Live pi spawn returned PONG; tool packet PACKET-VERDICT tools=1 class=worked; seat-health ledger opencode__nemotron-3.5-lightning-free.json http_status=200 health_class=healthy; no prepaid-usage/opencode.json (free class, zero spend). Quality bar (sr-free-model-roster, league mean must beat worst incumbent): worst incumbent on the opencode free ladder is hy3-free (reasoning, 190K context, 64K max output, text-only); nemotron-3.5-lightning-free is reasoning, 262K context, 262K max output, text-only, so it clears the worst-incumbent bar on context window and max output while matching reasoning + text input. The same admission tool packet returned tools=1 class=worked on both nemotron and hy3-free. cap=1 shares the provider cap (capacity-is-measured); raise after a league mean beats the worst incumbent on the ladder. Do not allowlist a billing slug. No billing sibling nemotron-3.5-lightning (without -free) is in Pi's opencode catalog today, so there is nothing to keep warm. fleet-free-roster-canary observe-to-close: wiring this slug stops the free-slug-available ticket.",
       "_comment_mimo": "2026-08-27 fleet-ops#640: OpenCode mimo-v2.5-free. Catalog cost 0/0. Live pi spawn returned PONG; tool packet PACKET-VERDICT tools=1 class=worked; zen/v1 meter cost=0. Beats incumbent hy3-free (thinking, 200k context, images, heavy-capable). cap=1 shares the provider cap. Do not allowlist a billing slug.",
       "_comment_nemotron_ultra": "2026-08-27 fleet-ops#910: OpenCode nemotron-3-ultra-free. Catalog cost 0/0/0/0, reasoning, 1M context, 128k max-out. Live pi spawn returned PONG; tool packet PACKET-VERDICT tools=1 class=worked; zen/v1 meter cost=0 (prompt 25, completion 44). Seat-health http_status=200 health_class=healthy. Beats worst incumbent hy3-free (131.1k context, 16.4k max-out, thinking=no). cap=1 shares the provider cap. Do not allowlist a billing slug. fleet-free-roster-canary observe-to-close: wiring this slug stops the free-slug-available ticket.",
@@ -147,14 +150,15 @@
       "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane."
     },
     "bai": {
-      "cap": 2,
+      "cap": 4,
       "class": "free",
-      "max_probe_ceiling": 4,
+      "max_probe_ceiling": 6,
       "models": {
-        "deepseek-v4-flash": 1,
-        "deepseek-v4-flash-vision-exp": 1
+        "deepseek-v4-flash": 2,
+        "deepseek-v4-flash-vision-exp": 2
       },
-      "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) \u2014 OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image \u2014 relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct \u2014 2,3,5,7,11,13,17,19 are exactly 8 primes \u2264 20). Cap 2 split 1+1 (capacity-is-measured) per conservative cap-2 for new free lanes; raise after a league mean beats the worst incumbent on the ladder. Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) \u2014 only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm."
+      "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) \u2014 OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image \u2014 relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct \u2014 2,3,5,7,11,13,17,19 are exactly 8 primes \u2264 20). Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) \u2014 only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm.",
+      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 5 simultaneous pi --print --provider bai --model deepseek-v4-flash 'reply PONG' probes, all rc=0 + PONG, zero 429, p95 ~5.1s (n=5: 3.0/5.1/2.8/2.8/2.8s). Measured tolerance >=5; cap raised 2->4 (headroom below the 5-clean floor) split 2+2, max_probe_ceiling 4->6 so AIMD can probe toward 5-6 if 4 stays clean in production. Cursor stays 1 (known single-flight, out of scope)."
     },
     "orcarouter": {
       "cap": 0,

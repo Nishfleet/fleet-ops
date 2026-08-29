@@ -230,14 +230,14 @@ jq -e '.providers.devin.hard_ceiling == true' "$caps" >/dev/null \
   || fail "production: devin must be hard_ceiling=true"
 jq -e '.providers.ollama.hard_ceiling == true' "$caps" >/dev/null \
   || fail "production: ollama must be hard_ceiling=true"
-jq -e '.providers.commandcode.max_probe_ceiling == 4' "$caps" >/dev/null \
-  || fail "production: commandcode max_probe_ceiling must be 4"
-jq -e '.providers.bai.max_probe_ceiling == 4' "$caps" >/dev/null \
-  || fail "production: bai max_probe_ceiling must be 4"
+jq -e '.providers.commandcode.max_probe_ceiling == 6' "$caps" >/dev/null \
+  || fail "production: commandcode max_probe_ceiling must be 6 (fleet-ops#1350: cap 4 + 2-probe headroom, measured clean to n=5)"
+jq -e '.providers.bai.max_probe_ceiling == 6' "$caps" >/dev/null \
+  || fail "production: bai max_probe_ceiling must be 6 (fleet-ops#1350: cap 4 + 2-probe headroom, measured clean to n=5)"
 jq -e '.providers.hetzner.max_probe_ceiling == 4' "$caps" >/dev/null \
   || fail "production: hetzner max_probe_ceiling must be 4"
-jq -e '.providers.opencode.max_probe_ceiling == 2' "$caps" >/dev/null \
-  || fail "production: opencode max_probe_ceiling must be 2"
+jq -e '.providers.opencode.max_probe_ceiling == 5' "$caps" >/dev/null \
+  || fail "production: opencode max_probe_ceiling must be 5 (fleet-ops#1350: cap 3 + 2-probe headroom, measured clean to n=5)"
 jq -e '.providers.minimax.max_probe_ceiling == null' "$caps" >/dev/null \
   || fail "production: minimax must omit max_probe_ceiling (no climb)"
 ok "production seat-caps.json: hard_ceiling on devin/ollama, probe ceilings on free lanes"
