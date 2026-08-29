@@ -1,38 +1,49 @@
-feat(1464): GitHub push channel via Cloudflare + synthetic canary
+Raise free-lane caps and add GitHub API rate limit as a concurrency governor (fleet-ops#1350).
 
-Implements the two patterns from fleet-ops#1464:
+## What changed
 
-1. REAL PUSH FROM GITHUB — Cloudflare Worker (`workers/github-push-forward/`) receives org-level webhooks, verifies the GitHub HMAC, and forwards the body through a Cloudflare Tunnel to `libexec/gh-webhook-receiver/serve.py` on the VPS. The receiver re-verifies HMAC (defence-in-depth), dispatches to the matching systemd unit (`pi-intake@<repo>` for `issues/labeled/agent-ready`, `fleet-deploy-check` for `workflow_run/completed/success`), and exports a Prometheus heartbeat.
+- `config/seat-caps.json`: raised free-lane caps and AIMD probe ceilings from live concurrency-tolerance probes.
+  - `bai` cap 2 -> 4 (deepseek-v4-flash, measured clean to n=5).
+  - `commandcode` cap 2 -> 4 (minimax-m3-free, measured clean to n=5).
+  - `opencode` cap 1 -> 3 (hy3-free, measured clean to n=5).
+  - `hetzner` cap stays 2 (concurrent probes timeout; re-probe before raising).
+  - Cursor stays 1 (known single-flight).
+- `libexec/fleet-metrics-export.py`: fetches `gh api rate_limit` once per run, emits `fleet_gh_rate_limit_*` Prometheus metrics, and writes a side-car JSON state file for the intake throttle.
+- `lib/pi-intake-tick.sh`: gates issue claims on the side-car state; holds claims this tick when any consumed resource (core/search/graphql) is below 20%. Missing or stale state fail-open (and now logs that it is failing open) so a dead exporter does not freeze the fleet.
+- `config/fleet_rules.yml`: adds `FleetGhRateLimitAbsent` (organ heartbeat) and `FleetGhRateLimitLowSustained` (6h trend) alerts.
+- `tests/seat-lib-aimd.test.sh`: updated AIMD ceiling assertions to match the raised free-lane caps.
+- `tests/fleet-gh-rate-limit.test.sh` + `tests/pi-intake-gh-rate-limit.test.sh` (CI-hosted by `fleet-metrics-export.test.sh` and `pi-intake-run.test.sh`): offline coverage for the rate-limit metrics and the intake throttle.
 
-2. SYNTHETIC CANARY — `bin/gh-webhook-canary.py` fires every 5 min, posts a synthetic `issues/labeled/agent-ready` payload to the local receiver, and bumps the last-green metric. `bin/gh-webhook-canary-deadman.py` checks the metric and writes the alert-repair triage file (plus an optional healthchecks.io fail URL) when the series is missing or stale > 15 min.
+## Target state
 
-The slow `pi-intake@<repo>.timer` cadence drops from `*/15` to `*/20` so it behaves as a reconciler, not the primary trigger. `lib/pi-intake-tick.sh` now increments `fleet_intake_reconciler_caught_total{repo="<repo>"}` per slow-poll catch so a rising count is visible.
+- 15-25 concurrent workers, load <12, zero 429-storms.
+- GitHub API budget is a soft ceiling: intake throttles before the remaining core/search/graphql budget drops below 20%, and a sustained-low trend alert fires if any resource stays under 20% for 6+ hours.
 
-New fleet organs (`gh-webhook-receiver`, `gh-webhook-canary`) are registered in `config/fleet-organs.json` with matching `absent()` rules in `config/fleet_rules.yml` (fleet-ops#1010).
+## Verification
 
-Verification:
+run-proof: tests/fleet-gh-rate-limit.test.sh
+
 ```
-bash tests/gh-webhook-receiver-hmac.test.sh      # 10/10 phases green
-bash tests/gh-webhook-canary.test.sh             # 8/8 phases green
-bash tests/fleet-intake-reconciler-counter.test.sh # 8/8 phases green
-bash tests/gh-webhook-organ-heartbeat.test.sh    # 4/4 phases green
-bash tests/timer-manifest.test.sh                # all repo + live timers covered
-systemd-analyze verify --man=no systemd/*.service systemd/*.timer
-gitleaks git --redact --verbose                    # no leaks
-sgscan                                              # no new security findings
-find bin -maxdepth 1 -type f ! -name '*.py' ! -name '*.ts' -print | xargs -r shellcheck -x
-shellcheck -x install.sh
+$ cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1350
+$ bash tests/fleet-gh-rate-limit.test.sh
+OK: healthy rate-limit emits metrics + sidecar; low=0, binding floor=20/30
+OK: exhausted rate-limit (<20% on search) sets low=1, sidecar=5/30
+OK: fleet-ops#1350 gh rate-limit metrics + sidecar verified
+
+$ bash tests/pi-intake-gh-rate-limit.test.sh
+OK: low=1 holds claims and exits 0
+OK: low=0 continues without holding
+OK: missing gh rate-limit state is fail-open
+
+$ bash tests/seat-lib-aimd.test.sh
+All AIMD invariants passed.
+
+$ bash tests/pi-intake-run.test.sh
+ALL OK: intake-tick spawn post-condition + start-limit healer
+
+$ bash tests/fleet-metrics-export.test.sh
+ALL OK: fleet-metrics-export #1136 logic pinned
+
+$ bash tests/seat-lib.test.sh
+ALL OK
 ```
-All above passed on the VPS.
-
-run-proof: tests/gh-webhook-receiver-hmac.test.sh + tests/gh-webhook-canary.test.sh + tests/fleet-intake-reconciler-counter.test.sh + tests/timer-manifest.test.sh all passed; systemd user timers active on netcup-rs2000; gitleaks/shellcheck/sgscan clean.
-
-research: official docs and last30days-scale pass (Cloudflare Workers webhooks, GitHub org webhooks + HMAC, Cloudflare Tunnel ingress); compared a hand-built persistent daemon (rejected per no-hand-built-orchestration) and a per-repo GitHub Actions workflow (rejected: one org-level webhook beats N per-repo workflows). Adopted Cloudflare Worker + Tunnel because it keeps the Worker as dumb transport and all logic on the VPS.
-
-help-first: ran `curl --help`, `systemctl --help`, `python3 --help`, and `python3 -m http.server --help` — none can verify a GitHub HMAC signature, forward webhooks through a Cloudflare Tunnel, write a dead-man Prometheus metric, or append an alert-repair triage entry, so the existing tools do not already do this.
-
-Pre-existing (not this PR):
-- `tests/rule-enforcement.test.sh` fails locally because `config/rule-enforcement.json` is missing rows for new 2026-08-28 ledger/standing rules; the issue that owns that matrix update is unrelated.
-- `tests/ci-standards-audit.test.sh` invokes `tests/seat-health-classifier.test.sh`, which fails only on the VPS because the out-of-repo `~/.pi/agent/extensions/seat-health.ts` is installed and still marks HTTP-200/empty-body as healthy. It is the fleet-ops#1466 closure canary.
-
-Closes #1464

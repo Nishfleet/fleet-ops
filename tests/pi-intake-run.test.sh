@@ -98,3 +98,7 @@ bash "$here/pi-intake-tick-seat-gate.test.sh"
 # verification (branch + packet + unit exist before claimed+spawned). ci.yml
 # lists this file, so the drill runs from here instead of a new workflow line.
 bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
+# --- 7. fleet-ops#1350 gh rate-limit throttle gate (CI hook) ---------------
+# tests/pi-intake-gh-rate-limit.test.sh locks the side-car throttle in
+# lib/pi-intake-tick.sh. ci.yml lists this file, so the drill runs here.
+bash "$here/pi-intake-gh-rate-limit.test.sh"

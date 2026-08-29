@@ -327,3 +327,6 @@ print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
 
 echo "ALL OK: fleet-metrics-export #1136 logic pinned"
+
+# fleet-ops#1350: GitHub API rate-limit metrics + pi-intake sidecar.
+bash "$here/fleet-gh-rate-limit.test.sh" || fail "fleet-gh-rate-limit tests failed"

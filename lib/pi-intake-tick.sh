@@ -234,7 +234,11 @@ if [[ -r "$gh_rl_path" ]]; then
             echo "gh rate-limit low (remaining=${_gh_rl_remaining}/${_gh_rl_limit}, resets in ${_gh_rl_wait}s); holding claims this tick — gate: gh_rate_limit low"
             exit 0
         fi
+    else
+        echo "gh rate-limit state file unreadable or empty; failing open — gate: gh_rate_limit missing"
     fi
+else
+    echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing"
 fi
 
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
