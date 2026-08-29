@@ -370,11 +370,39 @@ queued_issues = [
     {"number": 482, "body": body_fallback, "comments": [{"body": f"canary-covered: {src}\n"}]},
 ]
 assert m.close_targets(queued_report, queued_issues) == [], "queued row must not close"
+
+# needs-interactive guard (fleet-ops#2006): an issue whose body carries a
+# `needs-interactive:` marker is an ACTIVE human-action fault (e.g. the grok
+# CLI seat is dead and Nish must `grok login --device-auth`). The
+# rule-enforcement canary "covers" the signal because it DETECTS the dead
+# seat every tick — but "covered" means detected, not fixed. Without this
+# guard the observe-to-close loop posts canary-covered, then closes the
+# ticket while the seat is still dead, the canary re-files next tick, and
+# the class recurs indefinitely (4 tickets in ~4h on 2026-08-29). Such an
+# issue must be excluded from BOTH observe_targets (no canary-covered
+# comment) and close_targets (no close) so the live fault stays open until
+# a human actually fixes it.
+needs_interactive_body = (
+    body_fallback
+    + "\n\nseat-live-validate: grok needs-interactive\n"
+)
+needs_interactive_issues = [
+    {
+        "number": 483,
+        "body": needs_interactive_body,
+        "comments": [{"body": f"canary-covered: {src}\n"}],
+    },
+]
+assert m.observe_targets(report, needs_interactive_issues) == [], \
+    "needs-interactive issue must not get a canary-covered comment"
+assert m.close_targets(report, needs_interactive_issues) == [], \
+    "needs-interactive issue must not be observe-to-closed while the fault is live"
 print("parser-ok")
 PY
 ok "parser: ## headings counted, ### ignored, FLAG ledger lines skipped"
 ok "observe-to-close: fallback id, source backtick, and already-commented issues"
 ok "observe-to-close close_targets: marker+enforced closes, no-marker and queued do not"
+ok "observe-to-close: needs-interactive issue is not commented or closed (fleet-ops#2006)"
 
 # --- fixture join: complete coverage ----------------------------------------
 cat >"$scratch/covered-rules.md" <<'EOF'
