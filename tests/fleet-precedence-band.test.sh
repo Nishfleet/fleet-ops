@@ -827,6 +827,74 @@ set -e
   || fail "scenario19e: expected skip-band (floor already spent), got $reason"
 ok "scenario19e: floor is one claim per process (intra-tick latch)"
 
+# --- 19f..19h. starvation floor (fleet-ops#1448) -----------------------
+# The 08-28 morning deadlock: the machinery cap was already consumed by
+# emergency dispatches AND product lanes were saturated, so the starvation
+# reports themselves (#1448, #1455) and the seat-pool fix (#1456) were
+# skip-listed. With live machinery == 0 false, the machinery floor (#1452)
+# could not fire; with the doubled cap already consumed, band-multiplier:2
+# was also insufficient. Starvation-class issues diagnose the throttle
+# itself and must get exactly ONE lane per tick even when the band would
+# otherwise skip them.
+# shellcheck source=/dev/null
+. "$shlib"
+export PRECEDENCE_BAND_JSON="$scratch/policy.json"
+export PRECEDENCE_BAND_NOW="2026-08-28T03:30:00Z"
+export BAND_PENDING_FILE="$scratch/pending.latch"
+rm -f "$BAND_PENDING_FILE"
+export BAND_PENDING_STARVATION_FILE="$scratch/pending-starvation.latch"
+rm -f "$BAND_PENDING_STARVATION_FILE"
+# 3 machinery + 1 product = 75% machinery > 30% cap (over cap) and product
+# NOT empty — neither the machinery floor nor empty-product surge applies.
+cat >"$scratch/units-starvation.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+UNITS
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-starvation.txt"
+# Starvation-class issue (dispatch pipeline not consuming the queue) must get
+# the reserved lane despite over-cap and saturated product.
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1449 "" "Intake starvation: 224 ready items, 2 dispatches in 2h with 13 healthy seats")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario19f: starvation must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-starvation-floor" ]] \
+  || fail "scenario19f: expected allow-starvation-floor, got $reason"
+ok "scenario19f: starvation-class issue gets one floor lane despite over-cap+saturated-product"
+# The starvation floor is latched: a SECOND starvation claim in the same
+# tick is refused so it cannot drain the overnight queue.
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1450 "" "Intake starvation: 229 ready items, 0 claims in 2h")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19g: starvation latch must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19g: expected skip-band after starvation floor spent, got $reason"
+ok "scenario19g: starvation floor is latched — one lane per tick, then skip"
+# A non-starvation repair issue in the same over-cap+saturated-product
+# position is still skip-band (only starvation-class is floor-eligible).
+rm -f "$BAND_PENDING_STARVATION_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1451 "" "fix: resolve a specific booking bug")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19h: non-starvation over-cap must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19h: expected skip-band for non-starvation over-cap, got $reason"
+ok "scenario19h: non-starvation repair stays skip-band (only starvation is floor-eligible)"
+# Starvation detection must NOT fire on an empty title/body (safe catch-all).
+rm -f "$BAND_PENDING_STARVATION_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1452 "" "")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19i: empty starvation title must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19i: expected skip-band for empty title, got $reason"
+ok "scenario19i: empty title is not starvation-class (safe catch-all)"
+
 # --- 18. run_canary default NOW is pinned (mechanical prevention #1444) -----
 # The #1444 FleetMainRed root cause: run_canary defaulted PRECEDENCE_BAND_NOW
 # to empty (live clock), so a phase-specific scenario that forgot to pin NOW

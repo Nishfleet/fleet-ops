@@ -47,6 +47,31 @@ precedence_band_pending_clear() {
     rm -f "$(precedence_band_pending_file)"
 }
 
+# Starvation floor latch (fleet-ops#1448). Separate from BAND_PENDING_FILE
+# so the one-lane starvation reservation does not consume the machinery
+# floor latch (they are independent one-lane reservations in different
+# failure modes).
+precedence_band_pending_starvation_file() {
+    printf '%s\n' "${BAND_PENDING_STARVATION_FILE:-${XDG_RUNTIME_DIR:-/tmp}/precedence-band-pending-starvation.$$}"
+}
+precedence_band_pending_starvation_get() {
+    if [[ -f "$(precedence_band_pending_starvation_file)" ]]; then
+        printf '1\n'
+    else
+        printf '0\n'
+    fi
+}
+precedence_band_pending_starvation_set() {
+    local f dir
+    f="$(precedence_band_pending_starvation_file)"
+    dir="$(dirname "$f")"
+    mkdir -p "$dir"
+    : >"$f"
+}
+precedence_band_pending_starvation_clear() {
+    rm -f "$(precedence_band_pending_starvation_file)"
+}
+
 precedence_band_resolve_json() {
     local here
     if [[ -n "$PRECEDENCE_BAND_JSON" && -f "$PRECEDENCE_BAND_JSON" ]]; then
@@ -110,12 +135,38 @@ precedence_band_has_multiplier() {
     printf '%s\n' "$body" | grep -qE '^band-multiplier:[[:space:]]*[1-9][0-9]*[[:space:]]*$'
 }
 
+# Detect starvation-class issues: meta-issues reporting the dispatch/claim
+# pipeline is not consuming the ready queue. These differ from regular
+# repair issues (specific code bugs) in that they diagnose the throttle
+# itself. fleet-ops#1448: such issues must be floor-eligible so the
+# machinery cap cannot lock out the very diagnostic that would unstick
+# the queue. Uses the same signal set as classify_quality for repair
+# classification, but additionally requires a dispatch/claim pipeline
+# signal (ready_work, dispatches, claims, at-capacity, empty runs, etc.)
+# to avoid promoting every outage issue into the starvation floor.
+# Args: title body
+precedence_band_is_starvation_issue() {
+    local title="${1:-}" body="${2:-}"
+    printf '%s\n%s\n' "$title" "$body" \
+        | grep -qiE "$PRECEDENCE_BAND_STARVATION_SIGNALS"
+}
+
 # Outage/defect signals that promote an UNPREFIXED title to repair. When a
 # title carries no conventional-commit prefix, its content (title + body) is
 # scanned for these; a hit is repair, anything else is churn. Prefixed titles
 # keep their prefix mapping regardless of body (chore: stays churn even if the
 # body says "broken") — the legit-work guard (fleet-ops#1516) depends on this.
 PRECEDENCE_BAND_REPAIR_SIGNALS='\b(red|fail(s|ed|ing)?|broken|down|absent|stall(s|ed|ing)?|stuck|starv[a-z]*|outages?|regressions?|leak[a-z]*|crash[a-z]*|hang(s|ed|ing)?|timeouts?|deadlock|block(s|ed|ing)?|frozen|exhaust(s|ed|ion)?|dead|wedg(e|es|ed|ing)?|drift(s|ed|ing)?)\b'
+
+# Starvation-class signals: issues that report the dispatch/claim pipeline
+# is not consuming the ready queue. These are metacompact — they exist
+# because the fleet can't process its own backlog. Unlike regular repair
+# issues (a specific code bug), starvation issues must be floor-eligible:
+# they diagnose and fix the throttle itself, so locking them behind the
+# machinery cap when the cap is already consumed re-creates the deadlock.
+# fleet-ops#1448: "consider starvation-class issues as floor-eligible."
+# Scans title + body for dispatch/claim pipeline stall signals.
+PRECEDENCE_BAND_STARVATION_SIGNALS='\b(starv|starved|starvation|dispatcher.*idle|idle.*dispatcher|queue.*starv|starv.*queue|dispatch.*starv|intake.*starv|starv.*intake|claim.*starv|starv.*claim|no.*dispatch|no.*claim|skips|at[-_]capacity|ready_work|ready.*items?|dispatches?.*2h|claims?.*2h|empty.*run|no.op|outflow.*0|dispatch.*stalled|claim.*stalled|pipeline.*stalled)\b'
 
 # Classify issue quality from title (and optionally body/labels).
 # Prints: upgrade | repair | churn
@@ -308,6 +359,23 @@ precedence_band_allow_claim() {
         if precedence_band_has_multiplier "$body"; then
             printf 'allow-multiplier\n'
             return 0
+        fi
+        # Starvation floor (fleet-ops#1448): when the machinery cap is already
+        # consumed by emergency dispatches and product lanes are saturated,
+        # starvation-class issues (dispatch/claim pipeline not consuming the
+        # queue) must still get exactly ONE lane per tick to diagnose and
+        # unstick the throttle. Without this, the machinery floor (one lane,
+        # held by a long-running worker at 06:20Z) and band-multiplier (one lane,
+        # insufficient when the doubled cap is already consumed) leave the
+        # queue permanently stalled. Uses a separate latch from the machinery
+        # floor so the two one-lane reservations do not collide.
+        if precedence_band_is_starvation_issue "$title" "$body"; then
+            BAND_PENDING_STARVATION="$(precedence_band_pending_starvation_get)"
+            if (( BAND_PENDING_STARVATION == 0 )); then
+                precedence_band_pending_starvation_set
+                printf 'allow-starvation-floor\n'
+                return 0
+            fi
         fi
         printf 'skip-band\n'
         return 1
