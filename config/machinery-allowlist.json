@@ -114,6 +114,12 @@
       "source": "repo"
     },
     {
+      "unit": "app-pi\\x2dissue",
+      "class": "a",
+      "source": "repo",
+      "note": "oomd kill-policy slice for pi-issue@ workers; repo-owned via MANIFEST"
+    },
+    {
       "unit": "pi-packet@",
       "class": "a",
       "source": "repo"

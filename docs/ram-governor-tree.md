@@ -133,7 +133,7 @@ is a side effect, not a design.
 | 2 — per-worker throttle | `systemd/pi-issue@.service` | `~/.config/systemd/user/pi-issue@.service` | `./install.sh` (default) |
 | 3 — stock neutralizer | `systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf` | `/etc/systemd/system/user@1000.service.d/...` | `./install.sh --system` (or manual) |
 | 4 — slice governor | `systemd/system/user-1000.slice.d/50-ram-governor.conf` | `/etc/systemd/system/user-1000.slice.d/...` | `./install.sh --system` (or manual) |
-| 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | out-of-band copy (pre-existing; see #71) |
+| 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | `./install.sh` (default) |
 
 Layers 3 and 4 are NEW in this repo as of issue #71; layers 1, 2 and 5 were
 already repo-owned.

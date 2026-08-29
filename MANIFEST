@@ -136,6 +136,7 @@ lib/quality-routing.py /home/nish/.local/lib/pi-packet/quality-routing.py
 bin/fleet-role-gate-audit /home/nish/.local/bin/fleet-role-gate-audit
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
+systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
