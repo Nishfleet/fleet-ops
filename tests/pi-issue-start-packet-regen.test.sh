@@ -77,9 +77,10 @@ pkt="$ISSUES_DIR/${inst}.in"
 out="$(GH_OUT="$GH_OUT" "$bin" "$inst")"
 printf '%s\n' "$out" | grep -q 'REGENERATED missing packet' || fail "missing packet must be regenerated, got: $out"
 [[ -f "$pkt" ]] || fail "packet file was not created at $pkt"
-# Content: worker prompt + blank + TARGET line, no keystone marker.
+# Content: worker prompt + blank + TARGET line, no keystone/phases marker.
 head -1 "$pkt" | grep -q '^# Pi fleet issue worker' || fail "packet must start with worker prompt, got: $(head -1 "$pkt")"
 grep -q '^difficulty: keystone' "$pkt" && fail "non-keystone issue must NOT carry the keystone marker"
+grep -q '^phases:' "$pkt" && fail "non-keystone issue must NOT carry the phases manifest"
 tail -1 "$pkt" | grep -q "^TARGET: repo Nishfleet/fleet-ops issue 1149 unit pi-issue-fleet-ops-1149$" \
   || fail "packet must end with the TARGET line, got: $(tail -1 "$pkt")"
 grep -q '^start ' "$scratch/systemctl-calls" || fail "must call systemctl start after regen, called=$(cat "$scratch/systemctl-calls")"
@@ -92,7 +93,7 @@ GH_OUT='{"title":"[keystone] big one","body":"critical","labels":[{"name":"keyst
 out="$(GH_OUT="$GH_OUT" "$bin" "$inst")"
 printf '%s\n' "$out" | grep -q 'REGENERATED missing packet' || fail "keystone packet must be regenerated, got: $out"
 [[ -f "$pkt" ]] || fail "keystone packet file was not created"
-head -1 "$pkt" | grep -q '^difficulty: keystone$' || fail "keystone issue must carry the marker as line 1, got: $(head -1 "$pkt")"
+head -1 "$pkt" | grep -q '^phases:' || fail "keystone issue must carry the phases manifest as line 1, got: $(head -1 "$pkt")"
 grep -q '^TARGET: repo Nishfleet/fleet-ops issue 1149 unit pi-issue-fleet-ops-1149$' "$pkt" \
   || fail "keystone packet must still carry the TARGET line"
 ok "missing keystone .in regenerated with marker, then start fired"
@@ -123,6 +124,7 @@ out="$("$bin" "$inst" 2>"$scratch/err")" || fail "gh failure must NOT abort rege
 printf '%s\n' "$out" | grep -q 'REGENERATED missing packet' || fail "packet must be regenerated even when gh fails, got: $out"
 [[ -f "$pkt" ]] || fail "packet must exist even when gh fails"
 grep -q '^difficulty: keystone' "$pkt" && fail "gh-failed regen must not carry a stale keystone marker"
+grep -q '^phases:' "$pkt" && fail "gh-failed regen must not carry a stale keystone phases marker"
 tail -1 "$pkt" | grep -q "^TARGET: repo Nishfleet/fleet-ops issue 1149 unit pi-issue-fleet-ops-1149$" \
   || fail "gh-failed regen must still carry the TARGET line"
 ok "gh failure is non-fatal: packet regenerated without marker"
