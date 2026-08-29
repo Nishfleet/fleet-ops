@@ -11,6 +11,13 @@
 # command is not a grep/rg/diff no-match). This file locks the live
 # #784 shape so a future detector refactor cannot regress it.
 #
+# fleet-ops#879: the same `systemctl --user status` call piped through
+# `head` is missed because bash has no `pipefail` by default. The
+# pipeline exit is `head`'s 0, so isError=false and there is no
+# `Command exited with code 3` trailer, but the output still shows
+# `× unit` and `Active: failed`. Detect this from the command and the
+# output content.
+#
 # Live session: 2026-08-27T01-49-30-032Z_01a040e8-7030-72f9-bb6c-ed7efd812bee.jsonl
 # The unpiped `systemctl --user status 'fleet-deploy-check.service' --no-pager`
 # call returned 3 because the unit was Active: failed, and the assistant
@@ -27,6 +34,10 @@
 #   4. `systemctl --user --failed` listing with isError=false is clean:
 #      the list command itself succeeded. Failed units in successful
 #      output are not a swallowed command failure.
+#   5. fleet-ops#879: systemctl status of a failed unit piped through
+#      `head`, isError=false, no exit-code trailer, thinking-only
+#      follow-up -> finding.
+#   6. same piped shape plus a later user-facing flag -> clean.
 
 set -euo pipefail
 
@@ -118,4 +129,36 @@ count=$(jq '.findings | length' <<<"$report")
 ok "successful systemctl --failed listing is clean"
 rm -f "$sessions/systemctl-failed-list-ok.jsonl"
 
-echo "OK: fleet-failed-command-systemctl-status-failed: live #784 status-failed + flag drill"
+# --- 5. piped through `head`, isError=false, no exit-code trailer ----------
+# fleet-ops#879: the pipeline exit is `head`'s 0, so Pi sees isError=false
+# and no `Command exited with code` line. The output still contains
+# `× unit` and `Active: failed (Result: exit-code)`.
+write_session "systemctl-status-failed-piped" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_piped","name":"bash","arguments":{"command":"systemctl --user status 'fleet-deploy-check.service' --no-pager | head -15"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_piped","toolName":"bash","isError":false,"content":[{"type":"text","text":"× fleet-deploy-check.service - Fleet merge-to-live deploy check (tight cadence, fleet-ops#468)\n     Loaded: loaded (/home/nish/.config/systemd/user/fleet-deploy-check.service; enabled; preset: enabled)\n     Active: failed (Result: exit-code) since Thu 2026-08-27 07:24:06 IST; 27s ago\n   Main PID: 907286 (code=exited, status=1/FAILURE)\n\nAug 27 07:24:06 netcup-rs2000 fleet-deploy-check[907286]: [2026-08-27T01:54:06Z] [fleet-deploy-check] LOUD DEPLOY-CHECK-FAILED fleet-ops-deploy exited rc=1 — merge-to-live gate red\nAug 27 07:24:06 netcup-rs2000 systemd[1125]: fleet-deploy-check.service: Failed with result 'exit-code'.\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"On to the next check."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "piped systemctl status failed walked past should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'fleet-deploy-check.service' <<<"$snippet" \
+  || fail "finding snippet should mention fleet-deploy-check.service (got $snippet)"
+ok "piped systemctl status of failed unit walked past is flagged"
+rm -f "$sessions/systemctl-status-failed-piped.jsonl"
+
+# --- 6. same piped shape plus a later user-facing flag is clean --------------
+write_session "systemctl-status-failed-piped-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_piped2","name":"bash","arguments":{"command":"systemctl --user status 'fleet-deploy-check.service' --no-pager | head -15"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_piped2","toolName":"bash","isError":false,"content":[{"type":"text","text":"× fleet-deploy-check.service - Fleet merge-to-live deploy check (tight cadence, fleet-ops#468)\n     Active: failed (Result: exit-code)\n"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the systemctl status call shows Active: failed, fleet-deploy-check.service is down. Checking the journal next."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "flagged piped systemctl status failed should be clean (got $count) $report"
+ok "piped systemctl status failed plus later user-facing flag is clean"
+rm -f "$sessions/systemctl-status-failed-piped-flagged.jsonl"
+
+echo "OK: fleet-failed-command-systemctl-status-failed: live #784 status-failed + #879 piped + flag drill"
