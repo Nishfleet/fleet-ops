@@ -165,17 +165,17 @@ while IFS= read -r repo; do
         continue
     fi
 
-    # Recent merged PRs (title+body + number+url + mergedAt) in one fetch,
-    # filtered to the window in jq. `gh pr list` has no --sort; length is
-    # enough for a 7-day window on the fleet's merge volume.
+    # Recent merged PRs (title+body + number+url + mergedAt + headRefName) in
+    # one fetch, filtered to the window in jq. `gh pr list` has no --sort;
+    # length is enough for a 7-day window on the fleet's merge volume.
     if ! merged_json=$("$GH" pr list -R "$repo" --state merged --limit 300 \
-        --json number,title,body,mergedAt,url 2>/dev/null); then
+        --json number,title,body,mergedAt,url,headRefName 2>/dev/null); then
         loud "MERGED-PR-CLOSE-GH" "$repo: gh pr list merged failed — skip (next tick retries)"
         continue
     fi
     if ! in_window=$(printf '%s' "$merged_json" | jq -r --arg ws "$window_start" '
         [ .[] | select((.mergedAt // "") != "") | select(.mergedAt >= $ws)
-          | [.number, .title, (.body // ""), .url] | @tsv ] | .[]' 2>/dev/null); then
+          | [.number, .title, (.body // ""), .url, (.headRefName // "")] | @tsv ] | .[]' 2>/dev/null); then
         loud "MERGED-PR-CLOSE-BROKEN" "$repo: jq window filter failed — skip (next tick retries)"
         continue
     fi
@@ -216,13 +216,28 @@ while IFS= read -r repo; do
         fi
 
         # 4. How many merged PRs in the window reference this issue?
+        #    A merged PR whose head branch is claim/issue-<N> is the delivery
+        #    PR (fleet-ops#1672: a passing body mention in an unrelated PR
+        #    created false ambiguity and kept a delivered issue stuck open).
+        #    Prefer the claim-branch PR as the single delivery; treat every
+        #    other reference as a passing mention.
         matches=()
-        while IFS=$'\t' read -r mnum mtitle mbody murl; do
+        delivery=""
+        while IFS=$'\t' read -r mnum mtitle mbody murl mhead; do
             [ -z "$mnum" ] && continue
+            if [ "$mhead" = "claim/issue-${num}" ]; then
+                delivery="$mnum|$murl"
+            fi
             if references_issue "$mtitle" "$num" || references_issue "$mbody" "$num"; then
                 matches+=("$mnum|$murl")
             fi
         done <<< "$in_window"
+
+        # The claim-branch PR is authoritative: it is the delivery, so a
+        # passing mention elsewhere cannot make the signal ambiguous.
+        if [ -n "$delivery" ]; then
+            matches=("$delivery")
+        fi
 
         nmatches=${#matches[@]}
         if [ "$nmatches" -eq 0 ]; then

@@ -15,7 +15,9 @@
 #   - claim/issue-<N> branch still exists -> skip (may be in a worktree)
 #   - no agent-in-progress / critical-path label -> not scanned
 #   - a live pi-issue worker -> skip (actively being worked)
-#   - more than one merged PR references the issue -> AMBIGUOUS LOUD skip
+#   - more than one merged PR references the issue -> AMBIGUOUS LOUD skip,
+#     UNLESS one of them is the claim/issue-<N> delivery PR, which
+#     disambiguates a passing mention (fleet-ops#1672)
 #   - merged PR outside the 7-day window -> no reference -> leave open
 #   - reference matcher is exact-number: #11352 / claim/issue-1135 do not
 #     match issue 1135
@@ -183,6 +185,29 @@ grep -q 'MERGED-PR-CLOSE-AMBIGUOUS' <<<"$out" || fail "ambiguous must be LOUD: $
 [[ -s "$scratch/closes.log" ]] && fail "ambiguous must not close: $(cat "$scratch/closes.log")"
 grep -q 'MERGED-PR-CLOSE-AMBIGUOUS' "$scratch/triage.md" || fail "ambiguous must land in triage: $(cat "$scratch/triage.md")"
 ok "multiple merged PRs reference the issue -> AMBIGUOUS LOUD skip"
+
+# --- Case 7b: a claim-branch PR disambiguates a passing mention ---
+# fleet-ops#1672: a merged delivery PR (head branch claim/issue-<N>) plus a
+# passing body mention in an unrelated PR must NOT be ambiguous — the
+# claim-branch PR is the delivery, so the issue closes.
+set_fixtures \
+  '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
+  '[{"number":1429,"title":"feat: x (fleet-ops#1135)","body":"See fleet-ops#1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1429","headRefName":"claim/issue-1135"},{"number":1430,"title":"y","body":"already filed as #1135","mergedAt":"2026-08-27T00:00:00Z","url":"https://url/1430","headRefName":"fix/other"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'CLOSED' <<<"$out" || fail "claim-branch PR must disambiguate and close: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "disambiguated close must call gh issue close 1135: $(cat "$scratch/closes.log")"
+grep -q 'MERGED-PR-CLOSE-AMBIGUOUS' <<<"$out" && fail "claim-branch PR must not be ambiguous: $out"
+ok "claim-branch delivery PR disambiguates a passing mention -> close"
+
+# --- Case 7c: claim-branch PR wins even when the passing mention is in a
+# title, and the delivery PR itself carries no #<N> reference ---
+set_fixtures \
+  '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
+  '[{"number":1429,"title":"feat: x","body":"shipped work","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1429","headRefName":"claim/issue-1135"},{"number":1430,"title":"y (#1135)","body":"z","mergedAt":"2026-08-27T00:00:00Z","url":"https://url/1430","headRefName":"fix/other"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'CLOSED' <<<"$out" || fail "claim-branch PR must win over a title mention: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "claim-branch win must close: $(cat "$scratch/closes.log")"
+ok "claim-branch delivery PR wins over a title mention -> close"
 
 # --- Case 8: merged PR outside the 7-day window -> leave open ---
 set_fixtures \
