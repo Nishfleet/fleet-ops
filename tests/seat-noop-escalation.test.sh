@@ -188,10 +188,18 @@ if seat_usable "$p" "$m"; then
     fail "seat_usable returned usable immediately after a fresh spawn-fail bench"
 fi
 ok "freshly-benched seat is UNUSABLE (seat-fault held)"
-# Force usable_at into the past to simulate bench expiry.
+# Force usable_at into the past to simulate bench expiry. fleet-ops#1512: the
+# bench now lives in BOTH the ledger and the clobber-proof spawn-bench marker,
+# so age both surfaces (in production real time passing ages both; the test
+# simulates that by editing both).
 past_iso=$(date -u -d '@0' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
 tmp=$(mktemp)
 jq --arg u "$past_iso" '.usable_at = $u' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+sb_marker="$LEDGER/${p//[^A-Za-z0-9._-]/_}__${m//[^A-Za-z0-9._-]/_}.spawn-bench.json"
+if [[ -f "$sb_marker" ]]; then
+    tmp=$(mktemp)
+    jq --arg u "$past_iso" '.usable_at = $u' "$sb_marker" >"$tmp" 2>/dev/null && mv "$tmp" "$sb_marker"
+fi
 if ! seat_usable "$p" "$m"; then
     fail "seat_usable returned unusable after bench expired — fail-open is broken (recovered seat walled)"
 fi

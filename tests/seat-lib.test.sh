@@ -2812,3 +2812,12 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # the same reason as the noop-bench test above (listed in ci.yml, runs
 # independent of the p14-test-listing-gate).
 bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
+
+# fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
+# later healthy observation that seat-health.ts writes to the per-seat ledger
+# (the clobber that re-admitted functionally-dead seats and kept
+# stop-escalation.service failing). The clobber-proof spawn-bench marker is
+# checked by seat_usable before the ledger. Hosted here for the same reason
+# as the noop-bench test above (listed in ci.yml, runs independent of the
+# p14-test-listing-gate).
+bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"
