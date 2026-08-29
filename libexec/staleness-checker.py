@@ -87,8 +87,10 @@ FLEET_UNIT_PREFIXES = ("fleet-", "pi-", "alert-repair-")
 
 # Issue reference patterns
 # fleet-ops#1234, Nishfleet/fleet-ops#1234, #1234 (with repo context)
-ISSUE_RE = re.compile(r'(?:Nishfleet/fleet-ops|#)(\d{3,5})\b')
-FULL_ISSUE_RE = re.compile(r'(Nishfleet/fleet-ops)#(\d{3,5})\b')
+# A single regex captures the optional owner/repo prefix so upstream refs like
+# "systemd/systemd#33486" are filtered out in code (only fleet-ops refs count).
+# Group 1 = owner (optional), Group 2 = repo (optional), Group 3 = number.
+ISSUE_RE = re.compile(r'(?:(\w[\w.-]*)/)?(\w[\w.-]*)?#(\d{3,5})\b')
 
 # File path patterns — absolute or ~ paths. Captures the full path including
 # any trailing backtick that might surround it. The backtick-quoted variant
@@ -204,20 +206,36 @@ def _extract_units(text):
 
 
 def _extract_issues(text):
-    """Extract issue numbers from text.
+    """Extract fleet-ops issue references from text.
 
-    Returns list of (repo, number) tuples. Prioritizes full repo references.
+    Returns list of (repo, number) tuples. Only fleet-ops references are
+    returned — upstream refs like "systemd/systemd#33486" are filtered out.
+    A bare "#NNNN" (no repo prefix) is assumed to be fleet-ops (the docs are
+    fleet-ops docs).
     """
     issues = []
-    # Full repo#number
-    for m in FULL_ISSUE_RE.finditer(text):
-        issues.append((m.group(1), int(m.group(2))))
-    # Bare #number (after a newline or known context → assume fleet-ops)
+    seen = set()
     for m in ISSUE_RE.finditer(text):
-        num = int(m.group(1))
-        # Avoid duplicates from full matches
-        if not any(r == "Nishfleet/fleet-ops" and n == num for r, n in issues):
-            issues.append(("Nishfleet/fleet-ops", num))
+        owner = m.group(1)  # e.g. "Nishfleet" or "systemd" or None
+        repo = m.group(2)   # e.g. "fleet-ops" or "systemd" or None
+        num = int(m.group(3))
+
+        # Determine if this is a fleet-ops reference:
+        # - bare #NNNN (no owner, no repo) → fleet-ops
+        # - fleet-ops#NNNN (repo=fleet-ops, any/none owner) → fleet-ops
+        # - Nishfleet/fleet-ops#NNNN → fleet-ops
+        # - anything else (systemd/systemd#NNNN, cloudflare/wrangler#NNNN) → skip
+        if repo is None and owner is None:
+            pass  # bare #NNNN → fleet-ops
+        elif repo == "fleet-ops":
+            pass  # fleet-ops#NNNN or Nishfleet/fleet-ops#NNNN
+        else:
+            continue  # upstream ref, skip
+
+        key = ("Nishfleet/fleet-ops", num)
+        if key not in seen:
+            seen.add(key)
+            issues.append(key)
     return issues
 
 
@@ -469,7 +487,17 @@ def main():
 
     Returns 0 on success (even if mismatches found).
     Returns non-zero only on internal errors.
+
+    Flags:
+      --no-file   Extract and validate claims, export metrics, but do NOT file
+                  GitHub issues. Used by tests and dry runs to avoid side effects.
     """
+    import argparse
+    parser = argparse.ArgumentParser(description="Truth staleness detector")
+    parser.add_argument("--no-file", action="store_true",
+                        help="validate and export metrics only; do not file GitHub issues")
+    args = parser.parse_args()
+
     start_time = time.time()
     findings = []
 
@@ -514,10 +542,14 @@ def main():
     }
     _write_cache(FINDINGS_CACHE, run_data)
 
-    # 5. File issues for new mismatches (only when run directly, not as exporter hook)
+    # 5. File issues for new mismatches (only when run directly with filing
+    #    enabled). --no-file skips filing (tests, dry runs). The exporter
+    #    piggyback (STALENESS_RUN_MODE=export) also skips filing — the weekly
+    #    timer (STALENESS_RUN_MODE=direct) is the only path that files.
     run_type = os.environ.get("STALENESS_RUN_MODE", "direct")
+    file_issues = run_type == "direct" and not args.no_file
     filed_issues = []
-    if run_type == "direct" and findings:
+    if file_issues and findings:
         # Limit issues per run
         for f in findings[:FINDING_LIMIT]:
             iss = _file_finding(f)

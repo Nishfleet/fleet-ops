@@ -133,6 +133,18 @@
         "systemd/grok-token-refresh.service",
         "systemd/grok-token-refresh.timer"
       ]
+    },
+    {
+      "name": "truth-staleness",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_truth_staleness_last_run_seconds",
+      "absent_alert": "TruthStalenessAbsent",
+      "files": [
+        "libexec/staleness-checker.py",
+        "systemd/fleet-truth-staleness-check.service",
+        "systemd/fleet-truth-staleness-check.timer",
+        "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
+      ]
     }
   ]
 }

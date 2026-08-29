@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for bin/staleness-checker.py — fleet-ops#1137
+# Tests for libexec/staleness-checker.py — fleet-ops#1137
 # Run with: bash tests/staleness-checker.test.sh
 
 set -euo pipefail
@@ -15,11 +15,11 @@ echo "=== staleness-checker tests ==="
 
 # Test 1: Script exists and is executable
 echo "[1] Script exists and is valid Python"
-if [[ -f bin/staleness-checker.py ]]; then
-  python3 -c "import py_compile; py_compile.compile('bin/staleness-checker.py', doraise=True)" 2>/dev/null
-  pass "bin/staleness-checker.py exists and compiles"
+if [[ -f libexec/staleness-checker.py ]]; then
+  python3 -c "import py_compile; py_compile.compile('libexec/staleness-checker.py', doraise=True)" 2>/dev/null
+  pass "libexec/staleness-checker.py exists and compiles"
 else
-  fail "bin/staleness-checker.py not found"
+  fail "libexec/staleness-checker.py not found"
 fi
 
 # Test 2: Timer and service files exist
@@ -74,14 +74,14 @@ fi
 
 # Test 7: Claim extraction patterns match real docs
 echo "[7] Claim extraction from real docs"
-# Test path, unit, and issue extraction with inline Python
+# Test path, unit, and issue extraction with inline Python.
+# Verifies the issue regex filters out upstream refs (systemd/systemd#NNNN).
 PY_RESULT=$(python3 <<'PYEOF'
 import re, sys
 
 PATH_RE = re.compile(r'`?(~|/home/nish)[\w./\-]+(?:\.(md|sh|py|yml|json|conf|timer|service|path))`?')
 UNIT_RE = re.compile(r'`(fleet-\w+(?:@\w+|-|\.service|\.timer|\.path))`')
-ISSUE_RE = re.compile(r'(?:Nishfleet/fleet-ops|#)(\d{3,5})\b')
-FULL_ISSUE_RE = re.compile(r'(Nishfleet/fleet-ops)#(\d{3,5})\b')
+ISSUE_RE = re.compile(r'(?:(\w[\w.-]*)/)?(\w[\w.-]*)?#(\d{3,5})\b')
 
 # Path test
 paths = []
@@ -93,14 +93,23 @@ for m in PATH_RE.finditer('`/home/nish/workspaces/agent-state/plan.md`'):
 # Unit test
 units = UNIT_RE.findall('`fleet-heartbeat.timer`')
 
-# Issue test
+# Issue test: fleet-ops refs match, upstream refs are filtered out
 issues = []
-for m in FULL_ISSUE_RE.finditer('fleet-ops#1137 also see #522'):
-    issues.append((m.group(1), int(m.group(2))))
-for m in ISSUE_RE.finditer('fleet-ops#1137 also see #522'):
-    num = int(m.group(1))
-    if not any(r == "Nishfleet/fleet-ops" and n == num for r, n in issues):
-        issues.append(("Nishfleet/fleet-ops", num))
+seen = set()
+for m in ISSUE_RE.finditer('fleet-ops#1137 also see #522 and systemd/systemd#33486'):
+    owner = m.group(1)
+    repo = m.group(2)
+    num = int(m.group(3))
+    if repo is None and owner is None:
+        pass
+    elif repo == "fleet-ops":
+        pass
+    else:
+        continue
+    key = ("Nishfleet/fleet-ops", num)
+    if key not in seen:
+        seen.add(key)
+        issues.append(key)
 
 ok = True
 if not any("agent-state/plan.md" in p for p in paths):
@@ -109,8 +118,9 @@ if not any("agent-state/plan.md" in p for p in paths):
 if "fleet-heartbeat.timer" not in units:
     print("UNIT_FAIL", file=sys.stderr)
     ok = False
-if not any(str(n) == "1137" for _, n in issues):
-    print("ISSUE_FAIL", file=sys.stderr)
+nums = sorted(n for _, n in issues)
+if nums != [522, 1137]:
+    print(f"ISSUE_FAIL: got {nums}", file=sys.stderr)
     ok = False
 
 if ok:
@@ -118,17 +128,17 @@ if ok:
 PYEOF
 ) || PY_RESULT=""
 if [[ "$PY_RESULT" == "ALL_OK" ]]; then
-  pass "Path/unit/issue extraction works on real patterns"
+  pass "Path/unit/issue extraction works; upstream refs filtered"
 else
   fail "Extraction test failed: $PY_RESULT"
 fi
 
-# Test 8: Script runs without error (dry check)
-echo "[8] Script runs without crashing"
-python3 bin/staleness-checker.py 2>/dev/null
+# Test 8: Script runs without error (dry check, --no-file to avoid filing real issues)
+echo "[8] Script runs without crashing (--no-file)"
+python3 libexec/staleness-checker.py --no-file 2>/dev/null
 RC=$?
 if [[ $RC -eq 0 ]]; then
-  pass "Script runs clean (rc=$RC)"
+  pass "Script runs clean with --no-file (rc=$RC)"
 else
   fail "Script crashed (rc=$RC)"
 fi

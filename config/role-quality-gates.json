@@ -156,7 +156,7 @@
       "id": "truth-staleness",
       "gate": "weekly checker cross-checks standing docs against live state",
       "proof": [
-        "bin/staleness-checker.py",
+        "libexec/staleness-checker.py",
         "tests/staleness-checker.test.sh",
         "config/fleet_rules.yml",
         "systemd/fleet-truth-staleness-check.timer",
