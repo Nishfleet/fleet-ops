@@ -95,7 +95,10 @@ ok "3. zero units exit 0 and write state"
 # =========================================================================
 # 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
 #    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
-#    Coupling rule (fleet-ops#1190, the #1168 drift that broke this test): the
+#    Drift history: #1246 flagged the 1.5 lock stale after #1168 set 0.6; #1270
+#    locked the assertion at 0.6 and #1284 fixed the docstrings; #1558 later
+#    re-measured down to 0.5. Coupling rule (fleet-ops#1190, the #1168 drift
+#    that broke this test): the
 #    "0.5" below is a deliberate lock. When you change ram_gb_per_worker in
 #    config/seat-caps.json, update this assertion and the ok line below in the
 #    SAME commit/PR. The config value is the source of truth; this test exists
