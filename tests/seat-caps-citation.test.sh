@@ -57,7 +57,7 @@ ok "seat-caps.json parses"
 # A citation must mention a YYYY-MM-DD date AND at least one measurement
 # marker. Pure date without a measurement is a vibes line.
 date_pat='(20[0-9]{2}-[0-9]{2}-[0-9]{2})'
-meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9])'
+meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9]|meter|cost=null)'
 
 # 1. orcarouter: cap=0 + reason present
 echo "--- scenario 1: orcarouter cap=0 with non-empty reason ---"
@@ -83,17 +83,10 @@ if jq -e '.free_providers_in_order | index("orcarouter")' "$caps" >/dev/null; th
 fi
 ok "orcarouter removed from free_providers_in_order"
 
-# 5. Cross-fleet soft check: every cap=0 reason across the fleet
-#    ALSO carries a date. The measurement-marker check is owned by
-#    the sr-never-vibes canary (fleet-ops#538) so a single-source
-#    enforcer exists. This test only mirrors the date-presence part
-#    of the entitled-wired contract as a local pre-push sanity check.
-#    We do NOT fail the test on measurement-marker gaps here, because
-#    those are pre-existing canary findings for inferx, opencode-anthropic,
-#    and grok — they are out of scope for the orcarouter#703 fix and
-#    must be filed as their own issues, not retrofitted into this PR.
-#    A soft warn line is still emitted so the next pre-push run makes
-#    the gap visible to whoever touches the file.
+# 5. Cross-fleet check: every cap=0 reason across the fleet carries a
+#    date (the entitled-wired date contract). The measurement-marker
+#    check is enforced in scenario 6 below; this scenario only pins the
+#    date-presence invariant as a local pre-push sanity check.
 echo "--- scenario 5: every cap=0 reason across the fleet is dated ---"
 bad=0
 while IFS=$'\t' read -r prov reason; do
@@ -107,23 +100,41 @@ while IFS=$'\t' read -r prov reason; do
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
 [[ "$bad" == "0" ]] || fail "scenario5: $bad cap=0 reason(s) missing date — entitled-wired owns this; copy the test signal into a follow-up issue"
 
-# 6. Soft warn: cap=0 reasons that lack a measurement marker are
-#    pre-existing canary gaps (NOT failures of THIS test). They are
-#    filed as a follow-up issue rather than fixed in this PR, per the
-#    'stay inside the issue's scope' rule. Listed by name so the next
-#    worker who touches seat-caps.json sees the gap.
-echo "--- scenario 6 (warn-only): cap=0 reasons missing a measurement marker ---"
-soft_bad=0
+# 6. HARD check: every cap=0 reason carries a measurement marker (probe
+#    output, observed provider signal, sample size), either in .reason
+#    itself or in a top-level _comment_<prov> field (fleet-ops#878). The
+#    cross-fleet audit from #703 exposed inferx (date only, no marker),
+#    opencode-anthropic (money-decision, no measurement), and grok (evidence
+#    was in _comment_grok, not .reason). This test owns the fix: each
+#    cap=0 provider must carry date + marker in .reason OR have a
+#    _comment_<prov> top-level field with date + marker.
+echo "--- scenario 6: every cap=0 reason has a date + measurement marker ---"
+hard_bad=0
 while IFS=$'\t' read -r prov reason; do
     [[ -n "$prov" && -n "$reason" ]] || continue
-    if ! grep -qiE "$meas_pat" <<<"$reason"; then
-        echo "  WARN: $prov cap=0 reason has a date but no measurement marker (canary-owned; pre-existing, out of scope for #703)"
-        soft_bad=$((soft_bad + 1))
+    # Must have a date (enforced by scenario 5 above; re-check for
+    # self-containment).
+    if ! grep -qE "$date_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 reason missing date" >&2
+        hard_bad=$((hard_bad + 1))
+        continue
     fi
+    # Check marker in .reason itself.
+    if grep -qiE "$meas_pat" <<<"$reason"; then
+        ok "$prov: cap=0 reason has date + measurement marker"
+        continue
+    fi
+    # .reason has no marker — check a top-level _comment_<prov> field.
+    comment_field="_comment_${prov}"
+    prov_comment=$(jq -r --arg f "$comment_field" '.[$f] // empty' "$caps")
+    if [[ -n "$prov_comment" ]] && grep -qE "$date_pat" <<<"$prov_comment" && grep -qiE "$meas_pat" <<<"$prov_comment"; then
+        ok "$prov: cap=0 reason cites _comment_${prov} top-level field with date + measurement marker"
+        continue
+    fi
+    echo "  $prov: cap=0 reason has a date but no measurement marker (not in .reason or _comment_${prov})" >&2
+    hard_bad=$((hard_bad + 1))
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
-if (( soft_bad > 0 )); then
-    echo "  ($soft_bad cap=0 reason(s) lack a measurement marker; tracked under the follow-up issue filed by this PR, NOT fixed here)"
-fi
+[[ "$hard_bad" == "0" ]] || fail "scenario6: $hard_bad cap=0 reason(s) still lack a measurement marker after fleet-ops#878 — sr-never-vibes requires date + marker in .reason or _comment_<prov>"
 
 # 7. Cross-fleet check: every MODEL cap=0 entry has a dated _* reason
 #    field on its provider (fleet-ops#1456). #1506 re-audited all 8
