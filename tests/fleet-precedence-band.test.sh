@@ -150,19 +150,57 @@ set -e
 grep -q 'product_front' <<<"$out" || fail "scenario6: must name product_front ($out)"
 ok "scenario6: product_front entries must be REPO#NUMBER"
 
-# --- 7. surge phase, non-leverage fleet-ops claim ---------------------------
+# --- 7. surge phase, non-leverage churn fleet-ops claim ---------------------
+# fleet-ops#1377: the canary now classifies non-leverage claims by title.
+# A churn-class title is still drift. Use the titles-file seam so the test
+# is deterministic (no live gh call).
 base_policy_json | clean_policy
 cat >"$scratch/units.txt" <<'UNITS'
 pi-issue@0509-1299.service
 pi-issue@fleet-ops-1234.service
 UNITS
+cat >"$scratch/titles.json" <<'JSON'
+{"1234": "chore: bump deps"}
+JSON
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
+out=$(FLEET_PRECEDENCE_TITLES_FILE="$scratch/titles.json" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario7: surge non-leverage must exit 1, got $rc ($out)"
+[[ "$rc" == "1" ]] || fail "scenario7: surge non-leverage churn must exit 1, got $rc ($out)"
 grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7: must name surge-phase non-leverage ($out)"
-ok "scenario7: surge refuses a non-leverage fleet-ops claim"
+ok "scenario7: surge refuses a non-leverage churn fleet-ops claim"
+
+# --- 7b. surge phase, non-leverage legit-work fleet-ops claim (fleet-ops#1377)
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1234.service
+UNITS
+cat >"$scratch/titles-legit.json" <<'JSON'
+{"1234": "fix(intake): repair the claim path starvation"}
+JSON
+set +e
+out=$(FLEET_PRECEDENCE_TITLES_FILE="$scratch/titles-legit.json" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario7b: surge legit-work non-leverage must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario7b: must log OK ($out)"
+ok "scenario7b: surge allows a legit-work non-leverage fleet-ops claim (#1377)"
+
+# --- 7c. surge phase, non-leverage claim with no title (fail-closed) ---------
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1234.service
+UNITS
+set +e
+out=$(FLEET_PRECEDENCE_TITLES_FILE="$scratch/nonexistent-titles.json" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario7c: surge no-title must fail-closed exit 1, got $rc ($out)"
+grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7c: must name surge-phase non-leverage ($out)"
+ok "scenario7c: surge fail-closed when title unavailable"
 
 # --- 8. surge phase, leverage fleet-ops claim only --------------------------
 cat >"$scratch/units.txt" <<'UNITS'
@@ -395,10 +433,10 @@ set +e
 reason=$(precedence_band_allow_claim fleet-ops 9999 "")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage must rc=1, got $rc ($reason)"
+[[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage churn must rc=1, got $rc ($reason)"
 [[ "$reason" == "skip-surge-leverage" ]] \
   || fail "scenario17a: expected skip-surge-leverage, got $reason"
-ok "scenario17a: surge skips a non-leverage fleet-ops claim"
+ok "scenario17a: surge skips a non-leverage churn fleet-ops claim"
 
 set +e
 reason=$(precedence_band_allow_claim fleet-ops 1223 "")
@@ -408,6 +446,37 @@ set -e
 [[ "$reason" == "allow-surge-leverage" ]] \
   || fail "scenario17b: expected allow-surge-leverage, got $reason"
 ok "scenario17b: surge allows a leverage fleet-ops claim"
+
+# --- 17a2. surge legit-work fallback (fleet-ops#1377) -----------------------
+# Non-leverage + legit-work title (fix:) → allow-surge-legit, not skip.
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 9999 "" "fix(intake): repair starvation")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17a2: surge legit-work must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-surge-legit" ]] \
+  || fail "scenario17a2: expected allow-surge-legit, got $reason"
+ok "scenario17a2: surge allows a legit-work non-leverage claim (#1377)"
+
+# --- 17a3. surge churn still skipped (fleet-ops#1377) -----------------------
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 9999 "" "chore: bump deps")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17a3: surge churn must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-surge-leverage" ]] \
+  || fail "scenario17a3: expected skip-surge-leverage, got $reason"
+ok "scenario17a3: surge still skips churn non-leverage claims"
+
+# --- 17a4. surge unprefixed repair-signal title (fleet-ops#1377) -------------
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 9999 "" "Intake starvation: 212 ready items")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17a4: surge repair-signal must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-surge-legit" ]] \
+  || fail "scenario17a4: expected allow-surge-legit, got $reason"
+ok "scenario17a4: surge allows unprefixed repair-signal title (#1377)"
 
 set +e
 reason=$(precedence_band_allow_claim 0509 1299 "")
