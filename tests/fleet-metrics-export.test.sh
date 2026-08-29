@@ -30,6 +30,13 @@
 #  10. The exporter emits the new metric lines for a canned detail list
 #      (end-to-end main() shape check via a stubbed detail fetch), including
 #      the verified-merges and queue-composition families.
+#  11. fleet-ops#1844/#1855: when BOTH queues emit (agent-ready AND
+#      ready-work), main() must write exactly one # HELP and one # TYPE per
+#      metric name. The pre-#1855 exporter emitted them inside the per-queue
+#      loop, duplicating them; node_exporter's textfile collector REJECTS the
+#      whole fleet.prom, so every fleet metric (ready_work, self-maintenance,
+#      keystone heartbeat) went absent at once — the 2026-08-29T03:05Z
+#      incident that filed #1844. Pin it so the class cannot silently regress.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -350,6 +357,102 @@ print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
 
 echo "ALL OK: fleet-metrics-export #1136 logic pinned"
+
+# =========================================================================
+# 11. fleet-ops#1844/#1855: exactly one HELP + TYPE per metric family.
+# =========================================================================
+# When BOTH queues emit, the pre-#1855 exporter wrote # HELP/# TYPE for
+# fleet_queue_total, fleet_queue_self_maintenance_total and
+# fleet_queue_self_maintenance_ratio inside the per-queue loop, duplicating
+# them. node_exporter's textfile collector rejects the whole file, so every
+# fleet metric (ready_work, self-maintenance, keystone heartbeat, workers)
+# went absent at once — the 2026-08-29T03:05Z incident that filed #1844.
+# #1855 moved HELP/TYPE out of the loop but added no regression test; pin the
+# single-HELP/TYPE invariant so a future edit cannot silently blind the fleet.
+QUEUE_OUT="$scratch/queue.prom"
+python3 - "$exporter" "$QUEUE_OUT" <<'PY' || fail "queue-family emission failed"
+import importlib.util, sys
+from pathlib import Path
+from collections import Counter
+exporter, out_path = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# Mirror block 10's offline path overrides so the run never touches real state.
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(out_path).parent
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/seatdb")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = Path(out_path).parent / "detail.cache.json"
+
+# gh-derived families are stubbed absent except queue composition, which is
+# the family that used to duplicate its HELP/TYPE and must prove single-emit.
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 5, "self": 4},
+    "agent-ready": {"total": 6, "self": 4},
+}
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+
+# The family that used to dup must actually emit BOTH queues.
+assert 'fleet_queue_total{queue="agent-ready"} 6' in body, body
+assert 'fleet_queue_total{queue="ready-work"} 5' in body, body
+assert 'fleet_queue_self_maintenance_total{queue="ready-work"} 4' in body, body
+
+# THE regression guard (fleet-ops#1844/#1855): each metric name has exactly
+# one # HELP and one # TYPE. A duplicate makes the textfile unparseable and
+# node_exporter silently drops the whole fleet.prom.
+help_counts = Counter()
+type_counts = Counter()
+for line in body.splitlines():
+    if line.startswith("# HELP "):
+        help_counts[line.split()[2]] += 1
+    elif line.startswith("# TYPE "):
+        type_counts[line.split()[2]] += 1
+dups = [n for n, c in help_counts.items() if c > 1] + [
+    n for n, c in type_counts.items() if c > 1
+]
+assert not dups, "duplicate HELP/TYPE lines for: %s\n%s" % (dups, body)
+
+# Every queue-family metric must carry exactly one TYPE (a sample with a
+# missing TYPE is also rejected by the textfile collector).
+for fam in (
+    "fleet_queue_total",
+    "fleet_queue_self_maintenance_total",
+    "fleet_queue_self_maintenance_ratio",
+):
+    assert type_counts[fam] == 1, f"{fam} TYPE count {type_counts[fam]}"
+
+print("OK: queue family emits both queues with exactly one HELP/TYPE per metric")
+PY
+
 
 # fleet-ops#1350: GitHub API rate-limit metrics + pi-intake sidecar.
 bash "$here/fleet-gh-rate-limit.test.sh" || fail "fleet-gh-rate-limit tests failed"
