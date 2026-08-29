@@ -420,8 +420,8 @@ for i in "${!numbers[@]}"; do
     edit_out=""
     edit_rc=0
     for _ in 1 2 3; do
-        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1)
-        edit_rc=$?
+        edit_rc=0
+        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
             *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
@@ -445,8 +445,8 @@ for i in "${!numbers[@]}"; do
     comment_out=""
     comment_rc=0
     for _ in 1 2 3; do
-        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1)
-        comment_rc=$?
+        comment_rc=0
+        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
             *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
@@ -454,8 +454,14 @@ for i in "${!numbers[@]}"; do
         esac
     done
     if [[ $comment_rc -ne 0 ]]; then
-        echo "gh issue comment failed for $N: $comment_out" >&2
-        exit 1
+        # The comment is a GH-visibility nicety, not load-bearing: the claim
+        # branch + label flip + claims log are the authoritative record, and
+        # the worker packet + unit start below do not depend on it. A
+        # sustained GitHub secondary rate limit ("submitted too quickly")
+        # must not abandon an otherwise-valid claim and orphan the worker
+        # spawn — that is the same loss the set -e guard above prevents.
+        # Log loud and continue to spawn the worker.
+        echo "issue $N: claim comment skipped (gh secondary rate limit after 3 retries: $comment_out)" >&2
     fi
 
     # Write the worker packet so pi-issue-run can pick its own seat at run time
