@@ -87,8 +87,10 @@ HELP_WACT = "# HELP fleet_pi_workers_active Live pi work in flight by source. ki
 TYPE_WACT = "# TYPE fleet_pi_workers_active gauge"
 # `fleet_ready_work` — open agent-ready issues across enrolled Nishfleet repos
 # (intake-repos.json is the source of truth). One gh call, cached 30 min like
-# merged-prs; omitted after 2h stale — never a frozen value.
-HELP_READY = "# HELP fleet_ready_work Open agent-ready issues across enrolled Nishfleet repos (intake-repos.json). Omitted when gh is unhealthy and cache is >2h stale."
+# merged-prs. If gh is unhealthy and the cache is >2h stale, the exporter FAILS
+# LOUD (exits non-zero) instead of omitting the family, so the frozen-queue gate
+# never receives a null/frozen value (fleet-ops#1772).
+HELP_READY = "# HELP fleet_ready_work Open agent-ready issues across enrolled Nishfleet repos (intake-repos.json). The exporter fails loud when the value cannot be determined, so this family is never silently null or stale."
 TYPE_READY = "# TYPE fleet_ready_work gauge"
 # `fleet_maintenance_quiescing` — 1 during the weekly maintenance window (or
 # any manual quiesce), else 0. Gates FleetUndersaturated so the window's
@@ -1245,16 +1247,6 @@ def _fetch_queue_composition():
     }
 
 
-def _ready_work():
-    """Cached open agent-ready issue count (30-min fresh, 2-h stale envelope).
-    Back-compat: returns the total count for the ready-work queue.
-    """
-    qc = _queue_composition()
-    if qc is None:
-        return None
-    return qc["ready-work"]["total"]
-
-
 def _worker_units():
     """Return list of active+activating user service units matching pi-* /
     alert-repair-*.
@@ -1778,53 +1770,63 @@ def main():
             )
         fresh_kinds.append("repo_snapshot")
 
-    ready = _ready_work()
-    if ready is not None:
-        lines.append("")
-        lines.append(HELP_READY)
-        lines.append(TYPE_READY)
-        lines.append(f"fleet_ready_work {ready}")
-        fresh_kinds.append("ready_work")
+    # --- Ready work + queue composition (fleet-ops#1136, #1772) ---
+    # Both share one cached gh call. If we cannot determine the open
+    # agent-ready count, fail loud instead of writing a fleet.prom that
+    # omits fleet_ready_work and makes the frozen-queue gate see null.
+    qc = _queue_composition()
+    if qc is None:
+        print(
+            f"ready_work: cannot determine open agent-ready issue count; "
+            f"refusing to write {OUT} so the frozen-queue gate does not see a "
+            f"null/frozen value",
+            file=sys.stderr,
+        )
+        return 1
 
-    # --- Queue composition (fleet-ops#1136 scope addition) ---
-    # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
+    ready = qc["ready-work"]["total"]
+    lines.append("")
+    lines.append(HELP_READY)
+    lines.append(TYPE_READY)
+    lines.append(f"fleet_ready_work {ready}")
+    fresh_kinds.append("ready_work")
+
+    # Queue composition: "agent-ready" (all Nishfleet repos) and "ready-work"
     # (enrolled repos only). Both export total, self-maintenance count, and
     # ratio (omitted when total=0). The 64% fleet2 death-number tripwire
     # is a TREND alert (offset 7d), not a level.
     # HELP/TYPE is emitted once per metric name; the per-queue samples
     # follow. Duplicate HELP/TYPE lines make the textfile unparseable
     # (promtool rejects them), so they must stay outside the loop.
-    qc = _queue_composition()
-    if qc is not None:
-        lines.append("")
-        lines.append(HELP_QT)
-        lines.append(TYPE_QT)
-        for queue in ("agent-ready", "ready-work"):
-            lines.append(
-                f'fleet_queue_total{{queue="{queue}"}} {qc[queue]["total"]}'
+    lines.append("")
+    lines.append(HELP_QT)
+    lines.append(TYPE_QT)
+    for queue in ("agent-ready", "ready-work"):
+        lines.append(
+            f'fleet_queue_total{{queue="{queue}"}} {qc[queue]["total"]}'
+        )
+    lines.append("")
+    lines.append(HELP_QSM)
+    lines.append(TYPE_QSM)
+    for queue in ("agent-ready", "ready-work"):
+        lines.append(
+            f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {qc[queue]["self"]}'
+        )
+    ratio_lines = []
+    for queue in ("agent-ready", "ready-work"):
+        q = qc[queue]
+        total = q["total"]
+        if total > 0:
+            ratio = q["self"] / total
+            ratio_lines.append(
+                f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}'
             )
+    if ratio_lines:
         lines.append("")
-        lines.append(HELP_QSM)
-        lines.append(TYPE_QSM)
-        for queue in ("agent-ready", "ready-work"):
-            lines.append(
-                f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {qc[queue]["self"]}'
-            )
-        ratio_lines = []
-        for queue in ("agent-ready", "ready-work"):
-            q = qc[queue]
-            total = q["total"]
-            if total > 0:
-                ratio = q["self"] / total
-                ratio_lines.append(
-                    f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}'
-                )
-        if ratio_lines:
-            lines.append("")
-            lines.append(HELP_QSMR)
-            lines.append(TYPE_QSMR)
-            lines.extend(ratio_lines)
-        fresh_kinds.append("queue_composition")
+        lines.append(HELP_QSMR)
+        lines.append(TYPE_QSMR)
+        lines.extend(ratio_lines)
+    fresh_kinds.append("queue_composition")
 
     if fresh_kinds:
         lines.append("")

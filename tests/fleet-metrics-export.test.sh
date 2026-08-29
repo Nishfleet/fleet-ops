@@ -314,7 +314,10 @@ m._timer_active = lambda unit: 1
 m._read_seat = lambda: (1, 0)
 m._merged_prs_detail = lambda: json.loads(Path(detail_stub).read_text())
 m._repo_snapshot = lambda: None
-m._queue_composition = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 5, "self": 1},
+    "agent-ready": {"total": 6, "self": 2},
+}
 m._escalations_24h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
@@ -451,6 +454,58 @@ for fam in (
     assert type_counts[fam] == 1, f"{fam} TYPE count {type_counts[fam]}"
 
 print("OK: queue family emits both queues with exactly one HELP/TYPE per metric")
+PY
+
+# =========================================================================
+# 12. fleet-ops#1772: null ready_work must fail loud, not write a partial file
+# =========================================================================
+FAIL_OUT="$scratch/fail.prom"
+python3 - "$exporter" "$FAIL_OUT" <<'PY' || fail "null-ready_work fail-loud test failed"
+import importlib.util, os, sys
+from pathlib import Path
+exporter, out_path = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/seatdb")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
+m.GH_RATE_LIMIT_STATE = Path(os.path.dirname(out_path)) / "rl.state.json"
+
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: None  # null ready_work source
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+
+rc = m.main()
+assert rc == 1, f"main() must fail loud on null ready_work, got rc={rc}"
+assert not Path(out_path).exists(), f"main() wrote a partial file on null ready_work: {out_path}"
+print("OK: null ready_work fails loud and no fleet.prom is written")
 PY
 
 
