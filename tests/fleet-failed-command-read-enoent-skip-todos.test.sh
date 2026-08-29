@@ -35,6 +35,8 @@
 #      failure -> clean.
 #   3. worker.md cites fleet-ops#958 (prompt-side lock).
 #   4. seat-lib.test.sh hosts this file (CI cannot gain a new P14 line).
+#   5. guard-fires drill: a worker.md copy stripped of the locked
+#      wording fails the scenario-3 checks (fleet-ops#2101 prevention).
 
 set -euo pipefail
 
@@ -122,6 +124,31 @@ grep -q 'fleet-ops#958' "$worker" \
 grep -q "ENOENT: no such file or directory, access" "$worker" \
   || fail "prompts/worker.md must name the live ENOENT wording so workers flag it"
 ok "worker.md cites fleet-ops#958 and the live ENOENT wording"
+
+# --- 5. guard-fires drill: drift in the #958 citation fails scenario 3 ------
+# fleet-ops#2101: prompts/worker.md lost the #958 citation (plus 17 siblings)
+# and the P14 suite caught it red on main (FleetMainRed). The scenario-3
+# greps are the guard. This drill proves the guard FIRES: a worker.md copy
+# with the locked wording stripped must fail the exact scenario-3 checks, so
+# a future refactor cannot soften those greps without a named FAIL here.
+drift="$scratch/worker.md"
+cp "$worker" "$drift" || fail "could not copy worker.md to scratch"
+sed -i 's/fleet-ops#958//g' "$drift" || fail "could not strip #958 citation from drill copy"
+sed -i 's/ENOENT: no such file or directory, access/ENOENT-X/g' "$drift" || fail "could not strip ENOENT wording from drill copy"
+if grep -q 'fleet-ops#958' "$drift"; then
+  fail "drill: stripped copy still cites fleet-ops#958"
+fi
+set +e
+grep -q 'fleet-ops#958' "$drift"
+rc=$?
+set -e
+[[ "$rc" == 1 ]] || fail "guard must fire when worker.md loses the fleet-ops#958 citation (got rc=$rc)"
+set +e
+grep -q 'ENOENT: no such file or directory, access' "$drift"
+rc=$?
+set -e
+[[ "$rc" == 1 ]] || fail "guard must fire when worker.md loses the ENOENT wording (got rc=$rc)"
+ok "guard fires when worker.md drifts off the fleet-ops#958 lock wording"
 
 # --- 4. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh"' \
