@@ -1,38 +1,66 @@
-feat(1464): GitHub push channel via Cloudflare + synthetic canary
+fleet-ops#1145 slice 2 (Conflict B): split `nish-memory-compound` into two canonical sections and template the per-surface `--agent` token.
 
-Implements the two patterns from fleet-ops#1464:
+# What changed
 
-1. REAL PUSH FROM GITHUB — Cloudflare Worker (`workers/github-push-forward/`) receives org-level webhooks, verifies the GitHub HMAC, and forwards the body through a Cloudflare Tunnel to `libexec/gh-webhook-receiver/serve.py` on the VPS. The receiver re-verifies HMAC (defence-in-depth), dispatches to the matching systemd unit (`pi-intake@<repo>` for `issues/labeled/agent-ready`, `fleet-deploy-check` for `workflow_run/completed/success`), and exports a Prometheus heartbeat.
+Two new canonical sections replace the old `nish-memory-compound` block in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`:
 
-2. SYNTHETIC CANARY — `bin/gh-webhook-canary.py` fires every 5 min, posts a synthetic `issues/labeled/agent-ready` payload to the local receiver, and bumps the last-green metric. `bin/gh-webhook-canary-deadman.py` checks the metric and writes the alert-repair triage file (plus an optional healthchecks.io fail URL) when the series is missing or stale > 15 min.
+- `never-relay-finding` — the "Never relay a finding you could act on" heading + bullets. Used in the CLAUDE.md surface only; in AGENTS.md it stays a hand-written block (per its existing marker scope), the same call the issue made for it.
+- `shared-memory-loop` — the `## Automatic shared-memory loop` heading + the six memoryctl bullets, used by BOTH surfaces.
 
-The slow `pi-intake@<repo>.timer` cadence drops from `*/15` to `*/20` so it behaves as a reconciler, not the primary trigger. `lib/pi-intake-tick.sh` now increments `fleet_intake_reconciler_caught_total{repo="<repo>"}` per slow-poll catch so a rising count is visible.
+## Scope fact the issue description did not carry
 
-New fleet organs (`gh-webhook-receiver`, `gh-webhook-canary`) are registered in `config/fleet-organs.json` with matching `absent()` rules in `config/fleet_rules.yml` (fleet-ops#1010).
+The issue described the second conflict as exactly two pieces (marker scope + per-surface `--agent`). Verification against the live files found a third scope difference inside the same block: the **failure-response bullet** sits inside CLAUDE.md's `nish-memory-compound` marker but lives in AGENTS.md's hand-written `## Safety` section (byte-identical in both, line 124 vs line 198). A single `shared-memory-loop` section could not carry it without either duplicating it in AGENTS.md or dropping it out of CLAUDE.md — both behavior-changing.
 
-Verification:
+Solution mirrors the slice-1 `{{OLD_LAUNCHER_BLOCK}}` precedent (a block present in one surface's region and absent in the other's): a per-surface `{{FAILURE_RESPONSE_BLOCK}}` token. Claude's value is the bullet (its loop keeps it exactly where it was); Codex's value is empty (its loop never had it). Byte order in the always-loaded files is unchanged.
+
+## The five per-surface occurrences
+
+`shared-memory-loop` keys every `--agent` / `--verified-by` occurrence off `{{SURFACE_AGENT}}` — exactly five, as the issue's DONE-WHEN requires: `context (...--agent)`, `outcome (--agent + --verified-by)`, `feedback (--agent + --verified-by)`. Note: no `--agent-id` flag exists in the live commands; the live flags are `--agent` and `--verified-by`, and those five are templated. `capture` carries no per-surface token, so nothing is templated there.
+
+# Behavior-preserving proof (byte-exact)
+
+Diff of each live file against its pre-edit backup shows ONLY marker renames:
+
+- `CLAUDE.md`: `<!-- nish-memory-compound:start -->` → `BEGIN GENERATED: never-relay-finding`; the separator blank line → `END GENERATED: never-relay-finding` + `BEGIN GENERATED: shared-memory-loop`; `<!-- nish-memory-compound:end -->` → `END GENERATED: shared-memory-loop`. No content dropped, no reorder, failure-response bullet preserved in place.
+- `AGENTS.md`: only the two marker lines renamed. Everything else byte-identical.
+
+Backups: `/home/nish/.local/state/standing-rules/bak-1153-20260829T015925Z/`.
+
+# Verification
+
+- `bash tests/standing-rules-drift.test.sh` → `ALL OK: 8/8 assertions passed` (and the new 4b split + token-binding assertion).
+- Live `--check` is clean: `python3 /home/nish/.local/bin/render-standing-rules.py --canonical <vault> --check` → `OK (checked): 2 target(s), 6 section(s)`.
+- Drift gate fires and recovers on the live system: hand-edit a generated region → `--check` exits 1 (`DRIFT in /home/nish/.claude/CLAUDE.md`) → `--render` restores byte-exact → `--check` exits 0.
+- Token accounting: canonical has 0 literal `claude-vps`/`codex-vps`; the `shared-memory-loop` canonical body holds exactly 5 `{{SURFACE_AGENT}}`; the live CLAUDE.md region renders 5× `claude-vps`, live AGENTS.md renders 5× `codex-vps`, zero cross-leak, zero surviving `{{`.
+
+run-proof: journal — `standing-rules-render.service`:
 ```
-bash tests/gh-webhook-receiver-hmac.test.sh      # 10/10 phases green
-bash tests/gh-webhook-canary.test.sh             # 8/8 phases green
-bash tests/fleet-intake-reconciler-counter.test.sh # 8/8 phases green
-bash tests/gh-webhook-organ-heartbeat.test.sh    # 4/4 phases green
-bash tests/timer-manifest.test.sh                # all repo + live timers covered
-systemd-analyze verify --man=no systemd/*.service systemd/*.timer
-gitleaks git --redact --verbose                    # no leaks
-sgscan                                              # no new security findings
-find bin -maxdepth 1 -type f ! -name '*.py' ! -name '*.ts' -print | xargs -r shellcheck -x
-shellcheck -x install.sh
+Aug 29 07:30:28 ... Starting standing-rules-render.service ...
+Aug 29 07:30:28 ... python3[...]: OK (rendered): 2 target(s), 6 section(s)
+Aug 29 07:30:28 ... Finished standing-rules-render.service ...
 ```
-All above passed on the VPS.
+The path unit fired on the vault canonical write and rendered both live target files with the new generator (status=0/SUCCESS).
 
-run-proof: tests/gh-webhook-receiver-hmac.test.sh + tests/gh-webhook-canary.test.sh + tests/fleet-intake-reconciler-counter.test.sh + tests/timer-manifest.test.sh all passed; systemd user timers active on netcup-rs2000; gitleaks/shellcheck/sgscan clean.
+research: n/a — this slice adds no new `bin/` file (the generator already exists; only modified). Compared the issue's "two sections" shape against the discovered third scope difference and chose the slice-1 `{{OLD_LAUNCHER_BLOCK}}` presence-token mechanism over a third generated region, because a separate region would reorder the failure-response bullet relative to the loop heading and break byte-identity for CLAUDE.md.
+help-first: n/a — no new `bin/` file.
 
-research: official docs and last30days-scale pass (Cloudflare Workers webhooks, GitHub org webhooks + HMAC, Cloudflare Tunnel ingress); compared a hand-built persistent daemon (rejected per no-hand-built-orchestration) and a per-repo GitHub Actions workflow (rejected: one org-level webhook beats N per-repo workflows). Adopted Cloudflare Worker + Tunnel because it keeps the Worker as dumb transport and all logic on the VPS.
+# Live-config edits
 
-help-first: ran `curl --help`, `systemctl --help`, `python3 --help`, and `python3 -m http.server --help` — none can verify a GitHub HMAC signature, forward webhooks through a Cloudflare Tunnel, write a dead-man Prometheus metric, or append an alert-repair triage entry, so the existing tools do not already do this.
+| Path | Before | After |
+|---|---|---|
+| `~/.claude/CLAUDE.md` | `<!-- nish-memory-compound:start/end -->` block (Never-relay + loop, failure bullet inline) | two adjacent `BEGIN/END GENERATED` regions (`never-relay-finding`, `shared-memory-loop`) |
+| `~/.codex/AGENTS.md` | `<!-- nish-memory-compound:start/end -->` block (loop only) | single `BEGIN/END GENERATED: shared-memory-loop` region; Never-relay stays hand-written at line 163 |
+| vault `global-standing-rules.canonical.md` | 4 sections | 6 sections (+never-relay-finding, +shared-memory-loop) |
+| `tooling/fleet-ops-deploy-clone/bin/render-standing-rules.py` | slice-1 generator | +`{{FAILURE_RESPONSE_BLOCK}}`, applied to the live symlink target so the path-fired render is clean now; absorbed by `origin/main` on merge |
 
-Pre-existing (not this PR):
-- `tests/rule-enforcement.test.sh` fails locally because `config/rule-enforcement.json` is missing rows for new 2026-08-28 ledger/standing rules; the issue that owns that matrix update is unrelated.
-- `tests/ci-standards-audit.test.sh` invokes `tests/seat-health-classifier.test.sh`, which fails only on the VPS because the out-of-repo `~/.pi/agent/extensions/seat-health.ts` is installed and still marks HTTP-200/empty-body as healthy. It is the fleet-ops#1466 closure canary.
+# Deviation note
 
-Closes #1464
+The deploy-clone is currently in a pre-existing deploy-flap (unrelated dirty tracked files `libexec/staleness-checker.py`, `prompts/scout-repair.md`; see `~/.local/state/fleet-heartbeat/deploy-audit.log`). This PR does not own that; the generator sync here is byte-identical to what `origin/main` will hold post-merge, so the next clean deploy absorbs it.
+
+## Pre-existing gate false-positive found while running the worker preflight
+
+`bin/fleet-token-efficiency-check` rejects `lib/standing-rules/canonical.md` (`prompt template placeholder before the static body`, first `{{` at line 48). That is a pre-existing misclassification on `origin/main` (identical first `{{SURFACE_PREIMPLEMENT_PHRASE}}` at line 48 in the merged file — slice-1), not introduced here; the canonical is a generator template source, not a model-prompt assembler. The gate is not run in any CI workflow. Filed as #1813 for the gate owner; not fixed in this slice so the generator template contract is not distorted.
+
+mechanism-impossible: n/a — this is not a failure-fix; it is the slice-2 de-duplication feature. The existing drift gate (CI `standing-rules-drift` test + the live path-fired render + `--check`) is the prevention mechanism and is extended by the new 4b assertions.
+
+Closes #1153
