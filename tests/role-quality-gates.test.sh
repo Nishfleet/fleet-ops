@@ -63,6 +63,35 @@ if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
 PY
 ok "catalog: researcher role is gated (fleet-ops#592)"
 
+# fleet-ops#1571: the 2026-08-28 main CI red was caused by the gap-closure
+# conference/research prompts and auditor/conference units landing without
+# catalog rows. Dropping them must fail even if the live audit happens to be
+# green for other reasons.
+python3 - "$catalog" <<'PY' || fail "senior-auditor catalog row missing gap-closure gates (fleet-ops#1571)"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+row = next((r for r in data["roles"] if r.get("id") == "senior-auditor"), None)
+if row is None:
+    raise SystemExit("senior-auditor role missing")
+required_prompts = (
+    "gap-closure-conference.md",
+    "gap-closure-conference-round2.md",
+    "gap-closure-research.md",
+    "gap-closure-research-round2.md",
+)
+missing_prompts = [p for p in required_prompts if p not in (row.get("prompts") or [])]
+if missing_prompts:
+    raise SystemExit("senior-auditor prompts missing: " + ", ".join(missing_prompts))
+required_units = (
+    "fleet-gap-closure-auditor@.service",
+    "fleet-gap-closure-conference.service",
+)
+missing_units = [u for u in required_units if u not in (row.get("units") or [])]
+if missing_units:
+    raise SystemExit("senior-auditor units missing: " + ", ".join(missing_units))
+PY
+ok "catalog: senior-auditor role gates gap-closure conference/research (fleet-ops#1571)"
+
 # fleet-ops#592 / #636 / #1180 / #1513: session-reap, vault-conflict-resolver,
 # the vault knowledge-format lint timer, the fleet-metrics-export Prometheus
 # textfile exporter, and the pi-intake-trigger oneshot are plumbing, not
