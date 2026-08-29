@@ -443,4 +443,26 @@ if grep -E 'fleet_scout_last_run_seconds\{repo="fleet-ops"\} 0$' "$scratch/fleet
 fi
 ok "scenario15: rest-skip end omits last_run=0"
 
+# --- 16. runway is measured in hours, not just ready items ------------------
+# 12 ready issues with no consumption = 12h runway (>= cap) -> reset.
+# 12 ready with 12 closed in the last 6h = drain rate 2/h -> runway 6h.
+# The item count alone would say "at cap"; the hours metric must escalate.
+: >"$gh_log"
+: >"$triage"
+rm -f "$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=12
+export SCOUT_FUTILITY_CLOSED_JSON="$scratch/closed-12.json"
+now=$(date -u +%s)
+jq -n --arg ts "$(date -u -d '@'"$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)" \
+  '[range(12) | {number:(.+1), closedAt:$ts}]' >"$SCOUT_FUTILITY_CLOSED_JSON"
+printf '%s\n' 'before=12' 'consecutive_dry=2' >"$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "3" ]] \
+  || fail "scenario16: 12 ready with high drain (12 closed in 6h) = 6h runway; should escalate, got '$(state_field consecutive_dry)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario16: missing LOUD SCOUT-FUTILITY for runway < 12h"
+ok "scenario16: runway in hours — high drain turns 12 ready items into 6h buffer, escalates"
+unset SCOUT_FUTILITY_CLOSED_JSON
+
 echo "OK: scout-futility: green-and-empty scout escalates after N dry runs, never loops quietly"
