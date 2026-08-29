@@ -11,11 +11,14 @@
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), bench the seat via mark_seat_spawn_fail (short backoff,
-#      same as spawn-fail) and exit non-zero so systemd's Restart= treats
-#      it as a failure and re-seats. Without the bench, pick_seat re-selects
-#      the same still-healthy seat on an intake re-spawn with an empty
-#      tried-seats file (fleet-ops#390 / fleet-ops-378). 20 B is enough
+#      to stdout), exit non-zero so systemd's Restart= treats it as a failure
+#      and re-seats. A provider no-op (pi ran, exited 0, produced nothing)
+#      is a LANE FAULT, not a seat fault — the seat is healthy. We do NOT
+#      write a per-seat ledger marker; the PER-UNIT tried-seats file already
+#      records the seat and prevents immediate re-pick on the next Restart.
+#      An intake re-spawn (fresh claim, empty tried-seats) may re-pick the
+#      same seat, which is intentional: the seat is healthy, so trying it
+#      again after a short wait is fine (fleet-ops#1416). 20 B is enough
 #      for a GitHub PR URL or a short status like 'blocked: proposal posted'
 #      (26 B).
 #   3. Active-seat registration: writes the picked seat to the per-seat
@@ -437,28 +440,27 @@ is_empty_run() {
     [[ -z "$rest" ]]
 }
 
-if (( out_bytes < OUT_MIN )) || is_empty_run "$out_file"; then
-    if (( out_bytes < OUT_MIN )); then
-        noop_reason="stdout=${out_bytes}B (< ${OUT_MIN}B)"
-        mark_fn=mark_seat_spawn_fail
-    else
-        noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
-        mark_fn=mark_seat_empty_run
-    fi
+if (( out_bytes < OUT_MIN )); then
+    # fleet-ops#1416: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
+    # is a LANE FAULT, not a seat fault. The seat is healthy — it accepted
+    # the work and ran pi. We do NOT write a per-seat ledger marker; the
+    # tried-seats file already records this seat for THIS unit, and
+    # systemd restart will pick a different one. An intake re-spawn
+    # (fresh claim with empty tried-seats) may re-pick this seat, which
+    # is intentional: the seat is healthy and may work on the next attempt.
+    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, exiting 1 so systemd re-seats (seat NOT marked; healthy seat, lane fault)"
+    exit 1
+fi
+if is_empty_run "$out_file"; then
+    noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
     seat_log "pi-issue-run: $inst pi exited 0 but ${noop_reason} — no-op, exiting 1 so systemd re-seats"
-    # fleet-ops#390: a no-op is a flake on this packet, not proof the seat
-    # is dead. Bench it briefly (SPAWN_FAIL_BACKOFF_S, default 5 min) so
-    # pick_seat skips it on the next Restart AND on an intake re-spawn
-    # that starts with an empty tried-seats file. Without this, the
-    # healthy ledger re-selects the same seat and the unit loops until
-    # StartLimitBurst exhausts (fleet-ops-378: 1 byte stdout, unit dead).
     # fleet-ops#902: an empty-run (verdict tools=0, no final text) benches
     # via mark_seat_empty_run (15 min, empty_run mode) matching the
     # seat-health.ts extension's classification.
-    if "$mark_fn" "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
+    if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
         seat_log "pi-issue-run: $inst seat $np/$nm marked; next systemd Restart will pick a different seat via pick_seat (excluded by usable_at in the future)"
     else
-        seat_log "pi-issue-run: $inst WARN: $mark_fn marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
+        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on systemd Restart alone to dodge the dead seat"
     fi
     exit 1
 fi

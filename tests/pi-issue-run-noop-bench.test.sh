@@ -169,43 +169,38 @@ seat_line=$(head -n1 "$tried")
 np="${seat_line%%/*}"
 nm="${seat_line#*/}"
 
-# (a) mark_seat_spawn_fail was called for that seat, with a no-op reason.
-[[ -f "$scratch/mark_calls" ]] \
-  || fail "mark_seat_spawn_fail was never called (no-op path did not bench the seat)"
-grep -qF "$np/$nm" "$scratch/mark_calls" \
-  || fail "mark_seat_spawn_fail was not called for $np/$nm; calls: $(cat "$scratch/mark_calls")"
-grep -qF "no-op" "$scratch/mark_calls" \
-  || fail "mark_seat_spawn_fail reason must mention no-op; calls: $(cat "$scratch/mark_calls")"
-ok "no-op -> mark_seat_spawn_fail called for $np/$nm"
+# (a) fleet-ops#1416: provider no-ops (stdout < OUT_MIN, exit 0) do NOT
+# bench the seat. The seat is healthy — pi ran and exited 0. The tried-seats
+# file already records this seat for THIS unit, and systemd Restart will
+# pick a different one. No mark_seat_spawn_fail or mark_seat_empty_run
+# call should be made.
+if [[ -f "$scratch/mark_calls" ]]; then
+    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must NOT mark a healthy seat (calls: $(cat "$scratch/mark_calls"))"
+fi
+if [[ -f "$scratch/mark_empty_calls" ]] && grep -qF "$np/$nm" "$scratch/mark_empty_calls"; then
+    fail "mark_seat_empty_run was called for stdout < OUT_MIN — must NOT mark a healthy seat (calls: $(cat "$scratch/mark_empty_calls"))"
+fi
+ok "provider no-op (stdout < OUT_MIN) -> NO seat marker written (healthy seat, lane fault)"
 
-# (b) per-seat ledger has usable_at in the future so pick_seat excludes it.
-ledger_file="$LEDGER/${np//[^A-Za-z0-9._-]/_}__${nm//[^A-Za-z0-9._-]/_}.json"
-[[ -f "$ledger_file" ]] || fail "per-seat ledger missing at $ledger_file"
-usable=$(jq -r '.usable_at // empty' "$ledger_file")
-[[ -n "$usable" ]] || fail "ledger has no usable_at: $(cat "$ledger_file")"
-usable_epoch=$(date -u -d "$usable" +%s)
-now_epoch=$(date -u +%s)
-(( usable_epoch > now_epoch )) \
-  || fail "usable_at $usable is not in the future (now epoch=$now_epoch usable epoch=$usable_epoch)"
-ok "ledger usable_at=$usable is in the future"
-
-# Simulate the intake re-spawn: empty tried-seats, same ledger. pick_seat
-# must skip the no-op seat and return the other one.
-: >"$tried"
+# (b) seat_usable must still return true — the seat is healthy, no penalty.
 # shellcheck disable=SC1091
 source "$repo_root/lib/seat-lib.sh"
-if seat_usable "$np" "$nm"; then
-    fail "seat_usable $np/$nm returned usable after no-op bench — pick_seat would re-select it"
+if ! seat_usable "$np" "$nm"; then
+    fail "seat_usable $np/$nm returned UNUSABLE after provider no-op — should be usable (healthy seat, no penalty)"
 fi
-next=$(pick_seat "" "" 0 "" || true)
-[[ -n "$next" ]] || fail "pick_seat returned empty after benching $np/$nm (the other seat should still be free)"
-next_np=$(printf '%s' "$next" | cut -f1)
-next_nm=$(printf '%s' "$next" | cut -f2)
-[[ "$next_np/$next_nm" != "$np/$nm" ]] \
-  || fail "pick_seat re-selected the no-op seat $np/$nm — the stuck loop is not fixed"
-ok "intake re-spawn pick_seat skips $np/$nm and picks $next_np/$next_nm"
+ok "seat_usable $np/$nm still USABLE after provider no-op"
 
-ok "pi-issue-run no-op benches the seat so re-seat picks a different seat"
+# (c) pick_seat with empty tried-seats WILL re-select the same seat on
+# intake re-spawn. This is intentional: the seat is healthy, so trying
+# it again is fine (the provider may produce output on the next attempt).
+: >"$tried"
+next=$(pick_seat "" "" 0 "" || true)
+[[ -n "$next" ]] || fail "pick_seat returned empty after provider no-op"
+# Just verify pick_seat works; it may pick the same or a different seat.
+# Either is acceptable — the seat is not penalised.
+ok "pick_seat returned a seat after provider no-op (may be same or different)"
+
+ok "pi-issue-run provider no-op exits 1, no marker, seat stays usable"
 
 # =============================================================================
 # fleet-ops#902: verdict-based EMPTY RUN — pi exits 0 and the ONLY stdout is
