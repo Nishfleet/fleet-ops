@@ -104,6 +104,12 @@ NON_ROLE_UNIT_PREFIXES = (
     # and produces no work items — same class as fleet-aeo-probe. Its own
     # gate is the drift --check plus tests/agent-scheduler-drift.test.sh.
     "agent-scheduler-drift",
+    # fleet-ops#1348: seat-walled-probe is credential-recovery plumbing
+    # (polite 1-token probe for walled seats), not a work-producing role.
+    # It runs no Pi model of its own, owns no judging prompt and produces
+    # no work items — its gate is tests/seat-walled-probe.test.sh plus the
+    # absent() rule on the timer.
+    "seat-walled-probe",
 )
 
 
