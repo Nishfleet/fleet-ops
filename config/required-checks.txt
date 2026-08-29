@@ -1,0 +1,16 @@
+# Required status checks for main — mirrors branch protection.
+#
+# auto-revert.sh reads this when the branch-protection API is unreadable.
+# The nishfleet-worker App token and GITHUB_TOKEN both lack Administration
+# scope, so `gh api repos/<repo>/branches/main/protection` 403s in
+# production (fleet-ops#1407). Without this fallback auto-revert could
+# never tell a required-check failure from a non-required one and always
+# SKIPped (issue #325, open since 2026-08-26).
+#
+# Keep in sync with the "four required check names" named in
+# .github/workflows/ci.yml and the live branch-protection
+# required-status-checks list. One check context per line.
+Gitleaks
+Semgrep
+Shellcheck
+systemd-analyze

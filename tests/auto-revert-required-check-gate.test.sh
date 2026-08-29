@@ -474,6 +474,92 @@ ok "scenario B: Semgrep (required) failed -> revert PR created and armed"
 
 ok "auto-revert gates on required checks: non-required skips, required reverts"
 
+# Scenario C (fleet-ops#1407): the branch-protection API is unreadable in
+# production — the nishfleet-worker App and GITHUB_TOKEN both 403 on
+# repos/<repo>/branches/main/protection (no Administration scope). The fake
+# gh returns empty for the protection endpoint when REQUIRED_CONTEXTS_JSON is
+# unset, mirroring the 403. auto-revert must fall back to the committed
+# config/required-checks.txt mirror so a required-check failure still reverts
+# instead of silently SKIPping (the live bug: issue #325 open since
+# 2026-08-26, auto-revert never reverted a single required-check failure).
+calls_c="$scratch/calls-c"
+: > "$calls_c"
+
+# Scenario B's git revert + checkout -b left the scratch repo on the revert
+# branch; restore main to head_sha so the "main moved" guard does not fire,
+# and drop the leftover revert branch so scenario C's checkout -b does not
+# collide with it (same head_sha -> same revert/<short> name).
+( cd "$repo" && git checkout main && git reset --hard "$head_sha" \
+  && git branch -D "revert/$(git rev-parse --short=7 "$head_sha")" 2>/dev/null || true )
+
+# REQUIRED_CONTEXTS_JSON intentionally unset: the protection API 403s in prod.
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$head_sha" \
+    RUN_NAME="CI" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/129" \
+    GH_CALLS_FILE="$calls_c" \
+    CHECK_RUNS_JSON="$check_runs_b" \
+    bash "$script"
+) >"$scratch/scenario-c.out" 2>"$scratch/scenario-c.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario C: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-c.err"))"
+grep -q "PR_CREATE title=revert:" "$calls_c" \
+  || fail "scenario C: API unreadable + required Semgrep failed -> must revert via config fallback, got calls: $(cat "$calls_c")"
+grep -q "PR_MERGE" "$calls_c" \
+  || fail "scenario C: revert PR must be armed, got calls: $(cat "$calls_c")"
+if grep -q "ISSUE_CREATE title=AUTO-REVERT SKIP" "$calls_c"; then
+  fail "scenario C: must not SKIP when a required check failed (even with API unreadable), got calls: $(cat "$calls_c")"
+fi
+grep -q "branch-protection API unreadable" "$scratch/scenario-c.err" \
+  || fail "scenario C: must warn that the API was unreadable, got stderr: $(cat "$scratch/scenario-c.err")"
+ok "scenario C: API 403 + required check failed -> revert via config/required-checks.txt fallback (not a silent SKIP)"
+
+# Scenario D (fleet-ops#1407): API unreadable AND only the non-required P14
+# check failed. The config fallback still preserves the required-vs-non-required
+# distinction: P14 tests is not in config/required-checks.txt, so auto-revert
+# SKIPs (halt issue) rather than reverting a non-required-only failure.
+calls_d="$scratch/calls-d"
+: > "$calls_d"
+
+# Scenario C reverted; restore main to head_sha and drop its revert branch.
+( cd "$repo" && git checkout main && git reset --hard "$head_sha" \
+  && git branch -D "revert/$(git rev-parse --short=7 "$head_sha")" 2>/dev/null || true )
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$head_sha" \
+    RUN_NAME="CI" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/130" \
+    GH_CALLS_FILE="$calls_d" \
+    CHECK_RUNS_JSON="$check_runs_a" \
+    bash "$script"
+) >"$scratch/scenario-d.out" 2>"$scratch/scenario-d.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario D: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-d.err"))"
+grep -q "ISSUE_CREATE title=AUTO-REVERT SKIP" "$calls_d" \
+  || fail "scenario D: API unreadable + only P14 failed -> must SKIP via fallback, got calls: $(cat "$calls_d")"
+if grep -q "PR_CREATE\|PR_MERGE" "$calls_d"; then
+  fail "scenario D: must not revert a non-required-only failure even with API unreadable, got calls: $(cat "$calls_d")"
+fi
+ok "scenario D: API 403 + only non-required P14 failed -> still SKIPs (fallback preserves the distinction)"
+
+ok "auto-revert gates on required checks: non-required skips, required reverts"
+
 # fleet-ops#596: GraphQL `gh issue comment` reddens Auto revert on a PAT.
 # The fake `issue comment` subcommand always exits 1 with that production
 # error, so A2/A3 fail if the script reverts. Also lock the source.

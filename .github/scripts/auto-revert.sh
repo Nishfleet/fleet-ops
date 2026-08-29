@@ -7,7 +7,8 @@
 
 set -euo pipefail
 
-ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/fleet-issue-file}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$repo_root/bin/fleet-issue-file}"
 
 short="$(git rev-parse --short=7 "$HEAD_SHA")"
 subject="$(git log --format=%s -n 1 "$HEAD_SHA")"
@@ -89,7 +90,6 @@ fi
 # Failed check-run names, one per line.
 failed_names_file="$(mktemp)"
 required_names_file="$(mktemp)"
-trap 'rm -f "$failed_names_file" "$required_names_file"' EXIT
 
 gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" --paginate \
   --jq '.check_runs[] | select(.conclusion=="failure") | .name' 2>/dev/null \
@@ -99,16 +99,34 @@ failing="$(paste -sd', ' "$failed_names_file" || true)"
 [ -z "$failing" ] && failing="(see run — no failed check-runs listed by the API)"
 
 # Required status check contexts from branch protection, one per line.
+# The branch-protection API needs Administration scope; the nishfleet-worker
+# App token and GITHUB_TOKEN both lack it (403, fleet-ops#1407), so the call
+# returns empty in production. Without a fallback auto-revert could never
+# detect a required-check failure and always SKIPped (issue #325, open since
+# 2026-08-26). Fall back to the committed config/required-checks.txt mirror
+# of branch protection so the required-vs-non-required distinction survives.
+required_err_file="$(mktemp)"
+trap 'rm -f "$failed_names_file" "$required_names_file" "$required_err_file"' EXIT
 
 required_raw="$(
   gh api "repos/$REPO/branches/main/protection" --paginate \
-    --jq '[(.required_status_checks.contexts? // []), (.required_status_checks.checks? // [] | map(.context? // empty))] | flatten | .[]' 2>/dev/null || true
+    --jq '[(.required_status_checks.contexts? // []), (.required_status_checks.checks? // [] | map(.context? // empty))] | flatten | .[]' 2>"$required_err_file" || true
 )"
 
 if [ -n "$required_raw" ]; then
   printf '%s\n' "$required_raw" | sort -u > "$required_names_file"
 else
-  : > "$required_names_file"
+  # API unreadable (403 under the App/GITHUB token). Fall back to the
+  # committed mirror of branch protection's required checks so a
+  # required-check failure still triggers a revert instead of a silent SKIP.
+  fallback="$repo_root/config/required-checks.txt"
+  if [ -f "$fallback" ]; then
+    grep -vE '^\s*(#|$)' "$fallback" | sort -u > "$required_names_file"
+    echo "warning: branch-protection API unreadable ($(head -c 120 "$required_err_file" 2>/dev/null || echo unknown)); using $fallback for required checks" >&2
+  else
+    : > "$required_names_file"
+    echo "warning: branch-protection API unreadable and no config/required-checks.txt fallback; auto-revert will SKIP every failure" >&2
+  fi
 fi
 
 # Is any failed check a required one?
