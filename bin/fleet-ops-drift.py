@@ -38,6 +38,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
   FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-VOLATILE; 0 skip gh
+  FLEET_OPS_DRIFT_CLOSE           1 (default) close a drift issue on a later green tick once it carries `resolved-at:`; 0 only comment (fleet-ops#1156)
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
   FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
@@ -78,6 +79,7 @@ def issue_file_py() -> str:
         return str(installed)
     return str(cand)
 DRIFT_FILE = os.environ.get("FLEET_OPS_DRIFT_FILE", "1") == "1"
+DRIFT_CLOSE = os.environ.get("FLEET_OPS_DRIFT_CLOSE", "1") == "1"
 ALLOW_NONCANONICAL = os.environ.get("FLEET_OPS_ALLOW_NONCANONICAL", "") == "1"
 WORKSPACES_ROOT = Path(os.environ.get("FLEET_OPS_WORKSPACES_ROOT", "/home/nish/workspaces"))
 CANONICAL_CHECKOUT = Path(
@@ -333,11 +335,20 @@ def _issue_blob(issue: dict[str, Any]) -> str:
 def observe_close_drift_issues(
     checkout: Path, head: str, only_marker: str | None = None
 ) -> None:
-    """Comment on open drift issues whose class is now green.
+    """Comment on, then close, open drift issues whose class is now green.
 
     Observe-to-close wiring (fleet-ops#620): when the canary is green, any
     open issue carrying a drift marker gets a `resolved-at:` comment. This
     makes the close evidence-backed rather than manual.
+
+    Two-tick close (fleet-ops#1156, mirroring fleet-exec-review-canary
+    fleet-ops#729 and fleet-decisions-ledger fleet-ops#650): the first green
+    tick posts `resolved-at:`; a later green tick — once that marker is
+    already present — closes the issue with `gh issue close --reason
+    completed`. A still-red class never reaches this code (the matching
+    check fail-louds first), so a dirty drift issue is never closed. The
+    close is gated by ``FLEET_OPS_DRIFT_CLOSE`` (default 1); tests that
+    only exercise the comment path set it to 0.
 
     When ``only_marker`` is given, only that marker is considered. Per-check
     callers use this so a class that is binary (e.g. off-main: branch is
@@ -386,7 +397,25 @@ def observe_close_drift_issues(
                 continue
             resolved_marker = f"resolved-at: {marker}"
             if resolved_marker in blob:
-                log(f"dedup observe: {DRIFT_REPO}#{number} already carries {resolved_marker}")
+                # Tick 2+: the green tick that posted `resolved-at:` already
+                # landed on a prior heartbeat. Close now (fleet-ops#1156).
+                if not DRIFT_CLOSE:
+                    log(f"dedup observe: {DRIFT_REPO}#{number} already carries {resolved_marker}")
+                    break
+                name = marker_names.get(marker, marker)
+                try:
+                    cp = subprocess.run(
+                        [GH, "issue", "close", str(number), "-R", DRIFT_REPO, "--reason", "completed"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if cp.returncode == 0:
+                        log(f"OBSERVE-CLOSED: {name} -> {DRIFT_REPO}#{number}")
+                    else:
+                        log(f"WARN: gh issue close failed for {DRIFT_REPO}#{number}: {cp.stderr.strip()}")
+                except OSError as e:
+                    log(f"WARN: gh issue close failed for {DRIFT_REPO}#{number}: {e}")
                 break
             comment = (
                 f"{resolved_marker}\n"
