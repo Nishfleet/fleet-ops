@@ -53,6 +53,11 @@ NON_ROLE_UNIT_PREFIXES = (
     # model and owns no prompt, so it has no role gate.
     "fleet-completion-canary",
     "fleet-seat-recovery",
+    # fleet-ops#1448/#1348: seat-walled-probe is observability plumbing
+    # (wakes benched seats after their backoff window); runs no model, owns
+    # no prompt and produces no work items. Its own gate is tests/seat-walled-probe.test.sh
+    # + the absent() rule on the timer run timestamp.
+    "seat-walled-probe",
     "interactive-session-reap",
     "agent-cron-",
     "app-pi",
