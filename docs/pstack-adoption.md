@@ -49,11 +49,16 @@ Missing vs upstream:
   2026-08-20 standing-rule review.
 - `poteto-mode/scripts/check-plan.mjs` (Cursor plan helper).
 
-Drift:
+Drift (re-synced, fleet-ops#1311):
 
-- `blast-radius/SKILL.md` local sha `a4b87de50224`, upstream `b060df3ca858`.
-  The vault copy under `skills-library/blast-radius/` is a third text. Filed
-  as a follow-up; this PR does not overwrite either copy.
+- `blast-radius/SKILL.md` upstream `b060df3ca858`, the vault copy
+  `88274acde55a` is the house-adapted canonical, and all live harnesses
+  (Claude, Codex, Pi) now symlink to that single vault copy.
+  `unslop` and `why` were in the same real-dir state and were re-linked at
+  the same time.
+- The `fleet-skills-symlink-canary` compares the SHA-256 of every vault-listed
+  house skill against each harness on every heartbeat tick, so a pstack install
+  that leaves a real directory behind no longer silently diverges.
 
 `~/.cursor/rules/pstack-models.mdc` sets every role to `inherit-parent` so
 pstack cannot bypass the seat governor. That stays.
