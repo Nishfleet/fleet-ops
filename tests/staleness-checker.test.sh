@@ -140,8 +140,39 @@ else
   fail "Extraction test failed: $PY_RESULT"
 fi
 
-# Test 8: Script runs without error (dry check, --no-file to avoid filing real issues)
-echo "[8] Script runs without crashing (--no-file)"
+# Test 8: Real-doc upstream-ref filter (fleet-ops#1674)
+# The real global-standing-rules.md cites systemd/systemd#33486. An earlier
+# version of the checker mis-parsed that as Nishfleet/fleet-ops#33486 and filed
+# a false-positive staleness issue. This test loads the ACTUAL doc and asserts
+# the upstream ref is filtered out — a synthetic string cannot pin this.
+echo "[8] Real global-standing-rules.md filters upstream issue refs"
+REAL_DOC="$HOME/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md"
+PY_RESULT2=$(python3 <<PYEOF
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.py")
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+try:
+    text = open("$REAL_DOC").read()
+except OSError as e:
+    print("DOC_READ_FAIL: " + str(e), file=sys.stderr)
+    sys.exit(1)
+issues = sc._extract_issues(text)
+nums = sorted(n for _, n in issues)
+if 33486 in nums:
+    print("UPSTREAM_LEAK: 33486 extracted as fleet-ops issue: " + str(nums), file=sys.stderr)
+    sys.exit(1)
+print("OK: " + ",".join(str(n) for n in nums))
+PYEOF
+) || PY_RESULT2=""
+if [[ "$PY_RESULT2" == OK:* ]]; then
+  pass "Real doc does not leak systemd/systemd#33486 as fleet-ops (got: ${PY_RESULT2#OK: })"
+else
+  fail "Real-doc upstream filter failed: $PY_RESULT2"
+fi
+
+# Test 9: Script runs without error (dry check, --no-file to avoid filing real issues)
+echo "[9] Script runs without crashing (--no-file)"
 python3 libexec/staleness-checker.py --no-file 2>/dev/null
 RC=$?
 if [[ $RC -eq 0 ]]; then
