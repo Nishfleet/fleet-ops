@@ -66,10 +66,22 @@ state_jq() {
 }
 
 gap_board_count() {
-    local n
-    n="$("$GH" issue list -R "$REPO" -l gap-audit --state open \
-        --json number --jq length)" || fail_loud "gh issue list gap-audit failed"
-    printf '%s' "$n"
+    local out rc=0
+    out="$("$GH" issue list -R "$REPO" -l gap-audit --state open \
+        --json number --jq length 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf '%s' "$out"
+        return 0
+    fi
+    if printf '%s' "$out" | grep -qiE 'API rate limit|rate limit'; then
+        # Sentinel returned to the caller; the caller must exit the parent
+        # because this function is often invoked inside $() and exit here
+        # would only exit the subshell.
+        printf '__RATE_LIMITED__'
+        return 0
+    fi
+    printf '%s' "gh issue list gap-audit failed (rc=$rc): $out"
+    return 1
 }
 
 unit_done() {
@@ -122,8 +134,15 @@ phase_audit() {
         log "cycle $(state_read '.cycle'): audit still running — wait"
         return 0
     fi
-    local findings cycle
-    findings="$(gap_board_count)"
+    local findings cycle gb_rc=0
+    findings="$(gap_board_count)" || gb_rc=$?
+    if [ "$findings" = "__RATE_LIMITED__" ]; then
+        log "GraphQL rate limit exhausted; skipping this tick (state unchanged)"
+        exit 0
+    fi
+    if [ "$gb_rc" -ne 0 ]; then
+        fail_loud "$findings"
+    fi
     cycle="$(state_read '.cycle')"
     state_jq --argjson f "$findings" '.cycle_findings = $f | .dispatched = {}'
     log "cycle $cycle: audit complete, findings=$findings"
@@ -157,8 +176,15 @@ phase_research() {
 }
 
 phase_fix() {
-    local n
-    n="$(gap_board_count)"
+    local n gb_rc=0
+    n="$(gap_board_count)" || gb_rc=$?
+    if [ "$n" = "__RATE_LIMITED__" ]; then
+        log "GraphQL rate limit exhausted; skipping this tick (state unchanged)"
+        exit 0
+    fi
+    if [ "$gb_rc" -ne 0 ]; then
+        fail_loud "$n"
+    fi
     if [ "$n" -gt 0 ] 2>/dev/null; then
         log "cycle $(state_read '.cycle'): fix — $n open gap-audit issue(s), wait for fleet to drain"
         return 0
@@ -232,12 +258,20 @@ file_dissent() {
             if [ "$DRY_RUN" = "1" ]; then
                 log "DRY RUN: would file dissent for $auditor"
             fi
-            "$GH" issue create -R "$REPO" \
+            local create_out create_rc=0
+            create_out="$("$GH" issue create -R "$REPO" \
                 --title "[gap-audit] conference dissent ($auditor, cycle $(state_read '.cycle'))" \
                 --body "Senior auditor $auditor voted NOT-DONE in conference $conf_id.
 
 Reason: $reason" \
-                --label gap-audit --label agent-ready || fail_loud "could not file dissent for $auditor"
+                --label gap-audit --label agent-ready 2>&1)" || create_rc=$?
+            if [ "$create_rc" -ne 0 ]; then
+                if printf '%s' "$create_out" | grep -qiE 'API rate limit|rate limit'; then
+                    log "GraphQL rate limit exhausted; skipping this tick (state unchanged)"
+                    exit 0
+                fi
+                fail_loud "could not file dissent for $auditor (rc=$create_rc): $create_out"
+            fi
         fi
         i=$((i + 1))
     done
@@ -289,8 +323,15 @@ quality_regressed() {
 }
 
 phase_done() {
-    local n next due
-    n="$(gap_board_count)"
+    local n next due gb_rc=0
+    n="$(gap_board_count)" || gb_rc=$?
+    if [ "$n" = "__RATE_LIMITED__" ]; then
+        log "GraphQL rate limit exhausted; skipping this tick (state unchanged)"
+        exit 0
+    fi
+    if [ "$gb_rc" -ne 0 ]; then
+        fail_loud "$n"
+    fi
     if [ "$n" -gt 0 ] 2>/dev/null; then
         next=$(( $(state_read '.cycle') + 1 ))
         due="$(research_due_for "$next")"

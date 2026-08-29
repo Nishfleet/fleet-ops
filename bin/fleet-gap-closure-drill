@@ -119,13 +119,17 @@ drill_failed_units_signal() {
     local stub="gap-closure-drill-stub-fail.service"
     "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
     "$SYSTEMCTL" --user start "$stub" && true
-    local found
+    # `is-failed` is synchronous; the --state=failed list can lag by one
+    # manager cycle, so accept either signal as proof the stub was recorded
+    # (fleet-ops#180 / PR #2087).
+    local isf found
+    isf="$("$SYSTEMCTL" --user is-failed "$stub" 2>/dev/null || echo "unknown")"
     found="$("$SYSTEMCTL" --user --state=failed --no-legend --no-pager --plain 2>/dev/null | awk '{print $1}' | grep -Fx "$stub" || true)"
     "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
-    if [ -n "$found" ]; then
-        record "$name" true "failed stub $stub visible in --state=failed"
+    if [ "$isf" = "failed" ] || [ -n "$found" ]; then
+        record "$name" true "failed stub $stub recorded (is-failed=$isf, state-failed=$found)"
     else
-        record "$name" false "failed stub $stub NOT visible in --state=failed"
+        record "$name" false "failed stub $stub NOT recorded (is-failed=$isf, state-failed=$found)"
     fi
 }
 

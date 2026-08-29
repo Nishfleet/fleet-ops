@@ -181,6 +181,10 @@ creates="$scratch/creates.log"
 
 cat >"$scratch/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
+if [ -n "${GAP_LOOP_FAKE_GH_RATE_LIMIT:-}" ]; then
+    printf 'GraphQL: API rate limit already exceeded for user ID 257724087.\n' >&2
+    exit 1
+fi
 case "$*" in
   *"issue list"*gap-audit*"--state open"*)
     jq 'length' "${GAPS_JSON}" 2>/dev/null || echo 0
@@ -406,6 +410,36 @@ tick
 [[ "$(prec_val)" == "loop" ]] || fail "regression must flip precedence=loop, got $(prec_val)"
 [[ "$(cycle)" == "4" ]] || fail "reopen must increment cycle, got $(cycle)"
 ok "injected regression -> loop reopened, precedence=loop"
+
+# ---------------------------------------------------------------------------
+# GraphQL rate-limit guard: a transient API limit must not fail-loud.
+# ---------------------------------------------------------------------------
+cat >"$state_dir/state.json" <<'JSON'
+{
+  "cycle": 4,
+  "phase": "fix",
+  "cycle_findings": 2,
+  "consecutive_clean": 0,
+  "drills_pass": null,
+  "drill_results": [],
+  "slo_snapshot": {},
+  "slos_green": null,
+  "precedence": "loop",
+  "research_due": false,
+  "dispatched": {},
+  "verdict_history": [],
+  "last_verdict": "",
+  "updated_at": "2026-08-26T16:00:00Z"
+}
+JSON
+export GAP_LOOP_FAKE_GH_RATE_LIMIT=1
+rl_out="$("$loop" 2>&1)"
+export -n GAP_LOOP_FAKE_GH_RATE_LIMIT
+[[ "$(phase)" == "fix" ]] || fail "rate-limit skip must keep phase=fix, got $(phase)"
+[[ "$(cycle)" == "4" ]] || fail "rate-limit skip must not advance cycle, got $(cycle)"
+printf '%s' "$rl_out" | grep -q "GraphQL rate limit exhausted" \
+  || fail "rate-limit skip must log the guard, got: $rl_out"
+ok "gap_board_count GraphQL rate-limit guard: exit 0, state unchanged, log"
 
 # ---------------------------------------------------------------------------
 # SLO: #153 placeholder; drill pass rate gates green
