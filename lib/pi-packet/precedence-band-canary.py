@@ -42,6 +42,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -101,7 +102,37 @@ def _checkout_root(here: Path) -> Path:
     return parent.parent
 
 
-def default_paths() -> tuple[Path, Path, Path]:
+def read_live_units() -> list[tuple[str, int]]:
+    """Read live pi-issue@ units from systemd. Matches precedence_band_read_units in lib/precedence-band.sh."""
+    try:
+        result = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "list-units",
+                "pi-issue@*.service",
+                "--state=active,activating",
+                "--no-legend",
+                "--plain",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    out: list[tuple[str, int]] = []
+    for line in result.stdout.splitlines():
+        name = line.split()[0] if line.split() else ""
+        match = UNIT_RE.match(name)
+        if match:
+            out.append((match.group(1), int(match.group(2))))
+    return out
+
+
+def default_paths() -> tuple[Path, Path | None, Path]:
     here = Path(__file__).resolve()
     checkout = _checkout_root(here)
     policy = Path(os.environ["FLEET_PRECEDENCE_BAND_POLICY"]) if os.environ.get(
@@ -121,8 +152,7 @@ def default_paths() -> tuple[Path, Path, Path]:
     )
     if policy is None:
         policy = checkout / "config/precedence-band.json"
-    if units is None:
-        units = Path("/dev/null")  # empty file = no live units (CI / surge)
+    # units stays None when no env file is set -> read live units from systemd
     if prior is None:
         prior = Path("/dev/null")
     return policy, units, prior
@@ -367,7 +397,7 @@ def check_surge_phase(
 
 def run_check(
     policy_path: Path,
-    units_path: Path,
+    units_path: Path | None,
     prior_path: Path,
     triage: str | None,
     now_iso: str | None,
@@ -399,7 +429,10 @@ def run_check(
     if isinstance(prior_data, dict):
         errors.extend(check_ratchet(data, prior_data, now_dt))
     phase = phase_of(data, now_dt)
-    units = read_units(units_path)
+    if units_path is None:
+        units = read_live_units()
+    else:
+        units = read_units(units_path)
     machinery_repo = str(data.get("machinery_repo") or MACHINERY_REPO_DEFAULT)
     if phase == "band":
         errors.extend(check_band_phase(data, units, machinery_repo))
