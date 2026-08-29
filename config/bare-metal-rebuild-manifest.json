@@ -162,6 +162,15 @@
       "/etc/systemd/system/tailscaled.*"
     ]
   },
+  "masked_units": {
+    "description": "System units that must be masked on this host because the hardware they drive is absent (e.g. IPMI on a VPS). Masking at provision time stops the unit re-entering failed state and paging SystemUnitFailed every alert cycle. apply_rebuild masks each; live_check verifies each is masked so drift is caught. fleet-ops#2122.",
+    "units": [
+      {
+        "name": "openipmi.service",
+        "reason": "netcup-rs2000 is a VPS with no IPMI BMC; the unit can never start and re-enters failed state, paging SystemUnitFailed every cycle."
+      }
+    ]
+  },
   "env_files": {
     "description": "Environment files referenced by units and scripts. Values are not stored here.",
     "paths": [
@@ -223,7 +232,8 @@
       "install_manifest",
       "env_files",
       "secrets_locations",
-      "backup"
+      "backup",
+      "masked_units"
     ]
   }
 }
