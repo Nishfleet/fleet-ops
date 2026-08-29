@@ -21,6 +21,13 @@
 #      re-seating in-process (fleet-ops#902). In both cases the in-process
 #      retry loop avoids burning the item's StartLimitBurst dispatch budget
 #      (only exits 1 after EMPTY_RUN_RETRY_MAX consecutive empty runs).
+#      Root cause (fleet-ops#1378 determination, snapshot 2026-08-27): the
+#      empty runs were LANE FAULTS on free seats (opencode/nemotron-3-ultra-
+#      free, straitly/deepseek/deepseek-v4-pro returned < 20 B stdout), NOT
+#      unworkable issue bodies — the three target issues (fleet-ops#1249,
+#      #1252, #1223) were well-formed detector findings. The in-process
+#      re-seat is the correct response: the item is never charged for a
+#      provider flake on a healthy seat.
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
