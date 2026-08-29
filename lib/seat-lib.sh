@@ -183,6 +183,13 @@ declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 declare -A SEAT_PROVIDER_MAX_PROBE=()
 declare -A SEAT_PROVIDER_HARD_CEILING=()
 declare -A SEAT_PROVIDER_REASON=()
+# fleet-ops#1432: classification of cap=0 seats as intentional (dead_decoy /
+# money_only) vs stale (broken endpoint, TPM ceiling, exhausted quota). Drives
+# the summary line in _build_excluded_set so the operator sees at a glance
+# which cap=0 seats are by-design vs which need re-audition. Keyed on
+# "provider" for provider-level cap=0, "provider/model" for model-level.
+declare -A SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
+declare -A SEAT_CAP_ZERO_CLASS_STALE=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 SEAT_VOLUME_ORDER=""
@@ -242,6 +249,8 @@ load_seat_caps() {
     SEAT_PROVIDER_MAX_PROBE=()
     SEAT_PROVIDER_HARD_CEILING=()
     SEAT_PROVIDER_REASON=()
+    SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
+    SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_VOLUME_ORDER=""
@@ -282,7 +291,7 @@ load_seat_caps() {
     local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
@@ -294,6 +303,12 @@ load_seat_caps() {
         [[ "$max_probe" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_MAX_PROBE["$p"]="$max_probe"
         [[ "$hard" == "true" ]] && SEAT_PROVIDER_HARD_CEILING["$p"]=1
         [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
+        # fleet-ops#1432: classification of cap=0 seats (intentional vs stale).
+        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" ]]; then
+            SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p"]="$icz"
+        elif [[ "$icz" == "stale" ]]; then
+            SEAT_CAP_ZERO_CLASS_STALE["$p"]="$icz"
+        fi
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
@@ -303,7 +318,7 @@ load_seat_caps() {
     # provider_quota_bench_default returns 0 (no default, writer fails open).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p m cap class; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -321,6 +336,17 @@ load_seat_caps() {
         if [[ -n "$class" ]]; then
             [[ "$class" == "subscription" ]] && class="prepaid-quota"
             SEAT_MODEL_CLASS["$p/$m"]="$class"
+        fi
+        # fleet-ops#1432: model-level intentional_cap_zero classification.
+        # Only present when the model value is an object (not a bare number).
+        if [[ ! "$cap" =~ ^[0-9]+$ ]]; then
+            local icz
+            icz=$(jq -r '.intentional_cap_zero // ""' <<<"$cap" 2>/dev/null || true)
+            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" ]]; then
+                SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]="$icz"
+            elif [[ "$icz" == "stale" ]]; then
+                SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"
+            fi
         fi
     # Same bare-number guard as the providers loop: .value.models on a bare
     # number crashes jq before `// {}` can rescue it, emptying all model caps.
@@ -2193,13 +2219,32 @@ pick_seat() {
     # cap=0/dead reasons separately. The summary line then names the
     # unique counts.
     local _excluded_cap0_n=0 _excluded_dead_n=0 _excluded_allowlist_n=0
+    # fleet-ops#1432: within the cap=0 excluded seats, how many are INTENTIONAL
+    # (dead_decoy / money_only — by design, never re-audit) vs STALE (broken
+    # endpoint / TPM ceiling / exhausted quota — re-audit when the external
+    # condition clears). Surfaced in the summary so the operator sees at a
+    # glance which cap=0 seats are by-design vs which warrant re-audition.
+    local _excluded_cap0_intentional_n=0 _excluded_cap0_stale_n=0
     local _p _m _er
     if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
         while IFS=$'\t' read -r _p _m; do
             [[ -n "$_p" && -n "$_m" ]] || continue
             if [[ -n "${_EXCLUDED_REASON[$_p/$_m]:-}" ]]; then
                 case "${_EXCLUDED_REASON[$_p/$_m]}" in
-                    cap=0:*)            _excluded_cap0_n=$((_excluded_cap0_n + 1)) ;;
+                    cap=0:*)
+                        _excluded_cap0_n=$((_excluded_cap0_n + 1))
+                        # A seat is keyed on the provider for a provider-level
+                        # cap (e.g. opencode-anthropic) and on provider/model
+                        # for a model-level cap (e.g. opencode/muse-*). Classify
+                        # from the annotation loaded in load_seat_caps.
+                        if [[ -n "${SEAT_CAP_ZERO_CLASS_INTENTIONAL[$_p]:-}" \
+                              || -n "${SEAT_CAP_ZERO_CLASS_INTENTIONAL[$_p/$_m]:-}" ]]; then
+                            _excluded_cap0_intentional_n=$((_excluded_cap0_intentional_n + 1))
+                        elif [[ -n "${SEAT_CAP_ZERO_CLASS_STALE[$_p]:-}" \
+                                || -n "${SEAT_CAP_ZERO_CLASS_STALE[$_p/$_m]:-}" ]]; then
+                            _excluded_cap0_stale_n=$((_excluded_cap0_stale_n + 1))
+                        fi
+                        ;;
                     not-in-allowlist:*) _excluded_allowlist_n=$((_excluded_allowlist_n + 1)) ;;
                 esac
             fi
@@ -2443,7 +2488,16 @@ pick_seat() {
         if (( ${#_sorted[@]} > 0 )); then
             _sample_str=$(printf '%s\n' "${_sorted[@]}" | paste -sd, -)
         fi
-        seat_log "pick_seat: excluded $((_excluded_cap0_n + _excluded_dead_n + _excluded_allowlist_n)) seats (cap=0: $_excluded_cap0_n; dead: $_excluded_dead_n; not-in-allowlist: $_excluded_allowlist_n) [${_sample_str}]"
+        # fleet-ops#1432: fold the cap=0 classification into the summary so the
+        # operator sees intentional vs stale cap=0 seats at a glance. Emitted
+        # only when at least one cap=0 seat is annotated, so un-annotated
+        # fixtures (and the legacy "devin: glm-5-2:0" shorthand rows) keep the
+        # exact legacy summary shape.
+        local _cap0_clause=""
+        if (( _excluded_cap0_intentional_n + _excluded_cap0_stale_n > 0 )); then
+            _cap0_clause=" [cap0-intentional: $_excluded_cap0_intentional_n; cap0-stale: $_excluded_cap0_stale_n]"
+        fi
+        seat_log "pick_seat: excluded $((_excluded_cap0_n + _excluded_dead_n + _excluded_allowlist_n)) seats (cap=0: $_excluded_cap0_n; dead: $_excluded_dead_n; not-in-allowlist: $_excluded_allowlist_n)${_cap0_clause} [${_sample_str}]"
     fi
 
     # fleet-ops#1624: ONE summary line per pick_seat call for the at-capacity

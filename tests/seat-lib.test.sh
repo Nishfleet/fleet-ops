@@ -1861,6 +1861,67 @@ ok "1415-atcap: commandcode/poolside/laguna-s-2.1-free at cap emits 0 metric-pre
 export PI_MODELS_JSON="$scratch/1163/models.json"
 rm -rf "$PI_PACKET_STATE/active-seats"
 
+# (c5) fleet-ops#1432: cap=0 seats classified as intentional (dead_decoy /
+#      money_only — by design, never re-audit) vs stale (broken endpoint /
+#      TPM ceiling / exhausted quota — re-audit when the external condition
+#      clears) surface in the per-pick excluded summary so the operator sees
+#      at a glance which cap=0 seats need re-audition and which are permanent.
+#      The per-seat "skipped (provider cap=0)" lines stay silenced (the
+#      at_capacity_events metric predicate stays 0); the classification is
+#      folded into the ONE excluded summary via the intentional_cap_zero
+#      annotation in the cap map.
+mkdir -p "$scratch/1432"
+export PI_PACKET_STATE="$scratch/1432/state"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+cat >"$scratch/1432/models.json" <<'JSON'
+{
+  "providers": {
+    "starco": { "models": [ { "id": "star-m1" } ] },
+    "dudco":  { "models": [ { "id": "dud-m1" } ] },
+    "freeco": { "models": [ { "id": "lite-free" } ] }
+  }
+}
+JSON
+cat >"$scratch/1432/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["freeco"],
+  "providers": {
+    "starco": { "cap": 0, "class": "metered", "intentional_cap_zero": "money_only" },
+    "dudco":  { "cap": 0, "class": "free",    "intentional_cap_zero": "stale" },
+    "freeco": { "cap": 2, "class": "free",    "models": { "lite-free": 2 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1432/models.json"
+export SEAT_CAPS_JSON="$scratch/1432/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1432/ledger"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1432-capclass: expected the freeco lane to be pickable, got rc=$rc out=$out"
+[[ "$out" == "freeco"$'\t'"lite-free" ]] \
+  || fail "1432-capclass: expected freeco/lite-free (the only cap>0 lane), got: $out"
+# One excluded summary naming both cap=0 seats AND the intentional/stale split.
+grep -qE "pick_seat: excluded 2 seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\) \[cap0-intentional: 1; cap0-stale: 1\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1432-capclass: summary must fold the cap=0 intentional/stale classification, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Per-seat cap=0 lines stay silenced (at_capacity_events metric predicate 0).
+_1432_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1432_pred=${_1432_pred:-0}
+if (( _1432_pred > 0 )); then
+  fail "1432-capclass: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1432_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1432-capclass: cap=0 classification (1 intentional / 1 stale) folded into the excluded summary; metric predicate 0"
+# restore the env the following (d) 1163-dead test expects: the 1163 model
+# inventory + the 1415 caps map that c4 left in effect.
+export PI_MODELS_JSON="$scratch/1163/models.json"
+export SEAT_CAPS_JSON="$scratch/1415/caps.json"
+rm -rf "$PI_PACKET_STATE/active-seats"
+
 # (d) Dead token means a dead seat: a credentials_bad ledger entry
 #     must keep pick_seat off xai-oauth (the 'never lie "ready" again'
 #     half of #1163). Without the ledger the seat would be picked
