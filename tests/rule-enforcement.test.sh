@@ -129,6 +129,34 @@ do
   esac
 done
 
+# fleet-ops#1621: the remaining seven 2026-08-28 vault entries (1 standing
+# rule + 6 ledger decisions) must each have a matrix entry with a valid
+# status (enforced | queued(#N) | advisory(reason)). PR #1634 added the
+# rows; the #1529 block above pins the other five from the same batch.
+# Asserted against the matrix directly so it holds on CI too, where the
+# live-vault join is skipped. Same class as #1371/#1529/#1403.
+for src in \
+  'global-standing-rules.md: Quality is a constraint, never a trade-off (Nish, 2026-08-28)' \
+  'decisions-ledger.md: 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: "max *quality* throughput because *quality* above all else")' \
+  'decisions-ledger.md: 2026-08-28 | Quality is a CONSTRAINT, never a trade-off (Nish)' \
+  'decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: "I want 25 workers on all the time... quality is the bar, it has to keep climbing")' \
+  'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 revival queued under existing decisions (ledger-derived, no new ask)' \
+  'decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted (Nish, via decision prompt)'
+do
+  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
+  case "$status" in
+    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1621)" ;;
+    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1621)" ;;
+  esac
+done
+# fleet-ops#1621: apostrophe in "It's" — assert via --arg, not a for-loop entry.
+src_1621='decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED (Nish: "Hostinger was retired. It'"'"'s now Netcup dummy")'
+status=$(jq -r --arg src "$src_1621" '.rules[] | select(.source == $src) | .status' "$matrix")
+case "$status" in
+  enforced|"queued("*|"advisory"*) ok "matrix row for $src_1621 is present (fleet-ops#1621)" ;;
+  *) fail "matrix must have a valid-status row for $src_1621, got ${status:-missing} (fleet-ops#1621)" ;;
+esac
+
 # fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
 # vault join so a busy board of other uncovered sibling ledger lines
 # cannot skip this drill (the live join still asserts our covered_rows).
