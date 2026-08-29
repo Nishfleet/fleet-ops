@@ -100,7 +100,11 @@
     },
     "zenmux": {
       "cap": 2,
-      "class": "metered"
+      "class": "metered",
+      "models": {
+        "z-ai/glm-4.7-flash-free": { "cap": 1, "class": "free" }
+      },
+      "_comment_1442": "2026-08-29 fleet-ops#1442 (queue-starvation audit): zenmux had NO models map, so pick_seat skipped every zenmux row as not-in-allowlist even though z-ai/glm-4.7-flash-free was healthy (HTTP 200, observed 2026-08-28T14:27Z) and genuinely free. Live zenmux /models API: display_name 'Z.AI: GLM 4.7 Flash (Free)', pricings.completion[0].value=0 perMTokens USD. Live pi --print spawn: PACKET-VERDICT tools=1 class=worked, ANSWER=42, exit 0. Per-model class=free override (model_class_of, fleet-ops#384) buckets it free so the free-tier privacy line and ladder order apply even though the provider class is metered — same shape as cline/z-ai/glm-5.3-flash. The paid credit lane deepseek/deepseek-v4-flash is deliberately NOT in the allowlist (fleet-ops#42: never wire a slug that can bill credits without a meter check). cap=1 capacity-is-measured; the seat rate-limited (429) after 3 probes in 2 min during this audit, so cap stays 1 until a league mean beats a servable incumbent — the walled_comeback rate_limit_s=900 handles transient free-tier TPM walls. NOT added to free_providers_in_order (cline precedent: a metered/prepaid provider with a free model override is not in the free-order list; the free model is still bucketed and picked, just after the free-class providers)."
     },
     "openrouter": {
       "cap": 2,
