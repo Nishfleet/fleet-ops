@@ -320,14 +320,18 @@ ok "fixture: #830 inline verify of fleet-seat-recovery is flagged"
 # red-fail hosted CI run #N+1 instead).
 units_test="$repo_root/tests/fleet-seat-recovery-units.test.sh"
 [[ -f "$units_test" ]] || fail "missing $units_test"
-# The SKIP block gates verify on the bin's presence; both halves must remain.
-grep -Fq '/home/nish/.local/bin/fleet-seat-recovery' "$units_test" \
-  || fail "fleet-seat-recovery-units.test.sh must reference the VPS bin path (gate anchor)"
-grep -Fq 'SKIP' "$units_test" \
-  || fail "fleet-seat-recovery-units.test.sh must contain a SKIP block (fleet-ops#884)"
-grep -Fq 'unit-verify CI job' "$units_test" \
-  || fail "fleet-seat-recovery-units.test.sh SKIP must name the unit-verify CI job (named-reason contract)"
-# Both branches of the gate must be present (verify path AND skip path).
+# Anchors must be CODE, not prose: comment-only references to the bin path
+# or to the unit-verify job would let a re-breakage that strips the guard
+# slip through (proven by the negative drill on 2026-08-30: the first pass
+# grepped 'SKIP' + 'unit-verify CI job', both satisfiable in comments, and
+# the lock held while the functional guard was gone).
+# 1. The existence guard on the VPS bin (the line that makes CI skip).
+grep -Fq 'if [[ -x /home/nish/.local/bin/fleet-seat-recovery ]]; then' "$units_test" \
+  || fail "fleet-seat-recovery-units.test.sh must gate verify on the VPS bin with -x (fleet-ops#884)"
+# 2. The bin-absent SKIP echo with its named reason (code line, not comment).
+grep -Fq 'echo "SKIP: fleet-seat-recovery bin absent' "$units_test" \
+  || fail "fleet-seat-recovery-units.test.sh bin-absent branch must SKIP with a named reason (fleet-ops#884)"
+# 3. The verify call must still exist for the VPS path (verify not deleted).
 grep -Fq 'systemd-analyze verify --man=no' "$units_test" \
   || fail "fleet-seat-recovery-units.test.sh must still call systemd-analyze verify on the VPS path"
 ok "fixture: #884 SKIP block in fleet-seat-recovery-units.test.sh is locked"
