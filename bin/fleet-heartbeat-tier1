@@ -1549,7 +1549,9 @@ DEBUG_PLAYBOOK_BIN="${FLEET_DEBUG_PLAYBOOK_BIN:-/home/nish/.local/bin/fleet-debu
 debug_playbook_rc=0
 if [ -x "$DEBUG_PLAYBOOK_BIN" ]; then
     log "18. debug-playbook session-close lint starting"
-    if "$DEBUG_PLAYBOOK_BIN"; then
+    # fleet-ops#2005: observe-to-close is fail-closed; enable only in the
+    # production heartbeat so one-off tests cannot phantom-close real issues.
+    if FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1 "$DEBUG_PLAYBOOK_BIN"; then
         log "18. debug-playbook session-close lint complete"
     else
         debug_playbook_rc=$?
