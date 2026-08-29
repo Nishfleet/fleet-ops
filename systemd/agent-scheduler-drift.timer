@@ -1,0 +1,12 @@
+# Agent-agnostic scheduling rule — drift detector timer. See the .service
+# header for provenance (fleet-ops#1495).
+[Unit]
+Description=Agent-scheduler drift detector — daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Kolkata
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
