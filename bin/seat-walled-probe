@@ -76,9 +76,17 @@ actions_log() {
 now_s() { date -u +%s; }
 
 # Check if a seat should be probed (respect min_probe_interval_s between probes)
-# The ledger entry tracks the last probe time via a custom field or we infer
-# from observed_at. For simplicity, we check if usable_at has passed and if
-# enough time has passed since the last probe.
+# The ledger entry tracks the last probe time via custom field or we infer
+# from observed_at. For simplicity, we check if enough time has passed since
+# the last probe.
+#
+# credentials_bad seats probe after min_probe_interval_s (not the full
+# credentials_bad_s backoff) so a transient 403 does not lock the seat for a
+# week. A successful probe clears the seat (seat-health.ts writes a healthy
+# observation over the credentials_bad ledger entry); a failed probe
+# re-extends the backoff. The credentials_bad_s interval only controls when
+# to FILE an agent-ready issue (see file_credentials_issue call site).
+#
 should_probe_seat() {
     local provider="$1" model="$2" failure_mode="$3" usable_at="$4" observed_at="$5" consecutive_failures="$6"
     local now
@@ -91,19 +99,8 @@ should_probe_seat() {
     # usable_at must be in the past
     (( usable_at_s <= now )) || return 1
 
-    # For credentials_bad, also check if we've already probed this week
-    if [[ "$failure_mode" == "credentials_bad" ]]; then
-        local observed_s
-        observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
-        if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
-            local time_since_observed=$((now - observed_s))
-            # Only probe if it's been at least CREDENTIALS_BAD_S since last observation
-            (( time_since_observed >= CREDENTIALS_BAD_S )) || return 1
-        fi
-    fi
-
-    # Respect min_probe_interval_s since last probe/observation
-    # We use observed_at as the last check time
+    # Respect min_probe_interval_s since last probe/observation.
+    # We use observed_at as the last check time.
     local observed_s
     observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
     if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
