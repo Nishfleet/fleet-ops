@@ -3,12 +3,11 @@ Description=Fleet Console (Pi) — generate live truth and push to KV
 # Replaces the deleted fleet1 console pusher. No hand-built orchestration:
 # systemd owns restart/backoff. TimeoutStartSec bounds a hung gh/wrangler call
 # (RuntimeMaxSec has no effect on Type=oneshot — systemd ignores it there).
-# fleet-ops#1460: the .path unit (fleet-console-pi.path) can fire rapidly
-# — the metrics exporter writes fleet.prom atomically (replace-by-rename),
-# generating multiple inotify events. The default 5/10s burst is blown
-# through, wedging the service (same wedge as fleet-seat-recovery #617).
-# The push is idempotent; raise the limit so an export cannot wedge the
-# fast path. StartLimit* must live in [Unit].
+# fleet-ops#1460/#2123: the .path unit was removed — it self-retriggered
+# because the metrics exporter writes fleet.prom atomically
+# (replace-by-rename), generating multiple inotify events (same wedge as
+# fleet-seat-recovery #617). The 12-min timer carries the cadence.
+# StartLimitBurst stays as a safety margin; StartLimit* must live in [Unit].
 StartLimitIntervalSec=1h
 StartLimitBurst=100
 
