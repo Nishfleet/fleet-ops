@@ -268,6 +268,17 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-worker-prompt-gh-pr-view-u
   || fail "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh must not be a known orphan (fleet-ops#1367)"
 ok "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh is pinned in the P14 reachable set (fleet-ops#1367)"
 
+# fleet-ops#1370 is a duplicate of #1367 (and #1368), filed later for the
+# same P14 breach: fleet-worker-prompt-gh-pr-view-unknown-field.test.sh
+# landed in PR #1352 with no ci.yml entry and no host line, so it ran
+# nowhere and turned the P14 job red for every unrelated PR. The same
+# fix — host line in tests/seat-lib.test.sh (PR #1369) plus this named
+# pin (PR #1645, merged after #1368 filed the pin) — closes all three.
+# No new code; this comment plus the closing PR is the receipt, same
+# shape as the #831/#799/#1331 duplicate receipts above.
+# Verified: `bash tests/p14-test-listing-gate.test.sh` reports the test
+# pinned in the P14 reachable set (exit 0) on origin/main.
+
 # fleet-ops#308: hard-pin the host line for fleet-spawn-guard-stash-readonly.
 # The test landed on main via PR #1678 (fleet-ops#754) without a ci.yml
 # listing or a host, so the P14 listing gate failed on the next push to
