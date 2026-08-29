@@ -1863,7 +1863,22 @@ FREE_ROSTER_CANARY_BIN="${FLEET_FREE_ROSTER_CANARY:-/home/nish/.local/bin/fleet-
 free_roster_canary_rc=0
 if [ -x "$FREE_ROSTER_CANARY_BIN" ]; then
     log "21. free-model roster canary starting"
-    if "$FREE_ROSTER_CANARY_BIN"; then
+    # observe-to-close is OPT-IN per call (fleet-ops#995). The canary
+    # defaults to skip so a worker run from a worktree against the worker
+    # gh credentials can never auto-close a real issue. The production
+    # heartbeat is the only trusted caller; we set the env here as a
+    # per-call argument (not exported globally) so a sibling process in the
+    # same shell cannot inherit it. The canary ALSO requires a fresh
+    # sentinel file at $FLEET_FREE_ROSTER_OBSERVE_SENTINEL (default
+    # /run/user/$(id -u)/fleet-free-roster-trusted) — we touch it here so
+    # the close path is only open to a tick the heartbeat actually drove.
+    free_roster_sentinel="${FLEET_FREE_ROSTER_OBSERVE_SENTINEL:-/run/user/$(id -u)/fleet-free-roster-trusted}"
+    mkdir -p "$(dirname "$free_roster_sentinel")" 2>/dev/null || true
+    touch "$free_roster_sentinel" 2>/dev/null || \
+        log "21. WARN: could not refresh $free_roster_sentinel; observe-to-close will skip"
+    if FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 \
+       FLEET_FREE_ROSTER_OBSERVE_SENTINEL="$free_roster_sentinel" \
+       "$FREE_ROSTER_CANARY_BIN"; then
         log "21. free-model roster canary complete"
     else
         free_roster_canary_rc=$?
