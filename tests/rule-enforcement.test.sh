@@ -111,6 +111,27 @@ do
   esac
 done
 
+# fleet-ops#1621: the remaining seven 2026-08-28 vault entries (1 standing
+# rule + 6 ledger decisions) must each have a matrix row with a valid status
+# (enforced | queued(#N) | advisory(reason)). Same class as #1371/#1529. The
+# live-vault join covers them on the VPS, but CI skips that join, so pin them
+# directly to keep the batch from silently drifting on CI.
+for src in \
+  'global-standing-rules.md: Quality is a constraint, never a trade-off (Nish, 2026-08-28)' \
+  'decisions-ledger.md: 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: "max *quality* throughput because *quality* above all else")' \
+  'decisions-ledger.md: 2026-08-28 | Quality is a CONSTRAINT, never a trade-off (Nish)' \
+  'decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: "I want 25 workers on all the time... quality is the bar, it has to keep climbing")' \
+  'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 revival queued under existing decisions (ledger-derived, no new ask)' \
+  $'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED (Nish: "Hostinger was retired. It\'s now Netcup dummy")' \
+  'decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted (Nish, via decision prompt)'
+do
+  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
+  case "$status" in
+    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1621)" ;;
+    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1621)" ;;
+  esac
+done
+
 # fleet-ops#1403: the four 2026-08-27/28 ledger decisions must each have a
 # matrix entry with a valid status (enforced | queued(#N) |
 # advisory(reason)). The rows were added by PR #1400 (closing #1371), but
