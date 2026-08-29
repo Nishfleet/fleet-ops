@@ -394,11 +394,24 @@ for i in "${!numbers[@]}"; do
         exit 1
     }
 
+    # GitHub secondary rate limits on addComment ("submitted too quickly")
+    # are transient — retry with backoff (fleet-ops#1350 pattern). A
+    # permanent failure (auth, 404, etc.) still exits 1 after exhaustion.
     comment_body="claimed by pi-issue-${REPO}-${N} at $(date -u +%FT%TZ)"
-    comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || {
+    comment_out=""
+    comment_rc=1
+    for _ in 1 2 3; do
+        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
+        if [[ $comment_rc -eq 0 ]]; then break; fi
+        case "$comment_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *) break ;;  # permanent error — do not retry
+        esac
+    done
+    if [[ $comment_rc -ne 0 ]]; then
         echo "gh issue comment failed for $N: $comment_out" >&2
         exit 1
-    }
+    fi
 
     # Write the worker packet so pi-issue-run can pick its own seat at run time
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
