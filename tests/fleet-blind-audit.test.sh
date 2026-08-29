@@ -522,5 +522,12 @@ ok "open #367-marker issue suppresses a second detector file"
 # so it runs in CI without a workflow-file edit (P14 hosted-test pattern).
 bash "$here/manual-seam-lens.test.sh"
 
+# fleet-ops#838: no | head -N truncation pipes survive under set -o pipefail.
+# grep -mN is the safe replacement; head -c on a file is fine.
+if grep -nE '\| +head +-[0-9]' "$bin"; then
+    fail "fleet-blind-audit contains | head -N pipe that risks SIGPIPE (fleet-ops#838)"
+fi
+ok "no head -N truncation pipes in fleet-blind-audit"
+
 echo "OK: fleet-blind-audit.test.sh"
 
