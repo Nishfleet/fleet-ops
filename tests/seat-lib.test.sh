@@ -345,6 +345,59 @@ grep -qE "pick_seat: excluded 14 seats \(cap=0: 2; dead: 9; not-in-allowlist: 3\
   || fail "atcap: must log per-pick summary 'pick_seat: excluded 14 seats (cap=0: 2; dead: 9; not-in-allowlist: 3)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
 ok "atcap: per-pick summary replaces per-seat UNUSABLE (seat_dead=true) lines; 0 dead lines logged, 1 summary line"
 
+# --- fleet-ops#1297: fold the per-seat "not capable for heavy task" lines ---
+# The dominant watch.log flood on 2026-08-29 was a heavy-only fleet with no
+# capable seat: every heavy pick_seat re-logged each non-capable seat, ~28,243
+# "skipped (not capable for heavy task)" lines in 2h. Fixed by folding them
+# into ONE per-pick summary line (same pattern as #1449/#1624). This pins the
+# contract: a heavy pick where the ONLY allowlisted/alive/cap>0 seat is not
+# heavy-capable must NOT emit the per-seat line, must emit the summary, and
+# must still fail (rc=1) rather than route to a non-capable seat.
+cat >"$scratch/models-notcap.json" <<'JSON'
+{
+  "providers": {
+    "lightco": { "models": [ { "id": "tiny-lite", "cost": { "input": 0 } } ] },
+    "wallco":  { "models": [ { "id": "zeroed",    "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-notcap.json" <<'JSON'
+{
+  "providers": {
+    "lightco": { "cap": 1, "class": "free", "models": { "tiny-lite": 1 } },
+    "wallco":  { "cap": 0, "class": "free" }
+  }
+}
+JSON
+ledger="$scratch/ledger-notcap"
+mkdir -p "$ledger"
+export PI_MODELS_JSON="$scratch/models-notcap.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps-notcap.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export PI_PACKET_STATE="$scratch/state-notcap"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "notcap: heavy pick must fail (only seat is not capable), got rc=$rc out=$out"
+[[ -z "$out" ]] || fail "notcap: must print nothing to stdout, got: $out"
+# The per-seat "not capable for heavy task" lines must be GONE (flood source).
+nc_lines=$(grep -c "skipped (not capable for heavy task)" "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+nc_lines=${nc_lines:-0}
+if (( nc_lines > 0 )); then
+  fail "notcap: per-seat 'skipped (not capable for heavy task)' lines must be silenced (was: $nc_lines); the per-pick summary replaces them"
+fi
+# The per-seat "not in cap-map allowlist" line for wallco (cap=0 -> excluded)
+# must also stay folded; the summary must name the not-capable count.
+grep -qE "pick_seat: filtered-static 1 seats \\(not-capable: 1; quality-ban: 0\\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "notcap: must log per-pick summary 'pick_seat: filtered-static 1 seats (not-capable: 1; quality-ban: 0)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+  || fail "notcap: must still log the loud NO USABLE SEAT line"
+ok "notcap: heavy pick folds per-seat 'not capable for heavy task' lines into one per-pick summary (0 per-seat lines, 1 summary, rc=1)"
+# Restore the suite's default fixtures for the blocks that follow.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 # --- invariant 4: free lanes before prepaid on an empty (usable) ledger ---
 # Every allowlisted model has no health file -> usable. commandcode is free;
 # cursor/cline are prepaid-quota (subscription alias). Free wins.

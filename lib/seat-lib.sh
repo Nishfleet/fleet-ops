@@ -2026,6 +2026,17 @@ pick_seat() {
     local _at_capacity_n=0
     local -a _at_capacity_sample=()
 
+    # fleet-ops#1297: fold the STATIC heavy-pick skip classes too. A model's
+    # `capable` flag for a given difficulty and the quality-routing ban do not
+    # change while a heavy pick runs, so re-logging each per-seat line on every
+    # pick is pure churn (28,243 "not capable for heavy task" lines in 2h on
+    # 2026-08-29 while the fleet was heavy-only with no capable seat). Count
+    # them into ONE per-pick summary, same pattern as #1449/#1624. Unlike
+    # at-capacity (a busy seat frees), these are static for the pick, so the
+    # skip is genuinely cheap — the per-seat detail adds nothing.
+    local _notcap_n=0 _qban_n=0
+    local -a _notcap_sample=()
+
     local p m free capable p_cap m_cap p_active m_active class eff_cap
     # `free` is emitted by enumerate_seats for parity with the legacy contract;
     # the new bucketing uses class_of() instead. Unused but stable in the pipe.
@@ -2106,11 +2117,16 @@ pick_seat() {
             fi
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
-            seat_log "seat $p/$m skipped (not capable for heavy task)"
+            # fleet-ops#1297: silence the per-seat "not capable for heavy task"
+            # line — it was the dominant watch.log flood (28k/2h) when a heavy
+            # pick had no capable seat. Counted into the per-pick summary below.
+            _notcap_n=$((_notcap_n + 1))
+            _notcap_sample+=("$p/$m")
             continue
         fi
         if (( need_capable )) && [[ -n "${QUALITY_HEAVY_BAN[$p/$m]:-}" ]]; then
-            seat_log "seat $p/$m skipped (quality-routing: over threshold, light work only)"
+            # fleet-ops#1297: same fold for the quality-routing ban line.
+            _qban_n=$((_qban_n + 1))
             continue
         fi
         if ! seat_usable "$p" "$m"; then
@@ -2225,6 +2241,28 @@ pick_seat() {
             _ac_sample_str=$(printf '%s\n' "${_ac_sorted[@]}" | paste -sd, -)
         fi
         seat_log "pick_seat: at-capacity ${_at_capacity_n} seats [${_ac_sample_str}]"
+    fi
+
+    # fleet-ops#1297: ONE summary line per pick_seat call for the folded STATIC
+    # heavy-pick skips (not-capable-for-heavy and quality-routing-ban). Same
+    # pattern as the #1449/#1624 summaries. The per-seat "skipped (not capable
+    # for heavy task)" lines were the dominant watch.log flood source (28,243
+    # lines in 2h on 2026-08-29) when a heavy-only fleet had no capable seat.
+    # A model's capable flag and the routing ban are static for a pick, so no
+    # information is lost by collapsing them. Format is stable: "pick_seat:
+    # filtered-static N seats (not-capable: C; quality-ban: Q) [sample]" so a
+    # future grep can pin the count.
+    if (( _notcap_n + _qban_n > 0 )); then
+        local _nc_sorted=()
+        if (( ${#_notcap_sample[@]} > 0 )); then
+            mapfile -t _nc_sorted < <(printf '%s\n' "${_notcap_sample[@]}" | sort | uniq)
+            _nc_sorted=("${_nc_sorted[@]:0:6}")
+        fi
+        local _nc_sample_str=""
+        if (( ${#_nc_sorted[@]} > 0 )); then
+            _nc_sample_str=$(printf '%s\n' "${_nc_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: filtered-static $((_notcap_n + _qban_n)) seats (not-capable: $_notcap_n; quality-ban: $_qban_n) [${_nc_sample_str}]"
     fi
 
     if [[ -n "$SEAT_FREE_ORDER" ]] && (( ${#free_seats[@]} > 0 )); then
