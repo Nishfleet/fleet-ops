@@ -139,7 +139,9 @@ if ! systemctl --user is-system-running >/dev/null 2>&1 \
 else
     unit="issue26-survive-$$"
     # Parent starts the unit and exits. The child sleep must still be running.
-    bash -c "$bin --unit $unit -- /bin/sleep 20"
+    # Suppress the dispatch ledger write so the live test does not pollute the
+    # real agent-state ledger with a test sleep unit (fleet-ops#1009).
+    bash -c "FLEET_DISPATCH_LEDGER_NO_WRITE=1 $bin --unit $unit -- /bin/sleep 20"
     # Parent is gone. Give systemd a moment to register the unit.
     sleep 0.4
     state="$(systemctl --user is-active "${unit}.service" 2>/dev/null || true)"
@@ -160,3 +162,147 @@ bash "$here/pi-salvage-worktree.test.sh" || fail "pi-salvage-worktree tests fail
 # fleet-ops#1213: nested so hosted CI runs git-mirror-update tests without
 # a workflow edit (nishfleet-worker cannot push .github/workflows/**).
 bash "$here/git-mirror-update.test.sh" || fail "git-mirror-update tests failed"
+
+# ============================================================================
+# Dispatch ledger (fleet-ops#1009)
+# ============================================================================
+# Hermetic: fake systemd-run, verify ledger append + packet copy + new flags.
+scratch2="$(mktemp -d -t pi-systemd-run-dispatch.XXXXXX)"
+trap2='rm -rf "$scratch2"'
+trap "$trap2" EXIT
+
+cat >"$scratch2/fake-systemd-run" <<'FAKE'
+#!/usr/bin/env bash
+echo "fake-systemd-run: $*" >>"${SR_LOG:?}"
+exit 0
+FAKE
+chmod +x "$scratch2/fake-systemd-run"
+
+# Fake systemctl: always returns inactive / MainPID=0 so the already-running
+# no-op check does not fire.
+cat >"$scratch2/fake-systemctl" <<'FAKE'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --user)
+    case "${2:-}" in
+      is-active) echo "inactive"; exit 1 ;;
+      show) echo "MainPID=0"; exit 0 ;;
+      *) exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$scratch2/fake-systemctl"
+
+pkt="$scratch2/packet.md"
+echo "test packet body" > "$pkt"
+: > "$scratch2/sr.log"
+
+LEDGER="$scratch2/dispatch-ledger.jsonl"
+AS="$scratch2/agent-state"
+
+# --- 7. dry-run with --deadline/--provider/--model/--chain-id/--hop --------
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" \
+SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 \
+AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" \
+FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+SR_LOG="$scratch2/sr.log" \
+  "$bin" --dry-run --unit testunit --stdin "$pkt" \
+    --deadline 30 --provider devin --model glm-5-2 \
+    --chain-id chain-x --hop 0 \
+    -- pi --print --provider devin --model glm-5-2 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "dry-run with new flags rc=$rc"
+[[ ! -s "$scratch2/sr.log" ]] || fail "dry-run must not call systemd-run"
+[[ ! -f "$LEDGER" ]] || fail "dry-run must not write ledger"
+ok "dry-run accepts --deadline/--provider/--model/--chain-id/--hop (fleet-ops#1009)"
+
+# --- 8. real dispatch: ledger append + packet copy + provider parse --------
+: > "$scratch2/sr.log"
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" \
+SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 \
+AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" \
+FLEET_DISPATCH_PACKET_DIR="$AS/dispatch-packets" \
+SR_LOG="$scratch2/sr.log" \
+  "$bin" --unit ledger-test --stdin "$pkt" \
+    --deadline 5 --chain-id chain-abc --hop 0 \
+    -- pi --print --provider devin --model glm-5-2 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "real dispatch rc=$rc"
+
+# Ledger must have exactly one entry.
+lines=$(wc -l < "$LEDGER")
+[[ "$lines" == "1" ]] || fail "ledger must have 1 entry, got $lines"
+
+# Parse and validate the ledger entry.
+python3 - "$LEDGER" <<'PY' || fail "ledger entry validation failed"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] == "open", d
+assert d["chain_id"] == "chain-abc", d
+assert d["hop"] == 0, d
+assert d["unit"] == "ledger-test", d
+assert d["provider"] == "devin", d       # parsed from COMMAND
+assert d["model"] == "glm-5-2", d        # parsed from COMMAND
+assert d["deadline_min"] == 5, d
+assert d["deadline_ts"] != "", d
+assert d["packet_path"] != "", d
+assert d["retries"] == 0, d
+print("ledger entry OK")
+PY
+
+# Packet must have been copied into dispatch-packets.
+pkts=$(find "$AS/dispatch-packets" -name 'ledger-test-*.md' | wc -l)
+[[ "$pkts" == "1" ]] || fail "expected 1 copied packet, got $pkts"
+
+# systemd-run must have been called with StandardInput pointing at the copy.
+grep -q 'StandardInput=file:' "$scratch2/sr.log" \
+  || fail "systemd-run must receive StandardInput=file:"
+grep -q "$AS/dispatch-packets" "$scratch2/sr.log" \
+  || fail "StandardInput must point at the durable copy, not the original"
+
+ok "real dispatch: ledger append + packet copy + provider parse (fleet-ops#1009)"
+
+# --- 9. --deadline / --hop validation ---------------------------------------
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 FLEET_DISPATCH_LEDGER_NO_WRITE=1 SR_LOG="$scratch2/sr.log" \
+  "$bin" --unit bad --deadline 0 -- /bin/true 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "2" ]] || fail "--deadline 0 must exit 2, got $rc"
+
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 FLEET_DISPATCH_LEDGER_NO_WRITE=1 SR_LOG="$scratch2/sr.log" \
+  "$bin" --unit bad --hop -1 -- /bin/true 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "2" ]] || fail "--hop -1 must exit 2, got $rc"
+
+ok "--deadline/--hop validation rejects junk (fleet-ops#1009)"
+
+# --- 10. FLEET_DISPATCH_LEDGER_NO_WRITE suppresses ledger -------------------
+rm -f "$LEDGER"
+: > "$scratch2/sr.log"
+set +e
+SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+SR_LOG="$scratch2/sr.log" \
+  "$bin" --unit noledger --stdin "$pkt" -- /bin/sleep 1 2>/dev/null
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "no-write dispatch rc=$rc"
+[[ ! -f "$LEDGER" ]] || fail "FLEET_DISPATCH_LEDGER_NO_WRITE must suppress ledger"
+
+ok "FLEET_DISPATCH_LEDGER_NO_WRITE suppresses ledger append (fleet-ops#1009)"
