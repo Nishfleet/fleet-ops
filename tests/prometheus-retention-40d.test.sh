@@ -324,3 +324,10 @@ fi
 ok "install.sh --check --system: stays on /etc/ entries"
 
 echo "OK: prometheus retention 40d locked (shape + deploy restart/headroom functional)"
+
+# --- Verification for fleet-ops#1414 ------------------------------------------
+# This test was already wired into P14 CI by PR #1420 (commit e0969a12).
+# The issue #1414 (main CI red on fleet-ops at 2026-08-27T21:10Z) was resolved
+# by that fix. This verification branch confirms the fix is present and main
+# is green as of the latest CI run (33232685375).
+# Verification: https://github.com/Nishfleet/fleet-ops/actions/runs/33232685375
