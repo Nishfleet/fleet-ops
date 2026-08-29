@@ -109,3 +109,17 @@ bash "$here/pi-intake-gh-rate-limit.test.sh"
 # watchers auto-file false "Intake starvation" issues. ci.yml lists this
 # file, so the drill runs here instead of a new workflow line.
 bash "$here/pi-intake-tick-claims-log.test.sh"
+# --- 9. fleet-ops#234/#2007 escalate-senior exclusion (CI hook) -----------
+# tests/pi-intake-tick-escalate-senior-exclusion.test.sh (added by PR
+# #2044) locks the exclude-escalate-senior filter in
+# lib/pi-intake-tick.sh: a regular worker must never be dispatched on a
+# senior-auditor-owned escalation (the #2007 live class). ci.yml lists
+# this file, so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-escalate-senior-exclusion.test.sh"
+# --- 10. fleet-ops#2040 set -e claim-set-e guard (CI hook) ---------------
+# tests/pi-intake-tick-claim-set-e-guard.test.sh (added by PR #2040) locks
+# the retry guards in lib/pi-intake-tick.sh so a GitHub secondary rate
+# limit on gh issue edit/comment cannot abort the tick before the worker
+# spawns (fleet-ops#2040 live class). ci.yml lists this file, so the drill
+# runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-claim-set-e-guard.test.sh"
