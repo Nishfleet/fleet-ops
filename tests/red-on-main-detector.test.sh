@@ -52,6 +52,7 @@ if (!rendered.includes("first ever")) throw new Error("renderAlert first-ever mu
 if (!rendered.includes("https://example.com/run/10")) throw new Error("renderAlert must include run url");
 
 if (isSkippedWorkflow("Red on main detector") !== true) throw new Error("detector workflow must be skipped");
+if (isSkippedWorkflow("Auto revert") !== true) throw new Error("auto-revert halt workflow must be skipped (by-design exit 1)");
 if (isSkippedWorkflow("CI") !== false) throw new Error("CI must not be skipped");
 
 const collapsed = collapseAlerts([
