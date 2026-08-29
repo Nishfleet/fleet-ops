@@ -2917,3 +2917,12 @@ bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
 # wired into ci.yml. Host it here from this already-listed seat-lib test so the
 # P14 test-listing gate goes green without a workflow edit.
 bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
+
+# fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
+# later healthy observation that seat-health.ts writes to the per-seat ledger
+# (the clobber that re-admitted functionally-dead seats and kept
+# stop-escalation.service failing). The clobber-proof spawn-bench marker is
+# checked by seat_usable before the ledger. Hosted here for the same reason
+# as the noop-bench test above (listed in ci.yml, runs independent of the
+# p14-test-listing-gate).
+bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"

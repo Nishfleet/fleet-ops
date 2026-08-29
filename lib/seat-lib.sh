@@ -1080,6 +1080,50 @@ seat_ledger_path() {
     printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
 }
 
+# fleet-ops#1512: separate spawn-fail/empty-run bench marker. The per-seat
+# ledger is co-written by the pi seat-health.ts extension (after_provider_response
+# / cli_spawn) AND by these wrapper-side mark_seat_* functions. A seat that is
+# HTTP-200 with a non-empty body but functionally dead for an agentic packet
+# (tools=0 / no diagnosis block) gets benched by mark_seat_spawn_fail as
+# transient_fault + future usable_at — but a LATER healthy observation from
+# seat-health.ts (a different worker's simple packet that produced output)
+# clobbers the ledger back to health_class:"healthy" + null usable_at, so
+# seat_usable re-admits the dead seat on the next trip and the organ fails
+# again. This marker file is written ONLY by the wrapper (mark_seat_spawn_fail
+# / mark_seat_empty_run) and never by seat-health.ts, so the bench survives the
+# clobber. seat_usable checks it before trusting a stale healthy ledger entry.
+seat_spawn_bench_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.spawn-bench.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# Write the spawn-fail/empty-run bench marker. Best-effort: a write failure
+# must not block the ledger write or the exit-0 quiet contract. The marker
+# carries only usable_at (the field seat_usable checks) + provenance; the
+# ledger remains the authority for everything else.
+# Args: provider model usable_at reason backoff_s
+_seat_write_spawn_bench() {
+    local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
+    local path now_utc tmp
+    path=$(seat_spawn_bench_path "$p" "$m")
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    tmp="$path.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" --arg usable "$usable" \
+        --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
+        '{provider:$provider, model:$model, usable_at:$usable,
+          reason:$reason, written_at:$written, backoff_s:$backoff}' \
+        > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
 # True if observed_at is within STALE_SECS of now (i.e. fresh enough to trust).
 _seat_observed_fresh() {
     local obs="$1" now obs_s
@@ -1137,6 +1181,27 @@ _seat_in_future() {
 #   - otherwise                                   -> usable.
 seat_usable() {
     local p="$1" m="$2" f hc dead observed usable_at bench_until
+    # fleet-ops#1512: clobber-proof spawn-fail/empty-run bench marker. The
+    # ledger is co-written by seat-health.ts, which can flip a benched seat
+    # back to health_class:"healthy" + null usable_at on a later healthy HTTP
+    # observation (a different worker's simple packet that produced output).
+    # That clobber re-admits a seat the wrapper benched for being functionally
+    # dead for agentic work (tools=0 / no diagnosis block), so the organ
+    # re-picks it and fails again. This marker is written ONLY by the wrapper
+    # (mark_seat_spawn_fail / mark_seat_empty_run) and never by seat-health.ts,
+    # so the bench survives the clobber. Checked FIRST, before the ledger is
+    # even read: a fresh marker wins regardless of what the ledger says (or
+    # whether the ledger file exists at all). An expired marker falls through
+    # to the ledger (fail-open, same as the ledger's own bench_until expiry).
+    local sb_path sb_usable
+    sb_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_path" ]]; then
+        sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+        if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
+            seat_log "seat $p/$m: UNUSABLE (spawn-bench until $sb_usable — wrapper bench held)"
+            return 1
+        fi
+    fi
     f=$(seat_ledger_path "$p" "$m")
     if [[ ! -f "$f" ]]; then
         seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
@@ -2934,6 +2999,11 @@ mark_seat_spawn_fail() {
             _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
             seat_log "spawn-fail: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
         fi
+        # fleet-ops#1512: also write the clobber-proof spawn-bench marker so
+        # seat_usable honours this bench even if seat-health.ts later writes a
+        # healthy observation to the ledger. Best-effort: a marker write
+        # failure does not undo the ledger write above.
+        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" 2>/dev/null || true
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
@@ -3022,6 +3092,9 @@ mark_seat_empty_run() {
             _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
             seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
         fi
+        # fleet-ops#1512: clobber-proof spawn-bench marker (same rationale as
+        # mark_seat_spawn_fail). Best-effort.
+        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" 2>/dev/null || true
         return 0
     fi
     seat_log "empty-run: rename FAILED for $p/$m at $path (reason=$reason)"
