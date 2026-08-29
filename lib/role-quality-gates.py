@@ -99,6 +99,12 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-gap-closure-drill",
     "fleet-gap-closure-loop",
     "gap-closure-drill",
+    # fleet-ops#1495: agent-scheduler-drift is a fail-loud watchdog
+    # (drift-detector diffing scheduler state vs allowlist). It runs
+    # no model, owns no prompt and produces no work items, so it has
+    # no role gate; its own gate is the timer-driven daily run + the
+    # absent() heartbeat rule in fleet_rules.yml.
+    "agent-scheduler-drift",
 )
 
 
