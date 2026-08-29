@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -86,9 +87,23 @@ def parse_name_status(text: str) -> list[tuple[str, str, str]]:
     return rows
 
 
+def _git_unquote(path: str) -> str:
+    """Undo git's C-style quoting on diff --name-status paths.
+
+    A path such as '"systemd/app-pi\\\\x2dissue.slice"' (git's quote of a
+    file literally named 'systemd/app-pi\\x2dissue.slice') is unwrapped and
+    the doubled backslashes are collapsed. Unquoted strings (e.g. MANIFEST
+    lines) are returned unchanged so the backslash stays part of the unit
+    name and is not treated as a path separator.
+    """
+    if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
+        return shlex.split(path, comments=False)[0]
+    return path
+
+
 def unit_basename(path: str) -> str | None:
     """Return the unit stem (with trailing @ for templates) or None."""
-    name = Path(path.replace("\\", "/")).name
+    name = Path(_git_unquote(path)).name
     for suf in UNIT_SUFFIXES:
         if name.endswith(suf):
             stem = name[: -len(suf)]
@@ -97,7 +112,7 @@ def unit_basename(path: str) -> str | None:
 
 
 def is_systemd_unit_path(path: str) -> bool:
-    norm = path.replace("\\", "/")
+    norm = _git_unquote(path)
     if not norm.startswith("systemd/"):
         return False
     if norm.rstrip("/").endswith("systemd") or norm.endswith("/"):

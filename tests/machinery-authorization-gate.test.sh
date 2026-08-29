@@ -71,6 +71,17 @@ set -e
 jq -e '.verdict=="PASS"' <<<"$out" >/dev/null || fail "pass-allowlisted must PASS: $out"
 ok "allowlisted new unit PASSes"
 
+# --- escaped unit name (git-quoted diff + MANIFEST line) PASSes ----------
+set +e
+out=$("$gate" evaluate --input "$fixtures/pass-escaped-unit-name.json" 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "pass-escaped-unit-name must exit 0, got $rc: $out"
+jq -e '.verdict=="PASS"' <<<"$out" >/dev/null || fail "pass-escaped-unit-name must PASS: $out"
+jq -e '[.additions[].unit] | index("x2dissue") == null' <<<"$out" >/dev/null \
+  || fail "escaped name must not misfire into the 'x2dissue' broken stem: $out"
+ok "git-quoted and MANIFEST escaped unit names PASS"
+
 # --- Nish-only authorization signal PASSes -------------------------------
 set +e
 out=$("$gate" evaluate --input "$fixtures/pass-authorized-signal.json" 2>&1)
@@ -156,6 +167,11 @@ else
     ok "live hunt ran (findings=$total; no user unit dir on this host — schema OK)"
   fi
 fi
+# Issue #2072: the escaped worker slice is now repo-sourced and allowlisted,
+# so the live hunt must not flag it even while it is still a hand-placed file.
+jq -e --arg u 'app-pi\x2dissue' '[.findings[].unit] | index($u) == null' <<<"$live" >/dev/null \
+  || fail "live hunt must not flag allowlisted app-pi\x2dissue: $live"
+ok "live hunt does not flag repo-allowlisted app-pi\x2dissue"
 
 # --- prompts state the rule (authored, not retrofitted) ------------------
 grep -F -q "$ledger" "$repo_root/prompts/senior-conference.md" \
