@@ -171,8 +171,44 @@ else
   fail "Real-doc upstream filter failed: $PY_RESULT2"
 fi
 
-# Test 9: Script runs without error (dry check, --no-file to avoid filing real issues)
-echo "[9] Script runs without crashing (--no-file)"
+# Test 9: Real canonical.md does not re-introduce stale paths (fleet-ops#1672)
+# The truth-staleness-checker auto-filed #1672 because canonical.md referenced
+# `~/workspaces/agent-state/OVERNIGHT.md` (and `SIMPLIFY-MANDATE.md`), neither
+# of which exist post-restoration. The fix removed both refs and replaced
+# the table row with the real `fleet-restoration-2026-08-25.md`. This test
+# loads the ACTUAL canonical.md and asserts no extracted path ends with the
+# two stale basenames — a synthetic string cannot pin this, only the real doc.
+echo "[9] Real canonical.md drops stale OVERNIGHT.md and SIMPLIFY-MANDATE.md refs"
+REAL_CANONICAL="$HOME/workspaces/tooling/fleet-ops-deploy-clone/lib/pi-agents-md/canonical.md"
+# Fall back to the in-worktree copy if the deploy-clone is unreachable
+[[ -f "$REAL_CANONICAL" ]] || REAL_CANONICAL="lib/pi-agents-md/canonical.md"
+PY_RESULT3=$(python3 <<PYEOF
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.py")
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+try:
+    text = open("$REAL_CANONICAL").read()
+except OSError as e:
+    print("DOC_READ_FAIL: " + str(e), file=sys.stderr)
+    sys.exit(1)
+paths = sc._extract_file_paths(text)
+banned = {"OVERNIGHT.md", "SIMPLIFY-MANDATE.md"}
+hits = sorted(p for p in paths if p.rsplit("/", 1)[-1] in banned)
+if hits:
+    print("STALE_PATH_LEAK: " + ",".join(hits), file=sys.stderr)
+    sys.exit(1)
+print("OK: " + ",".join(p.rsplit("/", 1)[-1] for p in paths))
+PYEOF
+) || PY_RESULT3=""
+if [[ "$PY_RESULT3" == OK:* ]]; then
+  pass "Real canonical.md has no OVERNIGHT.md or SIMPLIFY-MANDATE.md refs (paths: ${PY_RESULT3#OK: })"
+else
+  fail "Real canonical.md still references stale paths: $PY_RESULT3"
+fi
+
+# Test 10: Script runs without error (dry check, --no-file to avoid filing real issues)
+echo "[10] Script runs without crashing (--no-file)"
 python3 libexec/staleness-checker.py --no-file 2>/dev/null
 RC=$?
 if [[ $RC -eq 0 ]]; then
