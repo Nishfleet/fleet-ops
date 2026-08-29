@@ -27,7 +27,7 @@
     {
       "id": "grok",
       "class": "prepaid-quota",
-      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter)."
+      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter). 2026-08-29 fleet-ops#1380: the grok dead-decoy provider is pruned from the live seat list in ~/.pi/agent/models.json and bin/fleet-seat-live-validate no longer re-paints the grok__grok-* phantom ledger — xai-oauth (below) is the sole live SuperGrok seat, so health counts stop reporting the decoy as walled capacity. Kept cap=0 dead_decoy for auditability."
     },
     {
       "id": "xai-oauth",
