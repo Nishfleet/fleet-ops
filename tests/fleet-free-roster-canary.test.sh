@@ -409,7 +409,10 @@ ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slu
 # reason without a passing re-audition fails this lock. The cap=0 row is
 # required so the canary stops re-filing "free-slug-available" on every
 # tick while the slug sits in the catalog but the API rejects it.
-xpf_cap=$(jq -r '.providers.opencode.models["x-preview-f-free"] // "missing"' \
+# fleet-ops#1432: cap values can be a plain number (legacy) or an
+# object {"cap": N, "intentional_cap_zero": "..."}. Extract .cap
+# from the object form, or use the value as-is for the scalar form.
+xpf_cap=$(jq -r '(.providers.opencode.models["x-preview-f-free"] // "missing") | if type == "object" then .cap else . end' \
     "$repo_root/config/seat-caps.json")
 if [[ "$xpf_cap" == "missing" ]]; then
   fail "scenario14: production seat-caps must keep an x-preview-f-free row (cap=0 bench, fleet-ops#811)"
@@ -508,7 +511,10 @@ ok "scenario16: production seat-caps keep nemotron-3-ultra-free and no billing s
 # reason without a passing re-audition fails this lock. The cap=0 row is
 # required so the canary stops re-filing "free-slug-available" on every
 # tick while the slug sits in the catalog but the API returns HTTP 500.
-msf_cap=$(jq -r '.providers.opencode.models["muse-spark-1.2-contributor-free"] // "missing"' \
+# fleet-ops#1432: cap values can be a plain number (legacy) or an
+# object {"cap": N, "intentional_cap_zero": "..."}. Extract .cap
+# from the object form, or use the value as-is for the scalar form.
+msf_cap=$(jq -r '(.providers.opencode.models["muse-spark-1.2-contributor-free"] // "missing") | if type == "object" then .cap else . end' \
     "$repo_root/config/seat-caps.json")
 if [[ "$msf_cap" == "missing" ]]; then
   fail "scenario17: production seat-caps must keep a muse-spark-1.2-contributor-free row (cap=0 bench, fleet-ops#1224)"
