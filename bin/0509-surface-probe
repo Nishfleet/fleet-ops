@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# 0509-surface-probe — authenticated surface-matrix probe for 0509.
+#
+# Runs the 0509 authenticated surface audit (e2e/surface-audit.mjs: routes ×
+# viewports {390,1440,2000} × themes {light,dark} × fixture tiers
+# {free,scout,starter,agency,expired}) against a DEDICATED local checkout of
+# 0509 origin/main, then exports fleet_probe_success, fleet_probe_latency_seconds,
+# a consecutive-failure gauge and a last-run heartbeat to the node-exporter
+# textfile collector.
+#
+# Why a local build and not a live-prod curl: the matrix is the only harness
+# that renders 0509 logged-in, in dark, at a wide viewport, as a paying tier
+# (fleet-ops#1150, supersede constraint — do NOT fall back to a
+# logged-out/light/public sweep, which caught zero of the four defects that
+# shipped 2026-08-27). Probes observe, never deploy; they use local fixture
+# accounts and never touch real customer data. wrangler_deploy_guard intact.
+#
+# The checkout is owned by this organ and reset to origin/main every run, so
+# the probe always validates the latest shipped source. It never pushes, never
+# deploys. Playwright's webServer config (E2E_START_LOCAL_SERVER=1) starts the
+# fixture server (e2e-prepare-local.mjs seeds local D1 + the dev server) on a
+# dedicated loopback port and tears it down when the run ends.
+#
+# Watchdog discipline (standing order): never page Nish. A failure leaves the
+# systemd unit failed so the next pass and the next agent see it; the
+# SurfaceProbeFailing alert (2 consecutive fails, critical) rides the
+# repair-dispatch rail and spawns a repair worker, never the phone.
+#
+# Exit codes (SuccessExitStatus=0 1 in the service unit):
+#   0 = clean — the surface matrix passed; metrics exported green.
+#   1 = finding — the matrix failed (real regression on shipped main); metrics
+#        exported red and the unit is left FAILED for the next pass/agent.
+#   2 = bad env — checkout missing, node/npm missing, or deps install failed;
+#        the probe cannot run. Metrics still exported red so absent() does not
+#        mask a dead organ.
+#
+# Provisioning (one time, not committed — runtime state on the VPS):
+#   git clone https://github.com/Nishfleet/0509.git /home/nish/workspaces/0509-probe
+#   cd /home/nish/workspaces/0509-probe && npm install --ignore-scripts
+#   npx playwright install chromium   # shared cache at ~/.cache/ms-playwright
+set -uo pipefail
+
+CHECKOUT="${SURFACE_PROBE_0509_CHECKOUT:-/home/nish/workspaces/0509-probe}"
+TEXTFILE_DIR="${TEXTFILE_DIR:-/var/lib/prometheus/node-exporter}"
+OUTFILE="${TEXTFILE_DIR}/fleet-surface-probe-0509.prom"
+STATE_DIR="${SURFACE_PROBE_0509_STATE_DIR:-/home/nish/.local/state/0509-surface-probe}"
+PROBE_NAME="0509-surface"
+JOURNEY="surface-auth-matrix"
+RUN_LOG="${SURFACE_PROBE_0509_RUN_LOG:-/tmp/0509-surface-probe-run.log}"
+# Dedicated loopback port, owned exclusively by this probe. The shared 0509
+# dev servers use 4179; using it here would collide with other agents' servers
+# and fail the run (fleet-ops#1150 spent a cycle on exactly that).
+PORT="${SURFACE_PROBE_0509_PORT:-4191}"
+BASE_URL="http://127.0.0.1:${PORT}"
+
+log() { printf '[0509-surface-probe] %s: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+
+mkdir -p "$STATE_DIR" "$(dirname "$OUTFILE")"
+
+state_file="${STATE_DIR}/state"
+prev=0
+if [ -f "$state_file" ]; then
+  prev="$(cat "$state_file" 2>/dev/null || printf '0')"
+  [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+fi
+
+# write_metrics <pass 0|1> <latency_s> <consec> <unix_ts>
+write_metrics() {
+  local pass="$1" lat="$2" consec_n="$3" ts="$4"
+  local tmp
+  tmp="$(mktemp "${OUTFILE}.XXXXXX")"
+  cat > "$tmp" <<EOF
+# HELP fleet_probe_success 1 if the probe journey passed, 0 if it failed.
+# TYPE fleet_probe_success gauge
+fleet_probe_success{probe="${PROBE_NAME}",journey="${JOURNEY}"} ${pass}
+# HELP fleet_probe_latency_seconds Latency of the last probe run in seconds.
+# TYPE fleet_probe_latency_seconds gauge
+fleet_probe_latency_seconds{probe="${PROBE_NAME}",journey="${JOURNEY}"} ${lat}
+# HELP fleet_surface_probe_consecutive_failures Consecutive failing 0509 surface probe runs (>=2 fires SurfaceProbeFailing, critical).
+# TYPE fleet_surface_probe_consecutive_failures gauge
+fleet_surface_probe_consecutive_failures{probe="${PROBE_NAME}"} ${consec_n}
+# HELP fleet_surface_probe_last_run_seconds Unix time of the last 0509 surface probe run (organ heartbeat).
+# TYPE fleet_surface_probe_last_run_seconds gauge
+fleet_surface_probe_last_run_seconds{probe="${PROBE_NAME}"} ${ts}
+EOF
+  chmod 0644 "$tmp"
+  mv "$tmp" "$OUTFILE"
+}
+
+# -- Pre-flight: node/npm and the dedicated checkout must exist. --
+command -v node >/dev/null 2>&1 || { log "FAIL: no node on PATH"; write_metrics 0 0 "$((prev + 1))" "$(date +%s)"; exit 2; }
+command -v npm  >/dev/null 2>&1 || { log "FAIL: no npm on PATH";  write_metrics 0 0 "$((prev + 1))" "$(date +%s)"; exit 2; }
+if [ ! -d "$CHECKOUT/.git" ]; then
+  log "FAIL: probe checkout missing at $CHECKOUT (provision it first: git clone + npm install --ignore-scripts + npx playwright install chromium)"
+  consec=$((prev + 1))
+  printf '%s\n' "$consec" > "$state_file"
+  write_metrics 0 0 "$consec" "$(date +%s)"
+  exit 2
+fi
+
+# -- Free the probe's OWN dedicated port from a stale dev server left by a
+#    crashed earlier cycle. Match the probe checkout path in the cmdline so
+#    this can never kill another agent's server (those live on 4179 / other
+#    ports and outside this checkout). Targeted argv match, not pgrep -f. --
+for pid in $(ss -ltnp "sport = :$PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u); do
+  if [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q -- "$CHECKOUT"; then
+    log "info: killing stale probe dev server pid $pid on :$PORT"
+    kill "$pid" 2>/dev/null || true
+  fi
+done
+
+# -- Update the checkout to latest 0509 main (dedicated probe checkout only). --
+if ! git -C "$CHECKOUT" fetch --quiet origin main 2>>"$RUN_LOG"; then
+  log "FAIL: git fetch of 0509 origin/main failed"
+  consec=$((prev + 1))
+  printf '%s\n' "$consec" > "$state_file"
+  write_metrics 0 0 "$consec" "$(date +%s)"
+  exit 2
+fi
+git -C "$CHECKOUT" reset --hard --quiet origin/main 2>>"$RUN_LOG"
+
+# Keep deps in sync with the lockfile; incremental (fast when unchanged) and
+# preserves the shared Playwright browser cache at ~/.cache/ms-playwright.
+# npm ci would wipe node_modules every run — wasteful and fragile (siterep
+# canary hit the same trade-off).
+if ! ( cd "$CHECKOUT" && npm install --ignore-scripts --no-audit --no-fund ) >>"$RUN_LOG" 2>&1; then
+  log "FAIL: npm install failed (deps out of sync or network); probe cannot run"
+  consec=$((prev + 1))
+  printf '%s\n' "$consec" > "$state_file"
+  write_metrics 0 0 "$consec" "$(date +%s)"
+  exit 2
+fi
+
+# -- Run the matrix. Playwright's webServer config starts the fixture server
+#    (e2e-prepare-local.mjs seeds local D1, then the dev server with retry)
+#    on $BASE_URL and tears it down when the run ends. --
+start_s="$(date +%s)"
+if (
+  cd "$CHECKOUT" && E2E_START_LOCAL_SERVER=1 E2E_BASE_URL="$BASE_URL" \
+    npx playwright test --config=playwright.config.ts \
+    --project=local-auth --grep "surface audit"
+) >>"$RUN_LOG" 2>&1; then
+  rc=0
+else
+  rc=$?
+fi
+end_s="$(date +%s)"
+latency=$((end_s - start_s))
+now="$end_s"
+
+if [ "$rc" -eq 0 ]; then
+  consec=0
+  printf '%s\n' "$consec" > "$state_file"
+  write_metrics 1 "$latency" "$consec" "$now"
+  log "OK: surface matrix passed (${latency}s); exported $OUTFILE"
+  exit 0
+else
+  consec=$((prev + 1))
+  printf '%s\n' "$consec" > "$state_file"
+  write_metrics 0 "$latency" "$consec" "$now"
+  log "FAIL: surface matrix exited $rc (${latency}s, consecutive-fails=$consec); see $RUN_LOG"
+  exit 1
+fi
