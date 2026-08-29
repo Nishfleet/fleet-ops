@@ -206,14 +206,18 @@ EOF
         return 0
     fi
 
-    # Use fleet-issue-file if available, otherwise gh issue create
+    # Use fleet-issue-file if available (deduped filing); otherwise gh issue create.
+    # fleet-issue-file writes [issue-file] diagnostics to stderr and the URL
+    # (or JSON payload) to stdout — capture stdout only with stderr suppressed.
     if [[ -x "$ISSUE_FILE_BIN" ]]; then
-        issue_url=$("$ISSUE_FILE_BIN" file -R "$ISSUE_REPO" --title "$title" --body "$body" --label agent-ready 2>&1 | tail -1)
+        issue_url=$("$ISSUE_FILE_BIN" file -R "$ISSUE_REPO" --title "$title" --body "$body" --label agent-ready 2>/dev/null | tail -1)
     else
-        issue_url=$(gh issue create -R "$ISSUE_REPO" --title "$title" --body "$body" --label agent-ready 2>&1 | tail -1)
+        issue_url=$(gh issue create -R "$ISSUE_REPO" --title "$title" --body "$body" --label agent-ready 2>/dev/null | tail -1)
     fi
 
-    if [[ -n "$issue_url" ]]; then
+    # fleet-issue-file prints the URL on stdout (or JSON if --json). If stdout
+    # is empty or literally "null", treat as a failed filing.
+    if [[ -n "$issue_url" ]] && [[ "$issue_url" != "null" ]]; then
         seat_log "filed agent-ready issue for $provider/$model credentials_bad: $issue_url"
         actions_log "seat-probe: filed agent-ready issue for $provider/$model credentials_bad: $issue_url"
         return 0
