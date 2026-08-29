@@ -2654,3 +2654,11 @@ bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed
 # orphan-listing gaps keep that gate red. The noop-bench test exercises
 # mark_seat_empty_run + pick_seat from lib/seat-lib.sh.
 bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
+
+# fleet-ops#1408: a seat that no-ops or spawn-fails repeatedly must NOT re-enter
+# rotation at the base backoff every cycle. mark_seat_spawn_fail and
+# mark_seat_empty_run escalate the bench by consecutive_failure_count so each
+# repeated failure benches longer, breaking the re-seat loop. Hosted here for
+# the same reason as the noop-bench test above (listed in ci.yml, runs
+# independent of the p14-test-listing-gate).
+bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
