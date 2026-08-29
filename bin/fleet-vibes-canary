@@ -315,7 +315,24 @@ while IFS=$'\t' read -r prov cap has_qb; do
                 "vibes: $prov cap=0 has no dated reason" \
                 "config/seat-caps.json caps \`${prov}\` at 0 but \`.reason\` carries no YYYY-MM-DD date. sr-never-vibes (Nish, 2026-08-26): even an \`off\` decision must show its measurement — the probe / credential failure / quota signal that justified cap=0, with a date. Add a dated reason naming the evidence (fleet-ops#538)."
             detected=$((detected + 1))
+            continue
         fi
+        # cap=0 has a date — now require a measurement marker too (fleet-ops#878).
+        # A date alone is not enough for an "off" decision; the evidence that
+        # justified cap=0 (HTTP code, probe, quota, meter) must carry a real
+        # measurement signal, either in .reason or in a top-level
+        # _comment_<prov> field that names the provider with date + marker.
+        if has_marker "$reason"; then
+            continue
+        fi
+        if top_level_names_provider_with_evidence "$prov"; then
+            continue
+        fi
+        log "DETECTOR: $prov cap=0 dated reason has no measurement marker — filing (cap0-no-measurement)"
+        file_finding "$prov" "cap0-no-measurement" \
+            "vibes: $prov cap=0 dated reason has no measurement marker" \
+            "config/seat-caps.json caps \`${prov}\` at 0 with a dated \`.reason\` but no measurement marker. sr-never-vibes (fleet-ops#878): a date alone is not enough for an \`off\` decision — the evidence that justified cap=0 (HTTP code, probe output, quota signal, meter, n=, p95) must appear in \`.reason\` or in a top-level \`_comment_${prov}\` field carrying a date + the marker. Add the measurement signal that closed the seat, or re-audition and record the live probe result (fleet-ops#538)."
+        detected=$((detected + 1))
         continue
     fi
 
