@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+# fleet-merged-pr-observe-close — close worker-claimed issues whose merged
+# PR omitted the Closes/Fixes/Resolves trailer (fleet-ops#1435).
+#
+# Heartbeat tier-1 deterministic sweep. Runs before the orphan-claim
+# release pass so an already-merged PR can close its issue before the
+# heartbeat flips the agent-in-progress label back to agent-ready and
+# re-queues the work.
+#
+# For each open issue carrying the agent-in-progress label:
+#   1. Skip if a pi-issue worker is live.
+#   2. Skip if an open PR exists on claim/issue-<N>.
+#   3. Look at PRs merged in the last N days (default 7).
+#   4. If exactly one merged PR's title/body references the issue number
+#      (#<N> or <repo-short>#<N>) in a non-incidental way and the
+#      reference is not just a "Relates to" / "Related to" / "See" /
+#      "Refs" / "Addresses" / "Part of" link, close the issue and cite
+#      the merged PR.
+#   5. If multiple merged PRs reference the issue, write a LOUD line
+#      (ambiguous) and do not close.
+#
+# The actual close is gated by FLEET_MERGED_PR_CLOSE_OK=1, like the
+# FLEET_FINDINGS_QUEUED_OK_TO_CLOSE gate (fleet-ops#820), so a one-off
+# test or hand-run cannot close every open issue.
+#
+# Environment (tests override all of these):
+#   MERGED_PR_CLOSE_REPOS           newline-separated owner/name list
+#   MERGED_PR_CLOSE_INTAKE_JSON     default repo list (intake-repos.json)
+#   MERGED_PR_CLOSE_TRIAGE          heartbeat triage file
+#   FLEET_MERGED_PR_CLOSE_OK        1 to actually close (default 0)
+#   MERGED_PR_CLOSE_DRY_RUN         1 to log but not mutate
+#   MERGED_PR_CLOSE_LOOKBACK_DAYS   default 7
+#   MERGED_PR_CLOSE_LIMIT           max merged PRs to fetch (default 100)
+#   MERGED_PR_CLOSE_LABELS          space-separated label list
+#                                   (default "agent-in-progress")
+#   MERGED_PR_CLOSE_NOW             ISO-8601 UTC clock
+#   MERGED_PR_CLOSE_LOCKDIR         flock directory
+#   SYSTEMCTL                       systemctl binary (test seam)
+#   GH                              gh binary (test seam)
+#
+# Exit 0 on a clean sweep or overlapping no-op. Non-zero on unexpected
+# failure (missing jq/gh, unreadable intake file).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+read -r -d '' MATCH_PY <<'PY' || true
+import json, re, sys
+
+n = sys.argv[1]
+short = sys.argv[2]
+
+n_re = re.compile(r'(?:^|[^A-Za-z0-9_])#' + re.escape(n) + r'(?:[^0-9]|$)')
+short_re = re.compile(r'(?:^|[^A-Za-z0-9_])' + re.escape(short) + r'#' + re.escape(n) + r'(?:[^0-9]|$)')
+url_re = re.compile(
+    r'github\.com/[\w.-]+/' + re.escape(short) + r'/issues/' + re.escape(n) + r'(?:[^0-9]|$)',
+    re.I,
+)
+nonclosing_re = re.compile(
+    r'\b(?:Relates|Related|See|Refs?|Ref|Addresses|Part of)(?:\s+(?:to|of))?\s*$',
+    re.I,
+)
+
+
+def has_issue_ref(text, start, end):
+    before = text[max(0, start - 80):start]
+    if nonclosing_re.search(before):
+        return False
+    if text[max(0, start - 1):start] == '`':
+        return False
+    return True
+
+
+matches = []
+for pr in json.load(sys.stdin):
+    title = pr.get('title') or ''
+    body = pr.get('body') or ''
+    text = title + '\n' + body
+    found = False
+    for pat in (n_re, short_re, url_re):
+        for m in pat.finditer(text):
+            if has_issue_ref(text, m.start(), m.end()):
+                found = True
+                break
+        if found:
+            break
+    if found:
+        matches.append(str(pr.get('number')))
+
+print('\n'.join(matches))
+PY
+
+INTAKE_JSON="${MERGED_PR_CLOSE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+TRIAGE="${MERGED_PR_CLOSE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOCKDIR="${MERGED_PR_CLOSE_LOCKDIR:-${XDG_RUNTIME_DIR}/merged-pr-observe-close}"
+OK_TO_CLOSE="${FLEET_MERGED_PR_CLOSE_OK:-0}"
+DRY="${MERGED_PR_CLOSE_DRY_RUN:-0}"
+LOOKBACK_DAYS="${MERGED_PR_CLOSE_LOOKBACK_DAYS:-7}"
+LIMIT="${MERGED_PR_CLOSE_LIMIT:-100}"
+LABELS="${MERGED_PR_CLOSE_LABELS:-agent-in-progress}"
+GH="${GH:-gh}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+log() {
+    printf '[%s] [fleet-merged-pr-observe-close] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+now_iso() {
+    if [ -n "${MERGED_PR_CLOSE_NOW:-}" ]; then
+        printf '%s' "$MERGED_PR_CLOSE_NOW"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+mkdir -p "$LOCKDIR"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { log "FATAL: python3 missing"; exit 2; }
+command -v "$GH" >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
+
+repos=""
+if [ -n "${MERGED_PR_CLOSE_REPOS:-}" ]; then
+    repos="$MERGED_PR_CLOSE_REPOS"
+else
+    [ -f "$INTAKE_JSON" ] || { log "FATAL: intake file missing: $INTAKE_JSON"; exit 2; }
+    repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+    case "$repos" in
+        *Nishfleet/fleet-ops*) ;;
+        *) repos=$(printf '%s\nNishfleet/fleet-ops\n' "$repos") ;;
+    esac
+fi
+
+NOW_ISO=$(now_iso)
+cutoff=$(date -u -d "now - $LOOKBACK_DAYS days" +%Y-%m-%d)
+cutoff_search="merged:>=$cutoff"
+
+closed=0
+would_close=0
+skipped_live=0
+skipped_pr=0
+ambiguous=0
+failed=0
+
+# is_live_worker <short> <issue_n>
+# Mirrors tier 1 orphan pass exactly: active,activating both count as live;
+# the SubState is queried only to log degraded vs busy.
+is_live_worker() {
+    local short="$1" issue_n="$2"
+    local unit="pi-issue@${short}-${issue_n}.service"
+    if "$SYSTEMCTL" --user list-units "$unit" --state=active,activating --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -qx "$unit"; then
+        local sub
+        sub=$("$SYSTEMCTL" --user show "$unit" --property=SubState --value 2>/dev/null || echo unknown)
+        case "$sub" in
+            auto-restart)
+                log "  $unit: worker DEGRADED (sub=$sub) — lane held"
+                ;;
+            *)
+                log "  $unit: worker LIVE (sub=$sub) — not a merged-PR orphan"
+                ;;
+        esac
+        return 0
+    fi
+    # Transient fable-p* / pi-issue workers running outside the template.
+    if "$SYSTEMCTL" --user list-units --no-legend --type=service --state=running 2>/dev/null \
+        | awk '{print $1}' | grep -E "(fable-p|pi-issue)" | grep -q "${short}-${issue_n}"; then
+        log "  $unit: transient worker active — not a merged-PR orphan"
+        return 0
+    fi
+    return 1
+}
+
+# has_open_pr <repo> <issue_n>
+has_open_pr() {
+    local repo="$1" issue_n="$2"
+    "$GH" pr list -R "$repo" --head "claim/issue-${issue_n}" --state open --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1
+}
+
+# find_matching_prs <merged_prs_json> <issue_n> <repo_short>
+# Prints one matching PR number per line, or nothing.
+find_matching_prs() {
+    local prs_json="$1" issue_n="$2" short="$3"
+    printf '%s' "$prs_json" | python3 -c "$MATCH_PY" "$issue_n" "$short"
+}
+
+# close_issue <repo> <issue_n> <pr>
+close_issue() {
+    local repo="$1" issue_n="$2" pr="$3"
+    local pr_number pr_url pr_merged_at
+    pr_number=$(printf '%s' "$pr" | jq -r '.number')
+    pr_url=$(printf '%s' "$pr" | jq -r '.url')
+    pr_merged_at=$(printf '%s' "$pr" | jq -r '.mergedAt')
+    local body
+    body=$(cat <<EOF
+observe-to-close: merged PR ${pr_url} (mergedAt ${pr_merged_at}) references this issue and no live worker or open PR was found on a heartbeat tick at ${NOW_ISO}. Closing as delivered. (fleet-ops#1435)
+EOF
+)
+    if [ "$DRY" = "1" ]; then
+        log "  $repo#$issue_n: DRY close by PR $pr_number"
+        return 0
+    fi
+    if ! "$GH" issue close "$issue_n" -R "$repo" --comment "$body" >/dev/null 2>&1; then
+        log "  $repo#$issue_n: close by PR $pr_number FAILED"
+        return 1
+    fi
+    return 0
+}
+
+# Extract one PR object by number from the merged-PR JSON array.
+pr_by_number() {
+    local prs_json="$1" number="$2"
+    printf '%s' "$prs_json" | jq --argjson n "$number" -c '.[] | select(.number == $n)'
+}
+
+log "sweep starting now=$NOW_ISO lookback=${LOOKBACK_DAYS}d cutoff=${cutoff} OK_TO_CLOSE=$OK_TO_CLOSE"
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    short="${repo#*/}"
+    log "repo $repo"
+
+    # Gather open issues carrying any of the watched labels.
+    all_issues_json='[]'
+    for label in $LABELS; do
+        if ! list_json=$("$GH" issue list -R "$repo" -l "$label" --state open \
+            --json number,title --limit 100 2>/dev/null); then
+            log "  $repo: gh issue list -l $label FAILED — skip"
+            continue
+        fi
+        all_issues_json=$(printf '%s\n%s\n' "$all_issues_json" "$list_json" \
+            | jq -s 'add | unique_by(.number)')
+    done
+
+    if [ -z "$(printf '%s' "$all_issues_json" | jq '.[]?')" ]; then
+        log "  $repo: no open $LABELS issues"
+        continue
+    fi
+
+    # Fetch recently merged PRs once per repo.
+    if ! merged_json=$("$GH" pr list -R "$repo" --state merged \
+        --search "$cutoff_search" \
+        --json number,title,body,url,mergedAt,headRefName --limit "$LIMIT" 2>/dev/null); then
+        log "  $repo: gh pr list --state merged FAILED — skip"
+        continue
+    fi
+
+    if [ -z "$(printf '%s' "$merged_json" | jq '.[]?')" ]; then
+        log "  $repo: no merged PRs in the last ${LOOKBACK_DAYS} days"
+        continue
+    fi
+
+    while IFS= read -r issue_row; do
+        [ -z "$issue_row" ] && continue
+        issue_n=$(printf '%s' "$issue_row" | jq -r '.number')
+
+        if is_live_worker "$short" "$issue_n"; then
+            skipped_live=$((skipped_live + 1))
+            continue
+        fi
+
+        if has_open_pr "$repo" "$issue_n"; then
+            log "  $repo#$issue_n: open claim PR exists — not a merged-PR orphan"
+            skipped_pr=$((skipped_pr + 1))
+            continue
+        fi
+
+        matching=$(find_matching_prs "$merged_json" "$issue_n" "$short")
+        count=$(printf '%s' "$matching" | grep -c '^[0-9]\+$' || true)
+
+        if [ "$count" -eq 0 ]; then
+            log "  $repo#$issue_n: no merged PR references it"
+            continue
+        fi
+
+        if [ "$count" -gt 1 ]; then
+            first=$(printf '%s' "$matching" | head -n 1)
+            second=$(printf '%s' "$matching" | sed -n '2p')
+            loud "MERGED-PR-CLOSE-AMBIGUOUS" \
+                "$repo#$issue_n: multiple merged PRs reference it (e.g. #$first, #$second) — not closing"
+            ambiguous=$((ambiguous + 1))
+            continue
+        fi
+
+        pr_number="$matching"
+        pr=$(pr_by_number "$merged_json" "$pr_number")
+        if [ -z "$pr" ]; then
+            log "  $repo#$issue_n: PR $pr_number vanished from results — skip"
+            continue
+        fi
+
+        if [ "$OK_TO_CLOSE" != "1" ]; then
+            log "  $repo#$issue_n: would close by merged PR $pr_number (FLEET_MERGED_PR_CLOSE_OK != 1)"
+            would_close=$((would_close + 1))
+            continue
+        fi
+
+        if close_issue "$repo" "$issue_n" "$pr"; then
+            log "  $repo#$issue_n: CLOSED by merged PR $pr_number"
+            closed=$((closed + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done < <(printf '%s' "$all_issues_json" | jq -c '.[]')
+done <<< "$repos"
+
+log "sweep done: closed=$closed would_close=$would_close skipped_live=$skipped_live skipped_pr=$skipped_pr ambiguous=$ambiguous failed=$failed"
+printf 'merged-pr-observe-close closed=%s would_close=%s skipped_live=%s skipped_pr=%s ambiguous=%s failed=%s\n' \
+    "$closed" "$would_close" "$skipped_live" "$skipped_pr" "$ambiguous" "$failed"
+exit 0
