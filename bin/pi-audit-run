@@ -474,20 +474,34 @@ main() {
         { cat "$out"; printf '\n\n## stderr\n'; cat "$err"; } > "$combined"
     fi
 
-    verdict=$(extract_verdict "$combined")
-    reason=$(extract_reason "$combined")
+    # fleet-ops#146: extract_verdict/extract_reason use grep -m1 which exits 1
+    # on no-match. Under set -e the bare assignment kills the script silently
+    # before the empty-verdict branch below is reached (dead code), so a seat
+    # that returns exit 0 with no PASS/FAIL token (no-tools/refusal/empty run)
+    # escalates via exit 1 instead of SKIP-ing. Guard the assignment so the
+    # empty-verdict/reason paths are actually reachable.
+    verdict=$(extract_verdict "$combined") || verdict=""
+    reason=$(extract_reason "$combined") || reason=""
 
+    # A seat that returns exit 0 with no verdict/reason is transient
+    # seat-quality (no-tools/empty/refusal run) -- same class as the
+    # provider-wall SKIP above. Write SKIP so the panel sees the seat
+    # failure without cascading into a new escalation trip. A real fleet
+    # fault would have failed the pi call (pi_rc != 0, already SKIP'd).
     if [ -z "$verdict" ]; then
-        log "auditor output did not contain a PASS/FAIL verdict"
-        exit 1
+        log "auditor output did not contain a PASS/FAIL verdict; writing SKIP"
+        write_vote "$repo" "$candidate" "$role" "SKIP" "no PASS/FAIL verdict in $provider/$model output (exit 0); transient seat-quality, retry next tick"
+        exit 0
     fi
     if [ -z "$reason" ]; then
-        log "auditor output did not contain a reason"
-        exit 1
+        log "auditor output did not contain a reason; writing SKIP"
+        write_vote "$repo" "$candidate" "$role" "SKIP" "no reason paragraph in $provider/$model output (exit 0); transient seat-quality, retry next tick"
+        exit 0
     fi
     if ! reason=$(ensure_reason_complete "$reason"); then
-        log "auditor reason empty after extraction"
-        exit 1
+        log "auditor reason empty after extraction; writing SKIP"
+        write_vote "$repo" "$candidate" "$role" "SKIP" "reason empty after ensure_reason_complete for $provider/$model; transient seat-quality, retry next tick"
+        exit 0
     fi
 
     write_vote "$repo" "$candidate" "$role" "$verdict" "$reason"
