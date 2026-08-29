@@ -119,6 +119,7 @@ jobs:
             /home/nish/.local/bin/fleet-escalation-completion \
             /home/nish/.local/bin/fleet-asset-census \
             /home/nish/.local/bin/agent-scheduler-drift-check \
+            /home/nish/.local/bin/seat-walled-probe \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -207,6 +208,7 @@ jobs:
         bash tests/pi-issue-start-packet-regen.test.sh
         bash tests/pi-issue-failed-reap.test.sh
         bash tests/repair-rotation.test.sh
+        bash tests/seat-walled-probe.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
