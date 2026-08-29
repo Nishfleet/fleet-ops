@@ -2996,6 +2996,12 @@ bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
 # P14 test-listing gate goes green without a workflow edit.
 bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
 
+# fleet-ops#1348 (fleet-ops#1863, fleet-ops#2001): tests/seat-walled-probe.test.sh is a
+# walled-seat comeback probe regression test that landed on main without being
+# wired into ci.yml. Host it here from this already-listed seat-lib test so the
+# P14 test-listing gate goes green without a workflow edit.
+bash "$here/seat-walled-probe.test.sh" || fail "seat-walled-probe tests failed"
+
 # fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
 # later healthy observation that seat-health.ts writes to the per-seat ledger
 # (the clobber that re-admitted functionally-dead seats and kept
