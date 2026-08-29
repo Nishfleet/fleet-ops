@@ -11,33 +11,36 @@
 #      --provider devin --model glm-5-2 in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
-#      to stdout), re-seat in-process via continue (fleet-ops#1378).
-#      A provider no-op (pi ran, exited 0, produced < 20 B) is a LANE
-#      FAULT, not a seat fault — the seat is healthy — so we do NOT mark
-#      the seat; the tried-seats file already records it for this unit and
-#      prevents an immediate re-pick on the next in-process attempt
-#      (fleet-ops#1416). A verdict-based empty run (tools=0, no final text)
-#      is a SEAT FAULT and is benched via mark_seat_empty_run before
-#      re-seating in-process (fleet-ops#902). In both cases the in-process
-#      retry loop avoids burning the item's StartLimitBurst dispatch budget
-#      (only exits 1 after EMPTY_RUN_RETRY_MAX consecutive empty runs).
-#      Root cause (fleet-ops#1378 determination, snapshot 2026-08-27): the
-#      empty runs were LANE FAULTS on free seats (opencode/nemotron-3-ultra-
-#      free, straitly/deepseek/deepseek-v4-pro returned < 20 B stdout), NOT
-#      unworkable issue bodies — the three target issues (fleet-ops#1249,
-#      #1252, #1223) were well-formed detector findings. The in-process
-#      re-seat is the correct response: the item is never charged for a
-#      provider flake on a healthy seat.
-#      fleet-ops#1873 determination (window 2026-08-29T02:30-04:30Z: 14 empty
-#      runs vs 3 dispatches, ready_work=119, samples fleet-ops-1360/-628/
-#      -1350/-1390 on straitly/deepseek-v4-pro, openrouter/deepseek-v4-flash-
-#      0731, commandcode/poolside/laguna-s-2.1-free): same provider-empty-run
-#      class as devin-empty-run-known-fault (vault 2026-08-27). Packet-render
-#      RULED OUT — all four sample issues have well-formed bodies (331-885 B).
-#      Context-limit RULED OUT — the fault is intermittent across four
-#      distinct seats, not deterministic per seat/issue. The no-bench (#1416)
-#      + in-process re-seat (#1378) mechanism already shipped covers this
-#      window; pinned by tests/pi-issue-run-noop-bench.test.sh.
+#      to stdout), re-seat in-process via continue (fleet-ops#1378) AND
+#      bench the seat via mark_seat_empty_run so pick_seat skips it on the
+#      next intake re-spawn and reroutes to a healthy seat (fleet-ops#1298).
+#      A provider no-op (pi ran, exited 0, produced < 20 B) is a SEAT
+#      FAULT — same class as a verdict-based empty run (tools=0, no final
+#      text, fleet-ops#902) — so both are benched via mark_seat_empty_run
+#      before re-seating in-process. The bench escalates by
+#      consecutive_failure_count (fleet-ops#1408) so a repeat offender
+#      stays benched longer each cycle, and seat-health.ts resets the count
+#      on a healthy observation so a recovered seat is re-tried at the base
+#      backoff. The in-process retry loop avoids burning the item's
+#      StartLimitBurst dispatch budget (only exits 1 after
+#      EMPTY_RUN_RETRY_MAX consecutive empty runs).
+#      History: fleet-ops#1416 treated a provider no-op as a LANE fault
+#      (no bench) on the theory that a single 0B stdout was a provider
+#      hiccup on a healthy seat. fleet-ops#1298 reversed that: without a
+#      bench, an intake re-spawn (fresh claim, empty tried-seats) re-picked
+#      the same no-op'ing seat and burned 8 runs/2h on
+#      straitly/deepseek-v4-pro. The escalating bench breaks the loop
+#      without walling a recovered seat (fail-open after usable_at).
+#      fleet-ops#1873 determination (window 2026-08-29T02:30-04:30Z: 14
+#      empty runs vs 3 dispatches, ready_work=119, samples fleet-ops-1360/
+#      -628/-1350/-1390 on straitly/deepseek-v4-pro, openrouter/deepseek-
+#      v4-flash-0731, commandcode/poolside/laguna-s-2.1-free): same
+#      provider-empty-run class as devin-empty-run-known-fault (vault
+#      2026-08-27). Packet-render RULED OUT — all four sample issues have
+#      well-formed bodies (331-885 B). Context-limit RULED OUT — the fault
+#      is intermittent across four distinct seats, not deterministic per
+#      seat/issue. The bench (#1416) + in-process re-seat (#1378) mechanism
+#      covers this window; pinned by tests/pi-issue-run-noop-bench.test.sh.
 #   3. Active-seat registration: writes the picked seat to the per-seat
 #      state dir so seat-lib.sh's cap accounting reflects the running
 #      worker. Cleared on exit via trap.
@@ -45,20 +48,12 @@
 #      (default 120s) AND the captured output contains an ETIMEDOUT pattern
 #      paired with a spawn/socket/connect/child/handshake neighbour, write
 #      a per-seat ledger entry via mark_seat_spawn_fail (seat-lib.sh).
-#   4b. fleet-ops#859 data-driven lane-fault dispatch: on a non-zero pi exit
-#      (after the spawn-fail guard), _dispatch_lane_faults iterates the
-#      error_classes registry in seat-caps.json by trigger_order, calling
-#      the matcher for each class and firing the FIRST matching writer
-#      (one writer wins, no double-bench). quota_bench=2 (trigger_order)
-#      covers fleet-ops#90 quota/cap walls (ClinePass weekly cap, devin
-#      15-min 429, retry_after); overload_bench=3 covers the 2026-08-27
-#      503 upstream-overload storm (fleet-ops#652). The writers bench the
-#      seat until the advertised reset window or the provider default
-#      (quota_bench_default_s / 503_bench_default_s); seat_usable skips
-#      it until bench_until and fail-opens after. A walled seat is a lane
-#      fault, never charged to the work item. New classes are config-only:
-#      a row in seat-caps.json + a matcher + a case branch in the dispatch
-#      tables — no new three-file copy-paste.
+#   4b. fleet-ops#90 quota/cap wall bench: if pi exits non-zero with a
+#      quota/cap error carrying a reset window (ClinePass weekly cap,
+#      "retry after", 429 with retry_after), write health_class=quota_bench
+#      and bench_until so pick_seat skips the seat until then (or the
+#      provider default in seat-caps.json). A walled seat is a lane fault,
+#      never charged to the work item.
 #   6. Defensive mkdir for $ATTEMPTS_DIR: fleet-ops#63 observed the dir
 #      vanish between startup and the tried-seats append, stranding workers
 #      in crash-loop on a benign filesystem-cleanup race. The startup
@@ -142,9 +137,11 @@ source "$SEAT_LIB"
 
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # fleet-ops#1378: no-op in-process retry limit. A provider no-op (pi exits 0
-# with < OUT_MIN stdout) is a lane fault; a verdict-based empty run
-# (tools=0, no final text) is a seat fault. Both are re-seated in-process
-# up to EMPTY_RUN_RETRY_MAX times (default 2) before exiting 1 and letting
+# with < OUT_MIN stdout) and a verdict-based empty run (tools=0, no final
+# text) are both SEAT FAULTS (fleet-ops#1298 reversed the #1416 lane-fault
+# split for the provider no-op). Both are benched via mark_seat_empty_run
+# (escalating backoff, fleet-ops#1408) and re-seated in-process up to
+# EMPTY_RUN_RETRY_MAX times (default 2) before exiting 1 and letting
 # systemd Restart= count it toward StartLimitBurst. This keeps empty runs
 # from burning the item's dispatch budget.
 EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
@@ -395,46 +392,71 @@ if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
     fi
 fi
 
-# --- fleet-ops#859: data-driven lane-fault dispatch ------------------------
-# Iterates the error_classes registry in seat-caps.json by trigger_order
-# (quota_bench=2 before overload_bench=3). The FIRST matching class fires its
-# writer and stops — one writer wins, no double-bench. This replaces the former
-# hard-coded quota-cap and 503-overload blocks, so a future lane-fault class
-# (e.g. model_disabled_410) is a config-only addition: a row in seat-caps.json
-# + a matcher function + a case branch in _matcher_dispatch / _writer_dispatch,
-# not a third copy of the three-file pattern.
-#
-# Skipped when the spawn-fail path already handled this exit (a spawn
-# ETIMEDOUT is not a quota/overload wall). A walled seat is a lane fault,
-# never charged to the work item.
-#
-# spawn_fail (is_spawn_etimeout) and mid_session_death stay as explicit blocks:
-# they have time-based guards (spawn_elapsed < SPAWN_FAIL_MAX_S / > SPAWN_FAIL_MAX_S)
-# that the generic matcher contract cannot express. The !lane_fault_dispatched
-# guard below preserves the old "don't double-bench" contract for mid-session
-# death (if a quota/overload bench already landed, skip the mid-session bench).
-lane_fault_dispatched=0
+# --- fleet-ops#90: quota/cap wall bench ------------------------------------
+# A hard-capped seat (ClinePass weekly cap, devin 15-min 429) is a walled
+# seat, not a transient retry. Without this marker, pick_seat re-offers the
+# same seat to the next systemd Restart, burning a StartLimitBurst attempt on
+# a guaranteed failure. Detect a quota/cap wall in the captured output and
+# bench the seat until its advertised reset window (or the provider default
+# from seat-caps.json); seat_usable then skips it until bench_until and
+# fail-opens after. Skipped when the spawn-fail path already handled this
+# exit (a spawn ETIMEDOUT is not a quota wall). A walled seat is a lane
+# fault, never charged to the work item.
 if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     out_for_scan=""
     err_for_scan=""
     [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
-    if _dispatch_lane_faults "$np" "$nm" "$out_for_scan" "$err_for_scan"; then
-        lane_fault_dispatched=1
+    if is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
+        seat_log "pi-issue-run: $inst QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
+        if mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via pick_seat (excluded by bench_until)"
+        else
+            seat_log "pi-issue-run: $inst WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default) — relying on reactive ledger + systemd Restart"
+        fi
+    fi
+fi
+
+# --- fleet-ops #652 hot-patch: 503 / upstream-overload bench ---------------
+# A seat returning 503 "Upstream model provider is temporarily unavailable" is
+# NOT a quota wall (is_quota_cap_error does not match) and NOT a spawn-time
+# ETIMEDOUT (is_spawn_etimeout does not match). Live failure mode observed in
+# fleet-ops#652: commandcode/minimax-m3-free returned 35 of 200+ tool calls as
+# 503 in the first 20 minutes of a worker run, destabilising the model for the
+# rest of the session. Without this marker, pick_seat re-offers the same seat
+# to the next systemd Restart and the next worker hits the same 503 storm.
+# Bench the seat until the Retry-After (or the provider's 503_bench_default_s,
+# default 600s = 10 min). Distinct health_class="overload_bench" /
+# failure_mode="overload_503" so post-mortem tooling can tell overload benches
+# from quota/cap benches. Skipped when a previous block already handled this
+# exit (spawn-fail / quota-cap). Overload is a lane fault, never charged to
+# the work item.
+if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
+    out_for_scan=""
+    err_for_scan=""
+    [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
+    [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
+    if is_overload_error "$out_for_scan" "$err_for_scan"; then
+        seat_log "pi-issue-run: $inst 503/OVERLOAD WALL on $np/$nm (rc=$rc) — benching seat for its backoff window"
+        if mark_seat_overload_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (overload_bench); next systemd Restart will skip it via pick_seat (excluded by bench_until)"
+        else
+            seat_log "pi-issue-run: $inst WARN: overload-bench marker NOT written for $np/$nm (no Retry-After and no provider default) — relying on reactive ledger + systemd Restart"
+        fi
     fi
 fi
 
 if (( rc != 0 )); then
-    # Mid-session provider deaths that are NOT spawn-time and NOT a bench-
-    # class match still deserve a short bench. Without it, the tried-seats
-    # exclusion is the ONLY thing keeping the next restart off the killing
-    # seat — and the reaper (pi-issue-failed-reap) wipes tried-seats on every
-    # reap, so the intake re-claim starts from an empty list and pick_seat
-    # re-selects the same killing seat (0509-974 cursor-grok-4.6-high 143 x3,
-    # 2026-08-26). Bench it via mark_seat_spawn_fail, which writes a
-    # transient_fault ledger with usable_at = now + SPAWN_FAIL_BACKOFF_S,
-    # surviving the reap (the ledger is the DURABLE avoidance authority).
-    if (( ! spawn_fail_triggered )) && (( ! lane_fault_dispatched )) && is_mid_session_death "$err_file"; then
+    # Mid-session provider deaths that are NOT spawn-time and NOT a quota
+    # wall still deserve a short bench. Without it, the tried-seats exclusion
+    # is the ONLY thing keeping the next restart off the killing seat — and
+    # the reaper (pi-issue-failed-reap) wipes tried-seats on every reap, so
+    # the intake re-claim starts from an empty list and pick_seat re-selects
+    # the same killing seat (0509-974 cursor-grok-4.6-high 143 x3, 2026-08-26).
+    # Bench it exactly like the no-op path: mark_seat_spawn_fail writes a
+    # transient_fault ledger with usable_at = now + SPAWN_FAIL_BACKOFF_S, which
+    # survives the reap (the ledger is the DURABLE avoidance authority).
+    if (( ! spawn_fail_triggered )) && ! is_quota_cap_error "$out_file" "$err_file" && is_mid_session_death "$err_file"; then
         seat_log "pi-issue-run: $inst mid-session provider death (rc=$rc) on $np/$nm after ${spawn_elapsed_s}s — benching seat ${SPAWN_FAIL_BACKOFF_S}s"
         if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:mid-session-death:rc=$rc"; then
             seat_log "pi-issue-run: $inst seat $np/$nm marked; next restart or intake re-claim will skip it via pick_seat"
@@ -470,16 +492,29 @@ is_empty_run() {
 }
 
 if (( out_bytes < OUT_MIN )); then
-    # fleet-ops#1416: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
-    # is a LANE FAULT, not a seat fault. The seat is healthy — it accepted
-    # the work and ran pi. We do NOT write a per-seat ledger marker; the
-    # tried-seats file already records this seat for THIS unit, so the next
-    # in-process iteration will pick a different seat. An intake re-spawn
-    # (fresh claim with empty tried-seats) may re-pick this seat, which is
-    # intentional: the seat is healthy and may work on the next attempt.
+    # fleet-ops#1298: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
+    # is a SEAT FAULT, same class as the verdict tools=0 empty-run
+    # (fleet-ops#902). Bench it via mark_seat_empty_run so pick_seat skips
+    # it on the next intake re-spawn (fresh claim, empty tried-seats) and
+    # reroutes to a healthy seat. The bench escalates by
+    # consecutive_failure_count (fleet-ops#1408) so a repeat offender
+    # stays benched longer each cycle, and seat-health.ts resets the count
+    # on a healthy observation so a recovered seat is re-tried at the base
+    # backoff (fail-open after usable_at). The tried-seats file still
+    # records this seat for THIS unit so the next in-process iteration
+    # picks a different seat immediately.
     # fleet-ops#1378: re-seat in-process (continue) instead of exit 1 so
     # provider no-ops don't burn the item's StartLimitBurst dispatch budget.
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, re-seating in-process (seat NOT marked; healthy seat, lane fault)"
+    # History: fleet-ops#1416 made this a lane fault (no bench) on the
+    # theory a single 0B stdout was a provider hiccup on a healthy seat;
+    # without the bench an intake re-spawn re-picked the same no-op'ing
+    # seat and burned 8 runs/2h on straitly/deepseek-v4-pro (#1298).
+    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, escalating backoff) and re-seating in-process"
+    if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
+        seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
+    else
+        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
+    fi
     empty_run_attempt=$((empty_run_attempt + 1))
     if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
         seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
