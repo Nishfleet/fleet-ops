@@ -12,7 +12,9 @@
 #   - close is OFF by default (FLEET_MERGED_PR_CLOSE_OK != 1): candidate is
 #     described but the live repo is never touched
 #   - open PR on the claim branch -> skip (in flight)
-#   - claim/issue-<N> branch still exists -> skip (may be in a worktree)
+#   - claim/issue-<N> branch exists WITH divergent commits -> skip (worktree)
+#   - claim/issue-<N> branch exists with NO divergent commits -> stale
+#     re-queue pointer, fall through and close (fleet-ops#2080)
 #   - no agent-in-progress / critical-path label -> not scanned
 #   - a live pi-issue worker -> skip (actively being worked)
 #   - more than one merged PR references the issue -> AMBIGUOUS LOUD skip,
@@ -70,15 +72,59 @@ case "$1" in
       *) echo "unexpected gh pr $2" >&2; exit 1 ;;
     esac ;;
   api)
-    # repos/<repo>/git/refs/heads/claim/issue-N — 404 means the branch is
-    # gone (close eligible); 200 means it still exists (skip).
-    cat "$FAKE_DIR/ref.json"
-    exit "${FAKE_REF_RC:-1}"
-    ;;
+    case "$*" in
+      *"/compare/"*)
+        # repos/<repo>/compare/<base>...<head> — ahead_by drives the
+        # stale-branch guard (fleet-ops#2080). Default 0 = stale pointer.
+        # Honor --jq '.ahead_by' the way real gh does (prints the bare value).
+        if [[ "$*" == *"--jq"* ]]; then
+          printf '%s' "${FAKE_AHEAD_BY:-0}"
+        else
+          printf '%s' '{"ahead_by":'"${FAKE_AHEAD_BY:-0}"',"behind_by":0,"status":"identical"}'
+        fi
+        exit 0
+        ;;
+      *"git/refs/heads/claim/issue-"*)
+        # 200 + ref.json means the branch exists; 404 (FAKE_REF_RC=1) = gone.
+        cat "$FAKE_DIR/ref.json"
+        exit "${FAKE_REF_RC:-1}"
+        ;;
+      *"repos/"*"/git/refs/heads/"*)
+        # Non-claim ref lookup — not used by the detector, but be safe.
+        cat "$FAKE_DIR/ref.json"
+        exit "${FAKE_REF_RC:-1}"
+        ;;
+      *"repos/"*)
+        # repos/<repo> — default_branch for the compare base. Honor --jq.
+        if [[ "$*" == *"--jq"* ]]; then
+          printf '%s' "main"
+        else
+          printf '%s' '{"default_branch":"main"}'
+        fi
+        exit 0
+        ;;
+      *)
+        echo "unexpected gh api $*" >&2
+        exit 1
+        ;;
+    esac ;;
   *) echo "unexpected gh $1" >&2; exit 1 ;;
 esac
 FAKE
 chmod +x "$scratch/bin/gh"
+
+# Default systemctl mock: report NO live workers so the live-worker guard is
+# hermetic (a real pi-issue@fleet-ops-<N>.service activating on the VPS would
+# otherwise leak into every case). Case 6 overrides this with a live mock.
+cat >"$scratch/bin/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+# Echo nothing for list-units; is-active returns "inactive" (exit 3).
+case "$*" in
+  *list-units*) exit 0 ;;
+  *) exit 3 ;;
+esac
+FAKE
+chmod +x "$scratch/bin/systemctl"
 
 run() {
     # $@ -> env overrides; set default env then run the bin, print stdout.
@@ -134,14 +180,25 @@ grep -q 'open claim PR' <<<"$out" || fail "open-PR guard must log: $out"
 [[ -s "$scratch/closes.log" ]] && fail "open-PR guard must not close: $(cat "$scratch/closes.log")"
 ok "open PR on claim branch -> skip, no close"
 
-# --- Case 4: claim branch still exists -> skip (may be in a worktree) ---
+# --- Case 4: claim branch exists WITH divergent commits -> skip (real worktree) ---
 set_fixtures \
   '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
-  '[{"number":1429,"title":"feat: x (fleet-ops#1135)","body":"See fleet-ops#1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1429"}]'
-out=$(run FLEET_MERGED_PR_CLOSE_OK=1 FAKE_REF_RC=0)
-grep -q 'branch still exists' <<<"$out" || fail "claim-branch guard must log: $out"
-[[ -s "$scratch/closes.log" ]] && fail "claim-branch guard must not close: $(cat "$scratch/closes.log")"
-ok "claim/issue-N branch still exists -> skip, no close"
+  '[{"number":1429,"title":"feat: x (fleet-ops#1135)","body":"See fleet-ops#1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1429","headRefName":"claim/issue-1135"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1 FAKE_REF_RC=0 FAKE_AHEAD_BY=3)
+grep -q 'divergent commit' <<<"$out" || fail "divergent-branch guard must log: $out"
+[[ -s "$scratch/closes.log" ]] && fail "divergent-branch guard must not close: $(cat "$scratch/closes.log")"
+ok "claim/issue-N branch with divergent commits -> skip, no close"
+
+# --- Case 4b: claim branch exists with NO divergent commits -> stale pointer,
+# fall through and close (fleet-ops#2080: the bug that kept #1135 cycling) ---
+set_fixtures \
+  '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
+  '[{"number":1429,"title":"feat: x (fleet-ops#1135)","body":"See fleet-ops#1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1429","headRefName":"claim/issue-1135"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1 FAKE_REF_RC=0 FAKE_AHEAD_BY=0)
+grep -q 'stale re-queue pointer' <<<"$out" || fail "stale-branch fall-through must log: $out"
+grep -q 'CLOSED' <<<"$out" || fail "stale-branch must fall through and close: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "stale-branch must close: $(cat "$scratch/closes.log")"
+ok "claim/issue-N branch with no divergent commits (stale) -> fall through, close"
 
 # --- Case 5: no agent-in-progress / critical-path label -> not scanned ---
 set_fixtures \
@@ -280,5 +337,26 @@ grep -q 'FLEET_MERGED_PR_CLOSE_OK=1' "$repo_root/bin/fleet-heartbeat-tier1" \
 grep -q 'bin/fleet-merged-pr-close' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-merged-pr-close"
 ok "contracts: tier1 call + close gate + MANIFEST entry present"
+
+# --- Case 12: tick-log fd 3 must be APPEND mode (fleet-ops#2080) ---
+# tier1 opens `exec 3>>"$TICK_LOG"` and invokes the helper with `2>>"$TICK_LOG"`.
+# A truncate-write `exec 3>` would let fd 3's offset overwrite the helper's
+# appended lines, hiding the per-issue output from every tick log. Prove the
+# open mode is append so the helper's stderr survives.
+grep -q 'exec 3>>"\$TICK_LOG"' "$repo_root/bin/fleet-heartbeat-tier1" \
+  || fail "tier1 must open fd 3 in append mode (exec 3>>): $(grep -n 'exec 3' "$repo_root/bin/fleet-heartbeat-tier1")"
+# Reproduce the collision class directly: fd 3 append + helper append must
+# both preserve their lines in the shared file.
+fdtest=$(mktemp)
+: > "$fdtest"
+exec 4>>"$fdtest"   # simulate tier1's append fd 3
+printf '%s\n' "tier1-line-1" >&4
+printf '%s\n' "helper-line-appended" >>"$fdtest"   # simulate helper's 2>>
+printf '%s\n' "tier1-line-2" >&4
+exec 4>&-
+grep -q 'helper-line-appended' "$fdtest" || fail "append-mode fd 3 must preserve helper-appended lines"
+grep -q 'tier1-line-2' "$fdtest" || fail "append-mode fd 3 must preserve tier1's own lines"
+rm -f "$fdtest"
+ok "tick-log fd 3 is append mode — helper stderr survives the collision"
 
 echo "all fleet-merged-pr-close cases passed"

@@ -154,9 +154,15 @@ REPOS_JSON="${FLEET_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-re
 mkdir -p "$LOG_DIR"
 
 # Per-tick log file (UTC timestamp; one file per fire, easy to diff).
+# Opened in APPEND mode: helpers invoked with `2>>"$TICK_LOG"` open their own
+# append fd to the same path, and a truncate-write `exec 3>` here would let
+# this fd's offset overwrite their appended lines (fleet-ops#2080: the
+# merged-pr-close helper's per-issue output vanished from every tick log,
+# hiding the stale-branch skip that kept #1135 cycling). Append mode keeps
+# every writer's lines regardless of which fd they use.
 TICK_TS=$(date -u +%Y%m%dT%H%M%SZ)
 TICK_LOG="$LOG_DIR/tier1-$TICK_TS.log"
-exec 3>"$TICK_LOG"
+exec 3>>"$TICK_LOG"
 
 log() {
     local line

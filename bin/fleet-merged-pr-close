@@ -19,8 +19,12 @@
 # agent-in-progress or critical-path:
 #   1. Skip if there is an open PR on its claim/issue-<N> branch (work in
 #      flight — the queue pass owns it).
-#   2. Skip if the claim/issue-<N> branch still exists on origin (work may
-#      still be in a worktree; claim-reconcile owns cleaning orphan branches).
+#   2. If the claim/issue-<N> branch still exists on origin, check whether it
+#      has commits beyond the default branch (ahead_by). A branch with
+#      ahead_by > 0 is real in-flight work in a worktree → skip. A branch with
+#      ahead_by = 0 is a stale re-queue pointer the heartbeat recreated after
+#      §3 released it (fleet-ops#2080) → fall through so the merged-PR match
+#      can close the delivered issue. claim-reconcile owns cleaning the branch.
 #   3. Skip if a live pi-issue worker is running for that issue (actively
 #      being worked).
 #   4. List merged PRs in the last MERGED_PR_CLOSE_WINDOW_DAYS (default 7).
@@ -158,6 +162,16 @@ while IFS= read -r repo; do
     [ -z "$repo" ] && continue
     log "repo $repo"
 
+    # Default branch for the divergence check in guard #2. One call per repo
+    # per tick; cached for the inner loop. A missing default branch fails the
+    # repo closed (every branch guard would otherwise treat main as "main",
+    # which is wrong for repos whose default is master).
+    default_branch=$("$GH" api "repos/${repo}" --jq '.default_branch' 2>/dev/null) || true
+    if [ -z "$default_branch" ]; then
+        loud "MERGED-PR-CLOSE-GH" "$repo: could not resolve default branch — skip (next tick retries)"
+        continue
+    fi
+
     # Open issues carrying agent-in-progress or critical-path.
     if ! list_json=$("$GH" issue list -R "$repo" --state open \
         --json number,title,labels,body --limit 500 2>/dev/null); then
@@ -202,11 +216,22 @@ while IFS= read -r repo; do
             skipped_open_pr=$((skipped_open_pr + 1))
             continue
         fi
-        # 2. Claim branch still present → work may be in a worktree.
+        # 2. Claim branch still present → may be in-flight work in a worktree.
+        #    But a branch with NO commits beyond the default (ahead_by=0) is a
+        #    stale re-queue pointer the heartbeat recreated after §3 released
+        #    it — not in-flight work (fleet-ops#2080: this exact stale pointer
+        #    kept #1135 cycling forever). Only skip when the branch carries
+        #    real divergent commits (ahead_by > 0); otherwise fall through so
+        #    the merged-PR match can close the delivered issue.
         if "$GH" api "repos/${repo}/git/refs/heads/claim/issue-${num}" >/dev/null 2>&1; then
-            log "  $repo#$num: claim/issue-${num} branch still exists — skip (may be in a worktree)"
-            skipped_branch=$((skipped_branch + 1))
-            continue
+            ahead_by=$("$GH" api "repos/${repo}/compare/${default_branch}...claim/issue-${num}" \
+                --jq '.ahead_by' 2>/dev/null) || ahead_by=-1
+            if [ "${ahead_by:-0}" -gt 0 ]; then
+                log "  $repo#$num: claim/issue-${num} branch has ${ahead_by} divergent commit(s) — skip (may be in a worktree)"
+                skipped_branch=$((skipped_branch + 1))
+                continue
+            fi
+            log "  $repo#$num: claim/issue-${num} branch exists but has no divergent commits (ahead_by=${ahead_by}) — stale re-queue pointer, not in-flight"
         fi
         # 3. Live worker → actively being worked.
         if has_live_worker "$repo" "$num"; then
