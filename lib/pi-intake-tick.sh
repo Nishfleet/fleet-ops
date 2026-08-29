@@ -105,10 +105,25 @@ precedence_band_pending_starvation_clear
 # (all visible issues were non-leverage → skip-surge-leverage), causing
 # fleet starvation (222 ready, 0 running). 250 covers the observed ceiling
 # with headroom; the early surge skip below keeps the tick fast.
-issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 250 2>&1) || {
+issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
     echo "gh issue list failed: $issues_json" >&2
     exit 1
 }
+
+# fleet-ops#234: escalate-senior issues are senior-panel-owned, never a
+# regular-worker claim. The model-based orderer (pi-intake-priority order,
+# lib/intake-priority.sh) drops them via select(.escalation != true); the
+# deterministic tick must do the same or regular workers get dispatched on
+# senior-auditor escalations (the #2007 live class: pi-issue@fleet-ops-2007
+# claimed an [escalate-senior] scout-futility wrapper that
+# pi-escalation-audit was already convening a three-senior panel on). The
+# label is fetched above so the filter is a pure jq pass; the senior-auditor
+# panel lists escalate-senior directly (not agent-ready), so dropping them
+# here does not hide them from the panel.
+ESCALATE_LABEL="${PI_INTAKE_ESCALATE_LABEL:-escalate-senior}"
+issues_json=$(jq -c --arg esc "$ESCALATE_LABEL" \
+    '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($esc) == null)]' \
+    <<<"$issues_json" 2>/dev/null || printf '[]')
 
 # fleet-ops#1464 — reconciler-caught counter. Every time the poll finds
 # ready work, it means the GH webhook (workers/github-push-forward/ →
