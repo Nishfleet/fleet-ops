@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Thin drift detector for agent-scheduler-drift.service. Fails loud on any
+# agent-product scheduler job (hermes cron id or ~/.claude/scheduled-tasks/ dir)
+# not present in the allowlist. Also enforces a shim-integrity check on
+# ~/.claude/hooks/: every file there (except a small EXEMPT list) must be a
+# thin shim referencing the vault guards canonical library. No paging, no
+# auto-delete — exit 1 = unit FAILED.
+set -euo pipefail
+ALLOW=/home/nish/workspaces/agent-state/agent-scheduler-allowlist.txt
+HOOKS_DIR="$HOME/.claude/hooks"
+GUARDS_PATH="nish-vault/_system/shared-memory/guards"
+MAX_SHIM_LINES=12
+drift=0; drift_ids=""
+
+# Allowed set: strip trailing `# comment` and blank lines.
+mapfile -t allowed < <(sed -E 's/[[:space:]]*#.*//; /^[[:space:]]*$/d' "$ALLOW")
+in_allow() { printf '%s\n' "${allowed[@]}" | grep -qxF -- "$1"; }
+
+# hermes cron ids present.
+mapfile -t hermes_ids < <(hermes cron list 2>&1 | awk 'NF>=2 && $2 ~ /^\[/{print $1}')
+for id in "${hermes_ids[@]}"; do
+  in_allow "$id" || { drift_ids+="hermes:$id "; drift=1; }
+done
+
+# claude scheduled-tasks dirs present (real dirs only; symlinks resolve to a
+# listed target, files are not scheduler entries).
+mapfile -t claude_dirs < <(find "$HOME/.claude/scheduled-tasks/" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null)
+for d in "${claude_dirs[@]}"; do
+  in_allow "$d" || { drift_ids+="claude-task:$d "; drift=1; }
+done
+
+# Shim-integrity check: every file in ~/.claude/hooks/ (except an EXEMPT list
+# of agent-private / non-shim files) must be a thin shim — ≤MAX_SHIM_LINES
+# lines AND referencing the vault guards canonical path. Any hook file failing
+# either condition is drift; the detector fails loud, naming the file. Per
+# agent-agnostic-audit-2026-08-25.md Surface 3 (migrated 2026-08-25).
+SHIM_EXEMPT="session-memory-draft.py
+subagent_wait_guard.sh
+_install_guards.py
+_smoke_test.py"
+if [ -d "$HOOKS_DIR" ]; then
+  while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    # Skip backup files and pycache dir
+    case "$base" in
+      *.bak-*|__pycache__) continue ;;
+    esac
+    # Skip explicitly exempt files (agent-private / non-shim)
+    if printf '%s\n' "$SHIM_EXEMPT" | grep -qxF "$base"; then
+      continue
+    fi
+    line_count=$(wc -l < "$f")
+    if [ "$line_count" -gt "$MAX_SHIM_LINES" ]; then
+      drift_ids+="hook-too-long:$base($line_count>$MAX_SHIM_LINES lines) "
+      drift=1
+      continue
+    fi
+    if ! grep -qF "$GUARDS_PATH" "$f"; then
+      drift_ids+="hook-not-shimmed:$base "
+      drift=1
+    fi
+  done < <(find "$HOOKS_DIR" -maxdepth 1 -mindepth 1 -type f -print0 2>/dev/null)
+fi
+
+if [ "$drift" -ne 0 ]; then
+  echo "AGENT-SCHEDULER-DRIFT: $drift_ids" >&2
+  echo "Allowlist: $ALLOW" >&2
+  echo "Shim-integrity check: every ~/.claude/hooks/ file (except EXEMPT) must be" >&2
+  echo "  ≤$MAX_SHIM_LINES lines and reference $GUARDS_PATH" >&2
+  exit 1
+fi
+echo "agent-scheduler-drift: clean (hermes + claude-tasks allowlisted, shim-integrity OK)"
+exit 0
