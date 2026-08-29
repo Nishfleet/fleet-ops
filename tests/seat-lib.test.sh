@@ -1565,6 +1565,22 @@ set -e
 ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
 
 # --- fleet-ops#1163: xai-oauth (SuperGrok sub) prepaid weekly seat --------
+#
+# fleet-ops#1163 was closed by PR #1436 (merged 2026-08-28T01:02:18Z):
+#   - seat-caps.json: xai-oauth provider with cap=1, class=prepaid-quota
+#   - entitled-seats.json: xai-oauth entry with quota_window=weekly
+#   - bin/fleet-seat-live-validate: mirror grok CLI health onto xai-oauth
+#   - tests/seat-lib.test.sh: six tests (first-pick, alternation, cap=1,
+#     credentials_bad, expiry-order, P15 allowlist) — all green
+#   - models.json: xai-oauth provider with grok-4.6 + grok-4.5 entries
+#
+# fleet-ops#1406 ("leftover open: #1163 wire ticket still open after PR
+# #1257 landed the xai-oauth seat") was filed because #1163 stayed open
+# after PR #1257 merged. PR #1436 already closed #1163 with a Closes
+# trailer, so #1406 has ZERO remaining work. This comment is the receipt
+# — the xai-oauth seat is live, tested, canary-wired, and the closing
+# issue is gone. No new code.
+#
 # BINDING: prepaid seats ALTERNATE, never stack. xai-oauth enters the
 # prepaid-quota bucket with cap=1 and per-model cap=1. _rr_pick rotates
 # between grok-4.6 and grok-4.5 so the weekly meter is shared, not
