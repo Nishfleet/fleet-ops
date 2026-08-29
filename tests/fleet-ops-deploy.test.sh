@@ -1156,6 +1156,12 @@ case "$*" in
     fi
     exit 0
     ;;
+  *"issue close"*)
+    if [ -n "${GH_CLOSED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_CLOSED"
+    fi
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
@@ -1257,7 +1263,9 @@ git -C "$checkout" checkout -q -B main origin/main
 : >"$enabled_units"
 printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
 off_comment_log="$scratch/gh-off-main-commented.log"
+off_closed_log="$scratch/gh-off-main-closed.log"
 : >"$off_comment_log"
+: >"$off_closed_log"
 : >"$off_gh_log"
 jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
   '[{number: 477, body: $b, comments: []}]' >"$scratch/open-off-main.json"
@@ -1266,7 +1274,9 @@ if out=$(
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
   FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
     run_canary
 ); then
@@ -1282,12 +1292,19 @@ grep -q 'issue comment' "$off_gh_log" \
   || fail "scenario17e: must call gh issue comment (log=$(cat "$off_gh_log"))"
 grep -q '^477$' "$off_comment_log" \
   || fail "scenario17e: must comment on #477 (commented=$(cat "$off_comment_log"))"
+# First green tick posts resolved-at but must NOT close same tick (fleet-ops#1156).
+grep -q 'issue close' "$off_gh_log" \
+  && fail "scenario17e: must not close on the same tick as the comment (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_closed_log" ]] \
+  || fail "scenario17e: must not close same tick (closed=$(cat "$off_closed_log"))"
 ok "scenario17e: green canary observes-to-close on open off-main issue (fleet-ops#620)"
 
-# Replay: canary must not comment twice. The open issue now carries the
-# resolved-at comment, so the canary dedups instead of re-posting.
+# Replay: a later green tick. The open issue now carries the resolved-at
+# comment, so the canary CLOSES it (two-tick close, fleet-ops#1156) instead
+# of re-posting.
 : >"$off_gh_log"
 : >"$off_comment_log"
+: >"$off_closed_log"
 jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
   '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
 if out=$(
@@ -1295,7 +1312,9 @@ if out=$(
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
   FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
     run_canary
 ); then
@@ -1303,13 +1322,48 @@ if out=$(
 else
   fail "scenario17e replay: canary should pass on main (got: $out)"
 fi
-[[ "$out" == *"dedup observe"* ]] \
-  || fail "scenario17e replay: expected dedup observe (got: $out)"
+[[ "$out" == *"OBSERVE-CLOSED"* ]] \
+  || fail "scenario17e replay: expected OBSERVE-CLOSED (got: $out)"
+grep -q 'issue close' "$off_gh_log" \
+  || fail "scenario17e replay: must call gh issue close (log=$(cat "$off_gh_log"))"
+grep -q '^477$' "$off_closed_log" \
+  || fail "scenario17e replay: must close #477 (closed=$(cat "$off_closed_log"))"
 grep -q 'issue comment' "$off_gh_log" \
   && fail "scenario17e replay: must not call gh issue comment again (log=$(cat "$off_gh_log"))"
 [[ ! -s "$off_comment_log" ]] \
   || fail "scenario17e replay: must not record a second comment (commented=$(cat "$off_comment_log"))"
-ok "scenario17e replay: off-main observe-to-close does not repeat"
+ok "scenario17e replay: later green tick closes the resolved off-main issue (fleet-ops#1156)"
+
+# Replay with FLEET_OPS_DRIFT_CLOSE=0: comment-only mode must NOT close, only
+# dedup. This is the path tests and one-off runs take when closing is opted
+# out (mirrors fleet-exec-review-canary CLOSE_ISSUES=0).
+: >"$off_gh_log"
+: >"$off_comment_log"
+: >"$off_closed_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=0 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e close=0: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"dedup observe"* ]] \
+  || fail "scenario17e close=0: expected dedup observe (got: $out)"
+grep -q 'issue close' "$off_gh_log" \
+  && fail "scenario17e close=0: must not call gh issue close (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_closed_log" ]] \
+  || fail "scenario17e close=0: must not close (closed=$(cat "$off_closed_log"))"
+ok "scenario17e close=0: comment-only mode dedups without closing (fleet-ops#1156)"
 
 # --- scenario 17f: off-main observe-to-close fires even when a later check
 # is red (fleet-ops#774). The canary is on main and clean, but a leftover
