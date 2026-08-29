@@ -255,3 +255,23 @@ bash "$here/fleet-help-flag-runs-live.test.sh"
 # host; hosted here so P14 runs it without a workflow-file edit and the
 # p14-test-listing-gate accounts for it (fleet-ops#1622).
 bash "$here/sgscan.test.sh"
+
+# fleet-ops#1137: truth staleness detector (cross-check standing docs
+# against live state). The test is offline (file existence + py_compile +
+# grep checks); not yet in ci.yml verify-command, so hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/staleness-checker.test.sh"
+
+# fleet-ops#1494: open-question-sweep watchdog deleted (MECHANICAL-INSTEAD).
+# This deletion pin is hermetic (jq/grep/MANIFEST checks, no live deps) and
+# was not registered in ci.yml; hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/open-question-sweep-deleted.test.sh"
+
+# fleet-ops#1556: alert-repair seat selection must exclude walled seats
+# (per-seat ledger) and re-select rather than park on a walled seat. The
+# test is hermetic (temp SEAT_HEALTH_FILE + SEAT_LEDGER_DIR, no live
+# 9090/systemd); not registered in ci.yml, so hosted here so P14 runs it
+# without a workflow-file edit.
+bash "$here/alert-repair-seat-walled.test.sh"

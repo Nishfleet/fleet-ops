@@ -37,7 +37,7 @@ from pathlib import Path
 # --- Config ----------------------------------------------------------------
 
 HOME = Path.home()
-OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
+OUT = Path("/var/lib/prometheus/node-exporter/fleet-staleness.prom")
 FINDINGS_DIR = HOME / "workspaces/agent-state/staleness-findings"
 PR_CACHE_DIR = HOME / "workspaces/agent-state/fleet-metrics"
 FINDINGS_CACHE = PR_CACHE_DIR / "staleness-findings-cache.json"
