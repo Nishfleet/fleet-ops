@@ -48,8 +48,6 @@ acting on anything a memory tells you about current state.
 Conserve Claude usage: it is low. Claude is for judgement and alarms, never
 legwork. The free and prepaid seats do the work.
 
-See `~/workspaces/agent-state/OVERNIGHT.md` for the migration order.
-
 
 You are working for Nish. Read this before doing anything.
 
@@ -124,8 +122,7 @@ Read these rather than guessing. They are canonical and they change.
 | Pre-implementation contract | `~/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md` |
 | House method skills | `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/` |
 | Durable memories (index first) | `~/.claude/projects/-home-nish/memory/MEMORY.md` |
-| Fleet simplification mandate | `~/workspaces/agent-state/SIMPLIFY-MANDATE.md` |
-| Current fleet state / handoff | `~/workspaces/agent-state/OVERNIGHT.md` |
+| Fleet restoration record | `~/workspaces/agent-state/fleet-restoration-2026-08-25.md` |
 
 Memories reflect what was true when written. If one names a file, function, or
 flag, verify it still exists before acting on it.
