@@ -7,10 +7,10 @@
 # a retry. A judge/provider/quality stall then loops quietly forever.
 #
 # This helper is the class prevention. It snapshots the agent-ready buffer
-# around each scout completion (ExecStartPre begin / ExecStopPost end on
-# pi-scout@.service). N consecutive green runs with no net ready-work
-# increase while the buffer is below the 12-issue (12h) cap emit a LOUD
-# SCOUT-FUTILITY line and auto-file an escalate-senior ticket. Restarts
+# and measured drain rate around each scout completion (ExecStartPre begin /
+# ExecStopPost end on pi-scout@.service). N consecutive green runs with no net
+# runway increase while the buffer is below the 12-hour work-buffer cap emit a
+# LOUD SCOUT-FUTILITY line and auto-file an escalate-senior ticket. Restarts
 # cannot fix this; senior judgment can.
 #
 # Always exit 0. A broken tracker must not fail the scout (that would
@@ -26,10 +26,14 @@
 #   FLEET_HEARTBEAT_TRIAGE     triage file
 #   SCOUT_FUTILITY_STATE_DIR   per-repo state (default ~/.local/state/scout-futility)
 #   SCOUT_FUTILITY_N           consecutive dry runs before escalate (default 3)
-#   SCOUT_FUTILITY_BUFFER      "below the 12h buffer" cap in ready issues (default 12)
+#   SCOUT_FUTILITY_BUFFER_H    "below the 12h buffer" cap in banked-work hours (default 12)
+#   SCOUT_FUTILITY_BUFFER      deprecated alias for SCOUT_FUTILITY_BUFFER_H
+#   SCOUT_FUTILITY_WINDOW_H    drain-rate measurement window hours (default 6)
 #   SCOUT_FUTILITY_REPO        repo to file tickets in (default Nishfleet/fleet-ops)
 #   SCOUT_FUTILITY_FILE        1 (default) file issues; 0 skip gh create
 #   SCOUT_FUTILITY_READY_COUNT override ready count (fixture scout)
+#   SCOUT_FUTILITY_CLOSED_JSON closed-issue JSON fixture (file path or literal)
+#   SCOUT_FUTILITY_WS_LIB      path to work-supply.sh (tests/development)
 #   SCOUT_FUTILITY_PROM          textfile path (default
 #                                /var/lib/prometheus/node-exporter/fleet-scout.prom)
 #   EXIT_STATUS / SERVICE_RESULT  systemd ExecStopPost env when argv omits exit_code
@@ -44,10 +48,22 @@ ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 STATE_DIR="${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}"
 N="${SCOUT_FUTILITY_N:-3}"
-BUFFER="${SCOUT_FUTILITY_BUFFER:-12}"
+BUFFER_H="${SCOUT_FUTILITY_BUFFER_H:-${SCOUT_FUTILITY_BUFFER:-12}}"
+WINDOW_H="${SCOUT_FUTILITY_WINDOW_H:-6}"
 FILE_REPO="${SCOUT_FUTILITY_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${SCOUT_FUTILITY_FILE:-1}"
 PROM="${SCOUT_FUTILITY_PROM:-/var/lib/prometheus/node-exporter/fleet-scout.prom}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+WS_LIB="${SCOUT_FUTILITY_WS_LIB:-$_canon_repo/lib/work-supply.sh}"
+if [[ ! -f "$WS_LIB" ]]; then
+    WS_LIB="$HOME/.local/lib/pi-packet/work-supply.sh"
+fi
+if [[ -f "$WS_LIB" ]]; then
+    # shellcheck source=../lib/work-supply.sh source-path=SCRIPTDIR
+    source "$WS_LIB"
+fi
 
 log() {
     printf '[%s] [scout-futility-check] %s\n' \
@@ -98,6 +114,43 @@ ready_count() {
     n=$("$GH" issue list -R "Nishfleet/${repo}" -l agent-ready --state open \
         --json number --limit 200 --jq 'length' 2>/dev/null || true)
     printf '%s\n' "$n"
+}
+
+fetch_closed_json() {
+    local repo="$1"
+    if [[ -n "${SCOUT_FUTILITY_CLOSED_JSON:-}" ]]; then
+        if [[ -f "$SCOUT_FUTILITY_CLOSED_JSON" ]]; then
+            cat "$SCOUT_FUTILITY_CLOSED_JSON"
+            return 0
+        fi
+        printf '%s\n' "$SCOUT_FUTILITY_CLOSED_JSON"
+        return 0
+    fi
+    "$GH" issue list -R "Nishfleet/${repo}" -l agent-ready --state closed \
+        --limit 100 --search 'sort:updated-desc' \
+        --json number,closedAt 2>/dev/null || true
+}
+
+runway_hours() {
+    local repo="$1" ready="$2" now_s="$3" closed_json closed window
+    window="$WINDOW_H"
+    is_uint "$window" || window=6
+    is_uint "$ready" || { printf '0\n'; return 0; }
+    is_uint "$now_s" || now_s=$(date -u +%s)
+    closed_json=$(fetch_closed_json "$repo")
+    if [[ -z "$closed_json" ]]; then
+        closed=0
+    elif type work_supply_closed_in_window >/dev/null 2>&1; then
+        closed=$(work_supply_closed_in_window "$closed_json" "$window" "$now_s" 2>/dev/null || true)
+        is_uint "$closed" || closed=0
+    else
+        closed=0
+    fi
+    if type work_supply_hours >/dev/null 2>&1; then
+        work_supply_hours "$ready" "$closed" "$window"
+    else
+        printf '%s\n' "$ready"
+    fi
 }
 
 state_path() {
@@ -206,18 +259,18 @@ file_escalation() {
         log "dedup: open $FILE_REPO#$existing already carries $marker"
         return 0
     fi
-    title="[escalate-senior] scout futility: Nishfleet/${repo} ran green ${dry} times with no ready-work increase"
+    title="[escalate-senior] scout futility: Nishfleet/${repo} ran green ${dry} times with no runway increase"
     body_file=$(mktemp)
     cat >"$body_file" <<EOF
-Scout futility (fleet-ops#454). \`pi-scout@${repo}\` completed green ${dry} times in a row with no net ready-work increase while the buffer stayed below ${BUFFER} (the 12h work-buffer cap). Supervision is green (timer, OnFailure repair, low-water skipped_fresh) so this loops forever without a human.
+Scout futility (fleet-ops#454). \`pi-scout@${repo}\` completed green ${dry} times in a row with no net runway increase while the work buffer stayed below ${BUFFER_H} hours (the 12h banked-work cap). Supervision is green (timer, OnFailure repair, low-water skipped_fresh) so this loops forever without a human.
 
 This is a judge, provider, or quality problem, not a crash. Do not restart the scout. Route to the senior-auditor panel.
 
 ## Evidence
 - repo: Nishfleet/${repo}
 - consecutive_dry: ${dry}
-- last before -> after: ${before} -> ${after}
-- buffer_threshold: ${BUFFER}
+- runway before -> after: ${before}h -> ${after}h
+- buffer_threshold: ${BUFFER_H}h
 - N: ${N}
 
 ${marker}
@@ -235,7 +288,7 @@ EOF
 }
 
 cmd_begin() {
-    local repo="$1" before file now_s
+    local repo="$1" before before_hours file now_s
     valid_repo "$repo" || { log "begin: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "begin: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
     mkdir -p "$STATE_DIR"
@@ -247,16 +300,20 @@ cmd_begin() {
         return 0
     fi
     now_s=$(date -u +%s)
+    before_hours=$(runway_hours "$repo" "$before" "$now_s")
+    is_uint "$before_hours" || before_hours="$before"
     write_state "$file" \
         "before=${before}" \
+        "before_hours=${before_hours}" \
         "begin_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "consecutive_dry=$(read_field "$file" consecutive_dry)" \
         "last_after=$(read_field "$file" last_after)" \
+        "last_after_hours=$(read_field "$file" last_after_hours)" \
         "last_exit=$(read_field "$file" last_exit)" \
         "last_run_epoch=${now_s}" \
         "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     export_last_run
-    log "begin: $repo ready_before=$before last_run_epoch=$now_s"
+    log "begin: $repo ready_before=$before runway_before=${before_hours}h last_run_epoch=$now_s"
 }
 
 resolve_exit() {
@@ -281,38 +338,46 @@ cmd_end() {
     local repo="$1"
     local exit_code
     exit_code=$(resolve_exit "${2:-}")
-    local file before after dry next_dry last_run
+    local file before before_hours after after_hours dry next_dry last_run now_s
     valid_repo "$repo" || { log "end: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "end: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
-    is_uint "$BUFFER" || { log "end: SCOUT_FUTILITY_BUFFER not a uint: $BUFFER"; return 0; }
+    is_uint "$BUFFER_H" || { log "end: SCOUT_FUTILITY_BUFFER_H not a uint: $BUFFER_H"; return 0; }
     [[ "$N" -ge 1 ]] || { log "end: SCOUT_FUTILITY_N must be >= 1"; return 0; }
     mkdir -p "$STATE_DIR"
     with_lock "$repo"
     file=$(state_path "$repo")
     before=$(read_field "$file" before)
+    before_hours=$(read_field "$file" before_hours)
     if ! is_uint "$before"; then
         # fleet-ops#1277: missing/unreadable snapshot is absence-of-evidence,
         # not futility. Seed a snapshot and exit 0 (success-run). Do not
         # increment consecutive_dry: ExecStopPost still runs when
         # ExecCondition skipped the scout, so this is not a completed tick.
         after=$(ready_count "$repo")
+        is_uint "$after" || after=""
+        now_s=$(date -u +%s)
+        after_hours=$(runway_hours "$repo" "$after" "$now_s")
+        is_uint "$after_hours" || after_hours="$after"
         dry=$(read_field "$file" consecutive_dry)
         is_uint "$dry" || dry=0
         last_run=$(read_field "$file" last_run_epoch)
         is_uint "$last_run" || last_run=0
         if ! is_uint "$after"; then
             after=""
+            after_hours=""
         fi
         write_state "$file" \
             "before=" \
+            "before_hours=" \
             "begin_at=" \
             "consecutive_dry=${dry}" \
             "last_after=${after}" \
+            "last_after_hours=${after_hours}" \
             "last_exit=${exit_code}" \
             "last_run_epoch=${last_run}" \
             "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         export_last_run
-        log "end: $repo missing begin snapshot — created snapshot (success-run); not counted as dry last_run_epoch=$last_run"
+        log "end: $repo missing begin snapshot — created snapshot (success-run); not counted as dry last_run_epoch=$last_run runway_after=${after_hours}h"
         return 0
     fi
     after=$(ready_count "$repo")
@@ -320,33 +385,42 @@ cmd_end() {
         log "end: $repo ready count not numeric ('$after') — skip"
         return 0
     fi
+    now_s=$(date -u +%s)
+    after_hours=$(runway_hours "$repo" "$after" "$now_s")
+    is_uint "$after_hours" || after_hours="$after"
     dry=$(read_field "$file" consecutive_dry)
     is_uint "$dry" || dry=0
     next_dry=$dry
+    if ! is_uint "$before_hours"; then
+        before_hours=$before
+    fi
     if [[ "$exit_code" != "0" ]]; then
         log "end: $repo exit=$exit_code (not green) — leave consecutive_dry=$dry"
-    elif [[ "$after" -ge "$BUFFER" ]]; then
+    elif [[ "$after_hours" -ge "$BUFFER_H" ]]; then
         next_dry=0
-        log "end: $repo ready_after=$after >= buffer=$BUFFER — reset consecutive_dry"
-    elif [[ "$after" -gt "$before" ]]; then
+        log "end: $repo runway_after=${after_hours}h >= buffer=${BUFFER_H}h — reset consecutive_dry"
+    elif [[ "$after_hours" -gt "$before_hours" ]]; then
         next_dry=0
-        log "end: $repo ready $before -> $after (net increase) — reset consecutive_dry"
+        log "end: $repo runway ${before_hours} -> ${after_hours}h (net increase) — reset consecutive_dry"
     else
         next_dry=$((dry + 1))
-        log "end: $repo ready $before -> $after (no net increase, below buffer=$BUFFER) consecutive_dry=$next_dry"
+        log "end: $repo runway ${before_hours} -> ${after_hours}h (no net increase, below buffer=${BUFFER_H}h) consecutive_dry=$next_dry"
         if [[ "$next_dry" -ge "$N" ]]; then
-            loud "SCOUT-FUTILITY" "repo=Nishfleet/${repo} consecutive_dry=${next_dry} (N=${N}) ready ${before}->${after} below buffer=${BUFFER}. green scout filed nothing; escalate-senior, do not restart"
-            file_escalation "$repo" "$next_dry" "$before" "$after"
+            loud "SCOUT-FUTILITY" "repo=Nishfleet/${repo} consecutive_dry=${next_dry} (N=${N}) runway ${before_hours}->${after_hours}h below buffer=${BUFFER_H}h. green scout filed nothing; escalate-senior, do not restart"
+            file_escalation "$repo" "$next_dry" "$before_hours" "$after_hours"
         fi
     fi
     last_run=$(read_field "$file" last_run_epoch)
     is_uint "$last_run" || last_run=0
     write_state "$file" \
         "before=" \
+        "before_hours=" \
         "begin_at=" \
         "consecutive_dry=${next_dry}" \
         "last_before=${before}" \
+        "last_before_hours=${before_hours}" \
         "last_after=${after}" \
+        "last_after_hours=${after_hours}" \
         "last_exit=${exit_code}" \
         "last_run_epoch=${last_run}" \
         "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

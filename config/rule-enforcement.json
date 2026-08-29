@@ -830,9 +830,9 @@
     {
       "id": "led-2026-08-28-runway-measured-in-time",
       "source": "decisions-ledger.md: 2026-08-28 | Runway measured in TIME, not items (Nish: \"duhh yes\")",
-      "mechanism": "Proposal filed for the WFR dial owner to design the formula and wire it into EXISTING scout-futility/scout-cadence organs — no new units. Item floor stays as lower bound; breach stays loud + auto-escalating.",
-      "proof": "no mechanism yet; WFR dial owner to design via existing scout-futility/scout-cadence organs",
-      "status": "advisory(senior: WFR dial owner to design 12h-runway formula; wired into existing organs; no new units)"
+      "mechanism": "scout-futility-check computes runway_hours = ready_count / measured consumption rate using lib/work-supply.sh (6h trailing window of closed agent-ready issues). The 12h banked-work cap (SCOUT_FUTILITY_BUFFER_H) replaces the 12-issue cap; reset on runway >= 12h or net runway increase, escalate-senior on N consecutive green runs below the cap. Item floor preserved via work_supply_hours closed=0 fallback to ready count as hours.",
+      "proof": "bin/scout-futility-check; tests/scout-futility.test.sh scenario16; lib/work-supply.sh; systemd/pi-scout@.service ExecCondition already uses fleet-work-supply-canary for 24h/12h cadence",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-28-band-inversion",
