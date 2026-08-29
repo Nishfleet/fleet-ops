@@ -2760,6 +2760,93 @@ _escalated_backoff() {
     printf '%s' "$b"
 }
 
+# --- failure-count ceiling (fleet-ops#1362) ---------------------------------
+# Before this, the escalated backoff capped at 1h (spawn) / 2h (empty) and the
+# quota/overload/hang benches used a FLAT provider default every cycle, so a
+# seat that kept failing re-entered rotation every cap/flat interval forever.
+# consecutive_failure_count climbed to 72 on devin/glm-5-2 (HTTP 429), 64 on
+# opencode/muse-spark-1.2-contributor-free (HTTP 500), 63 on
+# opencode/mimo-v2.5-free (HTTP 429) while the bench never grew past ~15min —
+# the prober kept hammering them and burning probe budget on guaranteed
+# failures. The ceiling parks a seat behind a long wall once its
+# consecutive_failure_count crosses SEAT_FAILURE_CEILING, so a chronically
+# failing seat is probed once per park wall instead of once per base backoff.
+#
+# Design: the park is a LONGER WALL, not seat_dead=true. seat_usable fail-opens
+# after usable_at / bench_until regardless of count (the #1408 contract), and
+# seat-health.ts resets consecutive_failure_count to 0 on a healthy in-session
+# observation — so a recovered seat is re-tried at the base backoff, not walled
+# permanently. Setting seat_dead=true would either be redundant (the bench
+# branches short-circuit before the seat_dead check) or break fail-open for
+# transient_fault markers (seat_dead holds past usable_at). The long wall keeps
+# the fail-open contract intact while still parking the seat.
+SEAT_FAILURE_CEILING="${SEAT_FAILURE_CEILING:-60}"
+SEAT_PARK_WALL_S="${SEAT_PARK_WALL_S:-86400}"  # 24 h — probe once per day, not per 15min
+
+# Echo the effective park wall seconds for a consecutive_failure_count and a
+# computed base backoff/window. When count >= SEAT_FAILURE_CEILING the wall is
+# forced to SEAT_PARK_WALL_S (the park); otherwise the base is echoed unchanged.
+# Defensive: non-numeric inputs fall back to the base / count=0.
+_failure_ceiling_wall() {
+    local count="${1:-0}" base="${2:-300}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$base" =~ ^[0-9]+$ ]] || base=300
+    local ceil="${SEAT_FAILURE_CEILING:-60}"
+    local park="${SEAT_PARK_WALL_S:-86400}"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=60
+    [[ "$park" =~ ^[0-9]+$ ]] || park=86400
+    if (( count >= ceil )); then
+        printf '%s' "$park"
+        return 0
+    fi
+    printf '%s' "$base"
+}
+
+# True (return 0) if count has crossed the failure ceiling.
+_seat_parked_by_ceiling() {
+    local count="${1:-0}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local ceil="${SEAT_FAILURE_CEILING:-60}"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=60
+    (( count >= ceil ))
+}
+
+# Emit the fleet_seat_failure_ceiling_parked metric for a parked seat. One
+# gauge line per parked seat (provider,model labels); merging preserves the
+# other seats' lines so a multi-seat park does not clobber the file. Fail-open:
+# a write error never bricks the marker. Default file is under STATE_DIR so
+# tests cannot poison the live node_exporter dir; production copies to the
+# public textfile collector when STATE_DIR is the live path (same pattern as
+# export_seat_selection_prom).
+_emit_failure_ceiling_metric() {
+    local p="$1" m="$2" count="${3:-0}"
+    local out="${SEAT_FAILURE_CEILING_PROM:-$STATE_DIR/fleet-seat-failure-ceiling.prom}"
+    local dir pub tmp sp sm
+    dir=$(dirname "$out")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    sp="${p//[^A-Za-z0-9._/-]/_}"
+    sm="${m//[^A-Za-z0-9._/-]/_}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    tmp="$out.$$.$RANDOM.tmp"
+    {
+        echo "# HELP fleet_seat_failure_ceiling_parked Seats parked past the consecutive-failure ceiling (fleet-ops#1362)."
+        echo "# TYPE fleet_seat_failure_ceiling_parked gauge"
+        # Preserve other seats' gauge lines; drop any stale line for this seat.
+        if [[ -f "$out" ]]; then
+            grep -E '^fleet_seat_failure_ceiling_parked' "$out" 2>/dev/null \
+                | grep -vE "fleet_seat_failure_ceiling_parked\\{provider=\"${sp}\",model=\"${sm}\"\\}" || true
+        fi
+        printf 'fleet_seat_failure_ceiling_parked{provider="%s",model="%s"} %s\n' "$sp" "$sm" "$count"
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    if [[ -z "${SEAT_FAILURE_CEILING_PROM:-}" && "$STATE_DIR" == "${HOME}/.local/state/pi-packet" ]]; then
+        pub="/var/lib/prometheus/node-exporter/fleet-seat-failure-ceiling.prom"
+        if [[ -d "$(dirname "$pub")" && -w "$(dirname "$pub")" ]]; then
+            cp "$out" "$pub" 2>/dev/null || true
+        fi
+    fi
+}
+
 # Returns 0 if the worker output looks like a spawn-phase failure (ETIMEDOUT
 # pattern from devin/cursor CLI shims). Strict enough to require the
 # timeout keyword AND a connection-flavored neighbour (ECONN / socket /
@@ -2810,6 +2897,9 @@ mark_seat_spawn_fail() {
     # cycle instead of re-entering rotation every base-backoff seconds.
     local backoff
     backoff=$(_escalated_backoff "$SPAWN_FAIL_BACKOFF_S" "$merged_count" "$SPAWN_FAIL_BACKOFF_CAP_S")
+    # fleet-ops#1362: once count crosses the failure ceiling, park the seat
+    # behind the long wall so the prober stops hammering it every base backoff.
+    backoff=$(_failure_ceiling_wall "$merged_count" "$backoff")
     # Compute usable_at = now + backoff (ISO 8601, bash portable: -d @ + offsets).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -2840,6 +2930,10 @@ mark_seat_spawn_fail() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "spawn-fail: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "spawn-fail: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+        fi
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
@@ -2892,6 +2986,8 @@ mark_seat_empty_run() {
     # fleet-ops#1408: escalate the bench by consecutive_failure_count.
     local backoff
     backoff=$(_escalated_backoff "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$EMPTY_RUN_BACKOFF_CAP_S")
+    # fleet-ops#1362: park past the failure ceiling (long wall, not seat_dead).
+    backoff=$(_failure_ceiling_wall "$merged_count" "$backoff")
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -2922,6 +3018,10 @@ mark_seat_empty_run() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "empty-run: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+        fi
         return 0
     fi
     seat_log "empty-run: rename FAILED for $p/$m at $path (reason=$reason)"
@@ -3188,6 +3288,13 @@ mark_seat_quota_bench() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#1362: park past the failure ceiling. The quota/cap path used a
+    # FLAT provider default every cycle, so a chronically walled seat re-entered
+    # rotation every window forever (count climbed to 72 on devin/glm-5-2 at a
+    # ~15min default). Override the window and recompute bench_until so the
+    # bench branch in seat_usable holds the long wall.
+    window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     local tmp="$path.bench.$$.$RANDOM.tmp"
     if ! jq -nc \
@@ -3216,6 +3323,10 @@ mark_seat_quota_bench() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "quota-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+        fi
         return 0
     fi
     seat_log "quota-bench: rename FAILED for $p/$m at $path"
@@ -3327,6 +3438,9 @@ mark_seat_overload_bench() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#1362: park past the failure ceiling (long wall override).
+    window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     local tmp="$path.overload.$$.$RANDOM.tmp"
     if ! jq -nc \
@@ -3355,6 +3469,10 @@ mark_seat_overload_bench() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "overload-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "overload-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+        fi
         return 0
     fi
     seat_log "overload-bench: rename FAILED for $p/$m at $path"
@@ -3405,6 +3523,9 @@ mark_seat_hang_bench() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#1362: park past the failure ceiling (long wall override).
+    window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
+    bench_until=$(date -u -d "@$(($(date -u +%s) + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     local tmp="$path.hang.$$.$RANDOM.tmp"
     if ! jq -nc \
@@ -3429,6 +3550,10 @@ mark_seat_hang_bench() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "hang-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count) — hung unit TimeoutStartSec / PI_HANG_TIMEOUT_S"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "hang-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+        fi
         return 0
     fi
     seat_log "hang-bench: rename FAILED for $p/$m at $path"
