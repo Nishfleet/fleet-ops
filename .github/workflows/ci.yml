@@ -119,6 +119,7 @@ jobs:
             /home/nish/.local/bin/fleet-escalation-completion \
             /home/nish/.local/bin/fleet-asset-census \
             /home/nish/.local/bin/agent-scheduler-drift-check \
+            /home/nish/.local/lib/pi-packet/pi-intake-tick.sh \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"

@@ -79,7 +79,7 @@ printf '%s\n' "$out" | grep -q 'REGENERATED missing packet' || fail "missing pac
 [[ -f "$pkt" ]] || fail "packet file was not created at $pkt"
 # Content: worker prompt + blank + TARGET line, no keystone marker.
 head -1 "$pkt" | grep -q '^# Pi fleet issue worker' || fail "packet must start with worker prompt, got: $(head -1 "$pkt")"
-grep -q '^difficulty: keystone' "$pkt" && fail "non-keystone issue must NOT carry the keystone marker"
+grep -q '^phases:' "$pkt" && fail "non-keystone issue must NOT carry a keystone phases marker"
 tail -1 "$pkt" | grep -q "^TARGET: repo Nishfleet/fleet-ops issue 1149 unit pi-issue-fleet-ops-1149$" \
   || fail "packet must end with the TARGET line, got: $(tail -1 "$pkt")"
 grep -q '^start ' "$scratch/systemctl-calls" || fail "must call systemctl start after regen, called=$(cat "$scratch/systemctl-calls")"
