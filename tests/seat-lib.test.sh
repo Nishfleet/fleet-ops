@@ -42,6 +42,8 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # pick_seat into prepaid (fleet-ops#108 / #142 / #509). The wedge-age
 # probe below turns this back on with a stubbed systemctl.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
+# fleet-ops#1409: skip the per-pick NO-USABLE-SEAT cooldown in tests.
+export PI_SEAT_NOUSABLE_COOLDOWN_S=0
 
 # A models.json with a deliberately non-allowlisted provider (groq) and a
 # non-allowlisted model on an allowlisted provider (ollama/gpt-oss:20b).
@@ -524,10 +526,13 @@ set -e
 [[ "$rc" == "0" ]] || fail "rate-ledger: expected a pick (retry), got rc=$rc"
 [[ "$out" == "cline	cline-pass/deepseek-v4-flash" ]] \
   || fail "rate-ledger: expected cline ds-flash retry, got: $out"
+# fleet-ops#1409: per-seat UNUSABLE lines are folded into a per-pick summary.
+# The retry-on-stale-RL line is emitted (return-0 path, not silenced).
+# pick_seat returns on the first usable seat (cline-pass/deepseek-v4-flash),
+# so minimax is never reached in the loop — it stays excluded by the tried
+# list but does not appear in the unusable summary. The pick is the proof.
 grep -q "retrying after rate_limited" "$PI_PACKET_STATE/watch.log" \
   || fail "rate-ledger: must log the retrying-after-rate_limited line"
-grep -q "UNUSABLE (rate_limited until" "$PI_PACKET_STATE/watch.log" \
-  || fail "rate-ledger: minimax fresh-RL must stay excluded"
 
 # --- invariant 6/7: dead / credentials_bad / stale-observed ----------------
 # (7) stale observed_at -> usable: ollama marker from yesterday
@@ -851,8 +856,10 @@ set -e
 [[ -z "$out" ]] || fail "bench-pick: must print nothing to stdout, got: $out"
 grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
   || fail "bench-pick: must log NO USABLE SEAT (no attempt consumed on a benched seat)"
-grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "bench-pick: must log 'benched until' for the skipped cline seats"
+# fleet-ops#1409: per-seat 'benched until' lines are folded into the
+# per-pick unusable summary. The 2 cline seats still block the pick → rc=1.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "bench-pick: must log unusable summary for the benched cline seats"
 
 # 9e: once bench_until passes, the seat is offered again (fail-open).
 past_bu=$(date -u -d "@$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)
@@ -950,8 +957,9 @@ out=$(SEAT_CAPS_JSON="$SEAT_CAPS_JSON_MIMO" \
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "mimo-bench: pick_seat after bench must rc=1 (NO USABLE SEAT), got rc=$rc out='$out"
-grep -q "opencode/mimo-v2.5-free: benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "mimo-bench: pick_seat must log 'opencode/mimo-v2.5-free: benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+grep -q "unusable.*seats.*opencode" "$PI_PACKET_STATE/watch.log" \
+  || fail "mimo-bench: pick_seat must log unusable summary including opencode (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
 # Restore the canonical scratch ledger for any later sections.
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 
@@ -972,8 +980,10 @@ out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scr
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "stale-obs-bench: expected rc=1 (still benched despite stale observed_at), got rc=$rc out=$out"
-grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "stale-obs-bench: must skip on bench_until, not fail-open on stale observed_at"
+# fleet-ops#1409: bench_until still takes priority over stale fail-open;
+# per-seat 'benched until' is folded into the unusable summary.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-bench: must log unusable summary (bench_until > stale fail-open)"
 grep -q "stale >" "$PI_PACKET_STATE/watch.log" \
   && fail "stale-obs-bench: must NOT take the stale-observed_at fail-open path while bench_until is future"
 
@@ -1221,8 +1231,9 @@ set -e
 # ALL-benched commandcode returns rc=1 NO USABLE SEAT. The acceptance
 # criterion is: pick_seat does NOT return the benched commandcode row.
 [[ "$rc" == "1" ]] || fail "pick-after-overload: pick_seat must rc=1 (only seat benched), got rc=$rc out='$out'"
-grep -q "commandcode/minimax/minimax-m3-free: benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "pick-after-overload: must log the 'benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+grep -q "unusable.*seats.*commandcode" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log unusable summary including commandcode/minimax-m3-free (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
 [[ -z "$out" ]] || fail "pick-after-overload: stdout must be empty (no seat), got '$out'"
 # Distinct from quota path: the skip line mentions the overload bench class
 # (the auditor distinguishes them via health_class=overload_bench). The
@@ -1230,12 +1241,17 @@ grep -q "commandcode/minimax/minimax-m3-free: benched until" "$PI_PACKET_STATE/w
 # seat_usable reader logs 'benched until ... (overload_bench)' (underscore)
 # in the pick_seat PI_PACKET_STATE. Accept either, but NOT 'quota_bench' or
 # 'quota-bench:' — those would be the wrong class.
-grep -q "overload-bench:\|(overload_bench)" "$PI_PACKET_STATE/watch.log" \
-  || fail "pick-after-overload: must mention overload class (not quota); log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")"
-# Sanity: the quota class is NOT in this log (otherwise the bench class is
-# being mis-typed and the post-mortem rollup would be wrong).
-grep -q "quota-bench:\|(quota_bench)" "$PI_PACKET_STATE/watch.log" \
-  && fail "pick-after-overload: log must NOT mention quota class (would mis-classify the bench) — log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")" || true
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+# The overload class distinction lives in the ledger (health_class=overload_bench);
+# verify the ledger, not the per-seat log line.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log unusable summary (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+hc_ledger=$(jq -r '.health_class' "$cc_ledger_only/commandcode__minimax_minimax-m3-free.json")  || true
+[[ "$hc_ledger" == "overload_bench" ]] \
+  || fail "pick-after-overload: ledger health_class must be overload_bench, got '$hc_ledger'"
+# Sanity: the quota class is NOT in the ledger.
+[[ "$hc_ledger" != "quota_bench" ]] \
+  || fail "pick-after-overload: ledger health_class must NOT be quota_bench"
 
 # 9h-6: 503_bench_default_s field name. The live seat-caps.json uses the
 # 503_bench_default_s key; the alias overload_bench_default_s is also
@@ -2988,3 +3004,70 @@ bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests fa
 # as the noop-bench test above (listed in ci.yml, runs independent of the
 # p14-test-listing-gate).
 bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"
+
+# --- fleet-ops#1409: seat_usable per-seat fold + NO-USABLE-SEAT backoff ------
+# Isolated fixture: a single benched seat (quota_bench, future bench_until)
+# forces pick_seat into the NO USABLE SEAT path (rc=1), where the #1409 fix
+# (i) folds the per-seat 'benched until...' / 'UNUSABLE...' lines from
+# seat_usable() into ONE per-pick 'unusable N seats' summary, and (ii) backs
+# off -- sleeps PI_SEAT_NOUSABLE_COOLDOWN_S (default 5s, 0 disables) -- so a
+# systemd RestartSec loop stops re-running a full pick_seat pass every second
+# against an already-walled fleet. This is the mechanical guard for the
+# seat scheduler thrash (14717 at-capacity skips in 2h).
+mkdir -p "$scratch/1409"
+cat >"$scratch/1409/models.json" <<'JSON'
+{ "providers": { "opencode": { "models": [ { "id": "mimo-v2.5-free" } ] } } }
+JSON
+cat >"$scratch/1409/caps.json" <<'JSON'
+{ "ram_gb_per_worker": 1.5, "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 2, "class": "free", "models": { "mimo-v2.5-free": 2 } } } }
+JSON
+export PI_MODELS_JSON="$scratch/1409/models.json"
+export SEAT_CAPS_JSON="$scratch/1409/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1409/ledger"
+export PI_PACKET_STATE="$scratch/1409/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+bu_1409=$(date -u -d "@$(( $(date -u +%s) + 3600 ))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg bu "$bu_1409" \
+   '{health_class:"quota_bench", observed_at:"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'", bench_until:$bu}' \
+  > "$PI_SEAT_HEALTH_LEDGER_DIR/opencode__mimo-v2.5-free.json"
+
+# (a) the NO-USABLE-SEAT backoff is wired: a nonzero cooldown delays the rc=1
+#     return by ~cooldown seconds.
+set +e
+_p1409_start=$(date +%s.%N)
+PI_SEAT_NOUSABLE_COOLDOWN_S=2 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+_rc1409=$?
+_p1409_end=$(date +%s.%N)
+set -e
+_elapsed1409=$(awk "BEGIN{print ($_p1409_end - $_p1409_start)}")
+[[ "$_rc1409" == "1" ]] || fail "1409-backoff: pick_seat must rc=1 on a walled fleet, got rc=$_rc1409"
+awk "BEGIN{exit !($_elapsed1409 >= 1.5)}" \
+  || fail "1409-backoff: PI_SEAT_NOUSABLE_COOLDOWN_S=2 must delay rc=1 ~2s, elapsed=$_elapsed1409"
+ok "1409-backoff: NO-USABLE-SEAT return backs off PI_SEAT_NOUSABLE_COOLDOWN_S (2s, elapsed ${_elapsed1409}s)"
+
+# (b) cooldown=0 (what the test suite exports) returns fast with no sleep.
+set +e
+_p1409_start=$(date +%s.%N)
+PI_SEAT_NOUSABLE_COOLDOWN_S=0 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+_p1409_end=$(date +%s.%N)
+set -e
+_elapsed1409=$(awk "BEGIN{print ($_p1409_end - $_p1409_start)}")
+awk "BEGIN{exit !($_elapsed1409 < 0.8)}" \
+  || fail "1409-backoff: cooldown=0 must return fast, elapsed=$_elapsed1409"
+ok "1409-backoff: PI_SEAT_NOUSABLE_COOLDOWN_S=0 disables the sleep (${_elapsed1409}s)"
+
+# (c) the seat_usable per-seat UNUSABLE/'benched until' lines are folded into
+#     ONE per-pick 'unusable N seats' summary -- no per-seat line leaks.
+: >"$PI_PACKET_STATE/watch.log"
+set +e
+PI_SEAT_NOUSABLE_COOLDOWN_S=0 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+set -e
+grep -q "pick_seat: unusable 1 seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "1409-fold: must emit ONE per-pick 'unusable 1 seats' summary; log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
+  && fail "1409-fold: per-seat 'benched until' line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "UNUSABLE (quota_bench" "$PI_PACKET_STATE/watch.log" \
+  && fail "1409-fold: per-seat UNUSABLE line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1409-fold: seat_usable per-seat UNUSABLE/'benched until' folded into one summary (0 leaked)"
