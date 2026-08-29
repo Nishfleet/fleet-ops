@@ -61,6 +61,12 @@ fi
 # a hardcoded /home/nish path crashes `set -e` with exit 1 on a GitHub-hosted
 # runner where the runner user cannot create /home/nish (fleet-ops#1407).
 ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}"
+# fleet-ops#1455: the claims index is the durable record of which issues were
+# actually claimed in this tick. opus-heartbeat-gather counts it for
+# claims_last_2h; fleet-restore-drill (B.2) reads it to know which issues are
+# claimed after a restore. Overridable for tests so a GitHub-hosted runner
+# does not have to write under /home/nish.
+CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
@@ -560,6 +566,12 @@ for i in "${!numbers[@]}"; do
     fi
 
     echo "issue $N ($title): claimed+spawned"
+    # fleet-ops#1455: write a durable claim record so opus-heartbeat-gather
+    # and fleet-restore-drill can see the claim. Guard above means we only
+    # append after a verified branch+packet+unit spawn.
+    _claims_dir="$(dirname "$CLAIMS_LOG")"
+    mkdir -p "$_claims_dir" 2>/dev/null || true
+    printf '%s claimed line=%s repo=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$N" "$REPO" >> "$CLAIMS_LOG" 2>/dev/null || true
     slots=$(( slots - 1 ))
 done
 
