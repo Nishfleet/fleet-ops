@@ -386,12 +386,6 @@
       "cadence": "weekly",
       "source": "repo"
     },
-    "ready-work-recheck.timer": {
-      "reason": "15-min dependency-gated ready-work re-evaluation — dependency checks are POLLS of external state with NO local event; CONVERTING TO PATH UNIT on queue file + seat-recovery",
-      "classification": "converting",
-      "cadence": "15min",
-      "source": "user-config"
-    },
     "seat-walled-probe.timer": {
       "reason": "15-min probe of walled seats whose usable_at has expired — sends a 1-token 'reply OK' probe so a seat re-enters the ladder only after a confirmed-healthy response, not a blind fail-open; credentials_bad probes weekly and files an agent-ready issue (fleet-ops#1348)",
       "classification": "scheduled",
@@ -453,10 +447,10 @@
       "source": "repo"
     },
     "fleet-truth-staleness-check.timer": {
-      "reason": "Truth staleness checker — weekly cross-check of standing docs vs live state (fleet-ops#1137); user-config drop-in until repo packaging lands",
+      "reason": "Weekly truth staleness checker — cross-checks standing docs against live state (fleet-ops#1137). Docs rot slowly; weekly cadence catches stale paths, units, and issue refs.",
       "classification": "scheduled",
       "cadence": "weekly",
-      "source": "user-config"
+      "source": "repo"
     },
     "vps-maintenance-quiesce.timer": {
       "reason": "Weekly maintenance quiesce (T-15) — stops NEW work only; Sun 03:15 IST before vps-weekly-update",
@@ -474,12 +468,6 @@
       "reason": "Headless OAuth refresh of SuperGrok xai-oauth seat — access token lifetime is 6h; 4h cadence keeps ~/.pi/agent/auth.json fresh so an idle prepaid seat does not wake into a 401 (fleet-ops#41).",
       "classification": "scheduled",
       "cadence": "4h",
-      "source": "repo"
-    },
-    "fleet-truth-staleness-check.timer": {
-      "reason": "Weekly truth staleness checker — cross-checks standing docs against live state (fleet-ops#1137). Docs rot slowly; weekly cadence catches stale paths, units, and issue refs.",
-      "classification": "scheduled",
-      "cadence": "weekly",
       "source": "repo"
     }
   }
