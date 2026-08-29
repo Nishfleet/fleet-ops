@@ -2929,6 +2929,94 @@ mark_seat_empty_run() {
     return 1
 }
 
+# --- error-class registry dispatch (fleet-ops#859) -----------------------
+# Data-driven lane-fault dispatch. seat-caps.json declares an `error_classes`
+# map: each class names a matcher function, a writer function, a trigger_order,
+# and a default_window_s_seconds. pi-issue-run (and any other caller) invokes
+# _dispatch_lane_faults <provider> <model> <out> <err> on a non-zero pi exit;
+# it iterates the registry by trigger_order, calling _matcher_dispatch once
+# per class, and on the FIRST match calls _writer_dispatch and returns — one
+# writer wins, no double-bench. New classes are config-only: add a row to
+# seat-caps.json, a matcher function, a case branch in _matcher_dispatch /
+# _writer_dispatch, and one regression test.
+#
+# Why the dispatch tables are a `case` (not eval): bash function dispatch by
+# name via eval is fragile under set -euo pipefail and unreadable to auditors.
+# A case table is explicit, grep-able, and fails loud on an unregistered name
+# instead of silently no-op'ing. Adding a class IS two code edits (case branch
+# + seat-caps.json row), not zero — that is the explicit-registration contract:
+# a misspelled matcher name must NOT silently resolve to nothing.
+
+# _matcher_dispatch <matcher_name> <out> <err>
+# Calls the named matcher function with (out, err). Returns the matcher's
+# exit code (0=match, nonzero=no-match). Returns 1 for an unknown name so
+# a stale config row is a loud fail, not a silent skip.
+_matcher_dispatch() {
+    local matcher="$1" out="$2" err="$3"
+    case "$matcher" in
+        is_quota_cap_error) is_quota_cap_error "$out" "$err" ;;
+        is_overload_error)  is_overload_error "$out" "$err" ;;
+        *)                  return 1 ;;
+    esac
+}
+
+# _writer_dispatch <writer_name> <provider> <model> <text>
+# Calls the named writer function with (provider, model, text). Returns the
+# writer's exit code (0=marker written, 1=fail-open / no default). Unknown
+# names return 1.
+_writer_dispatch() {
+    local writer="$1" p="$2" m="$3" text="$4"
+    case "$writer" in
+        mark_seat_quota_bench)    mark_seat_quota_bench "$p" "$m" "$text" ;;
+        mark_seat_overload_bench) mark_seat_overload_bench "$p" "$m" "$text" ;;
+        *)                        return 1 ;;
+    esac
+}
+
+# _load_error_classes [json_path]
+# Echoes one class entry per line as: <trigger_order>	<class_name>	<matcher>	<writer>
+# Sorted ascending by trigger_order. Returns 1 if the error_classes block is
+# missing or empty (callers fall back gracefully — no dispatch, no bench).
+_load_error_classes() {
+    local json="${1:-$SEAT_CAPS_JSON}"
+    [[ -f "$json" ]] || return 1
+    jq -r '
+      if (.error_classes // {}) | length == 0 then empty
+      else
+        .error_classes | to_entries[]
+        | [.value.trigger_order // 999, .key, (.value.matcher // ""), (.value.writer // "")]
+        | @tsv
+      end
+    ' "$json" 2>/dev/null | sort -t$'	' -k1,1n || true
+}
+
+# _dispatch_lane_faults <provider> <model> <out> <err>
+# Single entry point for pi-issue-run's post-mortem dispatch. Iterates the
+# error_classes registry by trigger_order; the FIRST class whose matcher
+# returns 0 fires its writer and the function returns (no later class fires).
+# This is the "one writer wins, no double-bench" contract: a body that matches
+# two classes (e.g. a 503 storm that also mentions "limit") gets benched by
+# the lowest trigger_order class only.
+#
+# Returns 0 if any class matched and its writer was attempted (whether the
+# writer wrote a marker or failed-open), 1 if no class matched.
+_dispatch_lane_faults() {
+    local p="$1" m="$2" out="$3" err="$4"
+    local order cls matcher writer
+    while IFS=$'	' read -r order cls matcher writer; do
+        [[ -n "$cls" && -n "$matcher" && -n "$writer" ]] || continue
+        if _matcher_dispatch "$matcher" "$out" "$err"; then
+            if _writer_dispatch "$writer" "$p" "$m" "$out"$'
+'"$err"; then
+                return 0
+            fi
+            seat_log "dispatch: $cls matcher fired but writer $writer failed-open for $p/$m"
+            return 0
+        fi
+    done < <(_load_error_classes)
+    return 1
+}
+
 # --- quota/cap bench (fleet-ops#90) ----------------------------------------
 # A provider that returns a hard cap/quota 429 with an advertised reset window
 # (ClinePass "weekly Clinepass limit ... resets in 1d 11h", devin 15-min 429,

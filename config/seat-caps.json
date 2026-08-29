@@ -248,5 +248,22 @@
       "VITEST_MAX_WORKERS": "2",
       "PLAYWRIGHT_WORKERS": "1"
     }
+  },
+  "_comment_error_classes": "fleet-ops#859: data-driven lane-fault registry. pi-issue-run iterates this map by trigger_order, calling _matcher_dispatch <matcher> <out> <err> once per class; the FIRST match fires its writer and stops (one writer wins, no double-bench). This replaces the former hard-coded quota-cap and 503-overload dispatch blocks, so a future lane-fault class is a config-only addition (a row in seat-caps.json + a matcher function + a case branch in _matcher_dispatch / _writer_dispatch), not a third copy of the three-file pattern. The writers keep their own provider-default resolution (quota_bench_default_s / 503_bench_default_s in the provider rows below); this map is dispatch wiring only, not the default-window value. spawn_fail and mid_session_death are NOT here: they have time-based guards (spawn_elapsed < SPAWN_FAIL_MAX_S / > SPAWN_FAIL_MAX_S) that the generic matcher contract cannot express, so they stay as explicit blocks in pi-issue-run.",
+  "error_classes": {
+    "quota_bench": {
+      "matcher": "is_quota_cap_error",
+      "writer": "mark_seat_quota_bench",
+      "default_window_s_seconds": "quota_bench_default_s",
+      "trigger_order": 2,
+      "description": "Hard cap / quota wall: weekly ClinePass, devin 15-min message rate limit, INFERENCE_CAP_ERROR. Bench until advertised reset window or provider default."
+    },
+    "overload_bench": {
+      "matcher": "is_overload_error",
+      "writer": "mark_seat_overload_bench",
+      "default_window_s_seconds": "503_bench_default_s",
+      "trigger_order": 3,
+      "description": "503 / upstream-overload storm (commandcode minimax-m3-free, fleet-ops#652). Bench until Retry-After or provider overload default."
+    }
   }
 }
