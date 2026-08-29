@@ -431,6 +431,45 @@ groups:
           summary: "gh-derived Prometheus families stale for 45+ minutes"
           description: "Repair worker: run the exporter (`systemctl --user start fleet-metrics-export.service`), check gh auth/rate limit (`gh auth status`; `gh api rate_limit`), and fix the refresh path in fleet-metrics-export.py (`_cached_json` / PR_CACHE_TTL=30m). 45m is 1.5x the cache cadence so routine expiry never fires."
 
+  - name: fleet_gh_rate_limit_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern). The exporter
+      # writes fleet_gh_rate_limit_fetched_seconds on every successful
+      # gh rate_limit fetch (fleet-ops#1350). absent() catches a missing
+      # file; time()-timestamp catches a frozen file (textfile collector
+      # keeps the last scrape). 30m is 30x the 60s exporter cadence, so
+      # routine cache misses never fire but a dead fetcher path does.
+      - alert: FleetGhRateLimitAbsent
+        expr: absent(fleet_gh_rate_limit_fetched_seconds) or (time() - fleet_gh_rate_limit_fetched_seconds) > 1800
+        for: 10m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "gh rate-limit metrics absent — the #1350 governor path is missing or dead"
+          description: "Repair worker: fleet_gh_rate_limit_fetched_seconds is absent or older than 30m. fleet-metrics-export.py must call `gh api rate_limit` and write the side-car state file. Check journalctl --user -u fleet-metrics-export.service for the fetcher error, gh auth (`gh auth status`), and the PR_CACHE_DIR/gh-rate-limit-cache.json cache. The throttle gate in pi-intake-tick.sh fail-OPENS on a missing state file, so a dead fetcher silently removes the API budget governor — fix the fetcher, not the throttle."
+
+      # Sustained-exhaustion TREND alert (fleet-ops#1350). The 20% threshold
+      # is the soft throttle (intake holds claims this tick). A TREND alert
+      # (delta over 6h) catches SUSTAINED exhaustion — a busy hour that
+      # bounces off 18% briefly is not a fault, but staying below 20% for
+      # most of a 6h window means the worker count is past the API budget.
+      # The `low` gauge is the exporter's precomputed 0/1 (any of the
+      # three resources below 20% → 1), so the alert does not re-derive
+      # the threshold. max() over all resources because exhaustion on ANY
+      # resource is a fault; do not narrow the scope with avg() (a 5000/hr
+      # core budget at 19% is a real problem even with search/graphql
+      # healthy). offset 6h cannot fire on the first 6h after deploy.
+      - alert: FleetGhRateLimitLowSustained
+        expr: (max(fleet_gh_rate_limit_low) - max(fleet_gh_rate_limit_low offset 6h)) > 0
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "gh rate-limit has been below 20% for 6+ hours"
+          description: "max(fleet_gh_rate_limit_low{resource=...}) flipped from 0 to 1 in the last 6h, sustained 6h. The throttle gate in pi-intake-tick.sh has been holding claims the whole window. A rate-limited fleet is slower than a governed one (Nish 2026-08-27 #1167). Inspect fleet_gh_rate_limit_remaining{resource=\"...\"} to see which resource is exhausted; fleet_gh_rate_limit_reset is the time-to-reset. Recovery: either (1) wait for the window to reset, or (2) reduce the worker count (drop free-lane caps in config/seat-caps.json). The alert is a TREND (delta) not a level so a brief 19% spike does not fire."
+
   - name: fleet_scout_supply
     rules:
       # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
