@@ -245,3 +245,37 @@ The issue says 15-30 minutes; we picked 20 because:
 - **Multi-tenant orgs.** The Worker is single-tenant (Nishfleet); the
   secret is bound via `wrangler secret`, so multi-tenant would need
   one Worker per tenant.
+
+## Incident record: FleetGhWebhookReceiverAbsent (fleet-ops#1594)
+
+**Event:** `FleetGhWebhookReceiverAbsent` fired for ~6h on 2026-08-28
+(08:26Z to ~15:56Z). The push channel itself was brand-new — #1524 landed
+~2 minutes before the alert first fired.
+
+**Root cause:** #1607 — the receiver's heartbeat prom file used
+single-quoted label values (Python `repr()`). node-exporter's textfile
+collector silently drops those, so `absent(fleet_gh_webhook_receiver_last_green_seconds)`
+fired forever regardless of channel health. This was the first-day
+teething of a new organ, not a long-standing drift; the fix (#1607),
+the canonical intake-repos path (#1659), and the annotation pointing at
+the real cause (#1954) all landed within hours.
+
+**Prevention already shipped (this class is mechanically guarded):**
+- Dead-man (`gh-webhook-canary-deadman`) reads BOTH the canary series and
+  the receiver's own heartbeat (default `/var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom`),
+  so canary-green-but-receiver-absent is paged (#1569).
+- `gh-webhook-receiver.service` carries `Restart=on-failure`, so a crash
+  auto-recovers at the machine level.
+- Offline lock tests pin the label format (#1607), the HMAC/dispatch
+  contract, the organ `absent()` rules, and the live-end-to-end path.
+
+**Restore + live proof (2026-08-29):** receiver restarted onto the
+canonical deploy-clone intake path (`enrolled=['0509','fleet-ops']`);
+live e2e (`bash tests/gh-webhook-receiver-live-e2e.test.sh`) shows
+canary → receiver → prom file → node-exporter → Prometheus with the
+`FleetGhWebhookReceiverAbsent` expression CLEAR.
+
+**Remaining deferred gate:** the five offline lock tests are tracked but
+not wired into `.github/workflows/ci.yml`, so the #1594 regression has
+no pre-merge gate yet. This is a workflow change the worker App token
+cannot push; filed as #1969 for Nish's scope.
