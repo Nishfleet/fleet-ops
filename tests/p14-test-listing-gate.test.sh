@@ -81,6 +81,12 @@ live_skip[pi-worker-execstart-live.test.sh]=1
 live_skip[opus-heartbeat-allowlist-gate.test.sh]=1
 live_skip[opus-heartbeat-follow-through.test.sh]=1
 live_skip[opus-heartbeat-replayed-frozen-snapshot.test.sh]=1
+# fleet-ops#1740 added gh-webhook-receiver-live-e2e.test.sh (live webhook →
+# Prometheus → alert e2e) but omitted the live_skip entry, leaving main red
+# on this required gate. The test skips gracefully in hosted CI (no live
+# receiver/Prometheus) and only runs on the VPS, so live_skip is the correct
+# classification, not a ci.yml listing (which would need workflow scope).
+live_skip[gh-webhook-receiver-live-e2e.test.sh]=1
 
 # Existing tests that are not yet listed or hosted. These pre-date the gate.
 # When a test is listed or hosted, remove it from this list.

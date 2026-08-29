@@ -598,8 +598,8 @@
     {
       "id": "led-worker-lane-refresh",
       "source": "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)",
-      "mechanism": "Heartbeat MiniMax M3 catalog canary on commandcode and opencode: fail-loud if seat-caps allowlists a billing MiniMax M3 slug or a free-form slug whose models.json cost is non-zero; observe-to-open detector auto-files a prove-free + wire ticket when a -free or *-pass/ MiniMax M3 slug appears unwired. Paid-flash watcher auto-files a cheapest-and-best bench+wire ticket when Qwen 3.8 flash or GLM 5.3 flash appears in Pi's catalog on openrouter/zenmux.",
-      "proof": "bin/opencode-m3-catalog-canary; tests/opencode-m3-catalog-canary.test.sh; bin/fleet-paid-flash-canary; tests/paid-flash-canary.test.sh; fleet-heartbeat-tier1 blocks 17-18; fleet-ops#545",
+      "mechanism": "Heartbeat MiniMax M3 catalog canary on commandcode and opencode: fail-loud if seat-caps allowlists a billing MiniMax M3 slug or a free-form slug whose models.json cost is non-zero; observe-to-open detector auto-files a prove-free + wire ticket when a -free or *-pass/ MiniMax M3 slug appears unwired. Paid-flash watcher auto-files a cheapest-and-best bench+wire ticket when a still-parked flash slug (Qwen 3.8 flash) appears in Pi's catalog on openrouter/zenmux; GLM 5.3 flash watch removed once #384 wired it free on cline (#1739) and the paid-lane question was resolved (DeepSeek V4 flash cheaper+best). The paid flash lane itself is wired: config/seat-caps.json providers.openrouter.models allowlists deepseek/deepseek-v4-flash-0731 (metered, $0.045/$0.09 per M — cheapest+best of the three candidates), pinned by tests/seat-caps-citation.test.sh scenario 8.",
+      "proof": "bin/opencode-m3-catalog-canary; tests/opencode-m3-catalog-canary.test.sh; bin/fleet-paid-flash-canary; tests/paid-flash-canary.test.sh; fleet-heartbeat-tier1 blocks 17-18; config/seat-caps.json providers.openrouter; tests/seat-caps-citation.test.sh scenario 8; fleet-ops#545; fleet-ops#384",
       "status": "enforced"
     },
     {
