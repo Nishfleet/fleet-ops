@@ -651,6 +651,24 @@ GIT_REAL_ERR_RE = re.compile(
     r"|error: pathspec)",
     re.I,
 )
+# `systemctl status <unit>` piped through `head`/`tail`/`grep` loses the
+# exit code: bash has no `pipefail`, so the pipeline exit is the last
+# command's (head, 0) and Pi sets isError=false. systemd still prints
+# `× unit` and `Active: failed (Result: exit-code)` for a failed unit.
+# Detect this from the command and the output, not the exit status
+# (fleet-ops#879). This does NOT flag `systemctl --user --failed` (no
+# `status` in the command) or `systemctl status` of an active/running unit.
+SYSTEMCTL_STATUS_RE = re.compile(
+    r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
+    r"systemctl\b[^|;&\n]*?\bstatus\b",
+    re.I,
+)
+# systemd uses `×` (multiplication sign) for a failed/inactive unit and
+# `●`/`○` for a healthy one. The `Active: failed` line is the signal.
+SYSTEMCTL_FAILED_RE = re.compile(
+    r"^\s*×\s+\S+(?:.*\n)*?\s*Active:\s+failed\b",
+    re.M | re.I,
+)
 # Unquoted assistant report. Tight on the standing-rule verbs.
 # \b403\b and "not accessible by integration" are the live #1253
 # `gh api /user` App-token 403 class (parallel to \b404\b for #698).
@@ -812,6 +830,21 @@ def _git_canonical_probe(text: str) -> bool:
     return True
 
 
+def _systemctl_status_failed(command: str, text: str) -> bool:
+    """True if the command is `systemctl status <unit>` and the output
+    shows a failed unit (`× unit ... Active: failed`).
+
+    This catches the piped-through-head case where isError is false
+    because `head` exits 0, but the unit is actually failed
+    (fleet-ops#879). It does not flag a successful
+    `systemctl --user --failed` listing (no `status` in the command) or
+    `systemctl status` of an active/running unit.
+    """
+    if not SYSTEMCTL_STATUS_RE.search(command):
+        return False
+    return bool(SYSTEMCTL_FAILED_RE.search(text))
+
+
 def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
     if code is None:
         return False
@@ -886,6 +919,11 @@ def result_failed(
     # tests/fleet-failed-command-edit-schema-validation.test.sh tests
     # pin the multi-edit and schema-validation siblings.
     # exemption is added here.
+    # `systemctl status` of a failed unit can show `× unit` and
+    # `Active: failed` even when the command is piped through `head`
+    # and isError=false (fleet-ops#879).
+    if _systemctl_status_failed(command, text):
+        return True, text
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
     code = _exit_code(text)
