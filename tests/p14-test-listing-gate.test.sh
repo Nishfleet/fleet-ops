@@ -108,7 +108,6 @@ known_orphans=(
   org-ruleset-skip-detector.test.sh
   pi-issue-run-defensive-mkdir.test.sh
   pi-issue-run-mid-session-bench.test.sh
-  pi-issue-run-noop-bench.test.sh
   pi-packet-run.test.sh
   pi-scout-seat-rotation.test.sh
   pi-transport-check-dropin-428.test.sh
