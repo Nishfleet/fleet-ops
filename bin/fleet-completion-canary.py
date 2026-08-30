@@ -404,7 +404,7 @@ def unit_status(unit: str | None) -> tuple[str, str]:
             return "exit-code", "inactive"
         if verdict == "success":
             return "success", "inactive"
-        if journal_has_started(jtext):
+        if journal_has_started(jtext) or journal_started(unit):
             # Loaded and ran to completion; no "Failed" line (fleet-ops#1295).
             return "success", "inactive"
         # No journal at all — the unit never started under this name.
@@ -900,6 +900,36 @@ def journal_text(unit: str) -> str:
     return r.stdout or ""
 
 
+def journal_started(unit: str) -> bool:
+    """Return True if the unit's journal carries its systemd 'Started' line.
+
+    journal_text() truncates to the last 20 lines, but the
+    'Started <unit>.service' line is always the FIRST journal entry. A
+    verbose pi transcript pushes it out of that window, so
+    journal_has_started(text) misses it and a --collect unit that genuinely
+    ran to completion is classified 'orphan' — its dispatch-ledger entry
+    stays open until the deadline, then the SAME packet is re-dispatched
+    (duplicate repair work) and exported as
+    fleet_chain_stalled{plane=dispatch,hop=run} (live fleet-ops#2414: two
+    24-line journals, Started at line 1, hidden by -n 20). Grep the full
+    unit journal journald-side (-g is bounded, -n 1 short-circuits) for the
+    exact start marker instead; the marker is unique to systemd's own line
+    and absent from a unit that never started.
+    """
+    name = unit.rstrip(".service")
+    try:
+        r = subprocess.run(
+            [JOURNALCTL, "--user", "-u",
+             name if unit.endswith(".service") else f"{name}.service",
+             "-o", "cat", "-g", rf"^Started {re.escape(name)}\.service\b",
+             "-n", "1"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return bool((r.stdout or "").strip())
+
+
 def journal_verdict(text: str) -> str | None:
     """Return 'success' / 'failed' from journal text, or None.
 
@@ -965,7 +995,11 @@ def classify_dispatch(rec: dict) -> str:
     # No verdict from standard strings. A --collect unit that was loaded and
     # started (journal has "Started <unit>.service") but never logged
     # "Succeeded" (common with --collect) completed without a failure log.
-    if journal_has_started(jtext):
+    if journal_has_started(jtext) or journal_started(unit):
+        # journal_has_started only sees the last 20 journal lines; the
+        # 'Started' marker is the FIRST line, so a verbose transcript hides
+        # it and a completed run would be orphaned until the deadline
+        # (fleet-ops#2414). journal_started scans the full journal for it.
         return "completed-success"
     return "orphan"
 
