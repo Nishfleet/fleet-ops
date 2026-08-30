@@ -67,6 +67,15 @@ ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}
 # claimed after a restore. Overridable for tests so a GitHub-hosted runner
 # does not have to write under /home/nish.
 CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
+# fleet-ops#2133: reclaim cooldown. When pi-issue-failed-reap releases a
+# failed worker's claim back to agent-ready, it writes a per-issue
+# .cooldown marker file (UTC timestamp). Intake skips the issue for this
+# many seconds so the spawn-die-respawn loop is broken: the seat-health
+# ledger gets time to bench the killing seat, and the issue does not
+# immediately re-enter the claimable pool. 900s = 15min is > the seat
+# bench backoff (300s) and ~2x the intake timer interval, so recovery is
+# automatic once the cooldown expires. Overridable for tests.
+RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
@@ -433,20 +442,68 @@ for i in "${!numbers[@]}"; do
         fi
     fi
 
+    # fleet-ops#2133: reclaim cooldown. A failed worker's claim was released
+    # by pi-issue-failed-reap, which wrote a .cooldown marker. Skip this issue
+    # for RECLAIM_COOLDOWN_S so the spawn-die-respawn loop is broken (the
+    # seat-health ledger gets time to bench the killing seat). After expiry,
+    # remove the marker and allow the claim. Checked BEFORE the git fetch /
+    # ls-remote so a cooldown'd issue costs zero network calls this tick.
+    _cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"
+    if [[ -f "$_cooldown_file" ]]; then
+        _cd_ts=$(cat "$_cooldown_file" 2>/dev/null || true)
+        _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null || echo 0)
+        _now_epoch=$(date -u +%s)
+        _cd_age=$(( _now_epoch - _cd_epoch ))
+        if (( _cd_epoch > 0 && _cd_age < RECLAIM_COOLDOWN_S )); then
+            echo "issue $N ($title): skipped-reclaim-cooldown (age=${_cd_age}s < ${RECLAIM_COOLDOWN_S}s)"
+            continue
+        fi
+        # Cooldown expired — clear the marker so the issue is claimable again.
+        rm -f "$_cooldown_file" 2>/dev/null || true
+    fi
+
     # Per-issue fetch (keeps origin/main fresh)
     git -C "$REPO_DIR" fetch origin 2>&1 || {
         echo "git fetch origin failed for issue $N" >&2
         exit 1
     }
 
-    # Check if another agent already holds the claim branch
+    # Check if another agent already holds the claim branch.
+    # fleet-ops#2133: a bare skip on ANY claim branch left stale claims stuck
+    # forever (skipped-claim-lost) — a worker that died without the reaper
+    # firing, or exited 0 without opening a PR, left a branch that intake
+    # skipped every tick while the issue stayed agent-ready. Now: if the
+    # worker unit is live OR an open PR exists from this branch, skip
+    # correctly (work in flight / in review). Otherwise the claim is stale —
+    # delete the branch and fall through to re-claim.
     remote=$(git -C "$REPO_DIR" ls-remote origin "refs/heads/claim/issue-$N" 2>&1) || {
         echo "git ls-remote failed for issue $N: $remote" >&2
         exit 1
     }
     if [[ -n "$remote" ]]; then
-        echo "issue $N ($title): skipped-claim-lost"
-        continue
+        _claim_unit="pi-issue@${REPO}-${N}.service"
+        _claim_state=$("$SYSTEMCTL" --user is-active "$_claim_unit" 2>/dev/null || true)
+        if [[ "$_claim_state" == "active" || "$_claim_state" == "activating" ]]; then
+            echo "issue $N ($title): skipped-claim-live (worker $_claim_unit $_claim_state)"
+            continue
+        fi
+        # No live worker. Is there an open PR from this branch? If so, the
+        # work is done and in review — skip (do not re-claim finished work).
+        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL#*/}:claim/issue-$N&per_page=1" 2>/dev/null || true)
+        _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
+        if (( _claim_pr_count > 0 )); then
+            echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"
+            continue
+        fi
+        # Stale claim: no live worker, no open PR. The worker died without
+        # the reaper firing (or the reaper failed transiently). Release the
+        # stale branch so this tick can re-claim it cleanly.
+        if git -C "$REPO_DIR" push origin ":refs/heads/claim/issue-$N" >/dev/null 2>&1; then
+            echo "issue $N ($title): released-stale-claim (no live worker, no open PR — branch deleted, re-claiming)"
+        else
+            echo "issue $N ($title): skipped-claim-lost (stale branch delete failed; will retry next tick)"
+            continue
+        fi
     fi
 
     # One body fetch serves the blocker filter (blocked-on: in body).

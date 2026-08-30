@@ -208,6 +208,11 @@ jobs:
         bash tests/pi-issue-start-packet-regen.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
         bash tests/pi-issue-failed-reap.test.sh
+        # fleet-ops#2133: reclaim cooldown + stale-claim release break the
+        # spawn-die-respawn wedge (reaper writes cooldown marker, intake
+        # skips for 15min, stale claims with no live worker/PR are released).
+        bash tests/pi-issue-failed-reap-cooldown.test.sh
+        bash tests/pi-intake-tick-reclaim-cooldown.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/fleet-claim.test.sh
