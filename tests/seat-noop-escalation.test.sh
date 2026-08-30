@@ -1,24 +1,32 @@
 #!/usr/bin/env bash
 # tests/seat-noop-escalation.test.sh
 #
-# fleet-ops#1408: a seat that no-ops or spawn-fails repeatedly must NOT be
-# re-seated in a loop. Before this fix, mark_seat_spawn_fail and
-# mark_seat_empty_run benched for a FIXED backoff (300s / 900s) regardless of
-# consecutive_failure_count, so a seat that no-ops every cycle re-entered
-# rotation every 5 min and burned 12 attempts in 2h on the same seat
-# (opencode/nemotron-3-ultra-free hit count=16 at a flat 300s bench).
+# fleet-ops#1408: a seat that fails repeatedly must NOT be re-seated in a
+# loop. Before this fix, mark_seat_spawn_fail benched for a FIXED backoff
+# (300s) regardless of consecutive_failure_count, so a seat that failed every
+# cycle re-entered rotation every 5 min and burned 12 attempts in 2h on the
+# same seat (opencode/nemotron-3-ultra-free hit count=16 at a flat 300s
+# bench).
 #
-# The fix: escalate the bench backoff by consecutive_failure_count so each
-# repeated failure benches the seat longer, breaking the re-seat loop. The
-# count is already tracked and reset to 0 by seat-health.ts on a healthy
-# in-session observation, so the escalation is fair — a recovered seat is
-# re-tried at the base backoff, not a stale-high one. seat_usable fail-opens
-# after usable_at regardless of count, so no seat is walled permanently.
+# The fix: escalate the SPAWN-FAIL bench (a real provider wall: non-zero
+# exit, HTTP 429/402/500, spawn ETIMEDOUT) by consecutive_failure_count so
+# each repeated failure benches the seat longer, breaking the re-seat loop.
+# fleet-ops#2343: EMPTY RUNS are NOT a wall and do NOT take that ladder — a
+# provider no-op (exit 0, stdout=0B) is a transient hiccup on an otherwise
+# healthy seat, and the #1408 empty-run ladder (900 -> 1800 -> 3600 -> 7200s)
+# churned healthy seats (deepseek-v4-flash-0731 benched for hours after 3
+# no-ops in 2h, fleet-ops-1384). The empty-run cooldown is FLAT
+# (EMPTY_RUN_BACKOFF_S, 900s); only the #1362 failure-ceiling park (60
+# consecutive = 24h wall) ever lengthens it. The count is still tracked and
+# reset to 0 by seat-health.ts on a healthy in-session observation, and
+# seat_usable fail-opens after usable_at regardless of count, so no seat is
+# walled permanently.
 #
 # This test proves:
 #   (1) repeated spawn-fail benches escalate (300 -> 600 -> 1200s, capped).
-#   (2) repeated empty-run benches escalate (900 -> 1800 -> 3600s, capped).
-#   (3) the cap holds (no unbounded growth).
+#   (2) repeated empty-run benches stay FLAT at 900s (fleet-ops#2343), even
+#       past the old 7200s cap point.
+#   (3) the spawn-fail cap holds (no unbounded growth).
 #   (4) a non-empty completion still exits 0 (work-complete is not punished).
 #
 # Runs entirely offline: scratch ledger, scratch state, no network, no systemd.
@@ -133,49 +141,42 @@ dc=$((uc - prev_epoch))
   || fail "spawn-fail backoff after 10 failures = ${dc}s, exceeds cap ${cap}s"
 ok "spawn-fail backoff capped at ~${dc}s (cap=${cap}s)"
 
-# --- (2) empty-run escalation: 900 -> 1800 -> 3600s ------------------------
+# --- (2) empty-run FLAT cooldown: 900s at every count (fleet-ops#2343) ---
+# A provider no-op (exit 0, < OUT_MIN stdout) is NOT a quota/rate/5xx wall
+# and must NOT escalate by consecutive_failure_count — the #1408 ladder
+# (900 -> 1800 -> 3600 -> 7200s) churned HEALTHY seats (3 empty runs in 2h
+# on openrouter/deepseek/deepseek-v4-flash-0731, fleet-ops-1384, benched
+# 900s and re-seated in-process each time, ladder pushing a working seat out
+# for hours). The no-op cooldown is FLAT: every empty run benches
+# EMPTY_RUN_BACKOFF_S; only the #1362 failure-ceiling park (60 consecutive,
+# 24h wall) ever lengthens it.
 rm -f "$lf"
 ebase=900
-mark_seat_empty_run "$p" "$m" "test:empty:1" >/dev/null 2>&1 || fail "mark_seat_empty_run #1 failed"
-ec1=$(jq -r '.consecutive_failure_count' "$lf")
-prev_epoch=$(date -u +%s)
-eu1=$(usable_at_epoch "$lf")
-ed1=$((eu1 - prev_epoch))
-[[ "$ec1" == "1" ]] || fail "count after 1st empty-run = $ec1, want 1"
-(( ed1 >= ebase - 30 && ed1 <= ebase + 30 )) \
-  || fail "1st empty-run backoff = ${ed1}s, want ~${ebase}s"
-ok "empty-run count=1 backoff=${ed1}s (~${ebase}s, base)"
+for i in 1 2 3; do
+    mark_seat_empty_run "$p" "$m" "test:empty:${i}" >/dev/null 2>&1 || fail "mark_seat_empty_run #${i} failed"
+    ec=$(jq -r '.consecutive_failure_count' "$lf")
+    [[ "$ec" == "$i" ]] || fail "count after ${i} empty-runs = $ec, want $i"
+    prev_epoch=$(date -u +%s)
+    eu=$(usable_at_epoch "$lf")
+    ed=$((eu - prev_epoch))
+    (( ed >= ebase - 30 && ed <= ebase + 30 )) \
+      || fail "empty-run #${i} backoff = ${ed}s, want ~${ebase}s (FLAT — no count ladder, fleet-ops#2343)"
+    ok "empty-run count=${i} backoff=${ed}s (~${ebase}s, flat)"
+done
 
-mark_seat_empty_run "$p" "$m" "test:empty:2" >/dev/null 2>&1 || fail "mark_seat_empty_run #2 failed"
-ec2=$(jq -r '.consecutive_failure_count' "$lf")
-prev_epoch=$(date -u +%s)
-eu2=$(usable_at_epoch "$lf")
-ed2=$((eu2 - prev_epoch))
-[[ "$ec2" == "2" ]] || fail "count after 2nd empty-run = $ec2, want 2"
-(( ed2 >= 2*ebase - 30 && ed2 <= 2*ebase + 30 )) \
-  || fail "2nd empty-run backoff = ${ed2}s, want ~$((2*ebase))s (escalated)"
-ok "empty-run count=2 backoff=${ed2}s (~$((2*ebase))s, escalated)"
-
-mark_seat_empty_run "$p" "$m" "test:empty:3" >/dev/null 2>&1 || fail "mark_seat_empty_run #3 failed"
-ec3=$(jq -r '.consecutive_failure_count' "$lf")
-prev_epoch=$(date -u +%s)
-eu3=$(usable_at_epoch "$lf")
-ed3=$((eu3 - prev_epoch))
-[[ "$ec3" == "3" ]] || fail "count after 3rd empty-run = $ec3, want 3"
-(( ed3 >= 4*ebase - 30 && ed3 <= 4*ebase + 30 )) \
-  || fail "3rd empty-run backoff = ${ed3}s, want ~$((4*ebase))s (escalated)"
-ok "empty-run count=3 backoff=${ed3}s (~$((4*ebase))s, escalated)"
-
-ecap="${EMPTY_RUN_BACKOFF_CAP_S:-7200}"
+# --- (3b) flat cooldown holds at higher counts (no hidden ladder) ----------
+# Eight consecutive no-ops earlier breached the old 7200s cap; under
+# fleet-ops#2343 the cooldown must still be ~900s (only the #1362 60-failure
+# park lengthens it).
 for _ in 4 5 6 7 8; do
-    mark_seat_empty_run "$p" "$m" "test:empty:cap" >/dev/null 2>&1 || true
+    mark_seat_empty_run "$p" "$m" "test:empty:flat" >/dev/null 2>&1 || true
 done
 prev_epoch=$(date -u +%s)
 euc=$(usable_at_epoch "$lf")
 edc=$((euc - prev_epoch))
-(( edc <= ecap + 30 )) \
-  || fail "empty-run backoff after 8 failures = ${edc}s, exceeds cap ${ecap}s"
-ok "empty-run backoff capped at ~${edc}s (cap=${ecap}s)"
+(( edc >= ebase - 30 && edc <= ebase + 30 )) \
+  || fail "empty-run backoff after 8 failures = ${edc}s, want still ~${ebase}s (flat cooldown)"
+ok "empty-run backoff after 8 no-ops still ~${edc}s (flat cooldown, no ladder)"
 
 # --- (4) a non-empty completion is NOT punished: seat_usable after bench ---
 # A benched seat is unusable only until usable_at; after it expires the seat
@@ -205,4 +206,4 @@ if ! seat_usable "$p" "$m"; then
 fi
 ok "expired bench fail-opens — a recovered seat is re-eligible (work-complete not punished)"
 
-ok "seat no-op escalation: repeated failures bench longer, capped, fail-open on recovery"
+ok "seat failure bench: spawn-fail escalates (capped), empty-run stays flat (fleet-ops#2343), fail-open on recovery"
