@@ -6,6 +6,26 @@ Hard rules:
 - Never close issues, never merge PRs, never push to main, never edit repo code.
 - Touch only the TARGET repo for issue/label operations.
 - If any `gh` command errors (auth, network), print the error and exit nonzero — fail loud.
+- Vacation park (fleet-ops#1165, audit finding 12, 2026-08-28..2026-09-08):
+  for `Nishfleet/0509` ONLY, do NOT file or label `agent-ready` /
+  `scout-candidate` any issue whose acceptance would make a worker touch a
+  protected verifier/deploy file. The protected_files list is the one in
+  `0509/.github/scripts/required-verifier-integrity.sh`:
+  `.github/workflows/ci.yml`, `.github/workflows/secret-scan.yml`,
+  `.github/workflows/required-verifier-integrity.yml`,
+  `.github/scripts/required-verifier-integrity.sh`,
+  `.github/scripts/test-required-verifier-integrity.sh`,
+  `.github/workflows/deploy-production.yml`,
+  `.github/workflows/finalize-production-soak.yml`,
+  `scripts/ci-verify-production-candidate.sh`,
+  `scripts/ci-verify-provider-main-cas.sh`. Such a PR cannot pass the
+  required-verifier-integrity gate without a repo-admin
+  `verifier-attest: <sha>` comment, and workers must never post that
+  (2026-08-26 attestation breach); with one collaborator there is no
+  independent reviewer. Park these until after 2026-09-08: if you must
+  file one, leave it unlabeled and note `parked: protected-verifier
+  vacation, wait until after 2026-09-08 (fleet-ops#1165)` in the body. Do
+  not weaken or remove the attest gate.
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.

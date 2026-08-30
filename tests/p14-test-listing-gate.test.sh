@@ -316,6 +316,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-claim-set-e-guard
   || fail "pi-intake-tick-claim-set-e-guard.test.sh must not be a known orphan (fleet-ops#2071)"
 ok "pi-intake-tick-claim-set-e-guard.test.sh is pinned in the P14 reachable set (fleet-ops#2071)"
 
+# fleet-ops#1165: hard-pin the host line for the protected-verifier
+# vacation park test. Hosted from tests/pi-intake-run.test.sh (already in
+# P14). Named pin so a future drop of the host line cannot park the test
+# on known_orphans to silence the generic $bad[] message — it fails by
+# name here first, same shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-protected-verifier-vacation\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-protected-verifier-vacation.test.sh (fleet-ops#1165)"
+[[ -n "${reachable[pi-intake-tick-protected-verifier-vacation.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-protected-verifier-vacation.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#1165)"
+[[ -z "${known_orphan_set[pi-intake-tick-protected-verifier-vacation.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-protected-verifier-vacation.test.sh must not be a known orphan (fleet-ops#1165)"
+ok "pi-intake-tick-protected-verifier-vacation.test.sh is pinned in the P14 reachable set (fleet-ops#1165)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
