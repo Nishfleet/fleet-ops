@@ -232,6 +232,18 @@ bash "$here/fleet-waste-ledger.test.sh"
 # .github/workflows/**).
 bash "$here/seat-health-classifier.test.sh"
 
+# fleet-ops#1422: closure condition for the runaway-seat quarantine. The
+# test imports the live extension at
+# $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
+# asserts that a seat past the quarantine threshold (20) gets an
+# exponentially growing wall (1h floor -> 24h cap) instead of a flat
+# 30s/900s re-probe window, and that a healthy write resets the count.
+# CI skips when the extension is missing; on the VPS the test fails against
+# the pre-fix extension and passes once computeUsableAt/writeSeatLedgerEntry
+# quarantine. Hosted here so P14 runs it without a workflow-file edit (the
+# worker App cannot push .github/workflows/**).
+bash "$here/seat-health-quarantine.test.sh"
+
 # fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
 # The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
 #   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
