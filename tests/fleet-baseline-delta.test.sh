@@ -286,6 +286,17 @@ set -e
 [[ ! -f "$prom7" ]] || fail "failed run must not write the heartbeat"
 ok "7. prometheus down fails loud and skips the heartbeat"
 
+# --- 7b. non-http(s) URL is refused (scheme allowlist, sgscan hardening) ---
+set +e
+"$bin" --prom-url "file:///etc/hostname" --out-dir "$scratch/out7b" \
+  --prom-file "$scratch/h7b.prom" --timeout 1 --now 1787800000 >/dev/null 2>"$scratch/scheme.err"
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "file:// URL must be refused"
+grep -qi 'http(s)' "$scratch/scheme.err" \
+  || fail "scheme refusal must name http(s), got $(cat "$scratch/scheme.err")"
+ok "7b. non-http(s) prometheus URL is refused"
+
 # --- 8. MANIFEST + install.sh ----------------------------------------------
 grep -Fxq "bin/fleet-baseline-delta /home/nish/.local/bin/fleet-baseline-delta" "$manifest" \
   || fail "MANIFEST missing bin/fleet-baseline-delta"

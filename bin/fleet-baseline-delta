@@ -267,6 +267,14 @@ def parse_matrix(payload: dict[str, Any]) -> list[tuple[dict[str, str], list[tup
 
 
 def http_json(url: str, path: str, params: dict[str, str], timeout: float, method: str = "GET") -> dict[str, Any]:
+    # Scheme allowlist: urllib follows file:// and other schemes, so a
+    # mis-set BASELINE_DELTA_PROM_URL must not turn this organ into a local
+    # file reader. Prometheus is http(s) only.
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise RuntimeError(
+            f"prometheus url must be http(s), got scheme {parsed.scheme!r}: {url}"
+        )
     encoded = urllib.parse.urlencode(params)
     if method == "POST":
         req = urllib.request.Request(
