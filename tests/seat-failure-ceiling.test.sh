@@ -27,6 +27,13 @@
 #   (5) fail-open still holds: after the park wall expires the seat is usable
 #       again (a recovered seat is re-eligible; the park is a long cooldown,
 #       not a permanent wall).
+#   (6) fleet-ops#2288 read-side park: an EXTENSION-WRITTEN transient_fault
+#       ledger (flat usable_at window, no bash marker) past the ceiling is
+#       not re-offered on the flat cadence — seat_usable holds it behind the
+#       long wall anchored at observed_at, then fail-opens after the wall
+#       (even while the ledger is still fresh). This is the fence that would
+#       have stopped the live opencode/muse-spark-1.2-contributor-free
+#       re-offer loop (149 straight HTTP 500s) from a stale pre-fix ledger.
 #
 # Runs entirely offline: scratch ledger, scratch state, no network, no systemd.
 
@@ -219,5 +226,83 @@ if ! seat_usable "$p" "$m"; then
     fail "seat_usable returned unusable after park wall expired — fail-open is broken (recovered seat walled)"
 fi
 ok "expired park wall fail-opens — a recovered seat is re-eligible (park is a cooldown, not a permanent wall)"
+
+# --- (6) fleet-ops#2288 read-side park for extension-written transient_fault -
+# The extension (seat-health.ts) writes transient_fault markers with a FLAT
+# usable_at window; the write-side escalation lives in that out-of-repo file.
+# This is the in-repo fence: seat_usable itself holds a transient_fault ledger
+# past SEAT_FAILURE_CEILING behind the long wall anchored at observed_at, so
+# even a stale/pre-fix ledger (the live muse-spark c=149 state) is never
+# re-offered on the flat 30s cadence. Cases:
+#   6a live replay: c=149 transient_fault, fresh -> parked (unusable)
+#   6b below the ceiling (c=59) -> usable
+#   6c stale observed (past the park wall too) -> usable (fail-open)
+#   6d short wall, observed OLDER than the wall (still fresh) -> usable
+#      (the park branch itself fail-opens, not the stale branch)
+#   6e short wall, observed NEWER than the wall -> parked
+#   6f healthy ledger with a high count (extension reset) -> usable
+p="opencode"; m="muse-spark-1.2-contributor-free"
+lf=$(ledger_file "$p" "$m")
+
+# 6a: the exact live snapshot shape (c=149, transient_fault, fresh).
+rm -f "$lf"
+seed_ledger "$p" "$m" 149 "transient_fault"
+if seat_usable "$p" "$m"; then
+    fail "6a: seat_usable returned USABLE for a c=149 transient_fault ledger (read-side park missing)"
+fi
+ok "6a: c=149 transient_fault ledger is parked (read-side long wall holds)"
+
+# 6b: one below the ceiling is not parked (flat behaviour unchanged).
+rm -f "$lf"
+seed_ledger "$p" "$m" $((ceil - 1)) "transient_fault"
+if ! seat_usable "$p" "$m"; then
+    fail "6b: seat_usable parked a c=$((ceil - 1)) transient_fault ledger (must stay below the ceiling)"
+fi
+ok "6b: c=$((ceil - 1)) transient_fault ledger is usable (below the ceiling, no park)"
+
+# 6c: observed at 25h (stale AND past the default 24h park wall) fail-opens.
+rm -f "$lf"
+seed_ledger "$p" "$m" 149 "transient_fault"
+old_iso=$(date -u -d '@'$(( $(date -u +%s) - 90000 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+tmp="$scratch/6c.json"
+jq --arg o "$old_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if ! seat_usable "$p" "$m"; then
+    fail "6c: seat_usable held a c=149 transient_fault ledger past the park wall — fail-open broken"
+fi
+ok "6c: observed past the park wall fail-opens (one probe per wall, not forever)"
+
+# 6d/6e: short park wall to prove the PARK branch fail-opens on its own clock
+# (observed still fresh) and holds when the wall has not elapsed.
+export SEAT_PARK_WALL_S=30
+rm -f "$lf"
+seed_ledger "$p" "$m" 149 "transient_fault"
+# observed 120s ago: fresh (<6h) but the 30s park wall already elapsed.
+mid_iso=$(date -u -d '@'$(( $(date -u +%s) - 120 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+tmp="$scratch/6d.json"
+jq --arg o "$mid_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if ! seat_usable "$p" "$m"; then
+    fail "6d: park branch did not fail-open after the short wall elapsed (fresh observed)"
+fi
+ok "6d: short wall elapsed while observed fresh -> usable (park branch fail-open)"
+
+rm -f "$lf"
+seed_ledger "$p" "$m" 149 "transient_fault"
+# observed 10s ago: fresh and inside the 30s wall.
+now_iso=$(date -u -d '@'$(( $(date -u +%s) - 10 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+tmp="$scratch/6e.json"
+jq --arg o "$now_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if seat_usable "$p" "$m"; then
+    fail "6e: short wall active (observed 10s ago) should be parked"
+fi
+ok "6e: inside the park wall -> parked even with a flat usable_at"
+export SEAT_PARK_WALL_S=86400
+
+# 6f: a healthy ledger with a high count (the extension's reset shape) is usable.
+rm -f "$lf"
+seed_ledger "$p" "$m" 149 "healthy"
+if ! seat_usable "$p" "$m"; then
+    fail "6f: healthy ledger with high count must not park (count resets on success)"
+fi
+ok "6f: healthy ledger is usable regardless of count (recovered seat re-eligible)"
 
 ok "seat failure ceiling: parks past 60 consecutive failures, emits one metric, fail-opens on recovery"

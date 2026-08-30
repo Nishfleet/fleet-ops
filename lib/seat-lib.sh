@@ -1178,9 +1178,13 @@ _seat_in_future() {
 #   - rate_limited: excluded while the marker is FRESH (observed_at <
 #     RATE_LIMIT_FRESH_SECS=30min) and usable_at is in the future; once the
 #     marker ages past 30min the seat is RETRIED (rate limit may have reset).
+#   - transient_fault past SEAT_FAILURE_CEILING consecutive failures -> unusable
+#     (parked behind the long wall until observed_at + SEAT_PARK_WALL_S, then
+#     fail-opens — the #2288 read-side fence for extension-written flat-window
+#     markers whose write-side escalation lives in the out-of-repo extension).
 #   - otherwise                                   -> usable.
 seat_usable() {
-    local p="$1" m="$2" f hc dead observed usable_at bench_until
+    local p="$1" m="$2" f hc dead observed usable_at bench_until fail_count
     # fleet-ops#1512: clobber-proof spawn-fail/empty-run bench marker. The
     # ledger is co-written by seat-health.ts, which can flip a benched seat
     # back to health_class:"healthy" + null usable_at on a later healthy HTTP
@@ -1212,8 +1216,8 @@ seat_usable() {
     # usable_at is empty (the 9d fixture and any ledger without usable_at).
     # \x1f is not whitespace, so empty fields survive. Include newline in IFS
     # so the trailing jq newline is not glued onto bench_until.
-    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until < <(
-        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until fail_count < <(
+        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0)] | join("\u001f")' "$f" 2>/dev/null || true
     )
     if [[ -z "$hc" ]]; then
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
@@ -1268,6 +1272,28 @@ seat_usable() {
         fi
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
         return 1
+    fi
+    # fleet-ops#2288: extension-written transient_fault markers (source
+    # provider_fetch / after_provider_response) carry a FLAT usable_at window
+    # from seat-health.ts computeUsableAt; the write-side escalation lives in
+    # that OUT-OF-REPO extension (#1422/#2145) and the bash fences
+    # (#1362/#1408) cover bash-written markers only. So a seat whose ledger
+    # shows transient_fault with a runaway consecutive_failure_count (live:
+    # opencode/muse-spark-1.2-contributor-free at 149 straight HTTP 500s) was
+    # re-offered every flat-window cycle (30s), even from a stale pre-fix
+    # ledger. Park the READ side with the same long wall the marker writers
+    # use: past SEAT_FAILURE_CEILING a transient_fault ledger is held until
+    # observed_at + SEAT_PARK_WALL_S, then fail-opens (one probe per park
+    # wall, not per flat window). Same contract as #1362: a healthy write
+    # resets count to 0, so a recovered seat is never walled permanently.
+    if [[ "$hc" == "transient_fault" && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count"; then
+        local park_end_s park_end_iso
+        park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S))
+        park_end_iso=$(date -u -d "@$park_end_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$observed")
+        if _seat_in_future "$park_end_iso"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (transient_fault count=$fail_count >= ${SEAT_FAILURE_CEILING:-60}, parked until $park_end_iso — long wall, not flat re-offer)"
+            return 1
+        fi
     fi
     if ! _seat_observed_fresh "$observed"; then
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
