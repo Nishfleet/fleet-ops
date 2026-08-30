@@ -595,3 +595,107 @@ groups:
         annotations:
           summary: "grok-token-refresh has not succeeded in 12+ hours"
           description: "Repair worker: fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script is the prevention side of fleet-ops#41 — it keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat (fleet-ops#1163) does not age into a 401. A dead refresh means the credential is silently aging toward its 6h OAuth lifetime. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. Helper: /home/nish/.local/bin/grok-token-refresh. fleet-ops#41."
+
+  # fleet-ops#1291: SLO error budgets + multiwindow burn-rate alerts
+  # (Google SRE Workbook Ch.5 canon). config/slo-definitions.json is the
+  # single source of truth; lib/slo_budget.py does the budget math;
+  # libexec/fleet-metrics-export.py emits the fleet_slo_* gauges.
+  #
+  # Alert model (Workbook §5.4, translated for a sampled-gauge SLI):
+  # - RATIO SLOs (main_green, seat_availability): multiwindow burn-rate.
+  #     burn_rate = (1 - avg_over_time(fleet_slo_compliance{slo}[W])) / (1 - target)
+  #     Fast burn = 14.4x sustained over BOTH 1h AND 5m (long+short suppress flap).
+  #     Slow burn = 1x sustained over BOTH 6h AND 30m (feeds the WFR).
+  #     Gated on fleet_slo_instrumented{slo} == 1 so an uninstrumented SLO
+  #     (source metric pending) never burns budget it cannot measure.
+  # - THRESHOLD-GAUGE SLOs (waste_ratio, gh_rate_limit_headroom): the
+  #     error-budget ratio model does not fit a single threshold gauge
+  #     (Workbook applies burn-rate to ratio SLIs); these get canonical
+  #     threshold-window alerts on the raw source metric instead.
+  # severity: fast_burn=critical (pages the repair rail, NOT Nish's phone —
+  # fleet-ops#1534 reserves severity=page for RepairDispatchDown only),
+  # slow_burn=warning (feeds the WFR alert-quality lens).
+  - name: fleet_slo_burn
+    rules:
+      # Organ heartbeat (fleet-ops#1010): the SLO metric family is emitted
+      # every scrape by fleet-metrics-export. If it disappears, the
+      # exporter is dead and every SLO alert below is blind.
+      - alert: FleetSloMetricsAbsent
+        expr: absent(fleet_slo_instrumented)
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet SLO metrics absent — the SLO exporter path is dead"
+          description: "Repair worker: fleet_slo_instrumented is absent for 15m. fleet-metrics-export.py emits the fleet_slo_* family every scrape; if it disappears the exporter crashed (check journalctl --user -u fleet-metrics-export.service) or config/slo-definitions.json is unparseable. Without this family every burn alert below is blind. NOTE: a prior attempt deployed an exporter referencing lib/slo_budget.py before the file existed (2026-08-30T05:55Z ModuleNotFoundError crash) — verify lib/slo_budget.py is present and the exporter imports clean. fleet-ops#1291."
+
+      # --- main_green: ratio SLO, target 0.99, budget = 1% of week ---
+      # Fast burn: >2% of weekly budget in 1h (14.4x normal), 1h AND 5m.
+      - alert: FleetSloMainGreenFastBurn
+        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[1h])) / (1 - fleet_slo_target{slo="main_green"}) > 14.4) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[5m])) / (1 - fleet_slo_target{slo="main_green"}) > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "SLO main_green fast burn — CI green fraction burning >2% of weekly budget per hour"
+          description: "Repair worker: the main_green SLO (default-branch CI green across enrolled repos) is in fast burn — >14.4x the normal budget consumption rate over both 1h and 5m. Check fleet_main_ci_green{repo=...} for which repo(s) are red and whether a red-on-main or stop-the-line condition is active. fleet-ops#1291."
+      # Slow burn: >10% of weekly budget in 6h (1x), 6h AND 30m.
+      - alert: FleetSloMainGreenSlowBurn
+        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[6h])) / (1 - fleet_slo_target{slo="main_green"}) > 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[30m])) / (1 - fleet_slo_target{slo="main_green"}) > 1)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO main_green slow burn — CI green fraction trending below the 99% budget line"
+          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. fleet-ops#1291."
+
+      # --- seat_availability: ratio SLO, target 0.90, budget = 10% of week ---
+      - alert: FleetSloSeatAvailFastBurn
+        expr: (fleet_slo_instrumented{slo="seat_availability"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[1h])) / (1 - fleet_slo_target{slo="seat_availability"}) > 14.4) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[5m])) / (1 - fleet_slo_target{slo="seat_availability"}) > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "SLO seat_availability fast burn — healthy-seat fraction collapsing"
+          description: "Repair worker: the seat_availability SLO (healthy seats / enrolled seats) is in fast burn. Check fleet_pi_seat_healthy, the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, and FleetDeadCredentialSeats. fleet-ops#1291."
+      - alert: FleetSloSeatAvailSlowBurn
+        expr: (fleet_slo_instrumented{slo="seat_availability"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[6h])) / (1 - fleet_slo_target{slo="seat_availability"}) > 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[30m])) / (1 - fleet_slo_target{slo="seat_availability"}) > 1)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO seat_availability slow burn — healthy seats trending below the 90% budget line"
+          description: "WFR input: the seat_availability SLO is in slow burn. Feeds the weekly fleet review. fleet-ops#1291."
+
+      # --- waste_ratio: threshold-gauge SLO, target 0.10 (max) ---
+      # Canonical threshold-window alert (burn-rate ratio model does not fit
+      # a single gauge). Fires when waste exceeds 10% for a sustained window.
+      - alert: FleetSloWasteRatioOverTarget
+        expr: (fleet_slo_instrumented{slo="waste_ratio"} == 1) and (fleet_waste_ratio > 0.10)
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO waste_ratio over target — fleet waste ratio above 10% for 1h+"
+          description: "WFR input: the waste_ratio SLO (fleet waste ≤ 10%) is over target. Read fleet_waste_runs{kind=...} and the per-lane fleet_waste_empty_runs_24h / fleet_waste_retries_24h families (fleet-ops#1211). WasteRatioRising is the trend sibling. fleet-ops#1291."
+
+      # --- gh_rate_limit_headroom: threshold-gauge SLO, target 0.20 (min) ---
+      # Fires when min(remaining/limit) across core/search/graphql drops
+      # below 20% for 30m. The existing FleetGhRateLimitLow level alert and
+      # the 6h trend alert cover the same signal; this SLO alert is the
+      # budget-framed wrapper that feeds the WFR SMOOTH verdict.
+      - alert: FleetSloGhRateLimitHeadroomLow
+        expr: (fleet_slo_instrumented{slo="gh_rate_limit_headroom"} == 1) and (fleet_slo_compliance{slo="gh_rate_limit_headroom"} < 0.20)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO gh_rate_limit_headroom low — GitHub rate limit below 20% headroom for 30m+"
+          description: "WFR input: the gh_rate_limit_headroom SLO (min remaining/limit ≥ 20%) is under target. Inspect fleet_gh_rate_limit_remaining{resource=...}; fleet_gh_rate_limit_reset is time-to-reset. fleet-ops#1291."
