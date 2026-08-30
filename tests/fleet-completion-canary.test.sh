@@ -633,6 +633,99 @@ grep -q "dispatch AMX_ALERT_1_LABEL_alertname=FailedCollect" "$scratch/dispatch.
 
 ok "--collect failed unit → hop=run via journal fallback, not verify false-success (fleet-ops#2100)"
 
+# --- 9e. redispatch no-op at hop=dispatch escalates, not parks (fleet-ops#2247) --
+# Bug: a dispatch/run redispatch returns rc=0 (the dispatcher spawned an async
+# unit), and take_ladder parked the chain at ladder="redispatch" forever.
+# Subsequent ticks returned "already" — no STOP-REASON, no senior-conference
+# escalation — so FleetMainRed sat stuck through endless rc=0 redispatches
+# that never turned main green. Fix: a STILL-stalled chain that was already
+# redispatched fails loud (STOP-REASON) instead of returning "already".
+# Two-tick repro: tick 1 redispatches (rc=0); tick 2 still firing -> escalate.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-08-30T02:25:56Z",
+   "labels":{"alertname":"FleetMainRed"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# Tick 1: firing 20 min (02:25:56 -> 02:46:00) > 10 min CLOCK_DISPATCH, no
+# DISPATCH -> hop=dispatch stalled -> redispatch rc=0 -> ladder="redispatch".
+rc=$(run_bin "2026-08-30T02:46:00Z")
+[[ "$rc" == "0" ]] || fail "9e tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q "dispatch AMX_ALERT_1_LABEL_alertname=FleetMainRed" "$scratch/dispatch.log" \
+  || fail "9e tick-1: dispatcher must be invoked for dispatch stall; log=$(cat "$scratch/dispatch.log")"
+grep -q 'REDISPATCH alertname=FleetMainRed' "$scratch/actions.log" \
+  || fail "9e tick-1: missing REDISPATCH receipt"
+# Tick 1 must NOT have escalated yet (the redispatch gets a chance to run).
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  && fail "9e tick-1: must not write STOP-REASON on first redispatch (give worker a chance)"
+disp1=$(wc -l < "$scratch/dispatch.log")
+
+# Tick 2: alert STILL firing (no DISPATCH line reached actions.log — the
+# redispatched worker did not resolve the alert). hop=dispatch still stalled.
+# Before the fix: take_ladder returned "already", no STOP-REASON, dispatcher
+# NOT invoked again, chain stuck forever. After the fix: STOP-REASON written,
+# senior-conference escalation, no second redispatch.
+: >"$scratch/dispatch.log"   # reset to detect a (forbidden) second redispatch
+rc=$(run_bin "2026-08-30T03:07:00Z")
+[[ "$rc" == "0" ]] || fail "9e tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "9e tick-2: redispatch no-op must write STOP-REASON (escalate, not park)"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("reason") == "alert-repair-stalled", f"reason={d.get('reason')!r}"
+assert d.get("detail", {}).get("alertname") == "FleetMainRed", d
+PY
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9e tick-2: must NOT redispatch again on a no-op (escalate instead); log=$(cat "$scratch/dispatch.log")"
+fi
+ok "redispatch no-op at hop=dispatch escalates via STOP-REASON, not parks (fleet-ops#2247)"
+
+# --- 9f. redispatch no-op at hop=run escalates (fleet-ops#2247) ----------------
+# Same class, hop=run: the redispatched unit died without resolving the alert.
+# Seed a DISPATCH (as the real dispatcher writes to actions.log) with a dead
+# unit old enough to stall at hop=run, plus prior ladder="redispatch" state.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-30T02:30:00Z] DISPATCH alertname=FleetMainRed seat=devin/glm-5-2 unit=alert-repair-FleetMainRed-20260830T0230Z reason=fallback packet=/x rc=0
+PYEND
+# Unit dead (no state files -> not-found -> not running, not success).
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-08-30T02:25:56Z",
+   "labels":{"alertname":"FleetMainRed"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# Seed prior redispatch state (tick 1 already redispatched this chain).
+mkdir -p "$scratch/state/open"
+echo '{"alertname":"FleetMainRed","stall_count":1,"ladder":"redispatch","hop":"run"}' \
+  >"$scratch/state/open/FleetMainRed.json"
+# now=04:25:00 -> age since dispatch 02:30:00 = 6900s > 3600s CLOCK_RUN -> hop=run stalled.
+rc=$(run_bin "2026-08-30T04:25:00Z")
+[[ "$rc" == "0" ]] || fail "9f rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "9f: redispatch no-op at hop=run must write STOP-REASON (escalate, not park)"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("reason") == "alert-repair-stalled", f"reason={d.get('reason')!r}"
+assert d.get("detail", {}).get("hop") == "run", d
+PY
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9f: must NOT redispatch again on a no-op; log=$(cat "$scratch/dispatch.log")"
+fi
+ok "redispatch no-op at hop=run escalates via STOP-REASON, not parks (fleet-ops#2247)"
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================
