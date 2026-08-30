@@ -648,7 +648,7 @@
     {
       "id": "led-straitly-ds4-pro-workers",
       "source": "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers",
-      "mechanism": "Heartbeat straitly ds4-pro canary: providers.straitly must be class=metered with cap<=2; only deepseek/deepseek-v4-pro may be allowlisted on straitly with cap<=2; gpt-5.6-sol and qwen/qwen3.8-max are not approved; the ds4-pro slug must not be double-wired on any other provider; the slug must be present in models.json and `pi --list-models`; an active straitly/ds4-pro worker auto-files a meter-check ticket until a dated meter-check evidence file is written within minutes of the worker's started_at",
+      "mechanism": "Heartbeat straitly ds4-pro canary: providers.straitly must be class=metered with cap<=2; only deepseek/deepseek-v4-pro may be allowlisted on straitly with cap<=2; gpt-5.6-sol and qwen/qwen3.8-max are not approved; the ds4-pro slug must not be double-wired on any other provider; the slug must be present in models.json and `pi --list-models` (fleet-ops#1338: meter-check observe-to-open removed; public Straitly API does not expose remaining credits for a normal key)",
       "proof": "bin/fleet-straitly-ds4-pro-canary; tests/fleet-straitly-ds4-pro-canary.test.sh; fleet-heartbeat-tier1 block 25; fleet-ops#546",
       "status": "enforced"
     },

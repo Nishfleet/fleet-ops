@@ -13,11 +13,8 @@
 #   8. deepseek/deepseek-v4-pro double-wired on another provider -> exit 1.
 #   9. models.json missing the slug -> exit 1.
 #  10. Catalog fixture missing the slug -> exit 1.
-#  11. Active worker + missing meter-check evidence -> exit 0, files ticket.
-#  12. Active worker + recent meter-check evidence -> exit 0, no file.
-#  13. Dedup: open issue with the marker -> no second create.
-#  14. Production seat-caps is clean.
-#  15. Heartbeat-tier1 wires the canary and propagates a fail-loud.
+#  11. Production seat-caps is clean.
+#  12. Heartbeat-tier1 wires the canary and propagates a fail-loud.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,8 +41,6 @@ export FLEET_STRAITLY_DS4PRO_FILE=1
 
 mkdir -p "$scratch/active-seats"
 export FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS="$scratch/active-seats"
-export FLEET_STRAITLY_DS4PRO_METER="$scratch/meter.json"
-export FLEET_STRAITLY_DS4PRO_METER_WINDOW=60
 
 gh_log="$scratch/gh.log"
 gh_fake="$scratch/gh"
@@ -274,56 +269,6 @@ grep -q 'not in Pi' <<<"$env_out" || fail "scenario10: must name unproven ($env_
 grep -q 'issue create' "$gh_log" || fail "scenario10: must auto-file"
 ok "scenario10: allowlisted slug missing from catalog fails loud"
 
-# --- 11. active worker + missing meter-check evidence ------------------------
-: >"$gh_log"; : >"$triage"
-base_caps; base_models; base_catalog
-rm -f "$scratch/meter.json"
-cat >"$scratch/active-seats/pi-issue-test.json" <<'JSON'
-{ "provider": "straitly", "model": "deepseek/deepseek-v4-pro", "unit": "pi-issue-test", "started_at": "2026-08-27T05:00:00Z" }
-JSON
-run_canary
-[[ "$env_rc" == "0" ]] || fail "scenario11: meter-check observe-to-open must exit 0, got rc=$env_rc ($env_out)"
-grep -q 'METER-CHECK-NEEDED' <<<"$env_out" || fail "scenario11: must log METER-CHECK-NEEDED ($env_out)"
-grep -q 'issue create' "$gh_log" || fail "scenario11: must file meter-check ticket"
-grep -q 'meter-check' "$gh_log" || fail "scenario11: filed title must name meter-check"
-ok "scenario11: active worker with missing meter evidence files a ticket"
-
-# --- 12. active worker + recent meter-check evidence -------------------------
-: >"$gh_log"; : >"$triage"
-base_caps; base_models; base_catalog
-cat >"$scratch/active-seats/pi-issue-test.json" <<'JSON'
-{ "provider": "straitly", "model": "deepseek/deepseek-v4-pro", "unit": "pi-issue-test", "started_at": "2026-08-27T05:00:00Z" }
-JSON
-cat >"$scratch/meter.json" <<'JSON'
-{ "checked_at": "2026-08-27T05:05:00Z", "balance_usd": 42.00 }
-JSON
-run_canary
-[[ "$env_rc" == "0" ]] || fail "scenario12: recent meter evidence must exit 0, got rc=$env_rc ($env_out)"
-if grep -q 'issue create' "$gh_log"; then
-  fail "scenario12: must not file when meter evidence is recent (gh=$(cat "$gh_log"))"
-fi
-grep -q 'meter-check: evidence file is recent' <<<"$env_out" || fail "scenario12: must log recent meter check ($env_out)"
-ok "scenario12: active worker with recent meter evidence is quiet"
-
-# --- 13. dedup on open meter-check issue -------------------------------------
-: >"$gh_log"; : >"$triage"
-base_caps; base_models; base_catalog
-rm -f "$scratch/meter.json"
-cat >"$scratch/active-seats/pi-issue-test.json" <<'JSON'
-{ "provider": "straitly", "model": "deepseek/deepseek-v4-pro", "unit": "pi-issue-test", "started_at": "2026-08-27T05:00:00Z" }
-JSON
-export GH_OPEN_ISSUES="$scratch/open.json"
-jq -n --arg b $'body\nstraitly-ds4pro-canary: meter-check deepseek/deepseek-v4-pro\n' \
-  '[{number: 42, body: $b}]' >"$GH_OPEN_ISSUES"
-run_canary
-[[ "$env_rc" == "0" ]] || fail "scenario13: dedup must exit 0, got rc=$env_rc ($env_out)"
-if grep -q 'issue create' "$gh_log"; then
-  fail "scenario13: must not create a second meter-check issue"
-fi
-grep -q 'dedup:' <<<"$env_out" || fail "scenario13: must log dedup ($env_out)"
-ok "scenario13: open meter-check marker dedupes"
-unset GH_OPEN_ISSUES
-
 # --- 14. production seat-caps passes -----------------------------------------
 : >"$gh_log"; : >"$triage"
 base_models
@@ -366,4 +311,4 @@ grep -q 'bin/fleet-straitly-ds4-pro-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-straitly-ds4-pro-canary"
 ok "scenario15: heartbeat-tier1 wires the canary, fail-loud, MANIFEST installs it"
 
-ok "fleet-straitly-ds4-pro-canary: missing, class, caps, models, double-wire, models.json, catalog, meter-check, dedup, production clean"
+ok "fleet-straitly-ds4-pro-canary: missing, class, caps, models, double-wire, models.json, catalog, production clean"

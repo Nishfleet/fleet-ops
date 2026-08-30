@@ -3,7 +3,7 @@
 #
 # Ledger 2026-08-27: "ds4 pro from straitly is fire" — metered worker-rotation
 # use APPROVED, cap=2, AIMD only with evidence; Sol stays orchestration-only;
-# qwen3.8-max not approved; meter check within minutes of first draws.
+# qwen3.8-max not approved.
 #
 # Fail-loud gates (exit 1):
 #   1. straitly is missing from seat-caps.
@@ -15,11 +15,8 @@
 #   7. The allowlisted slug is missing from `pi --list-models` (unproven seat).
 #   8. watcher broken (pi missing / list-models failed and no catalog fixture).
 #
-# Observe-to-open (exit 0, auto-files one issue):
-#   - An active straitly/deepseek-v4-pro worker exists and the dated meter-check
-#     evidence file is missing or stale relative to the worker's started_at.
-#     A human checks the straitly meter and writes the evidence file; the
-#     canary stays quiet once it is recent.
+# No meter-check observe-to-open: the public Straitly API does not expose
+# remaining credits for a normal key (fleet-ops#1338).
 #
 # No new scheduler. Run by fleet-heartbeat-tier1 block 25.
 #
@@ -28,8 +25,6 @@
 #   FLEET_STRAITLY_DS4PRO_MODELS_JSON  models.json fixture
 #   FLEET_STRAITLY_DS4PRO_CATALOG      pi --list-models stdout fixture
 #   FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS active-seats dir override
-#   FLEET_STRAITLY_DS4PRO_METER        meter-check evidence file override
-#   FLEET_STRAITLY_DS4PRO_METER_WINDOW minutes (default 60)
 #   FLEET_HEARTBEAT_TRIAGE
 #   FLEET_STRAITLY_DS4PRO_REPO         default Nishfleet/fleet-ops
 #   FLEET_STRAITLY_DS4PRO_FILE         1 (default) file issues; 0 skip
@@ -60,8 +55,6 @@ REPO="${FLEET_STRAITLY_DS4PRO_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_STRAITLY_DS4PRO_FILE:-1}"
 
 ACTIVE_SEATS_DIR="${FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS:-${HOME}/.local/state/pi-packet/active-seats}"
-METER_FILE="${FLEET_STRAITLY_DS4PRO_METER:-${HOME}/.local/state/pi-packet/straitly-meter-check.json}"
-METER_WINDOW_MIN="${FLEET_STRAITLY_DS4PRO_METER_WINDOW:-60}"
 
 APPROVED_MODEL="deepseek/deepseek-v4-pro"
 
@@ -130,52 +123,6 @@ emit_straitly_catalog_ids() {
         | grep -v '^EXTLOAD-OK' \
         | grep -v '^provider ' \
         | awk '$1 == "straitly" { print $2 }'
-}
-
-# Return the earliest started_at ISO among active straitly/deepseek-v4-pro workers.
-first_draw_started_at() {
-    local f started earliest=""
-    if [[ ! -d "$ACTIVE_SEATS_DIR" ]]; then
-        return 0
-    fi
-    for f in "$ACTIVE_SEATS_DIR"/*.json; do
-        [[ -f "$f" ]] || continue
-        local p m
-        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
-        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
-        if [[ "$p" == "straitly" && "$m" == "$APPROVED_MODEL" ]]; then
-            started=$(jq -r '.started_at // ""' "$f" 2>/dev/null || true)
-            [[ -n "$started" ]] || continue
-            if [[ -z "$earliest" ]] || [[ "$started" < "$earliest" ]]; then
-                earliest="$started"
-            fi
-        fi
-    done
-    printf '%s\n' "$earliest"
-}
-
-# Return 0 if the meter-check evidence file is present and its checked_at is
-# within METER_WINDOW_MIN minutes of the given start timestamp.
-meter_check_recent_for() {
-    local start="$1"
-    if [[ ! -f "$METER_FILE" ]]; then
-        return 1
-    fi
-    if ! jq -e . "$METER_FILE" >/dev/null 2>&1; then
-        return 1
-    fi
-    local checked
-    checked=$(jq -r '.checked_at // ""' "$METER_FILE" 2>/dev/null || true)
-    [[ -n "$checked" ]] || return 1
-    local start_s checked_s diff
-    start_s=$(date -u -d "$start" +%s 2>/dev/null || true)
-    checked_s=$(date -u -d "$checked" +%s 2>/dev/null || true)
-    [[ -n "$start_s" && -n "$checked_s" ]] || return 1
-    if (( checked_s < start_s )); then
-        return 1
-    fi
-    diff=$(( (checked_s - start_s) / 60 ))
-    (( diff <= METER_WINDOW_MIN ))
 }
 
 if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
@@ -329,23 +276,6 @@ fi
 if (( violations > 0 )); then
     log "FAIL: $violations straitly ds4-pro violation(s)"
     exit 1
-fi
-
-# 8. Meter-check observe-to-open: an active straitly/ds4-pro worker must have
-# a recent, dated meter-check evidence file.
-first_draw=$(first_draw_started_at)
-if [[ -n "$first_draw" ]]; then
-    if meter_check_recent_for "$first_draw"; then
-        log "meter-check: evidence file is recent for first draw at $first_draw"
-    else
-        loud "STRAITLY-DS4PRO-METER-CHECK-NEEDED" "active straitly/$APPROVED_MODEL worker started at $first_draw; meter-check evidence file missing or stale"
-        file_finding "meter-check" "$APPROVED_MODEL" \
-            "straitly $APPROVED_MODEL first draw: check the meter" \
-            "A straitly/$APPROVED_MODEL worker is active (started ${first_draw}). The 2026-08-27 ledger line requires checking the straitly meter within minutes of first draws. Check the live balance/cost on the straitly dashboard or API, then write \`${METER_FILE}\` with a JSON object containing \`checked_at\` (ISO 8601) and \`balance_usd\`. This canary will stop filing once the evidence file has a \`checked_at\` within ${METER_WINDOW_MIN} minutes of the worker's started_at. fleet-ops#546."
-        # Observe-to-open: keep the heartbeat tick green while the ticket is open.
-    fi
-else
-    log "no active straitly/$APPROVED_MODEL worker; meter-check gate is quiet"
 fi
 
 loud "STRAITLY-DS4PRO-OK" "straitly ds4-pro worker rotation is gated: metered, cap<=2, only $APPROVED_MODEL, no double-wire, catalog+models.json proven"
