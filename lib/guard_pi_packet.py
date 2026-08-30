@@ -36,6 +36,44 @@ def _is_launcher_hint(command: str) -> bool:
     return False
 
 
+def classify_packet_text(text: str, *, launcher_hint: bool = False, verdict_re=None) -> list[str]:
+    """Classify a run-output body against the canonical verdict-line grammar.
+
+    The single canonical classifier for 'did this run actually do anything'.
+    Used verbatim by the pi-packet guard (main) and by the Cursor output
+    wrapper (guard_cursor_packet.py) — one grammar, two input adapters
+    (fleet-ops#1545). Returns a list of problems; empty list = clean.
+
+    verdict_re defaults to VERDICT (the pi lane terms). A different lane can
+    pass its own machine-checkable verdict grammar (e.g. a packet-verdict line
+    plus the same terms) without duplicating the decision logic.
+    """
+    if verdict_re is None:
+        verdict_re = VERDICT
+    lines = [l for l in text.splitlines() if l.strip()]
+    problems: list[str] = []
+
+    if LANE_FAULT.search(text):
+        problems.append(
+            "lane fault detected (rate limit / spawn timeout / quota) — "
+            "rotate the seat, do not charge the task"
+        )
+
+    if len(lines) <= 5 and not verdict_re.search(text):
+        if launcher_hint:
+            problems.append(
+                "launcher fault — command used nohup or trailing '&' and the "
+                "process was reaped before producing a verdict. Use "
+                "`pi-systemd-run` instead of `nohup ... &`"
+            )
+        else:
+            problems.append(
+                f"suspiciously short output ({len(lines)} lines) with no verdict line — "
+                "likely a narrate-and-quit or dead-on-arrival run"
+            )
+    return problems
+
+
 def _log_path(command: str) -> str | None:
     m = REDIRECT.search(command)
     if not m:
@@ -75,27 +113,7 @@ def main() -> int:
     except Exception:
         return 0
 
-    lines = [l for l in text.splitlines() if l.strip()]
-    problems: list[str] = []
-
-    if LANE_FAULT.search(text):
-        problems.append(
-            "lane fault detected (rate limit / spawn timeout / quota) — "
-            "rotate the seat, do not charge the task"
-        )
-
-    if len(lines) <= 5 and not VERDICT.search(text):
-        if _is_launcher_hint(cmd):
-            problems.append(
-                "launcher fault — command used nohup or trailing '&' and the "
-                "process was reaped before producing a verdict. Use "
-                "`pi-systemd-run` instead of `nohup ... &`"
-            )
-        else:
-            problems.append(
-                f"suspiciously short output ({len(lines)} lines) with no verdict line — "
-                "likely a narrate-and-quit or dead-on-arrival run"
-            )
+    problems = classify_packet_text(text, launcher_hint=_is_launcher_hint(cmd))
 
     if problems:
         print(

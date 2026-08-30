@@ -235,6 +235,17 @@ systemd/fleet-truth-staleness-check.timer /home/nish/.config/systemd/user/fleet-
 libexec/staleness-checker.py /home/nish/.local/libexec/staleness-checker.py
 systemd/fleet-metrics-export.service.d/staleness-checker.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/staleness-checker.conf
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py
+# fleet-ops#1545: cursor keystone lane packet contract parity. Ports the
+# packet-in / verdict-out / delivery-evidence contract to Cursor's native
+# extension points: a rules file (~/.cursor/rules/, alwaysApply) imposes the
+# prompt contract, and a sessionEnd hook (~/.cursor/hooks.json) runs the
+# output wrapper. lib/guard_cursor_packet.py REUSES lib/guard_pi_packet.py's
+# classify_packet_text verdict grammar verbatim (no new checker logic) and
+# adapts a Cursor agent-transcript into it.
+lib/guard_cursor_packet.py /home/nish/.local/lib/pi-packet/guard_cursor_packet.py
+bin/guard_cursor_packet_hook.py /home/nish/.cursor/hooks/guard_cursor_packet.py
+template/cursor-hooks.json /home/nish/.cursor/hooks.json
+template/cursor-rules/fleet-packet-verdict.mdc /home/nish/.cursor/rules/fleet-packet-verdict.mdc
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
