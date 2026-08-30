@@ -208,6 +208,32 @@ mark_live() {
 mark_pr() {
     printf '[{"number":1}]\n' >"$scratch/prs/$REPO/${1}.json"
 }
+# Helper: mark an alert-repair claim branch as existing on origin.
+# The fake gh maps repos/<owner>/<repo>/git/refs/heads/<branch> to
+# $FAKE_DIR/api/<owner>/<repo>/git/refs/heads/<branch>.json.
+mark_alert_branch() {
+    local branch="$1"
+    mkdir -p "$scratch/api/$REPO/git/refs/heads/claim"
+    printf '{"ref":"refs/heads/%s","object":{"sha":"deadbeef"}}\n' "$branch" \
+        >"$scratch/api/$REPO/git/refs/heads/${branch}.json"
+}
+# Helper: write an alert-repair claim state file (what alert-repair-claim
+# writes under ALERT_STATE_DIR on acquisition, fleet-ops#1199).
+write_alert_state() {
+    local name="$1" branch="$2" acquired="$3"
+    printf '{"repo":"fleet-ops","alert":"FleetMainRed","scope":"fleet-main-red","branch":"%s","acquired_at":"%s"}\n' "$branch" "$acquired" \
+        >"$ALERT_STATE_DIR/${name}.json"
+}
+# Helper: mark a live alert-repair worker unit (any active alert-repair-*).
+mark_live_alert() {
+    printf 'running\n' >"$scratch/live/alert-repair-*"
+}
+# Helper: mark an open PR whose head is an alert-repair claim branch.
+mark_pr_head() {
+    local branch="$1"
+    mkdir -p "$scratch/prs/$REPO/claim"
+    printf '[{"number":1}]\n' >"$scratch/prs/$REPO/${branch}.json"
+}
 
 reset_logs() {
     rm -f "$scratch"/deletes.log "$scratch"/comments-*.log "$scratch"/edits.log
@@ -315,6 +341,61 @@ out=$("$bin" 2>"$scratch/err.log")
 ! commented_on 10 || fail "defer: must NOT comment on agent-in-progress issue"
 ! edited_any || fail "defer: must NOT edit agent-in-progress issue: $(cat "$scratch/edits.log")"
 ok "agent-in-progress deferred to tier1 §3 (not touched)"
+
+# --- Case A1: stale alert-repair claim (no worker, no PR) deleted -------
+reset_logs
+export CLAIM_RECONCILE_ALERT_STATE_DIR="$scratch/alert-state"
+export ALERT_STATE_DIR="$scratch/alert-state"
+mkdir -p "$ALERT_STATE_DIR"
+mark_alert_branch "claim/fleet-main-red-fleet-ops"
+# 3h before CLAIM_RECONCILE_NOW (2026-08-26T00:00:00Z) -> stale (>2h).
+write_alert_state "fleet-ops-fleet-main-red" "claim/fleet-main-red-fleet-ops" "2026-08-25T21:00:00Z"
+out=$("$bin" 2>"$scratch/err.log")
+deleted_branch "claim/fleet-main-red-fleet-ops" \
+    || fail "A1: stale alert claim not deleted: $(cat "$scratch/deletes.log")"
+[ ! -f "$ALERT_STATE_DIR/fleet-ops-fleet-main-red.json" ] \
+    || fail "A1: stale state file not removed"
+ok "A1: stale alert-repair claim deleted; state file removed"
+
+# --- Case A2: fresh alert-repair claim held ---------------------------------
+reset_logs
+mark_alert_branch "claim/fleet-main-red-fleet-ops"
+# 10 min before NOW -> fresh (<2h).
+write_alert_state "fleet-ops-fleet-main-red" "claim/fleet-main-red-fleet-ops" "2026-08-25T23:50:00Z"
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/fleet-main-red-fleet-ops" || fail "A2: fresh alert claim must NOT be deleted"
+ok "A2: fresh alert-repair claim held"
+
+# --- Case A3: live alert-repair worker holds even a stale claim -------------
+reset_logs
+mark_alert_branch "claim/fleet-main-red-fleet-ops"
+write_alert_state "fleet-ops-fleet-main-red" "claim/fleet-main-red-fleet-ops" "2026-08-25T21:00:00Z"
+mark_live_alert
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/fleet-main-red-fleet-ops" || fail "A3: live worker must hold the claim"
+ok "A3: live alert-repair worker holds the claim"
+
+# --- Case A4: open PR with the claim as head holds ---------------------------
+reset_logs
+rm -f "$scratch/live/alert-repair-*"  # A3's live marker must not leak here
+mark_alert_branch "claim/fleet-main-red-fleet-ops"
+write_alert_state "fleet-ops-fleet-main-red" "claim/fleet-main-red-fleet-ops" "2026-08-25T21:00:00Z"
+mark_pr_head "claim/fleet-main-red-fleet-ops"
+out=$("$bin" 2>"$scratch/err.log")
+! deleted_branch "claim/fleet-main-red-fleet-ops" || fail "A4: open PR must hold the claim"
+ok "A4: open PR with claim head holds it"
+
+# --- Case A5: stray state file (branch already gone) cleaned up --------------
+reset_logs
+rm -f "$scratch/live/alert-repair-*"
+rm -f "$scratch/api/$REPO/git/refs/heads/claim/fleet-main-red-fleet-ops.json"
+rm -f "$scratch/prs/$REPO/claim/fleet-main-red-fleet-ops.json"
+# No mark_alert_branch: the branch does not exist on origin.
+write_alert_state "fleet-ops-fleet-main-red" "claim/fleet-main-red-fleet-ops" "2026-08-25T21:00:00Z"
+out=$("$bin" 2>"$scratch/err.log")
+[ ! -f "$ALERT_STATE_DIR/fleet-ops-fleet-main-red.json" ] \
+    || fail "A5: orphaned state file not cleaned up"
+ok "A5: state file for an already-gone claim is cleaned up"
 
 # --- Case 10: overlapping flock no-op -----------------------------------
 export CLAIM_RECONCILE_LOCKDIR="$scratch/lock-overlap"

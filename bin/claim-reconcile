@@ -63,6 +63,17 @@ INTAKE_JSON="${CLAIM_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet
 LOCKDIR="${CLAIM_RECONCILE_LOCKDIR:-${XDG_RUNTIME_DIR}/claim-reconcile}"
 DRY="${CLAIM_RECONCILE_DRY_RUN:-0}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+# Alert-repair claim branches (claim/<scope>-<repo>) — the mutex
+# alert-repair-claim (fleet-ops#1199) creates before spawning a repair
+# worker. Unlike claim/issue-* they name no issue, so only this sweep
+# can ever release them; a stale claim blocks every future dispatch of
+# that (alert, repo) with `skipped-claimed` (live: claim/fleet-main-red-
+# fleet-ops sat 2 days and starved FleetMainRed redispatches — repair
+# diagnosis 2026-08-30 07:14Z). State files written by alert-repair-claim
+# under ALERT_STATE_DIR are the discriminator: a claim/foo-<repo> branch
+# without one (auditor/scout branches) is never touched here.
+ALERT_STATE_DIR="${CLAIM_RECONCILE_ALERT_STATE_DIR:-/home/nish/.local/state/fleet-alert-repair}"
+ALERT_MAX_AGE="${CLAIM_RECONCILE_ALERT_MAX_AGE:-7200}"
 
 log() {
     printf '[%s] [claim-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -103,6 +114,7 @@ NOW_ISO=$(now_iso)
 released_b=0
 released_orphan=0
 released_c=0
+released_alert=0
 skipped_live=0
 skipped_pr=0
 skipped_progress=0
@@ -135,6 +147,36 @@ has_open_pr() {
     local repo="$1" issue_n="$2"
     gh pr list -R "$repo" --head "claim/issue-${issue_n}" --state open --json number 2>/dev/null \
         | jq -e 'length > 0' >/dev/null 2>&1
+}
+
+# is_live_alert_worker: any alert-repair-* user unit in active/activating on
+# this host means at least one alert-repair chain is in flight. Hold all
+# alert-repair claims while a worker runs — a claim whose worker is live is
+# legitimately held, and workers are short-lived so this deferral is brief.
+is_live_alert_worker() {
+    "$SYSTEMCTL" --user list-units 'alert-repair-*' --state=active,activating --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -q '^alert-repair-'
+}
+
+# has_open_pr_head <repo> <branch>: open PR whose head is this exact branch
+# (alert-repair workers that fix via PR keep the claim until the PR lands).
+has_open_pr_head() {
+    local repo="$1" branch="$2"
+    gh pr list -R "$repo" --head "$branch" --state open --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1
+}
+
+# alert_state_age <state_file>: echo seconds since acquired_at on the
+# CLAIM_RECONCILE_NOW clock (0 when the timestamp is missing/unparseable —
+# no staleness evidence means HOLD, never a speculative delete).
+alert_state_age() {
+    local f="$1" at at_epoch now_epoch
+    at=$(jq -r '.acquired_at // empty' "$f" 2>/dev/null || true)
+    [ -n "$at" ] || { echo 0; return; }
+    at_epoch=$(date -u -d "$at" +%s 2>/dev/null || true)
+    now_epoch=$(date -u -d "$NOW_ISO" +%s 2>/dev/null || true)
+    [ -n "$at_epoch" ] && [ -n "$now_epoch" ] || { echo 0; return; }
+    echo $(( now_epoch - at_epoch ))
 }
 
 # delete_branch <repo> <branch>   (tolerates already-gone)
@@ -270,9 +312,55 @@ while IFS= read -r repo; do
             failed=$((failed + 1))
         fi
     done <<< "$branch_names"
+
+    # --- alert-repair claim branches (claim/<scope>-<repo>) ----------------
+    # State files under ALERT_STATE_DIR, written by alert-repair-claim on
+    # acquisition, are the authoritative map to live alert-repair claims
+    # (the branch itself is `claim/<scope>-<repo>`; the state JSON carries
+    # the exact branch + acquired_at). Stale = older than ALERT_MAX_AGE
+    # with no live alert-repair worker and no open PR — the dispatch mutex
+    # outlived its worker, so a fresh dispatch must be able to re-acquire.
+    if [ -d "$ALERT_STATE_DIR" ]; then
+        while IFS= read -r state_file; do
+            [ -n "$state_file" ] || continue
+            rec_repo=$(jq -r '.repo // empty' "$state_file" 2>/dev/null || true)
+            [ "$rec_repo" = "$short" ] || continue
+            branch=$(jq -r '.branch // empty' "$state_file" 2>/dev/null || true)
+            [ -n "$branch" ] || continue
+            case "$branch" in
+                claim/*-"$short") ;;
+                *) continue ;;
+            esac
+            # Worker live -> claim in use, hold (brief deferral; workers die).
+            if is_live_alert_worker; then
+                log "  $repo: $branch — alert-repair worker live — hold"
+                skipped_live=$((skipped_live + 1))
+                continue
+            fi
+            # Open PR with this claim as head -> work in flight, hold.
+            if has_open_pr_head "$repo" "$branch"; then
+                log "  $repo: $branch — open PR references claim — hold"
+                skipped_pr=$((skipped_pr + 1))
+                continue
+            fi
+            age=$(alert_state_age "$state_file")
+            if [ "$age" -gt "$ALERT_MAX_AGE" ]; then
+                log "  $repo: $branch — stale alert-repair claim (age=${age}s > ${ALERT_MAX_AGE}s), no worker/PR — delete branch + state"
+                if delete_branch "$repo" "$branch"; then
+                    rm -f "$state_file"
+                    released_alert=$((released_alert + 1))
+                else
+                    failed=$((failed + 1))
+                fi
+            else
+                log "  $repo: $branch — alert-repair claim fresh (age=${age}s) — hold"
+                skipped_progress=$((skipped_progress + 1))
+            fi
+        done < <(find "$ALERT_STATE_DIR" -maxdepth 1 -name '*.json' -type f | sort)
+    fi
 done <<< "$repos"
 
-log "sweep done: B=$released_b orphan=$released_orphan C=$released_c skipped_live=$skipped_live skipped_pr=$skipped_pr skipped_progress=$skipped_progress failed=$failed"
-printf 'claim-reconcile B=%s orphan=%s C=%s skipped_live=%s skipped_pr=%s skipped_progress=%s failed=%s\n' \
-    "$released_b" "$released_orphan" "$released_c" "$skipped_live" "$skipped_pr" "$skipped_progress" "$failed"
+log "sweep done: B=$released_b orphan=$released_orphan C=$released_c alert=$released_alert skipped_live=$skipped_live skipped_pr=$skipped_pr skipped_progress=$skipped_progress failed=$failed"
+printf 'claim-reconcile B=%s orphan=%s C=%s alert=%s skipped_live=%s skipped_pr=%s skipped_progress=%s failed=%s\n' \
+    "$released_b" "$released_orphan" "$released_c" "$released_alert" "$skipped_live" "$skipped_pr" "$skipped_progress" "$failed"
 exit 0
