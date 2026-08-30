@@ -475,6 +475,7 @@ while read -r src _dest; do
   case "$src" in
     systemd/*.timer)
       case "$src" in *@*) continue ;; esac   # templates instantiated by the reconciler
+      case "$src" in systemd/system/*) continue ;; esac   # system-scope: enabled via install.sh --system, not the generic --user loop
       unit_file="$repo_root/$src"
       [ -f "$unit_file" ] || fail "MANIFEST timer src missing in repo: $src"
       grep -qE '^\[Install\]$' "$unit_file" 2>/dev/null || continue   # siterep-deploy deliberately omits [Install]
