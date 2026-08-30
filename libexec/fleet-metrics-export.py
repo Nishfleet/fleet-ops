@@ -22,6 +22,13 @@ from pathlib import Path
 # --- Config ----------------------------------------------------------------
 
 OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
+# fleet-ops#2273: legacy stale textfile left behind when staleness-checker.py
+# was refactored (a639520) to stop writing fleet-staleness.prom. node_exporter
+# reads ALL .prom files in the textfile dir, so the stale file's duplicate
+# fleet_truth_staleness_* metrics shadow the fresh values in fleet.prom.
+# This path is the cleanup target — removed atomically when fleet.prom is
+# (re)written, so the duplicate can never reappear.
+LEGACY_STALENESS_PROM = OUT.parent / "fleet-staleness.prom"
 SEAT_HEALTH = Path(
     "/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"
 )
@@ -1849,6 +1856,17 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
 # --- Main ------------------------------------------------------------------
 
 def main():
+    # fleet-ops#2273: remove the legacy fleet-staleness.prom textfile at the
+    # start of every run. The staleness checker used to write there directly;
+    # it now emits through this exporter into fleet.prom via the JSON cache.
+    # node_exporter reads every .prom file in the textfile dir, so a stale
+    # copy's duplicate fleet_truth_staleness_* metrics shadow the fresh values.
+    # Do this first so the cleanup runs even on a fail-loud early return.
+    try:
+        LEGACY_STALENESS_PROM.unlink()
+    except FileNotFoundError:
+        pass
+
     timers = _list_timers()
     healthy, observed_epoch = _read_seat()
 

@@ -550,6 +550,70 @@ assert not Path(out_path).exists(), f"main() wrote a partial file on null ready_
 print("OK: null ready_work fails loud and no fleet.prom is written")
 PY
 
+# =========================================================================
+# 13. fleet-ops#2273: legacy fleet-staleness.prom cleanup in the exporter
+# =========================================================================
+# The exporter is the single writer of staleness gauges (it reads the JSON
+# cache). When it (re)writes fleet.prom it must also unlink the legacy
+# fleet-staleness.prom textfile so node_exporter does not read a stale duplicate.
+LEGACY_OUT="$scratch/legacy"
+mkdir -p "$LEGACY_OUT/textfile"
+echo "fleet_truth_staleness_last_run_seconds 1000000000" \
+  > "$LEGACY_OUT/textfile/fleet-staleness.prom"
+python3 - "$exporter" "$LEGACY_OUT/out.prom" "$LEGACY_OUT/textfile/fleet-staleness.prom" <<'PY' || fail "legacy cleanup in exporter failed"
+import importlib.util, sys, os
+from pathlib import Path
+exporter, out_path, legacy = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path(legacy)
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/seatdb")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
+m.GH_RATE_LIMIT_STATE = Path(os.path.dirname(out_path)) / "rl.state.json"
+
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: None
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+
+rc = m.main()
+assert rc == 1, f"main() must fail loud on null ready_work (rc={rc})"
+assert not Path(out_path).exists(), "no fleet.prom on fail-loud"
+assert not Path(legacy).exists(), "legacy fleet-staleness.prom must be cleaned up"
+print("OK: legacy fleet-staleness.prom removed on fail-loud export")
+
+rc = m.main()
+assert rc == 1
+assert not Path(legacy).exists()
+print("OK: second run is a no-op when legacy file is absent")
+PY
+
 
 # fleet-ops#1350: GitHub API rate-limit metrics + pi-intake sidecar.
 bash "$here/fleet-gh-rate-limit.test.sh" || fail "fleet-gh-rate-limit tests failed"

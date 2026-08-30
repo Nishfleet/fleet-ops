@@ -44,6 +44,12 @@ FINDINGS_CACHE_TTL = 3600  # 1 hour — reuse last run's data
 FINDING_LIMIT = 100        # max open issues to file per run
 GH_TIMEOUT = 45            # gh calls can be slow
 ISSUE_LABELS = ["agent-ready", "staleness-detector"]
+# fleet-ops#2273: legacy textfile from before the metrics-export piggyback
+# refactor. The checker no longer writes here (fleet-metrics-export.py is the
+# single writer of staleness gauges into fleet.prom). Clean up the stale file
+# on every run so it can never shadow the live value in the node_exporter
+# textfile collector.
+LEGACY_STALENESS_PROM = Path("/var/lib/prometheus/node-exporter/fleet-staleness.prom")
 
 # Docs to scan for claims. Each entry: {path, name, claims_source}.
 # claims_source determines the claim extraction strategy:
@@ -563,6 +569,15 @@ def main():
     # reads this cache to emit the fleet_truth_staleness_* gauges. Writing
     # fleet.prom here too clobbered every other metric family between exporter
     # runs (fleet_escalations_24h, fleet_main_ci_green, ...).
+    #
+    # fleet-ops#2273: also clean up the legacy fleet-staleness.prom textfile
+    # that this checker used to write before the refactor. node_exporter reads
+    # every .prom file in the textfile dir, so a stale copy shadows the live
+    # gauge in fleet.prom and triggers TruthStalenessAbsent for no reason.
+    try:
+        LEGACY_STALENESS_PROM.unlink()
+    except FileNotFoundError:
+        pass
 
     # 7. Summary
     print(f"\nStaleness check complete: {docs_scanned} docs, "
