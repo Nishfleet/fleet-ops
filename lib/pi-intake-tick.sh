@@ -369,6 +369,7 @@ mkdir -p "$ISSUE_STATE_DIR"
 # Step 3: process issues in ascending number order
 mapfile -t numbers < <(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")
 mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
+mapfile -t labels  < <(jq -c 'sort_by(.number) | .[].labels'  <<<"$issues_json")
 
 # Cache the precedence-band phase once (auditor 2026-08-28): with 221 ready
 # issues, calling precedence_band_phase per-issue would re-read the JSON 221
@@ -441,8 +442,9 @@ for i in "${!numbers[@]}"; do
         continue
     fi
 
-    # One body fetch serves both the blocker filter and the rent-paying band
-    # (band-multiplier lives on the body). A failed view is fail-closed: skip
+    # One body fetch serves the blocker filter (blocked-on: in body).
+    # The rent-paying band (band-multiplier) now uses labels (priority/emergency)
+    # from the initial issue list. A failed view is fail-closed: skip
     # this issue this tick rather than claim a possibly-blocked or
     # out-of-band issue. The next tick retries.
     body=$(gh issue view "$N" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || {
@@ -472,13 +474,13 @@ for i in "${!numbers[@]}"; do
     # Rent-paying band (fleet-ops#1223): until cutoff_utc, fleet-ops intake
     # claims only surge_leverage_issues; after cutoff, a new machinery claim
     # that would push live share over machinery_max_pct is skipped unless the
-    # body carries `band-multiplier: N`. One repair lane always runs when
+    # issue carries a `priority` or `emergency` label. One repair lane always runs when
     # live machinery == 0 (fleet-ops#1452 floor). Skip, do not fail the tick —
     # product ticks still run, and the next fleet-ops tick retries when a
     # slot opens.
-    # Legit-work guard (fleet-ops#1516): pass title for quality classification
+    # Legit-work guard (fleet-ops#1516): pass title and body for quality classification
     # to allow empty-product surge expansion only for upgrade/repair work.
-    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body" "$title") || {
+    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "${labels[$i]}" "$body" "$title") || {
         echo "issue $N ($title): skipped-precedence-band ($band_reason)"
         continue
     }

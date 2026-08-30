@@ -8,8 +8,8 @@
 #   After: machinery capped at ~30% of live pi-issue@ lanes; product 70%
 #   with product_front first. One repair lane always runs when live
 #   machinery == 0 (fleet-ops#1452 floor); ratio resumes from the second
-#   machinery unit. A machinery issue jumps the band only by naming
-#   `band-multiplier: N` on its body. Weekly Fleet Review owns
+#   machinery unit. A machinery issue jumps the band only by carrying
+#   a `priority` or `emergency` label. Weekly Fleet Review owns
 #   machinery_max_pct / product_min_pct (tighten only).
 #
 # Environment (tests):
@@ -130,11 +130,19 @@ precedence_band_is_leverage_issue() {
     jq -e --argjson n "$n" '.surge_leverage_issues | index($n) != null' "$json" >/dev/null
 }
 
-precedence_band_has_multiplier() {
-    local body="$1"
-    printf '%s\n' "$body" | grep -qE '^band-multiplier:[[:space:]]*[1-9][0-9]*[[:space:]]*$'
-}
+PRECEDENCE_BAND_PRIORITY_LABEL="${PRECEDENCE_BAND_PRIORITY_LABEL:-priority}"
+PRECEDENCE_BAND_EMERGENCY_LABEL="${PRECEDENCE_BAND_EMERGENCY_LABEL:-emergency}"
 
+# Check if issue has a band-multiplier label (priority/emergency).
+# Args: labels_json (from gh issue list --json labels)
+precedence_band_has_multiplier() {
+    local labels_json="$1"
+    local priority="$PRECEDENCE_BAND_PRIORITY_LABEL"
+    local emergency="$PRECEDENCE_BAND_EMERGENCY_LABEL"
+    printf '%s\n' "$labels_json" | jq -e --arg p "$priority" --arg e "$emergency" '
+      .[]? | select(.name == $p or .name == $e) | .name
+    ' >/dev/null
+}
 # Detect starvation-class issues: meta-issues reporting the dispatch/claim
 # pipeline is not consuming the ready queue. These differ from regular
 # repair issues (specific code bugs) in that they diagnose the throttle
@@ -276,7 +284,7 @@ precedence_band_over_cap() {
 # Return 0 if this claim may proceed. Prints a one-token reason.
 # Args: repo issue_number body [title]
 precedence_band_allow_claim() {
-    local repo="$1" n="$2" body="${3:-}" title="${4:-}"
+    local repo="$1" n="$2" labels_json="${3:-}" body="${4:-}" title="${5:-}"
     local phase pct
     # Product repos are never gated by the machinery band. Check this
     # before reading the policy so a missing config cannot stall 0509.
@@ -356,7 +364,7 @@ precedence_band_allow_claim() {
             printf 'allow-band-surge-legit\n'
             return 0
         fi
-        if precedence_band_has_multiplier "$body"; then
+        if precedence_band_has_multiplier "$labels_json"; then
             printf 'allow-multiplier\n'
             return 0
         fi

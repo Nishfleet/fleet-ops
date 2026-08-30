@@ -6,7 +6,7 @@ Ledger 2026-08-27 | Precedence band + overnight machinery surge (Nish):
   1. From 2026-08-28 08:00 IST (cutoff_utc): blanket fleet-precedence ends.
      Machinery is capped at machinery_max_pct of live pi-issue@ units; the
      product gets the rest, with product_front claimed first. A machinery
-     issue jumps the band only by a `band-multiplier: N` line on its body.
+     issue jumps the band only by carrying a `priority` or `emergency` label.
      Weekly Fleet Review owns machinery_max_pct / product_min_pct (tighten
      only).
   2. Until cutoff: surge — fleet-ops intake claims only surge_leverage_issues.
