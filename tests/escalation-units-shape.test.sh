@@ -174,6 +174,8 @@ grep -q 'escalation-daily-sweep.timer' "$unit_write" \
   || fail "unit-escalation-write: must exclude escalation-daily-sweep.timer"
 grep -q 'resilience-drill-stub\*' "$unit_write" \
   || fail "unit-escalation-write: must exclude resilience-drill-stub* (#455 drill stubs)"
+grep -q 'pi-issue@\*' "$unit_write" \
+  || fail "unit-escalation-write: must exclude pi-issue@* (#2133 amplifier: own failure handling)"
 ok "unit-escalation-write self-trigger guard"
 
 # 12. systemd-analyze verify on the unit files (.service, .path, .timer).

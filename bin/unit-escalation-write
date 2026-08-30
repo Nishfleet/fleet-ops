@@ -50,9 +50,26 @@ fi
 # resurrection-plane stubs the drill DELIBERATELY SIGKILLs to prove
 # Restart=always; that intentional kill is the drill working, not a fault
 # (a real drill failure escalates normally via the drill unit itself).
+#
+# pi-issue@* exclusion (fleet-ops#2133, 2026-08-30): pi-issue workers have
+# their OWN failure handling — systemd Restart=on-failure (StartLimitBurst=3)
+# + OnFailure=pi-issue-failed@%i.service (reaps claim, releases labels,
+# re-dispatches on next intake tick). Routing every pi-issue failure through
+# the SENIOR AUDITOR created an amplifier loop: worker fails on a walled
+# seat → unit-escalation writes STOP-REASON → stop-escalation fires an
+# auditor → auditor consumes a healthy seat + RAM (1.1G) → auditor fails
+# (DISPATCH-NO-BLOCK) → benches that seat → next worker fails → repeat.
+# Measured 2026-08-30 05:00Z: 59 pi-issue failures → 62 unit-escalation
+# firings → 33 stop-escalation auditor dispatches in ONE HOUR, each one
+# burning a seat the workers needed. The auditor is redundant for pi-issue
+# failures (the reaper + intake re-dispatch is the correct recovery path)
+# and actively harmful (seat benching, RAM consumption). Exclude pi-issue@*
+# so the auditor stays available for genuine never-say-next trips
+# (stop-judge, ready-work, fleet-heartbeat, alert-repair, etc.) without the
+# worker-failure amplifier.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*)
-    echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger)" >&2
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|pi-issue@*)
+    echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;
 esac
