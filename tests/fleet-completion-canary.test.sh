@@ -26,6 +26,10 @@
 #  12. Dispatch plane: completed-success (journal) → close green.
 #  13. Dispatch plane: in-flight (active) → leave open.
 #  14. Dispatch plane: orphan before deadline → waiting, no re-dispatch.
+#  15. Dispatch plane: --collect unit, Started-only journal → completed-success.
+#  16. Issue-close evidence: closed without PR/commit evidence is flagged.
+#  17. Escalated dispatch/run chain terminates as terminal=escalated (not parked)
+#      — the fleet-ops#2367 drain (STOP-REASON hand-off is the terminal).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -725,6 +729,83 @@ if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
   fail "9f: must NOT redispatch again on a no-op; log=$(cat "$scratch/dispatch.log")"
 fi
 ok "redispatch no-op at hop=run escalates via STOP-REASON, not parks (fleet-ops#2247)"
+
+# --- 9g. escalated run chain terminates, does NOT park (fleet-ops#2367) ------
+# This is the live incident shape: worker ran, delivered the designed
+# non-zero EXIT CONTRACT verdict (unit failed while the alert still fires),
+# the ladder reached STOP-REASON (senior conference owns it), and the chain
+# sat PARKED at ladder=stop-reason exporting fleet_chain_stalled=1 forever.
+# FleetChainStalled then fired for hours — a repair worker was dispatched for
+# the rail, found the underlying alert unrepairable in-turn (genuine
+# structural signal), exited non-zero (another failed unit), and nothing
+# drained. Before the fix the parked chain never closed. After the fix the
+# next stalled tick TERMINATES it as terminal=escalated (cooldown marker,
+# excluded from open/stalled) — the same drain shape the verify-hop
+# deadline close uses.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+
+# Alert still firing; a DISPATCH was made hours back; the unit FAILED and
+# --collect unloaded it (journal shows the real failure).
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "FleetSloMainGreenSlowBurn"},
+   "activeAt": "2026-08-30T05:27:33Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-30T07:00:11Z] DISPATCH alertname=FleetSloMainGreenSlowBurn seat=commandcode/poolside/laguna-s-2.1-free unit=u-SLO-20260830T070011Z reason=healthy packet=/x rc=0
+PYEND
+printf 'Main process exited, code=exited, status=1/FAILURE\nu-SLO-20260830T070011Z.service: Failed with result exit-code.\n' \
+  >"$scratch/sysctl/u-SLO-20260830T070011Z.journal"
+
+# Seed the parked chain exactly as the live incident left it.
+mkdir -p "$scratch/state/open"
+echo '{"age": 15000, "alertname": "FleetSloMainGreenSlowBurn", "hop": "run", "ladder": "stop-reason", "stall_count": 2}' \
+  >"$scratch/state/open/FleetSloMainGreenSlowBurn.json"
+
+# Tick 1 (well past CLOCK_RUN): the parked chain must TERMINATE.
+rc=$(run_bin "2026-08-30T11:22:19Z")
+[[ "$rc" == "0" ]] || fail "9g tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# Ledger must carry terminal=escalated.
+grep -q 'FleetSloMainGreenSlowBurn.*"terminal": "escalated"' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9g tick-1: ledger must contain terminal=escalated for FleetSloMainGreenSlowBurn; got: $(cat "$scratch/state/chains.terminated.jsonl")"
+
+# State on disk must be the cooldown marker, not the parked chain.
+(
+  cd "$scratch/state/open"
+  for f in *.json; do
+    python3 -c "import json,sys; d=json.load(open('$f')); \
+      assert d.get('dead_until'), 'missing dead_until in '+str(d); \
+      assert d.get('terminal')=='escalated', d" \
+      || fail "9g tick-1: parked chain must become an escalated cooldown marker"
+  done
+)
+
+# The run hop must drain this tick (the issue's acceptance criterion).
+grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9g tick-1: run open must be 0 after escalated termination, got: $(grep run "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9g tick-1: run stalled must be 0 after escalated termination, got: $(grep run "$scratch/fleet-chains.prom")"
+
+# No dispatcher invocation (the escalation is terminal — no re-dispatch).
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9g tick-1: escalated chain must NOT re-dispatch; log=$(cat "$scratch/dispatch.log")"
+fi
+
+# Tick 2 (cooldown active): the chain must NOT re-create.
+rc=$(run_bin "2026-08-30T11:23:00Z")
+[[ "$rc" == "0" ]] || fail "9g tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9g tick-2: run open must stay 0 during cooldown, got: $(grep run "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9g tick-2: run stalled must stay 0 during cooldown, got: $(grep run "$scratch/fleet-chains.prom")"
+
+ok "escalated run chain terminates (terminal=escalated + cooldown), rail drains (fleet-ops#2367)"
 
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)

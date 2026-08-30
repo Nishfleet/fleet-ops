@@ -52,8 +52,12 @@ pi-systemd-run (anti-recursion: this bin creates no unit of its own).
 
 Anti-recursion: this bin never creates an alert-repair-* unit of its own.
 Its service inherits service.d/10-escalate.conf; a genuine fail-loud exit
-climbs that ladder. After STOP-REASON is written, subsequent ticks only
-export stalled>0 (the 15m FleetChainStalled rail) and do not re-fire.
+climbs that ladder. After STOP-REASON is written, subsequent ticks
+only export stalled>0 (the 15m FleetChainStalled rail) until the chain's
+next stall tick closes it as terminal=escalated (fleet-ops#2367) — a
+handled escalation must not park the chain open/stalled forever, or the
+rail turns into a permanent red loop that keeps dispatching repair
+workers into unrepairable structural alerts.
 
 Environment seams (tests):
   FLEET_COMPLETION_STATE, FLEET_COMPLETION_ACTIONS_LOG,
@@ -1425,7 +1429,50 @@ def main() -> int:
                 save_chain_state(name, state)
                 laddered_this_tick += 1
             else:
-                # Already laddered — persist updated hop/age for metrics.
+                # fleet-ops#2367: a chain whose ladder already reached
+                # "stop-reason" (STOP-REASON alert-repair-stalled written —
+                # the senior conference owns the escalation) must TERMINATE as
+                # terminal=escalated, not park open/stalled forever. Parking
+                # converted a handled escalation into a permanent red rail:
+                # FleetChainStalled fired, a repair worker was dispatched for
+                # the rail, found the underlying alert unrepairable in-turn
+                # (genuine structural signal), exited non-zero per the packet
+                # EXIT CONTRACT — another failed run unit — and nothing ever
+                # drained. Escalation IS the run hop's terminal. Mirror the
+                # verify-hop detector-red close (fleet-ops#1610): terminate
+                # this tick, record the terminal, and write a cooldown marker
+                # so the SAME stale dispatch does not re-open the chain next
+                # tick. A fresh dispatch (new DISPATCH line) or the alert
+                # leaving 9090 still closes the chain via the normal paths.
+                if state.get("ladder") == "stop-reason" and hop in {"dispatch", "run"}:
+                    start = decision["start_ts"]
+                    start_iso = iso(start)
+                    cycle = max(0, epoch(now) - epoch(start))
+                    if not already_terminated(name, start_iso):
+                        append_terminal({
+                            "alertname": name,
+                            "terminal": "escalated",
+                            "start_ts": start_iso,
+                            "end_ts": iso(now),
+                            "cycle_seconds": cycle,
+                            "unit": decision.get("dispatch_unit") or "",
+                        })
+                        log(f"TERMINAL escalated alertname={name} "
+                            f"cycle_seconds={cycle} "
+                            "(stop-reason hand-off; STOP-REASON owns the escalation)")
+                    cooldown_deadline = now + timedelta(seconds=VERIFY_DEADLINE)
+                    save_chain_state(name, {
+                        "alertname": name,
+                        "hop": hop,
+                        "terminal": "escalated",
+                        "dead_until": iso(cooldown_deadline),
+                    })
+                    # The chain terminated this tick — do not count it as
+                    # still-open/stalled (same exclusion as the verify close).
+                    open_hops[hop] -= 1
+                    stalled_hops[hop] -= 1
+                    continue
+                # Already laddered on another rung — persist hop/age.
                 state["hop"] = hop
                 state["age"] = decision["age"]
                 save_chain_state(name, state)
