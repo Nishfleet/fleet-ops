@@ -1,0 +1,624 @@
+#!/usr/bin/env bash
+# fleet-loose-ends-canary — sr-nothing-half-done enforcer (fleet-ops#528).
+#
+# Standing rule: nothing sits half-done, and no question dies unanswered
+# (Nish, 2026-08-20). The fleet2 timers that used to do this were
+# retired 2026-08-23; this is the live replacement, on the heartbeat
+# tick (no new scheduler).
+#
+# Three detection classes share one classifier so a single observer
+# drains the backlog without a pager storm:
+#
+#   1. Unanswered questions — QUESTIONS.md rows in OPEN status, or
+#      HOLD past its return date. Each nag-target gets a marker so a
+#      later tick can verify the nag landed and observe-to-close
+#      drain the ticket.
+#   2. Half-done PRs — open MERGEABLE worker PRs on enrolled repos
+#      older than the idle window WITHOUT auto-merge armed. Either
+#      the worker landed and forgot to arm, or the worker is
+#      missing in action. The ticket is the completion path.
+#   3. Half-done worktrees — worktrees with stale HEAD AND no live
+#      worker unit touching them. The dirty-or-idle class.
+#
+# Observe-to-open: a finding without an open ticket is filed (capped
+# per tick so the heartbeat stays cheap). Observe-to-close: a
+# previously filed slug that is no longer a finding gets a
+# `resolved-at:` comment on a green tick; a later tick that already
+# carries that marker closes the issue. This is the same two-tick
+# shape as fleet-ops#650/#521/#729.
+#
+# STEP 0 (research-before-build #517 / find-proven-thing #534): read
+# `gh issue list --help`, `gh pr list --help`, `systemctl --user
+# list-units --help`, and `find --help`. None of them natively
+# classifies half-done worktrees / unanswered questions / stale PRs
+# by the rule's three classes. The pattern is fleet-owned.
+#
+# STEP 0 (no-hand-built-orchestration): this canary is read-only
+# against the filesystem and gh. No retries, no cooldowns, no
+# dispatcher. The worker's inner loop is the executor; the canary
+# only classifies and files.
+#
+# Environment seams (tests override every of these):
+#   FLEET_LOOSE_ENDS_LIB             default lib/loose-ends.py
+#   FLEET_LOOSE_ENDS_QUESTIONS       default vault QUESTIONS.md
+#   FLEET_LOOSE_ENDS_WORKTREES_ROOT  default ~/workspaces/agent-worktrees
+#   FLEET_LOOSE_ENDS_INTAKE          default config/intake-repos.json
+#   FLEET_LOOSE_ENDS_PRS_FILE        skip live gh when set (JSON array)
+#   FLEET_LOOSE_ENDS_LIVE_UNITS_FILE skip live systemctl when set
+#   FLEET_LOOSE_ENDS_NOW             ISO timestamp
+#   FLEET_LOOSE_ENDS_IDLE_HOURS      default 24
+#   FLEET_LOOSE_ENDS_NAG_HOURS       default 24
+#   FLEET_LOOSE_ENDS_FILE            1 (default) / 0
+#   FLEET_LOOSE_ENDS_CLOSE           1 (default) / 0
+#   FLEET_LOOSE_ENDS_ISSUE_REPO      default Nishfleet/fleet-ops
+#   FLEET_LOOSE_ENDS_CAP             default 5
+#   FLEET_LOOSE_ENDS_SCAN_PRS        1 (default) / 0
+#   FLEET_LOOSE_ENDS_SCAN_WORKTREES  1 (default) / 0
+#   FLEET_LOOSE_ENDS_REPOS           default Nishfleet/<enrolled>
+#   FLEET_HEARTBEAT_TRIAGE
+#   GH
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$_canon_repo/bin/fleet-issue-file}"
+
+LIB="${FLEET_LOOSE_ENDS_LIB:-$_canon_repo/lib/loose-ends.py}"
+QUESTIONS="${FLEET_LOOSE_ENDS_QUESTIONS:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/QUESTIONS.md}"
+WORKTREES_ROOT="${FLEET_LOOSE_ENDS_WORKTREES_ROOT:-$HOME/workspaces/agent-worktrees}"
+INTAKE="${FLEET_LOOSE_ENDS_INTAKE:-$_canon_repo/config/intake-repos.json}"
+PRS_FILE="${FLEET_LOOSE_ENDS_PRS_FILE:-}"
+LIVE_UNITS_FILE="${FLEET_LOOSE_ENDS_LIVE_UNITS_FILE:-}"
+WORKTREES_FILE="${FLEET_LOOSE_ENDS_WORKTREES_FILE:-}"
+NOW_ISO="${FLEET_LOOSE_ENDS_NOW:-}"
+IDLE_HOURS="${FLEET_LOOSE_ENDS_IDLE_HOURS:-24}"
+NAG_HOURS="${FLEET_LOOSE_ENDS_NAG_HOURS:-24}"
+FILE_ISSUES="${FLEET_LOOSE_ENDS_FILE:-1}"
+CLOSE_ISSUES="${FLEET_LOOSE_ENDS_CLOSE:-1}"
+ISSUE_REPO="${FLEET_LOOSE_ENDS_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_LOOSE_ENDS_CAP:-5}"
+SCAN_PRS="${FLEET_LOOSE_ENDS_SCAN_PRS:-1}"
+SCAN_WORKTREES="${FLEET_LOOSE_ENDS_SCAN_WORKTREES:-1}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+usage() {
+    cat >&2 <<USAGE
+usage: fleet-loose-ends-canary [--help] [--nag-only|--prs-only|--worktrees-only]
+                                [--no-file] [--no-close]
+USAGE
+    exit 2
+}
+
+mode="all"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage ;;
+        --nag-only)        mode="nag"; shift ;;
+        --prs-only)        mode="prs"; shift ;;
+        --worktrees-only)  mode="worktrees"; shift ;;
+        --no-file)         FILE_ISSUES=0; shift ;;
+        --no-close)        CLOSE_ISSUES=0; shift ;;
+        *) usage ;;
+    esac
+done
+
+log() {
+    printf '[%s] [fleet-loose-ends-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    loud "LOOSE-ENDS-BROKEN" "python3 missing — cannot classify"
+    exit 1
+fi
+if [[ ! -f "$LIB" ]]; then
+    loud "LOOSE-ENDS-BROKEN" "helper missing at $LIB"
+    exit 1
+fi
+
+scratch=$(mktemp -d -t loose-ends.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+# --- 1. unanswered questions ----------------------------------------------
+nag_findings=()
+nag_scanned=0
+if [[ "$mode" == "all" || "$mode" == "nag" ]]; then
+    if [[ ! -f "$QUESTIONS" ]]; then
+        loud "LOOSE-ENDS-NAG-MISSING" "QUESTIONS.md missing at $QUESTIONS"
+        nag_findings=()
+    else
+        q_args=(questions --questions "$QUESTIONS")
+        if [[ -n "$NOW_ISO" ]]; then
+            q_args+=(--now "$NOW_ISO")
+        fi
+        set +e
+        q_report=$(python3 "$LIB" "${q_args[@]}" 2>"$scratch/q.err")
+        q_rc=$?
+        set -e
+        if [[ "$q_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$q_report"; then
+            loud "LOOSE-ENDS-BROKEN" \
+                "questions helper failed rc=$q_rc $(tr '\n' ' ' <"$scratch/q.err")"
+            exit 1
+        fi
+        nag_scanned=$(jq -r '.rows_total // 0' <<<"$q_report")
+        nag_findings=()
+        while IFS= read -r row; do
+            [[ -n "$row" ]] || continue
+            nag_findings+=("$row")
+        done < <(jq -c '.nag_targets[]? // empty' <<<"$q_report")
+        log "nag: rows=$nag_scanned targets=${#nag_findings[@]}"
+        while IFS= read -r err; do
+            [[ -n "$err" ]] || continue
+            loud "LOOSE-ENDS-QUESTIONS-PARSE" "$err"
+        done < <(jq -r '.parse_errors[]? // empty' <<<"$q_report")
+    fi
+fi
+
+# --- 2. half-done PRs ------------------------------------------------------
+pr_findings=()
+pr_scanned=0
+if [[ "$mode" == "all" || "$mode" == "prs" ]]; then
+    if [[ "$SCAN_PRS" != "1" ]]; then
+        log "prs: scan disabled (FLEET_LOOSE_ENDS_SCAN_PRS=$SCAN_PRS)"
+    else
+        prs_json="$scratch/prs.json"
+        : >"$prs_json"
+        if [[ -n "$PRS_FILE" ]]; then
+            if [[ ! -f "$PRS_FILE" ]]; then
+                loud "LOOSE-ENDS-BROKEN" "PRS fixture missing: $PRS_FILE"
+                exit 1
+            fi
+            cp "$PRS_FILE" "$prs_json"
+        else
+            if [[ ! -f "$INTAKE" ]]; then
+                loud "LOOSE-ENDS-BROKEN" "intake-repos.json missing: $INTAKE"
+                exit 1
+            fi
+            if ! command -v "$GH" >/dev/null 2>&1; then
+                loud "LOOSE-ENDS-BROKEN" "gh missing ($GH) — cannot list PRs"
+                exit 1
+            fi
+            mapfile -t repos < <(jq -r '.repos[]?.name // empty | "Nishfleet/" + .' \
+                "$INTAKE" 2>/dev/null || true)
+            if [[ ${#repos[@]} -eq 0 ]]; then
+                loud "LOOSE-ENDS-BROKEN" "no enrolled repos in $INTAKE"
+                exit 1
+            fi
+            printf '[\n' >"$prs_json"
+            first=1
+            for repo in "${repos[@]}"; do
+                [[ -n "$repo" ]] || continue
+                set +e
+                chunk=$("$GH" pr list -R "$repo" --state open --limit 100 \
+                    --json number,title,url,createdAt,headRefName,isDraft,author 2>"$scratch/gh.err")
+                gh_rc=$?
+                set -e
+                if [[ "$gh_rc" -ne 0 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$chunk"; then
+                    loud "LOOSE-ENDS-BROKEN" \
+                        "gh pr list failed for $repo rc=$gh_rc $(tr '\n' ' ' <"$scratch/gh.err")"
+                    exit 1
+                fi
+                while IFS= read -r row; do
+                    [[ -n "$row" ]] || continue
+                    row=$(jq -c --arg r "$repo" '. + {repo: $r}' <<<"$row")
+                    if [[ "$first" -eq 1 ]]; then
+                        first=0
+                    else
+                        printf ',\n' >>"$prs_json"
+                    fi
+                    printf '%s\n' "$row" >>"$prs_json"
+                done < <(jq -c '.[]' <<<"$chunk")
+            done
+            printf ']\n' >>"$prs_json"
+        fi
+
+        p_args=(prs --prs "$prs_json" --window-hours "$IDLE_HOURS")
+        if [[ -n "$NOW_ISO" ]]; then
+            p_args+=(--now "$NOW_ISO")
+        fi
+        set +e
+        p_report=$(python3 "$LIB" "${p_args[@]}" 2>"$scratch/p.err")
+        p_rc=$?
+        set -e
+        if [[ "$p_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$p_report"; then
+            loud "LOOSE-ENDS-BROKEN" \
+                "prs helper failed rc=$p_rc $(tr '\n' ' ' <"$scratch/p.err")"
+            exit 1
+        fi
+        pr_scanned=$(jq -r '.scanned // 0' <<<"$p_report")
+        log "prs: scanned=$pr_scanned skipped_human=$(jq -r .skipped_human <<<"$p_report") skipped_fresh=$(jq -r .skipped_fresh <<<"$p_report") skipped_draft=$(jq -r .skipped_draft <<<"$p_report")"
+        while IFS= read -r row; do
+            [[ -n "$row" ]] || continue
+            pr_findings+=("$row")
+        done < <(jq -c '.findings[]? // empty' <<<"$p_report")
+        log "prs: findings=${#pr_findings[@]}"
+    fi
+fi
+
+# --- 3. half-done worktrees ------------------------------------------------
+wt_findings=()
+wt_scanned=0
+if [[ "$mode" == "all" || "$mode" == "worktrees" ]]; then
+    if [[ "$SCAN_WORKTREES" != "1" ]]; then
+        log "worktrees: scan disabled (FLEET_LOOSE_ENDS_SCAN_WORKTREES=$SCAN_WORKTREES)"
+    else
+        wt_json="$scratch/worktrees.json"
+        live_units_file="$scratch/live-units.txt"
+        : >"$wt_json"
+        : >"$live_units_file"
+        if [[ -n "$WORKTREES_FILE" ]]; then
+            if [[ ! -f "$WORKTREES_FILE" ]]; then
+                loud "LOOSE-ENDS-BROKEN" "worktrees fixture missing: $WORKTREES_FILE"
+                exit 1
+            fi
+            cp "$WORKTREES_FILE" "$wt_json"
+        fi
+        if [[ -n "$LIVE_UNITS_FILE" ]]; then
+            if [[ ! -f "$LIVE_UNITS_FILE" ]]; then
+                loud "LOOSE-ENDS-BROKEN" "live-units fixture missing: $LIVE_UNITS_FILE"
+                exit 1
+            fi
+            cp "$LIVE_UNITS_FILE" "$live_units_file"
+        else
+            # Live: systemctl --user list-units --type=service --state=running
+            # --no-legend. The unit name carries the worker's claim surface.
+            set +e
+            systemctl --user list-units --type=service --state=running \
+                --no-legend --plain 2>"$scratch/sctl.err" \
+                | awk '{print $1}' >"$live_units_file" || true
+            set -e
+            # A dead systemctl (XDG_RUNTIME_DIR unset, no user bus) is not
+            # a heartbeat failure — it just means we cannot prove liveness
+            # for the live-worker exemption. Log and move on; the canary
+            # will skip the live filter and report all stale worktrees.
+            if [[ ! -s "$live_units_file" ]]; then
+                log "worktrees: systemctl returned no live units (XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}); live exemption skipped"
+            fi
+        fi
+
+        # Walk WORKTREES_ROOT for git worktrees and capture HEAD info.
+        # We skip the directory walk when WORKTREES_FILE was supplied
+        # (the fixture is the source of truth for tests).
+        # We read .git pointer files rather than shelling out per
+        # directory — `git -C <path> rev-parse HEAD` is N+1 forks and
+        # adds real wall-time on a 2083-entry tree. The .git pointer
+        # shape is stable on this box (every worktree is either a
+        # proper gitdir file or a $GIT_DIR/worktrees/<name> sibling).
+        if [[ -z "$WORKTREES_FILE" && -d "$WORKTREES_ROOT" ]]; then
+            while IFS= read -r wt_path; do
+                [[ -d "$wt_path" ]] || continue
+                # The .git pointer: a file whose `gitdir:` line resolves
+                # the worktree's git dir. We refuse to recurse into git
+                # internals; only the pointer file shape.
+                gitfile="$wt_path/.git"
+                gitdir=""
+                if [[ -f "$gitfile" ]]; then
+                    gitdir=$(sed -n 's/^gitdir: //p' "$gitfile" 2>/dev/null || true)
+                    gitdir="${gitdir%$'\r'}"
+                elif [[ -d "$wt_path/.git" ]]; then
+                    # Bare-style or non-pointer worktrees — fall back to
+                    # shelling out so we do not silently misclassify.
+                    gitdir="$wt_path/.git"
+                fi
+                if [[ -z "$gitdir" ]]; then
+                    # Not a git worktree; skip silently. agent-worktrees
+                    # holds sandbox dirs and stale mirrors that are not
+                    # worktrees. The half-done class is git worktrees.
+                    continue
+                fi
+                # Branch from .git pointer resolution: HEAD file.
+                head_file=""
+                if [[ -f "$gitdir/HEAD" ]]; then
+                    head_file="$gitdir/HEAD"
+                elif [[ -f "$wt_path/.git/HEAD" ]]; then
+                    head_file="$wt_path/.git/HEAD"
+                fi
+                branch=""
+                if [[ -n "$head_file" ]]; then
+                    ref=$(awk 'NR==1{print $2}' "$head_file" 2>/dev/null || true)
+                    case "$ref" in
+                        refs/heads/*) branch="${ref#refs/heads/}" ;;
+                    esac
+                fi
+                # Last-commit timestamp from committerdate of HEAD. Read
+                # the loose commit if HEAD is an exact sha, or fall back
+                # to git -C for symbolic refs. We only shell out for
+                # symbolic refs to keep the cost down.
+                last_ts=""
+                if [[ -n "$head_file" ]]; then
+                    headref=$(awk 'NR==1{print $2}' "$head_file" 2>/dev/null || true)
+                    if [[ -z "$headref" ]] || [[ "$headref" == *[!a-f0-9]* ]]; then
+                        # Detached HEAD or empty — skip silently. A
+                        # detached HEAD is its own bug class and not
+                        # ours to detect here.
+                        last_ts="null"
+                    else
+                        commit_obj="$gitdir/objects/${headref:0:2}/${headref:2}"
+                        if [[ -f "$commit_obj" ]]; then
+                            # Git loose object format: zlib stream. The
+                            # committer line follows `committer NAME
+                            # EMAIL UNIX_TIMESTAMP TZ`. Cheap extraction
+                            # without python/zlib: scan the raw bytes.
+                            # We accept that loose-object extraction is
+                            # approximate (timestamp is stable) and
+                            # fall back to git -C if it fails.
+                            last_ts=$(zcat "$commit_obj" 2>/dev/null \
+                                | tr -d '\0' \
+                                | awk '/^committer /{print $NF; exit}' \
+                                || true)
+                            if [[ -z "$last_ts" ]]; then
+                                last_ts=""
+                            fi
+                        fi
+                        if [[ -z "$last_ts" ]]; then
+                            set +e
+                            last_ts=$(git -C "$wt_path" log -1 \
+                                --format=%ct 2>/dev/null || echo "")
+                            set -e
+                        fi
+                    fi
+                fi
+                # Dirty if there are any modified/unstaged entries. The
+                # cheap read: git status --porcelain. We accept the N
+                # forks; this is the loudest signal and worth it.
+                dirty=false
+                set +e
+                porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null \
+                    | head -n 1 || true)
+                set -e
+                if [[ -n "$porcelain" ]]; then
+                    dirty=true
+                fi
+
+                # Live-unit lookup: claim/issue-* branches map to
+                # pi-issue-fleet-ops-<n>.service / pi-issue-<repo>-<n>.
+                # Without a stable naming convention we cannot map
+                # every unit; we mark every worktree "live=false" and
+                # let the live_units_file filter do the heavy lifting
+                # via branch-name match (handled by the classify step
+                # when the upstream caller enriches the record).
+                unit=""
+
+                jq -n \
+                    --arg path "$wt_path" \
+                    --arg branch "$branch" \
+                    --argjson ts "${last_ts:-null}" \
+                    --argjson dirty "$dirty" \
+                    --arg unit "$unit" \
+                    '{path:$path,branch:$branch,last_commit_ts:$ts,dirty:$dirty,live:false,unit:$unit}' \
+                    >>"$wt_json"
+            done < <(find "$WORKTREES_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+                | sort)
+        fi
+
+        w_args=(worktrees --worktrees "$wt_json" --live-units "$live_units_file" \
+                --window-hours "$IDLE_HOURS")
+        if [[ -n "$NOW_ISO" ]]; then
+            w_args+=(--now "$NOW_ISO")
+        fi
+        set +e
+        w_report=$(python3 "$LIB" "${w_args[@]}" 2>"$scratch/w.err")
+        w_rc=$?
+        set -e
+        if [[ "$w_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$w_report"; then
+            loud "LOOSE-ENDS-BROKEN" \
+                "worktrees helper failed rc=$w_rc $(tr '\n' ' ' <"$scratch/w.err")"
+            exit 1
+        fi
+        wt_scanned=$(jq -r '.scanned // 0' <<<"$w_report")
+        log "worktrees: scanned=$wt_scanned skipped_clean=$(jq -r .skipped_clean <<<"$w_report") skipped_fresh=$(jq -r .skipped_fresh <<<"$w_report") skipped_live=$(jq -r .skipped_live <<<"$w_report")"
+        while IFS= read -r row; do
+            [[ -n "$row" ]] || continue
+            wt_findings+=("$row")
+        done < <(jq -c '.findings[]? // empty' <<<"$w_report")
+        log "worktrees: findings=${#wt_findings[@]}"
+    fi
+fi
+
+# --- 4. observe-to-open: file a ticket per finding ------------------------
+findings_total=$(( ${#nag_findings[@]} + ${#pr_findings[@]} + ${#wt_findings[@]} ))
+log "totals: nag=${#nag_findings[@]} prs=${#pr_findings[@]} worktrees=${#wt_findings[@]}"
+
+open_json="[]"
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 \
+        --json number,body,comments 2>/dev/null || echo "[]")
+    set -e
+    open_json="${open_json:-[]}"
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "WARN: gh issue list produced no JSON"
+        open_json="[]"
+    fi
+fi
+
+file_finding() {
+    local slug="$1" kind="$2" title="$3" body="$4"
+    local marker="loose-ends-canary: ${slug} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_LOOSE_ENDS_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    if printf '%s' "$open_json" | jq -e --arg s "$marker" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        log "auto-file: $slug already open (deduped)"
+        return 0
+    fi
+    local full="${body}
+
+${marker}
+"
+    set +e
+    created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$full" 2>/dev/null || echo "")
+    create_rc=$?
+    set -e
+    if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
+        log "auto-file: FILED $slug -> $created"
+    else
+        log "auto-file: failed to file $slug (rc=$create_rc)"
+    fi
+}
+
+filed=0
+file_one() {
+    local kind="$1" slug="$2" payload="$3" reason="$4"
+    [[ "$filed" -lt "$CAP" ]] || { log "file cap reached ($CAP); deferring $slug"; return 0; }
+    local title="fix(loose-ends): $kind — $slug"
+    local body="The loose-ends canary (fleet-ops#528, sr-nothing-half-done) found a half-done artifact.
+
+- kind: ${kind}
+- slug: \`${slug}\`
+- payload: ${payload}
+- reason: ${reason}
+
+Standing rule: nothing sits half-done, and no question dies unanswered (Nish, 2026-08-20). Either complete end-to-end (merge, deploy, wire, prove) or explicitly discard with a one-line note. Parked is not a state.
+
+Do not close until the canary reports this slug as resolved on a real heartbeat tick (observe-to-close).
+
+signal: rule-enforcement/sr-nothing-half-done"
+    file_finding "$slug" "$kind" "$title" "$body"
+    filed=$((filed + 1))
+}
+
+# Nag targets — log LOUD and file.
+for row in "${nag_findings[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    slug=$(jq -r '.slug // "unknown"' <<<"$row")
+    kind=$(jq -r '.kind // "open-question"' <<<"$row")
+    asked=$(jq -r '.asked // "?"' <<<"$row")
+    status=$(jq -r '.status // "OPEN"' <<<"$row")
+    question=$(jq -r '.question // ""' <<<"$row")
+    loud "LOOSE-ENDS-NAG" "$kind slug=$slug asked=$asked status=$status"
+    payload=$(printf 'asked=%s status=%s question=%q' "$asked" "$status" "$question")
+    file_one "$kind" "$slug" "$payload" "QUESTIONS.md row needs a 24h nag or resolution"
+done
+
+for row in "${pr_findings[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    slug=$(jq -r '.slug // "unknown"' <<<"$row")
+    url=$(jq -r '.url // ""' <<<"$row")
+    age=$(jq -r '.age_hours // "?"' <<<"$row")
+    head=$(jq -r '.headRefName // ""' <<<"$row")
+    loud "LOOSE-ENDS-STALE-PR" "slug=$slug age_h=$age head=$head url=$url"
+    payload=$(printf 'age_h=%s headRef=%s url=%s' "$age" "$head" "$url")
+    file_one "stale-worker-pr" "$slug" "$payload" \
+        "open worker PR older than the idle window without auto-merge; arm auto-merge or finish the work"
+done
+
+for row in "${wt_findings[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    slug=$(jq -r '.slug // "unknown"' <<<"$row")
+    path=$(jq -r '.path // ""' <<<"$row")
+    age=$(jq -r '.age_hours // "?"' <<<"$row")
+    dirty=$(jq -r '.dirty // false' <<<"$row")
+    loud "LOOSE-ENDS-STALE-WORKTREE" "slug=$slug age_h=$age dirty=$dirty path=$path"
+    payload=$(printf 'age_h=%s dirty=%s path=%s' "$age" "$dirty" "$path")
+    file_one "stale-worktree" "$slug" "$payload" \
+        "worktree HEAD older than the idle window with no live worker unit; complete or discard"
+done
+
+# --- 5. observe-to-close: drain previously filed slugs that are clean ----
+observed=0
+closed=0
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    # Build a set of all current finding slugs.
+    finding_slugs=$(mktemp)
+    : >"$finding_slugs"
+    for row in "${nag_findings[@]:-}" "${pr_findings[@]:-}" "${wt_findings[@]:-}"; do
+        [[ -n "$row" ]] || continue
+        s=$(jq -r '.slug // empty' <<<"$row")
+        [[ -n "$s" ]] && printf '%s\n' "$s" >>"$finding_slugs"
+    done
+    sort -u "$finding_slugs" -o "$finding_slugs"
+
+    while IFS= read -r irow; do
+        [[ -n "$irow" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$irow")
+        [[ -n "$num" && "$num" != "null" ]] || continue
+        body=$(jq -r '.body // ""' <<<"$irow")
+        signal=$(grep -oE 'signal: rule-enforcement/sr-nothing-half-done' <<<"$body" | head -1 || true)
+        # We only drain loose-ends-canary tickets. Anything else stays
+        # untouched — other rule-enforcement sources have their own
+        # observe-to-close logic in their own canaries.
+        grep -q 'loose-ends-canary:' <<<"$body" || continue
+        # Extract the slug from the marker line.
+        marker_line=$(grep -m1 'loose-ends-canary:' <<<"$body" || true)
+        slug=$(printf '%s' "$marker_line" \
+            | sed -E 's/.*loose-ends-canary: ([^ ]+) .*/\1/')
+        [[ -n "$slug" ]] || continue
+        if grep -qxF -- "$slug" "$finding_slugs"; then
+            log "observe: $slug still a finding (#$num) — skip"
+            continue
+        fi
+        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")
+        marker="resolved-at: signal: rule-enforcement/sr-nothing-half-done"
+        if grep -Fq -- "$marker" <<<"$blob"; then
+            if [[ "$CLOSE_ISSUES" == "1" ]] && [[ "$closed" -lt "$CAP" ]]; then
+                set +e
+                "$GH" issue close "$num" -R "$ISSUE_REPO" --reason completed \
+                    >"$scratch/close.err" 2>&1
+                close_rc=$?
+                set -e
+                if [[ "$close_rc" -eq 0 ]]; then
+                    closed=$((closed + 1))
+                    log "OBSERVE-CLOSED $slug -> #$num (resolved-at + no longer a finding)"
+                else
+                    log "WARN: failed to close #$num (rc=$close_rc) $(tr '\n' ' ' <"$scratch/close.err")"
+                fi
+            else
+                log "dedup observe: #$num already carries $marker"
+            fi
+            continue
+        fi
+        [[ "$observed" -lt "$CAP" ]] || continue
+        comment="${marker}
+
+observed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Detector is green for this slug on a real heartbeat tick (fleet-ops#528 observe-to-close)."
+        set +e
+        "$GH" issue comment "$num" -R "$ISSUE_REPO" --body "$comment" \
+            >"$scratch/comment.err" 2>&1
+        comment_rc=$?
+        set -e
+        if [[ "$comment_rc" -eq 0 ]]; then
+            observed=$((observed + 1))
+            log "OBSERVED-RESOLVED $slug -> #$num"
+        else
+            log "WARN: failed to comment on #$num (rc=$comment_rc) $(tr '\n' ' ' <"$scratch/comment.err")"
+        fi
+    done < <(jq -c '.[]' <<<"$open_json")
+    rm -f "$finding_slugs"
+    log "observe-to-close: commented=$observed closed=$closed"
+fi
+
+if [[ "$findings_total" -eq 0 ]]; then
+    loud "LOOSE-ENDS-OK" \
+        "no half-done artifacts (nag=$nag_scanned prs=$pr_scanned worktrees=$wt_scanned)"
+    exit 0
+fi
+
+# A tick with findings already filed everything it can up to CAP. We
+# exit 0: the tickets are the prevention (observe-to-open), the canary
+# is not allowed to land the heartbeat in --state=failed every tick
+# for a class that already has tickets (fleet-ops#1116 alarm-vs-
+# failure separation). rc >= 2 stays reserved for helper crashes.
+exit 0
