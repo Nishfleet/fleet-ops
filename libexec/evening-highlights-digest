@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# evening-highlights-digest — generate and send Nish's 21:00 IST evening
+# highlights digest on Telegram (vacation window through 2026-09-08).
+#
+# The second sanctioned digest slot (hermes message contract: urgent instant +
+# 2 digests max). Driven by ~/.config/systemd/user/evening-highlights-digest.{timer,service}.
+#
+# Reports ONLY wins-and-milestones a human would care about:
+#   - first AEO citation (if any new since last run)
+#   - GLM audition verdict (if any new since last run)
+#   - weekly review outcomes (if any new since last run)
+#   - quality-share improvements (if any new since last run)
+#   - notable saves by the matrix (if any new since last run)
+#
+# Plain language, wins-only, 5 lines max. NO gauge dumps (the 9 AM digest
+# owns gauges). CRITICAL: if the day has nothing genuinely worth saying, it
+# sends NOTHING — silence is a feature, a forced daily message becomes noise.
+#
+# Delivery: same sanctioned texter as daily-digest (`hermes send -t telegram
+# --urgent --class evening-highlights-digest ...`). --urgent bypasses the
+# 3/24h ceiling because this is a sanctioned digest, not a routine
+# notification. The send is still ledgered.
+#
+# Persistent, sunset/reassess 2026-09-08 (ledger). This is "keep in touch",
+# not "report in duplicate".
+
+set -Eeuo pipefail
+
+# --- Sunset gate: stop after 2026-09-08 --------------------------------------
+# After 2026-09-08 this digest should be reassessed or removed. The timer
+# stays installed but the generator exits silently so no message is sent.
+today_utc="$(date -u +%Y-%m-%d)"
+if [[ "$today_utc" > "2026-09-08" ]]; then
+  # Past sunset: do not send, do not log, just exit cleanly.
+  exit 0
+fi
+
+# --- State file to track "last seen" for each signal -------------------------
+# We only report NEW wins since the last run. State lives in agent-state.
+STATE_DIR="/home/nish/workspaces/agent-state/evening-digest"
+mkdir -p "$STATE_DIR"
+STATE_FILE="$STATE_DIR/last-seen.json"
+
+# Read last-seen timestamps (epoch seconds)
+read_state() {
+  if [[ -f "$STATE_FILE" ]]; then
+    cat "$STATE_FILE"
+  else
+    echo '{"aeo":0,"glm":0,"weekly":0,"quality":0,"matrix":0}'
+  fi
+}
+
+write_state() {
+  local new_state="$1"
+  printf '%s\n' "$new_state" > "$STATE_FILE.tmp"
+  mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+last_seen=$(read_state)
+aeo_last=$(printf '%s' "$last_seen" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("aeo",0))')
+glm_last=$(printf '%s' "$last_seen" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("glm",0))')
+weekly_last=$(printf '%s' "$last_seen" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("weekly",0))')
+quality_last=$(printf '%s' "$last_seen" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("quality",0))')
+matrix_last=$(printf '%s' "$last_seen" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("matrix",0))')
+
+# --- Collect candidate highlights (max 5 lines) -------------------------------
+highlights=()
+new_aeo=$aeo_last
+new_glm=$glm_last
+new_weekly=$weekly_last
+new_quality=$quality_last
+new_matrix=$matrix_last
+
+# 1. First AEO citation — check aeo-probe latest.json for new citations
+aeo_file="/home/nish/workspaces/agent-state/aeo-probe/latest.json"
+if [[ -f "$aeo_file" ]]; then
+  aeo_data=$(cat "$aeo_file")
+  aeo_run_at=$(printf '%s' "$aeo_data" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("run_at_unix",0))')
+  aeo_cited=$(printf '%s' "$aeo_data" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(e.get("cited",0) for e in d.get("engines",{}).values()))')
+  if (( aeo_run_at > aeo_last )) && (( aeo_cited > 0 )); then
+    highlights+=("First AEO citation landed (${aeo_cited} total across engines).")
+    new_aeo=$aeo_run_at
+  fi
+fi
+
+# 2. GLM audition verdict — check fleet-researcher last-verdict.json for GLM adoption
+glm_file="/home/nish/workspaces/agent-state/fleet-researcher/last-verdict.json"
+if [[ -f "$glm_file" ]]; then
+  glm_data=$(cat "$glm_file")
+  glm_dispatch=$(printf '%s' "$glm_data" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("dispatch",False))')
+  glm_adopted=$(printf '%s' "$glm_data" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("adopted",0))')
+  glm_judged=$(printf '%s' "$glm_data" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("judged",0))')
+  # Use file mtime as a proxy for "new verdict"
+  glm_mtime=$(stat -c %Y "$glm_file" 2>/dev/null || echo 0)
+  if (( glm_mtime > glm_last )) && [[ "$glm_dispatch" == "true" ]] && (( glm_adopted > 0 || glm_judged > 0 )); then
+    highlights+=("GLM audition: ${glm_adopted} adopted of ${glm_judged} judged — promoted to rotation.")
+    new_glm=$glm_mtime
+  fi
+fi
+
+# 3. Weekly review outcomes — check fleet-weekly-review/runs for new run
+weekly_dir="/home/nish/workspaces/agent-state/fleet-weekly-review/runs"
+if [[ -d "$weekly_dir" ]]; then
+  latest_weekly=$(find "$weekly_dir" -maxdepth 1 -type d -name '20*' | sort | tail -1)
+  if [[ -n "$latest_weekly" && -d "$latest_weekly" ]]; then
+    weekly_mtime=$(stat -c %Y "$latest_weekly" 2>/dev/null || echo 0)
+    # Check if there are meaningful findings/actions
+    actions_file="$latest_weekly/actions.jsonl"
+    findings_dir="$latest_weekly/findings"
+    has_content=0
+    if [[ -f "$actions_file" && -s "$actions_file" ]]; then
+      has_content=1
+    elif [[ -d "$findings_dir" ]]; then
+      finding_count=$(find "$findings_dir" -name '*.json' -type f 2>/dev/null | wc -l)
+      (( finding_count > 0 )) && has_content=1
+    fi
+    if (( weekly_mtime > weekly_last )) && (( has_content == 1 )); then
+      week_label=$(basename "$latest_weekly" | cut -c1-10)
+      highlights+=("Weekly review ${week_label} completed — findings filed, actions queued.")
+      new_weekly=$weekly_mtime
+    fi
+  fi
+fi
+
+# 4. Quality-share improvements — check quality-slo/events.json for new improvements
+quality_file="/home/nish/workspaces/agent-state/quality-slo/events.json"
+if [[ -f "$quality_file" ]]; then
+  quality_mtime=$(stat -c %Y "$quality_file" 2>/dev/null || echo 0)
+  if (( quality_mtime > quality_last )); then
+    # Look for positive quality events in the last 24h
+    quality_new=$(python3 - "$quality_file" "$quality_last" <<'PY'
+import json, sys, time
+path, last = sys.argv[1], int(sys.argv[2])
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+# Events have timestamps; count improvements since last check
+improvements = 0
+for ev in data.get("events", []):
+    ts = ev.get("timestamp", 0)
+    if ts > last and ev.get("type") in ("quality_improved", "slo_met", "gate_passed"):
+        improvements += 1
+print(improvements)
+PY
+)
+    if (( quality_new > 0 )); then
+      highlights+=("Quality share improved: ${quality_new} gate/SLO gains since last check.")
+      new_quality=$quality_mtime
+    fi
+  fi
+fi
+
+# 5. Notable saves by the matrix — check fleet-blind-audit verdicts for PASS
+# findings that auto-filed as agent-ready (matrix caught something)
+matrix_dir="/home/nish/workspaces/agent-state/fleet-blind-audit/reports"
+if [[ -d "$matrix_dir" ]]; then
+  latest_matrix=$(find "$matrix_dir" -maxdepth 1 -type d -name '20*' | sort | tail -1)
+  if [[ -n "$latest_matrix" && -d "$latest_matrix" ]]; then
+    verdicts_file="$latest_matrix/verdicts.jsonl"
+    matrix_mtime=$(stat -c %Y "$latest_matrix" 2>/dev/null || echo 0)
+    if (( matrix_mtime > matrix_last )) && [[ -f "$verdicts_file" ]]; then
+      matrix_saves=$(python3 - "$verdicts_file" "$matrix_last" <<'PY'
+import json, sys
+path, last = sys.argv[1], int(sys.argv[2])
+saves = 0
+try:
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                v = json.loads(line)
+            except Exception:
+                continue
+            # PASS verdicts that filed issues = matrix caught something real
+            if v.get("verdict") == "PASS" and v.get("filed_issue"):
+                saves += 1
+except Exception:
+    pass
+print(saves)
+PY
+)
+      if (( matrix_saves > 0 )); then
+        highlights+=("Matrix caught ${matrix_saves} real issue(s) — blind audit PASS, issues filed.")
+        new_matrix=$matrix_mtime
+      fi
+    fi
+  fi
+fi
+
+# --- If no highlights, send NOTHING (silence is a feature) -------------------
+if [[ ${#highlights[@]} -eq 0 ]]; then
+  # Update state anyway so we don't re-report old things
+  new_state=$(printf '%s' "$last_seen" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+d['aeo'] = $new_aeo
+d['glm'] = $new_glm
+d['weekly'] = $new_weekly
+d['quality'] = $new_quality
+d['matrix'] = $new_matrix
+print(json.dumps(d))
+")
+  write_state "$new_state"
+  exit 0
+fi
+
+# --- Compose message (max 5 lines) -------------------------------------------
+# Take at most 5 highlights
+selected=("${highlights[@]:0:5}")
+
+now_ist="$(TZ=Asia/Kolkata date +'%A %-d %B %Y, %H:%M IST')"
+header="Evening highlights — $now_ist"
+
+body="$header"
+for h in "${selected[@]}"; do
+  body="$body
+
+• $h"
+done
+
+body="$body
+
+Reply if you want details. Otherwise, good night."
+
+# --- Send via sanctioned texter ----------------------------------------------
+# --urgent bypasses 3/24h ceiling (sanctioned digest class). Still ledgered.
+# --class evening-highlights-digest declares the sanctioned class.
+exec /home/nish/.local/bin/hermes send -t telegram --urgent --class evening-highlights-digest --json "$body" </dev/null

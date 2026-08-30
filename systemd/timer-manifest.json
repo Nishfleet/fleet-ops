@@ -26,6 +26,12 @@
       "cadence": "daily",
       "source": "user-config"
     },
+    "evening-highlights-digest.timer": {
+      "reason": "9 PM IST evening highlights digest push (vacation window through 2026-09-08) — second sanctioned digest slot, wins-only; silence if nothing worth saying",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "user-config"
+    },
     "escalation-daily-sweep.timer": {
       "reason": "Daily dead-man floor for SENIOR-AUDITOR escalation layer — bounds max time-to-audit at 24h for failures with no dedicated tripwire",
       "classification": "scheduled",

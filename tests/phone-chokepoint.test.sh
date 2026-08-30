@@ -92,6 +92,11 @@ grep -q 'hermes send -t telegram --urgent --class daily-digest' "$repo_root/libe
   || fail "daily-digest must pass --class daily-digest to hermes send"
 ok "daily-digest passes --class daily-digest to hermes"
 
+# --- 6b. evening-highlights-digest passes --class evening-highlights-digest ---
+grep -q 'hermes send -t telegram --urgent --class evening-highlights-digest' "$repo_root/libexec/evening-highlights-digest" \
+  || fail "evening-highlights-digest must pass --class evening-highlights-digest to hermes send"
+ok "evening-highlights-digest passes --class evening-highlights-digest to hermes"
+
 # --- 7. stop-escalation-dispatch write_nish gates NISH writes ---
 grep -q '^write_nish()' "$repo_root/bin/stop-escalation-dispatch" \
   || fail "stop-escalation-dispatch must have write_nish helper"

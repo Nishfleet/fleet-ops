@@ -64,6 +64,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Alert→repair bridge | prometheus-am-executor | `prometheus-am-executor.service` | alert pipeline |
 | Transport integrity | pi-transport-check | `pi-transport-check.timer` | Pi transport |
 | Daily digest | daily-digest | `daily-digest.timer` | Pi-era data |
+| Evening highlights digest | evening-highlights-digest | `evening-highlights-digest.timer` | fleet-ops#1384 (vacation window) |
 | Product nightly site check | tinystudio-live-site-check | `tinystudio-live-site-check.timer` | product-ops |
 | Product cron | agent-cron-0509-* | `agent-cron-0509-*.timer` | product cron |
 
