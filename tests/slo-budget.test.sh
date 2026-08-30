@@ -144,6 +144,72 @@ print("OK: waste_ratio compliance = 0.800000 (0.08/0.10)")
 PY
 
 # =========================================================================
+# 3b. seat_availability = healthy-enrolled rollup, NOT single-seat 0/1 / 13
+# =========================================================================
+python3 - "$exporter" "$slo_defs" "$scratch" <<'PY' || fail "seat_availability rollup check failed"
+import importlib.util, sys, json
+from pathlib import Path
+exporter, slo_defs, scratch = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+sys.modules["fme"] = m
+spec.loader.exec_module(m)
+defs = json.loads(Path(slo_defs).read_text())
+slo = next(s for s in defs["slos"] if s["id"] == "seat_availability")
+
+# Hermetic fixture: 3 enrolled providers (cap>0), per-seat ledgers:
+#   a__m1 healthy, a__m2 dead-cred (seat_dead) -> a healthy (one live model)
+#   b__m1 healthy                               -> b healthy
+#   c__m1 quota_exhausted, c__m2 transient_fault -> c NOT healthy
+# Expected compliance = 2/3. The pre-fix bug pinned this at 0/3 (or 1/3)
+# by dividing the single pi-seat-health 0/1 gauge by the provider count.
+seat_dir = Path(scratch) / "seats"
+seat_dir.mkdir(exist_ok=True)
+fixtures = {
+    "a__m1.json": {"provider": "a", "model": "m1",
+                    "health_class": "healthy", "seat_dead": False},
+    "a__m2.json": {"provider": "a", "model": "m2",
+                    "health_class": "credentials_bad", "seat_dead": True},
+    "b__m1.json": {"provider": "b", "model": "m1",
+                    "health_class": "healthy", "seat_dead": False},
+    "c__m1.json": {"provider": "c", "model": "m1",
+                    "health_class": "quota_exhausted", "seat_dead": False},
+    "c__m2.json": {"provider": "c", "model": "m2",
+                    "health_class": "transient_fault", "seat_dead": False},
+}
+for name, data in fixtures.items():
+    (seat_dir / name).write_text(json.dumps(data))
+m.SEAT_LEDGER = seat_dir
+caps = Path(scratch) / "seat-caps.json"
+caps.write_text(json.dumps({"providers": {
+    "a": {"cap": 1}, "b": {"cap": 1}, "c": {"cap": 1}}}))
+m.SEAT_CAPS_DEFAULT = caps
+m.SEAT_CAPS_FALLBACK = caps
+
+comp, inst = m._slo_compliance(slo, {}, 0, {}, None, 3)
+assert inst, "seat_availability should be instrumented with a readable ledger"
+assert abs(comp - 2 / 3) < 1e-9, f"expected 2/3 rollup, got {comp}"
+print("OK: seat_availability compliance = 0.666667 (2/3 healthy-enrolled rollup)")
+
+# A provider with no ledger at all is not proven healthy (fail-safe).
+caps2 = Path(scratch) / "seat-caps2.json"
+caps2.write_text(json.dumps({"providers": {
+    "a": {"cap": 1}, "b": {"cap": 1}, "d": {"cap": 1}}}))
+m.SEAT_CAPS_DEFAULT = caps2
+m.SEAT_CAPS_FALLBACK = caps2
+comp2, inst2 = m._slo_compliance(slo, {}, 0, {}, None, 3)
+assert inst2 and abs(comp2 - 2 / 3) < 1e-9, f"expected 2/3 with unproven provider d, got {comp2}"
+print("OK: unledgered enrolled provider counts unhealthy (fail-safe rollup)")
+
+# Missing ledger dir -> source unavailable (instrumented=0), not 1/13.
+m.SEAT_LEDGER = Path(scratch) / "no-such-seats-dir"
+comp3, inst3 = m._slo_compliance(slo, {}, 0, {}, None, 3)
+assert not inst3, "seat_availability must be uninstrumented when ledger unreadable"
+assert comp3 is None, f"expected None compliance on missing ledger, got {comp3}"
+print("OK: missing seat ledger -> instrumented=0 (no false 1/13 pin)")
+PY
+
+# =========================================================================
 # 4. fleet_rules.yml: SLO group + phone-chokepoint preserved
 # =========================================================================
 python3 - "$rules" <<'PY' || fail "rules check failed"

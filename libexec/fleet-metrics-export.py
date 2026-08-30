@@ -1738,12 +1738,14 @@ def _read_waste_ratio():
     return None
 
 
-def _enrolled_seat_total():
-    """Count enrolled seats (providers with cap>0) from seat-caps.json.
+def _enrolled_seat_providers():
+    """Return the set of enrolled provider names (cap > 0 in seat-caps.json).
 
-    fleet_pi_seat_total is the denominator for the seat_availability SLO.
-    Returns None when the config is missing/unparseable so the SLO reports
-    instrumented=0 rather than dividing by zero.
+    Enrollment is per-provider: a provider whose cap is 0 (dead decoys,
+    deliberately-capped, money-only rows) is not a seat the fleet routes
+    to, so it must not count in the seat_availability SLO numerator or
+    denominator family. Returns None when the config is missing/unparseable
+    (callers then report source-unavailable rather than guessing).
     """
     for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
         try:
@@ -1753,15 +1755,69 @@ def _enrolled_seat_total():
         providers = data.get("providers") or {}
         if not isinstance(providers, dict):
             continue
-        total = 0
+        enrolled = set()
         for prov, cfg in providers.items():
             if not isinstance(cfg, dict):
                 continue
             cap = cfg.get("cap", 0)
             if isinstance(cap, (int, float)) and cap > 0:
-                total += 1
-        return total if total > 0 else None
+                enrolled.add(prov)
+        return enrolled if enrolled else None
     return None
+
+
+def _enrolled_seat_total():
+    """Count enrolled seats (providers with cap>0) from seat-caps.json.
+
+    fleet_pi_seat_total is the denominator for the seat_availability SLO.
+    Returns None when the config is missing/unparseable so the SLO reports
+    instrumented=0 rather than dividing by zero.
+    """
+    enrolled = _enrolled_seat_providers()
+    return len(enrolled) if enrolled else None
+
+
+def _healthy_enrolled_seat_count():
+    """Count enrolled providers with >=1 healthy, non-dead model ledger.
+
+    Rollup for the seat_availability SLO (fleet-ops#1291): the spec says
+    "Fraction of enrolled seats that are healthy (rollup)" — i.e. a
+    per-seat healthy/not tally over the whole fleet, not one provider's
+    single 0/1. Each per-seat health ledger file under SEAT_LEDGER is one
+    (provider, model) observation; a provider counts healthy when ANY of
+    its model ledgers reports health_class=healthy and seat_dead != true
+    (a provider with a live model is an enrolled seat that is healthy).
+
+    Providers with no ledger file at all are counted unhealthy (not proven
+    healthy — fail-safe toward the alert). Returns None when the ledger
+    directory is missing/unreadable so the SLO reports instrumented=0.
+    """
+    enrolled = _enrolled_seat_providers()
+    if not enrolled:
+        return None
+    if not SEAT_LEDGER.is_dir():
+        return None
+    healthy = set()
+    try:
+        for f in SEAT_LEDGER.iterdir():
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            if data.get("health_class") != "healthy":
+                continue
+            prov = data.get("provider")
+            if isinstance(prov, str) and prov in enrolled:
+                healthy.add(prov)
+    except OSError:
+        return None
+    return len(healthy)
 
 
 def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
@@ -1780,11 +1836,20 @@ def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
         vals = list(main_ci.values())
         return sum(vals) / len(vals), True
     if sid == "seat_availability":
-        # healthy is the single pi-seat-health rollup (0/1); seat_total is
-        # the enrolled provider count. Compliance = healthy/total.
+        # Rollup over the per-seat health ledger (fleet-ops#1291): healthy
+        # enrolled providers / enrolled providers. The old code divided the
+        # SINGLE pi-seat-health 0/1 gauge by the enrolled-provider count,
+        # pinning compliance at 0/13 or 1/13 forever — a metric bug that
+        # kept this SLO in permanent slow burn regardless of real seat
+        # health (alert-repair diagnosis 2026-08-30, 05:57/07:44Z). The
+        # single-seat gauge stays exported as fleet_pi_seat_healthy for the
+        # FleetPiSeatUnhealthy alert; this SLO now computes the rollup.
         if seat_total is None or seat_total <= 0:
             return None, False
-        return healthy / seat_total, True
+        healthy_count = _healthy_enrolled_seat_count()
+        if healthy_count is None:
+            return None, False
+        return healthy_count / seat_total, True
     if sid == "gh_rate_limit_headroom":
         # min(remaining/limit) across the consumed resources, as a fraction.
         if not rate_limit:
