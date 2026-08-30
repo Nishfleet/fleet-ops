@@ -434,6 +434,14 @@ bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
 systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
 systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
 systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/fleet-restore-drill.service.d/10-keystone-hc.conf
+# fleet-ops#2227: orphan agent-worktree reaper. Daily GC of worktrees whose
+# claim/issue-<N> branch is merged AND whose pi-issue@<repo>-<N> worker is
+# terminal AND whose tree is clean. Fail-safe: 4 gates, dry-run capable.
+# NOT a fleet organ (no heartbeat metric exported) — a plain maintenance
+# timer, so no absent() rule or fleet-organs.json entry.
+bin/fleet-worktree-reaper /home/nish/.local/bin/fleet-worktree-reaper
+systemd/fleet-worktree-reaper.service /home/nish/.config/systemd/user/fleet-worktree-reaper.service
+systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktree-reaper.timer
 # fleet-ops#455 + #1463: eleven-plane resilience drill + keystone dead-man
 # pings + tailscaled Restart=always. The five #1463 failure-class planes
 # (queue_freeze, pipeline_red, boundary_delivery, band_floor,

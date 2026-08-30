@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# fleet-worktree-reaper — GC orphan agent worktrees whose claim branch is
+# merged and whose worker cycle is terminal (fleet-ops#2227).
+#
+# Heartbeat reports hygiene_counts.worktree_dirs growing monotonically
+# (1238 dirs on 2026-08-30, 2247 three weeks later). Each pi-issue worker
+# worktree is ~440MB and there was no reaper. This is the reaper, on
+# existing rails: a systemd user timer (no new organ — it exports no
+# heartbeat metric) runs this script once daily.
+#
+# GATE — a worktree is deleted only when ALL of the following hold:
+#   1. SHAPE: it lives under the agent-worktrees root, is a registered git
+#      worktree, and its current branch is claim/issue-<N> (the pi-issue
+#      worker claim shape). Worktrees on other branches (wip/*, lane
+#      branches, main, detached) belong to other mechanisms
+#      (pi-salvage-worktree --gc, lane runners, the deploy clone) and are
+#      left alone.
+#   2. MERGED: a MERGED PR with head claim/issue-<N> exists on the
+#      worktree's repo. Squash-merge safe: it uses PR merge state, not SHA
+#      ancestry (the fleet merges with --squash, so the branch tip is not
+#      an ancestor of main). If gh cannot answer for a repo, every
+#      worktree on that repo is skipped — fail safe, never delete blind.
+#   3. TERMINAL: pi-issue@<short>-<N>.service is not active or activating
+#      (mirrors claim-reconcile is_live_worker). A live worker's worktree
+#      is never touched.
+#   4. CLEAN: `git status --porcelain` is empty. Dirty worktrees are
+#      reported and skipped, never force-removed.
+#
+# Standing rule honored: never delete a live worktree belonging to another
+# agent cycle (gate 3).
+#
+# Removal uses `git worktree remove` (no --force), which itself refuses a
+# dirty or locked worktree — defense in depth on top of gate 4.
+#
+# Usage:
+#   fleet-worktree-reaper [--dry-run] [--root DIR] [--help]
+#
+# Options:
+#   --dry-run   Report what would be removed; delete nothing.
+#   --root DIR  Worktree root (default /home/nish/workspaces/agent-worktrees).
+#
+# Environment seams (tests):
+#   SYSTEMCTL   systemctl binary
+#   GH          gh binary
+#   FLEET_WORKTREE_REAPER_MERGED_LIMIT  gh pr list --limit (default 5000)
+#
+# Exit codes:
+#   0  best-effort GC complete (per-worktree failures are logged + counted,
+#      never fatal — a timer that aborts on one bad worktree stops all GC)
+#   2  missing prereq (git, gh, systemctl, jq) or usage
+set -euo pipefail
+
+ROOT="${FLEET_WORKTREE_REAPER_ROOT:-/home/nish/workspaces/agent-worktrees}"
+DRY_RUN=0
+MERGED_LIMIT="${FLEET_WORKTREE_REAPER_MERGED_LIMIT:-5000}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH="${GH:-gh}"
+
+usage() {
+    sed -n '2,44p' "$0" | sed 's/^# \?//' >&2
+    exit 2
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --root) ROOT="${2:?--root needs a DIR}"; shift 2 ;;
+        -h|--help) usage ;;
+        *) echo "fleet-worktree-reaper: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+command -v git >/dev/null 2>&1 || { echo "fleet-worktree-reaper: git missing" >&2; exit 2; }
+command -v jq >/dev/null 2>&1  || { echo "fleet-worktree-reaper: jq missing" >&2; exit 2; }
+command -v "$GH" >/dev/null 2>&1 || { echo "fleet-worktree-reaper: gh missing" >&2; exit 2; }
+command -v "$SYSTEMCTL" >/dev/null 2>&1 || { echo "fleet-worktree-reaper: systemctl missing" >&2; exit 2; }
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+log() { printf '[%s] [worktree-reaper] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+# --- discover parent repos from worktree .git pointers --------------------
+# Each worktree dir has a .git file: `gitdir: <parent>/.git/worktrees/<name>`.
+# Collect the set of parent repos that have worktrees under $ROOT.
+declare -a parents=()
+declare -A parent_seen=()
+while IFS= read -r d; do
+    [ -f "$d/.git" ] || continue
+    gitdir=$(cat "$d/.git" 2>/dev/null | sed 's/^gitdir: //')
+    [ -n "$gitdir" ] || continue
+    parent=${gitdir%/.git/worktrees/*}
+    [ "$parent" = "$gitdir" ] && continue   # not the expected shape
+    if [ -z "${parent_seen[$parent]:-}" ]; then
+        parent_seen[$parent]=1
+        parents+=("$parent")
+    fi
+done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+
+log "root=$ROOT dry_run=$DRY_RUN parents=${#parents[@]}"
+
+# --- per-parent: list worktrees, resolve repo, batch merged-PR query ------
+total_scanned=0
+total_claim=0
+reaped=0
+skipped_live=0
+skipped_unmerged=0
+skipped_dirty=0
+skipped_nogit=0
+failed=0
+
+# is_live_worker <short> <issue_n>  — mirrors claim-reconcile.
+is_live_worker() {
+    local short="$1" issue_n="$2"
+    local unit="pi-issue@${short}-${issue_n}.service"
+    if "$SYSTEMCTL" --user list-units "$unit" --state=active,activating --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -qx "$unit"; then
+        return 0
+    fi
+    if "$SYSTEMCTL" --user list-units --no-legend --type=service --state=running 2>/dev/null \
+        | awk '{print $1}' | grep -E "(fable-p|pi-issue)" | grep -q "${short}-${issue_n}"; then
+        return 0
+    fi
+    return 1
+}
+
+# merged_claim_refs <owner/repo> -> echoes `claim/issue-<N>` names, one/line.
+# Empty + rc=1 (gh failure) is distinguished from empty + rc=0 (no merged).
+merged_claim_refs() {
+    local repo="$1"
+    "$GH" pr list -R "$repo" --state merged --json headRefName --limit "$MERGED_LIMIT" 2>/dev/null \
+        | jq -r '.[].headRefName | select(startswith("claim/issue-"))' 2>/dev/null
+}
+
+for parent in "${parents[@]}"; do
+    [ -d "$parent" ] || continue
+    # Resolve canonical owner/repo from the parent's origin remote.
+    url=$(git -C "$parent" config --get remote.origin.url 2>/dev/null || true)
+    [ -n "$url" ] || { log "parent $parent: no origin remote — skip"; continue; }
+    # Strip trailing .git, take last path segment as repo; owner is the
+    # segment before it. Handles https://github.com/OWNER/REPO(.git).
+    repo_path=${url%.git}
+    repo_path=${repo_path%/*}   # noop if no slash; real URLs always have one
+    owner_repo=${url%.git}
+    owner_repo=${owner_repo#*://*/}
+    short=${owner_repo##*/}
+    [ -n "$short" ] || { log "parent $parent: cannot parse repo from $url — skip"; continue; }
+
+    # Enumerate this parent's worktrees under $ROOT with their branches.
+    # `git worktree list --porcelain` prints blocks: `worktree <path>` then
+    # `branch <name>` or `detached`. Only keep paths under $ROOT on
+    # claim/issue-<N>.
+    declare -a wt_paths=() wt_branches=()
+    cur_path=""
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*) cur_path=${line#worktree };;
+            "branch "*)
+                branch=${line#branch }
+                branch=${branch#refs/heads/}
+                if [ -n "$cur_path" ] && [[ "$cur_path" == "$ROOT"/* ]] && [[ "$branch" == claim/issue-* ]]; then
+                    wt_paths+=("$cur_path"); wt_branches+=("$branch")
+                fi
+                cur_path=""
+                ;;
+            "detached"*) cur_path="";;
+        esac
+    done < <(git -C "$parent" worktree list --porcelain 2>/dev/null)
+    [ "${#wt_paths[@]}" -gt 0 ] || continue
+
+    # Batch the merged-PR query once per repo.
+    merged_set=$("$(command -v mktemp)" 2>/dev/null) || merged_set=""
+    gh_ok=1
+    if ! merged_claim_refs "$owner_repo" >"$merged_set" 2>/dev/null; then
+        gh_ok=0
+        log "repo $owner_repo: gh merged query FAILED — skip all ${#wt_paths[@]} worktrees (fail safe)"
+    fi
+
+    for i in "${!wt_paths[@]}"; do
+        path="${wt_paths[$i]}"
+        branch="${wt_branches[$i]}"
+        n=${branch#claim/issue-}
+        total_scanned=$((total_scanned + 1))
+        if ! [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+            continue   # non-numeric claim branch — leave to claim-reconcile
+        fi
+        total_claim=$((total_claim + 1))
+
+        # Gate 2: merged. gh failure => fail safe: skip every worktree on
+        # this repo (never delete blind).
+        if [ "$gh_ok" = 0 ]; then
+            skipped_unmerged=$((skipped_unmerged + 1))
+            log "  $path: SKIP gh-fail repo ($branch)"
+            continue
+        fi
+        if ! grep -qx "$branch" "$merged_set"; then
+            skipped_unmerged=$((skipped_unmerged + 1))
+            log "  $path: SKIP not-merged ($branch)"
+            continue
+        fi
+        # Gate 3: terminal.
+        if is_live_worker "$short" "$n"; then
+            skipped_live=$((skipped_live + 1))
+            log "  $path: SKIP live worker ($branch)"
+            continue
+        fi
+        # Gate 4: clean.
+        if ! git -C "$path" diff --quiet --ignore-submodules HEAD 2>/dev/null \
+           || [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+            skipped_dirty=$((skipped_dirty + 1))
+            log "  $path: SKIP dirty ($branch)"
+            continue
+        fi
+
+        if [ "$DRY_RUN" = 1 ]; then
+            reaped=$((reaped + 1))
+            log "  $path: DRY-REAP ($branch, merged, terminal, clean)"
+            continue
+        fi
+        if git -C "$parent" worktree remove "$path" 2>/dev/null; then
+            reaped=$((reaped + 1))
+            log "  $path: REAPED ($branch)"
+        else
+            failed=$((failed + 1))
+            log "  $path: REMOVE FAILED ($branch) — left in place"
+        fi
+    done
+    [ -n "$merged_set" ] && rm -f "$merged_set"
+done
+
+log "done: scanned=$total_scanned claim=$total_claim reaped=$reaped \
+skipped_live=$skipped_live skipped_unmerged=$skipped_unmerged \
+skipped_dirty=$skipped_dirty skipped_nogit=$skipped_nogit failed=$failed"
+printf 'fleet-worktree-reaper scanned=%s claim=%s reaped=%s live=%s unmerged=%s dirty=%s nogit=%s failed=%s\n' \
+    "$total_scanned" "$total_claim" "$reaped" "$skipped_live" \
+    "$skipped_unmerged" "$skipped_dirty" "$skipped_nogit" "$failed"
