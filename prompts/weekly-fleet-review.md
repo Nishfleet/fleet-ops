@@ -74,6 +74,20 @@ eight lenses:
   Read `fleet_waste_ratio` and the per-lane `fleet_waste_empty_runs_24h`
   / `fleet_waste_retries_24h` families (fleet-ops#1211 waste ledger).
   WasteRatioRising is a trend alert that feeds this lens; it does not page.
+
+  **Deletion review (recurring lens, fleet-ops#1531)** — every run re-scores
+  the organ inventory on three axes: (1) what breaks if deleted, (2) events
+  in the trailing 14 days that led to real work (`journalctl --user` per
+  unit, `fleet.prom` liveness, absent() rules in `config/fleet_rules.yml`),
+  (3) overlap with another organ or a stock systemd/Pi primitive. Keeping
+  needs justification; deleting is free. Safety organs (deadman,
+  orphan-watchdog, maintenance window) are exempt but still get a
+  justification line. Any organ scoring no-harm + no-fires-to-real-work +
+  overlap gets a deletion proposal filed through the queue (plain issue,
+  provenance `wfr-action/deletion-review`). Read
+  `reports/machinery-deletion-review-2026-08-30.md` (the seed, fleet-ops#1531)
+  first; findings ride the existing machinery-lens JSON — do not add a 9th
+  lens value to the enum.
 - **L4 truth/docs integrity** — pick THREE claims the fleet or 0509
   product makes in their docs or READMEs and verify each against the
   code/CLI/state. Flag drift, staleness, or ungrounded claims. (The
@@ -141,6 +155,11 @@ eight lenses:
   real-and-repairable that the worker missed. Findings become specced
   issues (e.g., "add X to SKIP_SET", "downgrade Y to warning",
   "file standing issue for Z's root cause").
+
+The deletion-review block is part of the machinery lens, not a new lens:
+its findings use `"lens": "machinery"` in the Findings JSON. Optimization:
+the 09-08 scheduled-expiry cohort (opus-heartbeat, opus-heartbeat-thorough,
+evening-highlights-digest) is the standing first look each cycle.
 
 Each lens file MUST end with a `## Findings` heading and a JSON block:
 
