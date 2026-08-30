@@ -234,6 +234,68 @@ else
   fail "Script crashed (rc=$RC)"
 fi
 
+# Test 11: autoreview-verification.md truth-integrity (fleet-ops#2135)
+# WFR L4 lens found two defects in the vault rules-library doc:
+#   (a) a stale "Codex retired 2026-06-12" clause on the browser-policy line
+#       that contradicted the line-37 correction ("Codex is NOT retired"), and
+#   (b) a byte-identical duplicate `## Autoreview` header from a copy-paste edit.
+# Both are the doc rot the truth-staleness canary exists to catch. This case
+# pins the detection logic with a synthetic string (runs in CI without the
+# vault mounted) and asserts the real doc is clean when the vault is present.
+echo "[11] autoreview-verification.md: no stale 'Codex retired' + no duplicate headers"
+PY_RESULT4=$(python3 <<'PYEOF'
+import os, re, sys
+
+STALE_PHRASE = "Codex retired"
+
+def check_doc(text):
+    defects = []
+    if STALE_PHRASE in text:
+        defects.append("stale-phrase:" + STALE_PHRASE)
+    headers = re.findall(r"^## .+$", text, flags=re.MULTILINE)
+    seen = {}
+    for h in headers:
+        seen[h] = seen.get(h, 0) + 1
+    for h, n in seen.items():
+        if n > 1:
+            defects.append("dup-header:" + h)
+    return defects
+
+# Synthetic pin: dirty doc must flag both defect classes; clean doc flags none.
+dirty = "## Autoreview (x)\n\n## Autoreview (x)\n\nCodex retired 2026-06-12\n"
+d = check_doc(dirty)
+if not any(x.startswith("stale-phrase") for x in d):
+    print("SYNTHETIC_FAIL: dirty doc did not flag stale phrase", file=sys.stderr); sys.exit(1)
+if not any(x.startswith("dup-header") for x in d):
+    print("SYNTHETIC_FAIL: dirty doc did not flag duplicate header", file=sys.stderr); sys.exit(1)
+clean = "## Autoreview (x)\n\nRun the skill.\n"
+if check_doc(clean):
+    print("SYNTHETIC_FAIL: clean doc flagged " + ",".join(check_doc(clean)), file=sys.stderr); sys.exit(1)
+
+# Real doc (VPS): assert the live vault doc is clean. SKIP when vault absent.
+REAL = os.path.expanduser("~/workspaces/tooling/nish-vault/_system/shared-memory/rules-library/autoreview-verification.md")
+try:
+    text = open(REAL).read()
+except OSError:
+    print("OK: synthetic-only (real doc not available)")
+    sys.exit(0)
+d = check_doc(text)
+if d:
+    print("DOC_DEFECTS: " + ";".join(d), file=sys.stderr); sys.exit(1)
+# Pin the exact issue-2135 termination greps for determinism.
+if text.count(STALE_PHRASE) != 0:
+    print("DOC_DEFECTS: grep -c 'Codex retired' != 0", file=sys.stderr); sys.exit(1)
+if text.count("steipete's skill") != 1:
+    print("DOC_DEFECTS: steipete's skill count != 1", file=sys.stderr); sys.exit(1)
+print("OK: clean")
+PYEOF
+) || PY_RESULT4=""
+if [[ "$PY_RESULT4" == OK:* ]]; then
+  pass "autoreview-verification.md truth-integrity (${PY_RESULT4#OK: })"
+else
+  fail "autoreview-verification.md truth-integrity failed: $PY_RESULT4"
+fi
+
 # Summary
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
