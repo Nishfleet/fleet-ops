@@ -81,6 +81,10 @@ live_skip[pi-worker-execstart-live.test.sh]=1
 live_skip[opus-heartbeat-allowlist-gate.test.sh]=1
 live_skip[opus-heartbeat-follow-through.test.sh]=1
 live_skip[opus-heartbeat-replayed-frozen-snapshot.test.sh]=1
+# fleet-ops#1382: opus-heartbeat THOROUGH-mode test reads VPS-local state
+# (the launcher binary, the gather script, the judge prompt, and the
+# thorough service unit). Live/VPS-only — cannot run in hosted CI.
+live_skip[opus-heartbeat-thorough-mode.test.sh]=1
 # fleet-ops#1740 added gh-webhook-receiver-live-e2e.test.sh (live webhook →
 # Prometheus → alert e2e) but omitted the live_skip entry, leaving main red
 # on this required gate. The test skips gracefully in hosted CI (no live
