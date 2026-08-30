@@ -600,6 +600,14 @@ bin/oomd-drill /home/nish/.local/bin/oomd-drill
 # (Sun 03:30 IST, after the 15-minute quiesce drain).
 bin/codex-orphan-reap /home/nish/.local/bin/codex-orphan-reap
 systemd/vps-weekly-update.service.d/10-codex-orphan-reap.conf /home/nish/.config/systemd/user/vps-weekly-update.service.d/10-codex-orphan-reap.conf
+# fleet-ops#1160: VPS weekly update script (user-scope, installed to ~/.local/bin)
+bin/vps-weekly-update /home/nish/.local/bin/vps-weekly-update
+# fleet-ops#1160: post-reboot verify script with tailscale recover (user-scope)
+bin/vps-post-reboot-verify /home/nish/.local/bin/vps-post-reboot-verify
+# fleet-ops#1160: system-scope post-reboot verify service (install.sh --system)
+systemd/system/vps-post-reboot-verify.service /etc/systemd/system/vps-post-reboot-verify.service
+# fleet-ops#1160: re-verify timer ~30 min post-reboot (Persistent=true)
+systemd/vps-post-reboot-verify.timer /home/nish/.config/systemd/user/vps-post-reboot-verify.timer
 # fleet-ops#45: peak-RSS measurement so ram_gb_per_worker can be re-derived
 # by command rather than re-read from a comment. Pure observability — no
 # timers, no agents, no escalation. State at ~/.local/state/ram-measurement/
