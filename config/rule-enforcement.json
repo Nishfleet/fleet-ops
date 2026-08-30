@@ -904,6 +904,13 @@
       "mechanism": "Completion canary checks recently closed issues in enrolled repos for PR/commit evidence (Closes #N in merged PR, or commit referencing issue). Flags issues closed without evidence via fleet_issue_closed_without_evidence_total metric and LOUD triage entry. Drill: fleet-completion-canary test 16 proves detection works.",
       "proof": "bin/fleet-completion-canary.py check_closed_issues_without_evidence; tests/fleet-completion-canary.test.sh test 16; fleet-heartbeat-tier1 block (completion canary)",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-evidence-pinning",
+      "source": "decisions-ledger.md: 2026-08-28 | Manual evidence-pinning and triage greps (fleet-ops#1521 line 5)",
+      "mechanism": "unit-escalation-write attaches the failing unit's last 5 journal lines (detail.journal) AND its last N error-priority journal lines (detail.journal_errors, default 10, -p err) to STOP-REASON.json automatically, so the senior auditor carries the failure evidence without a hand journalctl grep. The unit name always comes from systemd's %i instance name (never an 'unknown unit' placeholder); fleet-heartbeat-failed-notify pages the real MONITOR_UNIT and no-ops when it is unset. Drill: unit-escalation-write-journal-errors test + live writer run prove both fields land in STOP-REASON.",
+      "proof": "bin/unit-escalation-write; lib/fleet-heartbeat-failed-notify.py; tests/unit-escalation-write-journal-errors.test.sh; tests/fleet-heartbeat-failed-notify-threshold.test.sh",
+      "status": "enforced"
     }
   ]
 }

@@ -55,7 +55,9 @@ got="$(cat "$scratch/argv")"
 [[ "$got" == *"$host"* ]] || fail "page must contain live hostname ($host); got: $got"
 [[ "$got" == *"$unit"* ]] || fail "page must include MONITOR_UNIT; got: $got"
 [[ "$got" != *hostinger-kvm4* ]] || fail "page still names hostinger-kvm4: $got"
-ok "3rd consecutive failure pages with live host and MONITOR_UNIT"
+[[ "$got" != *"unknown unit"* ]] || fail "page must never substitute 'unknown unit' (fleet-ops#1526); got: $got"
+[[ "$got" == *"FLEET UNIT FAILED"* ]] || fail "page is not a FLEET UNIT FAILED page: $got"
+ok "3rd consecutive failure pages with live host and real MONITOR_UNIT, never 'unknown unit'"
 
 # --- Scenario B: 4th failure is suppressed (counter reset after page). ------
 rm -f "$scratch/argv"
@@ -93,5 +95,22 @@ FLEET_HEARTBEAT_FAILED_NOTIFY_STATE_DIR="$state3" \
   python3 "$helper"
 [[ -f "$scratch/argv" ]] || fail "threshold 1 must page on the first failure"
 ok "threshold 1 pages immediately"
+
+# --- Scenario E: MONITOR_UNIT unset -> no page, and never an 'unknown ----
+# unit' placeholder (fleet-ops#1526). When OnFailure= activates the notify
+# without systemd passing the unit (or someone starts the unit by hand),
+# the script must do nothing rather than page a name-less 'unknown unit'.
+rm -f "$scratch/argv"
+state4="$scratch/state4"
+mkdir -p "$state4"
+HERMES="$hermes" \
+MONITOR_UNIT='' \
+FLEET_HEARTBEAT_FAILED_NOTIFY_THRESHOLD=1 \
+FLEET_HEARTBEAT_FAILED_NOTIFY_WINDOW=900 \
+FLEET_HEARTBEAT_FAILED_NOTIFY_STATE_DIR="$state4" \
+  python3 "$helper"
+[[ ! -f "$scratch/argv" ]] || fail "unset MONITOR_UNIT must not invoke hermes (no 'unknown unit' page)"
+[ -z "$(ls -A "$state4")" ] || fail "unset MONITOR_UNIT must not write per-unit state"
+ok "MONITOR_UNIT unset -> no page, no state, never 'unknown unit'"
 
 echo "OK: fleet-heartbeat-failed-notify threshold (#1399)"
