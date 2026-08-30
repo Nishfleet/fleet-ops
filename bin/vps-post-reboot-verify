@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -uo pipefail
+. /home/nish/.local/bin/vps-maintenance-lib
+exec > >(tee "$STATE/post-reboot.log") 2>&1
+
+[ -f "$STATE/resume-after-boot" ] || { note "no resume marker; nothing to do"; exit 0; }
+
+say "POST-REBOOT RESUME"
+FAIL=()
+
+# Enabled timers return on their own at boot. Only the active-but-disabled ones need a nudge.
+if [ -s "$STATE/paused-timers-not-enabled" ]; then
+  mapfile -t T < "$STATE/paused-timers-not-enabled"
+  start_units "${T[@]}" || FAIL+=("timers that would not restart: ${START_FAILED[*]}")
+fi
+if [ -s "$STATE/paused-paths" ]; then
+  mapfile -t P < "$STATE/paused-paths"
+  start_units "${P[@]}" || FAIL+=("path units that would not restart: ${START_FAILED[*]}")
+fi
+start_units "${HOLD_SERVICES[@]}" || FAIL+=("hold services that would not restart: ${START_FAILED[*]}")
+
+# --------------------------------------------------------------- TAILSCALE RECOVER
+# apt upgrades tailscale; if tailscaled is down post-reboot, RECOVER it (not just announce).
+# SSH to this box is Tailscale-only — this is the only path in.
+say "TAILSCALE RECOVER"
+if ! sudo -n tailscale status >/dev/null 2>&1; then
+  note "tailscale DOWN — attempting recover (re-enable + restart tailscaled)"
+  sudo -n systemctl enable --now tailscaled.service 2>&1 | tee -a "$STATE/post-reboot.log" || true
+  sleep 5
+  if ! sudo -n tailscale status >/dev/null 2>&1; then
+    # Harder recover: tailscale up --reset (non-interactive, uses auth key if configured)
+    note "tailscale still down — attempting 'tailscale up --reset'"
+    sudo -n tailscale up --reset 2>&1 | tee -a "$STATE/post-reboot.log" || true
+    sleep 5
+  fi
+  if ! sudo -n tailscale status >/dev/null 2>&1; then
+    FAIL+=("tailscale DOWN after recover attempts — SSH path at risk")
+  else
+    note "tailscale RECOVERED via re-enable/restart/up"
+  fi
+else
+  note "tailscale UP — no recover needed"
+fi
+# --------------------------------------------------------------- END TAILSCALE RECOVER
+
+set_flag clear '' ''
+rm -f "$STATE/resume-after-boot"
+
+sleep 30  # let boot-time units settle before judging them
+UF=$(systemctl --user list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
+SF=$(systemctl        list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
+[ -n "$UF" ] && FAIL+=("failed user units: $UF")
+[ -n "$SF" ] && FAIL+=("failed system units: $SF")
+sudo -n tailscale status >/dev/null 2>&1 || FAIL+=("tailscale DOWN — SSH path at risk")
+
+if [ ${#FAIL[@]} -gt 0 ]; then
+  notify urgent "VPS REBOOT RECOVERY FAILED on $(hostname): $(printf '%s; ' "${FAIL[@]}") — log: $STATE/post-reboot.log"
+  exit 1
+fi
+notify routine "VPS rebooted cleanly after weekly update. kernel=$(uname -r), agents resumed, 0 failed units."
