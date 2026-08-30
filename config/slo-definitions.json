@@ -1,0 +1,158 @@
+{
+  "_comment": "fleet-ops#1291: Fleet SLO definitions with error budgets and multiwindow burn-rate alerts (Google SRE Workbook Ch.5 canon). Single source of truth for SLO targets, windows, ratchet parameters, and metric sources. lib/slo_budget.py does the budget math; libexec/fleet-metrics-export.py reads this config and emits fleet_slo_* gauges; config/fleet_rules.yml holds the multiwindow burn alerts over fleet_slo_error_budget_consumed. severity: fast_burn=critical (pages the repair rail, NOT Nish's phone — fleet-ops#1534 reserves severity=page for RepairDispatchDown only), slow_burn=warning (feeds the WFR alert-quality lens). 'instrumented' marks whether the source metric is wired yet; an uninstrumented SLO emits fleet_slo_instrumented=0 and its burn alerts are gated off so a pending source metric never burns budget it cannot measure.",
+  "slo_version": 1,
+  "default_window": "1w",
+  "default_window_seconds": 604800,
+  "slos": [
+    {
+      "id": "main_green",
+      "name": "Main Branch CI Green",
+      "description": "Fraction of enrolled repos whose default-branch CI is green (fleet_main_ci_green rollup)",
+      "target": 0.99,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "above",
+      "metric_source": "fleet_main_ci_green",
+      "aggregation": "ratio_over_time",
+      "instrumented": true,
+      "ratchet": {
+        "notch": 0.001,
+        "stop_at": 0.999,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    },
+    {
+      "id": "chain_repair_latency",
+      "name": "Alert-Repair Chain Failure-to-Fix Time",
+      "description": "p95 time from alert firing to repair completion (target ≤ 30 min). Source metric fleet_chain_repair_duration_seconds is pending instrumentation (follow-up issue).",
+      "target": 0.95,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "above",
+      "threshold_seconds": 1800,
+      "metric_source": "fleet_chain_repair_duration_seconds",
+      "aggregation": "quantile_over_time",
+      "quantile": 0.95,
+      "instrumented": false,
+      "ratchet": {
+        "notch_seconds": 300,
+        "stop_at_seconds": 600,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    },
+    {
+      "id": "0509_user_journey",
+      "name": "0509 User Journey Success",
+      "description": "Success rate of critical 0509 user journeys. Source metrics fleet_0509_journey_success/total are pending instrumentation (follow-up issue).",
+      "target": 0.995,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "above",
+      "metric_source": "fleet_0509_journey_success",
+      "aggregation": "ratio_over_time",
+      "instrumented": false,
+      "ratchet": {
+        "notch": 0.0005,
+        "stop_at": 0.999,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    },
+    {
+      "id": "digest_delivery",
+      "name": "Digest Delivery Success",
+      "description": "Daily/weekly digest delivery success rate. Source metrics fleet_digest_delivered_total/attempted_total are pending instrumentation (follow-up issue).",
+      "target": 0.99,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "above",
+      "metric_source": "fleet_digest_delivered_total",
+      "aggregation": "ratio_over_time",
+      "instrumented": false,
+      "ratchet": {
+        "notch": 0.001,
+        "stop_at": 0.999,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    },
+    {
+      "id": "waste_ratio",
+      "name": "Waste Ratio Ceiling",
+      "description": "Fleet waste ratio (empty runs + salvage bleed) stays below 10% (fleet_waste_ratio from fleet-waste-export)",
+      "target": 0.10,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "below",
+      "metric_source": "fleet_waste_ratio",
+      "aggregation": "max_over_time",
+      "instrumented": true,
+      "ratchet": {
+        "notch": 0.01,
+        "stop_at": 0.02,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    },
+    {
+      "id": "seat_availability",
+      "name": "Pi Seat Availability",
+      "description": "Fraction of enrolled seats that are healthy (fleet_pi_seat_healthy / fleet_pi_seat_total rollup)",
+      "target": 0.90,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "above",
+      "metric_source": "fleet_pi_seat_healthy",
+      "aggregation": "ratio_over_time",
+      "instrumented": true,
+      "ratchet": {
+        "notch": 0.01,
+        "stop_at": 0.98,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    },
+    {
+      "id": "gh_rate_limit_headroom",
+      "name": "GitHub API Rate Limit Headroom",
+      "description": "Minimum remaining rate limit across core/search/graphql as fraction of limit (must stay above 20%)",
+      "target": 0.20,
+      "window": "1w",
+      "window_seconds": 604800,
+      "direction": "above",
+      "metric_source": "fleet_gh_rate_limit_remaining",
+      "aggregation": "min_over_time_ratio",
+      "resources": ["core", "search", "graphql"],
+      "instrumented": true,
+      "ratchet": {
+        "notch": 0.02,
+        "stop_at": 0.40,
+        "min_weeks_unspent": 4
+      },
+      "severity": {
+        "fast_burn": "critical",
+        "slow_burn": "warning"
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-# Weekly Fleet Review (WFR) — blind 6-lens senior research + conference
+# Weekly Fleet Review (WFR) — blind 8-lens senior research + conference
 
 This file is editable state. `agent-cron-run` pipes it into `pi --print` on
 every timer fire. Do not add a second runner.
@@ -43,12 +43,12 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.
 
-## Phase 1 — BLIND 6-lens research (write each lens to its own file)
+## Phase 1 — BLIND 8-lens research (write each lens to its own file)
 
 The spec says "blind" — each lens is written **without** reading the
 others. That is the whole point: independent discovery. Write to
 `/home/nish/workspaces/agent-state/WFR/lens-<n>-<lens>.md` as you go. The
-six lenses:
+eight lenses:
 
 - **L1 throughput** — issues filed vs merged vs stale, lane occupancy,
   claim-reconcile backlogs, time-to-merge, agents per seat, daily rate of
@@ -87,12 +87,59 @@ six lenses:
   Findings become specced issues like every other lens. Anything
   credential- or money-boundary routes via `boundary-notify` with a
   `Blocked on: nish-decision` line and does NOT count toward the 5.
+- **L7 SLO error budgets (SMOOTH verdict)** — fleet-ops#1291. Read
+  `config/slo-definitions.json` (the 7 SLOs, their targets, windows,
+  ratchet params) and query Prometheus for the week's SLO gauges:
+  `fleet_slo_compliance{slo=...}`, `fleet_slo_error_budget_remaining`,
+  `fleet_slo_instrumented`. For each SLO, record the verdict:
+  * **S** (Smooth) — budget remaining > 0 AND no slow-burn alert fired
+    this week. On track.
+  * **M** (Minor miss) — budget remaining > 0 BUT a slow-burn alert
+    (`FleetSlo*SlowBurn` or `FleetSlo*OverTarget`) fired at least once.
+    Trending toward exhaustion; name the cause.
+  * **O** (Over budget) — budget remaining ≤ 0 for the week. The SLO
+    was violated; the error budget is spent. Name the cause and the
+    remediation.
+  * **O** (Over budget, instrumented=0) — the SLO's source metric is
+    NOT wired (instrumented=0). This is a debt verdict, not a pass:
+    file the follow-up to instrument it. The three currently
+    uninstrumented SLOs (chain_repair_latency, 0509_user_journey,
+    digest_delivery) have follow-up issues filed — track their status.
+  * **T** (Tighten candidate) — S verdict AND the SLO has met its
+    target for `min_weeks_unspent` consecutive weeks → feed to the
+    SLO ratchet below.
+  * **H** (Hold) — M or O verdict → do NOT tighten; the budget is
+    being spent.
+  Record the per-SLO verdict in the lens Findings JSON. The SMOOTH
+  verdict is the SLO analog of the quality ratchet: a Smooth fleet
+  tightens its targets; a fleet spending its budget holds.
+- **L8 alert-quality** — fleet-ops#1291 part 2. Query Prometheus for
+  `fleet_alert_outcome_24h{alertname=...,kind=...}` over the week
+  (sum the daily gauges). For each alertname that fired, compute:
+  * **action_rate** = dispatch / (dispatch + skipped). Low action
+    rate (high skip share) = the alert fires but the dispatcher
+    skips it (already-claimed, in SKIP_SET, or resolved). Repeated
+    low action rate = the alert is noisy.
+  * **success_rate** = resolved / (resolved + failed). Low success
+    rate = the repair worker cannot fix the underlying cause (often
+    a Nish-reserved action like a production deploy).
+  * **repeat-fail count** = alerts with failed ≥ 3 this week. These
+    are candidates for SKIP_SET addition, severity downgrade, or a
+    standing-issue filing (the root cause is structural, not
+    repairable by a worker).
+  Read the `RESOLVED` / `FAILED` text in
+  `/home/nish/workspaces/agent-state/alert-repair/actions.log` for
+  the top repeat-fails to judge whether each is a false-positive
+  (alert is wrong), a real-but-unactionable (Nish-reserved), or a
+  real-and-repairable that the worker missed. Findings become specced
+  issues (e.g., "add X to SKIP_SET", "downgrade Y to warning",
+  "file standing issue for Z's root cause").
 
 Each lens file MUST end with a `## Findings` heading and a JSON block:
 
 ```json
 {
-  "lens": "throughput|quality|machinery|truth|outside|security",
+  "lens": "throughput|quality|machinery|truth|outside|security|slo|alert_quality",
   "findings": [
     {"claim": "specific narrow claim with evidence", "severity": "P0|P1|P2|P3"}
   ]
@@ -105,7 +152,7 @@ not invent findings to look busy; the cap of 5 is enforced in Phase 2.
 
 ## Phase 2 — senior CONFERENCE (max 5 actions, in priority order)
 
-After all six lenses are written, **read all of them in one pass** and
+After all eight lenses are written, **read all of them in one pass** and
 synthesize. Apply the standing-rule strict order: quality > speed >
 efficiency. Discard any finding that breaks quality for speed. Discard
 any finding that is just a slogan. Discard any finding that is already
@@ -188,6 +235,52 @@ Record shape:
 
 `hold` may omit `knob` / `from` / `to` / `filed`. Fail loud if the
 file is missing. The next heartbeat tick catches it.
+
+### SLO ratchet (fleet-ops#1291)
+
+The SLO ratchet is the SLO analog of the quality ratchet above. It
+runs from the L7 SMOOTH verdict: a Smooth fleet tightens its SLO
+targets; a fleet spending its budget holds. The SLO ratchet is a
+SEPARATE record from the quality ratchet — both run every week.
+
+1. Read `config/slo-definitions.json`. Each SLO has a `ratchet` block
+   with `notch` (the tighten increment), `stop_at` (the floor/ceiling
+   past which no further tighten is allowed), and `min_weeks_unspent`
+   (consecutive weeks the budget must be unspent before a tighten
+   qualifies).
+2. From the L7 verdicts, a SLO qualifies for tighten when its verdict
+   is **S (Smooth)** for `min_weeks_unspent` consecutive weeks AND its
+   current target has not reached `stop_at`.
+3. If one or more SLOs qualify, pick the highest-leverage one and
+   **tighten exactly one notch**: edit `config/slo-definitions.json`,
+   `target` → `target + notch` (ratio "above" SLOs) or `target -
+   notch` (gauge "below" SLOs). File that tighten as one of the ≤5
+   Adopt actions. The new `target` must not pass `stop_at`.
+4. If none qualify (any M/O verdict this week, or the lookback is not
+   met), `action` is `hold`. A hold does **not** count toward the 5.
+5. Never loosen an SLO target without a Nish `decisions-ledger`
+   waiver. Loosening is `action: nish-waiver` with `waiver_source`
+   pointing at a dated ledger line.
+
+Record shape (separate file:
+`/home/nish/workspaces/agent-state/WFR/last-slo-ratchet.json`):
+
+```json
+{
+  "date": "<today YYYY-MM-DD>",
+  "action": "tighten|hold|nish-waiver",
+  "slo_id": "main_green",
+  "from": 0.99,
+  "to": 0.991,
+  "evidence": "fleet_slo_error_budget_remaining > 0 for 4 consecutive weeks (2026-08-30 to 2026-09-27); no FleetSloMainGreenSlowBurn fired in the window",
+  "filed": 1292,
+  "waiver_source": null
+}
+```
+
+`hold` may omit `slo_id` / `from` / `to` / `filed`. An
+`instrumented=0` SLO is always `hold` — you cannot ratchet a target
+you are not measuring.
 
 ## Phase 3 — follow-through (file the work, log the score)
 

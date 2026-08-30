@@ -140,6 +140,13 @@ lib/quality-ratchet.py /home/nish/.local/lib/pi-packet/quality-ratchet.py
 lib/role-quality-gates.py /home/nish/.local/lib/pi-packet/role-quality-gates.py
 lib/quality-routing.py /home/nish/.local/lib/pi-packet/quality-routing.py
 bin/fleet-role-gate-audit /home/nish/.local/bin/fleet-role-gate-audit
+# fleet-ops#1291: SLO error budgets + multiwindow burn-rate alerts
+# (Google SRE Workbook Ch.5). config is the single source of truth; the
+# lib does the budget math; the exporter emits fleet_slo_* gauges; the
+# rules file holds the burn alerts. The WFR prompt (prompts/weekly-fleet-
+# review.md) has the L7 SMOOTH lens + L8 alert-quality lens + SLO ratchet.
+config/slo-definitions.json /home/nish/.local/state/pi-packet/slo-definitions.json
+lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice

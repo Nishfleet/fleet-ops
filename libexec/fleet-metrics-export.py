@@ -50,6 +50,8 @@ HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0.
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
 HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
+HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
+TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
 HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true and health_class=credentials_bad (HTTP 401/403) that need re-auth and will not recover until re-authenticated (fleet-ops#1445)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
 HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat needing re-auth (fleet-ops#1445)."
@@ -67,6 +69,8 @@ HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair ac
 TYPE_RDISP = "# TYPE fleet_repair_dispatch_24h gauge"
 HELP_RSKIP = "# HELP fleet_repair_skip_24h SKIP lines in alert-repair actions.log within 24h."
 TYPE_RSKIP = "# TYPE fleet_repair_skip_24h gauge"
+HELP_AD = "# HELP fleet_alert_outcome_24h Per-alertname repair outcomes in the trailing 24h (fleet-ops#1291 alert-quality). kind=dispatch|resolved|failed|skipped. Feeds the WFR alert-quality lens."
+TYPE_AD = "# TYPE fleet_alert_outcome_24h gauge"
 HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cached org snapshot."
 TYPE_OPEN = "# TYPE fleet_open_prs gauge"
 HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted."
@@ -307,6 +311,31 @@ INTAKE_JSON_DEFAULT = Path(
 )
 INTAKE_JSON_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/intake-repos.json"
+)
+# fleet-ops#1291: SLO definitions (single source of truth for targets,
+# windows, ratchet params, metric sources). The exporter reads this and
+# emits fleet_slo_* gauges; lib/slo_budget.py does the budget math.
+SLO_DEFS_DEFAULT = Path(
+    "/home/nish/workspaces/tooling/fleet-ops/config/slo-definitions.json"
+)
+SLO_DEFS_FALLBACK = Path(
+    "/home/nish/workspaces/products/fleet-ops/config/slo-definitions.json"
+)
+# fleet-waste-export writes fleet_waste_ratio here; the SLO emitter reads
+# the live value rather than recomputing it (single source of truth).
+WASTE_PROM = Path(
+    os.environ.get(
+        "FLEET_WASTE_OUT",
+        "/var/lib/prometheus/node-exporter/fleet-waste.prom",
+    )
+)
+# seat-caps.json is the source of truth for enrolled-seat count
+# (fleet_pi_seat_total) — providers with cap>0 are enrolled.
+SEAT_CAPS_DEFAULT = Path(
+    "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json"
+)
+SEAT_CAPS_FALLBACK = Path(
+    "/home/nish/workspaces/products/fleet-ops/config/seat-caps.json"
 )
 READY_CACHE = PR_CACHE_DIR / "ready-work-cache.json"
 READY_GH_TIMEOUT = 45
@@ -1095,6 +1124,64 @@ def _repair_log_counts_24h():
     return disp, skip
 
 
+# fleet-ops#1291: per-alertname repair-outcome counts for the WFR
+# alert-quality lens. The dispatcher writes one line per outcome with an
+# `alertname=` token; this counts DISPATCH / RESOLVED / FAILED /
+# SKIPPED-CLAIMED per alertname in the trailing 24h. The WFR computes
+# action_rate = dispatch/(dispatch+skipped) and reads the RESOLVED text to
+# judge false-positives — the stats feed the review, the review judges.
+# Handles both bracketed `[YYYY-..Z]` and bare `YYYY-..Z` timestamps (the
+# dispatcher's FAILED/RESOLVED lines use the bare form).
+_BARE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
+_ALERTNAME_RE = re.compile(r"alertname=(\S+)")
+
+
+def _repair_log_per_alertname_24h():
+    """Return dict[alertname] = {dispatch, resolved, failed, skipped} for the
+    trailing 24h, or {} when actions.log is missing."""
+    if not ACTIONS_LOG.exists():
+        return {}
+    cutoff = time.time() - 86400
+    out: dict = {}
+    try:
+        with ACTIONS_LOG.open("r") as f:
+            for line in f:
+                # Try bracketed then bare timestamp.
+                m = _TS_RE.match(line)
+                off = m.end() if m else None
+                if off is None:
+                    m = _BARE_TS_RE.match(line)
+                    off = m.end() if m else None
+                if off is None:
+                    continue
+                ep = _parse_iso_utc(m.group(1))
+                if ep is None or ep < cutoff:
+                    continue
+                rest = line[off:].lstrip()
+                kind = None
+                if rest.startswith("DISPATCH "):
+                    kind = "dispatch"
+                elif rest.startswith("RESOLVED "):
+                    kind = "resolved"
+                elif rest.startswith("FAILED "):
+                    kind = "failed"
+                elif rest.startswith("SKIPPED-CLAIMED "):
+                    kind = "skipped"
+                if kind is None:
+                    continue
+                am = _ALERTNAME_RE.search(rest)
+                if not am:
+                    continue
+                name = am.group(1)
+                d = out.setdefault(name, {"dispatch": 0, "resolved": 0,
+                                          "failed": 0, "skipped": 0})
+                d[kind] += 1
+    except OSError as exc:
+        print(f"actions.log per-alertname read: {exc}", file=sys.stderr)
+        return {}
+    return out
+
+
 # --- Undersaturation guard (2026-08-27) ------------------------------------
 
 def _enrolled_repos():
@@ -1573,6 +1660,191 @@ def _verified_merges(detail):
     }
 
 
+# --- SLO error budgets (fleet-ops#1291) ------------------------------------
+# Google SRE Workbook Ch.5 canon. config/slo-definitions.json is the single
+# source of truth; lib/slo_budget.py does the budget math (loaded lazily so
+# the exporter stays a standalone script with no sys.path games at import
+# time). The exporter computes compliance for each INSTRUMENTED SLO from
+# data it already gathers in main() (CI green rollup, seat health, rate
+# limit) plus the live fleet_waste_ratio from fleet-waste.prom, then emits
+# the fleet_slo_* gauge family. Burn-rate ALERTS live in
+# config/fleet_rules.yml as multiwindow avg_over_time() queries over
+# fleet_slo_compliance (ratio SLOs) or threshold-window alerts (gauge SLOs)
+# — Prometheus owns the canon, not Python. Uninstrumented SLOs (source
+# metric pending a follow-up) emit fleet_slo_instrumented=0 and zero budget
+# burn so their alert rules (gated on instrumented=1) never fire on a
+# metric they cannot measure.
+
+_SLO_BUDGET_MOD = None
+
+
+def _slo_budget_mod():
+    """Lazily load lib/slo_budget.py from ../lib/ relative to this script."""
+    global _SLO_BUDGET_MOD
+    if _SLO_BUDGET_MOD is not None:
+        return _SLO_BUDGET_MOD
+    import importlib.util
+    lib_path = Path(__file__).resolve().parent.parent / "lib" / "slo_budget.py"
+    spec = importlib.util.spec_from_file_location("slo_budget", lib_path)
+    mod = importlib.util.module_from_spec(spec)
+    # Register in sys.modules so dataclass's _is_type can resolve the module
+    # (frozen dataclasses look up cls.__module__ in sys.modules at class-build time).
+    sys.modules["slo_budget"] = mod
+    spec.loader.exec_module(mod)
+    _SLO_BUDGET_MOD = mod
+    return mod
+
+
+def _load_slo_defs():
+    """Return the parsed slo-definitions.json, or None if missing/unparseable."""
+    for path in (SLO_DEFS_DEFAULT, SLO_DEFS_FALLBACK):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def _read_waste_ratio():
+    """Read the live fleet_waste_ratio gauge from fleet-waste.prom, or None.
+
+    fleet-waste-export is the single source of truth for the waste ratio;
+    the SLO emitter reads its published value rather than recomputing it.
+    Returns None when the prom file is missing or the gauge is absent
+    (e.g., a fresh install before the waste exporter has run once) — the
+    waste_ratio SLO then reports instrumented=0 for this tick.
+    """
+    try:
+        text = WASTE_PROM.read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("fleet_waste_ratio "):
+            try:
+                return float(line.split()[-1])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def _enrolled_seat_total():
+    """Count enrolled seats (providers with cap>0) from seat-caps.json.
+
+    fleet_pi_seat_total is the denominator for the seat_availability SLO.
+    Returns None when the config is missing/unparseable so the SLO reports
+    instrumented=0 rather than dividing by zero.
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        total = 0
+        for prov, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            cap = cfg.get("cap", 0)
+            if isinstance(cap, (int, float)) and cap > 0:
+                total += 1
+        return total if total > 0 else None
+    return None
+
+
+def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
+    """Compute live compliance (0..1 ratio or value/target gauge) for one SLO.
+
+    Returns (compliance_or_None, instrumented_bool). None compliance means
+    the source metric is not available this tick (SLO emits instrumented=0).
+    """
+    sid = slo["id"]
+    if not slo.get("instrumented", False):
+        return None, False
+    if sid == "main_green":
+        # Fraction of enrolled repos with green CI this scrape.
+        if not main_ci:
+            return None, False
+        vals = list(main_ci.values())
+        return sum(vals) / len(vals), True
+    if sid == "seat_availability":
+        # healthy is the single pi-seat-health rollup (0/1); seat_total is
+        # the enrolled provider count. Compliance = healthy/total.
+        if seat_total is None or seat_total <= 0:
+            return None, False
+        return healthy / seat_total, True
+    if sid == "gh_rate_limit_headroom":
+        # min(remaining/limit) across the consumed resources, as a fraction.
+        if not rate_limit:
+            return None, False
+        fracs = []
+        for r in slo.get("resources", ("core", "search", "graphql")):
+            row = rate_limit.get(r)
+            if not row or row.get("limit", 0) <= 0:
+                continue
+            fracs.append(row["remaining"] / row["limit"])
+        if not fracs:
+            return None, False
+        return min(fracs), True
+    if sid == "waste_ratio":
+        # Gauge "below" SLO: compliance = actual/target (>1 means over budget).
+        if waste_ratio is None:
+            return None, False
+        target = slo["target"]
+        return (waste_ratio / target) if target > 0 else None, True
+    # chain_repair_latency / 0509_user_journey / digest_delivery: source
+    # metrics pending instrumentation (follow-up issues). Even if flagged
+    # instrumented=true in config, no live reader exists yet → not instrumented.
+    return None, False
+
+
+def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
+    """Append the fleet_slo_* gauge family for every SLO in the config.
+
+    Called from main() with the data it has already gathered. Reads
+    fleet-waste.prom and seat-caps.json for the two SLOs whose sources live
+    outside this exporter. Always emits the family (even on a missing
+    config — zeros with instrumented=0) so FleetSloMetricsAbsent never
+    false-fires on a config glitch; a missing config is logged to stderr.
+    """
+    sb = _slo_budget_mod()
+    defs = _load_slo_defs()
+    waste_ratio = _read_waste_ratio()
+    seat_total = _enrolled_seat_total()
+    lines.append("")
+    lines.extend(sb.format_prometheus_help_type())
+    if defs is None:
+        print("slo: config/slo-definitions.json missing/unparseable; "
+              "emitting empty SLO family", file=sys.stderr)
+        return
+    slos = defs.get("slos") or []
+    for slo in slos:
+        sid = slo["id"]
+        target = slo["target"]
+        window_s = slo.get("window_seconds", defs.get("default_window_seconds", 604800))
+        direction = slo.get("direction", "above")
+        compliance, instrumented = _slo_compliance(
+            slo, main_ci, healthy, rate_limit, waste_ratio, seat_total
+        )
+        if not instrumented or compliance is None:
+            # Uninstrumented or source unavailable this tick: emit zero
+            # budget burn + instrumented=0 so the burn alerts (gated on
+            # instrumented=1) cannot fire on a metric they cannot measure.
+            lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 0')
+            continue
+        # Elapsed = full window this scrape (compliance is a point-in-time
+        # rollup over the trailing window, so the whole window is "elapsed"
+        # for budget-consumption purposes). Burn-rate alerts derive the
+        # time dimension themselves via increase() over the consumed gauge.
+        budget = sb.compute_budget(sid, target, window_s, compliance, window_s, direction)
+        lines.extend(sb.format_prometheus(budget))
+        lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 1')
+
+
 # --- Main ------------------------------------------------------------------
 
 def main():
@@ -1751,6 +2023,7 @@ def main():
             lines.append(f"fleet_verified_merge_ratio {vm['ratio']:.6f}")
 
     snap = _repo_snapshot()
+    main_ci = {}
     if snap is not None:
         open_prs = snap.get("open_prs") or {}
         main_ci = snap.get("main_ci") or {}
@@ -1856,6 +2129,23 @@ def main():
     lines.append(TYPE_RSKIP)
     lines.append(f"fleet_repair_skip_24h {skip_count}")
 
+    # --- Per-alertname repair outcomes (fleet-ops#1291 alert-quality) ---
+    # Feeds the WFR alert-quality lens: dispatch vs skipped = action rate,
+    # resolved vs failed = success rate, repeated failed = noisy/unactionable.
+    per_alert = _repair_log_per_alertname_24h()
+    if per_alert:
+        lines.append("")
+        lines.append(HELP_AD)
+        lines.append(TYPE_AD)
+        for name in sorted(per_alert):
+            counts = per_alert[name]
+            lbl = _prom_label(name)
+            for kind in ("dispatch", "resolved", "failed", "skipped"):
+                lines.append(
+                    f'fleet_alert_outcome_24h{{alertname="{lbl}",kind="{kind}"}} '
+                    f'{counts[kind]}'
+                )
+
     # --- Undersaturation guard (2026-08-27) ---
     # fleet_pi_workers_active{kind=...} — always exported (no gh, no journal).
     # unit = active+activating pi-*/alert-repair-* services; process =
@@ -1933,6 +2223,19 @@ def main():
                 )
     except OSError as exc:
         print(f"staleness cache read: {exc}", file=sys.stderr)
+
+    # --- SLO error budgets (fleet-ops#1291) ---
+    # Emitted last so every source the SLOs read (CI rollup, seat health,
+    # rate limit, waste ratio) has been gathered this tick. fleet_pi_seat_total
+    # is the seat_availability denominator; published here so the SLO's
+    # compliance is auditable from the raw gauges alone.
+    _seat_total = _enrolled_seat_total()
+    if _seat_total is not None:
+        lines.append("")
+        lines.append(HELP_SEAT_TOTAL)
+        lines.append(TYPE_SEAT_TOTAL)
+        lines.append(f"fleet_pi_seat_total {_seat_total}")
+    _emit_slo_metrics(lines, main_ci, healthy, rl)
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)
