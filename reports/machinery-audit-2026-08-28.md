@@ -143,7 +143,7 @@ criteria; no blind mass-delete.
 
 | Unit | First run | Banned class | Follow-up |
 |---|---|---|---|
-| auditor-stdio-test | 2026-08-26 | test debris (ExecStart is `cat > /tmp/…`) | #1492 |
+| auditor-stdio-test | 2026-08-26 | test debris (ExecStart is `cat > /tmp/…`) | #1492 — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD** (deleted; not fleet machinery — a stdio-ordering test fixture left installed as a user unit; no repo trace, no live safety gate depends on it; live unit file deleted + disabled) |
 | ready-work | 2026-08-25 | dispatcher ("one continuation packet per firing") | #1493 — adjudicated MECHANICAL-INSTEAD (deleted; routes through Pi stock dispatch `pi-packet@`) |
 | open-question-sweep | 2026-08-24 | watchdog / poller ("re-drive stalled open questions") | #1494 |
 | agent-scheduler-drift | 2026-08-25 | watchdog ("enforce agent-agnostic scheduling rule") | #1495 |
@@ -260,7 +260,7 @@ instead.
 ## Follow-up issues filed
 
 Class (c) — adjudicate / delete-disable:
-- #1492 auditor-stdio-test (delete test debris)
+- #1492 auditor-stdio-test (delete test debris) — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD** (deleted)
 - #1493 ready-work (adjudicate dispatcher)
 - #1494 open-question-sweep (adjudicate watchdog/poller)
 - #1495 agent-scheduler-drift (adjudicate watchdog)

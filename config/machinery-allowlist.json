@@ -351,7 +351,10 @@
     {
       "unit": "auditor-stdio-test",
       "banned_class": "test debris",
-      "follow_up": "filed"
+      "follow_up": "filed",
+      "adjudicated": "MECHANICAL-INSTEAD",
+      "verdict": "deleted; not fleet machinery — a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
+      "resolved_by": "#1492"
     },
     {
       "unit": "ready-work",
