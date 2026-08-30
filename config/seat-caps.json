@@ -189,9 +189,10 @@
       "quota_window": "weekly",
       "quota_bench_default_s": 604800,
       "models": {
-        "grok-4.6": 1,
-        "grok-4.5": 1
+        "grok-4.6": 0,
+        "grok-4.5": 0
       },
+      "_grok_402_note": "2026-08-30 auditor (STOP-REASON pi-scout@0509 trip 08:15Z): SuperGrok weekly sub DRAINED - xai-oauth/grok-4.5 returned HTTP 402 'Grok Build usage balance exhausted' at 2026-08-30T08:15:06Z (the exact run that produced the scout exit-1). Both grok models share the same Grok Build balance, so both capped to 0 with a dated reason. Restore to 1/1 when the SuperGrok sub renews or the balance is topped up (money = Nish-reserved); remove this comment on restore.",
       "_comment_xai_oauth": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub, revived via stnly/pi-grok (pi-grok@0.10.1) OAuth provider \u2014 different from the api.x.ai 'grok' entry above (which has no live credential). Provider cap=1 + per-model cap=1 enforces the BINDING 'ALTERNATE, never stack' discipline: at most one xai-oauth worker in flight at any time, and seat-lib.sh _rr_pick alternates between grok-4.6 and grok-4.5 across picks so neither model drains the weekly sub alone. Subscription-backed $0 marginal \u2014 fits the 'prepaid subs run at max utilization' rule (cap=1 holds the lane, the live weekly meter must move within minutes of any draw, never-double-wire). Pick a $0 marginal prepaid lane over a $1.20/M minimax metered one. The provider must also be present in ~/.pi/agent/models.json (xai-oauth entry with models grok-4.6 + grok-4.5) for enumerate_seats to emit it; the cap map here is the allowlist, models.json is the inventory. If the OAuth token dies the seat-health extension writes a credentials_bad ledger entry and pick_seat skips the seat \u2014 no silent 'ready' lie. The pi-grok extension also self-heals the token (auto-refresh on 401), so a transient 403 should be rare; a persistent one is the dead-credential case this row is wired to catch."
     },
     "straitly": {
