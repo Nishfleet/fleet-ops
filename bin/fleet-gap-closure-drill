@@ -75,19 +75,28 @@ drill_timer_mask() {
         return 0
     fi
     local stub="gap-closure-drill-stub-mask.timer"
-    "$SYSTEMCTL" --user mask --runtime "$stub" || {
-        record "$name" false "could not runtime-mask $stub"
+    # Runtime mask in /run/user/<uid>/systemd/user.control so it overrides
+    # the installed unit in ~/.config/systemd/user (fleet-ops deploy-clone
+    # installs there; plain --runtime mask lands in .../user/ which has lower
+    # precedence and is ignored). Same path systemd-analyze --user unit-paths
+    # lists for userctl runtime masks.
+    local mask_dir="/run/user/$(id -u)/systemd/user.control"
+    local mask="$mask_dir/$stub"
+    mkdir -p "$mask_dir" 2>/dev/null || true
+    rm -f "$mask"
+    if ! ln -sf /dev/null "$mask"; then
+        record "$name" false "could not create user.control runtime mask for $stub"
         return 0
-    }
+    fi
     local en
     en="$("$SYSTEMCTL" --user is-enabled "$stub" 2>/dev/null || true)"
-    "$SYSTEMCTL" --user unmask "$stub" 2>/dev/null || true
+    rm -f "$mask"
     case "$en" in
         masked|masked-runtime)
-            record "$name" true "runtime-mask of $stub reported is-enabled=$en"
+            record "$name" true "user.control runtime mask of $stub reported is-enabled=$en"
             ;;
         *)
-            record "$name" false "runtime-mask of $stub reported is-enabled=$en (want masked)"
+            record "$name" false "user.control runtime mask of $stub reported is-enabled=$en (want masked)"
             ;;
     esac
 }
@@ -101,13 +110,16 @@ drill_failed_units_signal() {
     local stub="gap-closure-drill-stub-fail.service"
     "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
     "$SYSTEMCTL" --user start "$stub" && true
-    local found
+    # `is-failed` is synchronous; the --state=failed list can lag by one
+    # manager cycle, so accept either signal as proof the stub was recorded.
+    local isf found
+    isf="$("$SYSTEMCTL" --user is-failed "$stub" 2>/dev/null || echo "unknown")"
     found="$("$SYSTEMCTL" --user --state=failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -Fx "$stub" || true)"
     "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
-    if [ -n "$found" ]; then
-        record "$name" true "failed stub $stub visible in --state=failed"
+    if [ "$isf" = "failed" ] || [ -n "$found" ]; then
+        record "$name" true "failed stub $stub recorded (is-failed=$isf, state-failed=$found)"
     else
-        record "$name" false "failed stub $stub NOT visible in --state=failed"
+        record "$name" false "failed stub $stub NOT recorded (is-failed=$isf, state-failed=$found)"
     fi
 }
 
