@@ -95,6 +95,28 @@ m.SLO_DEFS_DEFAULT = Path(slo_defs)
 m.SLO_DEFS_FALLBACK = Path(slo_defs)
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+# Stub the per-seat health ledger (fleet-ops#2377). _slo_compliance for
+# seat_availability reads SEAT_LEDGER; the module's default is the live
+# control-plane path, which does NOT exist on GitHub runners — without a
+# hermetic fixture the emission drill fails on "seat_availability missing
+# compliance" exactly on the CI surface. Seed one healthy ledger per
+# enrolled provider (cap>0) from the checked-in caps file so the drill is
+# deterministic everywhere (same pattern as section 3b; this is the
+# _emit_slo_metrics whole-family check, 3b is the value drill).
+seat_dir = Path(scratch) / "seats"
+seat_dir.mkdir(exist_ok=True)
+caps_data = json.loads(Path(seat_caps).read_text())
+providers = caps_data.get("providers") or {}
+enrolled = [p for p, cfg in providers.items()
+            if isinstance(cfg, dict)
+            and isinstance(cfg.get("cap"), (int, float))
+            and cfg.get("cap") > 0]
+for prov in sorted(enrolled):
+    (seat_dir / f"{prov}__fixture.json").write_text(
+        json.dumps({"provider": prov, "model": "fixture",
+                    "health_class": "healthy", "seat_dead": False})
+    )
+m.SEAT_LEDGER = seat_dir
 # Stub waste prom
 wp = Path(scratch) / "fleet-waste.prom"
 wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
