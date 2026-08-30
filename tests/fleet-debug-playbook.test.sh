@@ -11,6 +11,8 @@
 #   6. Two real failures plus incomplete playbook (no DEAD ENDS) -> exit 1.
 #   6b. Two real failures plus playbook headings only in a toolResult read -> exit 1.
 #   7. Two grep/rg exit 1 (POSIX no-match) -> exit 0.
+#   7b. Two schema-validation-only isError toolResults -> exit 0 (formatting
+#       error, not a debug attempt — fleet-ops#2210).
 #   8. Auto-file with signal key, deduped on a second run.
 #   9. Missing helper fails loud.
 #  10. Contracts: heartbeat wiring, MANIFEST, nested CI host, matrix enforced.
@@ -208,6 +210,21 @@ rc=$(run_bin 0)
 [[ "$rc" == "0" ]] || fail "grep no-match pair should exit 0 (got $rc) $(cat "$scratch/err.log")"
 ok "grep/rg exit 1 pair is skipped"
 rm -f "$sessions/greps.jsonl"
+
+# --- 7b. two schema-validation-only isError toolResults (fleet-ops#2210) -----
+# A cheap model sent a malformed tool call (wrong arg name / {} arguments),
+# Pi rejected it with isError=true + "Validation failed for tool", the model
+# retried with correct args and succeeded. No debugging happened — the model
+# just fixed its formatting. The canary must NOT file this (fleet-ops#2210).
+write_session "schemaval" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"sv1","name":"bash","arguments":{}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"sv1","toolName":"bash","isError":true,"content":[{"type":"text","text":"Validation failed for tool \"bash\": - command: must have required properties command"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"sv2","name":"edit","arguments":{"edits":[]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"sv2","toolName":"edit","isError":true,"content":[{"type":"text","text":"Validation failed for tool \"edit\": - edits.0: must have object"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Fixed the formatting and retried; it worked."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "schema-validation-only pair should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "schema-validation-only isError pair is skipped (fleet-ops#2210)"
+rm -f "$sessions/schemaval.jsonl"
 
 # --- 8. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" "$FAIL_TWO
