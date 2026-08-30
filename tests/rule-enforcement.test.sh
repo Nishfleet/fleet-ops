@@ -1133,4 +1133,22 @@ ok "rule-enforcement: skills-symlink canary drill"
 bash "$here/fleet-bin-exclude-canary.test.sh" || fail "bin-exclude canary drill failed"
 ok "rule-enforcement: bin-exclude canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, and bin-exclude drills"
+# fleet-ops#1291: SLO error-budget system contract (lib/slo_budget.py,
+# config/slo-definitions.json, exporter _emit_slo_metrics, fleet_rules.yml
+# burn alerts, WFR L7/L8 lenses). Hosted from this already-listed test so
+# P14 runs it without a workflow edit.
+bash "$here/slo-budget.test.sh" || fail "slo-budget drill failed"
+ok "rule-enforcement: slo-budget drill"
+
+# fleet-ops#2152: seat comeback arithmetic in opus-heartbeat-gather
+# (retry_after delta-seconds, bench-marker inflation, synthetic fixtures).
+# Hosted here so P14 runs it without a workflow edit.
+bash "$here/opus-heartbeat-seat-comeback.test.sh" || fail "opus-heartbeat seat-comeback drill failed"
+ok "rule-enforcement: opus-heartbeat seat-comeback drill"
+
+# fleet-ops#2151: tailscaled localapi socket-reachability canary. Hosted
+# here from this already-listed test so P14 runs it without a workflow edit.
+bash "$here/fleet-tailscale-localapi-canary.test.sh" || fail "tailscale localapi canary drill failed"
+ok "rule-enforcement: tailscale localapi canary drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, opus-heartbeat-seat-comeback, and tailscale-localapi-canary drills"

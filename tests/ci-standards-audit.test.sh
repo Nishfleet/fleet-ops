@@ -206,6 +206,16 @@ bash "$here/machinery-authorization-gate.test.sh"
 # the P14 test-listing gate goes green without a workflow edit.
 bash "$here/ready-work-deleted.test.sh"
 
+# fleet-ops#1492 / #1497 / #1498: tests that pin the deletion
+# (auditor-stdio-test -> MECHANICAL-INSTEAD, quality-baseline-research ->
+# MECHANICAL-INSTEAD) and the migration (memory-index-autocompact ->
+# EXCEPTION-APPROVED) verdicts against the allowlist / MANIFEST / organ-catalog.
+# Hosted here from this already-listed ci-standards-audit test so the P14
+# test-listing gate goes green without a workflow edit.
+bash "$here/auditor-stdio-test-deleted.test.sh"
+bash "$here/quality-baseline-research-deleted.test.sh"
+bash "$here/memory-index-autocompact-migrated.test.sh"
+
 # fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/console-tile-verify.test.sh"
