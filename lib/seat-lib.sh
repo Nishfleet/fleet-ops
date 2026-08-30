@@ -3101,11 +3101,18 @@ mark_seat_spawn_fail() {
 # SeatLedgerEntry (seat-health.ts); seat_usable skips via the generic
 # usable_at check and fail-opens after.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
-# fleet-ops#1408: escalate the empty-run bench by consecutive_failure_count,
-# same ladder as spawn-fail but with a higher cap (empty runs waste a full
-# session's tokens for nothing, so a repeat offender stays benched longer).
-EMPTY_RUN_BACKOFF_CAP_S="${EMPTY_RUN_BACKOFF_CAP_S:-7200}"  # 2 h
-
+# fleet-ops#2343: an empty run is a provider NO-OP, NOT a quota wall, and
+# must NOT escalate by count. The fleet-ops#1408 ladder (900 -> 1800 -> 3600
+# -> 7200s) churned HEALTHY seats: openrouter/deepseek/deepseek-v4-flash-0731
+# produced 3 empty runs in 2h (fleet-ops-1384, stdout=0B) and was benched
+# 900s then re-seated in-process each time, with the count ladder pushing a
+# working seat out of rotation for longer and longer windows. The no-op
+# cooldown is FLAT: every empty run benches for EMPTY_RUN_BACKOFF_S, and
+# only the fleet-ops#1362 failure-ceiling park (60 consecutive failures = 24h
+# wall, the extreme dead-seat guard) ever lengthens it. The count still
+# merges for observability and for that ceiling, but it does not drive a
+# bench ladder the way a real quota/rate/5xx wall does. Recovery is one
+# successful run (count -> 0 via seat-health.ts).
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
     local path
@@ -3124,10 +3131,13 @@ mark_seat_empty_run() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
-    # fleet-ops#1408: escalate the bench by consecutive_failure_count.
+    # fleet-ops#2343: FLAT no-op cooldown — no count ladder (the 1408
+    # escalation churned healthy seats; a provider no-op is not a wall).
     local backoff
-    backoff=$(_escalated_backoff "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$EMPTY_RUN_BACKOFF_CAP_S")
+    backoff="$EMPTY_RUN_BACKOFF_S"
     # fleet-ops#1362: park past the failure ceiling (long wall, not seat_dead).
+    # The park is the extreme dead-seat guard (60 consecutive no-ops); the
+    # ordinary no-op case stays at the flat 900s cooldown.
     backoff=$(_failure_ceiling_wall "$merged_count" "$backoff")
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
