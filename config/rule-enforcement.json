@@ -49,9 +49,9 @@
     },
     {
       "id": "sr-research-before-build",
-      "source": "global-standing-rules.md: Research before build \u2014 always (Nish, 2026-08-18)",
-      "mechanism": "Two chokes. (1) Claim-step gate: a build-shaped agent-ready issue (build a / write a script / create a service) requires a Prior art section or intake bounces it with agent-blocked and does not push the claim branch (fleet-ops#1250). (2) PR gate: a new bin/ file requires a research: line naming last30days/official docs/live search plus compared options; worker prompt runs the checker; drill rejects a fixture that skips it (fleet-ops#517)",
-      "proof": "bin/prior-art-claim-check; tests/prior-art-claim-check.test.sh; lib/pi-intake-tick.sh; prompts/intake.md; prompts/scout.md; bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#1250; fleet-ops#517",
+      "source": "global-standing-rules.md: Research before build — always (Nish, 2026-08-18)",
+      "mechanism": "PR gate: a new bin/ file requires a research: line naming last30days/official docs/live search plus compared options; worker prompt runs the checker; drill rejects a fixture that skips it",
+      "proof": "bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#517",
       "status": "enforced"
     },
     {
@@ -169,10 +169,10 @@
     {
       "id": "sr-nothing-half-done",
       "source": "global-standing-rules.md: Nothing sits half-done, and no question dies unanswered (Nish, 2026-08-20)",
-      "mechanism": "No detector for done-but-unlanded work or unanswered questions",
-      "proof": "Nishfleet/fleet-ops#528",
-      "status": "queued(#528)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Three detector classes share one observer: (1) unanswered QUESTIONS.md rows (OPEN or HOLD past return date); (2) half-done worker PRs (open MERGEABLE, >24h, no auto-merge armed); (3) stale worktrees (dirty-or-idle >24h, no live worker unit). Observe-to-open files capped per tick; observe-to-close comments resolved-at then closes on a later tick",
+      "proof": "bin/fleet-loose-ends-canary; lib/loose-ends.py; tests/fleet-loose-ends-canary.test.sh; bin/fleet-heartbeat-tier1 block 43; prompts/worker.md; MANIFEST; fleet-ops#528",
+      "status": "enforced",
+      "queued_since": "2026-08-26"
     },
     {
       "id": "sr-one-instruction-binds",
