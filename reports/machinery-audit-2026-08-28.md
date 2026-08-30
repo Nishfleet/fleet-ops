@@ -2,9 +2,9 @@
 
 Audit owner: fleet-ops#1480
 Date: 2026-08-28
-Host: **netcup-rs2000** (the issue body says `hostinger-kvm4`; the fleet runs on
-netcup-rs2000, so this is the live target. `hostinger-kvm4` is stale host text —
-filed as a doc nit, not a class-(c) item.)
+Host: **netcup-rs2000** (the issue body originally said `hostinger-kvm4`; the fleet
+runs on netcup-rs2000, so this is the live target. The stale host text was corrected
+in the issue body 2026-08-30 via fleet-ops#1501 — a doc nit, not a class-(c) item.)
 
 ## What this audit is
 
