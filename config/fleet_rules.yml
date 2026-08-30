@@ -322,20 +322,26 @@ groups:
       # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
       # (enrolled repos only). The 64% fleet2 death-number is the tripwire
       # (Nish, 2026-08-27 scope addition): warning when any queue's ratio
-      # exceeds 64% for a week. A level sustained for a week is the physics
-      # signal — a momentary spike is absorbed by the 1w `for`. The ratio is
-      # exported only when total>0, so an empty queue never trips this.
-      # Severity=warning feeds the Weekly Review scoring and the
+      # exceeds 64% for a week. The physics signal is the WEEK, so the rule
+      # smooths the ratio over the trailing 7d (avg_over_time[7d]) instead of
+      # demanding the raw gauge sit above 0.64 for 7 uninterrupted wall-clock
+      # days. The instantaneous value dips (product issues land, the queue
+      # empties and the series goes stale) and every dip or >5m export gap
+      # reset a raw 1w `for:`, so that rule never reached firing
+      # (fleet-ops#2171). The 7d average absorbs momentary dips; `for: 6h`
+      # only certifies the smoothed breach is steady before it dispatches.
+      # The ratio is exported only when total>0, so an empty queue never
+      # trips this. Severity=warning feeds the Weekly Review scoring and the
       # precedence-sunset question.
       - alert: FleetQueueSelfMaintenanceRatioHigh
-        expr: fleet_queue_self_maintenance_ratio > 0.64
-        for: 1w
+        expr: avg_over_time(fleet_queue_self_maintenance_ratio[7d]) > 0.64
+        for: 6h
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "queue {{ $labels.queue }} self-maintenance ratio exceeded 64% (fleet2 death-number) for a week"
-          description: "fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"} has been above 0.64 (the fleet2 death-number) for 7+ days. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
+          summary: "queue {{ $labels.queue }} 7-day self-maintenance ratio stayed above 64% (fleet2 death-number) for 6 hours"
+          description: "avg_over_time(fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"}[7d]) has been above 0.64 (the fleet2 death-number) for 6+ hours. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The 7d window absorbs the momentary dips and export gaps that reset the old 1w for: and kept this alert pending forever (fleet-ops#2171). The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
 
   - name: fleet_waste
     rules:
