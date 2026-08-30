@@ -364,6 +364,12 @@ fi
 # Also written to the err file so the seat-health spawn-fail detector can
 # distinguish a hang (this marker) from a spawn ETIMEDOUT.
 PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=45min
+# fleet-ops#2133: minimum elapsed seconds before the long-hang-then-ETIMEDOUT
+# and Ready-for-input stall detectors fire. A genuine long hang is >> 5 min;
+# lowering it (e.g. PI_HANG_BENCH_MIN_S=1 in tests) does NOT change production
+# because the default is 300. Env-overridable like PI_HANG_TIMEOUT_S so the
+# detectors are testable without a 5-minute wall-clock wait.
+PI_HANG_BENCH_MIN_S="${PI_HANG_BENCH_MIN_S:-300}"
 spawn_start_s=$(date -u +%s)
 rc=0
 pi_rc=0
@@ -437,6 +443,46 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
             seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via pick_seat (excluded by bench_until)"
         else
             seat_log "pi-issue-run: $inst WARN: quota-bench marker NOT written for $np/$nm (no window and no provider default) — relying on reactive ledger + systemd Restart"
+        fi
+    fi
+fi
+
+# --- fleet-ops#2133: devin long-hang-then-ETIMEDOUT bench ------------------
+# devin/glm-5-2 intermittently hangs for ~30 min then exits with rc=1 and
+# "spawnSync ETIMEDOUT" in stderr. This is NOT a spawn-phase failure
+# (elapsed >> SPAWN_FAIL_MAX_S), NOT caught by the hang watchdog (exits
+# before PI_HANG_TIMEOUT_S), and NOT a mid-session signal death. Without
+# this detector, the seat stays pickable and burns every retry. Detect:
+# elapsed > 300s (5 min) AND stderr contains the devin spawnSync ETIMEDOUT
+# signature. Bench via mark_seat_hang_bench so the seat is skipped.
+if (( rc != 0 )) && (( ! spawn_fail_triggered )) && (( spawn_elapsed_s > PI_HANG_BENCH_MIN_S )); then
+    err_for_scan=""
+    [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
+    if grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' "$err_file" 2>/dev/null; then
+        seat_log "pi-issue-run: $inst DEVIN LONG HANG ETIMEDOUT on $np/$nm after ${spawn_elapsed_s}s (rc=$rc) — benching seat as hang-like failure"
+        if mark_seat_hang_bench "$np" "$nm" "$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (hang_bench); next systemd Restart will skip it via pick_seat (excluded by bench_until)"
+        else
+            seat_log "pi-issue-run: $inst WARN: hang-bench marker NOT written for $np/$nm — relying on tried-seats exclusion"
+        fi
+    fi
+fi
+
+# --- fleet-ops#2133: Ready-for-input stall detector ------------------
+# pi (any provider) can stall in a "Ready for input" loop where the
+# provider repeatedly prompts but never advances. This emits many
+# "Ready for input" lines to stderr without producing final output.
+# Detect: elapsed > 300s (5 min) AND >5 occurrences, rc != 124 (hang
+# watchdog kills are handled by mid-session-death). Bench via mark_seat_hang_bench.
+if (( rc != 0 )) && (( rc != 124 )) && (( ! spawn_fail_triggered )) && (( spawn_elapsed_s > PI_HANG_BENCH_MIN_S )); then
+    rfi_count=0
+    [[ -f "$err_file" ]] && rfi_count=$(grep -o "Ready for input" "$err_file" 2>/dev/null | wc -l)
+    if (( rfi_count > 5 )); then
+        seat_log "pi-issue-run: $inst READY-FOR-INPUT STALL on $np/$nm after ${spawn_elapsed_s}s (rfi_count=$rfi_count, rc=$rc) — benching seat"
+        if mark_seat_hang_bench "$np" "$nm" "$(cat "$err_file" 2>/dev/null)"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (hang_bench rfi); next restart will skip"
+        else
+            seat_log "pi-issue-run: $inst WARN: hang-bench marker NOT written for $np/$nm"
         fi
     fi
 fi
