@@ -12,6 +12,7 @@
 #     "detail": {
 #       "unit": "<full name>",
 #       "journal": ["last 5 lines"],
+#       "journal_errors": ["last 5 error-priority lines"],
 #       "result": "<Result from systemctl show>",
 #       "exit_status": "<ExecMainStatus if available>",
 #       "memory_peak": "<MemoryPeak bytes or empty>",
@@ -141,6 +142,15 @@ esac
 # array if journalctl is unavailable or the unit left no logs.
 mapfile -t jl < <(journalctl --user -u "$UNIT" -n 5 --no-pager -o short-iso 2>/dev/null || true)
 
+# Last 5 error-priority journal lines (ledger led-2026-08-28-manual-evidence-
+# pinning-and-triage-greps-fleet-op, fleet-ops#2392): the senior auditor carries
+# the failure evidence without a hand journalctl grep. error-priority = syslog
+# priority err(3) or higher (err, crit, alert, emerg), i.e. -p err. Best-effort:
+# empty array when the unit left no error-priority lines.
+JOURNAL_ERRORS_LINES=${UNIT_ESCALATION_JOURNAL_ERRORS_LINES:-5}
+case "$JOURNAL_ERRORS_LINES" in ''|*[!0-9]*) JOURNAL_ERRORS_LINES=5 ;; esac
+mapfile -t jel < <(journalctl --user -u "$UNIT" -p err -n "$JOURNAL_ERRORS_LINES" --no-pager -o short-iso 2>/dev/null || true)
+
 # OOM / kill evidence (fleet-ops#34, task 4).  systemctl show is best-effort:
 # an old unit may already have dropped out of the loaded set.
 result=$(systemctl --user show -p Result --value "$UNIT" 2>/dev/null || echo "")
@@ -163,16 +173,20 @@ fi
 # Atomic write under flock so concurrent failures serialize (each overwrites
 # with its own entry; the path unit fires per change; the auditor's catch-all
 # sweep then collects any other failed units via systemctl --state=failed).
-python3 - "$SR" "$UNIT" "$result" "$exit_status" "$mem_peak" "$oom_signal" "${jl[@]+"${jl[@]}"}" <<'PY'
+python3 - "$SR" "$UNIT" "$result" "$exit_status" "$mem_peak" "$oom_signal" "${#jl[@]}" "${jl[@]+"${jl[@]}"}" "${jel[@]+"${jel[@]}"}" <<'PY'
 import sys, json, os, time, fcntl, tempfile
 path, unit = sys.argv[1], sys.argv[2]
 result, exit_status, mem_peak, oom_signal = sys.argv[3:7]
-lines = sys.argv[7:]
+jcount = int(sys.argv[7])
+rest = sys.argv[8:]
+lines = rest[:jcount]
+errors_lines = rest[jcount:]
 entry = {
     "reason": "unit-failure",
     "detail": {
         "unit": unit,
         "journal": lines,
+        "journal_errors": errors_lines,
         "result": result,
         "exit_status": exit_status,
         "memory_peak": mem_peak,
