@@ -1,77 +1,83 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+fix(seat): flatten empty-run bench to a flat 15-min no-op cooldown
 
-## Why
+What changed and why:
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+Issue fleet-ops#2343 asked two things:
+(1) permanently retire seat_dead=true corpses instead of re-probing them;
+(2) make the empty-run classifier distinguish a provider no-op from a real
+    quota wall so the escalating backoff does not churn healthy seats.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+Ask (1) was already delivered by #2344 (fleet-ops#2327, merged
+2026-08-30T09:41:41Z, 11 min after this issue was filed against the
+09:30:15Z snapshot): seat_dead=true is a TERMINAL exclusion in both
+seat_usable() and the pick_seat excluded set (a stale observed_at does not
+resurrect a corpse), the ledger reclassifies to the terminal corpse class,
+and minimax/MiniMax-M3 (quota_exhausted) reclassifies via the corpse rules
+once its 402 observation ages past the 24h quota age. Recovery is solely
+the weekly seat-walled-probe success. Verified on current main:
+lib/seat-lib.sh seat_usable() lines 1280-1292 and the roster seat_dead
+exclusion at lines 2189-2220 are the #2327 absolute exclusions.
 
-## Scope
+This PR ships ask (2) — the empty-run classifier fix. A provider no-op
+(pi exits 0, stdout < OUT_MIN) is NOT a quota/rate/5xx wall: the
+fleet-ops#1408 count ladder (900 -> 1800 -> 3600 -> 7200s) churned HEALTHY
+seats — openrouter/deepseek/deepseek-v4-flash-0731 produced 3 empty runs
+in 2h (fleet-ops-1384, stdout=0B), was benched 900s and re-seated
+in-process each time, and the ladder kept extending a working seat's bench
+to hours after a handful of no-ops. The classification was already correct
+(pi-issue-run routes no-ops to mark_seat_empty_run and real spawn walls to
+mark_seat_spawn_fail); only the bench-by-count escalation was wrong for
+the no-op class.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+Fix:
+- mark_seat_empty_run now benches a FLAT EMPTY_RUN_BACKOFF_S (900s) at
+  every count; the fleet-ops#1408 count ladder is removed for empty runs.
+- The count still merges for observability and for the fleet-ops#1362
+  failure-ceiling park — 60 consecutive no-ops still park the seat behind
+  the 24h wall (the extreme dead-seat guard), so a truly broken seat is
+  still retired from the retry loop while an occasionally-no-op'ing
+  healthy seat stays on a flat 15-min cooldown.
+- mark_seat_spawn_fail (real walls: non-zero exit, HTTP 429/402/500,
+  spawn ETIMEDOUT) keeps the escalating ladder — that churn breaker is
+  still correct for genuine walls.
+- EMPTY_RUN_BACKOFF_CAP_S (the 2h cap) is removed; nothing referenced it
+  outside lib/seat-lib.sh and the updated test.
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+Mechanism: the updated tests are the regression drill that proves the
+guard fires — seat-noop-escalation.test.sh asserts the FLAT cooldown
+(900s at counts 1, 2, 3 and 8), and seat-failure-ceiling.test.sh still
+proves the 60-failure park fires for empty runs (mark_seat_empty_run is
+one of its five run_park_case marker types). Reintroducing the ladder
+fails the first drill red.
 
-## Tradeoffs
+Verification (exact commands + results, run in this session):
 
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
+- `bash tests/seat-noop-escalation.test.sh` -> exit 0, PASS:
+  spawn-fail escalates 300 -> 600 -> 1200 -> cap 3600 (unchanged); empty
+  run FLAT at 900s for counts 1, 2, 3 and after 8 no-ops (no ladder).
+- `bash tests/seat-failure-ceiling.test.sh` -> exit 0, PASS:
+  empty-run park case parks at count=60 with the 24h wall, metric
+  emitted, seat_usable holds (the #1362 guard still fires).
+- `bash tests/pi-issue-run-noop-bench.test.sh` -> exit 0, PASS:
+  provider no-op (exit 0, 0B stdout) benches via mark_seat_empty_run,
+  usable_at = +900s flat cooldown, pick_seat reroutes to a healthy seat;
+  verdict empty-run (tools=0) same; in-process retry unchanged.
+- `bash tests/seat-spawn-bench-clobber.test.sh` -> exit 0, PASS
+  (mark_seat_empty_run clobber-proof bench marker survives).
+- `bash tests/seat-lib.test.sh` -> exit 0, PASS (host suite incl. all
+  seat tests above, seat-walled-probe, quarantine, degraded, dispatch).
+- `bash tests/ci-standards-audit.test.sh` -> exit 0, PASS (incl. the
+  P14 test-listing gate and loose-ends canary scenarios).
+- `shellcheck -S error lib/seat-lib.sh bin/pi-issue-run
+  tests/seat-noop-escalation.test.sh tests/pi-issue-run-noop-bench.test.sh
+  tests/seat-lib.test.sh` -> clean, rc=0.
+- `sgscan` -> "No new security findings", rc=0.
+- crgate: skipped locally (CodeRabbit not signed in on this host, same as
+  #2344); the PR's CI CodeRabbit review covers it.
 
-## Blast Radius
+run-proof: no systemd unit, timer, path unit, or GitHub workflow added in
+this PR; the run is the repo test suite above, all green.
 
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+loose-ends-canary: none (PR is armed for auto-merge on open).
 
-## Verification
-
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
-
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
-
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
-
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #2343
