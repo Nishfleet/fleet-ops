@@ -77,7 +77,7 @@ done < <(jq -r '.timers | keys[]' "$MANIFEST" | sort)
 
 ok "all manifest entries have required fields with valid enum values"
 
-# --- Shape lock: every .timer in systemd/ has a manifest entry ---
+# --- Shape lock: every .timer in systemd/ (incl. systemd/system/) has a manifest entry ---
 
 missing_repo=0
 while IFS= read -r timer_file; do
@@ -92,9 +92,9 @@ while IFS= read -r timer_file; do
     if [[ "$timer_name" == *"@"* ]] && jq -e ".timers[\"$base\"]" "$MANIFEST" >/dev/null 2>&1; then
         continue
     fi
-    echo "FAIL: systemd/$timer_name has no manifest entry" >&2
+    echo "FAIL: $timer_file has no manifest entry" >&2
     missing_repo=1
-done < <(find "$REPO_ROOT/systemd" -maxdepth 1 -name '*.timer' -type f 2>/dev/null | sort)
+done < <(find "$REPO_ROOT/systemd" -name '*.timer' -type f 2>/dev/null | sort)
 
 [[ $missing_repo -eq 0 ]] || fail "one or more repo .timer files missing from manifest"
 
