@@ -179,6 +179,16 @@ not the FAILURE (the edit returned isError), exactly like the #1059
 failure. Do NOT add a READ_OFFSET_RE-style exemption for the no-op
 wording on the theory that "nothing broke": the worker believed it had
 edited the file and it had not, which is the whole point of the rule.
+For the #1140 sibling (same 0-match wording as #956, live path
+/home/nish/workspaces/agent-state/READY-WORK.md, session
+2026-08-27T12-07-48-699Z_01a0431e-84db-7863-9473-719a7cf6064e) the
+live recovery was a successful `bash cat >>` append of the SAME path
+after a thinking note, a grep, and a re-read; later user-facing prose
+("The ready-work system re-dispatched issue #1001 from READY-WORK.md")
+moved on without naming the failure. A successful write/append of the
+same file is recovery, not a user-facing flag — do NOT add a
+"successful write of the same path" exemption. observe-to-close ages
+out at 2026-08-28T12:07:48Z.
 tests/fleet-failed-command-edit-unmatch.test.sh pins the single-edit,
 multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
 unmatch.test.sh pins the multi-edit array `edits[0]` shape
@@ -242,6 +252,15 @@ filed by the same GitHub-search-index-delay that produced
 leftover-duplicate observe-to-close drain for the 01a041a5 pile
 (#1003, #1019) is locked under
 tests/fleet-failed-command-observe-duplicate-1003.test.sh.
+fleet-ops#1142 is the same `gh issue view --comments --json
+author,body,createdAt | python3 -c "...d['comments']..."` KeyError as
+#1003, on a DIFFERENT session (01a04326, the worker claiming #1003).
+The next turn was a thinking block ("the same bug") plus a successful
+`gh api graphql` comments query — not a user-facing flag. A future
+detector refactor must not treat GraphQL success as discharging the
+KeyError, and must not treat thinking "the same bug" as naming the
+failure. The dedicated regression test locks the live fleet-ops#1142
+shape under tests/fleet-failed-command-gh-json-graphql-recovery.test.sh.
 A `gh issue view <N> -R ... --body` command is not valid: `gh issue view`
 has no `--body` flag, so it exits 1 with `unknown flag: --body` and the
 full usage help (fleet-ops#1055, session
@@ -306,6 +325,24 @@ user-facing text in the same turn even when `isError` is false). The
 dedicated regression test
 tests/fleet-worker-prompt-gh-pr-view-unknown-field.test.sh asserts 0
 findings for the masked shape and 1 finding for the unpiped contrast.
+The UNPIPED form of the same `gh pr view <N> --json mergedAt,merged`
+(no pipe, no redirect) returns the same body AND `isError=true` AND
+`Command exited with code 1` (fleet-ops#1244, session
+2026-08-27T15-58-21-599Z_01a043f1-979f-75e8-93f5-9b72f5c84db9). The
+assistant's next turn was a thinking-only note ("doesn't have the
+mergedAt field") plus a silent retry (`gh pr view --json title,state`).
+The detector already flags this class via the generic isError path.
+Do NOT add `Unknown JSON field` to REAL_ERR_RE and check it when
+isError is false: that is the pipe-masked sibling (#1193) and would
+break the #1048 / #1122 / #1074 contract that successful output
+quoting error strings is content. The dedicated regression test
+tests/fleet-failed-command-gh-pr-view-merged.test.sh pins the unpiped
+shape (1 finding), the piped contrast (0 findings), the valid
+`--json mergedAt` success (0 findings), and the class lock
+(`--json closedReason` also flags). Live command:
+`gh pr view 392 -R Nishfleet/fleet-ops --json mergedAt,merged 2>&1`,
+which prints `Unknown JSON field: "merged"` and the Available fields
+listing `mergedAt`/`mergedBy` but not `merged`.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
@@ -533,9 +570,33 @@ testing the tool's behavior..." and moved on. That prose does NOT name the
 failure. The prompt-side lock in `prompts/worker.md` forbids explaining a
 no-agent-names REJECT as test data; the dedicated regression test
 `tests/fleet-failed-command-no-agent-names-reject.test.sh` pins the shape
-(fleet-ops#1052). A spawn-guard or harness block (SPAWN_BLOCKED
-/ "Dangerous command blocked") is not a ran-and-failed command: the call
-never executed.
+(fleet-ops#1052). A `bin/fleet-failed-command-flagged` invocation
+(`FLEET_FAILED_COMMAND_SESSIONS=/tmp`, `FLEET_FAILED_COMMAND_FILE_ISSUES=0`)
+that returns `findings=N` + `LOUD [FAILED-COMMAND-SWALLOWED]` lines +
+`Command exited with code 1` (isError=true) is a real swallowed failure
+(fleet-ops#1220): the detector's contract is to exit 1 when it finds
+things, which does not make the non-zero a probe; the
+FAILED-COMMAND-SWALLOWED lines in the toolResult are about OTHER
+sessions, not a user-facing flag of THIS command; and a thinking-only
+note that the detector is working plus a later grep is not a flag. The
+detector already flags this class via the generic `isError or code != 0`
+path. A future refactor that treats the detector bin's own exit 1 as
+expected, treats FAILED-COMMAND-SWALLOWED in the toolResult as
+already-flagged, or lets thinking that says "the detector is working"
+discharge the pending failure would silently suppress this real signal.
+Distinct from #727 (`npm run canary` exit 1, a different command) and
+grep/rg POSIX no-match (BENIGN_STAGE_RE; the live session also carried
+an earlier `grep "fleet-heartbeat.service.d"` with `(no output)`, which
+must stay a probe). The dedicated regression test
+tests/fleet-failed-command-detector-bin-exit.test.sh pins that. The
+auto-filed issue closes via observe-to-close when the session mtime
+ages out of the 24h window. Live session
+2026-08-27T15-16-17-039Z_01a043cb-120f-7fe1-952d-b01474cd5852.jsonl:
+`cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1054 &&
+FLEET_FAILED_COMMAND_SESSIONS=/tmp ... FLEET_FAILED_COMMAND_FILE_ISSUES=0
+bin/fleet-failed-command-flagged 2>&1`. A spawn-guard or harness block
+(SPAWN_BLOCKED / "Dangerous command blocked") is not a ran-and-failed
+command: the call never executed.
 
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
@@ -716,7 +777,9 @@ HARNESS_BLOCK_RE = re.compile(
 # oldText or newText was stale, or the worker's `edit` arguments were
 # malformed. A silent read/grep recovery, and cause-explaining prose
 # ("The text is already the same", "The edit tool requires the path
-# field"), do not discharge it.
+# field"), do not discharge it. A successful bash `cat >>` append of the
+# same path (fleet-ops#1140, live READY-WORK.md), and cause-explaining
+# prose ("The text is already the same"), do not discharge it.
 READ_OFFSET_RE = re.compile(
     r"Offset \d+ is beyond end of file \(\d+ lines total\)", re.I
 )
@@ -725,7 +788,23 @@ READ_OFFSET_RE = re.compile(
 # fails with exit 127 "No such file or directory". The assistant recovers via
 # the write tool. That ENOENT is a cascade of the block, not a swallowed
 # command failure. Only exempt when a prior toolResult in the session was a
-# harness block — a 127 ENOENT with no prior block is a real failure.
+# harness block — a 127 ENOENT with no prior block is a real failure
+# (fleet-ops#1254): there is no prior harness block, so the #677 cascade
+# exemption does not apply, and the next assistant turn is a thinking-only
+# "The path is wrong" plus a silent retry with the correct `.test.sh`. The
+# detector already flags this class via the generic `isError or code != 0`
+# path. A future refactor that drops the `had_prior_block` gate on the #677
+# 127-ENOENT cascade, treats a truncated `.est.sh` as an existence probe,
+# treats thinking-only "The path is wrong" as a flag, or lets a later
+# successful `.test.sh` sibling discharge the 127 would silently suppress
+# this real signal. The class is distinct from #677 (127 ENOENT
+# *downstream of a harness block*), #793 (`bash /tmp/<fresh-script>`
+# exit 1 with empty snippet, file existed), and the read-ENOENT family
+# (#651 / #953 / #1001 / #1059; `read` tool, no exit-code line). The
+# dedicated regression test tests/fleet-failed-command-typo-est-sh.test.sh
+# pins that. Live session
+# 2026-08-27T16-16-10-880Z_01a04401-e880-7f21-b990-b20a28e67e9d.jsonl:
+# `bash tests/fleet-failed-command-edit-unmatch.est.sh`.
 ENOENT_RE = re.compile(r"No such file or directory", re.I)
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
