@@ -296,6 +296,54 @@ else
   fail "autoreview-verification.md truth-integrity failed: $PY_RESULT4"
 fi
 
+# Test 12: Staleness cleanup (fleet-ops#2273)
+# The staleness-checker.py used to write a SEPARATE fleet-staleness.prom textfile.
+# It was refactored (a639520) to emit staleness gauges through fleet-metrics-export.py
+# into fleet.prom via the JSON cache. But the old fleet-staleness.prom file was
+# never deleted from the node_exporter textfile dir. node_exporter reads ALL .prom
+# files, so the stale file's duplicate fleet_truth_staleness_* metrics shadow the
+# fresh values in fleet.prom — Prometheus picks one, and the stale one won,
+# triggering TruthStalenessAbsent (absent() does not fire because the metric IS
+# present — it's just the wrong, stale value).
+# Pin: the checker removes the legacy file on every run (--no-file path too,
+# so the weekly-piggyback tick that doesn't file issues still cleans up).
+echo "[12] Removes legacy fleet-staleness.prom on every run (fleet-ops#2273)"
+SCRATCH_STALE="$(mktemp -d -t stale-test.XXXXXX)"
+trap 'rm -rf "$SCRATCH_STALE"' EXIT INT TERM
+mkdir -p "$SCRATCH_STALE/textfile"
+echo "fleet_truth_staleness_last_run_seconds 1000000000" \
+  > "$SCRATCH_STALE/textfile/fleet-staleness.prom"
+python3 - "$SCRATCH_STALE/textfile" <<PYEOF || fail "staleness cleanup failed"
+import importlib.util, json, os, sys, types
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.py")
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+
+# Save the scratch path, then rewrite argv so argparse sees only --no-file.
+legacy_path = Path(sys.argv[1]) / "fleet-staleness.prom"
+sys.argv = ["staleness-checker.py", "--no-file"]
+sc.LEGACY_STALENESS_PROM = legacy_path
+assert sc.LEGACY_STALENESS_PROM.exists(), "seed file should exist"
+
+sc._gh_issue = lambda repo, num: None
+sc._systemctl_unit_exists = lambda u: True
+sc._systemctl_unit_active = lambda u: True
+sc._file_finding = lambda f: None
+sc.STANDING_DOCS = []
+
+rc = sc.main()
+assert rc == 0, f"main rc={rc}"
+assert not sc.LEGACY_STALENESS_PROM.exists(), \
+    "legacy fleet-staleness.prom must be removed by the checker"
+print("OK: legacy fleet-staleness.prom removed")
+
+rc = sc.main()
+assert rc == 0, f"main rc={rc} on second run"
+assert not sc.LEGACY_STALENESS_PROM.exists()
+print("OK: second run is a no-op when legacy file is absent")
+PYEOF
+
 # Summary
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
