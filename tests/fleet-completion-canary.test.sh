@@ -914,6 +914,57 @@ grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 1' "$scratch/fleet-
 
 ok "laddered verify chain re-open re-parks, fresh dispatch re-opens (fleet-ops#2397)"
 
+# --- 9i. LEGACY terminal marker WITHOUT dispatch_unit re-parks (fleet-ops#2397) --
+# The live incident marker was auditor-hand-parked with NO dispatch_unit
+# (FleetQueueSelfMaintenanceRatioHigh, dead_until=20:29:41Z, ladder=
+# stop-reason, terminal=detector-red — written before the fix persisted the
+# unit). When its cooldown expires the re-park guard must still fire (the
+# `not existing.get("dispatch_unit")` branch): the escalation owns the chain;
+# a unit-less legacy marker must NOT re-ladder just because it cannot name
+# its own unit.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+rm -f "$scratch/STOP-REASON.json"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "VerifyLoop2"},
+   "activeAt": "2026-08-30T11:10:27Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-30T11:10:27Z] DISPATCH alertname=VerifyLoop2 seat=a/Model unit=u-VL2-20260830T111027Z
+PYEND
+printf 'Started u-VL2-20260830T111027Z.service\n' >"$scratch/sysctl/u-VL2-20260830T111027Z.service.journal"
+
+# Byte-accurate live shape: NO dispatch_unit, no stall_count beyond legacy
+# marker content, expired dead_until.
+echo '{"alertname":"VerifyLoop2","hop":"verify","terminal":"detector-red","ladder":"stop-reason","dead_until":"2026-08-30T14:00:00Z"}' \
+  >"$scratch/state/open/VerifyLoop2.json"
+
+rc=$(run_bin "2026-08-30T16:00:00Z")
+[[ "$rc" == "0" ]] || fail "9i rc=$rc stderr=$(cat "$scratch/err.log")"
+if grep -q 'REDISPATCH alertname=VerifyLoop2' "$scratch/actions.log" \
+   || grep -q -i 'VerifyLoop2' "$scratch/redispatch.log" 2>/dev/null; then
+  fail "9i: unit-less legacy marker must NOT re-ladder/spawn, got: $(grep -i verifyloop2 "$scratch/actions.log" "$scratch/redispatch.log" 2>/dev/null)"
+fi
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  && fail "9i: unit-less legacy marker must NOT write a new STOP-REASON"
+python3 - "$scratch/state/open/VerifyLoop2.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("dead_until") == "2026-08-30T17:00:00Z", d.get("dead_until")
+assert d.get("terminal") == "detector-red", d
+assert d.get("ladder") == "stop-reason", d
+assert d.get("dispatch_unit") == "u-VL2-20260830T111027Z", d  # unit backfilled
+PY
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9i: verify stalled must be 0 (unit-less legacy marker), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+ok "unit-less legacy terminal marker re-parks, no re-ladder (fleet-ops#2397)"
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================
