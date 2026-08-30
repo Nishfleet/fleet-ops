@@ -246,6 +246,10 @@ grep -q "avg_over_time(fleet_queue_self_maintenance_ratio\[7d\]) > 0.64" "$rules
 # (high ratio with recurring dips), not sit pending forever — proved with
 # promtool test rules (the live 2026-08-30 shape: ratio > 0.64 100% of the
 # time but the 1w for: never completed, fleet-ops#2171).
+grep -q "alert: FleetSeatComebackOverdue" "$rules" \
+  || fail "fleet_rules.yml missing FleetSeatComebackOverdue (fleet-ops#2407)"
+grep -q "fleet_seat_comeback_overdue_total > 0" "$rules" \
+  || fail "comeback-overdue rule must trip on fleet_seat_comeback_overdue_total > 0"
 if command -v promtool >/dev/null 2>&1; then
   unit_yml="$scratch/fleet-queue-ratio.test.yml"
   cat >"$unit_yml" <<YOAML
@@ -612,6 +616,153 @@ rc = m.main()
 assert rc == 1
 assert not Path(legacy).exists()
 print("OK: second run is a no-op when legacy file is absent")
+PY
+
+# =========================================================================
+# 14. fleet-ops#2407: seat release-at-usable_at + comeback-overdue metric
+# =========================================================================
+# A walled seat whose usable_at/bench_until has passed is RELEASED by the
+# router (lib/seat-lib.sh seat_usable fail-opens it) but stays classed
+# non-healthy in the ledger until the next observation reclassifies it.
+# The availability rollup must count released seats (so a past-wall seat
+# does not silently depress seat_availability), the comeback-overdue gauge
+# must fail loud when such seats linger unobserved, and fleet_rules.yml must
+# carry the alert. Fixtures are wall-clock-relative so the test is stable
+# at any run time.
+CB_SEATS="$scratch/cb-seats"
+mkdir -p "$CB_SEATS"
+python3 - "$exporter" "$repo_root/config/seat-caps.json" "$CB_SEATS" <<'PY' || fail "seat release-at-expiry test failed"
+import importlib.util, json, sys, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+exporter, seat_caps, seat_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+now = time.time()
+
+def iso(offset_s):
+    return datetime.fromtimestamp(now + offset_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+PAST = iso(-3600)   # wall clock expired 1h ago
+FUT  = iso(3600)    # wall clock held for another 1h
+
+# Fixtures: wall-clock-relative so no test depends on the real date.
+fixtures = {
+    # 1. overload_bench with EXPIRED wall -> RELEASED (router fail-opens).
+    "commandcode__minimax_minimax-m3-free.json": {
+        "provider": "commandcode", "model": "minimax/minimax-m3-free",
+        "http_status": 503, "health_class": "overload_bench", "seat_dead": False,
+        "usable_at": PAST, "bench_until": PAST,
+    },
+    # 2. overload_bench with FUTURE wall -> still HELD (walled).
+    "commandcode__poolside_laguna-s-2.1-free.json": {
+        "provider": "commandcode", "model": "poolside/laguna-s-2.1-free",
+        "http_status": 503, "health_class": "overload_bench", "seat_dead": False,
+        "usable_at": FUT, "bench_until": FUT,
+    },
+    # 3. quota_exhausted with EXPIRED wall -> NOT released (held
+    #    unconditionally until a healthy observation) but comeback-overdue.
+    "minimax__MiniMax-M3.json": {
+        "provider": "minimax", "model": "MiniMax-M3",
+        "http_status": 402, "health_class": "quota_exhausted", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
+    # 4. rate_limited with EXPIRED wall -> RELEASED.
+    "opencode__mimo-v2.5-free.json": {
+        "provider": "opencode", "model": "mimo-v2.5-free",
+        "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
+    # 5. corpse (seat_dead) with EXPIRED wall -> never released, never
+    #    comeback-overdue (FleetDeadCredentialSeats owns corpses).
+    "opencode__muse-spark-1.2-contributor-free.json": {
+        "provider": "opencode", "model": "muse-spark-1.2-contributor-free",
+        "http_status": 500, "health_class": "corpse", "seat_dead": True,
+        "usable_at": PAST, "bench_until": None,
+    },
+    # 6. test__ fixture -> excluded from comeback-overdue.
+    "test__test.json": {
+        "provider": "test", "model": "test",
+        "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
+    # 7. .spawn-bench marker -> excluded from comeback-overdue.
+    "xai-oauth__grok-4.5.spawn-bench.json": {
+        "provider": "xai-oauth", "model": "grok-4.5", "usable_at": PAST,
+        "reason": "no_block:rc=0", "backoff_s": 300,
+    },
+}
+for name, body in fixtures.items():
+    (Path(seat_dir) / name).write_text(json.dumps(body))
+
+# --- pure helper semantics ---
+def ld(name):
+    return json.loads((Path(seat_dir) / name).read_text())
+
+assert m._seat_is_released(ld("commandcode__minimax_minimax-m3-free.json")) is True, \
+    "expired overload_bench wall must release"
+assert m._seat_is_released(ld("commandcode__poolside_laguna-s-2.1-free.json")) is False, \
+    "future overload_bench wall must stay held"
+assert m._seat_is_released(ld("minimax__MiniMax-M3.json")) is False, \
+    "quota_exhausted is never release-at-expiry"
+assert m._seat_is_released(ld("opencode__mimo-v2.5-free.json")) is True, \
+    "expired rate_limited wall must release"
+assert m._seat_is_released(ld("opencode__muse-spark-1.2-contributor-free.json")) is False, \
+    "corpse (seat_dead) never releases"
+print("OK: _seat_is_released mirrors seat_usable fail-open (fleet-ops#2407)")
+
+# --- _read_comeback_overdue over the scratch ledger ---
+m.SEAT_LEDGER = Path(seat_dir)
+cb_n, cb = m._read_comeback_overdue()
+ids = {f"{s['provider']}__{s['model']}" for s in cb}
+# Past-wall non-dead non-excluded seats: commandcode minimax (overload past),
+# minimax MiniMax-M3 (quota past), opencode mimo (rate_limited past) = 3.
+assert cb_n == 3, f"comeback_overdue_n must be 3, got {cb_n}"
+assert {"commandcode__minimax/minimax-m3-free", "minimax__MiniMax-M3", "opencode__mimo-v2.5-free"} <= ids, ids
+assert not any("grok-4.5" in i for i in ids), "spawn-bench leaked into comeback"
+assert not any(i.startswith("test__") for i in ids), "test__ leaked into comeback"
+assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
+print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse")
+
+# --- availability rollup: released seats count healthy ---
+# Seed every enrolled provider (cap>0) with a healthy fixture ledger, then
+# overwrite commandcode's two ledgers with the past-wall overload_bench pair
+# (RELEASED -> commandcode still counts) and minimax's with quota_exhausted
+# past-wall (NOT released -> minimax drops out).
+caps = json.loads(Path(seat_caps).read_text())
+enrolled = [p for p, cfg in caps.get("providers", {}).items()
+            if isinstance(cfg, dict) and isinstance(cfg.get("cap"), (int, float))
+            and cfg.get("cap") > 0]
+assert "commandcode" in enrolled and "minimax" in enrolled, "fixture providers must be enrolled"
+for prov in enrolled:
+    (Path(seat_dir) / f"{prov}__fixture.json").write_text(json.dumps({
+        "provider": prov, "model": "fixture", "health_class": "healthy",
+        "seat_dead": False, "usable_at": None, "bench_until": None,
+    }))
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+base = m._healthy_enrolled_seat_count()
+assert base == len(enrolled), f"all-enrolled healthy base must be {len(enrolled)}, got {base}"
+# Replace the commandcode healthy fixture with the two overload_bench ledgers
+# (one past-wall). Released counts healthy -> commandcode stays in the rollup.
+(Path(seat_dir) / "commandcode__fixture.json").unlink(missing_ok=True)
+rel = m._healthy_enrolled_seat_count()
+assert rel == len(enrolled), \
+    f"released commandcode must still count healthy ({len(enrolled)}), got {rel}"
+print(f"OK: released seats count toward availability (commandcode stays {rel}/{len(enrolled)})")
+# Quarantine minimax: quota_exhausted past-wall is NOT released -> the
+# provider drops out of the rollup until re-observed.
+(Path(seat_dir) / "minimax__fixture.json").write_text(json.dumps({
+    "provider": "minimax", "model": "fixture", "health_class": "quota_exhausted",
+    "seat_dead": False, "usable_at": PAST, "bench_until": None,
+}))
+quota = m._healthy_enrolled_seat_count()
+assert quota == len(enrolled) - 1, \
+    f"quota_exhausted past-wall must NOT count healthy ({len(enrolled)-1}), got {quota}"
+print("OK: quota_exhausted never release-counts (availability honest)")
 PY
 
 

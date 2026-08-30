@@ -15,6 +15,10 @@
 #   - .spawn-bench files are excluded from walled_n and comeback_overdue_n.
 #   - test__ fixtures (provider == "test") are excluded from the census.
 #   - comeback_overdue_n reflects only genuinely stuck real seats.
+#   - fleet-ops#2407: seat_table RELEASES a walled seat the moment its wall
+#     clock (usable_at/bench_until) passes on the fail-open classes, so the
+#     census stops counting a router-usable seat as walled until something
+#     re-observes it; held quota walls and corpses stay walled.
 #
 # Sandbox: scratch SEATS_DIR with fixture files only. No live ledger touched.
 #
@@ -103,13 +107,42 @@ assert seats.get("present") is True, "seats table must be present"
 # -> n = 4 real seats, healthy_n = 1, walled_n = 3, excluded_n = 2
 assert seats.get("n") == 4, f"seat n must be 4 (6 fixtures - 2 excluded), got {seats.get('n')}"
 assert seats.get("healthy_n") == 1, f"healthy_n must be 1, got {seats.get('healthy_n')}"
-assert seats.get("walled_n") == 3, f"walled_n must be 3, got {seats.get('walled_n')}"
 assert seats.get("excluded_n") == 2, f"excluded_n must be 2, got {seats.get('excluded_n')}"
 ids = [r["id"] for r in seats.get("seats", [])]
 assert "healthy__model" in ids, f"healthy seat missing from table: {ids}"
 assert not any("spawn-bench" in i for i in ids), f"spawn-bench leaked into seat table: {ids}"
 assert not any(i.startswith("test__") for i in ids), f"test__ fixture leaked into seat table: {ids}"
 print("OK: seat_table excludes spawn-bench and test__ fixtures")
+
+# --- seat_table wall-held (release-at-usable_at) semantics (fleet-ops#2407) ---
+# A walled seat whose usable_at/bench_until has PASSED is RELEASED by the
+# router (seat_usable fail-opens it), so the census must not keep counting
+# it as walled until the next observation reclassifies it. Release applies
+# to the fail-open classes (overload_bench/quota_bench/hang_bench/
+# transient_fault/rate_limited); quota_exhausted and seat_dead corpses stay
+# walled until a healthy observation.
+#   #1 cline quota_exhausted, usable_at Sept 19 (future)     -> walled 2/6
+#   #2 commandcode overload_bench, usable_at in PAST         -> RELEASED
+#   #6 opencode mimo rate_limited, usable_at in PAST         -> RELEASED
+# -> walled_n drops 3 -> 1, released_n = 2, healthy_n stays 1, n stays 4.
+assert seats.get("walled_n") == 1, (
+    f"walled_n must be 1 after release-at-usable_at (only the future-wall "
+    f"quota seat), got {seats.get('walled_n')}"
+)
+assert seats.get("released_n") == 2, f"released_n must be 2, got {seats.get('released_n')}"
+row_by_id = {r["id"]: r for r in seats.get("seats", [])}
+cmd = row_by_id.get("commandcode__minimax_minimax-m3-free")
+assert cmd is not None and cmd.get("released") is True, \
+    f"commandcode overload_bench with passed usable_at must be released: {cmd}"
+assert cmd.get("walled") is False, f"released seat must not be walled: {cmd}"
+op = row_by_id.get("opencode__mimo-v2.5-free")
+assert op is not None and op.get("released") is True, \
+    f"opencode rate_limited with passed usable_at must be released: {op}"
+cl = row_by_id.get("cline__cline-pass_deepseek-v4-flash")
+assert cl is not None and cl.get("released") is False, \
+    f"quota_exhausted with future usable_at must NOT be released: {cl}"
+assert cl.get("walled") is True, f"future-wall quota seat must stay walled: {cl}"
+print("OK: seat_table releases expired walls (fleet-ops#2407), keeps held quota walls")
 
 # --- t_seat_probes_walled_comebacks assertions (thorough) ---
 thorough = snap.get("thorough")
