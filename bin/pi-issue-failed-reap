@@ -229,6 +229,25 @@ if [[ "$issue_state" == "OPEN" ]]; then
         log "comment post failed on $repo_slug#$issue (label flip already attempted)"
     fi
     log_to_triage "CLAIM-RELEASED" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_flipped=$label_ok comment_posted=$comment_ok"
+    # --- reclaim cooldown (fleet-ops#2133, auditor 2026-08-30) -----------------
+    # A failed worker's claim was just released back to agent-ready. Without a
+    # cooldown, the next intake tick (every ~8min) re-claims the same issue,
+    # spawns a new worker, and pick_seat routes to another free seat that dies
+    # the same way — a spawn-die-respawn loop that burned #2133 6x in one day
+    # (05:52, 07:01, 08:26, 09:23 IST + 2 more). The cooldown marker tells
+    # intake to skip this issue for PI_INTAKE_RECLAIM_COOLDOWN_S (default 900s
+    # = 15min), giving the seat-health ledger time to bench the killing seat
+    # and breaking the tight loop. Only written when the branch was actually
+    # deleted (the reclaim path); the open-PR shortcut exits before here.
+    if [[ "$branch_deleted" == "yes" ]]; then
+        cooldown_file="$ATTEMPTS_DIR/pi-issue-${instance}.cooldown"
+        if date -u +%Y-%m-%dT%H:%M:%SZ >"$cooldown_file" 2>/dev/null; then
+            log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
+        else
+            log "WARN: could not write cooldown marker $cooldown_file"
+        fi
+        log_to_triage "RECLAIM-COOLDOWN-SET" "instance=$instance repo=$repo_slug issue=$issue cooldown=$cooldown_file"
+    fi
 elif [[ "$issue_state" == "CLOSED" ]]; then
     label_ok=no
     if [[ "$in_progress" == "yes" ]]; then
