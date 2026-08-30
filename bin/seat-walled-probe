@@ -80,9 +80,25 @@ now_s() { date -u +%s; }
 # from observed_at. For simplicity, we check if usable_at has passed and if
 # enough time has passed since the last probe.
 should_probe_seat() {
-    local provider="$1" model="$2" failure_mode="$3" usable_at="$4" observed_at="$5" consecutive_failures="$6"
+    local provider="$1" model="$2" failure_mode="$3" usable_at="$4" observed_at="$5" consecutive_failures="$6" seat_dead="${7:-false}"
     local now
     now=$(now_s)
+
+    # fleet-ops#2145: seat_dead=true corpses are probed on the WEEKLY cadence
+    # (CREDENTIALS_BAD_S), regardless of usable_at, so a recovered seat
+    # re-enters the ladder via one successful probe. A probe success writes a
+    # healthy observation (seat-health.ts: count -> 0, seat_dead -> false).
+    # Without this, seat_dead=true is a permanent bench — the very thing the
+    # issue title says must not happen.
+    if [[ "$seat_dead" == "true" ]]; then
+        local observed_s
+        observed_s=$(date -u -d "$observed_at" +%s 2>/dev/null || echo 0)
+        if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > 0 )); then
+            local time_since_observed=$((now - observed_s))
+            (( time_since_observed >= CREDENTIALS_BAD_S )) || return 1
+        fi
+        return 0
+    fi
 
     local usable_at_s
     usable_at_s=$(date -u -d "$usable_at" +%s 2>/dev/null || echo 0)
@@ -279,19 +295,27 @@ EOF
     for f in "$LEDGER_DIR"/*__*.json; do
         [[ -f "$f" ]] || continue
 
-        local provider model failure_mode usable_at observed_at consecutive_failures
+        local provider model failure_mode usable_at observed_at consecutive_failures seat_dead
         provider=$(jq -r '.provider // ""' "$f" 2>/dev/null || echo "")
         model=$(jq -r '.model // ""' "$f" 2>/dev/null || echo "")
         failure_mode=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || echo "")
         usable_at=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || echo "")
         observed_at=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || echo "")
         consecutive_failures=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+        seat_dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || echo false)
 
         [[ -n "$provider" && -n "$model" ]] || continue
-        [[ -n "$usable_at" && "$usable_at" != "null" ]] || continue
+
+        # fleet-ops#2145: seat_dead=true corpses are always probe-eligible
+        # (weekly cadence, handled in should_probe_seat) and do NOT need a
+        # usable_at — a corpse may carry a far-future quarantine wall or none.
+        if [[ "$seat_dead" != "true" ]]; then
+            [[ -n "$usable_at" && "$usable_at" != "null" ]] || continue
+        fi
 
         # Determine if this is a walled failure mode we should probe
         local is_walled=0
+        if [[ "$seat_dead" == "true" ]]; then is_walled=1; fi
         case "$failure_mode" in
             rate_limit|quota_exhausted|credentials_bad|empty_run)
                 is_walled=1 ;;
@@ -302,7 +326,7 @@ EOF
         fi
 
         # Check if we should probe this seat
-        if ! should_probe_seat "$provider" "$model" "$failure_mode" "$usable_at" "$observed_at" "$consecutive_failures"; then
+        if ! should_probe_seat "$provider" "$model" "$failure_mode" "$usable_at" "$observed_at" "$consecutive_failures" "$seat_dead"; then
             continue
         fi
 

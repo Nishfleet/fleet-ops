@@ -244,6 +244,18 @@ bash "$here/seat-health-classifier.test.sh"
 # worker App cannot push .github/workflows/**).
 bash "$here/seat-health-quarantine.test.sh"
 
+# fleet-ops#2145: closure condition for the seat_dead corpse mark. The test
+# imports the live extension at $HOME/.pi/agent/extensions/seat-health.ts (or
+# FLEET_SEAT_HEALTH_TS) and asserts that a seat past the seat_dead threshold
+# (25 consecutive transient failures, or quota_exhausted aged past 24h) is
+# marked seat_dead=true — a corpse, not a walled seat — while a successful
+# probe recovers it (count -> 0, seat_dead -> false). CI skips when the
+# extension is missing; on the VPS the test fails against the pre-fix
+# extension and passes once shouldMarkSeatDead is wired into
+# writeSeatLedgerEntry. Hosted here so P14 runs it without a workflow-file
+# edit (the worker App cannot push .github/workflows/**).
+bash "$here/seat-health-seat-dead.test.sh"
+
 # fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
 # The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
 #   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
