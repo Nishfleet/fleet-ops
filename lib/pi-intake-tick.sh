@@ -160,6 +160,71 @@ blocked_filter() {
     return 1
 }
 
+# Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
+# 0509's required-verifier-integrity gate blocks any PR that touches a
+# protected verifier/deploy file unless a repo admin posts an exact
+# `verifier-attest: <40-hex head sha>` comment. The repo has exactly one
+# collaborator, so independent APPROVED review is structurally impossible
+# and the sole-admin attestation is the only unblock — and workers must
+# NEVER post that comment (the 2026-08-26 attestation breach). During
+# Nish's vacation window, parking these issues at intake prevents workers
+# from opening attest-stuck PRs that sit red until Nish returns (existing
+# red PRs #1295/#1281/#1273 stay open; this only stops NEW claims).
+#
+# The skip is date-bounded: after PROTECTED_VERIFIER_VACATION_UNTIL the
+# filter passes and intake resumes — the issue stays agent-ready throughout
+# the window, so no unpark/relabel mechanism is needed. The gate itself is
+# unchanged (do not weaken or remove it). All seams are env-overridable so
+# the regression test can drive the date, repo, and file list without
+# touching the real 0509 checkout or the clock.
+PROTECTED_VERIFIER_VACATION_REPO="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_REPO:-0509}"
+PROTECTED_VERIFIER_VACATION_FROM="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_FROM:-2026-08-28}"
+PROTECTED_VERIFIER_VACATION_UNTIL="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_UNTIL:-2026-09-08}"
+# Mirrors the protected_files list in
+# 0509 .github/scripts/required-verifier-integrity.sh. A drift here vs.
+# that script is a follow-up, not a blocker for this park.
+_pvv_default_files=(
+    ".github/workflows/ci.yml"
+    ".github/workflows/secret-scan.yml"
+    ".github/workflows/required-verifier-integrity.yml"
+    ".github/scripts/required-verifier-integrity.sh"
+    ".github/scripts/test-required-verifier-integrity.sh"
+    ".github/workflows/deploy-production.yml"
+    ".github/workflows/finalize-production-soak.yml"
+    "scripts/ci-verify-production-candidate.sh"
+    "scripts/ci-verify-provider-main-cas.sh"
+)
+protected_verifier_vacation_filter() {
+    # $1 = issue body. Returns 0 (skip this issue) when a protected
+    # verifier/deploy path appears in the body AND today is inside the
+    # vacation window [FROM, UNTIL] inclusive. Returns 1 otherwise.
+    local body="$1"
+    [[ "$REPO" == "$PROTECTED_VERIFIER_VACATION_REPO" ]] || return 1
+    local today="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_TODAY:-$(date -u +%Y-%m-%d)}"
+    # YYYY-MM-DD lexicographic compare == chronological. Skip only inside
+    # the window; after UNTIL the filter passes so intake resumes.
+    if [[ "$today" < "$PROTECTED_VERIFIER_VACATION_FROM" \
+          || "$today" > "$PROTECTED_VERIFIER_VACATION_UNTIL" ]]; then
+        return 1
+    fi
+    local f
+    if [[ -n "${PI_INTAKE_PROTECTED_VERIFIER_VACATION_FILES:-}" ]]; then
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            if printf '%s' "$body" | grep -qF -- "$f"; then
+                return 0
+            fi
+        done <<<"$PI_INTAKE_PROTECTED_VERIFIER_VACATION_FILES"
+    else
+        for f in "${_pvv_default_files[@]}"; do
+            if printf '%s' "$body" | grep -qF -- "$f"; then
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
     exit 0
@@ -390,6 +455,17 @@ for i in "${!numbers[@]}"; do
     # otherwise. Audit finding 2026-08-26: fleet-ops#87 looped exactly this way.
     if blocked_filter "$body"; then
         echo "issue $N ($title): skipped-blocked-on"
+        continue
+    fi
+
+    # Vacation park (fleet-ops#1165, audit finding 12): for 0509, skip
+    # claiming any agent-ready issue whose body names a protected
+    # verifier/deploy file while inside the vacation window. This is the
+    # intake-side prevention so workers do not open attest-stuck PRs that
+    # sit red until Nish returns. The issue stays agent-ready and becomes
+    # claimable again after the window; the gate is unchanged.
+    if protected_verifier_vacation_filter "$body"; then
+        echo "issue $N ($title): skipped-protected-verifier-vacation"
         continue
     fi
 

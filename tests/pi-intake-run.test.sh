@@ -123,3 +123,12 @@ bash "$here/pi-intake-tick-escalate-senior-exclusion.test.sh"
 # spawns (fleet-ops#2040 live class). ci.yml lists this file, so the drill
 # runs here instead of a new workflow line.
 bash "$here/pi-intake-tick-claim-set-e-guard.test.sh"
+# --- 11. fleet-ops#1165 protected-verifier vacation park (CI hook) -------
+# tests/pi-intake-tick-protected-verifier-vacation.test.sh locks the
+# 0509-only, date-bounded skip in lib/pi-intake-tick.sh that parks
+# agent-ready issues whose body names a protected verifier/deploy file
+# during Nish's vacation, so workers do not open attest-stuck PRs that
+# sit red on the required-verifier-integrity gate until Nish returns.
+# ci.yml lists this file, so the drill runs here instead of a new
+# workflow line (workers cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-protected-verifier-vacation.test.sh"
