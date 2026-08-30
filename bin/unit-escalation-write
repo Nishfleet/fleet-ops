@@ -57,6 +57,43 @@ case "$UNIT" in
     ;;
 esac
 
+# fleet-ops#1467 false-trip: a unit with Restart=on-failure is DESIGNED to
+# absorb a transient fault via retry before escalating. systemd fires
+# OnFailure= on the FIRST failure transition (before Restart=on-failure
+# executes its retry), so the escalation ladder races ahead of the retry and
+# escalates a fault the retry would have absorbed (proven: pi-audit@0509--1467
+# hit a 503 on first run, OnFailure wrote STOP-REASON, then the retry succeeded
+# and wrote a PASS/FAIL vote — the escalation was a false alarm).
+# Suppress when a retry cycle is still pending: NRestarts < StartLimitBurst.
+# After burst exhaustion the unit enters permanent failed state; the next
+# OnFailure trigger sees NRestarts >= burst and escalates normally. Best-effort:
+# missing properties (unit already unloaded) default so the check passes open
+# (escalate — fail-loud on the unknown).
+_nr=$(systemctl --user show -p NRestarts --value "$UNIT" 2>/dev/null || echo 0)
+_burst=$(systemctl --user show -p StartLimitBurst --value "$UNIT" 2>/dev/null || echo 0)
+_nr=${_nr:-0}; _burst=${_burst:-0}
+# Coerce to integers; non-numeric/blank becomes 0 (escalate — fail-loud on
+# the unknown rather than silently suppressing a real fault).
+case "$_nr" in ''|*[!0-9]*) _nr_i=0 ;; *) _nr_i="$_nr" ;; esac
+case "$_burst" in ''|*[!0-9]*) _burst_i=0 ;; *) _burst_i="$_burst" ;; esac
+_restart_mode=$(systemctl --user show -p Restart --value "$UNIT" 2>/dev/null || echo "no")
+# fleet-ops#1467: a unit with Restart=on-failure|always is designed to absorb
+# a transient fault via retry before escalating. systemd fires OnFailure= on
+# the FIRST failure transition (before Restart=on-failure executes its retry),
+# so without this guard a transient fault (e.g. a 503 overload) escalates to
+# the auditor even though the retry was about to absorb it (proven: pi-audit@
+# 0509--1467 hit a 503 on the first run, OnFailure wrote STOP-REASON, then the
+# retry succeeded and wrote a PASS/FAIL vote). Suppress when a retry cycle is
+# still pending: NRestarts < StartLimitBurst. After burst exhaustion the unit
+# enters permanent failed state; the next OnFailure trigger sees
+# NRestarts >= burst and escalates normally.
+if [ "$_restart_mode" = "on-failure" ] || [ "$_restart_mode" = "always" ]; then
+    if [ "$_nr_i" -lt "$_burst_i" ]; then
+        echo "unit-escalation-write: skipping '$UNIT' (Restart=$_restart_mode, NRestarts=$_nr < StartLimitBurst=$_burst — retry cycle in flight)" >&2
+        exit 0
+    fi
+fi
+
 # Last 5 journal lines for the failed unit (user scope). Best-effort: empty
 # array if journalctl is unavailable or the unit left no logs.
 mapfile -t jl < <(journalctl --user -u "$UNIT" -n 5 --no-pager -o short-iso 2>/dev/null || true)
