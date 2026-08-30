@@ -851,7 +851,14 @@ bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 # fleet-ops#1348 REMOVED (fleet-ops#2394 deletion review): seat-walled-probe
 # (probe bin + service + timer) deleted — 14-day 100% fail (Unknown provider
 # "test" on stale ledger fixtures), zero issues filed, seat-transition duty
-# overlaps fleet-seat-recovery + seat-lib comeback clocks.
+# overlaps fleet-seat-recovery + seat-lib comeback clocks. Its successor
+# (fleet-ops#2421) is fleet-seat-comeback-release below: the ACTIVE release
+# path that re-probes a seat whose wall clock has passed and unwalls a
+# provably-usable seat; it excludes test__/.spawn-bench pseudo-seats and
+# corpses (the predecessor-killers) and renders the stalled loud check.
+bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-release
+systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
+systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
 
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir

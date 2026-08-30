@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# fleet-seat-comeback-release — the ACTIVE release path for walled seats
+# (fleet-ops#2421).
+#
+# Problem: a seat whose wall clock (bench_until ?? usable_at) has passed is
+# FAIL-OPEN by the router (seat_usable in lib/seat-lib.sh), but nothing
+# actively re-probes it. The wall clears only when a worker happens to
+# re-pick the seat and the out-of-repo seat-health extension records the
+# outcome. The 2026-08-30T18:30:09Z census showed straitly/gpt-5.6-sol
+# quota_exhausted with usable_at an hour in the past still walled=true,
+# released=false; FleetSeatComebackOverdue was pending at value=3 and
+# released_n stayed 0 across the whole roster — nothing had EVER been
+# released. The fleet-ops#2407 metric-side release (seat_table released
+# flag in the gather, _seat_is_released in fleet-metrics-export.py)
+# only reclassifies the CENSUS; it releases nothing.
+#
+# This bin IS the release path. On a wall clock passing it sends a 1-token
+# "Reply with exactly: OK" probe through the REAL router (pi --print
+# --provider P --model M, the same probe seat-health.ts classifies):
+#   - probe success (exit 0 + non-empty output containing OK) -> the seat
+#     is provably usable: this bin writes the healthy observation ITSELF
+#     (unwall: health_class=healthy, seat_dead=false, count 0, wall clock
+#     cleared), so the release does not depend on the extension's response
+#     hook. The healthy write lands in the ledger -> fleet-seat-recovery.path
+#     fires -> pi-intake is primed the moment the seat re-enters the ladder.
+#   - probe failure -> the extension re-anchors usable_at from the real
+#     HTTP response (fresh wall); the seat stays walled until that window
+#     passes and the next comeback is owed. A corpse reclassification
+#     (seat_dead=true, health_class=corpse) is respected: a corpse is
+#     terminal (fleet-ops#2327/#2415) and is NEVER released here.
+#
+# Loud backstop (fleet-ops#2421): after the sweep, if walled seats still
+# hold EXPIRED wall clocks AND nothing was released this run, the release
+# path is broken (probe blocked, extension not re-anchoring, provider not
+# routable) — the run exits 1, writes fleet_seat_comeback_release_stalled=1
+# to the textfile and does NOT update the last-green timestamp. The
+# FleetSeatComebackReleaseStalled prom rule (1h sustained) is the loud
+# alert; the absent/stale rule on the last-green timestamp pages a dead
+# organ.
+#
+# Deliberate exclusions (the two bugs that killed the predecessor
+# seat-walled-probe, fleet-ops#2394): .spawn-bench bench-marker pseudo-seats
+# and test__ fixtures (provider == "test") are never probed. Corpse seats
+# (seat_dead=true) are never probed either: they carry no comeback clock
+# (fleet-ops#2415) and FleetDeadCredentialSeats owns them.
+#
+# Design (no new machinery):
+#   - min-probe interval per seat (state file), default 900s — matches
+#     seat-caps.json walled_comeback.min_probe_interval_s, so a failed
+#     probe that the extension did NOT re-anchor is not hammered every
+#     15-min tick (it renders steel-loud via the stalled check instead).
+#   - Times out each probe (default 45s). A clean sweep with nothing to do
+#     exits 0; the one-shot unit treats a no-op as success, not failure.
+#
+# Usage: fleet-seat-comeback-release [--dry-run]
+#
+# Env (tests):
+#   PI_SEAT_HEALTH_LEDGER_DIR   seat ledger dir (default
+#                               /home/nish/workspaces/agent-state/lanes/seats)
+#   PI_BIN                      pi binary (default /home/nish/.local/bin/pi)
+#   FLEET_SEAT_COMEBACK_STATE   state json (default
+#                               /home/nish/.local/state/fleet-seat-comeback-release.json)
+#   FLEET_SEAT_COMEBACK_PROM    textfile .prom (default
+#                               /var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom)
+#   FLEET_SEAT_COMEBACK_MIN_INTERVAL_S  per-seat min probe interval (default 900)
+#   FLEET_SEAT_COMEBACK_TIMEOUT_S       probe timeout (default 45)
+#   FLEET_SEAT_COMEBACK_NOW              ISO timestamp override (tests)
+#
+# Exit: 0 clean sweep. 1 when the release path is stuck (walled seats hold
+# expired wall clocks and nothing was released) or on internal error.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}"
+PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+STATE_FILE="${FLEET_SEAT_COMEBACK_STATE:-$HOME/.local/state/fleet-seat-comeback-release.json}"
+PROM_FILE="${FLEET_SEAT_COMEBACK_PROM:-/var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom}"
+MIN_INTERVAL="${FLEET_SEAT_COMEBACK_MIN_INTERVAL_S:-900}"
+PROBE_TIMEOUT="${FLEET_SEAT_COMEBACK_TIMEOUT_S:-45}"
+NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
+DRY_RUN=0
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+
+log() {
+    printf '[%s] [fleet-seat-comeback-release] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+now_iso() {
+    if [[ -n "$NOW_ISO" ]]; then
+        printf '%s\n' "$NOW_ISO"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+# Pure epoch (UTC) of an ISO timestamp, or empty. Accepts trailing Z.
+ts_epoch() {
+    local t="$1" e
+    t="${t%Z}"
+    e=$(date -u -d "$t" +%s 2>/dev/null || true)
+    [[ "$e" =~ ^[0-9]+$ ]] && printf '%s\n' "$e" || true
+}
+
+wall_end_of() {
+    # bench_until ?? usable_at — the router (seat_usable) prefers bench_until
+    # and falls back to usable_at; mirror that.
+    jq -r '(.bench_until // .usable_at // "")' "$1" 2>/dev/null || true
+}
+
+# --- state (per-seat last probe time + cumulative counters) ---------------
+load_state() {
+    if [[ -f "$STATE_FILE" ]]; then
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0}'
+    else
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0}'
+    fi
+}
+
+save_state() {
+    local state="$1"
+    mkdir -p "$(dirname "$STATE_FILE")"
+    printf '%s\n' "$state" > "$STATE_FILE.tmp"
+    mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+# --- textfile metrics ------------------------------------------------------
+write_prom() {
+    local last_green="$1" stalled="$2" probed="$3" released="$4" expired="$5"
+    mkdir -p "$(dirname "$PROM_FILE")"
+    {
+        printf '# HELP fleet_seat_comeback_release_last_green_seconds Last sweep that completed cleanly — no stuck release path (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_last_green_seconds gauge\n'
+        if [[ -n "$last_green" ]]; then
+            printf 'fleet_seat_comeback_release_last_green_seconds %s\n' "$last_green"
+        fi
+        printf '# HELP fleet_seat_comeback_release_stalled 1 while walled seats hold expired wall clocks and nothing was released (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_stalled gauge\n'
+        printf 'fleet_seat_comeback_release_stalled %s\n' "$stalled"
+        printf '# HELP fleet_seat_comeback_release_probed_total Probes sent by the come-back release organ (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_probed_total counter\n'
+        printf 'fleet_seat_comeback_release_probed_total %s\n' "$probed"
+        printf '# HELP fleet_seat_comeback_release_released_total Seats released (unwalled) by the come-back release organ (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_released_total counter\n'
+        printf 'fleet_seat_comeback_release_released_total %s\n' "$released"
+        printf '# HELP fleet_seat_comeback_release_walled_expired Walled seats still holding an expired wall clock after the sweep (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_walled_expired gauge\n'
+        printf 'fleet_seat_comeback_release_walled_expired %s\n' "$expired"
+    } > "$PROM_FILE.tmp"
+    mv "$PROM_FILE.tmp" "$PROM_FILE"
+}
+
+# --- probe -------------------------------------------------------------------
+# One 1-token "Reply with exactly: OK" dispatch through the real router.
+# Returns 0 on success, 1 on failure/timeout. A live probe ALSO records the
+# real response via the seat-health extension; this bin writes the unwall
+# itself on success so the release does not wait on the extension.
+probe_seat() {
+    local p="$1" m="$2" out rc
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would probe $p/$m with 'Reply with exactly: OK'"
+        return 0
+    fi
+    log "probing $p/$m (wall passed — 1-token reply-OK probe)"
+    # Capture rc BEFORE any || true so a failing probe cannot masquerade as
+    # a success under set -e (the substitution must not abort the sweep).
+    set +e
+    out=$(timeout "$PROBE_TIMEOUT" "$PI_BIN" --print --provider "$p" --model "$m" \
+        "Reply with exactly: OK" 2>/dev/null)
+    rc=$?
+    set -e
+    # The extension classifies: exit 0 + empty output = transient_fault
+    # (empty run), exit 0 + body = healthy. Mirror that: require non-empty
+    # output containing "OK" to call the probe successful.
+    if (( rc == 0 )) && [[ -n "$out" ]] && grep -qi "OK" <<<"$out"; then
+        log "probe $p/$m SUCCEEDED — releasing"
+        return 0
+    fi
+    log "probe $p/$m failed (rc=$rc, out=${out:0:120}…) — seat stays walled; the extension re-anchors on the real response"
+    return 1
+}
+
+# Write the healthy observation that UNWALLS a seat. Mirrors the
+# seat-health extension's writeSeatLedgerEntry healthy branch (failure_mode
+# "none" -> count 0, seat_dead false, usable_at null). Guarded: only writes
+# if the wall clock is STILL in the past at write time (a concurrent fresh
+# failure that re-anchored to the future must win).
+unwall_seat() {
+    local p="$1" m="$2" f="$3" wall_end we now_e
+    now_e=$(now_epoch)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    if [[ -n "$we" ]] && (( we >= now_e )); then
+        log "skip unwall $p/$m: wall moved to the future ($wall_end) — concurrent failure re-anchored"
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would unwall $p/$m (write healthy observation)"
+        return 0
+    fi
+    local tmp="$f.$$.tmp"
+    jq -n \
+        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" \
+        '{provider:$p, model:$m, http_status:200, retry_after:null,
+          health_class:"healthy", retryable:false, seat_dead:false,
+          poison_ladder:false, failure_mode:"none", observed_at:$now,
+          usable_at:null, bench_until:null, consecutive_failure_count:0,
+          source:"comeback_release"}' > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$f"
+    log "UNWALLED $p/$m (healthy observation written)"
+    return 0
+}
+
+# --- sweep -------------------------------------------------------------------
+main() {
+    local now state probed_total released_total probed=0 released_this_run=0
+    now=$(now_epoch)
+    state=$(load_state)
+    probed_total=$(jq -r '(.probed_total // 0)' <<<"$state")
+    released_total=$(jq -r '(.released_total // 0)' <<<"$state")
+
+    if [[ ! -d "$LEDGER" ]]; then
+        log "ledger dir missing: $LEDGER"
+        write_prom "" 0 "$probed_total" "$released_total" 0
+        return 1
+    fi
+
+    declare -A last_probe=()
+    local k v
+    while IFS=$'\t' read -r k v; do
+        [[ -n "$k" ]] || continue
+        last_probe["$k"]="$v"
+    done < <(jq -r '(.last_probe // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
+
+    local f base wall_end we
+    for f in "$LEDGER"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        # The two predecessor-killer exclusions: pseudo-seats and fixtures.
+        [[ "$base" != *".spawn-bench.json" ]] || continue
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ -n "$p" && "$p" != "test" ]] || continue
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        [[ -n "$m" ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" != "healthy" ]] || continue
+        dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+        # A corpse is terminal (fleet-ops#2327/#2415): no usable_at comeback
+        # clock, FleetDeadCredentialSeats owns it. Never probed here.
+        [[ "$dead" != "true" ]] || continue
+
+        wall_end=$(wall_end_of "$f")
+        we=$(ts_epoch "$wall_end")
+        if [[ -z "$we" ]]; then
+            # No wall clock: a defensive hold (class held without a clock).
+            # Nothing to come back from; the census counts it walled and the
+            # comeback-overdue metric skips it too (fleet-ops#2407).
+            continue
+        fi
+        if (( we > now )); then
+            continue  # wall genuinely held — not owed a comeback yet
+        fi
+
+        # Wall clock has PASSED -> the seat owes a comeback. Respect the
+        # per-seat min-probe interval: a seat probed within MIN_INTERVAL
+        # (a failed probe the extension has not re-anchored, or an in-flight
+        # dispatch) is not hammered; the stalled check makes it loud.
+        local lastp="${last_probe["$base"]:-0}"
+        if (( lastp > 0 )) && (( now - lastp < MIN_INTERVAL )); then
+            log "skip $p/$m: probed $(( now - lastp ))s ago — within min interval (${MIN_INTERVAL}s)"
+            continue
+        fi
+
+        if probe_seat "$p" "$m"; then
+            ((probed++)) || true
+            if unwall_seat "$p" "$m" "$f"; then
+                ((released_this_run++)) || true
+            fi
+        else
+            ((probed++)) || true
+            # The extension re-anchors usable_at from the real response; if
+            # it does NOT (broken extension / unroutable provider), the seat
+            # stays expired and the stalled check below renders loud.
+        fi
+        last_probe["$base"]="$(now_epoch)"
+    done
+
+    # Post-sweep truth: recount EXPIRED wall clocks from the LEDGER itself
+    # (a re-anchored seat is no longer expired; a cleared wall is healthy).
+    local expired=0
+    for f in "$LEDGER"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ "$base" != *".spawn-bench.json" ]] || continue
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ "$p" != "test" ]] || continue
+        [[ -n "$p" ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" != "healthy" ]] || continue
+        dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+        [[ "$dead" != "true" ]] || continue
+        wall_end=$(wall_end_of "$f")
+        we=$(ts_epoch "$wall_end")
+        if [[ -n "$we" ]] && (( we <= now )); then
+            expired=$((expired + 1))
+        fi
+    done
+
+    probed_total=$((probed_total + probed))
+    released_total=$((released_total + released_this_run))
+
+    if (( DRY_RUN )); then
+        log "DRY-RUN sweep complete: probed=$probed released=$released_this_run (no writes)"
+        return 0
+    fi
+
+    local last_probe_json=""
+    local kk
+    for kk in "${!last_probe[@]}"; do
+        last_probe_json+="$(jq -nc --arg k "$kk" --argjson v "${last_probe[$kk]}" '{key:$k,value:$v}'),"
+    done
+    last_probe_json="${last_probe_json%,}"
+    save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
+        --argjson pt "$probed_total" --argjson rt "$released_total" \
+        '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt}')"
+
+    # The fleet-ops#2421 loud check: walled seats still hold expired wall
+    # clocks AND nothing was released this run -> the release path did not
+    # operate (no release, no re-anchor). Fail loudly; keep last-green
+    # stale so the absent/stale rule also fires.
+    if (( expired > 0 )) && (( released_this_run == 0 )); then
+        log "LOUD [COMEBACK-RELEASE-STALLED] released_this_run=0 while $expired walled seat(s) still hold expired wall clocks — release path not operating"
+        write_prom "" 1 "$probed_total" "$released_total" "$expired"
+        return 1
+    fi
+
+    log "sweep complete: probed=$probed released=$released_this_run expired_after=$expired (cumulative released_total=$released_total)"
+    write_prom "$(now_epoch)" 0 "$probed_total" "$released_total" "$expired"
+    return 0
+}
+
+main "$@"
