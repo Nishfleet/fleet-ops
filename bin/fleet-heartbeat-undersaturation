@@ -394,9 +394,48 @@ fi
 
 if [ "$undersat" -eq 1 ]; then
     if [ "$prev_wedged" -eq 1 ]; then
-        # Second consecutive undersat tick — repair already ran last tick and
-        # the fleet is STILL below the floor. Fail loud; never degrade silently.
-        loud "UNDERSAT-FAIL-LOUD" "work=$work ready=$ready running=$running admit=$admit reason=$reason — second consecutive undersat tick; repair ran last tick and recovered nothing. Manual intervention needed."
+        # Recovery check (fleet-ops#2133): the flag carries the previous
+        # tick's reason and running count. If the condition IMPROVED since
+        # the last tick — full-wedge (running==0) -> below-admit-floor
+        # (running>0), OR running increased by >=1 — the repair WORKED and
+        # the fleet is climbing back to the floor. Fail-louding here
+        # re-fails the heartbeat on every tick of a slow recovery (the
+        # 2026-08-29 wedge: band fix took 0 -> 6 running, but the flag from
+        # the full-wedge tick stayed set and the next below-admit-floor
+        # tick fail-louded despite clear progress). Treat improvement as a
+        # fresh first tick: repair again, reset the flag. Only fail-loud
+        # when the condition did NOT improve (same/worse reason, running
+        # did not increase) — that is a repair that recovered nothing.
+        prev_reason=""
+        prev_running=0
+        if [ -f "$FLAG" ]; then
+            prev_reason=$(sed -E 's/^reason=([^|]+).*/\1/' "$FLAG" 2>/dev/null || true)
+            prev_running=$(sed -E 's/.*\|running=([0-9]+).*/\1/' "$FLAG" 2>/dev/null || echo 0)
+            [[ "$prev_running" =~ ^[0-9]+$ ]] || prev_running=0
+        fi
+        improved=0
+        # full-wedge -> below-admit-floor is improvement (0 -> >0 running).
+        if [ "$prev_reason" = "full-wedge" ] && [ "$reason" = "below-admit-floor" ]; then
+            improved=1
+        fi
+        # running increased by >=1 (repair is climbing, not stalled).
+        if [ "$running" -gt "$prev_running" ] 2>/dev/null; then
+            improved=1
+        fi
+        if [ "$improved" -eq 1 ]; then
+            log "recovery in progress: prev_reason=$prev_reason prev_running=$prev_running -> reason=$reason running=$running; repairing again (not fail-loud)"
+            loud "UNDERSAT-REPAIR" "work=$work ready=$ready running=$running admit=$admit reason=$reason — recovery in progress (prev: $prev_reason running=$prev_running); repairing again"
+            r1=$(reset_failed_pi_issue)
+            r2=$(reap_stale_active_seats)
+            r3=$(restart_intake)
+            log "repair complete: reset_failed=$r1 reaped_seats=$r2 intake_restarted=$r3"
+            printf 'reason=%s|running=%s|%s\n' "$reason" "$running" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$FLAG"
+            exit 0
+        fi
+        # Second consecutive undersat tick with NO improvement — repair
+        # already ran last tick and the fleet is STILL below the floor with
+        # no progress. Fail loud; never degrade silently.
+        loud "UNDERSAT-FAIL-LOUD" "work=$work ready=$ready running=$running admit=$admit reason=$reason — second consecutive undersat tick (prev: $prev_reason running=$prev_running); repair ran last tick and recovered nothing. Manual intervention needed."
         rm -f "$FLAG"
         exit 1
     fi
@@ -406,7 +445,7 @@ if [ "$undersat" -eq 1 ]; then
     r2=$(reap_stale_active_seats)
     r3=$(restart_intake)
     log "repair complete: reset_failed=$r1 reaped_seats=$r2 intake_restarted=$r3"
-    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$FLAG"
+    printf 'reason=%s|running=%s|%s\n' "$reason" "$running" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$FLAG"
     exit 0
 fi
 

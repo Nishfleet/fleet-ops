@@ -156,7 +156,7 @@ precedence_band_is_starvation_issue() {
 # scanned for these; a hit is repair, anything else is churn. Prefixed titles
 # keep their prefix mapping regardless of body (chore: stays churn even if the
 # body says "broken") — the legit-work guard (fleet-ops#1516) depends on this.
-PRECEDENCE_BAND_REPAIR_SIGNALS='\b(red|fail(s|ed|ing)?|broken|down|absent|stall(s|ed|ing)?|stuck|starv[a-z]*|outages?|regressions?|leak[a-z]*|crash[a-z]*|hang(s|ed|ing)?|timeouts?|deadlock|block(s|ed|ing)?|frozen|exhaust(s|ed|ion)?|dead|wedg(e|es|ed|ing)?|drift(s|ed|ing)?)\b'
+PRECEDENCE_BAND_REPAIR_SIGNALS='\b(red|fail(s|ed|ing|ure|ures)?|broken|down|absent|stall(s|ed|ing)?|stuck|starv[a-z]*|outages?|regressions?|leak[a-z]*|crash[a-z]*|hang(s|ed|ing)?|timeouts?|deadlock|block(s|ed|ing)?|frozen|exhaust(s|ed|ion)?|dead|wedg(e|es|ed|ing)?|drift(s|ed|ing)?)\b'
 
 # Starvation-class signals: issues that report the dispatch/claim pipeline
 # is not consuming the ready queue. These are metacompact — they exist
@@ -193,6 +193,11 @@ precedence_band_classify_quality() {
         case "$prefix" in
             feat)     printf 'upgrade\n' ;;
             fix|test) printf 'repair\n'  ;;
+            # ci: is repair-class — wiring a test into CI bulletproofs the
+            # existing build, same forward value as test: (fleet-ops#2133:
+            # the 0509 ci: queue was the all-blocked-on product side that
+            # stranded the fleet at 100% machinery). chore stays churn.
+            ci)       printf 'repair\n'  ;;
             chore)    printf 'churn\n'   ;;
             *)        printf 'churn\n'   ;;
         esac
@@ -216,12 +221,64 @@ precedence_band_is_legit_work() {
     [[ "$quality" == "upgrade" || "$quality" == "repair" ]]
 }
 
+# Explicit-churn detector (fleet-ops#2133). The empty-product surge valve
+# (fleet-ops#1516) admits legit work when no product is live, but the
+# legit-work guard alone is not enough to keep the queue moving: a
+# machinery repo with NO product live AND only churn-class machinery ready
+# still skip-bands every issue, and the fleet stays wedged at 100%
+# machinery below the 25-worker floor. The deadlock is the band cap
+# itself (30% of 0 product = 0 machinery), not the work quality. When
+# product is empty AND every over-cap machinery claim is non-churn (not
+# just upgrade/repair — also plain-English audit/gap/mechanism titles
+# that the prefix classifier reads as churn but are real backlog), the
+# band must admit one lane so the queue never hard-stalls. This helper is
+# the negative check: it returns 0 (true) only when the title/body is
+# EXPLICITLY churn (chore/refactor/polish/docs/rename/cleanup/tidy prefix
+# or a churn keyword), so the surge valve can admit everything else.
+# Args: title [body]
+precedence_band_is_explicit_churn() {
+    local title="${1:-}" body="${2:-}"
+    # Prefixed churn types are authoritative (chore: stays churn even if
+    # the body says "broken") — mirrors classify_quality's contract.
+    if printf '%s\n' "$title" \
+        | grep -qE '^[[:space:]]*[A-Za-z]+(\([^)]*\))?!?[[:space:]]*:'; then
+        local prefix
+        prefix="$(printf '%s\n' "$title" | sed -E 's/^\s*([A-Za-z]+)(\([^)]*\))?!?\s*:.*/\1/I' | tr '[:upper:]' '[:lower:]')"
+        case "$prefix" in
+            chore|refactor|polish|docs|doc|rename|cleanup|tidy|style|format) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    # No prefix: explicit-churn keywords in title/body. Conservative —
+    # only obvious housekeeping words; everything else is admitted.
+    printf '%s\n%s\n' "$title" "$body" \
+        | grep -qiE '\b(tidy|cleanup|clean[- ]?up|polish|rename|reformat|format only|whitespace|cosmetic)\b'
+}
+
 precedence_band_product_front_numbers() {
     local repo="$1" json
     json="$(precedence_band_resolve_json)" || return 0
     jq -r --arg repo "$repo" '
       .product_front[]? | select(startswith($repo + "#")) | split("#")[1]
     ' "$json"
+}
+
+# Admit floor for the empty-product below-floor valve (fleet-ops#2133).
+# Mirrors seat-lib.sh admit_ceiling = min(target_concurrent, ram_governor_cap),
+# but this lib is also sourced standalone by the canary/tests (no seat-lib),
+# so it calls admit_ceiling when that function is defined (intake-tick context)
+# and falls back to FLEET_PRECEDENCE_ADMIT_FLOOR (test seam) or 25 (the
+# standing light-workload target, fleet-ops#1558) otherwise. Never fails.
+precedence_band_admit_floor() {
+    if [[ -n "${FLEET_PRECEDENCE_ADMIT_FLOOR:-}" ]]; then
+        printf '%s\n' "$FLEET_PRECEDENCE_ADMIT_FLOOR"
+        return 0
+    fi
+    if declare -F admit_ceiling >/dev/null 2>&1; then
+        admit_ceiling 2>/dev/null || echo 25
+        return 0
+    fi
+    echo 25
 }
 
 # Classify a pi-issue@ unit. Prints machinery|product|other.
@@ -355,6 +412,34 @@ precedence_band_allow_claim() {
         if (( BAND_PRODUCT == 0 )) && precedence_band_is_legit_work "$title" "$body"; then
             printf 'allow-band-surge-legit\n'
             return 0
+        fi
+        # Empty-product below-floor valve (fleet-ops#2133): the legit-work
+        # guard above admits upgrade/repair, but a machinery repo whose
+        # ready queue is plain-English audit/gap/mechanism titles (no
+        # conventional-commit prefix, no outage keyword) reads as churn
+        # under classify_quality and skip-bands — stranding the fleet at
+        # 100% machinery below the 25-worker floor with no product live
+        # to open the ratio. The deadlock is the band cap (30% of 0
+        # product = 0 machinery), not the work quality. When product is
+        # empty AND the fleet is below the admit floor (total live <
+        # admit_ceiling), admit one lane per eligible issue for anything
+        # that is NOT explicit churn (chore/refactor/polish/docs/rename/
+        # cleanup/tidy) AND has a non-empty title (safe catch-all), so
+        # the queue never hard-stalls below the floor. At/above the floor
+        # the strict #1516 legit-work guard holds (no broad admission).
+        # Not latched (mirrors the #1516 legit valve): the band's job is
+        # eligibility, and pi-intake-tick's own `slots = total_cap -
+        # active` capacity gate bounds how many claims fire this tick.
+        if (( BAND_PRODUCT == 0 )); then
+            local _admit_floor _total_live
+            _admit_floor="$(precedence_band_admit_floor)"
+            _total_live=$(( BAND_MACHINERY + BAND_PRODUCT ))
+            if (( _total_live < _admit_floor )) \
+                    && [[ -n "${title// }" ]] \
+                    && ! precedence_band_is_explicit_churn "$title" "$body"; then
+                printf 'allow-band-surge-empty\n'
+                return 0
+            fi
         fi
         if precedence_band_has_multiplier "$body"; then
             printf 'allow-multiplier\n'

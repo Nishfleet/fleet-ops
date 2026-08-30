@@ -388,6 +388,72 @@ grep -q 'THROUGHPUT' "$triage" || fail "scenario2: triage missing THROUGHPUT lin
 ok "scenario2: second consecutive wedged tick -> fail loud (exit 1), no re-repair, marker cleared"
 
 # ============================================================================
+# Scenario 2b: full-wedge -> below-admit-floor recovery (fleet-ops#2133)
+# ============================================================================
+# The previous tick was full-wedge (running=0, flag set with reason=full-wedge).
+# The repair ran and recovered to running=3. This tick sees below-admit-floor
+# (ready >= admit, running=3 > 0, running < admit). The recovery check must
+# recognize the improvement (full-wedge -> below-admit-floor, running 0 -> 3)
+# and repair again (exit 0), NOT fail-loud. Without this, the heartbeat
+# re-fails on every tick of a slow recovery back to the admit floor.
+reset_state
+printf '10\n' >"$scratch/work_ready"       # 10 ready >= admit (25 pinned, but...)
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\npi-issue@demo-2.service\npi-issue@demo-3.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+# Pre-seed flag with the NEW format: reason=full-wedge|running=0|timestamp
+# (the state after the first full-wedge repair tick).
+printf 'reason=full-wedge|running=0|%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$log_dir/undersaturation.flag"
+# Set admit ceiling low enough that running=3 < admit but ready >= admit.
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+: >"$calls"
+: >"$triage"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario2b: recovery tick (full-wedge -> below-admit-floor) must exit 0, got $env_rc ($env_out)"
+# Repair must re-attempt (recovery in progress, not fail-loud).
+grep -qx 'start pi-intake@demo.service' "$calls" \
+    || fail "scenario2b: intake restart must be attempted on recovery ($(cat "$calls"))"
+# Flag must be re-stamped (not cleared — still below floor).
+[[ -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario2b: flag must be re-stamped on recovery tick"
+# Must NOT fail-loud.
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" \
+    || fail "scenario2b: must NOT fail-loud on recovery (improvement detected)"
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario2b: triage must have UNDERSAT-REPAIR (recovery repair)"
+ok "scenario2b: full-wedge -> below-admit-floor recovery repairs, not fail-loud (fleet-ops#2133)"
+
+# ============================================================================
+# Scenario 2c: below-admit-floor with NO running increase -> fail loud
+# ============================================================================
+# Previous tick was below-admit-floor with running=3. This tick is still
+# below-admit-floor with running=3 (no increase). The repair recovered
+# nothing — fail loud.
+reset_state
+printf '10\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\npi-issue@demo-2.service\npi-issue@demo-3.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+printf 'reason=below-admit-floor|running=3|%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$log_dir/undersaturation.flag"
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+: >"$calls"
+: >"$triage"
+
+run_helper
+[[ "$env_rc" == 1 ]] \
+    || fail "scenario2c: no-improvement below-admit-floor must exit 1, got $env_rc ($env_out)"
+! grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario2c: must NOT repair on no-improvement fail-loud"
+grep -q 'UNDERSAT-FAIL-LOUD' "$triage" \
+    || fail "scenario2c: triage must have UNDERSAT-FAIL-LOUD"
+ok "scenario2c: below-admit-floor with no running increase -> fail loud (fleet-ops#2133)"
+
+# Restore default admit ceiling for subsequent scenarios.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
+
+# ============================================================================
 # Scenario 3: work>0 / running>0 -> NO repair, exit 0, marker cleared
 # ============================================================================
 reset_state

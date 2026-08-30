@@ -653,6 +653,15 @@ ok "scenario17ag: chore: stays churn despite repair-signal body"
 # Unprefixed churn signal (rename) with no outage signal -> churn.
 expect_quality "Rename helper" "" churn
 ok "scenario17ah: unprefixed 'rename' (no outage signal) -> churn"
+# ci: is repair-class (fleet-ops#2133): wiring a test into CI bulletproofs
+# the existing build, same forward value as test:.
+expect_quality "ci: add tests/foo.test.sh to P14 verify-command list" "" repair
+ok "scenario17ai: ci: prefix -> repair (fleet-ops#2133)"
+# 'failure'/'failures' now match the repair-signal regex (fleet-ops#2133):
+# the old fail(s|ed|ing)? alternation missed the -ure suffix, so unprefixed
+# "test failure" titles read as churn and skip-banded.
+expect_quality "test failure rate spiked on main" "" repair
+ok "scenario17aj: unprefixed 'failure' signal -> repair (fleet-ops#2133)"
 
 # Test is_legit_work directly
 set +e
@@ -752,15 +761,68 @@ set -e
 [[ "$reason" == "skip-band" ]] || fail "scenario17w: expected skip-band, got $reason"
 ok "scenario17w: empty-product surge rejects churn work (refactor)"
 
-# Empty product, churn work (no prefix) -> skip-band (safe catch-all)
+# Empty product, churn work (no prefix) -> allow-band-surge-empty when below
+# the admit floor (fleet-ops#2133). The #1516 strict guard rejected every
+# unprefixed no-signal title as churn, which stranded the fleet at 100%
+# machinery below the 25-worker floor when the ready queue was plain-English
+# audit/gap/mechanism backlog. The #2133 fix admits one non-explicit-churn
+# lane per tick when product is empty AND total live < admit_floor, so the
+# queue never hard-stalls below the floor. The default admit floor fallback
+# is 25 (fleet-ops#1558); 3 machinery / 0 product = 3 < 25 -> valve fires.
+# test-removal-justified: the old skip-band assertion encoded the #1516
+# strict guard that caused the 2026-08-29 full-wedge (49 ready, 0 running);
+# the #2133 fix deliberately relaxes it below the admit floor.
 rm -f "$BAND_PENDING_FILE"
+unset FLEET_PRECEDENCE_ADMIT_FLOOR
 set +e
 reason=$(precedence_band_allow_claim fleet-ops 109 "" "random title no prefix")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario17x: empty-product + no-prefix must rc=1, got $rc ($reason)"
-[[ "$reason" == "skip-band" ]] || fail "scenario17x: expected skip-band, got $reason"
-ok "scenario17x: empty-product surge rejects churn work (no-prefix catch-all)"
+[[ "$rc" == "0" ]] || fail "scenario17x: below-floor + no-prefix must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-surge-empty" ]] \
+  || fail "scenario17x: expected allow-band-surge-empty, got $reason"
+ok "scenario17x: below-floor empty-product surge admits non-churn work (fleet-ops#2133)"
+
+# 17x2: below-floor + empty product + EXPLICIT churn (chore) is still
+# rejected — the valve admits non-churn only, never chore/refactor/polish.
+rm -f "$BAND_PENDING_FILE"
+unset FLEET_PRECEDENCE_ADMIT_FLOOR
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 109b "" "chore: tidy logs")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario17x2: below-floor + chore must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario17x2: expected skip-band, got $reason"
+ok "scenario17x2: below-floor valve still rejects explicit churn (chore)"
+
+# 17x3: AT the admit floor, the strict #1516 legit-work guard holds — an
+# unprefixed no-signal title is skip-band again. Set the floor to 3 so
+# total live (3 machinery) is NOT below the floor; the valve does not fire.
+rm -f "$BAND_PENDING_FILE"
+export FLEET_PRECEDENCE_ADMIT_FLOOR=3
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 109c "" "random title no prefix")
+rc=$?
+set -e
+unset FLEET_PRECEDENCE_ADMIT_FLOOR
+[[ "$rc" == "1" ]] || fail "scenario17x3: at-floor + no-prefix must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario17x3: expected skip-band, got $reason"
+ok "scenario17x3: at-floor the strict #1516 guard holds (no broad admission)"
+
+# 17x4: below-floor + empty product + real unprefixed backlog title (the
+# 2026-08-29 ready queue shape) is admitted — the wedge this issue fixes.
+rm -f "$BAND_PENDING_FILE"
+unset FLEET_PRECEDENCE_ADMIT_FLOOR
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 1531 "" "Deletion review: every organ in the audit inventory re-earns its place, or dies")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario17x4: below-floor + real backlog title must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-band-surge-empty" ]] \
+  || fail "scenario17x4: expected allow-band-surge-empty, got $reason"
+ok "scenario17x4: below-floor admits real unprefixed backlog (the #2133 wedge shape)"
 
 # Empty product, empty title -> skip-band (safe catch-all)
 rm -f "$BAND_PENDING_FILE"
