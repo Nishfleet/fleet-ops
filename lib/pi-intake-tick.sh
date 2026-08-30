@@ -76,6 +76,16 @@ CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work
 # bench backoff (300s) and ~2x the intake timer interval, so recovery is
 # automatic once the cooldown expires. Overridable for tests.
 RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
+# The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
+# — the same dir pi-issue-failed-reap writes (both use
+# ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
+# binds ATTEMPTS_DIR when it is sourced, but the test stub path (SEAT_LIB
+# override) does not, so under `set -u` the cooldown read killed the tick
+# mid-claim with an unbound variable and P14 CI went red on main
+# (fleet-ops#2281/#2326). Bind it here with the same default so every path
+# reaches that read with a defined value; seat-lib.sh re-sets the identical
+# path when it is sourced live, so behavior is unchanged.
+ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
