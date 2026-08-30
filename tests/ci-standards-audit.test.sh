@@ -304,3 +304,15 @@ bash "$here/fleet-help-flag-runs-live.test.sh"
 # host; hosted here so P14 runs it without a workflow-file edit and the
 # p14-test-listing-gate accounts for it (fleet-ops#1622).
 bash "$here/sgscan.test.sh"
+
+# auditor 2026-08-30: p14-test-listing-gate red on 4 orphan tests
+# (fleet-loose-ends-canary + pi-issue-run-hang-stall-bench +
+# unit-escalation-write-retry-absorb + unit-escalation-write-scout-futility-dedupe).
+# Each landed without a host or known_orphan entry, which kept the gate red,
+# SPEC-GATE-REFUSED the intake tick, dropped running=2 vs admit=22, and
+# tripped the fleet-heartbeat undersat fail-loud. Hosted here so P14 runs
+# them without a workflow-file edit.
+bash "$here/fleet-loose-ends-canary.test.sh"
+bash "$here/pi-issue-run-hang-stall-bench.test.sh"
+bash "$here/unit-escalation-write-retry-absorb.test.sh"
+bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
