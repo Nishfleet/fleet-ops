@@ -58,6 +58,14 @@ WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
 
+# Protected verifier/deploy files (fleet-ops#1165). For repos listed in
+# config/protected-verifier-files.json (protected_repos), an agent-ready
+# issue whose text references any protected_files path is SKIPPED — the
+# worker cannot push .github/workflows/** without a repo-admin verifier-attest
+# and Nish is on vacation (2026-08-28..2026-09-08). The config ships in-repo
+# and is installed by MANIFEST; PROTECTED_FILES_CONFIG may be overridden by tests.
+PROTECTED_FILES_CONFIG="${PROTECTED_FILES_CONFIG:-/home/nish/.local/state/pi-packet/protected-verifier-files.json}"
+
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
 . "$SEAT_LIB"
 
@@ -83,6 +91,35 @@ blocked_filter() {
         return 0
     fi
     return 1
+}
+
+# Protected-verifier skip (fleet-ops#1165): for repos whose issues touch
+# protected verifier/deploy files, the worker cannot push .github/workflows/**
+# without a repo-admin verifier-attest. An intake claim on such an issue spawns
+# a worker that writes a PR red on the attest gate until Nish returns.
+#
+# protected_files_filter <N> — returns 0 (skip) if the issue references any
+# protected file path in its title, body, or comments. Fail-open: missing
+# config file = no skip (the worker's verifier-attest guard still holds).
+# Only applies to repos listed in config/protected-files.json (protected_repos).
+protected_files_filter() {
+    local n="$1"
+    # Only repos in protected_repos are subject to the skip.
+    [ -f "$PROTECTED_FILES_CONFIG" ] || return 1
+    jq -e --arg repo "$REPO" '.protected_repos | index($repo) != null' "$PROTECTED_FILES_CONFIG" >/dev/null 2>&1 || return 1
+    local text
+    text=$(gh issue view "$n" -R "$FULL" --json title,body,comments --jq '.title + "\n" + (.body // "") + "\n" + ((.comments // []) | map(.body // "") | join("\n"))' 2>/dev/null) || return 1
+    # Read protected_files via process substitution (avoids the subshell
+    # return problem of piping into `while read`).
+    local pf found=0
+    while IFS= read -r pf; do
+        [ -z "$pf" ] && continue
+        if printf '%s' "$text" | grep -qF "$pf"; then
+            found=1
+            break
+        fi
+    done < <(jq -r '.protected_files[]?' "$PROTECTED_FILES_CONFIG" 2>/dev/null)
+    return $(( 1 - found ))
 }
 
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
@@ -166,6 +203,15 @@ for i in "${!numbers[@]}"; do
     }
     if [[ -n "$remote" ]]; then
         echo "issue $N ($title): skipped-claim-lost"
+        continue
+    fi
+
+    # Protected-verifier skip: never claim a 0509 issue whose files touch the
+    # protected verifier/deploy paths (fleet-ops#1165). Worker cannot push
+    # .github/workflows/** without a repo-admin verifier-attest; without the
+    # skip, vacation workers keep filing attest-stuck PRs.
+    if protected_files_filter "$N"; then
+        echo "issue $N ($title): skipped-protected-verifier"
         continue
     fi
 

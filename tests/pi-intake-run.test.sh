@@ -92,3 +92,8 @@ bash "$here/intake-priority.test.sh"
 # (workers cannot edit .github/workflows/ci.yml). Same bash "$here/..."
 # host pattern as the priority drill above.
 bash "$here/pi-intake-tick-seat-gate.test.sh"
+# --- 6. fleet-ops#1165 protected-verifier skip (CI hook) ------------------
+# tests/pi-intake-tick-protected-verifier-skip.test.sh locks the skip-on-
+# protected-verifier-file behaviour on lib/pi-intake-tick.sh. ci.yml lists
+# this file, so the drill runs from here instead of a new workflow line.
+bash "$here/pi-intake-tick-protected-verifier-skip.test.sh"

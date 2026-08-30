@@ -11,6 +11,8 @@ Hard rules:
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
 - **Every candidate must cite its research source.** The RESEARCH CONTEXT section is appended after this prompt. Use a `source:` line in the issue body with the exact market-signal line, bet ID, north-star rule reference, or merged-PR title that motivated the candidate. No citation = do not file.
 
+**Protected-verifier skip (fleet-ops#1165):** Do NOT file issues about editing protected verifier/deploy files on repos whose `protected_files` list in fleet-ops `config/protected-verifier-files.json` covers them (currently 0509). The worker cannot push `.github/workflows/**` without a repo-admin `verifier-attest`; without this skip, vacation scouts file issues that spawn attest-stuck PRs. If a live signal points at one of these files, note it in the triage stream instead of filing. These issues wait until after 2026-09-08.
+
 ## Capacity gate (already enforced by systemd)
 
 systemd `ExecCondition` skips this run when remaining work is >= 24 hours at the measured drain rate (closes per hour over the last 6 hours). Do not rest on a hardcoded issue count. The 2026-08-26 rule is hours, not heads: rest at 24h of ready work, go ham below 12h. This run only happens below the 24h rest cap.

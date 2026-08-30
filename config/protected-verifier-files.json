@@ -1,0 +1,17 @@
+{
+  "_comment_": "fleet-ops#1165: 0509 protected verifier/deploy files. An intake or scout SKIP for any issue whose files touch these — they require a repo-admin verifier-attest and Nish is on vacation (2026-08-28..2026-09-08). Without the skip, workers keep opening ci/workflow PRs that sit red on the attest gate until Nish returns. The protected_files list is sourced from 0509's .github/scripts/required-verifier-integrity.sh (the source of truth for what the gate protects); this is the fleet-ops-side copy that the intake tick and scout reference so they never need a network fetch into 0509.",
+  "protected_repos": ["0509"],
+  "protected_files": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/secret-scan.yml",
+    ".github/workflows/required-verifier-integrity.yml",
+    ".github/scripts/required-verifier-integrity.sh",
+    ".github/scripts/test-required-verifier-integrity.sh",
+    ".github/workflows/deploy-production.yml",
+    ".github/workflows/finalize-production-soak.yml",
+    "scripts/ci-verify-production-candidate.sh",
+    "scripts/ci-verify-provider-main-cas.sh"
+  ],
+  "_park_until": "2026-09-08",
+  "_comment_park": "Issues touching these files on protected repos are parked (skipped from intake/scout) until after the vacation window. After 2026-09-08 this config can be removed or the park_until lifted, restoring default behaviour."
+}

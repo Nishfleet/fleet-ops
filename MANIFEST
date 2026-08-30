@@ -42,6 +42,7 @@ prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
+config/protected-verifier-files.json /home/nish/.local/state/pi-packet/protected-verifier-files.json
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # fleet-ops#378: cadence-overdue canary sourced by heartbeat-tier1 §11.
