@@ -25,7 +25,7 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 1. `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md`
    — what Nish has already decided. Never re-recommend a decided item.
 2. `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md`
-   — the standing rules. The 6 lenses test the fleet against these.
+   — the standing rules. The 8 lenses test the fleet against these.
 3. `/home/nish/workspaces/agent-state/WFR/` — last week's review (if any):
    `last-actions.json` (the actions filed last week + their disposition
    this week) and `last-self-score.json` (the self-score). Phase 3 owes a
