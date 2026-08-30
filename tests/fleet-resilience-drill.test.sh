@@ -72,6 +72,16 @@ grep -q '^Restart=no$' "$svc" || fail "service: Restart=no (timer is the retry)"
 grep -q '^TimeoutStartSec=3min$' "$svc" || fail "service: TimeoutStartSec=3min"
 ok "service: oneshot, bounded, no restart, execs drill"
 
+# 1b. Metric-export default (2026-08-28 ResilienceDrillAbsent class fix,
+#     fleet-ops#1536): the drill's prom default MUST be the node-exporter
+#     textfile directory, the one Prometheus scrapes. A default pointing at
+#     $AGENT_STATE went unseen for a week of green runs (the incident), so
+#     a run without the env override (manual, or a future unit rewrite that
+#     drops the env line) must STILL land where the alert can see it.
+grep -q '^PROM_FILE="${FLEET_RES_DRILL_PROM_FILE:-/var/lib/prometheus/node-exporter/fleet-resilience-drill.prom}"$' "$drill" \
+  || fail "drill default prom path must be the node-exporter textfile dir (fleet-ops#1536)"
+ok "drill: default prom path is the scraped node-exporter textfile dir"
+
 # 2. Timer: daily cycle, persistent, named reason in comments, timers.target.
 grep -q '^OnCalendar=\*-\*-\* 05:47:00$' "$tmr" || fail "timer: OnCalendar must be daily 05:47"
 grep -q '^Persistent=true$' "$tmr" || fail "timer: Persistent=true"
@@ -318,6 +328,10 @@ export SYSTEMD_RUN="$systemd_run_fake"
 export SS="$ss_fake"
 export FLEET_OPS_REPO="$repo"
 export AGENT_STATE="$state"
+# The drill's default prom path is the node-exporter textfile dir (the
+# 2026-08-28 ResilienceDrillAbsent class fix); tests pin the override to
+# scratch so a test run never writes to the live scraped directory.
+export FLEET_RES_DRILL_PROM_FILE="$state/fleet-resilience-drill/resilience-drill.prom"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export FLEET_RESILIENCE_DRILL_OFFLINE=1
 export FLEET_RES_DRILL_AUTOFILE_DISABLE=1
