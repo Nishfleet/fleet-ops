@@ -63,6 +63,10 @@ HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
 HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat needing re-auth (fleet-ops#1445)."
 TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
+HELP_CB = "# HELP fleet_seat_comeback_overdue_total Number of seats still classed non-healthy whose wall clock (usable_at/bench_until) has passed — released by the router but not re-observed since (fleet-ops#2407)."
+TYPE_CB = "# TYPE fleet_seat_comeback_overdue_total gauge"
+HELP_CBP = "# HELP fleet_seat_comeback_overdue 1 for each seat whose wall clock has passed but is still classed non-healthy (fleet-ops#2407)."
+TYPE_CBP = "# TYPE fleet_seat_comeback_overdue gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -1777,8 +1781,123 @@ def _enrolled_seat_total():
     return len(enrolled) if enrolled else None
 
 
+# fleet-ops#2407: release-at-usable_at classes — the classes whose router
+# (lib/seat-lib.sh seat_usable) FAIL-OPENS the seat once its wall clock
+# (bench_until ?? usable_at) has passed. quota_exhausted / credentials_bad /
+# corpse are held unconditionally until a healthy observation (billing/
+# credential repair or a corpse re-probe), so they are never release-at-expiry.
+# Keep this list in lock-step with seat_usable's branches.
+_SEAT_RELEASE_AT_EXPIRY_CLASSES = frozenset(
+    {
+        "overload_bench",
+        "quota_bench",
+        "hang_bench",
+        "transient_fault",
+        "rate_limited",
+    }
+)
+
+
+def _seat_wall_end_epoch(data):
+    """Epoch (s) of a ledger's wall clock, or None when not held by a clock.
+
+    Bash-written bench markers (overload_bench / quota_bench / hang_bench)
+    carry bench_until (usable_at aliases it); extension-written classes carry
+    usable_at. seat_usable prefers bench_until and falls back to usable_at,
+    so this helper mirrors that. Returns None for an unparseable/absent clock
+    (treated as held, the defensive block).
+    """
+    raw = data.get("bench_until") or data.get("usable_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    ts = raw.strip().rstrip("Z")
+    try:
+        return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _seat_is_released(data, now=None):
+    """True when the router would (re)admit this seat at this instant.
+
+    fleet-ops#2407: a walled seat is RELEASED the moment now >= usable_at for
+    the release-at-expiry classes — seat_usable fail-opens it then, and the
+    census/availability split must not keep counting a released seat as
+    walled until the next observation happens to reclassify it. A non-healthy
+    seat with a wall clock that has passed is available; one that is held
+    (future clock) or has no clock (defensive hold) stays walled.
+    """
+    if data.get("seat_dead") is True:
+        return False
+    if data.get("health_class") not in _SEAT_RELEASE_AT_EXPIRY_CLASSES:
+        return False
+    end = _seat_wall_end_epoch(data)
+    if end is None:
+        return False
+    return end < (now if now is not None else time.time())
+
+
+def _read_comeback_overdue():
+    """Seats still classed non-healthy whose wall clock has already passed.
+
+    fleet-ops#2407: the wall-release path only clears on the NEXT observation
+    (a healthy write reclassifies; a failure re-anchors usable_at), so a seat
+    whose wall expired and nothing re-probed it lingers classed walled. Those
+    seats are comeback-OVERDUE: the router has fail-opened them but they were
+    not re-observed since. Exported once per tick (total + per-seat series) so
+    the state fails loud instead of silently depressing the seat_availability
+    rollup. seat_dead=true corpses are excluded here (they are deliberately
+    terminal — FleetDeadCredentialSeats owns them); a quota/credential hold
+    counts only once its own wall clock has passed (a hard billing wall whose
+    reset window elapsed is exactly an overdue comeback).
+
+    Returns (count, [ {provider, model, health_class, usable_at, bench_until} ]).
+    Never raises on a missing/unreadable ledger.
+    """
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    now = time.time()
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            if data.get("health_class") == "healthy":
+                continue
+            end = _seat_wall_end_epoch(data)
+            # No wall clock: nothing to come back from — not an overdue
+            # comeback (the class is a defensive hold or legacy garbage; the
+            # census still counts it walled). Only expired clocks alarm.
+            if end is None or end >= now:
+                continue
+            seats.append(
+                {
+                    "provider": data.get("provider", ""),
+                    "model": data.get("model", ""),
+                    "health_class": data.get("health_class", ""),
+                    "usable_at": data.get("usable_at"),
+                    "bench_until": data.get("bench_until"),
+                }
+            )
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
 def _healthy_enrolled_seat_count():
-    """Count enrolled providers with >=1 healthy, non-dead model ledger.
+    """Count enrolled providers with >=1 healthy or released, non-dead ledger.
 
     Rollup for the seat_availability SLO (fleet-ops#1291): the spec says
     "Fraction of enrolled seats that are healthy (rollup)" — i.e. a
@@ -1787,6 +1906,16 @@ def _healthy_enrolled_seat_count():
     (provider, model) observation; a provider counts healthy when ANY of
     its model ledgers reports health_class=healthy and seat_dead != true
     (a provider with a live model is an enrolled seat that is healthy).
+
+    fleet-ops#2407: a ledger whose wall clock has EXPIRED is released — the
+    router (seat_usable) fail-opens it at now >= usable_at, so it is
+    available capacity and counts toward the rollup even though no fresh
+    observation has reclassified it yet. Without this, an overload_bench /
+    transient_fault seat whose wall passed sat "walled" in the rollup until
+    the next probe, depressing seat availability for the whole window
+    (2026-08-30: three such seats past usable_at still counted walled).
+    The comeback-overdue metric above fails loud when that release is
+    unobserved, so no dead seat hides behind this relaxation.
 
     Providers with no ledger file at all are counted unhealthy (not proven
     healthy — fail-safe toward the alert). Returns None when the ledger
@@ -1810,7 +1939,7 @@ def _healthy_enrolled_seat_count():
                 continue
             if data.get("seat_dead") is True:
                 continue
-            if data.get("health_class") != "healthy":
+            if data.get("health_class") != "healthy" and not _seat_is_released(data):
                 continue
             prov = data.get("provider")
             if isinstance(prov, str) and prov in enrolled:
@@ -1981,6 +2110,29 @@ def main():
         _st = _prom_label(str(_s.get("http_status") or ""))
         lines.append(
             f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}"}} 1'
+        )
+    # fleet-ops#2407: surface comeback-overdue seats (still classed non-healthy
+    # past their usable_at/bench_until — released by the router's fail-open but
+    # never re-observed since). The total gauge drives the alert rule; the
+    # per-seat series names each lingering seat so the repair worker knows who
+    # to probe. .spawn-bench markers and test__ fixtures are synthetic, and
+    # seat_dead corpses are deliberately terminal (FleetDeadCredentialSeats
+    # owns them) — none of them appear here.
+    _cb_n, _cb = _read_comeback_overdue()
+    lines.append("")
+    lines.append(HELP_CB)
+    lines.append(TYPE_CB)
+    lines.append(f"fleet_seat_comeback_overdue_total {_cb_n}")
+    lines.append("")
+    lines.append(HELP_CBP)
+    lines.append(TYPE_CBP)
+    for _s in _cb:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _hc = _prom_label(str(_s.get("health_class") or ""))
+        lines.append(
+            f'fleet_seat_comeback_overdue{{seat="{_seat_label}",health_class="{_hc}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)

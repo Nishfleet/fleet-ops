@@ -89,6 +89,23 @@ groups:
           summary: "dead-credential seats need re-auth"
           description: "One or more seats are seat_dead=true with health_class=credentials_bad (HTTP 401/403) and will not recover until their provider credential is re-authenticated (fleet-ops#1445). The per-seat fleet_pi_seat_dead_credential series names each seat. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats and re-auth each dead seat, or remove it from config/seat-caps.json."
 
+      # fleet-ops#2407: a walled seat whose usable_at/bench_until has passed is
+      # RELEASED by the router (seat_usable fail-opens) but stays classed
+      # non-healthy in the ledger until something re-observes it. Sustained >0
+      # here means seats linger past their comeback with nobody probing them —
+      # the exact "benched indefinitely" failure the issue names. The
+      # seat_availability rollup counts released seats as available, so this
+      # alert is the loud backstop that keeps a quiet-lingering seat visible.
+      - alert: FleetSeatComebackOverdue
+        expr: fleet_seat_comeback_overdue_total > 0
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "seat comeback overdue — wall past usable_at, still unobserved"
+          description: "One or more seats are still classed non-healthy with their usable_at/bench_until in the past (fleet-ops#2407): the router has fail-opened them but nothing re-observed them since, so they linger as an unproven walled state. The per-seat fleet_seat_comeback_overdue series names each seat. Repair worker: probe each named seat (a 1-token reply-OK probe or a real dispatch); a success writes a healthy observation and clears it, a fresh failure re-anchors usable_at and clears it. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats."
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h
