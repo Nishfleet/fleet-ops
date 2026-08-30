@@ -32,8 +32,13 @@
 #   D10 writeSeatLedgerEntry: 25 transient_http failures -> seat_dead=true
 #       AND the ledger class reclassifies to the TERMINAL "corpse" class
 #       (fleet-ops#2327) — a corpse is retired, not a walled-transient seat
-#       that "transient backoff keeps re-benching forever". usable_at stays
-#       at the 24h quarantine cap (the 1422 wall still fires).
+#       that "transient backoff keeps re-benching forever". The corpse
+#       carries NO usable_at comeback clock (fleet-ops#2415): the 1422
+#       quarantine wall (24h cap) is for WALLED seats that may recover,
+#       never a retry schedule for a corpse — the 2026-08-30 heartbeat read
+#       muse-spark at c=150 with usable_at +24h as "still on a 24h retry
+#       cycle" consuming probe budget forever. A corpse's usable_at is null
+#       so no reader sees a retry cycle.
 #   D11 a healthy write after D10 resets seat_dead=false, count=0, and the
 #       class back to "healthy" (recovery via a successful probe — never a
 #       permanent bench).
@@ -41,6 +46,8 @@
 #       "transient_fault" (the quarantine wall fires at 20 but the corpse
 #       mark — and the reclassification — only at 25).
 #   D13 quota_exhausted corpse (age 25h) also reclassifies to "corpse".
+#   D14 a further failure write on the corpse (c=26) keeps seat_dead=true,
+#       class corpse, and usable_at null — the cleared clock sticks.
 #
 # Environment seams:
 #   FLEET_SEAT_HEALTH_TS    absolute path to seat-health.ts. Default:
@@ -176,10 +183,15 @@ for (let i = 0; i < 24; i++) writeSeatLedgerEntry(obs({}));
 let e = read();
 out.push(['c24-count', e.consecutive_failure_count, 'c24-dead', String(e.seat_dead), 'c24-class', e.health_class, 'c24-wall', Math.round((Date.parse(e.usable_at) - now) / 1000)]);
 // 25th failure: c=25 -> seat_dead=true, class reclassifies to corpse, wall
-// at the 24h quarantine cap.
+// cleared (fleet-ops#2415: corpse is retired — no comeback clock).
 writeSeatLedgerEntry(obs({}));
 e = read();
-out.push(['c25-count', e.consecutive_failure_count, 'c25-dead', String(e.seat_dead), 'c25-class', e.health_class, 'c25-wall', Math.round((Date.parse(e.usable_at) - now) / 1000)]);
+out.push(['c25-count', e.consecutive_failure_count, 'c25-dead', String(e.seat_dead), 'c25-class', e.health_class, 'c25-usable', String(e.usable_at)]);
+// 26th failure: the corpse's count climbs but seat_dead/class/usable_at do
+// not regress — the cleared clock sticks (D14).
+writeSeatLedgerEntry(obs({}));
+e = read();
+out.push(['c26-count', e.consecutive_failure_count, 'c26-dead', String(e.seat_dead), 'c26-class', e.health_class, 'c26-usable', String(e.usable_at)]);
 // healthy write: count -> 0, seat_dead -> false, class -> healthy (recovery
 // via a probe).
 writeSeatLedgerEntry({ ...base, http_status: 200, health_class: 'healthy', failure_mode: 'none', observed_at: new Date(now + 1000).toISOString(), usable_at: null, consecutive_failure_count: 0 });
@@ -212,21 +224,26 @@ expect "24" "0,1" "D12: c24-count (below corpse threshold)"
 expect "false" "0,3" "D12: c24-dead (quarantine wall fires, corpse mark does not)"
 expect "transient_fault" "0,5" "D12: c24-class (class unchanged below the corpse threshold)"
 expect "57600" "0,7" "D12: c24-wall (16h quarantine step at c=24)"
-# c25: count=25, seat_dead=true, class=corpse, wall=86400
+# c25: count=25, seat_dead=true, class=corpse, usable_at=null
 expect "25" "1,1" "D10: c25-count (at corpse threshold)"
 expect "true" "1,3" "D10: c25-dead (corpse marked)"
 expect "corpse" "1,5" "D10: c25-class (fleet-ops#2327 terminal reclassification)"
-expect "86400" "1,7" "D10: c25-wall (24h quarantine cap held alongside seat_dead)"
+expect "null" "1,7" "D10: c25-usable (corpse carries NO retry clock — fleet-ops#2415 permanent retirement)"
+# c26: count=26, seat_dead/class/usable_at unchanged (clock stays cleared)
+expect "26" "2,1" "D14: c26-count (still failing past the corpse threshold)"
+expect "true" "2,3" "D14: c26-dead (corpse stays dead)"
+expect "corpse" "2,5" "D14: c26-class (corpse class sticks)"
+expect "null" "2,7" "D14: c26-usable (cleared clock sticks — no retry cycle reappears)"
 # healthy: count=0, seat_dead=false, class=healthy, usable_at=null
-expect "0" "2,1" "D11: healthy-count (probe recovery resets)"
-expect "false" "2,3" "D11: healthy-dead (corpse cleared on success)"
-expect "healthy" "2,5" "D11: healthy-class (class rebuilt on recovery)"
-expect "null" "2,7" "D11: healthy-usable (wall cleared)"
+expect "0" "3,1" "D11: healthy-count (probe recovery resets)"
+expect "false" "3,3" "D11: healthy-dead (corpse cleared on success)"
+expect "healthy" "3,5" "D11: healthy-class (class rebuilt on recovery)"
+expect "null" "3,7" "D11: healthy-usable (wall cleared)"
 # quota corpse: seat_dead=true, class=corpse. count is merged prev+1 (fresh
 # file -> 1); the 402-death path is TIME-based (age >= 24h) so the count is
 # not what drives the corpse mark — the class reclassification is.
-expect "1" "3,1" "D13: quota-count (first write on a fresh file)"
-expect "true" "3,3" "D13: quota-dead (402 not cleared in 24h -> corpse)"
-expect "corpse" "3,5" "D13: quota-class (terminal reclassification, billing wall)"
+expect "1" "4,1" "D13: quota-count (first write on a fresh file)"
+expect "true" "4,3" "D13: quota-dead (402 not cleared in 24h -> corpse)"
+expect "corpse" "4,5" "D13: quota-class (terminal reclassification, billing wall)"
 
-ok "fleet-ops#2145/#2327 closure: corpses (transient c>=25, quota age>=24h) are seat_dead=true AND reclassify to the terminal corpse class; below-threshold and healthy behaviour unchanged; a successful probe recovers"
+ok "fleet-ops#2145/#2327/#2415 closure: corpses (transient c>=25, quota age>=24h) are seat_dead=true, reclassify to the terminal corpse class, and carry NO usable_at retry clock (the cleared clock sticks on further failures); below-threshold and healthy behaviour unchanged; a successful probe recovers"
