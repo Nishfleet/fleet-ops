@@ -148,7 +148,7 @@ criteria; no blind mass-delete.
 | open-question-sweep | 2026-08-24 | watchdog / poller ("re-drive stalled open questions") | #1494 |
 | agent-scheduler-drift | 2026-08-25 | watchdog ("enforce agent-agnostic scheduling rule") | #1495 |
 | siterep-pr-conflict-watchdog | 2026-08-24 | watchdog ("conflicting open-PR pile exceeds cap") | #1496 — **ADJUDICATED 2026-08-29: MECHANICAL-INSTEAD** (GH Actions workflow `pr-conflict-watchdog.yml` in `nish3451/siterep` already provides this check via the sanctioned repo channel; VPS timer was a hand-placed redundant duplicate, already disabled; live unit + script deleted; cost concern is Nish's money decision) |
-| quality-baseline-research | 2026-08-25 | dispatcher ("research refresh via Pi worker") | #1497 |
+| quality-baseline-research | 2026-08-25 | dispatcher ("research refresh via Pi worker") | #1497 — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD** (deleted; quality research is owned by the sanctioned `quality-research-weekly` class (a) repo-sourced per `docs/organ-catalog.md`. Hand-placed `quality-baseline-research.service/.timer` + `~/.local/bin/quality-baseline-refresh` was a hand-rolled dispatcher with no repo base, built 2026-08-25 (day before the ban). Both runs produced SKIP-WITH-NUDGE — zero research in 5 days, no gate it depends on is live. `visual-quality-waves.md` stays as the escalation-layer program doc; only the dispatcher was deleted. Same shape as #1493) |
 | memory-index-autocompact | 2026-08-24 | (borderline b/c — filed for adjudication) | #1498 — **ADJUDICATED 2026-08-30: EXCEPTION-APPROVED** (migrated to repo as class (b) sanctioned maintenance script; distinct from nish-memory-curator (vault memory vs Claude auto-memory). Script has tier-1 deterministic dedupe + tier-2 Opus headless compaction; path unit triggers on MEMORY.md growth) |
 
 ### Out of scope — dev/infra tools, not fleet machinery
@@ -265,7 +265,7 @@ Class (c) — adjudicate / delete-disable:
 - #1494 open-question-sweep (adjudicate watchdog/poller)
 - #1495 agent-scheduler-drift (adjudicate watchdog)
 - #1496 siterep-pr-conflict-watchdog (adjudicate watchdog)
-- #1497 quality-baseline-research (adjudicate dispatcher)
+- #1497 quality-baseline-research (adjudicate dispatcher) — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD**
 - #1498 memory-index-autocompact (adjudicate borderline b/c) — **ADJUDICATED 2026-08-30: EXCEPTION-APPROVED**
 
 Other:

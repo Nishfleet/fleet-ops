@@ -380,12 +380,6 @@
       "cadence": "30min",
       "source": "user-config"
     },
-    "quality-baseline-research.timer": {
-      "reason": "Quality-baseline research refresh — one rotation cycle every 3 days via Pi worker",
-      "classification": "scheduled",
-      "cadence": "3d",
-      "source": "user-config"
-    },
     "quality-research-weekly.timer": {
       "reason": "Weekly quality>speed>efficiency research sweep — outside world changes weekly; Sunday 03:00 IST off-peak delta sweep",
       "classification": "scheduled",
