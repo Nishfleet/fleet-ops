@@ -31,7 +31,25 @@ What this canary checks (official docs, not folklore):
   3. healthchecks.io URLs are UUIDs with no expiry. Prepaid weekly quotas
      reset; entitled-wired-canary covers seat wiring.
 
-Fail-loud: dead App, or a PAT that expires on or before 2026-09-08.
+  4. PRE-EXPIRY PROBE (fleet-ops#2134, WFR 2026-08-29 lens-6-security):
+     a model-seat credential that CARRIES a known expiry (the OAuth
+     `expires` field pi writes to ~/.pi/agent/auth.json[<provider>] —
+     ms epoch, same shape grok-token-refresh reads) is probed N hours
+     BEFORE it expires. The probe is the detection itself: reading the
+     known expiry field is the health check — it confirms the credential's
+     state without burning a production worker slot (the gap that let
+     devin/swe-1-7 die to a production 403 before any canary caught it,
+     fleet-ops#2108). On pre-expiry detection the canary emits
+     PRE-EXPIRY-DETECTED and the wrapper auto-files a renewal issue
+     (observe-to-close path) so the credential is renewed before a
+     worker hits the 403. The threshold N is AI-advisory; the
+     probe-fires-before-403 invariant is deterministic. Credentials
+     with no known expiry (static API keys like DEVIN_API_KEY, GitHub
+     App private keys) are not probeable here — the reactive seat-health
+     ledger remains their backstop.
+
+Fail-loud: dead App, a PAT that expires on or before 2026-09-08, or a
+PRE-EXPIRY-DETECTED model-seat credential.
 SKIP (exit 0): network unreachable, or no checkable credential is present.
 
 Usage:
@@ -39,6 +57,10 @@ Usage:
   credential-expiry-canary --from-fixtures <dir>
   credential-expiry-canary --app-returns <json> [--app-status N]
   credential-expiry-canary --pat-headers <raw-headers>
+  credential-expiry-canary --auth-json <path>           # pre-expiry probe
+  credential-expiry-canary --auth-entries <json>        # offline probe fixture
+  credential-expiry-canary --pre-expiry-hours 6         # AI-advisory threshold
+  credential-expiry-canary --no-pre-expiry-probe
   credential-expiry-canary --now 2026-09-01T00:00:00Z
   credential-expiry-canary --ledger-line
 """
@@ -64,6 +86,17 @@ LEDGER = (
     "FLEET_SYNC_PAT GitHub-Authentication-Token-Expiration horizon; "
     "worker-app-canary mint liveness; verify-fleet-sync-pat PAT liveness)."
 )
+
+# PRE-EXPIRY PROBE (fleet-ops#2134). AI-advisory threshold: fire the probe
+# this many hours before a model-seat credential's known expiry. 6h matches
+# the SuperGrok OAuth access-token lifetime (measured 21600s, fleet-ops#41),
+# so the probe fires within one token lifetime of expiry — well ahead of the
+# production 403 the reactive seat-health ledger only catches AFTER a worker
+# burns a slot. grok-token-refresh heals xai-oauth on a 4h timer; this probe
+# is the defence-in-depth that catches a broken heal path on the next
+# heartbeat tick and auto-files a renewal issue before the 403.
+PRE_EXPIRY_HOURS_DEFAULT = 6.0
+SIGNAL_PREFIX = "cred-expiry"
 
 
 def _pem_from_env(creds_path: str) -> tuple[str, str]:
@@ -236,6 +269,104 @@ def _parse_github_expiry(raw: str) -> datetime | None:
         return None
 
 
+def _epoch_ms_to_iso(epoch_ms: int) -> str:
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+
+
+def _coerce_expires_ms(raw: Any) -> int | None:
+    """Coerce an auth.json `expires` value to a ms epoch.
+
+    pi-grok / OAuthCredentials writes a ms epoch (> 1e12). Tolerate a
+    stringified number and a seconds epoch (< 1e12), matching
+    grok-token-refresh's heuristic. None / non-numeric -> None (no known
+    expiry; not probeable).
+    """
+    if raw is None:
+        return None
+    try:
+        val = int(raw)
+    except (ValueError, TypeError):
+        return None
+    if val > 1_000_000_000_000:
+        return val
+    return val * 1000
+
+
+def load_auth_expiries(auth_json_path: str) -> list[dict[str, Any]]:
+    """Read ~/.pi/agent/auth.json and return [{provider, expires_ms}] for
+    every provider entry that carries a known `expires` field.
+
+    Only credentials WITH a known expiry are probeable (fleet-ops#2134).
+    Static API keys (DEVIN_API_KEY) and GitHub App private keys have no
+    `expires` field and are skipped here — the reactive seat-health ledger
+    remains their backstop. No secret value is read or returned; only the
+    provider key and the numeric expiry.
+    """
+    if not auth_json_path or not os.path.isfile(auth_json_path):
+        return []
+    try:
+        with open(auth_json_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for provider, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        expires_ms = _coerce_expires_ms(entry.get("expires"))
+        if expires_ms is None:
+            continue
+        out.append({"provider": provider, "expires_ms": expires_ms})
+    return out
+
+
+def pre_expiry_probe(
+    auth_entries: list[dict[str, Any]],
+    now: datetime | None = None,
+    threshold_hours: float = PRE_EXPIRY_HOURS_DEFAULT,
+) -> list[dict[str, Any]]:
+    """Probe model-seat credentials with a known expiry N hours before they
+    expire (fleet-ops#2134).
+
+    The probe is the detection: a credential whose known `expires` is
+    within `threshold_hours` of `now` (or already past) is
+    PRE-EXPIRY-DETECTED. This fires BEFORE a production worker hits the
+    403 the reactive seat-health ledger only records after burning a slot
+    (the devin/swe-1-7 gap, fleet-ops#2108).
+
+    Returns one finding per near-expiry credential:
+      {provider, expires_at, remaining_s, signal, verdict, probe_triggered}
+    `probe_triggered=True` is the deterministic marker the regression
+    test asserts — the probe fired, not a production 403.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    threshold_s = threshold_hours * 3600
+    findings: list[dict[str, Any]] = []
+    for entry in auth_entries:
+        provider = entry.get("provider", "")
+        expires_ms = entry.get("expires_ms")
+        if expires_ms is None:
+            continue
+        remaining_s = (expires_ms - now_ms) / 1000
+        if remaining_s > threshold_s:
+            continue
+        findings.append(
+            {
+                "provider": provider,
+                "expires_at": _epoch_ms_to_iso(int(expires_ms)),
+                "remaining_s": int(remaining_s),
+                "signal": "signal: %s/%s" % (SIGNAL_PREFIX, provider),
+                "verdict": "PRE-EXPIRY-DETECTED",
+                "probe_triggered": True,
+            }
+        )
+    return findings
+
+
 def evaluate(
     app_status: int,
     pat_expiry_raw: str | None,
@@ -354,6 +485,15 @@ def _parse_now(s: str | None) -> datetime | None:
         return None
 
 
+def _parse_float_env(s: str | None, default: float) -> float:
+    if not s:
+        return default
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
 def _load_fixture(fixtures_dir: str) -> tuple[int, str | None]:
     app_status = 0
     app_headers_path = os.path.join(fixtures_dir, "app.headers")
@@ -432,6 +572,31 @@ def main() -> int:
     parser.add_argument("--token", default=None, help="PAT to probe (default $FLEET_SYNC_PAT).")
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--ledger-line", action="store_true")
+    # PRE-EXPIRY PROBE (fleet-ops#2134)
+    parser.add_argument(
+        "--auth-json",
+        metavar="PATH",
+        default=None,
+        help="auth.json path to probe for known-expiry credentials (default $PI_AGENT_AUTH_JSON).",
+    )
+    parser.add_argument(
+        "--auth-entries",
+        metavar="JSON",
+        default=None,
+        help='Offline probe fixture: JSON list [{"provider":"x","expires_ms":N},...].',
+    )
+    parser.add_argument(
+        "--pre-expiry-hours",
+        type=float,
+        default=None,
+        help="Fire the probe this many hours before a credential's known expiry (AI-advisory, default %.1f)."
+        % PRE_EXPIRY_HOURS_DEFAULT,
+    )
+    parser.add_argument(
+        "--no-pre-expiry-probe",
+        action="store_true",
+        help="Disable the pre-expiry probe (fleet-ops#2134).",
+    )
     args = parser.parse_args()
 
     if args.ledger_line:
@@ -440,6 +605,12 @@ def main() -> int:
 
     now = _parse_now(args.now) or _parse_now(os.environ.get("FLEET_CRED_EXPIRY_NOW"))
 
+    # Online vs offline mode. The pre-expiry probe defaults to the LIVE
+    # ~/.pi/agent/auth.json only in online mode; offline modes (fixtures,
+    # --app-returns, --pat-headers) skip the live probe unless an explicit
+    # --auth-json / --auth-entries is given, so the existing offline tests
+    # are unaffected by the new probe.
+    online = False
     if args.from_fixtures:
         app_status, pat_raw = _load_fixture(args.from_fixtures)
     elif args.app_returns is not None or args.pat_headers is not None:
@@ -469,6 +640,7 @@ def main() -> int:
             else:
                 pat_raw = ""
     else:
+        online = True
         creds = args.creds_file or os.environ.get(
             "WORKER_APP_CREDS_FILE",
             os.path.expanduser("~/.config/fleet-worker/nishfleet-worker.env"),
@@ -486,6 +658,63 @@ def main() -> int:
     result = evaluate(app_status=app_status, pat_expiry_raw=pat_raw, now=now)
     verdict = result["verdict"]
     reason = result["reason"]
+
+    # PRE-EXPIRY PROBE (fleet-ops#2134). Runs unless disabled. Online it
+    # reads ~/.pi/agent/auth.json; offline tests inject --auth-entries.
+    pre_expiry_findings: list[dict[str, Any]] = []
+    if not args.no_pre_expiry_probe:
+        threshold = args.pre_expiry_hours
+        if threshold is None:
+            threshold = _parse_float_env(
+                os.environ.get("FLEET_CRED_EXPIRY_PRE_EXPIRY_HOURS"),
+                PRE_EXPIRY_HOURS_DEFAULT,
+            )
+        if args.auth_entries is not None:
+            try:
+                entries = json.loads(args.auth_entries)
+            except json.JSONDecodeError as exc:
+                print(
+                    "credential-expiry-canary: --auth-entries is not valid JSON: %s"
+                    % exc,
+                    file=sys.stderr,
+                )
+                return 2
+            if not isinstance(entries, list):
+                print(
+                    "credential-expiry-canary: --auth-entries must be a JSON list",
+                    file=sys.stderr,
+                )
+                return 2
+        else:
+            # Live auth.json only in online mode; offline modes skip the
+            # probe unless an explicit --auth-json / env path is given.
+            auth_path = args.auth_json or os.environ.get("FLEET_CRED_EXPIRY_AUTH_JSON") \
+                or os.environ.get("PI_AGENT_AUTH_JSON")
+            if auth_path is None and online:
+                auth_path = os.path.expanduser("~/.pi/agent/auth.json")
+            entries = load_auth_expiries(auth_path) if auth_path else []
+        pre_expiry_findings = pre_expiry_probe(entries, now=now, threshold_hours=threshold)
+
+    if pre_expiry_findings:
+        for f in pre_expiry_findings:
+            print(
+                "credential-expiry-canary: PRE-EXPIRY-DETECTED — provider=%s "
+                "expires_at=%s remaining_s=%s probe_triggered=true (%s); "
+                "renewal issue auto-filed by the wrapper (observe-to-close)"
+                % (
+                    f["provider"],
+                    f["expires_at"],
+                    f["remaining_s"],
+                    f["signal"],
+                ),
+                file=sys.stderr,
+            )
+        # Machine-readable contract for the wrapper's auto-file +
+        # observe-to-close. Emitted to stdout ONLY when there are findings
+        # so the existing offline tests (which grep stderr) are unaffected.
+        print(json.dumps({"pre_expiry_detected": pre_expiry_findings}))
+        return 1
+
     if verdict == "PASS":
         print("credential-expiry-canary: PASS — %s" % reason, file=sys.stderr)
         return 0
