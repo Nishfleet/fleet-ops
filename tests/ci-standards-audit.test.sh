@@ -214,7 +214,9 @@ bash "$here/ready-work-deleted.test.sh"
 # test-listing gate goes green without a workflow edit.
 bash "$here/auditor-stdio-test-deleted.test.sh"
 bash "$here/quality-baseline-research-deleted.test.sh"
-bash "$here/memory-index-autocompact-migrated.test.sh"
+# note: memory-index-autocompact-migrated.test.sh runs `systemd-analyze verify` on
+# a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
+# (VPS-only) — it is live_skip in p14-test-listing-gate, not hosted here.
 
 # fleet-ops#1160: tests/fleet-ops-1160-regression.test.sh pins the tailscale
 # RECOVER / sudo-probe / Persistent-timer logic in bin/vps-post-reboot-verify
