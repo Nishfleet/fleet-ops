@@ -12,11 +12,21 @@
 #   5. Net ready increase resets the counter.
 #   6. Ready at/above the 12h buffer cap does not escalate.
 #   7. Non-zero scout exit does not increment (OnFailure owns crashes).
-#   8. end without begin is a no-op.
+#   8. end without begin creates a snapshot (success-run), does not
+#      increment consecutive_dry, does not file (fleet-ops#1277).
 #   9. Tracker always exits 0 (must not fail the scout unit).
 #  10. Production ExecStopPost shape (no argv, SERVICE_RESULT=success)
 #      counts as a green dry run.
 #  11. SERVICE_RESULT failure does not increment (OnFailure owns crashes).
+#  12. begin writes last_run_epoch + fleet_scout_last_run_seconds; a
+#      missing-begin end preserves last_run and does not bump it.
+#  13. pi-scout@0509 uses the same template ExecCondition (no instance
+#      override). fleet_rules.yml ships FleetScoutStale (organ heartbeat).
+#  14. export_last_run writes fleet-scout.prom mode 0644 (node_exporter
+#      is a different uid; mktemp is 0600 and would make the metric
+#      absent — FleetScoutStale 2026-08-27T19:41Z).
+#  15. last_run_epoch 0 / missing is omitted (a rest-skip end must not
+#      export 0 and re-fire FleetScoutStale).
 #
 # The live pi-scout@ oneshot is the outermost edge (it would run a real
 # LLM). The detector decision is exercised through the real helper.
@@ -43,9 +53,20 @@ grep -q "ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-c
   || fail "pi-scout@.service must ExecStopPost=- scout-futility-check end"
 grep -q "pi-scout-run %i scout" "$unit" \
   || fail "pi-scout@.service ExecStart must still invoke pi-scout-run"
+grep -q "fleet-work-supply-canary" "$unit" && grep -q "gate %i" "$unit" \
+  || fail "pi-scout@.service ExecCondition must stay the hours gate"
+! grep -E '^ExecCondition=.*scout-futility-check' "$unit" \
+  || fail "scout-futility-check must not be an ExecCondition"
+[[ ! -f "$repo_root/systemd/pi-scout@0509.service" ]] \
+  || fail "pi-scout@0509 must not have an instance unit; it shares the template"
+dropin="$repo_root/systemd/pi-scout@.service.d/10-keystone-hc.conf"
+if [[ -f "$dropin" ]]; then
+  ! grep -q '^ExecCondition=' "$dropin" \
+    || fail "pi-scout@ drop-in must not replace ExecCondition"
+fi
 grep -Fxq "bin/scout-futility-check /home/nish/.local/bin/scout-futility-check" "$manifest" \
   || fail "MANIFEST missing scout-futility-check dest"
-ok "wiring: unit snapshots begin/end; MANIFEST installs the helper"
+ok "wiring: unit snapshots begin/end; 0509 shares the template; MANIFEST installs the helper"
 
 if command -v systemd-analyze >/dev/null 2>&1; then
   systemd-analyze verify --man=no "$unit" >/dev/null 2>&1 \
@@ -73,6 +94,7 @@ export SCOUT_FUTILITY_BUFFER=12
 export SCOUT_FUTILITY_REPO="Nishfleet/fleet-ops"
 export SCOUT_FUTILITY_FILE=1
 export SCOUT_FUTILITY_READY_COUNT=2
+export SCOUT_FUTILITY_PROM="$scratch/fleet-scout.prom"
 
 gh_log="$scratch/gh.log"
 open_issues="$scratch/open-issues.json"
@@ -280,7 +302,7 @@ printf '%s\n' 'before=1' 'consecutive_dry=2' >"$state/0509.state"
 ! grep -q 'issue create' "$gh_log" || fail "scenario7: crash must not file futility"
 ok "scenario7: non-zero exit does not increment (OnFailure owns crashes)"
 
-# --- 8. end without begin is a no-op ----------------------------------------
+# --- 8. end without begin creates a snapshot (success-run) ------------------
 : >"$gh_log"
 : >"$triage"
 rm -f "$state/siterep-public.state"
@@ -289,8 +311,16 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario8: end without begin must exit 0, got $rc"
+[[ -f "$state/siterep-public.state" ]] \
+  || fail "scenario8: missing snapshot must create a state file"
+siterep_dry=$(grep -E '^consecutive_dry=' "$state/siterep-public.state" | cut -d= -f2-)
+[[ "$siterep_dry" == "0" ]] \
+  || fail "scenario8: must not increment consecutive_dry, got '$siterep_dry'"
+siterep_before=$(grep -E '^before=' "$state/siterep-public.state" | cut -d= -f2-)
+[[ -z "$siterep_before" ]] \
+  || fail "scenario8: seeded snapshot must leave before empty so a later skip-end cannot false-count dry, got '$siterep_before'"
 ! grep -q 'issue create' "$gh_log" || fail "scenario8: must not file"
-ok "scenario8: end without begin is a no-op"
+ok "scenario8: end without begin creates snapshot, success-run, not a dry count"
 
 # --- 9. tracker always exits 0 ----------------------------------------------
 set +e
@@ -325,5 +355,114 @@ printf '%s\n' 'before=2' 'consecutive_dry=2' >"$state/0509.state"
 [[ "$(state_field consecutive_dry)" == "2" ]] \
   || fail "scenario11: failed SERVICE_RESULT must leave consecutive_dry, got '$(state_field consecutive_dry)'"
 ok "scenario11: ExecStopPost-shaped crash does not increment"
+
+# --- 12. begin writes last_run; missing-begin end does not bump it ----------
+unset SERVICE_RESULT EXIT_STATUS || true
+: >"$gh_log"
+: >"$triage"
+rm -f "$state/0509.state" "$scratch/fleet-scout.prom"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+epoch1=$(state_field last_run_epoch)
+is_epoch() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+is_epoch "$epoch1" && [[ "$epoch1" -gt 0 ]] \
+  || fail "scenario12: begin must write last_run_epoch > 0, got '$epoch1'"
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
+  || fail "scenario12: prom missing last_run for 0509 (prom=$(cat "$scratch/fleet-scout.prom" 2>/dev/null))"
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario12: first completed end should dry=1"
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field last_run_epoch)" == "$epoch1" ]] \
+  || fail "scenario12: missing-begin end must preserve last_run_epoch ($epoch1), got '$(state_field last_run_epoch)'"
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario12: missing-begin end must not increment dry, got '$(state_field consecutive_dry)'"
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
+  || fail "scenario12: skip-end must not bump exported last_run"
+! grep -q 'issue create' "$gh_log" || fail "scenario12: must not file"
+ok "scenario12: last_run is begin-only; missing-begin end preserves it"
+
+# --- 12b. unreadable snapshot is the same success-run path ------------------
+printf 'this is garbage\nnot a state file\n' >"$state/0509.state"
+set +e
+"$bin" end 0509 0 >/dev/null
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario12b: unreadable snapshot must exit 0, got $rc"
+[[ "$(state_field consecutive_dry)" == "0" ]] \
+  || fail "scenario12b: unreadable snapshot must seed consecutive_dry=0, got '$(state_field consecutive_dry)'"
+ok "scenario12b: unreadable snapshot creates a clean snapshot, success-run"
+
+# --- 13. FleetScoutStale organ heartbeat + 0509 shares the template ---------
+rules="$repo_root/config/fleet_rules.yml"
+[[ -f "$rules" ]] || fail "missing $rules"
+grep -q 'alert: FleetScoutStale' "$rules" \
+  || fail "fleet_rules.yml missing FleetScoutStale (organ heartbeat)"
+grep -q 'absent(fleet_scout_last_run_seconds)' "$rules" \
+  || fail "FleetScoutStale must key absent() on fleet_scout_last_run_seconds"
+grep -q 'time() - fleet_scout_last_run_seconds' "$rules" \
+  || fail "FleetScoutStale must compare time() - last_run"
+grep -q '28800' "$rules" \
+  || fail "FleetScoutStale threshold must be 8h (28800s, two 4h ticks)"
+if command -v promtool >/dev/null 2>&1; then
+  promtool check rules "$rules" >/dev/null \
+    || fail "promtool check rules failed after FleetScoutStale"
+  ok "promtool check rules accepts FleetScoutStale"
+else
+  echo "SKIP: promtool not on PATH"
+fi
+ok "scenario13: FleetScoutStale ships with the organ; 0509 uses the shared template"
+
+# --- 14. fleet-scout.prom is 0644 (node_exporter is prometheus uid) ---------
+unset SERVICE_RESULT EXIT_STATUS || true
+rm -f "$scratch/fleet-scout.prom"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+mode=$(stat -c '%a' "$scratch/fleet-scout.prom")
+[[ "$mode" == "644" ]] \
+  || fail "scenario14: begin must write fleet-scout.prom mode 0644, got '$mode'"
+# A leftover 0600 (the live 2026-08-27 failure) must be repaired on rewrite.
+chmod 0600 "$scratch/fleet-scout.prom"
+"$bin" end 0509 0 >/dev/null
+mode=$(stat -c '%a' "$scratch/fleet-scout.prom")
+[[ "$mode" == "644" ]] \
+  || fail "scenario14: end must rewrite fleet-scout.prom mode 0644, got '$mode'"
+ok "scenario14: fleet-scout.prom is 0644 after begin and after end"
+
+# --- 15. rest-skip end must not export last_run=0 ---------------------------
+unset SERVICE_RESULT EXIT_STATUS || true
+rm -f "$state/0509.state" "$state/fleet-ops.state" "$scratch/fleet-scout.prom"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+epoch1=$(state_field last_run_epoch)
+"$bin" end fleet-ops 0 >/dev/null
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
+  || fail "scenario15: 0509 last_run must survive a fleet-ops rest-skip end"
+if grep -E 'fleet_scout_last_run_seconds\{repo="fleet-ops"\} 0$' "$scratch/fleet-scout.prom"; then
+  fail "scenario15: rest-skip must not export fleet-ops last_run=0 (prom=$(cat "$scratch/fleet-scout.prom"))"
+fi
+ok "scenario15: rest-skip end omits last_run=0"
+
+# --- 16. runway is measured in hours, not just ready items ------------------
+# 12 ready issues with no consumption = 12h runway (>= cap) -> reset.
+# 12 ready with 12 closed in the last 6h = drain rate 2/h -> runway 6h.
+# The item count alone would say "at cap"; the hours metric must escalate.
+: >"$gh_log"
+: >"$triage"
+rm -f "$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=12
+export SCOUT_FUTILITY_CLOSED_JSON="$scratch/closed-12.json"
+now=$(date -u +%s)
+jq -n --arg ts "$(date -u -d '@'"$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)" \
+  '[range(12) | {number:(.+1), closedAt:$ts}]' >"$SCOUT_FUTILITY_CLOSED_JSON"
+printf '%s\n' 'before=12' 'consecutive_dry=2' >"$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "3" ]] \
+  || fail "scenario16: 12 ready with high drain (12 closed in 6h) = 6h runway; should escalate, got '$(state_field consecutive_dry)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario16: missing LOUD SCOUT-FUTILITY for runway < 12h"
+ok "scenario16: runway in hours — high drain turns 12 ready items into 6h buffer, escalates"
+unset SCOUT_FUTILITY_CLOSED_JSON
 
 echo "OK: scout-futility: green-and-empty scout escalates after N dry runs, never loops quietly"

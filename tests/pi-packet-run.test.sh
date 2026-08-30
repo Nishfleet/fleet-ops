@@ -47,6 +47,11 @@ task_weight() {
 
 # First call (empty tried file) returns devin/glm-5-2. Once devin is in the
 # tried-seats file, return a different seat (cursor/composer-2.5).
+# fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
+# returns "public" so the test's deterministic pick_seat path is unchanged;
+# the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
+repo_privacy() { echo "public"; }
+packet_repo() { echo ""; }
 pick_seat() {
   local tried_file="${4:-}"
   if [[ -n "$tried_file" && -f "$tried_file" ]] \

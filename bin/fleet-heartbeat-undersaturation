@@ -17,19 +17,21 @@
 #             active/activating or MainPID is nonzero; for a Type=oneshot
 #             worker the live set is exactly active+activating).
 #
-# Decision:
-#   work > 0 AND running == 0  (wedge):
-#     - If the previous tick was NOT wedged: REPAIR. reset-failed all pi-issue
-#       units (so intake can redispatch past StartLimitBurst), clear stale
-#       active-seats/ registrations per #72's liveness rule, restart intake
-#       for every enrolled repo. Log the trace. Set a one-tick marker.
-#     - If the previous tick WAS wedged (marker present): FAIL LOUD. exit
-#       non-zero -> fleet-heartbeat.service lands in --state=failed ->
-#       OnFailure=unit-escalation@%n.service (STOP-REASON -> senior auditor).
-#       Never degrade silently. Clear the marker so the post-failure tick can
-#       attempt repair again (alternating repair / fail-loud keeps escalation
-#       while still trying to recover).
-#   otherwise (work == 0 OR running > 0): clear any stale marker, no action.
+# Decision (fleet-ops#1558 extends the floor):
+#   admit = min(target_concurrent, ram_governor_cap) from seat-caps / seat-lib
+#          (override: FLEET_UNDERSAT_ADMIT_CEILING for tests).
+#   ready = open agent-ready across enrolled repos (supply side).
+#   work  = ready + agent-in-progress (legacy wedge counter).
+#
+#   Case A — full wedge: work > 0 AND running == 0
+#     - First tick: REPAIR (reset-failed, reap stale seats, restart intake).
+#     - Second consecutive: FAIL LOUD (exit 1 -> unit-escalation).
+#   Case B — below admit floor with supply (fleet-ops#1558):
+#     ready >= admit AND running < admit (and running > 0, else Case A):
+#     same repair / fail-loud ladder. This is "25-when-supply-exists": a
+#     light-workload ceiling fault, not a dashboard number. When MemAvailable
+#     drops under browser load, admit self-reduces — no false page.
+#   otherwise: clear any stale marker, no action.
 #
 # Also emits one THROUGHPUT line per tick (merged fleet-worker PRs since the
 # last tick) into the triage log so a slow bleed — workers running but landing
@@ -59,6 +61,9 @@ INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
 ACTIVE_SEATS_DIR="${PI_PACKET_STATE:-${HOME}/.local/state/pi-packet}/active-seats"
+SEAT_LIB_DEFAULT="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
+# fleet-ops#1558: test seam for the admit floor (avoids sourcing seat-lib + /proc).
+# Production leaves this unset and calls admit_ceiling() from seat-lib.
 
 FLAG="$LOG_DIR/undersaturation.flag"
 THROUGHPUT_STATE="$LOG_DIR/throughput.last"
@@ -104,19 +109,51 @@ count_work() {
     echo "$total"
 }
 
-# --- count running: pi-issue@ units in active/activating state ---------------
-# #72's liveness rule: a worker is live iff ActiveState is active/activating
-# or MainPID is nonzero. For Type=oneshot the live set is exactly active+
-# activating (a unit with a nonzero MainPID is by definition in one of those
-# states), so the state filter is the live set.
+# --- count ready only (supply for the #1558 admit floor) ---------------------
+count_ready() {
+    local repo ready total=0
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        ready=$("$GH" issue list -R "$repo" -l agent-ready \
+            --state open --json number --limit 200 --jq 'length' 2>/dev/null || echo 0)
+        total=$((total + ready))
+    done <<< "$enrolled_repos"
+    echo "$total"
+}
+
+# --- admit ceiling: min(target_concurrent, ram_governor_cap) -----------------
+admit_floor() {
+    if [ -n "${FLEET_UNDERSAT_ADMIT_CEILING:-}" ]; then
+        printf '%s\n' "$FLEET_UNDERSAT_ADMIT_CEILING"
+        return 0
+    fi
+    if [ -f "$SEAT_LIB_DEFAULT" ]; then
+        # shellcheck source=/dev/null
+        source "$SEAT_LIB_DEFAULT"
+        admit_ceiling
+        return 0
+    fi
+    # seat-lib missing: fall back to the standing light-workload target.
+    echo 25
+}
+
+# --- count running: active/activating user services whose ExecStart command
+# line contains a live worker literal: "pi --print" (fleet-ops#1155),
+# "pi-issue-run" (P4-A seat-rotation wrapper for pi-issue@ units),
+# or "pi-packet-run". Never enumerate by unit-name patterns: odd-named
+# `pi-systemd-run --unit <name> -- ... pi --print` units must count, and
+# pi-packet@/alert-repair-*/pi-job-* workers are also live capacity. #72's
+# liveness rule still holds: the state filter is the live set.
 count_running() {
-    local unit n=0
+    local unit execstart n=0
     while IFS= read -r unit; do
         [ -n "$unit" ] || continue
-        case "$unit" in
-            pi-issue@*) n=$((n+1)) ;;
+        [ -z "${unit##*.service}" ] || continue
+        execstart=$("$SYSTEMCTL" --user show "$unit" --property=ExecStart --value 2>/dev/null || true)
+        case "$execstart" in
+            *"pi --print"*|*"pi-issue-run"*|*"pi-packet-run"*) n=$((n+1)) ;;
         esac
-    done < <("$SYSTEMCTL" --user list-units 'pi-issue@*.service' \
+    done < <("$SYSTEMCTL" --user list-units --type=service \
         --state=active,activating --no-legend --plain 2>/dev/null \
         | awk '{print $1}' || true)
     echo "$n"
@@ -320,7 +357,9 @@ prev_wedged=0
 
 work=$(count_work)
 running=$(count_running)
-log "undersaturation: work=$work running=$running prev_wedged=$prev_wedged"
+ready=$(count_ready)
+admit=$(admit_floor)
+log "undersaturation: work=$work ready=$ready running=$running admit=$admit prev_wedged=$prev_wedged"
 
 if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
     # Label-hygiene pre-pass (auditor-finding-C): a stale agent-in-progress
@@ -334,20 +373,35 @@ if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
         log "label-hygiene: cleared $hygiene stale agent-in-progress label(s); re-evaluating wedge"
         work=$(count_work)
         running=$(count_running)
-        log "post-hygiene: work=$work running=$running"
+        ready=$(count_ready)
+        log "post-hygiene: work=$work ready=$ready running=$running"
     fi
 fi
 
+# Case A: full wedge (legacy #75). Case B: below admit floor with supply (#1558).
+# Case B requires running > 0 so it does not double-fire with Case A.
+undersat=0
+reason=""
 if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
+    undersat=1
+    reason="full-wedge"
+elif [ "$ready" -ge "$admit" ] 2>/dev/null \
+        && [ "$running" -gt 0 ] 2>/dev/null \
+        && [ "$running" -lt "$admit" ] 2>/dev/null; then
+    undersat=1
+    reason="below-admit-floor"
+fi
+
+if [ "$undersat" -eq 1 ]; then
     if [ "$prev_wedged" -eq 1 ]; then
-        # Second consecutive wedged tick — repair already ran last tick and the
-        # fleet is STILL 100% wedged. Fail loud; never degrade silently.
-        loud "UNDERSAT-FAIL-LOUD" "work=$work running=$running — second consecutive wedged tick; repair ran last tick and recovered nothing. Manual intervention needed."
+        # Second consecutive undersat tick — repair already ran last tick and
+        # the fleet is STILL below the floor. Fail loud; never degrade silently.
+        loud "UNDERSAT-FAIL-LOUD" "work=$work ready=$ready running=$running admit=$admit reason=$reason — second consecutive undersat tick; repair ran last tick and recovered nothing. Manual intervention needed."
         rm -f "$FLAG"
         exit 1
     fi
-    # First wedged tick of this run — repair.
-    loud "UNDERSAT-REPAIR" "work=$work running=$running — resetting failed pi-issue units, reaping stale active-seats, restarting intake"
+    # First undersat tick of this run — repair.
+    loud "UNDERSAT-REPAIR" "work=$work ready=$ready running=$running admit=$admit reason=$reason — resetting failed pi-issue units, reaping stale active-seats, restarting intake"
     r1=$(reset_failed_pi_issue)
     r2=$(reap_stale_active_seats)
     r3=$(restart_intake)
@@ -356,7 +410,7 @@ if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
     exit 0
 fi
 
-# Healthy (no work, or workers running). Clear any stale marker.
+# Healthy (no work, or running >= admit, or ready < admit). Clear marker.
 rm -f "$FLAG"
-log "undersaturation: healthy (work=$work running=$running) — no action"
+log "undersaturation: healthy (work=$work ready=$ready running=$running admit=$admit) — no action"
 exit 0

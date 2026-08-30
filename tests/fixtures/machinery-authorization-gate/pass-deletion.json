@@ -1,0 +1,10 @@
+{
+  "name_status": "D\tsystemd/brand-new-dispatcher.service\nM\tbin/some-script\n",
+  "body": "Delete the unsanctioned dispatcher.\n\nCloses #9999\n",
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ]
+  },
+  "manifest_added_lines": []
+}

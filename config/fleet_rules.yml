@@ -79,6 +79,16 @@ groups:
           summary: "Pi seat unhealthy for 30+ minutes"
           description: "pi-seat-health.json reports a non-healthy seat class."
 
+      - alert: FleetDeadCredentialSeats
+        expr: fleet_pi_seat_dead_credential_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "dead-credential seats need re-auth"
+          description: "One or more seats are seat_dead=true with health_class=credentials_bad (HTTP 401/403) and will not recover until their provider credential is re-authenticated (fleet-ops#1445). The per-seat fleet_pi_seat_dead_credential series names each seat. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats and re-auth each dead seat, or remove it from config/seat-caps.json."
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h
@@ -98,6 +108,25 @@ groups:
         annotations:
           summary: "Fleet monitoring test alert"
           description: "Synthetic alert for end-to-end proof."
+
+      # fleet-ops#1534: the one meta-alert that pages Nish. severity=page is
+      # the ONLY alertmanager route that reaches the phone (config/alertmanager.yml).
+      # Fires when the am-executor webhook receiver (prometheus-am-executor.service,
+      # 127.0.0.1:9095) is down — the repair path itself is broken, so no
+      # critical/warning alert can spawn a repair worker. This is the last
+      # resort: if it is silent, the repair path is healthy; if it fires,
+      # Nish must intervene manually because the automatic repair path is dead.
+      # 2m for: am-executor restarts on transient errors; only a sustained
+      # outage pages. Scraped by the am-executor job in config/prometheus.yml.
+      - alert: RepairDispatchDown
+        expr: up{job="am-executor"} == 0
+        for: 2m
+        labels:
+          severity: page
+          service: fleet
+        annotations:
+          summary: "alert-repair-dispatch webhook receiver is down — the repair path is broken"
+          description: "prometheus-am-executor.service (127.0.0.1:9095) has been down for 2+ minutes. No critical/warning alert can spawn a repair worker while this is down. Nish must restart it manually: systemctl --user restart prometheus-am-executor."
 
   - name: host_and_system
     rules:
@@ -268,6 +297,83 @@ groups:
           summary: "churn share of merged PRs rose 20+ points versus yesterday's 24h window"
           description: "fleet_pr_quality_share{class=\"churn\"} rose by more than 0.20 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level. The fleet is merging a growing share of churn (chore/refactor/docs/unclassified) at the expense of upgrade (feat) and repair (fix/test). Inspect fleet_pr_quality_24h{class=...} and recent merge titles."
 
+      # Verified-merges regression TREND (fleet-ops#1136 objective decision,
+      # 2026-08-28). The fleet's single optimization target is max
+      # quality-throughput: verified, live-proven merged product work per day.
+      # Raw merge counts stay on the console; the WFR ratchets against the
+      # verified number. A 20-point drop versus yesterday's 24h window is the
+      # fleet merging a growing share of unverified work (null diff or no
+      # delivery evidence). Trend, not level — the acceptable verified ratio
+      # is policy (baseline established on the first instrumented week). The
+      # ratio is omitted on a no-merge day, so a quiet day never trips this.
+      - alert: FleetVerifiedMergeRegression
+        expr: (fleet_verified_merge_ratio - fleet_verified_merge_ratio offset 24h) < -0.20
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "verified-merge ratio fell 20+ points versus yesterday's 24h window"
+          description: "fleet_verified_merge_ratio dropped by more than 0.20 compared to its value 24h ago, sustained 6h. TREND alert (delta), not a level. A merged PR is verified when it has a non-null effective diff AND delivery evidence on closure (run-proof:/Verification: run-cue, per lib/exec-review-receipt.py). The WFR ratchets against this verified number, not raw merge counts. A sustained drop means the fleet is merging a growing share of unverified work. Inspect fleet_verified_merges_24h{kind=\"verified\"|\"unverified\"} and recent merge bodies."
+
+  - name: fleet_queue_composition
+    rules:
+      # Queue composition metrics (fleet-ops#1136 scope addition).
+      # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
+      # (enrolled repos only). The 64% fleet2 death-number is the tripwire
+      # (Nish, 2026-08-27 scope addition): warning when any queue's ratio
+      # exceeds 64% for a week. The physics signal is the WEEK, so the rule
+      # smooths the ratio over the trailing 7d (avg_over_time[7d]) instead of
+      # demanding the raw gauge sit above 0.64 for 7 uninterrupted wall-clock
+      # days. The instantaneous value dips (product issues land, the queue
+      # empties and the series goes stale) and every dip or >5m export gap
+      # reset a raw 1w `for:`, so that rule never reached firing
+      # (fleet-ops#2171). The 7d average absorbs momentary dips; `for: 6h`
+      # only certifies the smoothed breach is steady before it dispatches.
+      # The ratio is exported only when total>0, so an empty queue never
+      # trips this. Severity=warning feeds the Weekly Review scoring and the
+      # precedence-sunset question.
+      - alert: FleetQueueSelfMaintenanceRatioHigh
+        expr: avg_over_time(fleet_queue_self_maintenance_ratio[7d]) > 0.64
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "queue {{ $labels.queue }} 7-day self-maintenance ratio stayed above 64% (fleet2 death-number) for 6 hours"
+          description: "avg_over_time(fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"}[7d]) has been above 0.64 (the fleet2 death-number) for 6+ hours. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The 7d window absorbs the momentary dips and export gaps that reset the old 1w for: and kept this alert pending forever (fleet-ops#2171). The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
+
+  - name: fleet_waste
+    rules:
+      # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is
+      # ALWAYS emitted by a live waste-ledger export (zeros on a quiet
+      # window), so absent() fires only when the #1211 path is dead — not
+      # on a no-dispatch day. The ratio gauge itself is omitted when
+      # total spend is 0.
+      - alert: FleetWasteLedgerAbsent
+        expr: absent(fleet_waste_runs{kind="total"})
+        for: 3h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "waste-ledger metrics absent — the #1211 loss-accounting exporter path is missing or dead"
+          description: "Repair: fleet-waste-export.py must emit fleet_waste_runs{kind=\"total\"}. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/waste-ledger.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
+
+      # TREND alert, not a level, not a page. WasteRatioRising feeds the
+      # Weekly Fleet Review (L3 machinery health + cost). severity=none AND
+      # SKIP_SET (alert-repair-dispatch) so a firing trend cannot spawn a
+      # repair worker. offset 24h cannot fire on the first day after deploy.
+      - alert: WasteRatioRising
+        expr: (fleet_waste_ratio - fleet_waste_ratio offset 24h) > 0.15
+        for: 6h
+        labels:
+          severity: none
+          service: fleet
+        annotations:
+          summary: "fleet waste ratio rose 15+ points versus yesterday's 24h window"
+          description: "fleet_waste_ratio rose by more than 0.15 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level, not a page — Weekly Fleet Review owns the response. Inspect fleet_waste_empty_runs_24h (the #902 empty-run class) and fleet_waste_retries_24h (the #1204 salvage-bleed class) per lane."
+
   - name: fleet_console_truth
     rules:
       # fleet-ops#1157: a tile whose independent truth-check disagrees with
@@ -299,6 +405,28 @@ groups:
           summary: "console tile-verify organ absent — the self-audit pass is missing or dead"
           description: "Repair worker: fleet-console-pi/verify.py must write fleet_console_tile_verify_timestamp_seconds (and fleet_console_tile_mismatch). Check fleet-console-pi.timer is running and journalctl --user -u fleet-console-pi.service. No new timer was added; verify piggybacks the existing push cycle (fleet-ops#1157)."
 
+      # Organ heartbeat (fleet-ops#1463 + #1010 standing pattern). The
+      # resilience drill exports fleet_resilience_drill_last_green_seconds
+      # ONLY when every plane passes (or skips) on the last run; a red run
+      # deliberately keeps the timestamp at 0 so a drill that stays red is
+      # itself loud. 26h is just over one missed daily cycle (the drill
+      # fires at 05:47; a one-day skip should not page on a brief host
+      # pause, a two-day skip is a real failure). absent() catches a
+      # missing file (node-exporter textfile collector keeps the last
+      # scrape, so a frozen file keeps the timestamp fresh — that's why
+      # time()-timestamp is in the OR clause). The drill runs on the
+      # existing daily 05:47 timer (no new timer; #1463 only extends the
+      # existing roster).
+      - alert: ResilienceDrillAbsent
+        expr: absent(fleet_resilience_drill_last_green_seconds) or fleet_resilience_drill_last_green_seconds == 0 or (time() - fleet_resilience_drill_last_green_seconds) > 93600
+        for: 4h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet resilience drill organ absent — the eleven-plane drill is missing, dead, or stuck red"
+          description: "Repair worker: bin/fleet-resilience-drill must write fleet_resilience_drill_last_green_seconds on every all-pass run. fleet_resilience_drill_plane_fail{plane=...} and fleet_resilience_drill_plane_skip{plane=...} name the failing planes. Check fleet-resilience-drill.timer is running and journalctl --user -u fleet-resilience-drill.service. The five #1463 failure-class planes (queue_freeze, pipeline_red, boundary_delivery, band_floor, event_trigger_spot) sandbox against live state, so a red plane is safe to reproduce."
+
       # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
       # out and scheduled refreshes did not recover. Honesty rendering
       # (dash + stale marker) already works; this is the missing
@@ -319,3 +447,282 @@ groups:
           summary: "gh-derived Prometheus families stale for 45+ minutes"
           description: "Repair worker: run the exporter (`systemctl --user start fleet-metrics-export.service`), check gh auth/rate limit (`gh auth status`; `gh api rate_limit`), and fix the refresh path in fleet-metrics-export.py (`_cached_json` / PR_CACHE_TTL=30m). 45m is 1.5x the cache cadence so routine expiry never fires."
 
+  - name: fleet_gh_rate_limit_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern). The exporter
+      # writes fleet_gh_rate_limit_fetched_seconds on every successful
+      # gh rate_limit fetch (fleet-ops#1350). absent() catches a missing
+      # file; time()-timestamp catches a frozen file (textfile collector
+      # keeps the last scrape). 30m is 30x the 60s exporter cadence, so
+      # routine cache misses never fire but a dead fetcher path does.
+      - alert: FleetGhRateLimitAbsent
+        expr: absent(fleet_gh_rate_limit_fetched_seconds) or (time() - fleet_gh_rate_limit_fetched_seconds) > 1800
+        for: 10m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "gh rate-limit metrics absent — the #1350 governor path is missing or dead"
+          description: "Repair worker: fleet_gh_rate_limit_fetched_seconds is absent or older than 30m. fleet-metrics-export.py must call `gh api rate_limit` and write the side-car state file. Check journalctl --user -u fleet-metrics-export.service for the fetcher error, gh auth (`gh auth status`), and the PR_CACHE_DIR/gh-rate-limit-cache.json cache. The throttle gate in pi-intake-tick.sh fail-OPENS on a missing state file, so a dead fetcher silently removes the API budget governor — fix the fetcher, not the throttle."
+
+      # Sustained-exhaustion TREND alert (fleet-ops#1350). The 20% threshold
+      # is the soft throttle (intake holds claims this tick). A TREND alert
+      # (delta over 6h) catches SUSTAINED exhaustion — a busy hour that
+      # bounces off 18% briefly is not a fault, but staying below 20% for
+      # most of a 6h window means the worker count is past the API budget.
+      # The `low` gauge is the exporter's precomputed 0/1 (any of the
+      # three resources below 20% → 1), so the alert does not re-derive
+      # the threshold. max() over all resources because exhaustion on ANY
+      # resource is a fault; do not narrow the scope with avg() (a 5000/hr
+      # core budget at 19% is a real problem even with search/graphql
+      # healthy). offset 6h cannot fire on the first 6h after deploy.
+      - alert: FleetGhRateLimitLowSustained
+        expr: (max(fleet_gh_rate_limit_low) - max(fleet_gh_rate_limit_low offset 6h)) > 0
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "gh rate-limit has been below 20% for 6+ hours"
+          description: "max(fleet_gh_rate_limit_low{resource=...}) flipped from 0 to 1 in the last 6h, sustained 6h. The throttle gate in pi-intake-tick.sh has been holding claims the whole window. A rate-limited fleet is slower than a governed one (Nish 2026-08-27 #1167). Inspect fleet_gh_rate_limit_remaining{resource=\"...\"} to see which resource is exhausted; fleet_gh_rate_limit_reset is the time-to-reset. Recovery: either (1) wait for the window to reset, or (2) reduce the worker count (drop free-lane caps in config/seat-caps.json). The alert is a TREND (delta) not a level so a brief 19% spike does not fire."
+
+  - name: fleet_scout_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). scout-futility-check writes
+      # fleet_scout_last_run_seconds on ExecStartPre begin — not on
+      # ExecStopPost of an ExecCondition skip, so a rest-skipped tick does
+      # not look like a live scout. 8h is two missed 4h timer cycles.
+      # 0 means begin has never succeeded (missing snapshot).
+      - alert: FleetScoutStale
+        expr: absent(fleet_scout_last_run_seconds) or (time() - fleet_scout_last_run_seconds) > 28800
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "pi-scout@{{ $labels.repo }} has not actually begun in 8+ hours"
+          description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 8h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
+
+      # Organ heartbeat (fleet-ops#1137 standing pattern). The truth
+      # staleness checker exports fleet_truth_staleness_last_run_seconds on
+      # every run (both the weekly timer and the exporter-piggyback
+      # ExecStartPost). 25h = just over one missed weekly cycle, so a
+      # routine skip never fires but a dead checker does. absent() catches
+      # a missing file; time()-timestamp catches a frozen file (textfile
+      # collector keeps last scrape). No new timer needed for the heartbeat
+      # — the checker piggybacks the existing 5-min exporter tick via
+      # ExecStartPost.
+      - alert: TruthStalenessAbsent
+        expr: absent(fleet_truth_staleness_last_run_seconds) or (time() - fleet_truth_staleness_last_run_seconds) > 90000
+        for: 12h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "truth-staleness-checker organ absent — the standing-doc checker is missing or dead"
+          description: "Repair worker: fleet_truth_staleness_last_run_seconds is absent or older than 25h (one missed weekly cycle). The truth-staleness-checker (fleet-ops#1137) cross-checks standing docs against live state; if this is silent, standing truth can silently rot without detection. Check: (1) `systemctl --user list-timers fleet-truth-staleness-check.timer` is present; (2) the weekly timer fired successfully; (3) `cat ~/.local/libexec/staleness-checker.py` is intact; (4) `systemctl --user status fleet-metrics-export.service` (the checker piggybacks the exporter via ExecStartPost). Helper: /home/nish/.local/libexec/staleness-checker.py. fleet-ops#1137."
+
+
+  - name: fleet_asset_census_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR; required by fleet-ops#1149
+      # item 4). fleet-asset-census writes fleet_asset_census_last_run_seconds
+      # on every successful weekly diff — findings (unguarded assets) still
+      # count as a healthy run, only a stopped timer leaves the metric stale.
+      # 14d is two missed weekly timer cycles (Sun 03:15 IST), matching the
+      # scout doctrine of two missed cycles before "dead".
+      - alert: FleetAssetCensusAbsent
+        expr: absent(fleet_asset_census_last_run_seconds) or (time() - fleet_asset_census_last_run_seconds) > 1209600
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "weekly VPS asset census has not run in 14+ days"
+          description: "Repair worker: fleet_asset_census_last_run_seconds is absent or older than 14d (two weekly timer cycles). The census enumerates the VPS surface and diffs against config/asset-guard-map.json; a dead census means new/unguarded assets are invisible. Check journalctl --user -u fleet-asset-census.service and systemctl --user list-timers fleet-asset-census.timer. Helper: /home/nish/.local/bin/fleet-asset-census. fleet-ops#1149."
+
+  - name: fleet_gh_webhook_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR; required by fleet-ops#1464).
+      # gh-webhook-receiver writes fleet_gh_webhook_receiver_last_green_seconds
+      # on every verified+dispatched forward. It also writes the series
+      # with timestamp=0 on startup so the rule does not fire spuriously
+      # before the first event. 1h is 12 missed 5-min canary cycles — the
+      # same "two missed cycles × 6" doctrine as the scout (but at hour
+      # granularity because real webhooks are bursty, not continuous).
+      - alert: FleetGhWebhookReceiverAbsent
+        expr: absent(fleet_gh_webhook_receiver_last_green_seconds) or (time() - fleet_gh_webhook_receiver_last_green_seconds) > 3600
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "gh-webhook-receiver heartbeat metric missing or stale > 1h"
+          description: "Repair worker: fleet_gh_webhook_receiver_last_green_seconds is missing or stale. ROOT CAUSE that fired this twice (#1464 fixed by #1607, #1576): the receiver was alive and the synthetic canary was hitting it every 5 min, but the series never reached Prometheus — either the receiver did not bump the heartbeat on ignored canary events (record_verified in libexec/gh-webhook-receiver/serve.py), or the prom label values were single-quoted so node-exporter silently dropped them. Check IN THIS ORDER: (1) cat /var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom — is last_green_seconds recent and are label values double-quoted? (2) systemctl --user status gh-webhook-canary.timer — is the canary firing every 5 min? (3) curl -s 'http://127.0.0.1:9090/api/v1/query?query=fleet_gh_webhook_receiver_last_green_seconds' — does Prometheus see the series? (4) systemctl --user status gh-webhook-receiver.service and curl http://127.0.0.1:8088/healthz. NOTE: the Cloudflare Worker + Tunnel half of the channel (workers/github-push-forward/) is Nish-gated and NOT yet deployed — do NOT chase cloudflared logs (no tunnel exists on this VPS yet); the synthetic canary is the liveness probe. See docs/github-push-channel.md. fleet-ops#1464, #1607, #1576."
+
+      # fleet-ops#1464, pattern 2: synthetic canary is the liveness probe
+      # for the entire GitHub push channel. gh-webhook-canary posts a
+      # synthetic issues/labeled/agent-ready payload every 5 min and
+      # bumps fleet_gh_webhook_canary_last_green_seconds. The canary is
+      # considered dead when the series is missing OR older than 15 min
+      # (three missed 5-min cycles). The gh-webhook-canary-deadman unit
+      # ALSO writes the alert-repair triage file when this fires, so
+      # both rails are loud.
+      - alert: FleetGhWebhookCanaryAbsent
+        expr: absent(fleet_gh_webhook_canary_last_green_seconds) or (time() - fleet_gh_webhook_canary_last_green_seconds) > 900
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "GitHub push-channel synthetic canary has not gone green in 15+ minutes"
+          description: "Repair worker: gh-webhook-canary.timer has not fired a successful probe in 15+ minutes (three missed 5-min cycles). The push channel is provably broken — either gh-webhook-receiver.service is dead, the local receiver cannot be reached (tunnel down, secret file missing, or 127.0.0.1:8088 unbound), or the canary timer itself is dead. First check `systemctl --user status gh-webhook-canary.timer` and journalctl -u gh-webhook-canary. Then `curl http://127.0.0.1:8088/healthz`. Then read the gh-webhook-canary-deadman triage file at ~/.local/state/pi-packet/alert-repair-triage.md for the dead-man’s own diagnostic. fleet-ops#1464."
+
+  - name: fleet_grok_token_refresh_supply
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). grok-token-refresh writes
+      # fleet_grok_token_refresh_last_success_seconds on every SUCCESSFUL
+      # headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"]. A
+      # SKIP (still fresh) preserves the prior last_success so the rule
+      # does not false-alarm on a healthy idle seat. 12h is two missed
+      # 4h timer cycles plus slack for the 6h access-token lifetime —
+      # by the time the absent() rule fires the credential is provably
+      # stale.
+      - alert: FleetGrokTokenRefreshStale
+        expr: absent(fleet_grok_token_refresh_last_success_seconds) or (time() - fleet_grok_token_refresh_last_success_seconds) > 43200
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "grok-token-refresh has not succeeded in 12+ hours"
+          description: "Repair worker: fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script is the prevention side of fleet-ops#41 — it keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat (fleet-ops#1163) does not age into a 401. A dead refresh means the credential is silently aging toward its 6h OAuth lifetime. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. Helper: /home/nish/.local/bin/grok-token-refresh. fleet-ops#41."
+
+  # fleet-ops#1291: SLO error budgets + multiwindow burn-rate alerts
+  # (Google SRE Workbook Ch.5 canon). config/slo-definitions.json is the
+  # single source of truth; lib/slo_budget.py does the budget math;
+  # libexec/fleet-metrics-export.py emits the fleet_slo_* gauges.
+  #
+  # Alert model (Workbook §5.4, translated for a sampled-gauge SLI):
+  # - RATIO SLOs (main_green, seat_availability): multiwindow burn-rate.
+  #     burn_rate = (1 - avg_over_time(fleet_slo_compliance{slo}[W])) / (1 - target)
+  #     Fast burn = 14.4x sustained over BOTH 1h AND 5m (long+short suppress flap).
+  #     Slow burn = 1x sustained over BOTH 6h AND 30m (feeds the WFR).
+  #     Gated on fleet_slo_instrumented{slo} == 1 so an uninstrumented SLO
+  #     (source metric pending) never burns budget it cannot measure.
+  # - THRESHOLD-GAUGE SLOs (waste_ratio, gh_rate_limit_headroom): the
+  #     error-budget ratio model does not fit a single threshold gauge
+  #     (Workbook applies burn-rate to ratio SLIs); these get canonical
+  #     threshold-window alerts on the raw source metric instead.
+  # severity: fast_burn=critical (pages the repair rail, NOT Nish's phone —
+  # fleet-ops#1534 reserves severity=page for RepairDispatchDown only),
+  # slow_burn=warning (feeds the WFR alert-quality lens).
+  - name: fleet_slo_burn
+    rules:
+      # Organ heartbeat (fleet-ops#1010): the SLO metric family is emitted
+      # every scrape by fleet-metrics-export. If it disappears, the
+      # exporter is dead and every SLO alert below is blind.
+      - alert: FleetSloMetricsAbsent
+        expr: absent(fleet_slo_instrumented)
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet SLO metrics absent — the SLO exporter path is dead"
+          description: "Repair worker: fleet_slo_instrumented is absent for 15m. fleet-metrics-export.py emits the fleet_slo_* family every scrape; if it disappears the exporter crashed (check journalctl --user -u fleet-metrics-export.service) or config/slo-definitions.json is unparseable. Without this family every burn alert below is blind. NOTE: a prior attempt deployed an exporter referencing lib/slo_budget.py before the file existed (2026-08-30T05:55Z ModuleNotFoundError crash) — verify lib/slo_budget.py is present and the exporter imports clean. fleet-ops#1291."
+
+      # --- main_green: ratio SLO, target 0.99, budget = 1% of week ---
+      # Fast burn: >2% of weekly budget in 1h (14.4x normal), 1h AND 5m.
+      - alert: FleetSloMainGreenFastBurn
+        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[1h])) / (1 - fleet_slo_target{slo="main_green"}) > 14.4) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[5m])) / (1 - fleet_slo_target{slo="main_green"}) > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "SLO main_green fast burn — CI green fraction burning >2% of weekly budget per hour"
+          description: "Repair worker: the main_green SLO (default-branch CI green across enrolled repos) is in fast burn — >14.4x the normal budget consumption rate over both 1h and 5m. Check fleet_main_ci_green{repo=...} for which repo(s) are red and whether a red-on-main or stop-the-line condition is active. fleet-ops#1291."
+      # Slow burn: >10% of weekly budget in 6h (1x), 6h AND 30m.
+      - alert: FleetSloMainGreenSlowBurn
+        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[6h])) / (1 - fleet_slo_target{slo="main_green"}) > 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="main_green"}[30m])) / (1 - fleet_slo_target{slo="main_green"}) > 1)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO main_green slow burn — CI green fraction trending below the 99% budget line"
+          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. fleet-ops#1291."
+
+      # --- seat_availability: ratio SLO, target 0.90, budget = 10% of week ---
+      - alert: FleetSloSeatAvailFastBurn
+        expr: (fleet_slo_instrumented{slo="seat_availability"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[1h])) / (1 - fleet_slo_target{slo="seat_availability"}) > 14.4) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[5m])) / (1 - fleet_slo_target{slo="seat_availability"}) > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "SLO seat_availability fast burn — healthy-seat fraction collapsing"
+          description: "Repair worker: the seat_availability SLO (healthy seats / enrolled seats) is in fast burn. Check fleet_pi_seat_healthy, the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, and FleetDeadCredentialSeats. fleet-ops#1291."
+      - alert: FleetSloSeatAvailSlowBurn
+        expr: (fleet_slo_instrumented{slo="seat_availability"} == 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[6h])) / (1 - fleet_slo_target{slo="seat_availability"}) > 1) and ((1 - avg_over_time(fleet_slo_compliance{slo="seat_availability"}[30m])) / (1 - fleet_slo_target{slo="seat_availability"}) > 1)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO seat_availability slow burn — healthy seats trending below the 90% budget line"
+          description: "WFR input: the seat_availability SLO is in slow burn. Feeds the weekly fleet review. fleet-ops#1291."
+
+      # --- waste_ratio: threshold-gauge SLO, target 0.10 (max) ---
+      # Canonical threshold-window alert (burn-rate ratio model does not fit
+      # a single gauge). Fires when waste exceeds 10% for a sustained window.
+      - alert: FleetSloWasteRatioOverTarget
+        expr: (fleet_slo_instrumented{slo="waste_ratio"} == 1) and (fleet_waste_ratio > 0.10)
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO waste_ratio over target — fleet waste ratio above 10% for 1h+"
+          description: "WFR input: the waste_ratio SLO (fleet waste ≤ 10%) is over target. Read fleet_waste_runs{kind=...} and the per-lane fleet_waste_empty_runs_24h / fleet_waste_retries_24h families (fleet-ops#1211). WasteRatioRising is the trend sibling. fleet-ops#1291."
+
+      # --- gh_rate_limit_headroom: threshold-gauge SLO, target 0.20 (min) ---
+      # Fires when min(remaining/limit) across core/search/graphql drops
+      # below 20% for 30m. The existing FleetGhRateLimitLow level alert and
+      # the 6h trend alert cover the same signal; this SLO alert is the
+      # budget-framed wrapper that feeds the WFR SMOOTH verdict.
+      - alert: FleetSloGhRateLimitHeadroomLow
+        expr: (fleet_slo_instrumented{slo="gh_rate_limit_headroom"} == 1) and (fleet_slo_compliance{slo="gh_rate_limit_headroom"} < 0.20)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO gh_rate_limit_headroom low — GitHub rate limit below 20% headroom for 30m+"
+          description: "WFR input: the gh_rate_limit_headroom SLO (min remaining/limit ≥ 20%) is under target. Inspect fleet_gh_rate_limit_remaining{resource=...}; fleet_gh_rate_limit_reset is time-to-reset. fleet-ops#1291."
+
+  - name: fleet_baseline_delta_supply
+    rules:
+      # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
+      # Fleet Review. This rule watches the ORGAN, not the anomalies — a high
+      # |z| is a report line for the review conference, never a page. The
+      # metric is written by libexec/fleet-baseline-delta.py to
+      # /var/lib/prometheus/node-exporter/fleet-baseline-delta.prom on every
+      # completed run (zero anomalies is still a healthy run, so the rule
+      # fires only when the weekly timer stops). 14d is two missed weekly
+      # timer cycles (Sun 04:00 IST), matching the scout/asset-census
+      # doctrine of two missed cycles before "dead".
+      - alert: FleetBaselineDeltaAbsent
+        expr: absent(fleet_baseline_delta_last_run_seconds) or (time() - fleet_baseline_delta_last_run_seconds) > 1209600
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "weekly baseline-delta strangeness pass has not run in 14+ days"
+          description: "Repair worker: fleet_baseline_delta_last_run_seconds is absent or older than 14d (two weekly timer cycles). fleet-baseline-delta (#1151) queries Prometheus for every fleet_* and key node_* series, compares this week vs a trailing 4-week median+MAD baseline, and writes the ranked top-20 strangeness report the Weekly Fleet Review reads; a dead job means week-over-week anomalies are invisible to the review. Check journalctl --user -u fleet-baseline-delta.service and systemctl --user list-timers fleet-baseline-delta.timer. Helper: /home/nish/.local/libexec/fleet-baseline-delta.py. fleet-ops#1151."

@@ -44,7 +44,11 @@ export FLEET_WORK_SUPPLY_REPO="Nishfleet/fleet-ops"
 export FLEET_WORK_SUPPLY_FILE=1
 export FLEET_WORK_SUPPLY_LIB="$lib"
 export FLEET_OPS_REPO="$scratch/repo"
-export FLEET_WORK_SUPPLY_MAX_IDLE_S=9000
+# Default MAX_IDLE_S is 15000 (see bin/fleet-work-supply-canary, fleet-ops#1144):
+# must exceed the scout timer's normal max idle of OnCalendar 4h +
+# RandomizedDelaySec 5m = 14700s. We do NOT override it here so the default
+# is exercised end-to-end; scenario 8a pins the cadence-race fix.
+export FLEET_WORK_SUPPLY_MAX_IDLE_S=15000
 
 # --- hours math (source the lib) -------------------------------------------
 # shellcheck source=../lib/work-supply.sh
@@ -276,6 +280,28 @@ run_canary
 grep -q 'WORK-SUPPLY-GO-HAM' <<<"$env_out" || fail "scenario8: must LOUD go-ham ($env_out)"
 grep -q 'issue create' "$gh_log" || fail "scenario8: must file (gh=$(cat "$gh_log"))"
 ok "scenario8: idle scout under 12h fail-loud + files"
+
+# --- 8a. normal scout cadence is NOT a false positive (fleet-ops#1144) -------
+# The scout timer fires every 4h (OnCalendar=*-*-* 00/4:00:00) with up to 5m
+# jitter, so normal pre-fire idle reaches ~14700s. The prior 9000s default
+# flagged this as go-ham-idle on every heartbeat whenever work <12h. With the
+# 15000s default, a healthy 14000s idle (just under the next fire) must NOT
+# file or fail loud.
+write_wired_checkout
+: >"$gh_log"; : >"$triage"
+export FLEET_WORK_SUPPLY_HOURS=5
+export FLEET_WORK_SUPPLY_SCOUT_STATE=inactive
+export FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S=14000
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario8a: normal cadence must exit 0, got rc=$env_rc ($env_out)"
+if grep -q 'WORK-SUPPLY-GO-HAM' <<<"$env_out"; then
+  fail "scenario8a: must NOT LOUD go-ham for normal cadence ($env_out)"
+fi
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario8a: must NOT file for normal cadence (gh=$(cat "$gh_log"))"
+fi
+ok "scenario8a: normal 4h-cadence idle is not a false positive (#1144)"
+unset FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S
 
 # --- 9. dedup ---------------------------------------------------------------
 : >"$gh_log"; : >"$triage"

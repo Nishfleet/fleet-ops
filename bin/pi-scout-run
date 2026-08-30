@@ -59,7 +59,13 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" || true)
+# Free-tier privacy line (fleet-ops#520): a private-repo target never routes
+# to a free-class lane. Resolve visibility via config/repo-privacy.json
+# (fail-closed: an unclassified repo is treated as private).
+scout_privacy=$(repo_privacy "$repo")
+seat_log "pi-scout-run: $repo/$prompt_name privacy=$scout_privacy"
+
+seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)
 if [[ -z "$seat" ]]; then
     seat_log "pi-scout-run: $repo/$prompt_name no healthy seat available"
     echo "pi-scout-run: $repo/$prompt_name no healthy seat available" >&2

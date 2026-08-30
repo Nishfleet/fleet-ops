@@ -204,21 +204,52 @@ case "$cmd" in
     exit 0
     ;;
   show)
-    # ActiveEnterTimestampMonotonic (us). The awk shim below floors the
-    # simulated uptime at 3700s so the timestamp is always representable on
-    # any runner (a fresh runner cannot have a 3600s-old monotonic value).
-    unit="$1"
-    now_s=$(awk '{print int($1)}' /proc/uptime)
-    if (( now_s < 3700 )); then now_s=3700; fi
-    if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( (now_s - 3600) * 1000000 ))"
-    elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
-       && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
-      echo "$(( (now_s - 60) * 1000000 ))"
-    else
-      echo 0
-    fi
+    # Parse: systemctl show UNIT [--property=PROP] [--value].
+    # fleet-ops#1155: the worker counter now inspects ExecStart for live
+    # worker literals: "pi --print", "pi-issue-run", "pi-packet-run".
+    prop="ActiveEnterTimestampMonotonic"
+    unit=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -p|--property) prop="$2"; shift 2 ;;
+        --property=*) prop="${1#--property=}"; shift ;;
+        --value) shift ;;
+        *.service) unit="$1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    case "$prop" in
+      ExecStart)
+        if [[ -f "${RUNNING_EXEC:-/dev/nonexistent}" ]]; then
+          grep -F "${unit}|" "${RUNNING_EXEC:-/dev/nonexistent}" 2>/dev/null | head -n1 | cut -d'|' -f2-
+        else
+          # Default: any unit declared as live for this tick is a pi worker.
+          if grep -qxF "$unit" "${RUNNING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+             || grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+             || grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+            inst=""
+            case "$unit" in
+              pi-issue@*) inst="${unit#pi-issue@}"; inst="${inst%.service}"; printf '/home/nish/.local/bin/pi-issue-run %s\n' "$inst" ;;
+              pi-packet@*) inst="${unit#pi-packet@}"; inst="${inst%.service}"; printf '/home/nish/.local/bin/pi-packet-run %s\n' "$inst" ;;
+              *) printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n' ;;
+            esac
+          fi
+        fi
+        ;;
+      ActiveEnterTimestampMonotonic|*)
+        now_s=$(awk '{print int($1)}' /proc/uptime)
+        if (( now_s < 3700 )); then now_s=3700; fi
+        if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 3600) * 1000000 ))"
+        elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 60) * 1000000 ))"
+        else
+          echo 0
+        fi
+        ;;
+    esac
     exit 0
     ;;
   *)
@@ -257,6 +288,9 @@ export PI_PACKET_STATE="$seat_state"
 export CALLS="$calls"
 export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
+# fleet-ops#1558: pin the admit floor so scenarios do not read live
+# MemAvailable / seat-lib. Override per-scenario when testing the floor.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
 # Stale-label reap scenarios: the actual issue numbers labelled agent-in-progress
 # (one per line), and the subset of those that have an open claim/issue-<N> PR.
 # WORK_READY_NUMBERS mirrors the ready set so a flip (agent-in-progress ->
@@ -519,4 +553,79 @@ grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario6: missing UNDERSAT-REPAIR 
     || fail "scenario6: marker must be set (genuine wedge remains after flip)"
 ok "scenario6: stale agent-in-progress + no PR + no live worker -> flipped to agent-ready, intake restarted, exit 0"
 
+# ============================================================================
+# Scenario 7 (fleet-ops#1155): an odd-named pi unit is still a live worker.
+# The worker-count counter must inspect ExecStart for "pi --print", not unit
+# names. A `pi-systemd-run --unit weird-1155-undersaturation -- ... pi --print`
+# unit must suppress the false FleetUndersaturated alarm.
+# ============================================================================
+reset_state
+printf '3\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf 'weird-1155-undersaturation.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario7: odd-named live worker must be healthy, got $env_rc ($env_out)"
+if grep -qE '^(reset-failed|start) ' "$calls"; then
+    fail "scenario7: odd-named live worker must not repair, but calls=($(cat "$calls"))"
+fi
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" || fail "scenario7: must not fail-loud on odd-named live worker"
+! grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario7: must not repair on odd-named live worker"
+ok "scenario7: odd-named pi --print worker suppresses FleetUndersaturated (fleet-ops#1155)"
+
+# ============================================================================
+# Scenario 8 (fleet-ops#1558): below admit floor with supply.
+# ready >= admit AND 0 < running < admit -> REPAIR on first tick (not a full
+# wedge). Pins "25-when-supply-exists" without paging when MemAvailable drops.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '8\n' >"$scratch/work_ready"          # ready >= admit
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\n' >"$scratch/running_units"  # running=1 < 5
+: >"$scratch/failed_units"
+printf 'pi-issue@demo-1.service\n' >"$scratch/live_seat_units"
+printf '{"unit":"pi-issue-demo-1","provider":"devin","model":"glm-5-2"}' \
+    >"$seat_state/active-seats/pi-issue-demo-1.json"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario8: below-admit first tick must exit 0, got $env_rc ($env_out)"
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario8: triage missing UNDERSAT-REPAIR"
+grep -q 'below-admit-floor' <<<"$env_out" \
+    || fail "scenario8: stderr must name reason=below-admit-floor: $env_out"
+grep -qx 'start pi-intake@demo.service' "$calls" \
+    || fail "scenario8: intake restart not attempted ($(cat "$calls"))"
+[[ -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario8: marker must be set after below-admit repair"
+ok "scenario8: ready>=admit and running<admit -> repair (fleet-ops#1558)"
+
+# ============================================================================
+# Scenario 9 (fleet-ops#1558): running already at the admit floor is healthy
+# even when ready >> admit. Self-throttled / at-ceiling is not a fault.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=2
+printf '30\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\npi-issue@demo-2.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario9: at-admit tick must exit 0, got $env_rc ($env_out)"
+if grep -qE '^(reset-failed|start) ' "$calls"; then
+    fail "scenario9: at-admit must not repair, but calls=($(cat "$calls"))"
+fi
+! grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario9: must not UNDERSAT-REPAIR when running>=admit"
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" || fail "scenario9: must not fail-loud when running>=admit"
+ok "scenario9: running>=admit with ready>>admit is healthy (fleet-ops#1558)"
+
+# Restore the default admit pin for any later scenarios.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
+
 ok "undersaturation: stale agent-in-progress label is hygiene, not a wedge (auditor-finding-C)"
+ok "undersaturation: admit-floor below-target is a fault (fleet-ops#1558)"

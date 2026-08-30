@@ -14,10 +14,112 @@ FILE="$AS/NISH-ESCALATIONS.md"
 SEEN="$AS/lanes/nish-boundary-notify.seen"
 CLASSES='MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION'
 
+# --- Delivery: retry hermes, then fall back to the direct Telegram API -------
+#
+# fleet-ops#1458: on 2026-08-28 the Nish-reserved channel delivered 7h late
+# during an active Grok-401 incident. The 00:12/00:15 IST runs exited 1 with
+# no output — the seats= grep abort (fixed by #1349) killed the send before
+# it fired. But even after that fix, the only "retry" was "next tick", and the
+# .path unit only fires on PathChanged — so a genuine hermes failure (outbound
+# gate, network, binary gone) left the entry undelivered until the file was
+# touched again, hours later. This block closes that gap:
+#
+#   1. Retry hermes send up to 3 times (0s, 5s, 15s backoff).
+#   2. If hermes is still down, fall back to the direct Telegram Bot API via
+#      curl + the long-lived bot token in ~/.claude-telegram/.env — the same
+#      token the opus-heartbeat auth-wall pager uses. This path does NOT share
+#      hermes as a dependency, so a hermes outage cannot silence the channel.
+#   3. Only mark the entry seen after a confirmed delivery (either path).
+#   4. If both paths fail, exit 1 so OnFailure summons an auditor — a truly
+#      dead channel is the one thing that must be loud.
+#
+# Env overrides (for the drill test):
+#   BOUNDARY_NOTIFY_HERMES = path to the hermes binary (default: hermes from PATH)
+#   BOUNDARY_NOTIFY_TGENV  = path to the Telegram bridge .env
+#   BOUNDARY_NOTIFY_BACKOFF = space-separated sleep seconds between hermes retries
+#   BOUNDARY_NOTIFY_FALLBACK = if set to 0, disable the direct-API fallback
+HERMES_BIN=${BOUNDARY_NOTIFY_HERMES:-hermes}
+TGENV=${BOUNDARY_NOTIFY_TGENV:-/home/nish/.claude-telegram/.env}
+BACKOFFS=${BOUNDARY_NOTIFY_BACKOFF:-"5 15"}
+FALLBACK=${BOUNDARY_NOTIFY_FALLBACK:-1}
+
+# deliver <key> <header-line> <body> <class>
+# Tries hermes (with retries), then the direct Telegram API fallback.
+# Marks the entry seen on success. Returns non-zero only if both paths fail.
+# <class> is the Nish-reserved boundary token (MONEY-BOUNDARY, ...) matched
+# from the entry line; it is passed to hermes as --class so the outbound
+# gate's urgent class-gate honours the bypass (fleet-ops#1534). The direct
+# API fallback does not go through hermes, so --class does not apply there —
+# but the entry already passed the CLASSES grep, so it is a sanctioned class.
+deliver() {
+  local key="$1" header="$2" body="$3" class="$4"
+  local msg="NEEDS YOU — only you can decide this:
+
+$body
+
+Full log: $FILE"
+  local attempt=0
+
+  # --- hermes with retries ---------------------------------------------------
+  for backoff in 0 $BACKOFFS; do
+    if [ "$backoff" -gt 0 ] 2>/dev/null; then
+      echo "retry: hermes send attempt $((attempt+1)) after ${backoff}s backoff" >&2
+      sleep "$backoff" 2>/dev/null || true
+    fi
+    attempt=$((attempt+1))
+    if "$HERMES_BIN" send -t telegram --urgent --class "$class" "$msg" </dev/null >/dev/null 2>&1; then
+      printf '%s\n' "$key" >> "$SEEN"
+      echo "delivered (hermes, attempt $attempt): $header"
+      return 0
+    fi
+    echo "hermes send attempt $attempt failed" >&2
+  done
+
+  # --- direct Telegram Bot API fallback --------------------------------------
+  # Does NOT share hermes as a dependency: reads the bot token from the
+  # long-lived Telegram bridge env and calls the Bot API directly via curl.
+  # Same token + chat_id the opus-heartbeat auth-wall pager uses.
+  if [ "$FALLBACK" = 1 ] && [ -r "$TGENV" ]; then
+    local token chat_id
+    token=$(
+      set -a; . "$TGENV" >/dev/null 2>&1; set +a
+      printf '%s' "${CLAUDE_TELEGRAM_BOT_TOKEN:-}"
+    )
+    chat_id=$(
+      set -a; . "$TGENV" >/dev/null 2>&1; set +a
+      printf '%s' "${CLAUDE_TELEGRAM_ALLOWED_USER_ID:-}"
+    )
+    if [ -n "$token" ] && [ -n "$chat_id" ]; then
+      echo "fallback: hermes exhausted, trying direct Telegram Bot API" >&2
+      if curl -fsS --max-time 30 \
+            "https://api.telegram.org/bot${token}/sendMessage" \
+            --data-urlencode "chat_id=${chat_id}" \
+            --data-urlencode "text=${msg}" \
+            -o /dev/null 2>/dev/null; then
+        printf '%s\n' "$key" >> "$SEEN"
+        echo "delivered (fallback direct API): $header"
+        return 0
+      fi
+      echo "fallback: direct Telegram Bot API also failed" >&2
+    else
+      echo "fallback: Telegram bridge env missing token/chat_id ($TGENV)" >&2
+    fi
+  fi
+
+  echo "DELIVERY FAILED (hermes + fallback both exhausted): $header" >&2
+  return 1
+}
+
 [ -f "$FILE" ] || exit 0
 mkdir -p "$(dirname "$SEEN")"; touch "$SEEN"
 
-grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null | while IFS= read -r line; do
+# Process substitution (not a pipe) so the while loop runs in THIS shell and
+# the fail flag propagates. grep exits 1 on no match; inside <(...) that does
+# not abort the parent under set -e — the loop simply reads zero lines and
+# exits 0. A spurious path-unit trigger (file touched, no unseen boundary
+# entries) must not read as a failed delivery (fleet-ops#1458 class).
+fail=0
+while IFS= read -r line; do
   key=$(printf '%s' "$line" | sha256sum | cut -c1-32)
   grep -qxF "$key" "$SEEN" && continue
   # Body: the header line plus its indented SUMMARY/DECISION block.
@@ -33,7 +135,7 @@ grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null | while IFS= re
   # next morning. Nish got paged for nothing. So: if this entry names provider
   # seats, re-probe them live. All healthy => suppress the text, record it as
   # revoked. Any seat still down => deliver, the wall is real.
-  seats=$(printf '%s' "$body" | grep -oE '\b(devin|minimax|openrouter|cursor|deepseek|opencode-go)/[A-Za-z0-9._-]+' | sort -u)
+  seats=$(printf '%s' "$body" | grep -oE '\b(devin|minimax|openrouter|cursor|deepseek|opencode-go)/[A-Za-z0-9._-]+' | sort -u || true)
   if [ -n "$seats" ]; then
     all_ok=1
     for seat in $seats; do
@@ -53,15 +155,13 @@ grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null | while IFS= re
       continue
     fi
   fi
-  if hermes send -t telegram --urgent "NEEDS YOU — only you can decide this:
+  # The matched class token is the second whitespace field of the entry line
+  # (`<ts> <CLASS> ...`). Pass it to deliver so hermes gets --class <CLASS>
+  # and the outbound gate's urgent class-gate honours the bypass.
+  class=$(printf '%s' "$line" | awk '{print $2}')
+  deliver "$key" "$line" "$body" "$class" || fail=1
+done < <(grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null || true)
 
-$body
-
-Full log: $FILE" </dev/null >/dev/null 2>&1; then
-    printf '%s\n' "$key" >> "$SEEN"
-    echo "delivered: $line"
-  else
-    echo "DELIVERY FAILED (will retry next tick): $line" >&2
-    exit 1
-  fi
-done
+# A failed delivery (both paths exhausted) must be loud: exit 1 so OnFailure
+# summons an auditor. A spurious trigger with nothing to deliver exits 0.
+exit "$fail"

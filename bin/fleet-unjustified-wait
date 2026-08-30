@@ -25,7 +25,10 @@
 #        clocks (their shell check IS the machine-checkable gate). Items
 #        without `after:` are ready-now, not waiting. A CLAIMED item older
 #        than CLAIM_STALE_HOURS with no DONE marker is an UNJUSTIFIED-WAIT
-#        (a claim that stopped being worked and never re-queued).
+#        (a claim that stopped being worked and never re-queued). Default
+#        repair (fleet-ops#852) strips the stale CLAIMED: so the item is
+#        ready-now again — ready-work-dispatch skips any CLAIMED line, so
+#        an after: alone would silence the detector without re-dispatch.
 #
 # Named clocks are ANY of: bench_until, usable_at, after:, rate_limited_until,
 # quota-reset time, a Nish-reserved marker, or a blocking issue ref. The
@@ -43,6 +46,14 @@
 #   FLEET_READY_WORK            default $AGENT_STATE/READY-WORK.md
 #   FLEET_UNJUSTIFIED_WAIT_NOW  ISO timestamp override (tests)
 #   FLEET_CLAIM_STALE_HOURS     claim age threshold (default 24)
+#   FLEET_UNJUSTIFIED_WAIT_REPAIR default 1 — strip CLAIMED: from stalled
+#     READY-WORK items (CLAIMED older than threshold, no DONE, no after:)
+#     so they return to ready-now. Set 0 to audit-only (tests that assert
+#     the loud finding still fires).
+#   FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES default 0 — observe-to-close open
+#     signal: unjustified-wait/* issues when the tick is green. Heartbeat
+#     sets this to 1; tests leave it 0 so a fixture run cannot close live
+#     issues (same pattern as fleet-failed-command-flagged / #820).
 #   GH / FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO / FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES
 #
 # Exit: 0 = every wait carries a clock. Non-zero = at least one
@@ -60,7 +71,10 @@ STOP_REASON="${FLEET_STOP_REASON:-$AS/STOP-REASON.json}"
 READY_WORK="${FLEET_READY_WORK:-$AS/READY-WORK.md}"
 NOW_ISO="${FLEET_UNJUSTIFIED_WAIT_NOW:-}"
 CLAIM_STALE_HOURS="${FLEET_CLAIM_STALE_HOURS:-24}"
+REPAIR="${FLEET_UNJUSTIFIED_WAIT_REPAIR:-1}"
+CLOSE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES:-0}"
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 ISSUE_REPO="${FLEET_UNJUSTIFIED_WAIT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_UNJUSTIFIED_WAIT_FILE_ISSUES:-1}"
 
@@ -246,11 +260,17 @@ audit_stop_reason() {
     local reason
     reason=$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)
     case "$reason" in
-        ""|unit-failure|daily-sweep|boundary:*|cooldown_active|auditor-resolved)
+        ""|unit-failure|daily-sweep|boundary:*|cooldown_active|auditor-resolved|alert-repair-stalled)
             # unit-failure / daily-sweep = actively being worked by the
             # escalation chain (each has its own trip + dispatch budget);
             # boundary:* = Nish-reserved gate; cooldown_active = circuit
-            # holding with its own clock; auditor-resolved = closed.
+            # holding with its own clock; auditor-resolved = closed;
+            # alert-repair-stalled = fleet-completion-canary escalation hop
+            # (writes STOP-REASON itself; carries its own hop budget +
+            # verify_deadline_ts clock — see fleet-completion-canary.py
+            # observe_unit_escalation, which treats it as active, not
+            # terminal). Without this entry the canary fires UNJUSTIFIED-WAIT
+            # on its own sibling's sanctioned state (fleet-ops#2094).
             echo 0
             return 0
             ;;
@@ -262,17 +282,43 @@ audit_stop_reason() {
     esac
 }
 
-# --- READY-WORK audit -------------------------------------------------------
+# --- READY-WORK audit + repair ----------------------------------------------
 # Unchecked items: `after:` = named clock (the shell check is the gate).
 # A CLAIMED item with no DONE marker older than CLAIM_STALE_HOURS is a
 # stalled claim — an UNJUSTIFIED-WAIT unless it carries an after: gate.
+#
+# Repair (fleet-ops#852): when REPAIR=1, strip the stale CLAIMED:<ts>
+# marker so the item returns to ready-now. ready-work-dispatch skips any
+# line that still carries CLAIMED:, so an after: gate alone would silence
+# the detector without ever re-dispatching the work. Unclaiming restores
+# the TOP GEAR contract: the wait ends, the item is free for the next
+# ready-work.path / recheck tick. The repair is the prevention mechanism
+# for this failure class (mechanical-fix rule, fleet-ops#366).
+#
+# Returns the count of unrepaired findings. A successful repair of every
+# stalled claim yields 0 so the tick can go green.
+repair_stalled_claim_line() {
+    # Strip a trailing CLAIMED:<ts> (and any whitespace before it) from one
+    # READY-WORK line. Preserves after:/[pi:]/[packet:] fields that sit
+    # before CLAIMED. Idempotent on lines that no longer carry CLAIMED:.
+    local line="$1"
+    printf '%s' "$line" | sed -E 's/[[:space:]]+CLAIMED:[0-9TZ:+-]+//'
+}
+
 audit_ready_work() {
     [[ -f "$READY_WORK" ]] || { echo 0; return 0; }
-    local n=0 now
+    local n=0 now repaired=0
     now=$(now_epoch)
-    local line item after claimed done_flag
-    while IFS= read -r line; do
-        [[ "$line" == "- [ ] "* || "$line" == "- [x] "* ]] || continue
+    local line item after claimed done_flag claim_epoch rewritten
+    local -a out_lines=()
+    local dirty=0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Non-item lines pass through unchanged.
+        if [[ "$line" != "- [ ] "* && "$line" != "- [x] "* ]]; then
+            out_lines+=("$line")
+            continue
+        fi
         item="${line#- [x] }"; item="${item#- [ ] }"
         after=""
         claimed=""
@@ -290,17 +336,103 @@ audit_ready_work() {
             # is in-flight — still not a clock, but not stale enough to
             # scream. TOP GEAR's clock rule is about WAITING; a fresh claim
             # is being worked.
-            local claim_epoch=0
+            claim_epoch=0
             claim_epoch=$(date -u -d "$claimed" +%s 2>/dev/null || echo 0)
             if [[ "$claim_epoch" =~ ^[0-9]+$ ]] && (( claim_epoch > 0 )); then
                 if (( now - claim_epoch > CLAIM_STALE_HOURS * 3600 )); then
+                    if [[ "$REPAIR" == "1" ]]; then
+                        rewritten=$(repair_stalled_claim_line "$line")
+                        if [[ "$rewritten" != "$line" ]]; then
+                            loud "UNJUSTIFIED-WAIT-REPAIR" "READY-WORK claim unclaimed: '${item:0:100}…' CLAIMED:$claimed (${CLAIM_STALE_HOURS}h threshold) — stripped CLAIMED so the item is ready-now again"
+                            out_lines+=("$rewritten")
+                            dirty=1
+                            repaired=$((repaired + 1))
+                            continue
+                        fi
+                    fi
                     loud "UNJUSTIFIED-WAIT" "READY-WORK claim is stalled: '${item:0:100}…' CLAIMED:$claimed (${CLAIM_STALE_HOURS}h threshold) with no DONE and no after: gate — the wait has no clock"
                     n=$((n + 1))
                 fi
             fi
         fi
+        out_lines+=("$line")
     done < "$READY_WORK"
+
+    if [[ "$dirty" -eq 1 ]]; then
+        local tmp
+        tmp=$(mktemp "${READY_WORK}.XXXXXX")
+        printf '%s\n' "${out_lines[@]}" >"$tmp"
+        # Preserve a trailing newline even when the last line was empty.
+        if ! mv "$tmp" "$READY_WORK"; then
+            log "WARN: failed to write repaired READY-WORK to $READY_WORK"
+            rm -f "$tmp"
+            # Fall through: count unrepaired so the tick still fails loud.
+            n=$((n + repaired))
+            repaired=0
+        else
+            log "ready-work repair: unclaimed=$repaired file=$READY_WORK"
+        fi
+    fi
+
     echo "$n"
+}
+
+# Observe-to-close open signal: unjustified-wait/* issues when this tick
+# is green (fleet-ops#852 / #650 pattern). Two-tick close: first green
+# tick posts `resolved-at: signal: …`; a later green tick that already
+# sees that marker closes. Heartbeat opts in via CLOSE_ISSUES=1.
+observe_to_close() {
+    [[ "$CLOSE_ISSUES" == "1" ]] || { log "observe-to-close: skipped (FLEET_UNJUSTIFIED_WAIT_CLOSE_ISSUES=$CLOSE_ISSUES)"; return 0; }
+    command -v "$GH" >/dev/null 2>&1 || { log "observe-to-close: gh missing — skip"; return 0; }
+    local open_json observed=0 closed=0
+    set +e
+    open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 \
+        --json number,body,comments 2>/dev/null)
+    set -e
+    [[ -n "$open_json" ]] || { log "observe-to-close: empty issue list — skip"; return 0; }
+
+    local irow num body blob signal marker comment comment_rc close_rc
+    while IFS= read -r irow; do
+        [[ -n "$irow" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$irow")
+        [[ -n "$num" && "$num" != "null" ]] || continue
+        body=$(jq -r '.body // ""' <<<"$irow")
+        signal=$(grep -oE 'signal: unjustified-wait/[a-z0-9-]+' <<<"$body" | head -1 || true)
+        [[ -n "$signal" ]] || continue
+        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")
+        marker="resolved-at: ${signal}"
+        if grep -Fq -- "$marker" <<<"$blob"; then
+            set +e
+            "$GH" issue close "$num" -R "$ISSUE_REPO" --reason completed \
+                >/tmp/unjustified-wait-close.err 2>&1
+            close_rc=$?
+            set -e
+            if [[ "$close_rc" -eq 0 ]]; then
+                closed=$((closed + 1))
+                log "OBSERVE-CLOSED ${signal#signal: unjustified-wait/} -> #$num (resolved-at + detector green)"
+            else
+                log "WARN: failed to close #$num (rc=$close_rc) $(tr '\n' ' ' </tmp/unjustified-wait-close.err 2>/dev/null)"
+            fi
+            continue
+        fi
+        comment="${marker}
+
+observed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Detector is green on a real heartbeat tick (fleet-ops#852 observe-to-close)."
+        set +e
+        "$GH" issue comment "$num" -R "$ISSUE_REPO" --body "$comment" \
+            >/tmp/unjustified-wait-comment.err 2>&1
+        comment_rc=$?
+        set -e
+        if [[ "$comment_rc" -eq 0 ]]; then
+            observed=$((observed + 1))
+            log "OBSERVED-RESOLVED ${signal#signal: unjustified-wait/} -> #$num"
+        else
+            log "WARN: failed to comment on #$num (rc=$comment_rc) $(tr '\n' ' ' </tmp/unjustified-wait-comment.err 2>/dev/null)"
+        fi
+    done < <(jq -c '.[]' <<<"$open_json")
+    log "observe-to-close: commented=$observed closed=$closed"
 }
 
 # --- auto-file --------------------------------------------------------------
@@ -330,7 +462,7 @@ Do not close until the detector reports this clean on a real heartbeat tick (obs
 $signal"
     set +e
     local created
-    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
     local rc=$?
     set -e
     if [[ "$rc" -eq 0 ]] && [[ -n "$created" ]]; then
@@ -362,4 +494,5 @@ if [[ "$total" -gt 0 ]]; then
 fi
 
 loud "UNJUSTIFIED-WAIT-OK" "every wait carries a named clock (seats=$s stop_reason=$r ready_work=$w timers=$t) — TOP GEAR invariant holds"
+observe_to_close
 exit 0

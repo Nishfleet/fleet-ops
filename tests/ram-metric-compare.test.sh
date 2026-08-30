@@ -7,7 +7,7 @@
 #      reports mismatch=1 and those p95s. Does not edit ram_gb_per_worker.
 #   2. Equal metrics report mismatch=0.
 #   3. Zero units still exit 0 and write a state file.
-#   4. Admission uses ram_gb_per_worker from the cap map (0.6 as of #1168), no self-calibrate.
+#   4. Admission uses ram_gb_per_worker from the cap map (0.5 as of #1558), no self-calibrate.
 #   5. Comments that cite 35 MB must label it as process VmRSS and must
 #      also cite memory.current + fleet-ops#202 (so the class cannot
 #      silently return as "RSS means cgroup").
@@ -93,16 +93,25 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission uses cap-map ram_gb_per_worker (0.6), no self-calibrate
+# 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
+#    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
+#    Drift history: #1246 flagged the 1.5 lock stale after #1168 set 0.6; #1270
+#    locked the assertion at 0.6 and #1284 fixed the docstrings; #1558 later
+#    re-measured down to 0.5. Coupling rule (fleet-ops#1190, the #1168 drift
+#    that broke this test): the
+#    "0.5" below is a deliberate lock. When you change ram_gb_per_worker in
+#    config/seat-caps.json, update this assertion and the ok line below in the
+#    SAME commit/PR. The config value is the source of truth; this test exists
+#    to catch a config change that forgets its measurement doc.
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.6" ]] \
-    || fail "ram_gb_per_worker must be 0.6 (got $(jq -r '.ram_gb_per_worker' "$caps"))"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.5" ]] \
+    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula is 0.6 G from cap map, no self-calibrate"
+ok "4. admission formula is 0.5 G from cap map, no self-calibrate"
 
 # =========================================================================
 # 5. 35 MB cannot be cited as cgroup memory.current
@@ -171,6 +180,24 @@ echo "$out" | grep -q 'current_p95_mb=822.6' || fail "must read MemoryCurrent by
 echo "$out" | grep -q 'rss_p95_mb=35.0' || fail "must read VmRSS from MainPID; got: $out"
 echo "$out" | grep -q 'mismatch=1' || fail "live walk of #202 shape must mismatch; got: $out"
 ok "7. activating oneshot + named properties (not --value order)"
+
+# =========================================================================
+# 8. ram_governor_cap sanity assertion: fail loud if cap >= 64
+# =========================================================================
+# A MB-vs-GB slip (or a bogus tiny per-worker budget) can make the governor
+# claim thousands of workers. It must refuse to emit a cap >= 64.
+sanity_caps="$scratch/caps-sanity.json"
+jq '.ram_gb_per_worker = 0.0001' "$caps" > "$sanity_caps"
+set +e
+out=$(PI_PACKET_STATE="$scratch/pi-packet-sanity" SEAT_CAPS_JSON="$sanity_caps" \
+    bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_governor_cap 2>/dev/null' "$lib")
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] \
+    || fail "ram_governor_cap must fail loud when computed cap >= 64 (rc=$rc)"
+[[ -z "$out" ]] \
+    || fail "ram_governor_cap must not emit a huge cap on sanity fail (got '$out')"
+ok "8. ram_governor_cap fails loud when a unit slip yields cap >= 64"
 
 echo
 echo "ALL OK"

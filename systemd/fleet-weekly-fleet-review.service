@@ -1,13 +1,13 @@
 [Unit]
-Description=Weekly Fleet Review (WFR) — blind 5-lens senior research + conference (fleet-ops#1146)
+Description=Weekly Fleet Review (WFR) — blind 6-lens senior research + conference (fleet-ops#1146)
 # Named reason: the 2026-08-27 "Weekly Fleet Review approved" ledger line
-# mandates a weekly (Sun post-maintenance) blind 5-lens senior research +
+# mandates a weekly (Sun post-maintenance) blind 6-lens senior research +
 # conference, output capped at 5 specced actions + ledger discards, self-
 # scoring, ratio-governed, output = claimed work only. agent-cron-run
 # already owns seat rotation and pi --print; this unit is that runner
 # with a weekly slug. Restart=on-failure re-seats a transient 429
 # instead of waiting until next Sunday. TimeoutStartSec=90min: a single
-# run does 5 lenses + conference + filing — heavier than a delta sweep.
+# run does 6 lenses + conference + filing — heavier than a delta sweep.
 StartLimitIntervalSec=1h
 StartLimitBurst=3
 

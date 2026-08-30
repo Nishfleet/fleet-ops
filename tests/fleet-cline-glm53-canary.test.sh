@@ -324,11 +324,28 @@ ok "scenario10: broken watch fails loud"
 
 # --- 11. production seat-caps ----------------------------------------------
 : >"$gh_log"; : >"$triage"
-base_catalog; base_models
-if jq -r '.providers.cline.models // {} | keys[]' "$repo_root/config/seat-caps.json" \
-    | grep -qiE 'glm-5[.-]3'; then
-  fail "scenario11: production seat-caps still allowlists a GLM 5.3 family slug on cline"
-fi
+while IFS= read -r slug; do
+  [[ -n "$slug" ]] || continue
+  [[ "$slug" == "z-ai/glm-5.3-flash" ]] || fail "scenario11: production seat-caps has unproven GLM 5.3 family slug on cline: $slug"
+done < <(jq -r '.providers.cline.models // {} | keys[]' "$repo_root/config/seat-caps.json" | grep -iE 'glm-5[.-]3' || true)
+write_catalog <<'TSV'
+cline               cline-pass/deepseek-v4-flash                        131.1K   16.4K    no        no
+cline               cline-pass/minimax-m3                               200K     32K      no        no
+cline               z-ai/glm-5.3-flash                                  131.1K   16.4K    no        no
+TSV
+write_models <<'JSON'
+{
+  "providers": {
+    "cline": {
+      "models": [
+        { "id": "cline-pass/deepseek-v4-flash" },
+        { "id": "cline-pass/minimax-m3" },
+        { "id": "z-ai/glm-5.3-flash", "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }
+      ]
+    }
+  }
+}
+JSON
 prod_out=$(
   SEAT_CAPS_JSON="$repo_root/config/seat-caps.json" \
   FLEET_CLINE_GLM53_CATALOG="$scratch/catalog.tsv" \
@@ -338,7 +355,7 @@ prod_out=$(
   "$bin" 2>&1
 ) || fail "scenario11: production parked state must exit 0 ($prod_out)"
 grep -q 'CLINE-GLM53-OK' <<<"$prod_out" || fail "scenario11: production must log OK ($prod_out)"
-ok "scenario11: production seat-caps has no GLM 5.3 family slug on cline"
+ok "scenario11: production seat-caps wires the proven free z-ai/glm-5.3-flash"
 
 # --- 12. heartbeat wiring --------------------------------------------------
 grep -F 'fleet-cline-glm53-canary' "$tier1" >/dev/null \

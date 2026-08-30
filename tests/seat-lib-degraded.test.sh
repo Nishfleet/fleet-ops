@@ -3,9 +3,9 @@
 #
 # fleet-ops#63: distinguish `active/running` (busy) from
 # `activating/auto-restart` (degraded, lane held but no work) in seat
-# accounting. fleet-ops#355: the enumerator must use at-sign globs
-# (`pi-issue@*.service`), not hyphen (`pi-issue-*.service`), because
-# template instances are `pi-issue@<inst>.service`.
+# accounting. fleet-ops#1155: the worker enumerator now matches the
+# ExecStart command for "pi --print" instead of unit-name globs, so
+# odd-named ad-hoc `pi-systemd-run --unit <name>` workers count too.
 #   1. unit_is_degraded() returns true only for activating/auto-restart.
 #   2. count_degraded_total() counts degraded units across the
 #      registry + legacy-grep paths.
@@ -32,7 +32,8 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 fake="$scratch/systemctl"
 active_db="$scratch/active.db"
 sub_db="$scratch/sub.db"
-: >"$active_db"; : >"$sub_db"
+exec_db="$scratch/exec.db"
+: >"$active_db"; : >"$sub_db"; : >"$exec_db"
 cat >"$fake" <<'FAKE'
 #!/usr/bin/env bash
 shift  # --user
@@ -40,11 +41,14 @@ case "$1" in
   list-units)
     shift
     state_filter=""
+    type_filter=""
     declare -a patterns=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --state=*) state_filter="${1#--state=}"; shift ;;
         --state)   state_filter="$2"; shift 2 ;;
+        --type=*)  type_filter="${1#--type=}"; shift ;;
+        --type)    type_filter="$2"; shift 2 ;;
         --no-legend) shift ;;
         --plain) shift ;;
         *) patterns+=("$1"); shift ;;
@@ -55,16 +59,18 @@ case "$1" in
       active=$(grep -F "$u|" "$FAKE_ACTIVE_DB" | head -n1 | cut -d'|' -f2)
       sub=$(grep -F "$u|" "$FAKE_SUB_DB" | head -n1 | cut -d'|' -f2)
       [[ -z "$active" ]] && continue
-      # Match against any pattern (globs).
-      pat_match=0
-      for pat in "${patterns[@]:-}"; do
-        [[ -z "$pat" ]] && continue
-        # shellcheck disable=SC2254
-        case "$u" in
-          $pat) pat_match=1 ;;
-        esac
-      done
-      (( pat_match )) || continue
+      # Match against any pattern (globs). No patterns = match all.
+      if ((${#patterns[@]})); then
+        pat_match=0
+        for pat in "${patterns[@]}"; do
+          [[ -z "$pat" ]] && continue
+          # shellcheck disable=SC2254
+          case "$u" in
+            $pat) pat_match=1 ;;
+          esac
+        done
+        (( pat_match )) || continue
+      fi
       if [[ -n "$state_filter" ]]; then
         match=0
         IFS=',' read -ra wants <<<"$state_filter"
@@ -114,7 +120,7 @@ FAKE
 chmod +x "$fake"
 export FAKE_ACTIVE_DB="$active_db"
 export FAKE_SUB_DB="$sub_db"
-export FAKE_EXEC_DB="$scratch/exec.db"
+export FAKE_EXEC_DB="$exec_db"
 
 # Put the fake systemctl on PATH so seat-lib.sh's bare `systemctl --user ...`
 # invocations hit the stub instead of the real systemd user instance.
@@ -158,6 +164,11 @@ seed_unit() {
     printf '%s|%s\n' "$unit" "$sub" >>"$sub_db"
 }
 
+seed_exec() {
+    local unit="$1" exec="$2"
+    printf '%s|%s\n' "$unit" "$exec" >>"$exec_db"
+}
+
 # --- helper: seed an active-seats registry entry -------------------------
 seed_registry() {
     local instance="$1" provider="$2" model="$3" sysunit="$4"
@@ -176,6 +187,15 @@ seed_unit pi-issue@fleet-ops-31.service activating start
 seed_unit pi-issue@fleet-ops-20.service active running
 seed_unit pi-issue@fleet-ops-21.service failed failed
 seed_unit pi-issue@fleet-ops-22.service inactive dead
+
+# fleet-ops#1155: the enumerator now matches ExecStart content, not unit
+# names. Give every active/activating unit a pi --print ExecStart so the
+# legacy path can see it.
+seed_exec pi-issue@fleet-ops-36.service 'pi --print --provider devin --model swe-1-7'
+seed_exec pi-issue@fleet-ops-31.service 'pi --print --provider devin --model swe-1-7'
+seed_exec pi-issue@fleet-ops-20.service 'pi --print --provider devin --model swe-1-7'
+seed_exec pi-issue@fleet-ops-21.service 'pi --print --provider devin --model swe-1-7'
+seed_exec pi-issue@fleet-ops-22.service 'pi --print --provider devin --model swe-1-7'
 
 unit_is_degraded pi-issue@fleet-ops-36.service \
   || fail "unit_is_degraded must return true for activating/auto-restart"
@@ -199,6 +219,7 @@ ok "count_degraded_total = 1 (only fleet-ops-36 in auto-restart)"
 
 # Add another auto-restart unit via the registry; count rises.
 seed_unit pi-issue@fleet-ops-75.service activating auto-restart
+seed_exec pi-issue@fleet-ops-75.service 'pi --print --provider devin --model swe-1-7'
 seed_registry pi-issue-fleet-ops-75 devin swe-1-7 pi-issue@fleet-ops-75.service
 n=$(count_degraded_total)
 [[ "$n" == "2" ]] || fail "count_degraded_total: expected 2 after adding fleet-ops-75, got $n"
@@ -220,34 +241,40 @@ n=$(count_degraded_total)
 [[ "$n" == "2" ]] || fail "count_degraded_total: activating/start must NOT count as degraded, got $n"
 ok "count_degraded_total excludes activating/start (busy, not degraded)"
 
-# --- 5: source pins at-sign list-units globs (fleet-ops#355) --------------
-# Template instances are pi-issue@<inst>.service. Hyphen globs match
-# nothing. The same class as #28 (heartbeat §4) and #103 (heartbeat §7),
-# in seat-lib's worker enumerator.
+# --- 5: source enumerates by ExecStart, not unit-name patterns (fleet-ops#1155)
+# The worker enumerator must use `systemctl show -p ExecStart` and match
+# "pi --print"; it must never use name globs like pi-issue@*.service.
+grep -q 'ExecStart' "$SEAT_LIB" && grep -q 'pi --print' "$SEAT_LIB" \
+  || fail "seat-lib.sh must inspect ExecStart for 'pi --print'"
 grep -F "list-units 'pi-issue@*.service' 'pi-packet@*.service'" "$SEAT_LIB" >/dev/null \
-  || fail "seat-lib.sh must list-units pi-issue@*.service and pi-packet@*.service (at-sign)"
-grep -F "list-units 'pi-issue-*.service' 'pi-packet-*.service'" "$SEAT_LIB" >/dev/null \
-  && fail "seat-lib.sh must not list-units pi-issue-*.service / pi-packet-*.service (hyphen)" || true
-ok "source uses at-sign list-units globs, not hyphen"
+  && fail "seat-lib.sh must not use pi-issue@/pi-packet@ name globs" || true
+ok "source enumerates by ExecStart 'pi --print', not unit-name globs"
 
-# --- 6: _seat_list_unit returns at-sign template instances ----------------
-# A hyphen-named unit is seeded so a leftover hyphen glob would still
-# "succeed" against the wrong name. The enumerator must ignore it.
-seed_unit pi-issue-355.service active running
+# --- 6: _seat_list_unit counts odd-named pi --print units -----------------
+# fleet-ops#1155: ad-hoc pi-systemd-run --unit <odd-name> units must show
+# up when their ExecStart contains "pi --print", regardless of the name.
+seed_unit org-odd-1155.service active running
+seed_exec org-odd-1155.service 'pi --print --provider devin --model swe-1-7'
+# A non-worker service that happens to be active must not be emitted.
+seed_unit not-a-worker.service active running
+seed_exec not-a-worker.service '/bin/true'
 listed=$(_seat_list_unit)
 printf '%s\n' "$listed" | grep -qxF 'pi-issue@fleet-ops-36.service' \
   || fail "_seat_list_unit must emit pi-issue@fleet-ops-36.service, got: $listed"
-printf '%s\n' "$listed" | grep -qxF 'pi-issue-355.service' \
-  && fail "_seat_list_unit must not emit hyphen-named pi-issue-355.service, got: $listed" || true
-ok "_seat_list_unit emits at-sign template instances, not hyphen names"
+printf '%s\n' "$listed" | grep -qxF 'org-odd-1155.service' \
+  || fail "_seat_list_unit must emit odd-named org-odd-1155.service, got: $listed"
+printf '%s\n' "$listed" | grep -qxF 'not-a-worker.service' \
+  && fail "_seat_list_unit must not emit not-a-worker.service, got: $listed" || true
+ok "_seat_list_unit counts odd names with pi --print and ignores non-pi units"
 
-# --- 7: count_degraded_total legacy path sees at-sign crash-loopers -------
-# A crash-looping worker that never wrote a registry file (legacy ExecStart
-# path, or a wipe of active-seats) must still count. Hyphen globs miss it.
-seed_unit pi-issue@fleet-ops-355.service activating auto-restart
+# --- 7: count_degraded_total legacy path sees odd-named crash-loopers ------
+# A crash-looping worker with an odd name and no registry file must still
+# count; the fix is the ExecStart "pi --print" match (fleet-ops#1155).
+seed_unit weird-1155-degraded.service activating auto-restart
+seed_exec weird-1155-degraded.service 'pi --print --provider devin --model swe-1-7'
 n=$(count_degraded_total)
-[[ "$n" == "3" ]] || fail "count_degraded_total: expected 3 after unregistered pi-issue@fleet-ops-355, got $n"
-ok "count_degraded_total counts an unregistered at-sign auto-restart unit"
+[[ "$n" == "3" ]] || fail "count_degraded_total: expected 3 after unregistered weird-1155-degraded, got $n"
+ok "count_degraded_total counts an unregistered odd-named pi --print auto-restart unit"
 
 # --- 8: class gate: no hyphen list-units in production code ---------------
 # Prevents a fourth copy of this bug. Tests may mention the old glob to

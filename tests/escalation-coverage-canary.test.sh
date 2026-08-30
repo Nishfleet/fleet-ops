@@ -14,6 +14,9 @@
 #   5. Marker files for #76 and #124 suppress the pending findings; #76 is
 #      also suppressed by observing the real delivery wiring in the repo
 #      (watchman lib + heartbeat/tier1 wiring + hc.env EnvironmentFile).
+#      #124 is also observed as wired when the helper + a non-comment
+#      tier1 invocation exist (no marker needed); missing wiring without
+#      a marker is PENDING so the two canary steps cannot disagree.
 #
 # GitHub plane:
 #   6. auto-revert.yml + red-on-main-detector.yml present -> covered.
@@ -316,6 +319,10 @@ WF
   write_backup_fresh
   # Block 11 default: green vault-conflict handler + fixture resolver.
   write_vault_conflict_fresh
+  # Block 12 (fleet-ops#520): free-tier privacy guard fixtures.
+  mkdir -p "$repo/lib" "$repo/config"
+  cp "$repo_root/lib/seat-lib.sh" "$repo/lib/seat-lib.sh"
+  cp "$repo_root/config/repo-privacy.json" "$repo/config/repo-privacy.json"
 }
 
 # ============================================================================
@@ -370,6 +377,21 @@ SH
 [Service]
 EnvironmentFile=-/home/nish/.config/fleet-heartbeat/hc.env
 SVC
+}
+
+# Wire the #124 red-PR redispatch in the scratch repo so the canary's
+# block 4 sees real wiring (not just a marker). Mirrors the live layout:
+# executable helper + a non-comment invocation in fleet-heartbeat-tier1.
+wire_redpr() {
+  mkdir -p "$repo/bin"
+  cp "$repo_root/bin/fleet-heartbeat-red-pr-repair" "$repo/bin/fleet-heartbeat-red-pr-repair"
+  chmod +x "$repo/bin/fleet-heartbeat-red-pr-repair"
+  cat >"$repo/bin/fleet-heartbeat-tier1" <<'SH'
+#!/usr/bin/env bash
+# fleet-heartbeat-tier1 — block 12 delegates to the red-pr-repair helper.
+fleet-heartbeat-red-pr-repair
+SH
+  chmod +x "$repo/bin/fleet-heartbeat-tier1"
 }
 
 # ============================================================================
@@ -991,12 +1013,151 @@ grep -q 'fixture \*.sync-conflict-\* cleared' <<<"$env_out" \
 ! grep -q 'vault-conflict:' "$triage" || fail "scenario21: fresh handler must not raise vault-conflict"
 ok "scenario21: fixture *.sync-conflict-* cleared -> OK"
 
+# ============================================================================
+# Scenario 22: step 4 observes the #124 wiring directly (no marker needed)
+# — the two canary steps agree on a real tick (fleet-ops#124 adjudication).
+# The redispatch is delivered as heartbeat block 12; step 4 must see that
+# wiring (helper + tier1) and agree with step 7's claim_repos coverage,
+# WITHOUT the .red-ci-ownerless-guard marker.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509" "fleet-ops"
+write_claim_repos "Nishfleet/0509" "Nishfleet/fleet-ops"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+wire_redpr
+# REDCI marker deliberately absent — wiring must be observed directly.
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario22: must exit 0, got $env_rc ($env_out)"
+! grep -q 'red-CI-on-ownerless-PR coverage pending' "$triage" || fail "scenario22: step 4 must NOT report #124 PENDING when the helper is wired"
+# Step 4's "wired" line and step 7's "covered" line are log() (stderr), not
+# loud() (triage) — assert against the captured stderr.
+grep -q 'red-CI ownerless-PR coverage wired' <<<"$env_out" || fail "scenario22: stderr must show step 4 observed the wiring"
+grep -q 'covered by #124 redispatch' <<<"$env_out" || fail "scenario22: step 7 must still report claim_repos coverage"
+grep -q 'ESCALATION-CANARY-OK' "$triage" || fail "scenario22: triage must carry the OK line"
+grep -q 'pending=0' "$triage" || fail "scenario22: OK line must show pending=0 when #124 is observed as wired"
+ok "scenario22: #124 wiring observed directly — step 4 agrees with step 7, no marker, no PENDING"
+
+# ============================================================================
+# Scenario 23: step 4 PENDING when the helper is missing (wiring absent, no
+# marker) — proves the canary still fails loud if #124 is ever unwired.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+: >"$FLEET_ESCALATION_CANARY_DELIVERY"
+: >"$FLEET_ESCALATION_CANARY_BRIDGE"
+# No helper, no tier1 reference, no REDCI marker.
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario23: must exit 0 (PENDING not fail), got $env_rc ($env_out)"
+grep -q 'red-CI-on-ownerless-PR coverage pending' "$triage" || fail "scenario23: step 4 must report #124 PENDING when wiring is absent"
+ok "scenario23: #124 wiring absent + no marker -> PENDING (loud, not fail)"
+
 ok "escalation-coverage-canary: block 11 vault-conflict (fleet-ops#529) covered"
+
+# Scenario 24 (fleet-ops#520): privacy guard — config missing -> VIOLATION
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/config/repo-privacy.json"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario24: must exit 1 (missing privacy map), got $env_rc ($env_out)"
+grep -q 'privacy guard: config/repo-privacy.json missing' "$triage" \
+  || fail "scenario24: triage must name the missing privacy map"
+ok "scenario24: missing config/repo-privacy.json -> VIOLATION naming it"
+
+# Scenario 25 (fleet-ops#520): privacy guard — broken JSON -> VIOLATION
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+printf 'not json{' >"$repo/config/repo-privacy.json"
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario25: must exit 1 (unparseable privacy map), got $env_rc ($env_out)"
+grep -q 'privacy guard: config/repo-privacy.json unparseable' "$triage" \
+  || fail "scenario25: triage must name the unparseable privacy map"
+ok "scenario25: unparseable config/repo-privacy.json -> VIOLATION naming it"
+
+# Scenario 26 (fleet-ops#520): privacy guard — default_policy widened -> VIOLATION
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+cat >"$repo/config/repo-privacy.json" <<'JSON'
+{"default_policy":"public","public":["0509","fleet-ops"],"private":[]}
+JSON
+
+run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario26: must exit 1 (widened default_policy), got $env_rc ($env_out)"
+grep -q "default_policy is not 'private'" "$triage" \
+  || fail "scenario26: triage must name the widened default_policy"
+ok "scenario26: widened default_policy -> VIOLATION"
+
+# Scenario 27 (fleet-ops#520): privacy guard — skip flag suppresses block 12
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+rm -f "$repo/config/repo-privacy.json"
+export FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1
+
+run_canary
+
+unset FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD
+[[ "$env_rc" == 0 ]] || fail "scenario27: skip flag must keep exit 0, got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1)' <<<"$env_out" \
+  || fail "scenario27: canary must log the SKIP"
+! grep -q 'privacy guard' "$triage" || fail "scenario27: skip flag must suppress privacy guard"
+ok "scenario27: skip flag suppresses block 12"
+
+ok "escalation-coverage-canary: block 12 free-tier privacy guard (fleet-ops#520) covered"
+
 
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/entitled-wired-canary.test.sh"
+
+# fleet-ops#424: leftover AIMD meter canary. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens
+# cannot push .github/workflows/**).
+bash "$here/aimd-meter-canary.test.sh"
 
 # fleet-ops#388: restore drill. Invoked from this CI-listed file so hosted
 # runners run it without a workflow edit (worker tokens cannot push
@@ -1013,6 +1174,12 @@ bash "$here/fleet-resilience-drill.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-escalation-completion.test.sh"
 
+# fleet-ops#468/#1610: alert-repair COMPLETION canary (hop clocks + stall
+# ladder + bounded verify timeout so a verify hop cannot hold the chain open
+# indefinitely). Invoked from this CI-listed file so hosted runners run it
+# without a workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/fleet-completion-canary.test.sh"
+
 # fleet-ops#536: proven-only Pi extension allowlist. Invoked from this
 # CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).
@@ -1025,10 +1192,29 @@ bash "$here/fleet-pi-extensions-canary.test.sh"
 # is the same shape as the sibling canaries above.
 bash "$here/fleet-free-roster-canary.test.sh"
 
+# fleet-ops#531: prepaid max-utilization canary. Invoked from this CI-listed
+# file so hosted runners run it without a workflow edit (worker tokens cannot
+# push .github/workflows/**).
+bash "$here/fleet-prepaid-util-canary.test.sh"
+
+# fleet-ops#629: parked-flash watcher canary (fleet-ops#436). Invoked from
+# this CI-listed file so hosted runners run it without a workflow edit
+# (worker tokens cannot push .github/workflows/**). Same shape as the
+# prepaid-util sibling above; the canary + offline test shipped without a
+# CI host line, so hosted runners never ran the drill.
+bash "$here/paid-flash-canary.test.sh"
+
 # fleet-ops#917: SuperGrok live-validate canary. Invoked from this CI-listed
 # file so hosted runners run it without a workflow edit (worker tokens cannot
 # push .github/workflows/**).
 bash "$here/fleet-seat-live-validate.test.sh"
+
+# fleet-ops#41: headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"].
+# Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**). The
+# script is the prevent side of #41; the live-validate canary above
+# catches the dead case, this one keeps the credential alive.
+bash "$here/grok-token-refresh.test.sh"
 
 # fleet-ops#938: vacation-window credential expiry canary. Invoked from this
 # CI-listed file so hosted runners run it without a workflow edit
@@ -1039,4 +1225,9 @@ bash "$here/credential-expiry-canary.test.sh"
 # from this CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/cf-token-canary.test.sh"
+
+# fleet-ops#1135: bare-metal rebuild manifest + drill. Invoked from this
+# CI-listed file so hosted runners run it without a workflow edit (worker
+# tokens cannot push .github/workflows/**).
+bash "$here/fleet-bare-metal-rebuild.test.sh"
 

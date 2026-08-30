@@ -1,0 +1,30 @@
+{
+  "repository": "Nishfleet/fleet-ops",
+  "branch": "main",
+  "existing_issue_number": 1478,
+  "existing_issue_workflow": "CI",
+  "runs": [
+    {
+      "id": 33144644059,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "success",
+      "head_branch": "main",
+      "head_sha": "2d62250b603391de33f80f2ef39a7dcc788b6553",
+      "created_at": "2026-08-28T05:24:01Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/33144644059"
+    },
+    {
+      "id": 33145362942,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "success",
+      "head_branch": "main",
+      "head_sha": "384d0128651f4c22484b1f295efdf1f6d0409b72",
+      "created_at": "2026-08-28T05:38:16Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/33145362942"
+    }
+  ]
+}

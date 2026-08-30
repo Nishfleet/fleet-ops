@@ -77,6 +77,13 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
+# fleet-ops#1383: phases manifest for seat-selection ledger (#1211).
+pi_phases=""
+if declare -f packet_phases >/dev/null 2>&1; then
+    pi_phases=$(packet_phases "$PROMPT" 2>/dev/null || true)
+fi
+export PI_PACKET_PHASES="${pi_phases:-none}"
+
 seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
 if [[ -z "$seat" ]]; then
     seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"

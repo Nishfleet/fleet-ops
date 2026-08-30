@@ -12,7 +12,7 @@
 #       and quality-research-weekly)
 #   (e) install.sh enable --now the timer (fleet-ops#183 class)
 #   (f) prompt locks the 5-action cap, the signal-attribution rule,
-#       the blind 5-lens structure, and the "claimed work only" output
+#       the blind 8-lens structure (incl. L6 SECURITY), and the "claimed work only" output
 #   (g) role-quality-gates catalog ships the new role with the bypass
 #       check helper, and live audit is green
 #   (h) agent-cron-run with this slug succeeds on a stubbed pi (the
@@ -112,14 +112,25 @@ grep -q 'signal: wfr-action/' "$prompt" \
 grep -q 'claimed work only' "$prompt" \
   || fail "prompt must say 'claimed work only' (no Nish report)"
 grep -q -i 'blind' "$prompt" \
-  || fail "prompt must mention the blind 5-lens structure"
-grep -q '5-lens' "$prompt" \
-  || fail "prompt must name the 5 lenses"
-grep -q '5 lenses' "$prompt" \
-  || fail "prompt must enumerate the 5 lenses"
+  || fail "prompt must mention the blind 8-lens structure"
+grep -q '8-lens' "$prompt" \
+  || fail "prompt must name the 8 lenses"
+grep -q 'eight lenses' "$prompt" \
+  || fail "prompt must enumerate the eight lenses"
+grep -q 'L6 SECURITY' "$prompt" \
+  || fail "prompt must include the L6 SECURITY lens (fleet-ops#1146 Nish addition)"
+grep -q '"lens": "throughput|quality|machinery|truth|outside|security|slo|alert_quality"' "$prompt" \
+  || fail "prompt lens enum must include security"
 grep -q 'DIGEST::' "$prompt" \
   || fail "prompt must tell the agent to emit DIGEST:: for agent-cron-run"
-ok "(f) prompt locks the 5-action cap, signal, blind structure, claimed-work-only"
+# fleet-ops#1151: the baseline-delta pre-pass is a review input. The prompt
+# must read it (missing file / 'None this week' = no strangeness, not a
+# fail) and must not page on it. Locks the WFR-input wiring of #1151.
+grep -q 'WFR/baseline-delta.md' "$prompt" \
+  || fail "prompt must read WFR/baseline-delta.md (baseline-delta pre-pass, fleet-ops#1151)"
+grep -q 'never pages' "$prompt" \
+  || fail "prompt must state the pre-pass never pages"
+ok "(f) prompt locks the 5-action cap, signal, blind 8-lens structure (incl. SECURITY), claimed-work-only, baseline-delta input"
 
 # (g) role-quality-gates catalog + bypass check helper
 jq -e '.roles[] | select(.id == "weekly-fleet-review")' "$role_gates" >/dev/null \
@@ -130,10 +141,14 @@ jq -e '.roles[] | select(.id == "weekly-fleet-review") | .units | index("fleet-w
   || fail "weekly-fleet-review role must list fleet-weekly-fleet-review.service in units[]"
 jq -e '.roles[] | select(.id == "weekly-fleet-review") | .bypass_checks | index("weekly_fleet_review_output_contract")' "$role_gates" >/dev/null \
   || fail "weekly-fleet-review role must name the weekly_fleet_review_output_contract bypass check"
+jq -e '.roles[] | select(.id == "weekly-fleet-review") | .bypass_checks | index("quality_ratchet_contract")' "$role_gates" >/dev/null \
+  || fail "weekly-fleet-review role must name the quality_ratchet_contract bypass check"
 grep -q 'def check_weekly_fleet_review_output_contract' "$role_gates_lib" \
   || fail "lib/role-quality-gates.py must define check_weekly_fleet_review_output_contract"
 grep -q '"weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract' "$role_gates_lib" \
   || fail "BYPASS_CHECKS must register check_weekly_fleet_review_output_contract"
+grep -q 'def check_quality_ratchet_contract' "$role_gates_lib" \
+  || fail "lib/role-quality-gates.py must define check_quality_ratchet_contract"
 
 # Live audit must be green — the new role, prompt, and unit cannot show
 # up as findings (or the role-gate auditor is itself broken).

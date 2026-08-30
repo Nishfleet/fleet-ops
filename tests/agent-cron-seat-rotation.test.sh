@@ -445,6 +445,104 @@ if [[ -z "${AGENT_CRON_SKIP_DRILL:-}" ]]; then
     ok "missing-unit checkout SKIPs instead of failing (fleet-ops#264)"
 fi
 
+# --- class guard: every MANIFEST [Install] timer is enable --now'd ---------
+# fleet-ops#232: the original symptom was install.sh probing is-enabled for
+# the 0509 timer but never following through with enable --now. The fix is
+# the generic [Install] loop in install.sh (it collects every non-template
+# unit with [Install] and enable --now's each .timer/.path). The per-timer
+# lock above only proves the 0509 timer. This guard reads the REAL MANIFEST,
+# so any future timer added with [Install] is automatically required to be
+# enable --now'd by the generic loop -- the class cannot regress silently
+# the way #232 did (a comment-only / probe-only enable line passes the
+# per-timer shape check only for the one timer it names).
+#
+# Self-contained: builds its own stub systemctl with enabled-state tracking
+# (mirrors the #228 stub above) so it runs in every environment -- CI runners
+# and bare worktrees with no user systemd bus included -- not just under
+# NISHFLEET_LIVE_INSTALL_TEST. The class lock that gates a fresh-box install
+# must fire on every run, or the regression class is only checked by hand.
+class_scratch="$scratch/class-root"
+class_units="$scratch/class-units"
+class_fake="$scratch/class-fake-bin"
+mkdir -p "$class_scratch/systemd" "$class_units" "$class_fake"
+cp -a "$install_sh" "$class_scratch/install.sh"
+class_manifest="$class_scratch/MANIFEST"
+: >"$class_manifest"
+declare -a class_timers=()
+while read -r src _dest; do
+  [ -z "$src" ] && continue
+  case "$src" in '#'*) continue ;; esac
+  case "$src" in
+    systemd/*.timer)
+      case "$src" in *@*) continue ;; esac   # templates instantiated by the reconciler
+      case "$src" in systemd/system/*) continue ;; esac   # system-scope: enabled via install.sh --system, not the generic --user loop
+      unit_file="$repo_root/$src"
+      [ -f "$unit_file" ] || fail "MANIFEST timer src missing in repo: $src"
+      grep -qE '^\[Install\]$' "$unit_file" 2>/dev/null || continue   # siterep-deploy deliberately omits [Install]
+      base="$(basename "$src")"
+      mkdir -p "$class_scratch/$(dirname "$src")"
+      cp -a "$unit_file" "$class_scratch/$src"
+      printf '%s %s/%s\n' "$src" "$class_units" "$base" >>"$class_manifest"
+      class_timers+=("$base")
+      ;;
+  esac
+done < "$manifest"
+[[ "${#class_timers[@]}" -gt 1 ]] \
+  || fail "class guard needs multiple [Install] timers in MANIFEST; found ${#class_timers[@]} (guard would be vacuous)"
+class_enabled="$scratch/class-enabled"
+: >"$class_enabled"
+cat >"$class_fake/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+enabled_file="${AGENT_CRON_FAKE_ENABLED:-/dev/null}"
+mkdir -p "$(dirname "$enabled_file")" 2>/dev/null || true
+printf '%s\n' "$*" >>"${SYSTEMCTL_CALLS:?}"
+if [ "${1:-}" = "--user" ]; then
+  shift
+fi
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  is-enabled)
+    unit="${1:-}"
+    [ -f "$enabled_file" ] && grep -qxF "$unit" "$enabled_file" && exit 0
+    exit 1
+    ;;
+  daemon-reload)
+    exit 0
+    ;;
+  enable)
+    for u in "$@"; do
+      [ -n "$u" ] || continue
+      case "$u" in
+        --now) ;;
+        *) printf '%s\n' "$u" >> "$enabled_file" ;;
+      esac
+    done
+    exit 0
+    ;;
+  start)
+    exit 0
+    ;;
+  *)
+    printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
+    exit 1
+    ;;
+esac
+FAKE
+chmod +x "$class_fake/systemctl"
+class_calls="$scratch/class-systemctl.calls"
+: >"$class_calls"
+SYSTEMCTL_CALLS="$class_calls" AGENT_CRON_FAKE_ENABLED="$class_enabled" \
+  SYSTEMCTL="$class_fake/systemctl" PATH="$class_fake:$PATH" \
+  HOME="$scratch/home" XDG_RUNTIME_DIR="$scratch/xdg" \
+  env -u DBUS_SESSION_BUS_ADDRESS \
+  "$class_scratch/install.sh" >/dev/null
+for t in "${class_timers[@]}"; do
+  grep -Fxq -- "--user enable --now $t" "$class_calls" \
+    || fail "generic [Install] loop did not enable --now $t: $(cat "$class_calls")"
+done
+ok "class guard: every MANIFEST [Install] timer (${#class_timers[@]}) is enable --now'd by the generic loop"
+
 # --- systemd-analyze verify on the unit files -------------------------------
 # NOTE: unit-file verification is owned by the dedicated `systemd-analyze` CI
 # job (.github/workflows/ci.yml), which stubs the VPS ExecStart paths

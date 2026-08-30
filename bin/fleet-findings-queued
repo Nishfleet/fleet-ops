@@ -59,12 +59,18 @@ _canon_script=$(readlink -f "$0")
 _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 # Use `-` (not `:-`) so an explicit empty value disables a root (hermeticity
 # for tests); only an unset var falls back to the live VPS default.
 SESSIONS="${FLEET_FINDINGS_QUEUED_SESSIONS-$HOME/.pi/agent/sessions}"
 CURSOR_ROOTS="${FLEET_FINDINGS_QUEUED_CURSOR_ROOTS-$HOME/.cursor/projects}"
 CLAUDE_ROOTS="${FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS-$HOME/.claude/projects}"
 LIB="${FLEET_FINDINGS_QUEUED_LIB:-$_canon_repo/lib/findings-queued.py}"
+# fleet-ops#609 / fleet-ops#631: an explicit FLEET_FINDINGS_QUEUED_LIB pin
+# (even to a missing path) MUST win over the installed fallback. Without this
+# guard the bin silently falls back to ~/.local/lib/pi-packet/findings-queued.py,
+# the missing-helper drill scans clean, and the "fails loud" test exits 0 — a
+# broken helper looks healthy. The -z test below is the guard; do not remove.
 if [[ -z "${FLEET_FINDINGS_QUEUED_LIB:-}" && ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/findings-queued.py" ]]; then
     LIB="${HOME}/.local/lib/pi-packet/findings-queued.py"
 fi
@@ -248,7 +254,7 @@ Do not close until the detector reports this clean on a real heartbeat tick (obs
 
 $signal"
     set +e
-    created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+    created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
     create_rc=$?
     set -e
     if [[ "$create_rc" -eq 0 && -n "$created" ]]; then

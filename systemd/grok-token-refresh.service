@@ -1,0 +1,37 @@
+[Unit]
+Description=Headless OAuth refresh of SuperGrok xai-oauth seat (fleet-ops#41)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# SuperGrok's OAuth access token has a 6 h lifetime. A stale token in
+# ~/.pi/agent/auth.json makes the seat LOOK ready (pi auth check tests
+# presence only) and 401 the moment a worker picks it. fleet-seat-live-
+# validate (fleet-ops#917 / #1450) catches the dead case every heartbeat
+# tick but does not HEAL it — this unit is the heal path. 4 h is well
+# inside the 6 h access-token lifetime and matches the standard
+# prepaid-quota renewal posture; Persistent=true catches up after a
+# sleeping box.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@grok-token-refresh.service), so a failed refresh
+# joins the escalation matrix mechanically instead of burning the
+# SuperGrok week silently.
+#
+# fleet-ops#366: this unit is the prevention mechanism for the failure
+# class "stale SuperGrok credential makes the seat 401". The timer
+# (grok-token-refresh.timer) is the trigger; the script is the fix.
+# The live seat is xai-oauth (stnly/pi-grok, fleet-ops#1163), not the
+# cap=0 legacy `grok` models.json entry.
+Documentation=file:/home/nish/.local/bin/grok-token-refresh
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/grok-token-refresh'
+# The OAuth POST + jq rewrite is bounded well under a minute.
+TimeoutStartSec=2min
+# Never restart: the timer is the retry. A failed refresh escalates via
+# the global drop-in, not via Restart= (a stuck refresh must not loop
+# on a back-to-back retry).
+Restart=no

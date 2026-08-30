@@ -1,0 +1,13 @@
+[Unit]
+Description=Truth staleness checker (weekly, cross-check standing docs vs live state — fleet-ops#1137)
+# Named reason for weekly cadence: docs rot slowly. A weekly check
+# catches stale paths, units, and issue refs before they mislead agents.
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+RandomizedDelaySec=300
+Persistent=true
+AccuracySec=60s
+
+[Install]
+WantedBy=timers.target

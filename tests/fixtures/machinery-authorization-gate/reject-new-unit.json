@@ -1,0 +1,10 @@
+{
+  "name_status": "A\tsystemd/brand-new-dispatcher.service\nA\tbin/brand-new-dispatcher\n",
+  "body": "Adds a dispatcher unit.\n\nCloses #9999\n",
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ]
+  },
+  "manifest_added_lines": []
+}

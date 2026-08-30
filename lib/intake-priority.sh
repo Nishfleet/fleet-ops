@@ -9,12 +9,17 @@
 # agent-ready issues in ascending issue-number order. This lib is the orderer.
 #
 # Rules:
-#   1. A ready issue is critical if it carries `critical-path` OR
-#      `escalate-senior` (escalate-senior implies critical-path). The
-#      detector→queue reconciler (fleet-ops#362) should add `critical-path`
-#      when it files a keystone-signal issue; the orderer already honours
-#      that label.
+#   1. A ready issue is critical if it carries `critical-path` (the
+#      detector→queue reconciler, fleet-ops#362, adds it when it files a
+#      keystone-signal issue). `escalate-senior` issues are NOT critical
+#      work for a regular lane: they are routed to the senior-auditor panel
+#      (fleet-ops#234) and excluded from the regular-worker claim order.
 #   2. Critical issues are claimed before the agent-ready tail.
+#   2b. fleet-ops#180: while the intensive gap-closure loop is converging
+#      (precedence=loop, default), a ready `gap-audit` issue is treated as
+#      critical so it outranks product work. After unanimous DONE writes
+#      precedence=product, gap-audit is tail again. The file is
+#      $GAP_LOOP_PRECEDENCE_FILE (default agent-state/gap-closure/precedence).
 #   3. Anti-starvation: if the last INTAKE_PRIORITY_MAX_CRITICAL records
 #      are all critical AND a tail issue is waiting, the next pick is the
 #      lowest-number tail issue (kind=tail-ratio). Logged on the tick line
@@ -28,13 +33,28 @@ INTAKE_PRIORITY_MAX_CRITICAL="${INTAKE_PRIORITY_MAX_CRITICAL:-2}"
 INTAKE_PRIORITY_WINDOW="${INTAKE_PRIORITY_WINDOW:-3}"
 INTAKE_PRIORITY_LABEL="${INTAKE_PRIORITY_LABEL:-critical-path}"
 INTAKE_PRIORITY_ESCALATE_LABEL="${INTAKE_PRIORITY_ESCALATE_LABEL:-escalate-senior}"
+INTAKE_PRIORITY_GAP_LABEL="${INTAKE_PRIORITY_GAP_LABEL:-gap-audit}"
+INTAKE_PRIORITY_PRECEDENCE_FILE="${GAP_LOOP_PRECEDENCE_FILE:-/home/nish/workspaces/agent-state/gap-closure/precedence}"
+
+intake_priority_loop_open() {
+    local prec="loop"
+    if [[ -f "$INTAKE_PRIORITY_PRECEDENCE_FILE" ]]; then
+        prec="$(tr -d '[:space:]' <"$INTAKE_PRIORITY_PRECEDENCE_FILE")"
+    fi
+    [[ -z "$prec" || "$prec" == "loop" ]]
+}
 
 intake_priority_classify() {
     # stdin: gh issue list JSON array. stdout: classified JSON array.
-    local label escalate
+    local label escalate gap_label gap_critical="false"
     label="$INTAKE_PRIORITY_LABEL"
     escalate="$INTAKE_PRIORITY_ESCALATE_LABEL"
-    jq -c --arg label "$label" --arg escalate "$escalate" '
+    gap_label="$INTAKE_PRIORITY_GAP_LABEL"
+    if intake_priority_loop_open; then
+        gap_critical="true"
+    fi
+    jq -c --arg label "$label" --arg escalate "$escalate" \
+          --arg gap "$gap_label" --argjson gap_critical "$gap_critical" '
       def names:
         (.labels // [])
         | map(if type == "string" then . else (.name // empty) end);
@@ -42,10 +62,14 @@ intake_priority_classify() {
       map({
         number: .number,
         title: (.title // ""),
-        critical: (has($label) or has($escalate)),
+        # fleet-ops#234: escalate-senior is senior-panel-owned, never a
+        # regular-worker claim. Mark it escalation so the walk can exclude it.
+        escalation: has($escalate),
+        critical: (has($label) or ($gap_critical and has($gap))),
         display_kind: (
-          if has($label) then $label
-          elif has($escalate) then $escalate
+          if has($escalate) then $escalate
+          elif has($label) then $label
+          elif ($gap_critical and has($gap)) then $gap
           else "tail"
           end
         )
@@ -88,7 +112,7 @@ intake_priority_ratio_string() {
 
 intake_priority_normalize_kind() {
     case "$1" in
-        critical|critical-path|escalate-senior) printf 'critical\n' ;;
+        critical|critical-path|escalate-senior|gap-audit) printf 'critical\n' ;;
         *) printf 'tail\n' ;;
     esac
 }
@@ -115,6 +139,9 @@ intake_priority_walk() {
     local pick_one="${3:-0}"
     local sim
     sim="$(mktemp)"
+    # fleet-ops#234: escalate-senior issues never enter the regular-worker
+    # claim order; the senior-auditor panel owns them. Drop them up front.
+    remaining="$(jq -c '[.[] | select(.escalation != true)]' <<<"$remaining")"
     intake_priority_recent_kinds "$state_file" 20 >"$sim" || true
 
     while jq -e 'length > 0' <<<"$remaining" >/dev/null; do

@@ -1,0 +1,18 @@
+[Unit]
+Description=Gap-closure senior-auditor invocation %i (conference/research)
+# Sibling of pi-audit@.service (scout-candidate admission panel).
+# One instance per auditor per round. The conference writes
+# $STATE_DIR/pi-audit-jobs/%i/job.json before starting this unit.
+# Inherits global OnFailure=unit-escalation@%n.service. No [Install].
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=GAP_LOOP_STATE_DIR=/home/nish/workspaces/agent-state/gap-closure
+Environment=PI_AUDIT_INSTANCE=%i
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-gap-closure-auditor %i'
+TimeoutStartSec=30min
+Restart=no

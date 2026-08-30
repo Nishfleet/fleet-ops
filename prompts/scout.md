@@ -6,6 +6,26 @@ Hard rules:
 - Never close issues, never merge PRs, never push to main, never edit repo code.
 - Touch only the TARGET repo for issue/label operations.
 - If any `gh` command errors (auth, network), print the error and exit nonzero — fail loud.
+- Vacation park (fleet-ops#1165, audit finding 12, 2026-08-28..2026-09-08):
+  for `Nishfleet/0509` ONLY, do NOT file or label `agent-ready` /
+  `scout-candidate` any issue whose acceptance would make a worker touch a
+  protected verifier/deploy file. The protected_files list is the one in
+  `0509/.github/scripts/required-verifier-integrity.sh`:
+  `.github/workflows/ci.yml`, `.github/workflows/secret-scan.yml`,
+  `.github/workflows/required-verifier-integrity.yml`,
+  `.github/scripts/required-verifier-integrity.sh`,
+  `.github/scripts/test-required-verifier-integrity.sh`,
+  `.github/workflows/deploy-production.yml`,
+  `.github/workflows/finalize-production-soak.yml`,
+  `scripts/ci-verify-production-candidate.sh`,
+  `scripts/ci-verify-provider-main-cas.sh`. Such a PR cannot pass the
+  required-verifier-integrity gate without a repo-admin
+  `verifier-attest: <sha>` comment, and workers must never post that
+  (2026-08-26 attestation breach); with one collaborator there is no
+  independent reviewer. Park these until after 2026-09-08: if you must
+  file one, leave it unlabeled and note `parked: protected-verifier
+  vacation, wait until after 2026-09-08 (fleet-ops#1165)` in the body. Do
+  not weaken or remove the attest gate.
 - Max **8 new issues** per run. If you cannot write a concrete `termination:` command for a candidate, **do not file it**.
 - Max **1 infra issue** per run, and only when it blocks a named product flow (cite the flow).
 - NEVER file: refactors for their own sake, CI/tooling polish, control-plane work, duplicate work already covered by an open issue or PR.
@@ -117,6 +137,7 @@ termination: <one exact verification command whose exit 0 means done; must be ru
 Every one of those issues must additionally satisfy:
 - `accept:` forbids `DROP COLUMN`, `DROP TABLE`, a column/table rename, and `NOT NULL` without a `DEFAULT` in that PR.
 - `accept:` requires a test under `tests/integration/**` that applies the real migrations and asserts the new READ *and* WRITE path. A mocked-binding unit test does not count — it cannot see the schema.
+- `accept:` requires the D1 prod migration senior process from the final 2026-08-27 process amendment (fleet-ops#908): a concrete plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, and text Nish the result. The earlier same-day "do it right now" decision is VOID and is not informed consent.
 - `termination:` runs that integration test, not just the unit suite.
 
 If you cannot decompose the candidate into phases, drop it.
@@ -133,7 +154,7 @@ Do not file candidates whose acceptance criteria ask a worker to bypass these ga
 
 For each chosen candidate (max 8):
 ```bash
-gh issue create -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
+fleet-issue-file file -R Nishfleet/<repo> --title "<concise title>" --body "$(cat <<'EOF'
 <full body>
 EOF
 )"
@@ -150,7 +171,9 @@ gh issue edit <N> -R Nishfleet/<repo> --add-label scout-candidate
 Exception: TARGET REPO `Nishfleet/fleet-ops` is control-plane. Those issues
 already sit behind CI + conference + auto-revert, and the product auditor
 FAILS fleet/CI tooling by design. Apply `agent-ready` there, still within
-`label_budget`.
+`label_budget`, and only when the body passes the spec-gate (a
+`termination:` command, or `accept:` / `required:` / `metric:`). A
+prose-only body stays unlabeled until it has a spec (fleet-ops#543).
 
 Prefer labeling the highest product-impact issues first. Do not label more than `label_budget` total.
 

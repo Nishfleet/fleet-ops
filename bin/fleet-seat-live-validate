@@ -6,6 +6,17 @@
 # is unauthenticated (403 OAuth-invalid, missing ~/.grok/auth.json, or a
 # refresh token that no longer mints). The sub then sits at 100% unused.
 #
+# The grok CLI and the xai-oauth extension (stnly/pi-grok OAuth proxy,
+# fleet-ops#1163) use SEPARATE OAuth clients with SEPARATE tokens:
+#   - grok CLI stores credentials in $GROK_HOME/auth.json
+#   - xai-oauth extension stores credentials in ~/.pi/agent/auth.json
+#
+# A dead grok CLI does NOT imply a dead xai-oauth token. The canary now
+# validates each independently: the grok CLI result writes the grok/*
+# ledger, and a live probe of the xai-oauth token writes the xai-oauth/*
+# ledger. Only when the xai-oauth token itself is dead does the canary mark
+# xai-oauth credentials_bad — never blindly mirroring the grok CLI.
+#
 # Official grok CLI docs (user-guide/02-authentication.md): credentials live
 # in $GROK_HOME/auth.json; the CLI refreshes silently when it runs; when
 # refresh fails, a human must `grok login --device-auth` on this headless
@@ -16,28 +27,28 @@
 # tests auth.json existence, never the exit code alone, and never prints
 # credential contents.
 #
+# For xai-oauth: the token in ~/.pi/agent/auth.json carries a JWT `exp`
+# claim and the extension auto-refreshes on 401 (fleet-ops#1163). The
+# canary validates the xai-oauth seat by making a cheap live call to the
+# subscription proxy cli-chat-proxy.grok.com/v1/models (see
+# validate_xai_oauth) rather than trusting presence. The extension routes
+# every xai-oauth model through that proxy (models.ts CLI_PROXY_BASE_URL),
+# NOT api.x.ai — the token is a SuperGrok subscription credential, so
+# api.x.ai/v1/models returns 403 spending-limit even when the seat is
+# alive (fleet-ops#1441). A persistent non-200 from the proxy is the
+# dead-credential case this row is wired to catch.
+#
 # Running `grok models` every heartbeat tick IS the refresh wiring: if a
 # refresh_token is still stored, the CLI mints a new access token into
 # auth.json before we classify. No stored credentials → cannot refresh;
 # observe-to-open a Nish login ticket.
 #
 # Layers:
-#   1. GATE (fail-loud, exit 1): grok binary missing — the watch is broken.
+#   1. GATE (fail-loud, exit 1): grok binary missing — the grok watch is
+#      broken. (xai-oauth is still validated independently.)
 #   2. DETECTOR (observe-to-open, exit 0): live-dead SuperGrok writes
 #      credentials_bad onto the seat ledger (so pick_seat skips it) and
 #      auto-files a `grok login --device-auth` ticket (deduped).
-#
-# Environment seams (tests):
-#   GROK / FLEET_GROK_BIN          grok binary (default: grok)
-#   GROK_HOME                      grok config dir (default: $HOME/.grok)
-#   PI / FLEET_PI_BIN              pi binary (optional class-check)
-#   PI_SEAT_HEALTH_LEDGER_DIR      per-seat ledger dir
-#   FLEET_HEARTBEAT_TRIAGE         triage file
-#   FLEET_SEAT_LIVE_VALIDATE_REPO  default Nishfleet/fleet-ops
-#   FLEET_SEAT_LIVE_VALIDATE_FILE  1 (default) file issues; 0 skip gh
-#   FLEET_GROK_MODELS_TIMEOUT      seconds (default 30)
-#   GH                             gh binary (tests stub this)
-#   FLEET_PI_AUTH_CHECK_JSON       fixture replacing `pi auth check --json`
 
 set -Eeuo pipefail
 
@@ -45,11 +56,18 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 GROK="${FLEET_GROK_BIN:-${GROK:-grok}}"
 PI="${FLEET_PI_BIN:-${PI:-pi}}"
+CURL="${FLEET_CURL_BIN:-curl}"
 GROK_HOME="${GROK_HOME:-$HOME/.grok}"
 AUTH_JSON="$GROK_HOME/auth.json"
+# xai-oauth extension stores its own OAuth credentials separately from the
+# grok CLI. ~/.pi/agent/auth.json holds the access/refresh token that the
+# pi-grok extension actually uses for xai-oauth provider calls.
+PI_AGENT_AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+MODELS_JSON="${FLEET_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_SEAT_LIVE_VALIDATE_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_SEAT_LIVE_VALIDATE_FILE:-1}"
@@ -101,7 +119,7 @@ file_finding() {
 
 ${MARKER}
 "
-    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
         log "filed: $title"
     else
         log "WARN: gh issue create failed for $MARKER"
@@ -117,7 +135,7 @@ seat_ledger_path() {
 
 # Write one per-seat ledger record. Never includes credential material.
 write_ledger() {
-    local model="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    local provider="$1" model="$2" http_status="$3" health_class="$4" seat_dead="$5" failure_mode="$6"
     local path tmp observed retryable
     mkdir -p "$LEDGER_DIR"
     observed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -126,10 +144,10 @@ write_ledger() {
     else
         retryable=false
     fi
-    path=$(seat_ledger_path grok "$model")
+    path=$(seat_ledger_path "$provider" "$model")
     tmp="${path}.$$.tmp"
     jq -n \
-        --arg provider grok \
+        --arg provider "$provider" \
         --arg model "$model" \
         --argjson http_status "$http_status" \
         --arg health_class "$health_class" \
@@ -157,14 +175,102 @@ write_ledger() {
     chmod 600 "$path" 2>/dev/null || true
 }
 
+# Is `grok` still an enumerated seat (present as a provider in models.json)?
+# fleet-ops#1380 prunes the grok dead-decoy provider from the live seat list
+# (it is superseded by xai-oauth, which carries grok-4.5/4.6 on the healthy
+# subscription proxy path). Once pruned, grok is no longer emitted by
+# enumerate_seats, so painting a `grok__grok-*` ledger entry each tick only
+# reports phantom walled capacity in health counts. When a human re-wires
+# grok (`grok login --device-auth` + re-adding it to models.json), painting
+# resumes automatically. If models.json is missing/unreadable we fail open
+# (paint as before) so the dead-decoy watch is never silently dropped.
+grok_enumerated() {
+    if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
+        jq -e '.providers.grok != null' "$MODELS_JSON" >/dev/null 2>&1
+    else
+        return 0
+    fi
+}
+
 write_both_models() {
-    local http_status="$1" health_class="$2" seat_dead="$3" failure_mode="$4"
-    write_ledger "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
-    write_ledger "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
+    local provider="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    if [[ "$provider" == "grok" ]] && ! grok_enumerated; then
+        log "grok decoy pruned from models.json (fleet-ops#1380): skipping grok__grok-* ledger write; health-count phantom not re-painted (triage/auto-file still fire)"
+        return 0
+    fi
+    write_ledger "$provider" "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
+    write_ledger "$provider" "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
 }
 
 auth_present() {
     [[ -s "$AUTH_JSON" ]]
+}
+
+# Validate the xai-oauth token independently from the grok CLI. The
+# xai-oauth extension (stnly/pi-grok) stores its OAuth credentials in
+# ~/.pi/agent/auth.json — a separate store from the grok CLI's
+# ~/.grok/auth.json. A dead grok CLI does NOT mean xai-oauth is dead.
+#
+# Proves liveness with a cheap live call to the SUBSCRIPTION proxy the
+# extension actually routes through: cli-chat-proxy.grok.com/v1/models.
+# The extension (stnly/pi-grok models.ts rebuildModelsForOAuth) stamps
+# every xai-oauth model's baseUrl to CLI_PROXY_BASE_URL and sends the
+# proxy identity headers (User-Agent, x-grok-client-*). The token is a
+# SuperGrok subscription credential, NOT an api.x.ai API-key credit, so
+# probing api.x.ai/v1/models returns 403 spending-limit even when the
+# subscription seat is fully alive — that false negative produced the
+# fleet-ops#1441 "all four Grok seats 401 credentials_bad" report while
+# the proxy returned 200. Probe the proxy, not the API-credit endpoint.
+#
+# Tests override via FLEET_XAI_OAUTH_PROBE fixture (a file whose first line
+# is "ok" or "dead") so no network is needed in CI.
+# Returns 0 if healthy, 1 if dead, 2 if no token present at all.
+validate_xai_oauth() {
+    local token resp_code probe_url
+    if [[ -n "${FLEET_XAI_OAUTH_PROBE:-}" ]]; then
+        # Test seam: fixture file's first non-empty line is "ok" or "dead".
+        if [[ -f "$FLEET_XAI_OAUTH_PROBE" ]]; then
+            local fixture
+            fixture=$(head -1 "$FLEET_XAI_OAUTH_PROBE" 2>/dev/null | tr -d '[:space:]')
+            if [[ "$fixture" == "ok" ]]; then
+                return 0
+            fi
+        fi
+        return 1
+    fi
+    if [[ ! -f "$PI_AGENT_AUTH_JSON" ]]; then
+        log "xai-oauth: no auth.json at $PI_AGENT_AUTH_JSON"
+        return 2
+    fi
+    token=$(jq -r '.["xai-oauth"].access // empty' "$PI_AGENT_AUTH_JSON" 2>/dev/null || true)
+    if [[ -z "$token" ]]; then
+        log "xai-oauth: no access token in $PI_AGENT_AUTH_JSON"
+        return 2
+    fi
+    # The subscription proxy the extension routes through (models.ts
+    # CLI_PROXY_BASE_URL). Override via FLEET_XAI_OAUTH_PROBE_URL for tests
+    # that want to assert the probe target without a real network call.
+    probe_url="${FLEET_XAI_OAUTH_PROBE_URL:-https://cli-chat-proxy.grok.com/v1/models}"
+    # Burn one cheap call against the subscription proxy with the same
+    # identity headers the extension sends (buildProxyHeaders in models.ts).
+    # We do NOT print the token or any response body that might carry it.
+    # Only the HTTP status is inspected.
+    resp_code=$("$CURL" -sS -o /dev/null -w '%{http_code}' \
+        --max-time 15 \
+        -H "Authorization: Bearer ${token}" \
+        -H "User-Agent: ${FLEET_XAI_OAUTH_UA:-grok-shell/0.2.101 (linux; x86_64)}" \
+        -H "x-grok-client-identifier: ${FLEET_XAI_OAUTH_CLIENT:-grok-shell}" \
+        -H "x-grok-client-version: ${FLEET_XAI_OAUTH_VERSION:-0.2.101}" \
+        -H "x-grok-client-mode: interactive" \
+        -H "X-XAI-Token-Auth: xai-grok-cli" \
+        -H "x-authenticateresponse: authenticate-response" \
+        "$probe_url" 2>/dev/null || true)
+    if [[ "$resp_code" == "200" ]]; then
+        log "xai-oauth: ${probe_url} returned 200 — subscription token valid"
+        return 0
+    fi
+    log "xai-oauth: ${probe_url} returned ${resp_code:-<none>} — token dead"
+    return 1
 }
 
 # Optional class-check. Presence-ready while grok CLI is dead is the
@@ -189,14 +295,49 @@ pi_auth_status() {
 }
 
 if ! command -v "$GROK" >/dev/null 2>&1; then
+    # grok CLI is missing — the grok/* seat watch is broken, but xai-oauth
+    # uses a separate credential store and may still be alive. Mark grok
+    # dead but validate xai-oauth independently.
     loud "SEAT-LIVE-VALIDATE-WATCHER-BROKEN" "grok binary missing: $GROK"
+    write_both_models "grok" 401 credentials_bad true credentials_bad
+    # Validate xai-oauth independently since its watch does not depend on grok CLI
+    set +e
+    validate_xai_oauth
+    xai_rc=$?
+    set -e
+    if (( xai_rc == 0 )); then
+        write_both_models "xai-oauth" 200 healthy false none
+        log "grok CLI missing but xai-oauth independently validated as healthy"
+    else
+        write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
+    fi
+    # Watcher-broken (grok missing) is always fail-loud: the grok watch is
+    # the regression regardless of xai-oauth state. File a finding so the
+    # next heartbeat tick observes it; the body names the xai-oauth status
+    # so a healthy xai-oauth does not get blamed in the same ticket.
     file_finding \
-        "SuperGrok live-validate watcher broken (grok binary missing)" \
-        "fleet-seat-live-validate cannot run: \`$GROK\` is not on PATH.
+        "SuperGrok seat dead: grok CLI missing (watcher broken)" \
+        "fleet-seat-live-validate cannot run the grok CLI watch (\`$GROK\` not on PATH).
 
-Without this watch, a dead SuperGrok credential looks ready again (fleet-ops#917). Restore the grok CLI.
+The xai-oauth extension is probed independently (see validate_xai_oauth):
+xai-oauth result: $( (( xai_rc == 0 )) && echo healthy || echo dead ).
 
-signal: rule-enforcement/sr-prepaid-max-util"
+### grok CLI
+The canary could not run \`$GROK\`. Restore the grok CLI.
+
+### xai-oauth
+The xai-oauth token in ~/.pi/agent/auth.json was probed against the
+subscription proxy cli-chat-proxy.grok.com/v1/models. Status: $( (( xai_rc == 0 )) && echo "200 (token still valid)" || echo "non-200 or missing (token dead or absent)" ).
+
+Nish action:
+- If only grok CLI is missing, restore the grok CLI (\`grok login --device-auth\` on a headless box).
+- If xai-oauth is also dead, the pi-grok extension must be re-authenticated too (\`pi --provider xai-oauth login\`).
+
+Until then the canary writes credentials_bad on grok/* and (if dead) xai-oauth/* so pick_seat will not route to a corpse.
+
+signal: rule-enforcement/sr-prepaid-max-util" \
+        || true
+    # Watcher-broken (grok missing) is always fail-loud for the grok watch
     exit 1
 fi
 
@@ -247,43 +388,177 @@ fi
 
 pi_status=$(pi_auth_status)
 
-if [[ "$classify" == "healthy" ]]; then
-    write_both_models 200 healthy false none
-    log "OK grok live-valid ($reason) pi_auth_status=$pi_status"
-    {
-        printf '\n[%s] [SEAT-LIVE-VALIDATE-OK] grok healthy (%s)\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason"
-    } >>"$TRIAGE" 2>/dev/null || true
-    exit 0
-fi
-
-write_both_models 401 credentials_bad true credentials_bad
+# Independently validate xai-oauth. The grok CLI and xai-oauth use
+# separate OAuth clients; a dead grok CLI does NOT mean xai-oauth is dead.
+# (fleet-ops#1450: both were marked credentials_bad when only the grok
+# CLI was unauthenticated.) Use set +e around the call so xai_rc captures
+# the real return value (validate_xai_oauth returns 0/1/2; `|| true` would
+# mask it to 0 and let the if branch fire on dead).
+set +e
+validate_xai_oauth
+xai_rc=$?
+set -e
 
 class_note=""
 if [[ "$pi_status" == "ready" ]]; then
     class_note=" pi auth check reported status=ready (presence only) while the live grok CLI is dead — the fleet-ops#917 class."
 fi
 
-loud "SEAT-LIVE-VALIDATE-GROK-DEAD" "$reason.$class_note Nish must run: grok login --device-auth"
+if [[ "$classify" == "healthy" ]]; then
+    write_both_models "grok" 200 healthy false none
+    if (( xai_rc == 0 )); then
+        write_both_models "xai-oauth" 200 healthy false none
+        log "OK SuperGrok live-valid ($reason) pi_auth_status=$pi_status; xai-oauth independently validated healthy"
+        {
+            printf '\n[%s] [SEAT-LIVE-VALIDATE-OK] SuperGrok healthy (%s), xai-oauth independently healthy\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason"
+        } >>"$TRIAGE" 2>/dev/null || true
+    else
+        # grok CLI is healthy. xai-oauth state is observed independently
+        # below; do not let "xai_rc != 0" alone (which can mean a missing
+        # auth.json, not a dead token) block the OK signal. The OK line
+        # is the heartbeat green-cue for the grok watch; the xai-oauth
+        # state is its own lane with its own observe-to-close ticket.
+        log "OK SuperGrok live-valid ($reason) pi_auth_status=$pi_status; xai-oauth xai_rc=$xai_rc (0=healthy, 1=dead, 2=missing)"
+        {
+            printf '\n[%s] [SEAT-LIVE-VALIDATE-OK] SuperGrok healthy (%s), xai-oauth xai_rc=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$xai_rc"
+        } >>"$TRIAGE" 2>/dev/null || true
+        if (( xai_rc == 1 )); then
+            # grok CLI is healthy but xai-oauth is independently dead
+            # (token present but the subscription proxy returned non-200).
+            # Mark xai-oauth dead and file a finding so the seat gets a
+            # fresh ticket.
+            write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
+            log "WARN: grok CLI healthy but xai-oauth independently dead — marking xai-oauth credentials_bad"
+            file_finding \
+                "SuperGrok grok CLI healthy but xai-oauth token dead" \
+                "fleet-seat-live-validate: grok CLI is authenticated (healthy) but the
+xai-oauth extension token in ~/.pi/agent/auth.json is dead (the subscription
+proxy cli-chat-proxy.grok.com returned non-200). These are separate OAuth
+clients — the xai-oauth seat must be re-authenticated independently.
 
-file_finding \
-    "SuperGrok seat dead: grok CLI unauthenticated; needs grok login --device-auth" \
-    "SuperGrok live-validate (fleet-ops#917) found a dead grok CLI seat.
+Nish action: re-authenticate xai-oauth via the pi-grok extension device flow:
 
+    pi --provider xai-oauth login
+
+signal: rule-enforcement/sr-prepaid-max-util" \
+            || true
+        fi
+    fi
+    exit 0
+fi
+
+# grok CLI is dead. Mark grok dead, but validate xai-oauth independently
+# before marking it dead too. The LOUD line is always written for the grok
+# watch, regardless of xai-oauth state — the grok dead-class is its own
+# signal the heartbeat expects to see.
+loud "SEAT-LIVE-VALIDATE-GROK-DEAD" "$reason.${class_note} Nish must run: grok login --device-auth"
+write_both_models "grok" 401 credentials_bad true credentials_bad
+
+if (( xai_rc == 0 )); then
+    # grok CLI is dead but xai-oauth is independently healthy — do NOT
+    # mark xai-oauth dead. File the grok-only ticket so the seat gets a
+    # fresh #917-class issue. The dedup in file_finding prevents re-files
+    # when the existing #1450 / #917 ticket is still open.
+    write_both_models "xai-oauth" 200 healthy false none
+    log "OK grok CLI dead but xai-oauth independently validated healthy — NOT marking xai-oauth dead ($reason)"
+    {
+        printf '\n[%s] [SEAT-LIVE-VALIDATE-GROK-DEAD-XAI-OK] grok CLI dead (%s); xai-oauth independently healthy\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason"
+    } >>"$TRIAGE" 2>/dev/null || true
+    file_finding \
+        "SuperGrok seat dead: grok CLI unauthenticated; xai-oauth is healthy" \
+        "fleet-seat-live-validate (fleet-ops#917) found the grok CLI dead but the
+xai-oauth extension token in ~/.pi/agent/auth.json is still valid (the
+subscription proxy cli-chat-proxy.grok.com returned 200).
+
+This is the #1450 case: the previous canary blindly mirrored the grok
+dead-class onto xai-oauth, marking xai-oauth seats credentials_bad even
+though the xai-oauth token was healthy. The canary now reports xai-oauth
+independently and only marks it dead when the token itself is dead.
+
+### grok CLI
 Reason: ${reason}.${class_note}
 
-\`pi auth check --provider grok\` only tests that a credential is present (or returns invalid_state when the file is missing). It does not call x.ai. A dead OAuth token therefore looks ready and the prepaid SuperGrok week expires unused.
+Refresh was attempted by running \`grok models\` (the CLI's own silent OIDC
+refresh). There is nothing left to mint from: either \`~/.grok/auth.json\`
+is missing, or the stored refresh token was rejected.
 
-Refresh was attempted by running \`grok models\` (the CLI's own silent OIDC refresh). There is nothing left to mint from: either \`~/.grok/auth.json\` is missing, or the stored refresh token was rejected.
+### xai-oauth
+The xai-oauth token in ~/.pi/agent/auth.json was probed against the
+subscription proxy cli-chat-proxy.grok.com/v1/models and returned 200.
+The seat is healthy — only the grok CLI is the broken path.
+
+Nish must sign in TODAY on netcup-rs2000:
+
+    grok login --device-auth
+
+Until then the canary writes credentials_bad on grok/* and healthy on
+xai-oauth/* so pick_seat routes xai-oauth requests to the live token.
+
+signal: rule-enforcement/sr-prepaid-max-util" \
+        || true
+elif (( xai_rc == 2 )); then
+    # No xai-oauth token at all — separate observation.
+    write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
+    log "xai-oauth: no access token in $PI_AGENT_AUTH_JSON — marking dead"
+    file_finding \
+        "SuperGrok xai-oauth token missing (no access token in ~/.pi/agent/auth.json)" \
+        "fleet-seat-live-validate: the xai-oauth extension has no access token in
+~/.pi/agent/auth.json. The grok CLI is also dead (see reason below).
+
+grok CLI reason: ${reason}${class_note}
+
+The xai-oauth token is missing entirely — not just expired. The pi-grok
+extension needs to be re-authenticated.
+
+Nish action (headless device flow):
+
+    pi --provider xai-oauth login
+
+signal: rule-enforcement/sr-prepaid-max-util" \
+        || true
+elif (( xai_rc == 1 )); then
+    # xai-oauth token exists but is dead (non-200 from the subscription
+    # proxy).
+    write_both_models "xai-oauth" 401 credentials_bad true credentials_bad
+    log "xai-oauth: token dead (subscription proxy returned non-200) — marking credentials_bad"
+    file_finding \
+        "SuperGrok seat dead: grok CLI unauthenticated AND xai-oauth token dead" \
+        "fleet-seat-live-validate (fleet-ops#917) found BOTH the grok CLI and the
+xai-oauth extension token dead.
+
+### grok CLI
+Reason: ${reason}.${class_note}
+
+Refresh was attempted by running \`grok models\` (the CLI's own silent OIDC
+refresh). There is nothing left to mint from: either \`~/.grok/auth.json\`
+is missing, or the stored refresh token was rejected.
+
+### xai-oauth
+The xai-oauth token in ~/.pi/agent/auth.json was probed against the
+subscription proxy cli-chat-proxy.grok.com/v1/models and returned non-200.
+The pi-grok extension auto-refreshes on 401, so a persistent failure means
+the refresh token is exhausted or revoked.
 
 Nish must sign in TODAY on netcup-rs2000 (he leaves tomorrow for 11 days):
 
     grok login --device-auth
 
-That is the headless device-code flow from \`grok login --help\`. Browser \`grok login --oauth\` will not work on this VPS. Do not export an x.ai API key — SuperGrok is the subscription path, and api.x.ai credits are a money line (fleet-ops#41).
+Then re-authenticate the xai-oauth extension too:
 
-Until then the canary writes credentials_bad on grok/grok-4.6 and grok/grok-4.5 so pick_seat will not route to a corpse.
+    pi --provider xai-oauth login
 
-signal: rule-enforcement/sr-prepaid-max-util"
+Browser \`grok login --oauth\` will not work on this VPS. Do not export an
+x.ai API key — SuperGrok is the subscription path, and api.x.ai credits are
+a money line (fleet-ops#41).
+
+Until then the canary writes credentials_bad on grok/* and xai-oauth/*
+so pick_seat will not route to either corpse.
+
+signal: rule-enforcement/sr-prepaid-max-util" \
+        || true
+fi
 
 exit 0

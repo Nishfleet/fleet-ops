@@ -19,11 +19,15 @@
 #   4. seat-lib.sh must load SEAT_VOLUME_ORDER and prefer the volume bucket
 #      before leftover free / leftover prepaid / metered (the runtime wire).
 #
-# Detectors (observe-to-open, tick stays green):
+# Detectors (observe-to-open, tick stays green; observe-to-close drains):
 #   - xai-oauth present in models.json / pi catalog but missing from
 #     seat-caps providers (or cap=0 without a dated reason that cites
-#     2026-08-27+) auto-files a wire ticket so #1163 cannot silently stall
-#     the "then xai-oauth (alternate)" half of the ledger line.
+#     2026-08-27+) auto-files a wire ticket so the "then xai-oauth
+#     (alternate)" half of the ledger line cannot silently stall. Once
+#     the seat-caps row lands with cap>0 (or cap=0 + a fresh dated
+#     reason), observe-to-close drains the canary-filed ticket
+#     (fleet-ops#1268). Hand-filed wire tickets without the marker
+#     (e.g. #1163) stay on their own close path.
 #
 # Exit codes:
 #   0  gates clean (detectors may have filed)
@@ -44,6 +48,7 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
 _canon_script=$(readlink -f "$0")
 _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
@@ -132,11 +137,253 @@ file_finding() {
 
 ${marker}
 "
-    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
         log "filed: $title"
     else
         log "WARN: gh issue create failed for $marker"
     fi
+}
+
+# parse_marker body — extract `id` and `kind` from a body that carries a
+# `volume-lane-order-canary: <id> <kind>` marker line. Prints "id<TAB>kind"
+# on stdout; returns 1 if the marker is absent or malformed. The id never
+# contains whitespace; the kind never contains whitespace.
+parse_marker() {
+    local body="$1"
+    local line
+    line=$(printf '%s\n' "$body" \
+        | grep -E '^[[:space:]]*volume-lane-order-canary:[[:space:]]+' \
+        | head -n 1) || return 1
+    [[ -n "$line" ]] || return 1
+    line=$(printf '%s' "$line" \
+        | sed -E 's/^[[:space:]]*volume-lane-order-canary:[[:space:]]+//')
+    local id kind
+    id=$(printf '%s' "$line" | awk '{ print $1 }')
+    kind=$(printf '%s' "$line" | awk '{ print $2 }')
+    [[ -n "$id" && -n "$kind" ]] || return 1
+    printf '%s\t%s\n' "$id" "$kind"
+}
+
+# signal_still_active id kind — true (0) iff the original violation
+# recorded by the canary is STILL present. False (1) when the signal has
+# cleared, which is when observe-to-close should fire.
+#
+#   volume_providers_in_order  missing|mismatch
+#       violation = seat-caps lacks the locked CSV prefix
+#       clean     = seat-caps has volume_providers_in_order = ollama,devin,commandcode,cline
+#   cursor                    in-volume-prefix
+#       violation = cursor appears in volume_providers_in_order
+#       clean     = cursor is absent from the volume prefix
+#   seat-lib                  no-volume-order-load|no-volume-bucket|no-jq-volume-order
+#       violation = seat-lib.sh missing the runtime wire
+#       clean     = seat-lib.sh contains the missing marker
+#   <volume_provider>         missing-row|cap-zero|empty-models
+#       violation = volume-prefix provider has no row / cap=0 / models={}
+#       clean     = provider has a row, cap>0, models map is non-empty
+#   xai-oauth                 unwired|cap-zero-stale-reason
+#       violation = models.json has xai-oauth but seat-caps is missing
+#                   the row (unwired), OR the row is present at cap=0
+#                   without a post-2026-08-27 dated .reason
+#                   (cap-zero-stale-reason)
+#       clean     = seat-caps has providers.xai-oauth with cap>0, OR
+#                   cap=0 with a 2026-08-27+ dated reason (the
+#                   deliberate-dark case). Mirror of the detector below
+#                   so observe-to-close can drain canary-filed tickets
+#                   once the wire lands (live #1268: PR #1257 wired
+#                   the seat, but this canary kept the auto-filed
+#                   ticket open forever because the xai-oauth arm was
+#                   hard-coded to always-active).
+signal_still_active() {
+    local id="$1" kind="$2"
+    case "$id" in
+        volume_providers_in_order)
+            local got_csv
+            got_csv=$(jq -r '(.volume_providers_in_order // []) | join(",")' "$SEAT_CAPS_JSON" 2>/dev/null)
+            # violation present when csv is empty OR != expected
+            if [[ -z "$got_csv" || "$got_csv" != "$EXPECTED_VOLUME_CSV" ]]; then
+                return 0  # still active
+            fi
+            return 1  # clean
+            ;;
+        cursor)
+            # violation present when cursor is in the volume prefix
+            if jq -e --arg c cursor \
+                '(.volume_providers_in_order // []) | index($c) != null' \
+                "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+                return 0  # still active
+            fi
+            return 1  # clean
+            ;;
+        seat-lib)
+            # If seat-lib is missing the file entirely, the wire is not
+            # installed; preserve the open issue (the canary cannot prove
+            # the wire landed).
+            [[ -f "$SEAT_LIB" ]] || return 0
+            case "$kind" in
+                no-volume-order-load)
+                    grep -q 'SEAT_VOLUME_ORDER' "$SEAT_LIB" && return 1
+                    return 0
+                    ;;
+                no-volume-bucket)
+                    grep -q 'volume_seats' "$SEAT_LIB" && return 1
+                    return 0
+                    ;;
+                no-jq-volume-order)
+                    grep -q 'volume_providers_in_order' "$SEAT_LIB" && return 1
+                    return 0
+                    ;;
+                *) return 0 ;;
+            esac
+            ;;
+        xai-oauth)
+            # Mirror the detector below. Canary-filed tickets (#1268
+            # shape) carry the marker and must drain here once the wire
+            # lands. Hand-filed wire tickets without the marker (#1163
+            # shape) are ignored by observe_to_close (parse_marker
+            # fails) so they stay on their own close path.
+            case "$kind" in
+                unwired)
+                    # Still active while the providers.xai-oauth row is
+                    # missing. Presence of the row (any cap) clears the
+                    # "unwired" signal — a cap=0 row would be a different
+                    # kind (cap-zero-stale-reason).
+                    if ! jq -e '.providers["xai-oauth"] != null' \
+                        "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+                        return 0  # still missing -> still active
+                    fi
+                    return 1  # row present -> clean
+                    ;;
+                cap-zero-stale-reason)
+                    # Still active while cap=0 AND the reason lacks a
+                    # post-2026-08-27 date. Cap>0, or cap=0 with a fresh
+                    # dated reason, clears the signal.
+                    if ! jq -e '.providers["xai-oauth"] != null' \
+                        "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+                        return 0  # row gone -> still the violation class
+                    fi
+                    local xai_cap xai_reason
+                    xai_cap=$(jq -r '
+                      .providers["xai-oauth"] as $v
+                      | if ($v|type)=="number" then $v else ($v.cap // 0) end
+                    ' "$SEAT_CAPS_JSON")
+                    if [[ "$xai_cap" =~ ^[1-9][0-9]*$ ]]; then
+                        return 1  # cap > 0 -> clean
+                    fi
+                    xai_reason=$(jq -r '
+                      .providers["xai-oauth"] as $v
+                      | if ($v|type)=="object" then ($v.reason // "") else "" end
+                    ' "$SEAT_CAPS_JSON")
+                    if [[ "$xai_reason" =~ 2026-08-2[7-9]|2026-09 ]]; then
+                        return 1  # deliberate dark with fresh reason -> clean
+                    fi
+                    return 0  # cap=0, stale/missing reason -> still active
+                    ;;
+                *) return 0 ;;
+            esac
+            ;;
+        *)
+            # Volume-prefix provider: ollama, devin, commandcode, cline.
+            # Any other id is outside this canary's contract.
+            case "$id" in
+                ollama|devin|commandcode|cline) ;;
+                *) return 0 ;;
+            esac
+            local cap mcount
+            if ! jq -e --arg id "$id" '.providers[$id] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+                return 0  # row still absent -> still active
+            fi
+            cap=$(jq -r --arg id "$id" '
+              .providers[$id] as $v
+              | if ($v|type)=="number" then $v else ($v.cap // 0) end
+            ' "$SEAT_CAPS_JSON")
+            mcount=$(jq -r --arg id "$id" '
+              .providers[$id] as $v
+              | if ($v|type)=="object" and ($v.models|type)=="object" then ($v.models|length) else 0 end
+            ' "$SEAT_CAPS_JSON")
+            case "$kind" in
+                missing-row)
+                    # row is now present -> clean
+                    return 1
+                    ;;
+                cap-zero)
+                    if [[ "$cap" =~ ^[1-9][0-9]*$ ]]; then
+                        return 1  # cap > 0 -> clean
+                    fi
+                    return 0
+                    ;;
+                empty-models)
+                    if [[ "$mcount" =~ ^[1-9][0-9]*$ ]]; then
+                        return 1  # models > 0 -> clean
+                    fi
+                    return 0
+                    ;;
+                *) return 0 ;;
+            esac
+            ;;
+    esac
+}
+
+# observe_to_close — close auto-filed volume-lane-order-canary issues
+# whose signal has cleared on this heartbeat tick (fleet-ops#1269). The
+# canary files these on violation; without a close path they sit open
+# forever (live #1269: filed by an earlier tick, never closed by the
+# PR that fixed the underlying gate). For each open issue carrying the
+# marker, re-evaluate signal_still_active — when the original violation
+# is no longer present in seat-caps / seat-lib, close the issue with
+# an evidence comment. Wired only when FLEET_VOLUME_ORDER_FILE=1
+# (default) and gh is callable; offline mode is a no-op so the rest
+# of the canary keeps running on hosted CI.
+observe_to_close() {
+    closed=0
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        return 0
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: gh missing, skip"
+        return 0
+    fi
+    local open_json=""
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 200 \
+        --json number,body 2>/dev/null)
+    local list_rc=$?
+    set -e
+    if [[ "$list_rc" -ne 0 || -z "$open_json" ]]; then
+        log "observe-to-close: gh issue list failed (rc=$list_rc), skip"
+        return 0
+    fi
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "observe-to-close: gh issue list returned non-JSON, skip"
+        return 0
+    fi
+    local num body parsed id kind ts comment close_rc
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row" 2>/dev/null) || continue
+        body=$(jq -r '.body // ""' <<<"$row" 2>/dev/null) || continue
+        [[ -n "$num" && -n "$body" ]] || continue
+        parsed=$(parse_marker "$body" 2>/dev/null) || continue
+        id=$(printf '%s' "$parsed" | awk -F'\t' '{ print $1 }')
+        kind=$(printf '%s' "$parsed" | awk -F'\t' '{ print $2 }')
+        [[ -n "$id" && -n "$kind" ]] || continue
+        if signal_still_active "$id" "$kind"; then
+            log "observe-to-close: keep #$num (id=$id kind=$kind still active)"
+            continue
+        fi
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        comment="observe-to-close: volume-lane-order-canary/${id} ${kind} no longer reported on heartbeat tick at ${ts}. The original signal (volume prefix, volume provider cap/models, cursor exclusion, or seat-lib wire) has cleared."
+        set +e
+        "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1
+        close_rc=$?
+        set -e
+        if [[ "$close_rc" -eq 0 ]]; then
+            log "observe-to-close: CLOSED issue #$num (id=$id kind=$kind)"
+            closed=$((closed + 1))
+        else
+            log "observe-to-close: failed to close #$num (rc=$close_rc)"
+        fi
+    done < <(printf '%s' "$open_json" | jq -c '.[]' 2>/dev/null)
+    return 0
 }
 
 if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
@@ -254,6 +501,7 @@ fi
 
 if (( violations > 0 )); then
     log "FAIL: $violations volume-lane-order gate violation(s)"
+    observe_to_close
     exit 1
 fi
 
@@ -298,4 +546,5 @@ fi
 
 loud "VOLUME-ORDER-OK" \
     "volume front-of-ladder locked: $EXPECTED_VOLUME_CSV; cursor excluded; seat-lib volume bucket wired"
+observe_to_close
 exit 0

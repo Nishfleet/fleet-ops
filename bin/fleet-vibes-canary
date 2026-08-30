@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+# fleet-vibes-canary — "Never decide by vibes — always measure" (fleet-ops#538).
+#
+# Standing rule `sr-never-vibes` (global-standing-rules.md, Nish 2026-08-26):
+# any number that drives behaviour — a concurrency cap, a memory budget, a
+# timeout, a retry count, a threshold, a rate limit — must come from a
+# measurement you actually took and can show, not from a plausible-sounding
+# default. The rule was born from ram_gb_per_worker=1.5, an unmeasured
+# constant sitting on top of a unit bug that returned 6647 workers instead
+# of 6. Both the guess and the bug survived because nobody measured.
+#
+# This canary is the mechanical enforcer. It scans config/seat-caps.json,
+# the file that holds the fleet's behaviour-driving numbers, and requires
+# each one to carry a measurement citation: a `_comment_*` / `_note` /
+# `_hard_cap` / `reason` field that names a real measurement (a `bin/`
+# measurement command, a sample size, a probe, an observed 429 / rate-limit
+# / timeout) AND a YYYY-MM-DD date. An inherited constant with no citation
+# is a vibe; the canary screams or files.
+#
+# Two layers, mirroring fleet-free-roster-canary (fleet-ops#518):
+#
+#   1. GATE (fail-loud, exit 1) — the rule's origin constant:
+#      `ram_gb_per_worker` must have a top-level `_comment_*` citation that
+#      carries BOTH a date AND a `bin/...` measurement-command reference
+#      (bin/ram-measure, bin/ram-metric-compare). This is the exact number
+#      that caused the 6647-worker bug; an uncited or unmeasured
+#      ram_gb_per_worker is the vibe the rule exists to kill. A missing
+#      seat-caps.json or a missing ram_gb_per_worker is also a gate
+#      violation — the RAM governor cannot be a silent default.
+#
+#   2. DETECTOR (observe-to-open, tick stays green, exit 0) — the rest of
+#      the behaviour-driving numbers, so a human never re-checks by hand:
+#      a. Per-provider `cap > 0` without a measurement citation (provider-
+#         level `_comment_*` / `_note` / `_hard_cap`, OR a top-level
+#         `_comment_*` that names the provider) auto-files a "measure or
+#         remove this cap" ticket (deduped, capped).
+#      b. Per-provider `cap == 0` without a dated `reason` auto-files a
+#         ticket (overlaps entitled-wired-canary on the vibes angle).
+#      c. Per-provider `quota_bench_default_s` inherits the provider's cap
+#         citation; an uncited provider (no cap citation at all) auto-files.
+#      Filing never fails the tick — the detector's job is to surface, not
+#      to block. A filed ticket is the queue, not a green light.
+#
+# A "measurement citation" is a string containing:
+#   - a date:  YYYY-MM-DD
+#   - a marker (evidence the number came from a real observation, not a
+#     guess): `bin/` (a measurement command), `n=`, `p95`, `p50`, `median`,
+#     `mean`, `sample`, `probed`, `probe`, `measured`, `measurement`,
+#     `GiB`, `MB`, `bytes`, `rate limit`, `rate-limit`, `ETIMEDOUT`,
+#     `429`, `quota`, `meter`, `live`, `CreditsError`, `404`, `403`
+#     — a probe output, a sample size, a measurement command, or an
+#     observed provider signal (429 / timeout / quota reset). A bare
+#     "feels right" or a fleet-ops# ref alone is NOT a marker.
+#
+# Exit codes:
+#   0  gate clean (detectors may have filed; filing never fails the tick)
+#   1  a gate violation, or the canary itself is broken (config missing /
+#      unparseable, jq missing)
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 26.
+#
+# Environment seams (tests):
+#   SEAT_CAPS_JSON                cap map (default config/seat-caps.json)
+#   FLEET_HEARTBEAT_TRIAGE        triage file
+#   FLEET_VIBES_CANARY_REPO       default Nishfleet/fleet-ops
+#   FLEET_VIBES_CANARY_FILE       1 (default) file issues; 0 skip gh
+#   FLEET_VIBES_CANARY_CAP        per-tick file cap (default 5)
+#   GH                            gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$FLEET_OPS_REPO/config/seat-caps.json}"
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    SEAT_CAPS_JSON="${HOME}/.local/state/pi-packet/seat-caps.json"
+fi
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_VIBES_CANARY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_VIBES_CANARY_FILE:-1}"
+FILE_CAP="${FLEET_VIBES_CANARY_CAP:-5}"
+
+log() {
+    printf '[%s] [fleet-vibes-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# A date is any YYYY-MM-DD.
+has_date() {
+    [[ "$1" =~ 20[0-9]{2}-[0-9]{2}-[0-9]{2} ]]
+}
+
+# A measurement marker: evidence the number came from a real observation.
+# Plain word alternation; case-insensitive. A fleet-ops# ref alone is NOT
+# enough — that is a pointer, not a measurement.
+has_marker() {
+    local s="${1,,}"
+    [[ "$s" == *"bin/"* ]] \
+        || [[ "$s" == *"n="* ]] \
+        || [[ "$s" == *"p95"* ]] \
+        || [[ "$s" == *"p50"* ]] \
+        || [[ "$s" == *"median"* ]] \
+        || [[ "$s" == *"mean"* ]] \
+        || [[ "$s" == *"sample"* ]] \
+        || [[ "$s" == *"probed"* ]] \
+        || [[ "$s" == *"probe"* ]] \
+        || [[ "$s" == *"measured"* ]] \
+        || [[ "$s" == *"measurement"* ]] \
+        || [[ "$s" == *"gib"* ]] \
+        || [[ "$s" == *" mb"* ]] \
+        || [[ "$s" == *"-mb "* ]] \
+        || [[ "$s" == *"bytes"* ]] \
+        || [[ "$s" == *"rate limit"* ]] \
+        || [[ "$s" == *"rate-limit"* ]] \
+        || [[ "$s" == *"etimedout"* ]] \
+        || [[ "$s" == *"429"* ]] \
+        || [[ "$s" == *"quota"* ]] \
+        || [[ "$s" == *"meter"* ]] \
+        || [[ "$s" == *"live"* ]] \
+        || [[ "$s" == *"creditserror"* ]] \
+        || [[ "$s" == *"404"* ]] \
+        || [[ "$s" == *"403"* ]]
+}
+
+# The gate marker is stricter: a real measurement command (bin/...). The
+# rule's origin constant must be backed by a runnable measurement, not just
+# any observed signal.
+has_gate_marker() {
+    [[ "${1,,}" == *"bin/"* ]]
+}
+
+# Concatenate every `_comment_*` / `_note` / `_hard_cap` string at the top
+# level of seat-caps.json (the file-scope citations).
+top_level_citations() {
+    jq -r '
+        to_entries
+        | map(select(.key | startswith("_comment") or .=="_note" or .=="_hard_cap"))
+        | map(.value | select(type=="string"))
+        | join("\n")
+    ' "$SEAT_CAPS_JSON"
+}
+
+# Concatenate the provider-scope citation strings for one provider.
+provider_citations() {
+    local prov="$1"
+    jq -r --arg p "$prov" '
+        .providers[$p] as $v
+        | if ($v|type) != "object" then ""
+          else
+            ($v | to_entries
+              | map(select(.key | startswith("_comment") or .=="_note" or .=="_hard_cap" or .=="reason"))
+              | map(.value | select(type=="string"))
+              | join("\n"))
+          end
+    ' "$SEAT_CAPS_JSON"
+}
+
+# True if any top-level citation names the provider AND has a date + marker.
+# "Names" = the provider id appears as a whole word (case-insensitive), so
+# "devin" does not match "opencode-anthropic"'s citations spuriously.
+top_level_names_provider_with_evidence() {
+    local prov="$1"
+    local blob
+    blob=$(top_level_citations)
+    [[ "$blob" == *"$prov"* ]] || return 1
+    # Whole-word check (case-insensitive) on the joined blob.
+    if grep -qiE "(^|[^a-z0-9])${prov}([^a-z0-9]|$)" <<<"$blob"; then
+        local hits=0
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            if grep -qiE "(^|[^a-z0-9])${prov}([^a-z0-9]|$)" <<<"$line" \
+                && has_date "$line" && has_marker "$line"; then
+                hits=1
+                break
+            fi
+        done <<<"$blob"
+        [[ "$hits" == "1" ]]
+        return $?
+    fi
+    return 1
+}
+
+# File one issue for a detector finding. Dedup on an open issue whose body
+# contains the exact marker. Best-effort — a gh failure is logged, not
+# silent, and never fails the tick.
+file_finding() {
+    local id="$1" kind="$2" title="$3" body="$4"
+    local marker="vibes-canary: ${id} ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_VIBES_CANARY_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local filed
+    filed=$((FILED_COUNT + 0))
+    if (( filed >= FILE_CAP )); then
+        log "file cap reached (filed=$filed cap=$FILE_CAP) — $marker deferred to next tick"
+        return 0
+    fi
+    FILED_COUNT=$((filed + 1))
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+        FILED_COUNT=$((FILED_COUNT - 1))
+    fi
+}
+
+FILED_COUNT=0
+
+# --- canary broken -> fail loud ----------------------------------------------
+
+if ! command -v jq >/dev/null 2>&1; then
+    loud "VIBES-CANARY-BROKEN" "jq missing — cannot parse $SEAT_CAPS_JSON"
+    exit 1
+fi
+if [[ ! -f "$SEAT_CAPS_JSON" ]]; then
+    loud "VIBES-CANARY-BROKEN" "seat-caps missing: $SEAT_CAPS_JSON — RAM governor constant cannot be verified measured"
+    exit 1
+fi
+if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
+    loud "VIBES-CANARY-BROKEN" "seat-caps unparseable: $SEAT_CAPS_JSON"
+    exit 1
+fi
+
+# --- GATE: ram_gb_per_worker must be measured --------------------------------
+# The rule's origin constant. An uncited or unmeasured ram_gb_per_worker is
+# the exact vibe that returned 6647 workers instead of 6. Hard fail.
+
+ram_gb=$(jq -r '.ram_gb_per_worker // empty' "$SEAT_CAPS_JSON")
+if [[ -z "$ram_gb" ]]; then
+    loud "VIBES-GATE-VIOLATION" "ram_gb_per_worker is missing from seat-caps.json — the RAM governor cannot be a silent default (sr-never-vibes)"
+    exit 1
+fi
+
+top_blob=$(top_level_citations)
+gate_ok=0
+while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if has_date "$line" && has_gate_marker "$line"; then
+        gate_ok=1
+        break
+    fi
+done <<<"$top_blob"
+
+if [[ "$gate_ok" != "1" ]]; then
+    loud "VIBES-GATE-VIOLATION" "ram_gb_per_worker=$ram_gb has no top-level _comment_* citation carrying a date AND a bin/... measurement command — an unmeasured RAM budget is the vibe sr-never-vibes exists to kill (fleet-ops#538)"
+    exit 1
+fi
+
+log "GATE: ram_gb_per_worker=$ram_gb is backed by a dated bin/... measurement citation"
+
+# --- DETECTOR: per-provider caps + quota benches (observe-to-open) -----------
+
+detected=0
+
+while IFS=$'\t' read -r prov cap has_qb; do
+    [[ -n "$prov" ]] || continue
+
+    # Gather this provider's citation evidence.
+    prov_blob=$(provider_citations "$prov")
+    cited_local=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if has_date "$line" && has_marker "$line"; then
+            cited_local=1
+            break
+        fi
+    done <<<"$prov_blob"
+    cited_top=0
+    if [[ "$cited_local" != "1" ]] \
+        && top_level_names_provider_with_evidence "$prov"; then
+        cited_top=1
+    fi
+    cited=$((cited_local + cited_top))
+
+    if [[ "$cap" == "0" ]]; then
+        # cap=0 needs a dated reason (provider-scope). A cap=0 with no dated
+        # reason is an unmeasured "off" — the vibes angle on entitled-wired.
+        reason=$(jq -r --arg p "$prov" '.providers[$p].reason // empty' "$SEAT_CAPS_JSON")
+        if ! has_date "$reason"; then
+            log "DETECTOR: $prov cap=0 has no dated reason — filing"
+            file_finding "$prov" "cap0-no-dated-reason" \
+                "vibes: $prov cap=0 has no dated reason" \
+                "config/seat-caps.json caps \`${prov}\` at 0 but \`.reason\` carries no YYYY-MM-DD date. sr-never-vibes (Nish, 2026-08-26): even an \`off\` decision must show its measurement — the probe / credential failure / quota signal that justified cap=0, with a date. Add a dated reason naming the evidence (fleet-ops#538)."
+            detected=$((detected + 1))
+            continue
+        fi
+        # cap=0 has a date — now require a measurement marker too (fleet-ops#878).
+        # A date alone is not enough for an "off" decision; the evidence that
+        # justified cap=0 (HTTP code, probe, quota, meter) must carry a real
+        # measurement signal, either in .reason or in a top-level
+        # _comment_<prov> field that names the provider with date + marker.
+        if has_marker "$reason"; then
+            continue
+        fi
+        if top_level_names_provider_with_evidence "$prov"; then
+            continue
+        fi
+        log "DETECTOR: $prov cap=0 dated reason has no measurement marker — filing (cap0-no-measurement)"
+        file_finding "$prov" "cap0-no-measurement" \
+            "vibes: $prov cap=0 dated reason has no measurement marker" \
+            "config/seat-caps.json caps \`${prov}\` at 0 with a dated \`.reason\` but no measurement marker. sr-never-vibes (fleet-ops#878): a date alone is not enough for an \`off\` decision — the evidence that justified cap=0 (HTTP code, probe output, quota signal, meter, n=, p95) must appear in \`.reason\` or in a top-level \`_comment_${prov}\` field carrying a date + the marker. Add the measurement signal that closed the seat, or re-audition and record the live probe result (fleet-ops#538)."
+        detected=$((detected + 1))
+        continue
+    fi
+
+    # cap > 0: needs a measurement citation (provider-scope OR top-level
+    # naming the provider). quota_bench_default_s inherits the same citation.
+    if [[ "$cited" != "1" ]]; then
+        log "DETECTOR: $prov cap=$cap has no measurement citation — filing"
+        file_finding "$prov" "cap-no-measurement" \
+            "vibes: $prov cap=$cap has no measurement citation" \
+            "config/seat-caps.json sets providers.\`${prov}\`.cap=$cap with no measurement citation. sr-never-vibes (Nish, 2026-08-26): any number that drives behaviour must come from a measurement you actually took and can show — a \`bin/\` measurement command, a sample size (n=, p95), a probe output, or an observed provider signal (429 / rate-limit / timeout), with a YYYY-MM-DD date. Add a provider-scope \`_comment_*\` / \`_note\` citation, or a top-level \`_comment_*\` that names \`${prov}\`, carrying a date + the evidence. If the cap is a guess, measure it or set cap=0 with a dated reason (fleet-ops#538)."
+        detected=$((detected + 1))
+        continue
+    fi
+
+    # quota_bench_default_s inherits the provider's cap citation; if the
+    # provider itself was uncited we already filed above. Nothing extra here.
+    : "$has_qb"
+done < <(
+    jq -r '.providers | to_entries[] | [.key, (.value.cap // 0), ((.value.quota_bench_default_s // null) | if . == null then "0" else "1" end)] | @tsv' "$SEAT_CAPS_JSON"
+)
+
+if (( detected > 0 )); then
+    loud "VIBES-DETECTOR-FILED" "$detected uncited behaviour-driving constant(s) in seat-caps.json filed as tickets (observe-to-open); tick stays green"
+    log "DETECTOR: filed $detected finding(s) (FILED_COUNT=$FILED_COUNT); gate clean, exiting 0"
+else
+    loud "VIBES-CANARY-OK" "ram_gb_per_worker measured; every provider cap carries a dated measurement citation"
+    log "DETECTOR: clean — every behaviour-driving constant in seat-caps.json is cited"
+fi
+
+exit 0

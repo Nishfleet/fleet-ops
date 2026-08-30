@@ -15,6 +15,21 @@ ok()   { echo "OK: $*"; }
 fake="$(mktemp -d)"
 trap 'rm -rf "$fake"' EXIT
 
+# fleet-ops#1451: pi-issue-start now regenerates a missing .in before start.
+# Redirect the packet dir, worker prompt, and gh to fakes so this test never
+# touches the live ~/.local/state/pi-issues or the real gh.
+export PI_ISSUES_DIR="$fake/issues"
+mkdir -p "$PI_ISSUES_DIR"
+printf '# stub worker prompt\n' > "$fake/worker.md"
+export WORKER_PROMPT="$fake/worker.md"
+cat >"$fake/gh" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"title":"x","body":"x","labels":[]}'
+exit 0
+FAKE
+chmod +x "$fake/gh"
+export GH="$fake/gh"
+
 cat >"$fake/systemctl" <<'FAKE'
 #!/usr/bin/env bash
 shift  # --user
@@ -55,3 +70,11 @@ ok "inactive worker calls systemctl start"
 # add a new workflow line (no Workflows permission). The exec-review prompt
 # contract rides here so CI fails if someone deletes it from prompts/worker.md.
 bash "$here/exec-review-prompt.test.sh" || fail "exec-review prompt contract tests failed"
+# fleet-ops#1260: pstack playbooks are the default worker discipline.
+# Hosted here so CI fails if someone deletes the routing from worker.md
+# without a workflow edit (workers have no Workflows permission).
+bash "$here/pstack-worker-prompt.test.sh" || fail "pstack worker prompt contract tests failed"
+# fleet-ops#350: worker.md must route session-outliving work through
+# pi-systemd-run, never nohup. Hosted here for the same CI-host reason
+# (workers have no Workflows permission).
+bash "$here/worker-prompt-systemd-run.test.sh" || fail "worker-prompt-systemd-run tests failed"

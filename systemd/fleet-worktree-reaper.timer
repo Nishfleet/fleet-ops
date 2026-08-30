@@ -1,0 +1,17 @@
+[Unit]
+Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227)
+
+[Timer]
+# Named reason (vault: "a schedule needs a named reason"): worktree
+# accumulation is a monotonic growth invariant with no event signal — a
+# merged claim leaves its worktree behind silently. Daily catches a day's
+# worker churn within one waking window without noising triage every tick.
+# The reaper is fail-safe (4 gates, dry-run capable) and cheap (git + one
+# gh pr list per repo), so a daily cadence is proportionate.
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=30min
+Persistent=true
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

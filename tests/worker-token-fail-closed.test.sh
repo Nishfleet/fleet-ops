@@ -150,3 +150,38 @@ bash "$here/pi-issue-run-failure-reason.test.sh"
 # behavioural test, now green. Same P14-host constraint as above.
 bash "$here/pi-issue-run-scratch-home-identity.test.sh"
 bash "$here/pi-issue-run-tried-reset.test.sh"
+# fleet-ops#1233: legal-basics inventory lock. Named ci.yml step is out of
+# band for the worker App (Contents cannot push workflow files).
+bash "$here/legal-basics-surfaces.test.sh"
+# fleet-ops#1233: legal-basics inventory lock. Named ci.yml step is out of
+# band for the worker App (Contents cannot push workflow files).
+legal="$repo_root/config/legal-basics-surfaces.json"
+[[ -f "$legal" ]] || fail "legal-basics-surfaces.json not found: $legal"
+jq '.' "$legal" >/dev/null || fail "legal-basics-surfaces.json is not valid JSON"
+legal_count="$(jq '.surfaces | length' "$legal")"
+[[ "$legal_count" -gt 0 ]] || fail "legal-basics surfaces must be non-empty"
+legal_ids="$(jq -r '.surfaces[].id' "$legal")"
+legal_dupes="$(printf '%s\n' "$legal_ids" | LC_ALL=C sort | uniq -d)"
+[[ -z "$legal_dupes" ]] || fail "duplicate legal-basics surface ids: $legal_dupes"
+legal_sorted="$(printf '%s\n' "$legal_ids" | LC_ALL=C sort)"
+[[ "$(printf '%s\n' "$legal_ids")" == "$(printf '%s\n' "$legal_sorted")" ]] \
+  || fail "legal-basics surfaces must be sorted ascending by id"
+legal_idx=0
+while [[ "$legal_idx" -lt "$legal_count" ]]; do
+  for legal_key in id repo origin privacy_path terms_path contact stores_user_data; do
+    jq -e --argjson i "$legal_idx" --arg k "$legal_key" '.surfaces[$i] | has($k)' "$legal" >/dev/null \
+      || fail "legal-basics surfaces[$legal_idx] missing $legal_key"
+  done
+  legal_origin="$(jq -r --argjson i "$legal_idx" '.surfaces[$i].origin' "$legal")"
+  [[ "$legal_origin" =~ ^https://[A-Za-z0-9.-]+$ ]] \
+    || fail "legal-basics surfaces[$legal_idx].origin must be https://host, got '$legal_origin'"
+  legal_kind="$(jq -r --argjson i "$legal_idx" '.surfaces[$i].contact.kind' "$legal")"
+  [[ "$legal_kind" == "mailto" || "$legal_kind" == "page" ]] \
+    || fail "legal-basics surfaces[$legal_idx].contact.kind must be mailto or page"
+  legal_idx=$((legal_idx + 1))
+done
+for legal_need in 0509 aiconverter inish siterep tinystudio-io; do
+  printf '%s\n' "$legal_ids" | grep -qx "$legal_need" \
+    || fail "fleet-ops#1233 named product missing from legal-basics surfaces: $legal_need"
+done
+ok "legal-basics-surfaces.json shape locked ($legal_count surfaces)"

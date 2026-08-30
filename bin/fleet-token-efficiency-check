@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# fleet-token-efficiency-check — reject token-efficiency anti-patterns in
+# custom prompt assemblers (fleet-ops#523).
+#
+# Implementation lives in lib/fleet-token-efficiency-check.py.
+#
+# Usage:
+#   fleet-token-efficiency-check --name-status FILE
+#   git diff --name-status origin/main...HEAD | fleet-token-efficiency-check --name-status -
+#   fleet-token-efficiency-check --all --root ROOT
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_TOKEN_EFFICIENCY_LIB:-$here/../lib/pi-packet/fleet-token-efficiency-check.py}"
+[ -f "$lib" ] || lib="$here/../lib/fleet-token-efficiency-check.py"
+[ -f "$lib" ] || { printf 'fleet-token-efficiency-check: library missing: %s\n' "$lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

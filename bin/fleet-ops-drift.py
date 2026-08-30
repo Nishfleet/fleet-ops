@@ -37,7 +37,8 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-VOLATILE; 0 skip gh
+  FLEET_OPS_DRIFT_CLOSE           1 (default) close a drift issue on a later green tick once it carries `resolved-at:`; 0 only comment (fleet-ops#1156)
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
   FLEET_OPS_PRODUCTS_LINK         products/fleet-ops symlink (default: <workspaces>/products/fleet-ops)
@@ -63,7 +64,22 @@ SKIP_FETCH = os.environ.get("FLEET_OPS_SKIP_FETCH", "") == "1"
 SYSTEMCTL = os.environ.get("FLEET_OPS_SYSTEMCTL", "systemctl")
 GH = os.environ.get("GH", "gh")
 DRIFT_REPO = os.environ.get("FLEET_OPS_DRIFT_REPO", "Nishfleet/fleet-ops")
+
+
+def issue_file_py() -> str:
+    env = os.environ.get("FLEET_ISSUE_FILE_LIB")
+    if env:
+        return env
+    here = Path(__file__).resolve().parent
+    cand = here.parent / "lib" / "issue-file.py"
+    installed = HOME / ".local" / "lib" / "pi-packet" / "issue-file.py"
+    if cand.is_file():
+        return str(cand)
+    if installed.is_file():
+        return str(installed)
+    return str(cand)
 DRIFT_FILE = os.environ.get("FLEET_OPS_DRIFT_FILE", "1") == "1"
+DRIFT_CLOSE = os.environ.get("FLEET_OPS_DRIFT_CLOSE", "1") == "1"
 ALLOW_NONCANONICAL = os.environ.get("FLEET_OPS_ALLOW_NONCANONICAL", "") == "1"
 WORKSPACES_ROOT = Path(os.environ.get("FLEET_OPS_WORKSPACES_ROOT", "/home/nish/workspaces"))
 CANONICAL_CHECKOUT = Path(
@@ -78,6 +94,7 @@ PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
+VOLATILE_MARKER = "volatile-unit-path: fleet-ops#369"
 
 DRIFT_MARKERS = (
     SOURCE_MARKER,
@@ -86,6 +103,7 @@ DRIFT_MARKERS = (
     PRODUCTS_MARKER,
     OFF_MAIN_MARKER,
     HOTPATCH_MARKER,
+    VOLATILE_MARKER,
 )
 
 PAPER_OVER_DROPIN = (
@@ -181,11 +199,14 @@ def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
 
     full = f"{msg}\n\n{extra}\n\n{marker}\n"
     try:
+        env = os.environ.copy()
+        env["GH"] = GH
         proc = subprocess.run(
-            [GH, "issue", "create", "-R", DRIFT_REPO, "--title", title, "--body", full],
+            [sys.executable, issue_file_py(), "file", "-R", DRIFT_REPO, "--title", title, "--body", full],
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
         if proc.returncode == 0:
             log(f"filed: {title}")
@@ -278,6 +299,30 @@ def auto_file_off_main(msg: str) -> None:
     )
 
 
+def auto_file_volatile(msg: str) -> None:
+    """File one issue if a unit file or enable-link resolves into a volatile path.
+
+    A wants-link into /tmp (or /run, agent-worktrees) is one tmpfiles-clean
+    run or reboot from dangling, dropping the unit and any self-management
+    loop that runs through it. install.sh --check only verifies MANIFEST
+    fragment dests, not the wants-links systemctl enable creates, so this
+    canary is the only guard for that class (fleet-ops#369).
+    """
+    extra = (
+        "Re-symlink the wants-link to the deploy-clone's unit file: "
+        "systemctl --user reenable <unit>, or remove the link then "
+        "systemctl --user daemon-reload && systemctl --user enable <unit>. "
+        "A dangling link (target already deleted) takes the same reenable. "
+        "Do not restart a slice."
+    )
+    auto_file_drift(
+        VOLATILE_MARKER,
+        "Installed unit or enable-link resolves into a volatile path",
+        extra,
+        msg,
+    )
+
+
 def _issue_blob(issue: dict[str, Any]) -> str:
     """Body plus all comment bodies, for deduping observe-to-close posts."""
     parts = [str(issue.get("body") or "")]
@@ -290,11 +335,20 @@ def _issue_blob(issue: dict[str, Any]) -> str:
 def observe_close_drift_issues(
     checkout: Path, head: str, only_marker: str | None = None
 ) -> None:
-    """Comment on open drift issues whose class is now green.
+    """Comment on, then close, open drift issues whose class is now green.
 
     Observe-to-close wiring (fleet-ops#620): when the canary is green, any
     open issue carrying a drift marker gets a `resolved-at:` comment. This
     makes the close evidence-backed rather than manual.
+
+    Two-tick close (fleet-ops#1156, mirroring fleet-exec-review-canary
+    fleet-ops#729 and fleet-decisions-ledger fleet-ops#650): the first green
+    tick posts `resolved-at:`; a later green tick — once that marker is
+    already present — closes the issue with `gh issue close --reason
+    completed`. A still-red class never reaches this code (the matching
+    check fail-louds first), so a dirty drift issue is never closed. The
+    close is gated by ``FLEET_OPS_DRIFT_CLOSE`` (default 1); tests that
+    only exercise the comment path set it to 0.
 
     When ``only_marker`` is given, only that marker is considered. Per-check
     callers use this so a class that is binary (e.g. off-main: branch is
@@ -343,7 +397,25 @@ def observe_close_drift_issues(
                 continue
             resolved_marker = f"resolved-at: {marker}"
             if resolved_marker in blob:
-                log(f"dedup observe: {DRIFT_REPO}#{number} already carries {resolved_marker}")
+                # Tick 2+: the green tick that posted `resolved-at:` already
+                # landed on a prior heartbeat. Close now (fleet-ops#1156).
+                if not DRIFT_CLOSE:
+                    log(f"dedup observe: {DRIFT_REPO}#{number} already carries {resolved_marker}")
+                    break
+                name = marker_names.get(marker, marker)
+                try:
+                    cp = subprocess.run(
+                        [GH, "issue", "close", str(number), "-R", DRIFT_REPO, "--reason", "completed"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if cp.returncode == 0:
+                        log(f"OBSERVE-CLOSED: {name} -> {DRIFT_REPO}#{number}")
+                    else:
+                        log(f"WARN: gh issue close failed for {DRIFT_REPO}#{number}: {cp.stderr.strip()}")
+                except OSError as e:
+                    log(f"WARN: gh issue close failed for {DRIFT_REPO}#{number}: {e}")
                 break
             comment = (
                 f"{resolved_marker}\n"
@@ -777,11 +849,12 @@ def check_volatile_unit_paths(checkout: Path) -> None:
             findings.append(f"{item} -> {target}")
 
     if findings:
-        fail_loud(
-            "DRIFT-VOLATILE",
+        msg = (
             "installed unit file or enable-link resolves into a volatile path "
-            "(/tmp, /run, agent-worktrees):\n" + "\n".join(findings),
+            "(/tmp, /run, agent-worktrees):\n" + "\n".join(findings)
         )
+        auto_file_volatile(msg)
+        fail_loud("DRIFT-VOLATILE", msg)
     log("no unit file or enable-link resolves into a volatile path")
 
 

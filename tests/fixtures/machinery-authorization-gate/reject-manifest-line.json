@@ -1,0 +1,12 @@
+{
+  "name_status": "M\tMANIFEST\n",
+  "body": "Install a new unit via MANIFEST only.\n",
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"}
+    ]
+  },
+  "manifest_added_lines": [
+    "systemd/sneaky-new.timer /home/nish/.config/systemd/user/sneaky-new.timer"
+  ]
+}

@@ -27,7 +27,12 @@
 #   4. auditor panel (prompts/auditor.md, 2-of-3 gate) is missing.
 #   5. gh watch broken (list failed, jq missing).
 #   6. Live: hours < 12 and the scout has been idle longer than
-#      FLEET_WORK_SUPPLY_MAX_IDLE_S (default 9000 = 2.5h).
+#      FLEET_WORK_SUPPLY_MAX_IDLE_S (default 15000 = ~4.17h; must exceed the
+#      scout timer's normal max idle of OnCalendar 4h + RandomizedDelaySec 5m
+#      = 14700s, so a healthy cadence never false-positives. fleet-ops#1144:
+#      the prior 9000s default was below the 4h timer interval, so the scout
+#      was ALWAYS "idle" >2.5h in the 1.5h pre-fire window and the canary
+#      filed a go-ham-idle violation on every heartbeat whenever work <12h).
 #
 # No new scheduler. Run by fleet-heartbeat-tier1 block 27.
 #
@@ -39,7 +44,8 @@
 #   FLEET_WORK_SUPPLY_WINDOW_H      drain window hours (default 6)
 #   FLEET_WORK_SUPPLY_GOHAM_H       default 12
 #   FLEET_WORK_SUPPLY_REST_H        default 24
-#   FLEET_WORK_SUPPLY_MAX_IDLE_S    default 9000
+#   FLEET_WORK_SUPPLY_MAX_IDLE_S    default 15000 (must exceed scout timer
+#                                     cadence 4h + 5m jitter = 14700s; see #1144)
 #   FLEET_WORK_SUPPLY_SCOUT_STATE   active|activating|inactive fixture
 #   FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S  idle age fixture
 #   FLEET_INTAKE_REPOS_JSON
@@ -55,6 +61,7 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 _canon_script=$(readlink -f "$0")
@@ -76,7 +83,7 @@ INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_WORK_SUPPLY_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_WORK_SUPPLY_FILE:-1}"
-MAX_IDLE_S="${FLEET_WORK_SUPPLY_MAX_IDLE_S:-9000}"
+MAX_IDLE_S="${FLEET_WORK_SUPPLY_MAX_IDLE_S:-15000}"
 
 usage() {
     cat <<'EOF'
@@ -128,7 +135,7 @@ file_finding() {
 
 ${marker}
 "
-    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
         log "filed: $title"
     else
         log "WARN: gh issue create failed for $marker"

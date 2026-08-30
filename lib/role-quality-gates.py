@@ -27,10 +27,13 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # interactive-session-reap (fleet-ops#592) reaps idle scopes; it is not a
 # work-producing role. vault-conflict-resolver (fleet-ops#529 / #636) is the
 # Syncthing freeze handler; vault-knowledge-format is the daily lint timer
-# for vault shape (fleet-ops#525). Both are plumbing, same class.
-# fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
+# for vault shape (fleet-ops#525). fleet-baseline-delta (fleet-ops#1151) is
+# the weekly MAD strangeness pre-pass — deterministic plumbing, not a
+# judging role. fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
 # exporter (writes /var/lib/prometheus/node-exporter/fleet.prom every 5m);
 # it is observability plumbing, not a judging/building role.
+# fleet-aeo-probe (fleet-ops#1236) is the weekly 0509 citation probe; it
+# writes fleet-aeo.prom. Same plumbing class as the metrics exporter.
 NON_ROLE_UNIT_PREFIXES = (
     "siterep-",
     "oomd-",
@@ -41,16 +44,83 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-restore",
     "fleet-resilience",
     "resilience-drill",
+    "fleet-bare-metal-rebuild",
     "fleet-console",
     "fleet-heartbeat-failed-notify",
     "fleet-deploy-check",
+    # fleet-ops#468/#1610: alert-repair COMPLETION canary. It reads
+    # Prometheus alert chains / actions.log, climbs the stall ladder and
+    # writes a detector-red terminal — observability plumbing that runs no
+    # model and owns no prompt, so it has no role gate.
+    "fleet-completion-canary",
     "fleet-seat-recovery",
     "interactive-session-reap",
     "agent-cron-",
     "app-pi",
     "vault-conflict",
     "vault-knowledge-format",
+    # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the
+    # Weekly Fleet Review. Writes a ranked |z|>3 report to the review
+    # input dir + fleet-baseline-delta.prom. Deterministic plumbing, not
+    # a judging role.
+    "fleet-baseline-delta",
     "fleet-metrics-export",
+    # fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on
+    # merged+terminal claims (deletes git worktrees, runs no model, owns no
+    # prompt, produces no work items). Deterministic plumbing, not a role;
+    # its gate is tests/fleet-worktree-reaper.test.sh.
+    "fleet-worktree-reaper",
+    # fleet-ops#1152: standing-rules-render is a file-render maintenance
+    # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
+    # no model, owns no prompt and produces no work items, so it has no
+    # role gate; its own gate is the drift --check plus
+    # tests/standing-rules-drift.test.sh.
+    "standing-rules-render",
+    "fleet-aeo",
+    # fleet-ops#1149: asset census is observability plumbing, not a
+    # work-producing role. It enumerates the VPS and diffs against a
+    # versioned guard map before the Weekly Fleet Review.
+    "fleet-asset-census",
+    # fleet-ops#1464: the gh-webhook push channel is dumb transport
+    # (HMAC verify + forward) plus a synthetic-canary dead-man's switch.
+    # It runs no model, owns no prompt and produces no work items, so it
+    # has no role gate; its own gate is the receiver HMAC test, the
+    # canary round-trip test, and the absent() heartbeat rule.
+    "gh-webhook-",
+    # pi-intake-trigger is event-driven intake plumbing (PR #1490): a
+    # oneshot that fires on trigger files and starts pi-intake@ instances.
+    # It runs no model, owns no prompt and produces no work items — same
+    # class as intake-reconcile above. The planner role gate already
+    # covers pi-intake@.service and pi-intake-repair@.service.
+    "pi-intake-trigger",
+    # fleet-ops#41: grok-token-refresh is credential plumbing, not a
+    # work-producing role. It POSTs an OAuth refresh grant every 4h
+    # and rewrites ~/.pi/agent/auth.json["xai-oauth"] in place; its
+    # own gate is the absent() rule on
+    # fleet_grok_token_refresh_last_success_seconds plus
+    # tests/grok-token-refresh.test.sh.
+    "grok-token-refresh",
+    # fleet-ops#180 / #1557: gap-closure loop. Drill stubs + the loop
+    # oneshot are observability/orchestration plumbing (no model of their
+    # own). Auditor/conference/research prompts+units are catalogued under
+    # senior-auditor below; the remaining unit prefixes stay non-role so
+    # the live catalog does not flag them as ungated-role (pre-existing
+    # red on main after #180; blocks unrelated PRs — same class as
+    # pi-intake-trigger in #1517).
+    "fleet-gap-closure-drill",
+    "fleet-gap-closure-loop",
+    "gap-closure-drill",
+    # fleet-ops#1495: agent-scheduler-drift is a mechanical drift detector
+    # (standing-rules enforcement layer 3). It runs no model, owns no prompt
+    # and produces no work items — same class as fleet-aeo-probe. Its own
+    # gate is the drift --check plus tests/agent-scheduler-drift.test.sh.
+    "agent-scheduler-drift",
+    # fleet-ops#1348: seat-walled-probe is credential-recovery plumbing
+    # (polite 1-token probe for walled seats), not a work-producing role.
+    # It runs no Pi model of its own, owns no judging prompt and produces
+    # no work items — its gate is tests/seat-walled-probe.test.sh plus the
+    # absent() rule on the timer.
+    "seat-walled-probe",
 )
 
 
@@ -119,6 +189,19 @@ def check_intake_lists_agent_ready_only(repo: Path, _role: dict[str, Any]) -> st
     return None
 
 
+def check_agent_ready_spec_gate(repo: Path, _role: dict[str, Any]) -> str | None:
+    """First admission to agent-ready must call the spec-gate (fleet-ops#543)."""
+    if not (repo / "lib" / "agent-ready-spec-gate.py").exists():
+        return "lib/agent-ready-spec-gate.py missing"
+    for rel in ("bin/lifecycle-label-sweep", "bin/pi-audit-tally"):
+        text = _read(repo / rel)
+        if not text:
+            return f"{rel} missing"
+        if "agent-ready-spec-gate" not in text:
+            return f"{rel} applies agent-ready without the spec-gate"
+    return None
+
+
 def check_builder_ci_and_auto_revert(repo: Path, _role: dict[str, Any]) -> str | None:
     ci = repo / ".github" / "workflows" / "ci.yml"
     revert = repo / ".github" / "workflows" / "auto-revert.yml"
@@ -170,7 +253,9 @@ def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any])
     The prompt is the only output-contract surface — a worker that drops
     the cap or the `signal: wfr-action/...` attribution can flood the
     queue or break the rolling-ratio self-score. Gate-checked here so a
-    hand-edit cannot bypass either.
+    hand-edit cannot bypass either. The 6th SECURITY lens (Nish 2026-08-27
+    "are we doing everything" sweep) is also locked here — a prompt that
+    drops it silently loses the standing security audit.
     """
     text = _read(repo / "prompts" / "weekly-fleet-review.md")
     if not text:
@@ -182,7 +267,50 @@ def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any])
     if "claimed work only" not in text:
         return "prompts/weekly-fleet-review.md drops the 'claimed work only' output rule (no Nish report)"
     if "blind" not in text.lower():
-        return "prompts/weekly-fleet-review.md drops the blind 5-lens structure"
+        return "prompts/weekly-fleet-review.md drops the blind 8-lens structure"
+    if "L6 SECURITY" not in text:
+        return "prompts/weekly-fleet-review.md drops the L6 SECURITY lens (fleet-ops#1146 Nish addition)"
+    if '"lens": "throughput|quality|machinery|truth|outside|security|slo|alert_quality"' not in text:
+        return "prompts/weekly-fleet-review.md lens enum does not include security"
+    return None
+
+
+def check_quality_ratchet_contract(repo: Path, _role: dict[str, Any]) -> str | None:
+    """WFR (fleet-ops#1222) must lock the weekly quality ratchet.
+
+    The ledger says gates that were consistently met tighten one notch per
+    week and never loosen without Nish. The prompt is the WFR output
+    contract; dropping it lets a weekly run skip the bar-raise.
+    """
+    text = _read(repo / "prompts" / "weekly-fleet-review.md")
+    if not text:
+        return "prompts/weekly-fleet-review.md missing"
+    if "Quality ratchet" not in text:
+        return "prompts/weekly-fleet-review.md drops the Quality ratchet phase"
+    if "one notch" not in text:
+        return "prompts/weekly-fleet-review.md does not lock one notch per week"
+    if "last-ratchet.json" not in text:
+        return "prompts/weekly-fleet-review.md does not require last-ratchet.json"
+    if "never loosen" not in text.lower():
+        return "prompts/weekly-fleet-review.md drops 'never loosen without Nish'"
+    if not (repo / "lib" / "quality-ratchet.py").exists():
+        return "lib/quality-ratchet.py missing (quality ratchet canary)"
+    if not (repo / "config" / "quality-ratchet.json").exists():
+        return "config/quality-ratchet.json missing (committed floors)"
+def check_rulebook_redteam_backups(repo: Path, _role: dict[str, Any]) -> str | None:
+    """Red-team must refuse to file without sibling backups (fleet-ops#527)."""
+    timer = repo / "systemd" / "fleet-rulebook-redteam.timer"
+    if not timer.exists():
+        return "systemd/fleet-rulebook-redteam.timer missing"
+    text = _read(timer)
+    if "OnCalendar=" not in text or "Persistent=true" not in text:
+        return "timer must be OnCalendar monthly floor + Persistent=true"
+    runner = repo / "bin" / "fleet-rulebook-redteam"
+    if not runner.exists():
+        return "bin/fleet-rulebook-redteam missing"
+    body = _read(runner)
+    if "_require_backups" not in body:
+        return "runner must refuse to file without sibling backups"
     return None
 
 
@@ -190,6 +318,7 @@ BYPASS_CHECKS = {
     "scout_agent_ready_product": check_scout_agent_ready_product,
     "sweep_blank_approval": check_sweep_blank_approval,
     "intake_lists_agent_ready_only": check_intake_lists_agent_ready_only,
+    "agent_ready_spec_gate": check_agent_ready_spec_gate,
     "builder_ci_and_auto_revert": check_builder_ci_and_auto_revert,
     "reviewer_attestation_gate": check_reviewer_attestation_gate,
     "senior_cannot_self_admit": check_senior_cannot_self_admit,
@@ -197,6 +326,8 @@ BYPASS_CHECKS = {
     "audit_has_panel": check_audit_has_panel,
     "researcher_delta_contract": check_researcher_delta_contract,
     "weekly_fleet_review_output_contract": check_weekly_fleet_review_output_contract,
+    "quality_ratchet_contract": check_quality_ratchet_contract,
+    "rulebook_redteam_backups": check_rulebook_redteam_backups,
 }
 
 

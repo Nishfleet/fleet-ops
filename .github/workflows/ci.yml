@@ -117,6 +117,9 @@ jobs:
             /home/nish/.local/bin/fleet-seat-recovery \
             /home/nish/.local/bin/fleet-unjustified-wait \
             /home/nish/.local/bin/fleet-escalation-completion \
+            /home/nish/.local/bin/fleet-asset-census \
+            /home/nish/.local/bin/agent-scheduler-drift-check \
+            /home/nish/.local/bin/memory-index-autocompact \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -180,7 +183,7 @@ jobs:
       node-version: ""
       install-command: ""
       scan-secrets: false
-      timeout-minutes: 5
+      timeout-minutes: 10
       verify-command: |
         set -euo pipefail
         for t in jq openssl curl python3 node git flock; do
@@ -196,13 +199,17 @@ jobs:
         bash tests/repeat-deterministic-detector.test.sh
         bash tests/red-on-main-detector.test.sh
         bash tests/ci-failure-escalation-detector.test.sh
+        bash tests/staleness-checker.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/pi-packet-guard.test.sh
         bash tests/pi-systemd-run.test.sh
         bash tests/pi-intake-run.test.sh
         bash tests/pi-issue-start.test.sh
+        bash tests/pi-issue-start-packet-regen.test.sh
+        bash tests/worker-prompt-size-ceiling.test.sh
         bash tests/pi-issue-failed-reap.test.sh
         bash tests/repair-rotation.test.sh
+        bash tests/alert-repair-seat-walled.test.sh
         bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
         bash tests/seat-lib.test.sh
@@ -224,6 +231,9 @@ jobs:
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
+        # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
+        bash tests/orphan-workflow-detector.test.sh
+        bash tests/open-question-sweep-deleted.test.sh
         bash tests/escalation-coverage-canary.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
@@ -241,3 +251,26 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
+        # classification, queue composition, and verified-merges numerator
+        # (non-null diff AND delivery evidence) in the metrics exporter, plus
+        # the absent/trend alert rules and the self-maintenance config shape.
+        bash tests/fleet-metrics-export.test.sh
+        # fleet-ops#1235: lock the /etc/default/prometheus retention
+        # override (40d) and the deploy restart-vs-reload + headroom guard.
+        bash tests/prometheus-retention-40d.test.sh
+        # fleet-ops#1460: lock the timer manifest shape (every user timer
+        # has a manifest entry with a named reason — schedule-needs-reason).
+        bash tests/timer-manifest.test.sh
+        # fleet-ops#1534: single chokepoint for messages to Nish's phone.
+        # hermes outbound class-gate (--urgent requires sanctioned --class),
+        # alertmanager routing matrix (only severity=page -> telegram),
+        # RepairDispatchDown is the only severity=page alert, writer class-gate
+        # in stop-escalation-dispatch (CAP-REACHED/KILL-ESCALATION -> auditor
+        # path, LADDER-WALLED -> MONEY-BOUNDARY), and the integration test
+        # proving the two gates together form one phone chokepoint.
+        bash tests/hermes-outbound-class-gate.test.sh
+        bash tests/alertmanager-routing-matrix.test.sh
+        bash tests/fleet-rules-severity-page.test.sh
+        bash tests/stop-escalation-writer-class-gate.test.sh
+        bash tests/phone-chokepoint.test.sh

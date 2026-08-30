@@ -1,0 +1,178 @@
+{
+  "_doc": "Registry of known fleet organs (fleet-ops#1010). Every organ exports a heartbeat metric and must have a matching absent(<heartbeat_metric>) rule in config/fleet_rules.yml. The drill (bin/fleet-organ-heartbeat-check verify) enumerates this registry and asserts each organ's absent_alert has an expr containing absent( and the heartbeat_metric. The gate (bin/fleet-organ-heartbeat-check gate) rejects a PR that adds/changes an organ without shipping/keeping its absent() rule. Add a new organ here in the same PR that ships its absent() rule. files[] lists in-repo paths that constitute the organ (empty for organs whose exporter lives outside this repo, e.g. the live ~/.local/libexec metrics exporter or agent-state-built canaries).",
+  "organs": [
+    {
+      "name": "metrics-export",
+      "kind": "exporter",
+      "heartbeat_metric": "node_textfile_mtime_seconds",
+      "absent_alert": "FleetMetricsExportMissing",
+      "files": [
+        "libexec/fleet-metrics-export.py",
+        "systemd/fleet-metrics-export.service",
+        "systemd/fleet-metrics-export.timer"
+      ]
+    },
+    {
+      "name": "completion-canary",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_chain_open",
+      "absent_alert": "FleetCompletionCanaryAbsent",
+      "files": [
+        "bin/fleet-completion-canary.py",
+        "systemd/fleet-completion-canary.service",
+        "systemd/fleet-completion-canary.timer"
+      ]
+    },
+    {
+      "name": "undersaturation-guard",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_pi_workers_active",
+      "absent_alert": "FleetUndersatGuardAbsent",
+      "files": []
+    },
+    {
+      "name": "keystone-routing",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_keystone_routing_heartbeat_seconds",
+      "absent_alert": "FleetKeystoneRoutingAbsent",
+      "files": []
+    },
+    {
+      "name": "self-maintenance",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_self_maintenance_merges",
+      "absent_alert": "FleetSelfMaintenanceAbsent",
+      "files": []
+    },
+    {
+      "name": "waste-ledger",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_waste_runs",
+      "absent_alert": "FleetWasteLedgerAbsent",
+      "files": [
+        "libexec/fleet-waste-export.py",
+        "systemd/fleet-metrics-export.service.d/waste-ledger.conf"
+      ]
+    },
+    {
+      "name": "console-tile-verify",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_console_tile_verify_timestamp_seconds",
+      "absent_alert": "ConsoleTileVerifyAbsent",
+      "files": [
+        "libexec/fleet-console-pi/verify.py",
+        "systemd/fleet-console-pi.service",
+        "systemd/fleet-console-pi.timer"
+      ]
+    },
+    {
+      "name": "gh-cache",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_gh_cache_fresh",
+      "absent_alert": "FleetGhCacheStale",
+      "files": []
+    },
+    {
+      "name": "scout",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_scout_last_run_seconds",
+      "absent_alert": "FleetScoutStale",
+      "files": [
+        "bin/scout-futility-check",
+        "systemd/pi-scout@.service",
+        "systemd/pi-scout@.timer"
+      ]
+    },
+    {
+      "name": "asset-census",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_asset_census_last_run_seconds",
+      "absent_alert": "FleetAssetCensusAbsent",
+      "files": [
+        "bin/fleet-asset-census",
+        "lib/pi-packet/asset-census.py",
+        "systemd/fleet-asset-census.service",
+        "systemd/fleet-asset-census.timer",
+        "config/asset-guard-map.json"
+      ]
+    },
+    {
+      "name": "resilience-drill",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_resilience_drill_last_green_seconds",
+      "absent_alert": "ResilienceDrillAbsent",
+      "files": [
+        "bin/fleet-resilience-drill",
+        "systemd/fleet-resilience-drill.service",
+        "systemd/fleet-resilience-drill.timer"
+      ]
+    },
+    {
+      "name": "gh-webhook-receiver",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_gh_webhook_receiver_last_green_seconds",
+      "absent_alert": "FleetGhWebhookReceiverAbsent",
+      "files": [
+        "libexec/gh-webhook-receiver/serve.py",
+        "systemd/gh-webhook-receiver.service"
+      ]
+    },
+    {
+      "name": "gh-webhook-canary",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_gh_webhook_canary_last_green_seconds",
+      "absent_alert": "FleetGhWebhookCanaryAbsent",
+      "files": [
+        "bin/gh-webhook-canary.py",
+        "bin/gh-webhook-canary-deadman.py",
+        "systemd/gh-webhook-canary.service",
+        "systemd/gh-webhook-canary.timer",
+        "systemd/gh-webhook-canary-deadman.service",
+        "systemd/gh-webhook-canary-deadman.timer"
+      ]
+    },
+    {
+      "name": "grok-token-refresh",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_grok_token_refresh_last_success_seconds",
+      "absent_alert": "FleetGrokTokenRefreshStale",
+      "files": [
+        "bin/grok-token-refresh",
+        "systemd/grok-token-refresh.service",
+        "systemd/grok-token-refresh.timer"
+      ]
+    },
+    {
+      "name": "truth-staleness",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_truth_staleness_last_run_seconds",
+      "absent_alert": "TruthStalenessAbsent",
+      "files": [
+        "libexec/staleness-checker.py",
+        "systemd/fleet-truth-staleness-check.service",
+        "systemd/fleet-truth-staleness-check.timer",
+        "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
+      ]
+    },
+    {
+      "name": "gh-rate-limit",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_gh_rate_limit_fetched_seconds",
+      "absent_alert": "FleetGhRateLimitAbsent",
+      "files": [
+        "libexec/fleet-metrics-export.py"
+      ]
+    },
+    {
+      "name": "baseline-delta",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_baseline_delta_last_run_seconds",
+      "absent_alert": "FleetBaselineDeltaAbsent",
+      "files": [
+        "libexec/fleet-baseline-delta.py",
+        "systemd/fleet-baseline-delta.service",
+        "systemd/fleet-baseline-delta.timer"
+      ]
+    }
+  ]
+}

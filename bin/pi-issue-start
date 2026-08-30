@@ -5,10 +5,29 @@
 # StartLimitBurst and is what released a live worker's claim (issue #26).
 # This wrapper no-ops instead of queueing another start.
 #
-# Usage: pi-issue-start <repo>-<issue>
-# Environment: SYSTEMCTL (tests)
+# fleet-ops#1451: this is also the dispatch path for re-dispatch (intake
+# re-claim, fleet-heartbeat-red-pr-repair). The reaper (pi-issue-failed-reap)
+# archives the .in packet when it releases a claim, but a re-dispatch onto a
+# SURVIVING claim branch (e.g. an open PR from claim/issue-<N>) does NOT go
+# through intake's packet-write step — so systemctl start hits a missing
+# StandardInput=file and fails 208/STDIN, tripping OnFailure + escalation on
+# every restart-ladder step. systemd opens StandardInput=file BEFORE
+# ExecStartPre, so ExecStart cannot self-heal. This wrapper regenerates the
+# .in from the worker prompt + TARGET line when it is missing, so the start
+# always has a packet to read. The unit's ConditionPathExists is the
+# belt-and-braces backstop for a raw `systemctl start` that bypasses this
+# wrapper.
 #
-# Exit: 0 = started or already-live no-op. Non-zero = systemctl start failed.
+# Usage: pi-issue-start <repo>-<issue>
+# Environment:
+#   SYSTEMCTL        defaults to systemctl (tests inject a fake)
+#   PI_ISSUES_DIR    defaults to ~/.local/state/pi-issues (tests redirect)
+#   WORKER_PROMPT    defaults to ~/.pi/agent/prompts/worker.md (tests redirect)
+#   GH               defaults to gh (tests inject a fake for keystone lookup)
+#
+# Exit: 0 = started or already-live no-op. Non-zero = systemctl start failed
+#       or the packet could not be regenerated (unparseable instance, missing
+#       worker prompt).
 
 set -euo pipefail
 
@@ -18,6 +37,9 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 instance="$1"
 unit="pi-issue@${instance}.service"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
+WORKER_PROMPT="${WORKER_PROMPT:-$HOME/.pi/agent/prompts/worker.md}"
+GH="${GH:-gh}"
 
 state="$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)"
 case "$state" in
@@ -33,4 +55,80 @@ if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
     exit 0
 fi
 
-exec "$SYSTEMCTL" --user start "$unit"
+# --- regenerate the .in packet if it is missing (fleet-ops#1451) ------------
+# The reaper archives .in/.out/.err when it releases a claim. A re-dispatch
+# onto a surviving claim branch (open PR, or intake re-claim that lost the
+# race but the branch persisted) reaches here with no .in. systemd would
+# then fail 208/STDIN. Rebuild the packet exactly as intake does
+# (prompts/intake.md step 3d): worker prompt + TARGET line, with the
+# `phases:` manifest first when the issue is a keystone (fleet-ops#1383).
+pkt="$PI_ISSUES_DIR/${instance}.in"
+if [[ ! -f "$pkt" ]]; then
+    repo="${instance%-*}"
+    issue="${instance##*-}"
+    if [[ -z "$repo" || -z "$issue" || ! "$issue" =~ ^[0-9]+$ ]]; then
+        echo "pi-issue-start: cannot parse repo/issue from '$instance' — cannot regenerate $pkt" >&2
+        exit 1
+    fi
+    if [[ ! -f "$WORKER_PROMPT" ]]; then
+        echo "pi-issue-start: worker prompt not found at $WORKER_PROMPT — cannot regenerate $pkt" >&2
+        exit 1
+    fi
+    mkdir -p "$PI_ISSUES_DIR"
+    full_repo="Nishfleet/${repo}"
+    unit_name="pi-issue-${instance}"
+    # Keystone routing (fleet-ops#1133): if the issue title/body/labels carry
+    # "keystone" (case-insensitive), prefix the marker so pick_seat uses
+    # reliability-first routing. This mirrors intake step 3d exactly. A gh
+    # failure is non-fatal: the packet is still written without the marker,
+    # and the worker runs with default routing rather than not at all.
+    keystone=0
+    if command -v "$GH" >/dev/null 2>&1; then
+        issue_blob="$("$GH" issue view "$issue" -R "$full_repo" --json title,body,labels 2>/dev/null || true)"
+        if [[ -n "$issue_blob" ]] && printf '%s' "$issue_blob" | grep -qi 'keystone'; then
+            keystone=1
+        fi
+    fi
+    if [[ "$keystone" == "1" ]]; then
+        # fleet-ops#1383: phases manifest (replaces the older difficulty:
+        # only marker). packet_difficulty treats a phases manifest as
+        # keystone-class; the manifest is richer — it declares the
+        # Fryxell harness-loop routing so the seat ledger (#1211) can
+        # attribute frontier-token share to capable phases vs commodity.
+        { printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable\n'; cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
+    else
+        { cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
+    fi
+    echo "pi-issue-start: REGENERATED missing packet $pkt for $full_repo#$issue"
+fi
+
+# fleet-ops#1558: mirror intake's per-repo MemoryMax drop-in on re-dispatch
+# paths that bypass the intake tick (red-PR repair, StartLimitBurst reclaim).
+# Missing seat-lib or missing table row = keep the template defaults.
+SEAT_LIB="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+if [[ -f "$SEAT_LIB" ]]; then
+    # shellcheck source=/dev/null
+    . "$SEAT_LIB"
+    repo_for_mem="${instance%-*}"
+    mem_row=$(worker_memory_for_repo "$repo_for_mem" 2>/dev/null || true)
+    if [[ -n "$mem_row" ]]; then
+        IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
+        drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
+        mkdir -p "$drop_dir"
+        drop_tmp="$drop_dir/memory.conf.tmp.$$"
+        {
+            printf '# fleet-ops#1558: per-repo memory cap (written by pi-issue-start)\n'
+            printf '[Service]\n'
+            [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
+            [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+        } > "$drop_tmp"
+        if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
+            mv -f "$drop_tmp" "$drop_dir/memory.conf"
+            "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
+        else
+            rm -f "$drop_tmp"
+        fi
+    fi
+fi
+
+exec "$SYSTEMCTL" --user start --no-block "$unit"

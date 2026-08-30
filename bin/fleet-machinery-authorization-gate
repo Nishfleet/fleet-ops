@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# fleet-machinery-authorization-gate — conference criterion for fleet-ops#1548.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes.
+# New systemd/** unit files or MANIFEST unit lines that are neither on
+# config/machinery-allowlist.json nor carrying `authorized-by-nish:` are
+# REJECT (exit 1). Repairs and deletions stay ungated. hunt flags live
+# hand-placed units not on the allowlist.
+#
+# Usage:
+#   fleet-machinery-authorization-gate [--name-status F] [--body F] [--allowlist F]
+#   fleet-machinery-authorization-gate evaluate --input pr.json
+#   fleet-machinery-authorization-gate hunt [--allowlist F] [--unit-dir D]
+#   fleet-machinery-authorization-gate --ledger-line
+#
+# The implementation lives in lib/machinery-authorization-gate.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${MACHINERY_AUTHORIZATION_GATE_LIB:-$here/../lib/pi-packet/machinery-authorization-gate.py}"
+[ -f "$lib" ] || lib="$here/../lib/machinery-authorization-gate.py"
+[ -f "$lib" ] || { echo "fleet-machinery-authorization-gate: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

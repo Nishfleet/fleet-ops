@@ -1,0 +1,9 @@
+[Unit]
+Description=Throwaway timer for gap-closure mask-detection drills
+# Runtime-masked by the drill, then unmasked. Yearly so it never fires
+# on its own. No [Install].
+
+[Timer]
+OnCalendar=yearly
+Persistent=false
+AccuracySec=1h

@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# fleet-gap-closure-auditor — ExecStart wrapper for
+# fleet-gap-closure-auditor@.service (fleet-ops#180).
+# Sibling of pi-audit-run: that binary owns the scout-candidate admission
+# panel (fleet-ops#146 / #414). This one reads
+# $STATE_DIR/pi-audit-jobs/%i/job.json and runs pi with the conference
+# packet on stdin. Failures escalate via the unit's inherited OnFailure=.
+#
+# fleet-ops#1593: the seat named by the job is resolved against the per-seat
+# health ledger (and the global pi-seat-health.json marker as a fallback)
+# before calling pi. Dead, benched, or never-probed seats are refused with a
+# NOT-DONE verdict and an exit 0 so the conference unit does not fail; the
+# tally sees the dissent and the loop continues.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'EOF'
+usage: fleet-gap-closure-auditor <instance>
+Run one gap-closure conference/research auditor from job.json.
+Does not start a live run on --help.
+EOF
+    exit 0
+fi
+
+STATE_DIR="${GAP_LOOP_STATE_DIR:-/home/nish/workspaces/agent-state/gap-closure}"
+INSTANCE="${PI_AUDIT_INSTANCE:-${1:-}}"
+PI_BIN="${PI_AUDIT_PI_BIN:-/home/nish/.local/bin/pi}"
+DRY_RUN="${PI_AUDIT_DRY_RUN:-0}"
+
+[ -n "$INSTANCE" ] || { echo "fleet-gap-closure-auditor: missing instance" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "fleet-gap-closure-auditor: jq missing" >&2; exit 2; }
+
+job="$STATE_DIR/pi-audit-jobs/$INSTANCE/job.json"
+[ -f "$job" ] || { echo "fleet-gap-closure-auditor: job spec missing: $job" >&2; exit 2; }
+
+provider="$(jq -r '.provider' "$job")"
+model="$(jq -r '.model' "$job")"
+packet="$(jq -r '.packet' "$job")"
+stdout="$(jq -r '.stdout' "$job")"
+if [ -z "$provider" ] || [ -z "$model" ] || [ -z "$packet" ] || [ -z "$stdout" ]; then
+    echo "fleet-gap-closure-auditor: incomplete job spec" >&2
+    exit 2
+fi
+[ -f "$packet" ] || { echo "fleet-gap-closure-auditor: packet missing: $packet" >&2; exit 2; }
+
+mkdir -p "$(dirname "$stdout")"
+
+# --- seat preflight (fleet-ops#1593) -----------------------------------------
+# Conference jobs name a provider/model. Launching pi on a dead or never-
+# probed seat fails the unit and trips the conference's OnFailure= ladder.
+# Resolve the seat against the health ledger and refuse before the call.
+
+SEAT_LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+SEAT_HEALTH_FILE="${PI_SEAT_HEALTH_FILE:-/home/nish/workspaces/agent-state/lanes/pi-seat-health.json}"
+
+log() { printf '[%s] [fleet-gap-closure-auditor] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+in_future() {
+    local ts="$1"
+    [ -n "$ts" ] || return 1
+    local ts_s now
+    ts_s=$(date -u -d "$ts" +%s 2>/dev/null) || return 1
+    now=$(date -u +%s)
+    [ "$ts_s" -gt "$now" ]
+}
+
+observed_fresh() {
+    local obs="$1" window="${2:-1800}"
+    [ -n "$obs" ] || return 1
+    local obs_s now
+    obs_s=$(date -u -d "$obs" +%s 2>/dev/null) || return 1
+    now=$(date -u +%s)
+    [ "$obs_s" -gt 0 ] && (( now - obs_s <= window ))
+}
+
+_sanitise() {
+    printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+_seat_ledger_file() {
+    local p="$1" m="$2"
+    printf '%s/%s__%s.json\n' "$SEAT_LEDGER_DIR" "$(_sanitise "$p")" "$(_sanitise "$m")"
+}
+
+# Return 0 when the seat has fresh, usable health data; refuse (return 1) when
+# the ledger is missing/unparseable, seat_dead=true, or the health class says
+# the seat is unusable. The global pi-seat-health.json is a fallback only when
+# it names this exact provider/model and has usable data.
+seat_preflight_ok() {
+    local p="$1" m="$2" f hc dead obs usable_at bench_until
+    local gp gm
+    f=$(_seat_ledger_file "$p" "$m")
+
+    if [ -f "$f" ]; then
+        IFS=$'\x1f' read -r hc dead obs usable_at bench_until < <(
+            jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+    fi
+
+    if [ -z "${hc:-}" ] && [ -f "$SEAT_HEALTH_FILE" ]; then
+        gp=$(jq -r '.provider // ""' "$SEAT_HEALTH_FILE" 2>/dev/null || true)
+        gm=$(jq -r '.model // ""' "$SEAT_HEALTH_FILE" 2>/dev/null || true)
+        if [ "$gp" = "$p" ] && [ "$gm" = "$m" ]; then
+            IFS=$'\x1f' read -r hc dead obs usable_at bench_until < <(
+                jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$SEAT_HEALTH_FILE" 2>/dev/null || true
+            )
+            f="$SEAT_HEALTH_FILE"
+        fi
+    fi
+
+    if [ -z "${hc:-}" ]; then
+        log "refusing $p/$m: no health data"
+        return 1
+    fi
+
+    if [ "$dead" = "true" ]; then
+        log "refusing $p/$m: seat_dead=true"
+        return 1
+    fi
+
+    case "$hc" in
+        credentials_bad|quota_exhausted)
+            log "refusing $p/$m: health_class=$hc"
+            return 1
+            ;;
+        quota_bench|overload_bench|hang_bench)
+            if [ -n "${bench_until:-}" ] && in_future "$bench_until"; then
+                log "refusing $p/$m: benched until $bench_until ($hc)"
+                return 1
+            fi
+            ;;
+        rate_limited)
+            if observed_fresh "$obs" 1800 && [ -n "${usable_at:-}" ] && in_future "$usable_at"; then
+                log "refusing $p/$m: rate_limited until $usable_at"
+                return 1
+            fi
+            ;;
+    esac
+
+    if [ -n "${usable_at:-}" ] && in_future "$usable_at"; then
+        log "refusing $p/$m: usable_at $usable_at in future"
+        return 1
+    fi
+
+    log "resolved $p/$m against $f: health_class=$hc"
+    return 0
+}
+
+if [ "$DRY_RUN" = "1" ]; then
+    mode="$(jq -r '.mode // "termination"' "$job")"
+    if [ "$mode" = "research" ]; then
+        printf '{"vote":"NOT-DONE","reason":"dry-run","adopted":[],"rejected":[]}\n' >"$stdout"
+    else
+        printf '{"vote":"DONE","reason":"dry-run"}\n' >"$stdout"
+    fi
+    exit 0
+fi
+
+if ! seat_preflight_ok "$provider" "$model"; then
+    jq -c -n \
+        --arg provider "$provider" \
+        --arg model "$model" \
+        --arg reason "seat preflight refused $provider/$model (no health data or dead)" \
+        '{vote:"NOT-DONE", reason:$reason, _seat_preflight:true, provider:$provider, model:$model}' >"$stdout"
+    exit 0
+fi
+
+[ -x "$PI_BIN" ] || { echo "fleet-gap-closure-auditor: pi not executable: $PI_BIN" >&2; exit 2; }
+
+set +e
+"$PI_BIN" --print --provider "$provider" --model "$model" < "$packet" >"$stdout" 2>"$stdout.err"
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
+    jq -c -n --arg reason "pi exited rc=$rc" \
+        '{vote:"NOT-DONE", reason:$reason, _pi_failed:true}' >"$stdout"
+    exit 0
+fi
+
+if ! jq -e . "$stdout" >/dev/null 2>&1; then
+    raw="$(head -c 2000 "$stdout")"
+    jq -c -n --arg raw "$raw" \
+        '{vote:"NOT-DONE", reason:"pi output was not valid JSON", raw:$raw}' >"$stdout"
+fi
+exit 0

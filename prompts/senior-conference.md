@@ -62,3 +62,55 @@ fired via a sibling `Closes #480` line); a prose mention without a
 real closing reference is REJECT so the worker is forced to add the
 correct line. You may still REJECT a PASS from the gate but may not
 APPROVE a gate REJECT.
+
+## Automatic criterion: merge trample (fleet-ops#1229)
+
+Ledger line (verbatim):
+
+STANDING, NON-NEGOTIABLE: a PR must not merge if its effective diff-to-main deletes or reverts files that its own commits never modified (ghost: merge diff minus per-commit diff-tree paths), or if it deletes files its merge-base commit just added while also changing other files (worktree-gap). Origin: 08-27. PR #1228 squash-merged a decisions-ledger fix whose single commit also deleted bin/pi-salvage-worktree, landed two minutes earlier in #1215. GitHub squash applied that tree; salvage vanished. Restored by #1230. (fleet-ops #1229).
+
+A squash merge that publishes a tree missing files the PR's own commits
+never edited wipes whatever just landed on main. PR #1228 did that to
+salvage (#1215) two minutes after it merged. Compare the effective merge
+diff to the union of per-commit diff-tree paths; also reject a commit
+that deletes files its merge-base just added while editing something
+else (the working-tree never contained those files). `revert/` heads
+and a `trample-ok:` body line are the allow rules.
+
+Do not re-derive the automatic half. Run the gate:
+
+```
+fleet-merge-trample-gate evaluate
+```
+
+Exit 1 / `"verdict":"REJECT"` is an automatic REJECT. Cite the ledger
+line above. You may still REJECT a PASS from the gate but may not
+APPROVE a gate REJECT.
+
+
+## Automatic criterion: new machinery needs authorization (fleet-ops#1548)
+
+Ledger line (verbatim):
+
+STANDING, NON-NEGOTIABLE: NEW machinery (unit files under systemd/**, MANIFEST lines that install those units) is default-DENIED. A PR that adds machinery must either (a) name a unit already on config/machinery-allowlist.json, or (b) carry the Nish-only body signal `authorized-by-nish: <reason>`. Repairs and deletions of existing machinery stay ungated. Live hand-placed units not on the allowlist are hunt findings for senior-conference adjudication (MECHANICAL-INSTEAD / EXCEPTION-APPROVED / NISH-RESERVED). Enforced mechanically at the senior conference + blind audit (fleet-ops #1548, extends #366). Origin: 2026-08-28 machinery audit Step 4; Nish: 'Make it mechanically non-negotiable'.
+
+A diff that adds a new file under `systemd/**` or a new MANIFEST line
+installing a `systemd/` unit is REJECT unless the unit is on the
+allowlist or the PR body carries `authorized-by-nish: <reason>`.
+Repairs (`M`) and deletions (`D`) of existing machinery stay ungated
+(fix-it-now unaffected). Allowlist grandfathering stays until the
+deletion review (#1531) prunes it.
+
+Do not re-derive the automatic half. Run the mechanical gate on the
+name-status diff + PR body + allowlist:
+
+```
+fleet-machinery-authorization-gate evaluate --name-status <diff> --body <pr-body>
+```
+
+Exit 1 / `"verdict":"REJECT"` is an automatic REJECT. Cite the ledger
+line above. Violations route to senior-conference adjudication
+(MECHANICAL-INSTEAD default on doubt; EXCEPTION-APPROVED with both
+POVs; NISH-RESERVED via boundary-notify — the only path that reaches
+Nish). You may still REJECT a PASS from the gate (rubber-stamp
+`authorized-by-nish:` reasons) but you may not APPROVE a gate REJECT.

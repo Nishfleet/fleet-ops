@@ -11,7 +11,7 @@ Diagnose:
    - DNS resolution for siterep.net
    - Local connectivity (curl the endpoint yourself)
    - CF-side outage (Cloudflare status page) = nothing fixable from here
-4. If unfixable from here, file a gh issue in Nishfleet/siterep titled "UPTIME: siterep.net failing probes since <UTC ts>" with the evidence (journal tail, no secrets), then exit nonzero.
+4. If unfixable from here, file with `fleet-issue-file file -R Nishfleet/siterep --title "UPTIME: siterep.net failing probes since <UTC ts>" --body "<evidence, journal tail, no secrets>"`, then exit nonzero.
 
 Constraints:
 - Never page, email, or message Nish.

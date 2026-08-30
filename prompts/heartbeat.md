@@ -12,6 +12,14 @@ a failed run.
 one is needed, write a one-line `[REQUEST]` entry to the triage file and exit.
 Do not run `systemctl --user enable` on anything new.
 
+Git mirrors (fleet-ops#1213) update on the existing 5-min
+`fleet-metrics-export` tick (`git-mirror-update`). Do not add a timer for
+that. Mirrors live at `/home/nish/workspaces/.mirrors/<repo>.git` and are
+read-only fetch targets; never push. Packet clones use
+`git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`
+(no `--dissociate` on throwaway worktrees). A missing or corrupt mirror
+degrades to a plain clone.
+
 **Never merge or push on a held/hands-off repo.** Enrolment is
 `config/intake-repos.json` `repos[]`. The hands-off list is the `hands_off`
 key in the heartbeat state file (an operator hatch, not an enrolment list).
@@ -50,11 +58,22 @@ orphaned branches (issue missing/closed, no open PR). It defers direction A
 Tier 1 §6b also runs `lifecycle-label-sweep` every tick (fleet-ops#376 / #457): any
 open issue in an enrolled repo that lacks a lifecycle label (`agent-ready` /
 `agent-in-progress` / `agent-blocked` / `nish-reserved` / `noise-class` /
-`scout-candidate` / `drill:*`) is labelled within one tick. Product repos
+`observe-to-close` / `scout-candidate` / `drill:*`) is labelled within one tick. Product repos
 default to `scout-candidate` (admission, not blank approval). `fleet-ops`
 defaults to `agent-ready` (builder gate). Titles starting `AUTO-REVERT SKIP`
 or `AUTO-REVERT HALT` get `noise-class`; titles containing `FLAG-for-Nish`
-get `nish-reserved`. Do not redo that sweep.
+get `nish-reserved`. Failed-command observe-to-close issues (title prefix
+`fix(failed-command):` + suffix `— failed command walked past, never flagged`
+with body `signal: failed-command-flagged/<slug>`) get `observe-to-close` so
+intake does not claim them while the detector waits to close. Decisions-ledger
+observe-to-close issues (title prefix `fix(decisions-ledger):` + suffix
+`— decided question was re-asked` with body `signal: decisions-ledger/<slug>`)
+get `observe-to-close` for the same reason (fleet-ops#1083). The sweep also
+reclassifies any class-lock issue (`fix(failed-command):` / `fix(decisions-ledger):`)
+whose class-lock PR on `claim/issue-<N>` has already merged back to
+`observe-to-close`, regardless of its current label — the release paths flip
+it to `agent-ready` after StartLimitBurst and intake re-claims it every tick
+until the 24h observe-to-close window expires (fleet-ops#1083). Do not redo that sweep.
 
 ---
 

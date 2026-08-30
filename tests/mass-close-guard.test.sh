@@ -91,4 +91,55 @@ if (linkedPrNumbersFromTimeline([]).length !== 0) throw new Error("empty timelin
 console.log("OK: mass-close-guard shouldReopen + linkedPrNumbersFromTimeline decision matrix");
 ' || fail "pure function tests failed"
 
+# Regression test for fleet-ops#1027: ghJson argv construction without GH_HOST set.
+# Uses a PATH shim that records argv to a temp file so we can assert the exact
+# args passed to `gh` — no dangling --hostname when GH_HOST is unset.
+test_ghjson_argv() {
+  local tmpdir
+  tmpdir="$(mktemp -d)" || fail "mktemp failed"
+  trap "rm -rf '$tmpdir'" RETURN
+
+  # Shim gh: record argv to a file, then exit 0 (no real gh call needed).
+  cat >"$tmpdir/gh" <<'SHIM'
+#!/usr/bin/env bash
+echo "$@" > "$GH_ARGV_FILE"
+exit 0
+SHIM
+  chmod +x "$tmpdir/gh"
+
+  local argv_file="$tmpdir/argv.txt"
+
+  GH_ARGV_FILE="$argv_file" \
+    GH_HOST="" \
+    PATH="$tmpdir:$PATH" \
+    node --input-type=module -e '
+      import { ghJson } from "./.github/scripts/mass-close-guard.mjs";
+      // ghJson normally calls JSON.parse on stdout; our shim prints argv.
+      // JSON.parse of the recorded argv string will fail, which is fine —
+      // the shim has already written the argv file before ghJson throws.
+      try { ghJson(["repos/OWNER/REPO/issues/1", "--jq", "{state: .state}"]); } catch (_) {}
+    ' 2>/dev/null
+
+  if [[ ! -f "$argv_file" ]]; then
+    fail "ghJson did not invoke the gh shim (no argv file)"
+  fi
+
+  local actual
+  actual="$(cat "$argv_file")"
+  local expected="api repos/OWNER/REPO/issues/1 --jq {state: .state}"
+
+  if [[ "$actual" != "$expected" ]]; then
+    fail "ghJson argv mismatch:\n  expected: $expected\n  actual:   $actual"
+  fi
+
+  # Also verify: --hostname must NOT appear in argv when GH_HOST is unset.
+  if echo "$actual" | grep -qF -- '--hostname'; then
+    fail "ghJson argv contains dangling --hostname (fleet-ops#1027 regression): $actual"
+  fi
+
+  echo "OK: ghJson argv (GH_HOST unset) — no dangling --hostname"
+}
+
+test_ghjson_argv
+
 echo "OK: mass-close-guard.mjs decision matrix"

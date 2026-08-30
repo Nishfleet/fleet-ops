@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# fleet-tailscale-localapi-canary — tailscaled localapi socket reachability
+# as the UNPRIVILEGED user (fleet-ops#2151).
+#
+# SSH is Tailscale-only on this box. fleet-tailscale-acl-canary (block 28)
+# reads the compiled PacketFilter via `sudo -n tailscale debug netmap`; sudo
+# bypasses the /run/tailscale socket-dir permission, so a 0700
+# RuntimeDirectoryMode (or any socket-permission fault) reads CLEAN to the
+# ACL watch while the unprivileged `tailscale status` the SSH path and every
+# fleet user-land tool relies on is dead. That is the 2026-08-30 lockout
+# near-miss: daemon pid alive, socket unreachable, ACL watch green.
+#
+# This canary is the class prevention: every heartbeat tick, run
+# `tailscale status` AS THE UNPRIVILEGED USER (no sudo) and fail loud if it
+# cannot reach the localapi socket, if the daemon is not responding, or if
+# the tailnet shows no peers (an isolated node is a lockout building).
+# Missing binary / not running on the VPS = watcher broken (fail closed).
+# Auto-files, deduped by marker. No new scheduler. Run by fleet-heartbeat-
+# tier1 block 42.
+#
+# Official Tailscale docs: the localapi socket is /run/tailscale/
+# tailscaled.sock (RuntimeDirectory=tailscale). Upstream tailscaled.service
+# ships RuntimeDirectoryMode=0755 so unprivileged clients can reach it; a
+# drop-in forcing 0700 breaks every non-root caller. `tailscale status`
+# exits non-zero with "permission denied" / "not running?" on a dead socket.
+#
+# Environment seams (tests):
+#   FLEET_TAILSCALE_STATUS_FIXTURE  fixture `tailscale status` stdout (skips live)
+#   FLEET_TAILSCALE_STATUS_FIXTURE_RC  fixture exit code (default 0)
+#   FLEET_TAILSCALE_STATUS_FIXTURE_ERR fixture `tailscale status` stderr
+#   TAILSCALE_STATUS_CMD            override for the live fetch
+#   FLEET_HEARTBEAT_TRIAGE
+#   FLEET_TAILSCALE_LOCALAPI_REPO   default Nishfleet/fleet-ops
+#   FLEET_TAILSCALE_LOCALAPI_FILE   1 (default) file issues; 0 skip gh
+#   GH                              gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+_canon_script=$(readlink -f "$0")
+_canon_dir=$(dirname "$_canon_script")
+_canon_repo=$(cd "$_canon_dir/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_TAILSCALE_LOCALAPI_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_TAILSCALE_LOCALAPI_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-tailscale-localapi-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+file_finding() {
+    local kind="$1" title="$2" body="$3"
+    local marker="tailscale-localapi-canary: ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_TAILSCALE_LOCALAPI_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+scratch=$(mktemp -d -t tailscale-localapi-canary.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+# --- fetch `tailscale status` as the unprivileged user -------------------
+status_out="$scratch/status.out"
+status_err="$scratch/status.err"
+
+if [[ -n "${FLEET_TAILSCALE_STATUS_FIXTURE:-}" ]]; then
+    if [[ ! -f "$FLEET_TAILSCALE_STATUS_FIXTURE" ]]; then
+        loud "TAILSCALE-LOCALAPI-WATCHER-BROKEN" "fixture missing: $FLEET_TAILSCALE_STATUS_FIXTURE"
+        file_finding "watcher-broken" \
+            "Tailscale localapi canary cannot run (fleet-ops#2151)" \
+            "FLEET_TAILSCALE_STATUS_FIXTURE was set but the file is missing. The unprivileged socket-reachability watch cannot be judged.
+
+signal: access-plane/tailscale-localapi"
+        exit 1
+    fi
+    cp "$FLEET_TAILSCALE_STATUS_FIXTURE" "$status_out"
+    printf '%s' "${FLEET_TAILSCALE_STATUS_FIXTURE_ERR:-}" >"$status_err"
+    fetch_rc="${FLEET_TAILSCALE_STATUS_FIXTURE_RC:-0}"
+else
+    # UNPRIVILEGED: no sudo. This is the whole point — sudo bypasses the
+    # socket-dir permission that this watch exists to catch.
+    set +e
+    if [[ -n "${TAILSCALE_STATUS_CMD:-}" ]]; then
+        bash -c "$TAILSCALE_STATUS_CMD" >"$status_out" 2>"$status_err"
+        fetch_rc=$?
+    else
+        if ! command -v tailscale >/dev/null 2>&1; then
+            loud "TAILSCALE-LOCALAPI-WATCHER-BROKEN" "tailscale binary missing on PATH"
+            file_finding "watcher-broken" \
+                "Tailscale localapi canary cannot run (fleet-ops#2151)" \
+                "The \`tailscale\` client binary is not on PATH. Without it the unprivileged socket-reachability watch cannot run; a dead watch must not read as clean.
+
+signal: access-plane/tailscale-localapi"
+            exit 1
+        fi
+        tailscale status >"$status_out" 2>"$status_err"
+        fetch_rc=$?
+    fi
+    set -e
+fi
+
+# --- judge ----------------------------------------------------------------
+# Failure class 1: `tailscale status` exited non-zero. Covers permission
+# denied on the socket, daemon not responding, socket missing — every shape
+# of "daemon may be alive but the control plane is unreachable to the
+# unprivileged callers SSH depends on". This is the early page: the tunnel
+# may still be forwarding packets, but the localapi is already dead.
+if [[ "$fetch_rc" -ne 0 ]]; then
+    err_snip=$(head -c 400 "$status_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')
+    loud "TAILSCALE-LOCALAPI-UNREACHABLE" \
+        "tailscale status failed as unprivileged user (rc=$fetch_rc): $err_snip"
+    file_finding "localapi-unreachable" \
+        "tailscaled localapi socket unreachable to unprivileged callers (fleet-ops#2151)" \
+        "\`tailscale status\` run as the unprivileged user (no sudo) failed with rc=$fetch_rc. The daemon may be alive but the localapi socket is unreachable to every non-root caller — the SSH-over-Tailscale path and fleet user-land tools depend on this. Common cause: a tailscaled.service drop-in forcing RuntimeDirectoryMode=0700 on /run/tailscale (upstream ships 0755), or a socket-permission / stale-socket fault after reboot. Restore unprivileged \`tailscale status\` and remove any rogue RuntimeDirectoryMode drop-in.
+
+stderr: $err_snip
+
+signal: access-plane/tailscale-localapi"
+    exit 1
+fi
+
+# Failure class 2: status succeeded but the tailnet is isolated — no peer
+# lines. A node with zero peers is one reboot away from a lockout; page
+# before the tunnel is fully gone. Peer lines start with a 100.x address.
+peer_lines=$(grep -cE '^[0-9]+\.' "$status_out" 2>/dev/null || true)
+if [[ "$peer_lines" -lt 1 ]]; then
+    loud "TAILSCALE-LOCALAPI-NO-PEERS" \
+        "tailscale status succeeded but shows no peers (isolated node)"
+    file_finding "no-peers" \
+        "tailscale tailnet isolated — no peers visible (fleet-ops#2151)" \
+        "\`tailscale status\` reached the localapi socket but the tailnet shows no peer nodes. An isolated access-plane node is a lockout building; page before the tunnel is fully gone. Check tailnet membership / ACL visibility, not the socket.
+
+signal: access-plane/tailscale-localapi"
+    exit 1
+fi
+
+{
+    printf '\n[%s] [TAILSCALE-LOCALAPI-OK] unprivileged tailscale status reached localapi, %d peer(s)\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$peer_lines"
+} >> "$TRIAGE" 2>/dev/null || true
+log "OK: unprivileged tailscale status reached localapi, $peer_lines peer(s)"
+exit 0

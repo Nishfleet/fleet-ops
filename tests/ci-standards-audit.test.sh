@@ -168,11 +168,62 @@ bash "$here/p14-unstubbed-unit-verify.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#1457: stop-the-line detector drill. The detector + watch
+# workflows landed in #1465, but the test was never registered in ci.yml
+# (workers cannot push .github/workflows/**), so the p14-test-listing-gate
+# failed on main. Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/stop-the-line-detector.test.sh"
+
+# fleet-ops#1458: nish-boundary-notify retry + direct Telegram API fallback
+# drill. Landed in #1471 but was not registered in ci.yml (workers cannot
+# push .github/workflows/**). Runs offline against temp files. Hosted here
+# so P14 runs it without a workflow-file edit.
+bash "$here/nish-boundary-notify-retry-fallback.test.sh"
+
+# fleet-ops#1212: filing-time same-problem dedupe helper. Hosted here so
+# P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/issue-file.test.sh"
+
 # fleet-ops#695: same-repo `Closes <repo>#N` rejection gate. Pure
 # evaluator hosted by this listed test so the drill runs in P14
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/same-repo-closes-gate.test.sh"
+
+# fleet-ops#1229: merge-trample gate. Hosted here so P14 runs the drill
+# without a workflow-file edit.
+bash "$here/merge-trample-gate.test.sh"
+
+# fleet-ops#1548: machinery-authorization gate. Hosted here so P14 runs
+# the drill without a workflow-file edit (nishfleet-worker cannot push
+# .github/workflows/**).
+bash "$here/machinery-authorization-gate.test.sh"
+
+# fleet-ops#1493 (fleet-ops#2020): tests/ready-work-deleted.test.sh pins the deletion
+# of the hand-placed ready-work dispatcher and checks the allowlist / MANIFEST /
+# organ-catalog. Host it here from this already-listed ci-standards-audit test so
+# the P14 test-listing gate goes green without a workflow edit.
+bash "$here/ready-work-deleted.test.sh"
+
+# fleet-ops#1492 / #1497 / #1498: tests that pin the deletion
+# (auditor-stdio-test -> MECHANICAL-INSTEAD, quality-baseline-research ->
+# MECHANICAL-INSTEAD) and the migration (memory-index-autocompact ->
+# EXCEPTION-APPROVED) verdicts against the allowlist / MANIFEST / organ-catalog.
+# Hosted here from this already-listed ci-standards-audit test so the P14
+# test-listing gate goes green without a workflow edit.
+bash "$here/auditor-stdio-test-deleted.test.sh"
+bash "$here/quality-baseline-research-deleted.test.sh"
+# note: memory-index-autocompact-migrated.test.sh runs `systemd-analyze verify` on
+# a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
+# (VPS-only) — it is live_skip in p14-test-listing-gate, not hosted here.
+
+# fleet-ops#1160: tests/fleet-ops-1160-regression.test.sh pins the tailscale
+# RECOVER / sudo-probe / Persistent-timer logic in bin/vps-post-reboot-verify
+# and bin/vps-weekly-update. Hosted here from this already-listed
+# ci-standards-audit test so the P14 test-listing gate goes green without a
+# workflow edit.
+bash "$here/fleet-ops-1160-regression.test.sh"
 
 # fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
 # Hosted here so P14 runs it without a workflow-file edit.
@@ -181,3 +232,75 @@ bash "$here/console-tile-verify.test.sh"
 # fleet-ops#1232: FleetGhCacheStale (warning, 45m) on the repair rail.
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-gh-cache-stale.test.sh"
+
+# fleet-ops#1263: TTL + provenance compile layer. Nested host so P14
+# covers it without a workflow-file edit.
+bash "$here/memoryctl-ttl-provenance.test.sh"
+
+# fleet-ops#1211: waste-ledger metric family + WasteRatioRising (no page).
+# Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/fleet-waste-ledger.test.sh"
+
+# fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
+# false-healthy gap. The test imports the live extension at
+# $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
+# runs the three invariants from the issue's test plan. CI skips when the
+# extension is missing; on the VPS the test fails today (the gap is open)
+# and passes once the classifier is fixed. Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/seat-health-classifier.test.sh"
+
+# fleet-ops#1422: closure condition for the runaway-seat quarantine. The
+# test imports the live extension at
+# $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
+# asserts that a seat past the quarantine threshold (20) gets an
+# exponentially growing wall (1h floor -> 24h cap) instead of a flat
+# 30s/900s re-probe window, and that a healthy write resets the count.
+# CI skips when the extension is missing; on the VPS the test fails against
+# the pre-fix extension and passes once computeUsableAt/writeSeatLedgerEntry
+# quarantine. Hosted here so P14 runs it without a workflow-file edit (the
+# worker App cannot push .github/workflows/**).
+bash "$here/seat-health-quarantine.test.sh"
+
+# fleet-ops#2145: closure condition for the seat_dead corpse mark. The test
+# imports the live extension at $HOME/.pi/agent/extensions/seat-health.ts (or
+# FLEET_SEAT_HEALTH_TS) and asserts that a seat past the seat_dead threshold
+# (25 consecutive transient failures, or quota_exhausted aged past 24h) is
+# marked seat_dead=true — a corpse, not a walled seat — while a successful
+# probe recovers it (count -> 0, seat_dead -> false). CI skips when the
+# extension is missing; on the VPS the test fails against the pre-fix
+# extension and passes once shouldMarkSeatDead is wired into
+# writeSeatLedgerEntry. Hosted here so P14 runs it without a workflow-file
+# edit (the worker App cannot push .github/workflows/**).
+bash "$here/seat-health-seat-dead.test.sh"
+
+# fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
+# The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
+#   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
+#   - gh-webhook-canary: synthetic probe HMAC + dead-man status states
+#   - gh-webhook-organ-heartbeat: organ registry + absent() rules + gate
+#   - fleet-intake-reconciler-counter: reconciler-caught counter + cadence
+# Hosted here so P14 runs them without a workflow-file edit (the worker
+# App cannot push .github/workflows/**).
+bash "$here/gh-webhook-receiver-hmac.test.sh"
+bash "$here/gh-webhook-canary.test.sh"
+bash "$here/gh-webhook-organ-heartbeat.test.sh"
+bash "$here/fleet-intake-reconciler-counter.test.sh"
+
+# fleet-ops#180: gap-closure loop state machine (stubbed acceptance).
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**).
+bash "$here/fleet-gap-closure-loop.test.sh"
+
+# fleet-ops#1549: --help/-h on fleet-blind-audit and fleet-researcher-dispatch
+# must print usage and exit 0 without running a live audit or dispatch.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**).
+bash "$here/fleet-help-flag-runs-live.test.sh"
+
+# fleet-ops#796: sgscan wrapper regression suite (--help, JSON parsing,
+# unknown-flag rejection). Added by #1652 without a ci.yml listing or
+# host; hosted here so P14 runs it without a workflow-file edit and the
+# p14-test-listing-gate accounts for it (fleet-ops#1622).
+bash "$here/sgscan.test.sh"

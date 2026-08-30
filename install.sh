@@ -21,6 +21,12 @@
 #                          re-reads the drop-ins. --system takes no part in
 #                          daemon-reload for the user instance — call without
 #                          --system first for that.
+#                          A changed config/fleet_rules.yml also gets
+#                          `sudo systemctl reload prometheus` (ExecReload is
+#                          kill -HUP), and every group in the installed file
+#                          is proven present in GET /api/v1/rules
+#                          (fleet-ops#1307); the reload is skipped when the
+#                          file bytes did not change.
 #   --check --system     — drift detection for system-scope entries only.
 #                          Useful for "is this box up to date?" without
 #                          changing anything.
@@ -34,6 +40,7 @@ mode=""
 check_system=0
 user_unit_changed=0
 system_unit_changed=0
+system_rules_changed=0
 declare -a to_enable=()
 for arg in "$@"; do
   case "$arg" in
@@ -150,17 +157,45 @@ live_target_file() {
     fi
 }
 
+# Returns 0 if $1 resolves under FLEET_OPS_WORKSPACES_ROOT but not under
+# the canonical deploy checkout. That class is a hijacked install source
+# (issue worktree, worktree-parent, leftover hotfix) — not a hot-patch.
+# The mtime guard must not block retargeting these, or a leftover worktree
+# symlink (e.g. fleet-failed-command-flagged pointing at issue-1136) stays
+# live forever (fleet-ops#1189).
+live_target_is_noncanonical() {
+  local live=$1
+  local ws_root canon live_r want root
+  ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+  canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+  live_r=$(readlink -f "$live" 2>/dev/null || printf '%s\n' "$live")
+  want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+  root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+  case "$live_r" in
+    "$want"|"$want"/*) return 1 ;;
+    "$root"|"$root"/*) return 0 ;;
+  esac
+  return 1
+}
+
 # Returns 0 if dest exists and its live target is a different file whose
 # mtime is newer than the repo copy AND whose content differs from the repo
 # copy. A newer, byte-identical file is not a hot-patch; it is only newer
 # because it has already been installed (#463). Re-sync its mtime so the
 # guard does not re-check, then allow the normal install to proceed.
+# A dest whose live target is in a non-canonical workspaces tree is a
+# hijacked symlink (issue worktree, worktree-parent, leftover hotfix), not
+# a hot-patch: retarget it to the canonical repo instead of refusing
+# (fleet-ops#1189).
 live_newer_than_repo() {
     local dest=$1 repo=$2
     local live live_m repo_m
     live=$(live_target_file "$dest")
     [ -n "$live" ] && [ -e "$live" ] || return 1
     [ "$live" = "$repo" ] && return 1
+    if live_target_is_noncanonical "$live"; then
+        return 1
+    fi
     live_m=$(stat -c %Y "$live" 2>/dev/null || echo 0)
     repo_m=$(stat -c %Y "$repo" 2>/dev/null || echo 0)
     [ "$live_m" -gt "$repo_m" ] || return 1
@@ -286,13 +321,55 @@ remove_papered_heartbeat_dropin() {
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
 #
+# fleet-ops#1307: after a prometheus HUP, prove every group in the installed
+# fleet_rules.yml is actually loaded via GET /api/v1/rules (PM_RULES_URL;
+# file:// allowed for tests). A parse error in one group silently drops it
+# from the API while prometheus keeps serving the old rules — the class of
+# gap that left a merged alert rule unloaded. Reads the installed file
+# (PM_RULES_FILE). Exit 0 = every file group is loaded; exit 1 = proof
+# failed, and install.sh --system must be loud.
+prove_rules_loaded() {
+    local rules_file=$1 url=$2
+    python3 - "$rules_file" "$url" <<'PY'
+import json, re, sys, urllib.request
+
+rules_file, url = sys.argv[1], sys.argv[2]
+try:
+    with open(rules_file, encoding="utf-8") as f:
+        text = f.read()
+except OSError as exc:
+    sys.stderr.write(f"install.sh rules-proof: cannot read {rules_file}: {exc}\n")
+    sys.exit(1)
+expected = sorted(set(g.strip(chr(34) + chr(39)) for g in re.findall(r"(?m)^\s*-\s*name:\s*(\S+)", text)))
+if not expected:
+    sys.stdout.write(f"install.sh rules-proof: {rules_file} defines no groups; nothing to prove\n")
+    sys.exit(0)
+try:
+    payload = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+except Exception as exc:
+    sys.stderr.write(f"install.sh rules-proof: cannot fetch {url}: {exc}\n")
+    sys.exit(1)
+try:
+    loaded = sorted(set(g["name"] for g in json.loads(payload)["data"]["groups"]))
+except (KeyError, TypeError, ValueError) as exc:
+    sys.stderr.write(f"install.sh rules-proof: unexpected {url} payload: {exc}\n")
+    sys.exit(1)
+missing = [g for g in expected if g not in loaded]
+if missing:
+    sys.stderr.write(f"install.sh rules-proof: FAIL groups not loaded: {missing} (fleet-ops#1307)\n")
+    sys.exit(1)
+sys.stdout.write(f"install.sh rules-proof: {len(expected)} group(s) loaded: {' '.join(expected)}\n")
+sys.exit(0)
+PY
+}
+
 # Comment-junk check (fleet-ops#156 finding 11): the old MANIFEST parser
 # created symlinks named after the second token of a comment line (e.g.
 # `# P14: ...` became a symlink called `P14: ...`). This scans the MANIFEST
 # for any such line and proves no filesystem entry with that name exists.
 check_comment_junk() {
   local src dest check_path
-  while read -r src dest; do
+  while read -r src dest || [ -n "$src" ]; do
     [ -z "$src" ] && continue
     # Only whole-line comments (first token starts with '#').
     case "$src" in
@@ -347,6 +424,15 @@ process_entry() {
     if [[ "$src" == systemd/system/* ]] && ! unit_file_matches "$dest" "$repo"; then
         system_unit_changed=1
     fi
+    # fleet-ops#1307: prometheus re-reads fleet_rules.yml only on HUP
+    # (systemctl reload; ExecReload is kill -HUP), so a changed copy needs a
+    # reload + proof, not just the systemd daemon-reload below. Byte-compare
+    # BEFORE install: a diff or a first install sets the flag; a
+    # byte-identical re-install skips the reload. PM_RULES_FILE overrides
+    # the live file path for tests.
+    if [[ "$src" == config/fleet_rules.yml ]] && ! cmp -s "${PM_RULES_FILE:-$dest}" "$repo" 2>/dev/null; then
+        system_rules_changed=1
+    fi
     sudo install -D -m 0644 -o root -g root "$repo" "$dest"
     echo "installed (system): $dest"
   else
@@ -386,7 +472,11 @@ process_entry() {
   fi
 }
 
-while read -r src dest; do
+# `while read` silently drops the final line if the file has no trailing
+# newline (fleet-ops#1443: fleet-asset-census.timer was never installed
+# because MANIFEST ended mid-line). The `|| [ -n "$src" ]` guard catches
+# that last unterminated line so every MANIFEST entry is processed.
+while read -r src dest || [ -n "$src" ]; do
   [ -z "$src" ] && continue
   # Skip whole-line comment lines (first token is '#' with no leading path).
   case "$src" in '#'*) continue ;; esac
@@ -426,6 +516,16 @@ if [ "$do_user_install" = 1 ]; then
           if ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable --now "$unit"
             echo "enabled+started: $unit"
+          elif ! "$SYSTEMCTL" --user is-active --quiet "$unit" 2>/dev/null; then
+            # Enabled but not active/running: a prior enable landed without
+            # --now (or the start was lost), so the generic loop above used
+            # to skip this unit forever (fleet-ops#2089: staleness timer was
+            # enabled but inactive, NextElapse=infinity, never scheduled).
+            # `enable --now` on an already-enabled unit starts it; this
+            # self-heals the whole enabled-but-inactive class, not just one
+            # timer.
+            "$SYSTEMCTL" --user enable --now "$unit"
+            echo "started: $unit (was enabled but inactive)"
           fi
           ;;
         *.service)
@@ -473,11 +573,24 @@ if [ "$do_user_install" = 1 ]; then
     fi
   fi
   # fleet-ops#1146: Weekly Fleet Review — Sun 04:30 IST, post-vps-weekly-update.
-  # Blind 5-lens senior research + conference, output capped at 5 specced
+  # Blind 6-lens senior research + conference, output capped at 5 specced
   # actions. Same install-sh enable as #541.
   if [ -f "$here/systemd/fleet-weekly-fleet-review.timer" ]; then
     if ! is_unit_enabled fleet-weekly-fleet-review.timer; then
       "$SYSTEMCTL" --user enable --now fleet-weekly-fleet-review.timer
+    fi
+  fi
+  # fleet-ops#1236: weekly AEO visibility probe — Sun 03:30 IST, before WFR.
+  # Same install-sh enable as #541 / #1146 (MANIFEST [Install] is not enough).
+  if [ -f "$here/systemd/fleet-aeo-probe.timer" ]; then
+    if ! is_unit_enabled fleet-aeo-probe.timer; then
+      "$SYSTEMCTL" --user enable --now fleet-aeo-probe.timer
+    fi
+  fi
+  # fleet-ops#1151: weekly baseline-delta pre-pass. Same #183 class.
+  if [ -f "$here/systemd/fleet-baseline-delta.timer" ]; then
+    if ! is_unit_enabled fleet-baseline-delta.timer; then
+      "$SYSTEMCTL" --user enable --now fleet-baseline-delta.timer
     fi
   fi
 elif [ "$do_system_install" = 1 ]; then
@@ -485,6 +598,41 @@ elif [ "$do_system_install" = 1 ]; then
   # session, so it must go through sudo.
   if [ "$system_unit_changed" = 1 ]; then
     sudo systemctl daemon-reload
+  fi
+  # fleet-ops#1307: install -D does not HUP prometheus (ExecReload is
+  # kill -HUP), so a changed fleet_rules.yml would sit unloaded until the
+  # next restart. Reload only when the file bytes actually changed, then
+  # prove every group in the installed file appears in GET /api/v1/rules —
+  # a group that fails to parse never loads, and Prometheus keeps serving
+  # the old rules.
+  if [ "$system_rules_changed" = 1 ]; then
+    if sudo systemctl is-active --quiet prometheus 2>/dev/null; then
+      if ! sudo systemctl reload prometheus; then
+        echo "install.sh: prometheus reload failed after fleet_rules.yml change (fleet-ops#1307)" >&2
+        rc=1
+      elif ! prove_rules_loaded "${PM_RULES_FILE:-/etc/prometheus/fleet_rules.yml}" \
+                                "${PM_RULES_URL:-http://127.0.0.1:9090/api/v1/rules}"; then
+        echo "install.sh: rules proof failed — new fleet_rules.yml groups not all loaded (fleet-ops#1307)" >&2
+        rc=1
+      fi
+    else
+      echo "install.sh: prometheus not active — skipped reload + rules proof (fleet-ops#1307)" >&2
+    fi
+  fi
+  # fleet-ops#1160: vps-post-reboot-verify.timer is system-scope (the
+  # service it triggers is system-scope too). Install --system does not
+  # auto-enable system units (is_installable_unit excludes systemd/system/*),
+  # so enable it here — same class as the user timer --now enables above.
+  if [ -f "$here/systemd/system/vps-post-reboot-verify.timer" ]; then
+    if ! sudo systemctl is-enabled vps-post-reboot-verify.timer 2>/dev/null; then
+      sudo systemctl enable --now vps-post-reboot-verify.timer \
+        || { echo "install.sh: failed to enable vps-post-reboot-verify.timer" >&2; rc=1; }
+      echo "enabled+started: vps-post-reboot-verify.timer (system)"
+    elif ! sudo systemctl is-active --quiet vps-post-reboot-verify.timer 2>/dev/null; then
+      sudo systemctl start vps-post-reboot-verify.timer \
+        || { echo "install.sh: failed to start vps-post-reboot-verify.timer" >&2; rc=1; }
+      echo "started: vps-post-reboot-verify.timer (system, was enabled but inactive)"
+    fi
   fi
 fi
 exit "$rc"

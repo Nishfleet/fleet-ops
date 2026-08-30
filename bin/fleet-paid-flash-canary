@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # fleet-paid-flash-canary — parked-flash model watcher (fleet-ops#436).
 #
-# #384 wired OpenRouter deepseek-v4-flash-0731 as the paid flash lane and
-# parked two follow-ups: Qwen 3.8 flash (no slug on any provider) and
-# GLM 5.3 flash (z-ai/glm-5.3-flash exists on OpenRouter/Zenmux but is not
-# in Pi's catalog and has no quality bench). #436 says: revisit GLM 5.3
-# flash only after it appears in Pi's catalog AND has a quality bench.
+# #384 wired OpenRouter deepseek/deepseek-v4-flash-0731 as the paid flash
+# lane (cheapest+best: $0.045/$0.09 per M, proven workhorse on 4 free lanes).
+# GLM 5.3 flash was a parked follow-up under #436 but is now RESOLVED: it is
+# wired FREE on cline (z-ai/glm-5.3-flash, fleet-ops#1739) and as a PAID
+# openrouter/zenmux lane it loses to DeepSeek V4 flash on price ($0.075/$0.25
+# vs $0.045/$0.09), so no paid GLM 5.3 flash lane is needed (#1749 closed by
+# the #384 PR). The glm-5.3-flash watch row was removed when the #384 PR
+# answered the revisit question; re-adding it would re-file the resolved
+# #1749. Qwen 3.8 flash stays parked (no slug on any provider — only 27B /
+# Max / 2.4T); #436 says revisit it once a flash slug appears in Pi's catalog.
 #
 # The blind spot: a human has to re-check Pi's catalog by hand to know when
 # to revisit. This canary watches Pi's catalog every heartbeat tick for the
@@ -38,6 +43,7 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 PI="${PI:-pi}"
 
 _canon_script=$(readlink -f "$0")
@@ -70,9 +76,11 @@ loud() {
 #   title  filed issue title
 #   body   filed issue body (the bench+wire instructions for the scout)
 # Add a row here when a new flash variant is parked; the canary does the rest.
+# GLM 5.3 flash was removed from this list when #384 resolved its paid-lane
+# question (wired free on cline #1739; paid lane loses to DeepSeek V4 flash on
+# price). Re-adding it would re-file the resolved #1749.
 watched=(
-  'glm-5.3-flash|glm-?5\.3-?flash|Revisit: GLM 5.3 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a GLM 5.3 flash slug is now in Pi'"'"'s catalog (was parked: z-ai/glm-5.3-flash exists on OpenRouter/Zenmux but not in Pi, no league score). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux (pricing moves — query the provider model APIs, do not trust a cached number), and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek-v4-flash-0731 lane. Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport (devin/cursor precedent: not everything is a Pi provider). Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
-  'qwen-3.8-flash|qwen3\.8.*flash|Revisit: Qwen 3.8 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a Qwen 3.8 flash slug is now in Pi'"'"'s catalog (was parked: no Qwen 3.8 flash slug on any provider — only 27B / Max / 2.4T). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux, and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek-v4-flash-0731 lane. Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport. Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
+  'qwen-3.8-flash|qwen3\.8.*flash|Revisit: Qwen 3.8 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a Qwen 3.8 flash slug is now in Pi'"'"'s catalog (was parked: no Qwen 3.8 flash slug on any provider — only 27B / Max / 2.4T). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux (pricing moves — query the provider model APIs, do not trust a cached number), and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek/deepseek-v4-flash-0731 lane ($0.045/$0.09 per M as of 2026-08-29). Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport. Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
 )
 
 # File one issue for a transition. Dedup: an open issue whose body contains
@@ -98,7 +106,7 @@ file_revisit() {
 
 ${marker}
 "
-    if "$GH" issue create -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
         log "filed: $title"
     else
         log "WARN: gh issue create failed for $marker"

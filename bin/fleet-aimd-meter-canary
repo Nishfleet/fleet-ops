@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# fleet-aimd-meter-canary — leftover AIMD meter must have a reader (fleet-ops#424).
+#
+# Why this exists (find-the-proven-thing, 2026-08-23):
+#   0. No external CLI. Pattern cloned from bin/fleet-entitled-wired-canary
+#      (read before writing; STEP 0: that file's header and file_finding,
+#      plus `bin/fleet-issue-file --help`). AIMD itself is restored in-tree
+#      code from 1d45440 / #276, not a new scheduler.
+#   1. entitled-wired-canary diffs inventory vs seat-caps; it does not
+#      notice a vanished AIMD reader next to learned-caps-audit.log.
+#      fleet-ops-drift.py does not either.
+#   2/3. No off-the-shelf or managed AIMD seat-cap meter for this fleet.
+#   4. House canary, no new systemd unit: heartbeat-tier1 block 37.
+#
+# Class this prevents: AIMD landed, fired, auto-revert wiped the code,
+# leftover learned-caps-audit.log looks like a live control plane with
+# no reader.
+#
+# Every tick:
+#   1. seat-lib.sh must still contain the AIMD reader
+#      (_aimd_probe_admitted, effective_provider_cap, _record_learned_cap).
+#   2. If those symbols are gone and leftover learned-caps state exists,
+#      go LOUD and auto-file.
+#   3. If AIMD is present and the leftover log is backoff-only (no
+#      result=probe), archive it to *.pre-424 so old lines cannot be
+#      mistaken for a post-re-land raise. One-time (stamp file).
+#
+# Environment seams (tests):
+#   FLEET_AIMD_SEAT_LIB         seat-lib.sh to inspect
+#   LEARNED_CAPS_AUDIT          audit log
+#   LEARNED_CAPS_JSON           learned state
+#   FLEET_AIMD_ADOPT_STAMP      one-time archive stamp
+#   FLEET_HEARTBEAT_TRIAGE      triage file
+#   FLEET_AIMD_CANARY_REPO      default Nishfleet/fleet-ops
+#   FLEET_AIMD_CANARY_FILE      1 (default) file issues; 0 skip gh
+#   GH                          gh binary (tests stub this)
+#   FLEET_ISSUE_FILE            filing helper (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+if [[ -n "${FLEET_AIMD_SEAT_LIB:-}" ]]; then
+    SEAT_LIB="$FLEET_AIMD_SEAT_LIB"
+elif [[ -f "$FLEET_OPS_REPO/lib/seat-lib.sh" ]]; then
+    SEAT_LIB="$FLEET_OPS_REPO/lib/seat-lib.sh"
+else
+    SEAT_LIB="${HOME}/.local/lib/pi-packet/seat-lib.sh"
+fi
+
+AUDIT="${LEARNED_CAPS_AUDIT:-$HOME/.local/state/pi-packet/learned-caps-audit.log}"
+LEARNED="${LEARNED_CAPS_JSON:-$HOME/.local/state/pi-packet/learned-caps.json}"
+STAMP="${FLEET_AIMD_ADOPT_STAMP:-$HOME/.local/state/pi-packet/learned-caps-adopted-424}"
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_AIMD_CANARY_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_AIMD_CANARY_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-aimd-meter-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+has_aimd_reader() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -q '_aimd_probe_admitted' "$f" || return 1
+    grep -q 'effective_provider_cap' "$f" || return 1
+    grep -q '_record_learned_cap' "$f" || return 1
+    return 0
+}
+
+leftover_meter_exists() {
+    [[ -f "$AUDIT" && -s "$AUDIT" ]] && return 0
+    [[ -f "$LEARNED" && -s "$LEARNED" ]] && return 0
+    return 1
+}
+
+# File one issue. Dedup: an open issue whose body contains the exact marker.
+file_finding() {
+    local kind="$1" title="$2" body="$3"
+    local marker="aimd-meter-canary: ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_AIMD_CANARY_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full
+    full="${body}
+
+${marker}
+"
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+if ! has_aimd_reader "$SEAT_LIB"; then
+    if leftover_meter_exists; then
+        loud "AIMD-METER-ORPHAN" \
+            "learned-caps audit/state exists at $AUDIT but $SEAT_LIB has no AIMD reader (fleet-ops#424)"
+        file_finding "orphan-meter" \
+            "AIMD reader vanished; leftover learned-caps meter has no owner" \
+            "learned-caps-audit.log / learned-caps.json still exist but lib/seat-lib.sh no longer contains _aimd_probe_admitted / effective_provider_cap / _record_learned_cap. Auto-revert wiped the code after it fired (fleet-ops#424). Re-land AIMD or delete the leftover meter so it cannot look like a live control plane."
+        exit 1
+    fi
+    loud "AIMD-VANISHED" \
+        "AIMD reader missing from $SEAT_LIB (fleet-ops#424)"
+    file_finding "aimd-vanished" \
+        "AIMD seat-cap layer vanished from seat-lib.sh" \
+        "lib/seat-lib.sh no longer contains the AIMD symbols re-landed in fleet-ops#424 (_aimd_probe_admitted, effective_provider_cap, _record_learned_cap). Adaptive upward probe of free-lane caps is gone. Re-land or replace it."
+    exit 1
+fi
+
+# AIMD is present: own the leftover pre-re-land meter once. Archive a
+# backoff-only log so old 2026-08-26 lines cannot be cited as a raise.
+if [[ ! -f "$STAMP" ]]; then
+    mkdir -p "$(dirname "$STAMP")" 2>/dev/null || true
+    if leftover_meter_exists && ! grep -q 'result=probe' "$AUDIT" 2>/dev/null; then
+        if [[ -f "$AUDIT" ]]; then
+            mv "$AUDIT" "${AUDIT}.pre-424" 2>/dev/null || true
+        fi
+        if [[ -f "$LEARNED" ]]; then
+            mv "$LEARNED" "${LEARNED}.pre-424" 2>/dev/null || true
+        fi
+        log "archived leftover AIMD meter to *.pre-424 (no post-re-land probe line)"
+    fi
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$STAMP" 2>/dev/null || true
+fi
+
+log "AIMD-METER-OK reader in $SEAT_LIB"
+{
+    printf '\n[%s] [AIMD-METER-OK] reader present in %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SEAT_LIB"
+} >> "$TRIAGE" 2>/dev/null || true
+exit 0

@@ -1,0 +1,594 @@
+#!/usr/bin/env bash
+# fleet-bare-metal-rebuild — rebuild the Nishfleet control plane on a fresh
+# Ubuntu 24.04 LTS box (fleet-ops#1135).
+#
+# Reads config/bare-metal-rebuild-manifest.json for the inventory of packages,
+# users, repos, units and secret locations. Never stores or prints secret values.
+#
+# Modes:
+#   --manifest              print the manifest as a human-readable report
+#   --manifest-check        validate the manifest against the repo (static)
+#   --check                 audit the live box against the manifest
+#   --apply --dry-run       list what --apply would do
+#   --apply                 perform the rebuild on a fresh box
+#   --force-live            required when --apply is run on the existing VPS
+#   --restore <env-file>    run a restic restore before install (destructive)
+#
+# Env:
+#   FLEET_OPS_REPO          fleet-ops checkout (default: parent of this script)
+#   MANIFEST_JSON           override the manifest path
+#   SYSTEMCTL               default: systemctl
+#   APT                     default: apt-get
+#   FLEET_BARE_METAL_REBUILD_SKIP_LIVE  1=skip live-only checks
+#
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$here}"
+MANIFEST_JSON="${MANIFEST_JSON:-$FLEET_OPS_REPO/config/bare-metal-rebuild-manifest.json}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+APT="${APT:-apt-get}"
+SKIP_LIVE="${FLEET_BARE_METAL_REBUILD_SKIP_LIVE:-0}"
+
+# Source the masked-units verifier (fleet-ops#2122). Tests may override the
+# path; the directive points at the canonical source for static analysis.
+MASKED_UNITS_LIB="${FLEET_BARE_METAL_MASKED_UNITS_LIB:-$FLEET_OPS_REPO/lib/bare-metal-masked-units.sh}"
+# shellcheck source=../lib/bare-metal-masked-units.sh source-path=SCRIPTDIR
+source "$MASKED_UNITS_LIB"
+
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+mode=""
+dry_run=0
+force_live=0
+restore_env=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --manifest)        mode="manifest" ;;
+    --manifest-check)  mode="manifest-check" ;;
+    --check)           mode="check" ;;
+    --apply)           mode="apply" ;;
+    --dry-run)         dry_run=1 ;;
+    --force-live)      force_live=1 ;;
+    --restore)
+      # the next argument is the env file
+      ;;
+    *)
+      if [[ "$arg" == --* ]]; then
+        echo "fleet-bare-metal-rebuild: unknown flag: $arg" >&2
+        echo "usage: fleet-bare-metal-rebuild [--manifest|--manifest-check|--check|--apply] [--dry-run] [--force-live] [--restore <env-file>]" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+# Parse --restore <env-file> as a positional pair.
+restore_env=""
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "--restore" ]]; then
+    j=$((i+1))
+    if [[ $j -le $# ]]; then
+      restore_env="${!j}"
+    fi
+  fi
+done
+
+if [[ -z "$mode" ]]; then
+  if [[ "$dry_run" == 1 ]]; then
+    mode="apply"
+  else
+    echo "fleet-bare-metal-rebuild: no mode specified" >&2
+    echo "usage: fleet-bare-metal-rebuild [--manifest|--manifest-check|--check|--apply] [--dry-run] [--force-live] [--restore <env-file>]" >&2
+    exit 2
+  fi
+fi
+
+log() {
+  printf '[%s] [fleet-bare-metal-rebuild] %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+  local tag="$1"; shift
+  local msg="$*"
+  log "LOUD [$tag] $msg"
+  {
+    printf '\n[%s] [%s] %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+  } >> "$TRIAGE" 2>/dev/null || true
+}
+
+fail() {
+  loud "BARE-METAL-REBUILD-FAIL" "$*"
+  exit 1
+}
+
+warn() {
+  log "WARN: $*"
+}
+
+command_or_fail() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required but not installed"
+}
+
+# ---------------------------------------------------------------------------
+# manifest loading and validation
+# ---------------------------------------------------------------------------
+
+load_manifest() {
+  if [[ ! -f "$MANIFEST_JSON" ]]; then
+    fail "manifest not found: $MANIFEST_JSON"
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    fail "jq is required to parse the manifest"
+  fi
+  if ! jq -e . "$MANIFEST_JSON" >/dev/null 2>&1; then
+    fail "manifest is not valid JSON: $MANIFEST_JSON"
+  fi
+  for key in version title description target packages manual_tools repositories install_manifest env_files secrets_locations backup masked_units; do
+    if ! jq -e ".${key}" "$MANIFEST_JSON" >/dev/null 2>&1; then
+      fail "manifest missing required key: $key"
+    fi
+  done
+}
+
+manifest_value() {
+  jq -r "$1 // empty" "$MANIFEST_JSON"
+}
+
+manifest_array() {
+  jq -r "$1 // empty" "$MANIFEST_JSON" 2>/dev/null || true
+}
+
+manifest_array_len() {
+  jq -r "($1 | length) // 0" "$MANIFEST_JSON"
+}
+
+manifest_has() {
+  jq -e "$1" "$MANIFEST_JSON" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# --manifest: human-readable summary
+# ---------------------------------------------------------------------------
+
+print_manifest() {
+  load_manifest
+  local title target_os primary_user
+  title="$(manifest_value '.title')"
+  target_os="$(manifest_value '.target.os')"
+  primary_user="$(manifest_value '.target.primary_user')"
+
+  printf '%s\n' "$title"
+  printf 'Target OS : %s\n' "$target_os"
+  printf 'User      : %s\n' "$primary_user"
+  printf '\n'
+
+  printf 'Apt packages (%s core):\n' "$(manifest_array_len '.packages.core')"
+  manifest_array '.packages.core[]' | sed 's/^/  - /'
+
+  printf '\nManual tools (documented, not automatable by default):\n'
+  while IFS= read -r name; do
+    printf '  - %s\n' "$name"
+  done < <(manifest_array '.manual_tools[].name')
+
+  printf '\nRepositories:\n'
+  printf '  fleet-ops   : %s\n' "$(manifest_value '.repositories.fleet_ops.canonical_checkout')"
+  printf '  products    : %s\n' "$(manifest_value '.repositories.products_root')"
+  printf '  mirrors     : %s\n' "$(manifest_value '.repositories.mirrors_root')"
+
+  printf '\nEnv files (locations only):\n'
+  manifest_array '.env_files.paths[]' | sed 's/^/  - /'
+
+  printf '\nSecret locations (locations only):\n'
+  manifest_array '.secrets_locations.directories[]' | sed 's/^/  - dir: /'
+  manifest_array '.secrets_locations.files[]' | sed 's/^/  - file: /'
+
+  printf '\nBackup:\n'
+  printf '  tool: %s\n' "$(manifest_value '.backup.tool')"
+  printf '  sources: %s\n' "$(manifest_value '.backup.sources | join(", ")')"
+  printf '  repo env: %s\n' "$(manifest_value '.backup.repo_env')"
+
+  printf '\nMasked units (hardware absent on this host, masked at provision):\n'
+  while IFS=$'\t' read -r name reason; do
+    [[ -z "$name" ]] && continue
+    printf '  - %s: %s\n' "$name" "$reason"
+  done < <(jq -r '.masked_units.units[] | "\(.name)\t\(.reason)"' "$MANIFEST_JSON" 2>/dev/null || true)
+
+  printf '\nRunbook: %s\n' "$(manifest_value '.runbook_path')"
+}
+
+# ---------------------------------------------------------------------------
+# --manifest-check: static completeness proof
+# ---------------------------------------------------------------------------
+
+manifest_check() {
+  load_manifest
+  local violations=0
+  local manifest_path
+  manifest_path="$FLEET_OPS_REPO/$(manifest_value '.install_manifest.path')"
+  if [[ ! -f "$manifest_path" ]]; then
+    log "manifest-check: missing install manifest: $manifest_path"
+    violations=$((violations + 1))
+  else
+    local src missing=0
+    # Build a list of MANIFEST src paths for fast membership checks.
+    local manifest_srcs
+    manifest_srcs="$(mktemp)"
+    trap 'rm -f "$manifest_srcs"' EXIT
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      [[ "$line" == \#* ]] && continue
+      src="${line%% *}"
+      [[ -z "$src" ]] && continue
+      printf '%s\n' "$src" >> "$manifest_srcs"
+      if [[ ! -e "$FLEET_OPS_REPO/$src" ]]; then
+        log "manifest-check: MANIFEST src missing: $src"
+        missing=$((missing + 1))
+      fi
+    done < "$manifest_path"
+    log "manifest-check: MANIFEST src missing count: $missing"
+    [[ "$missing" -gt 0 ]] && violations=$((violations + 1))
+
+    # 2. Files referenced by the rebuild manifest must exist.
+    #    MANIFEST is the install allowlist; the bare-metal manifest is the
+    #    versioned inventory. Source-of-truth files used directly from the
+    #    checkout (e.g. intake-repos.json, rule-enforcement.json) are not
+    #    required to be in MANIFEST.
+    for ref in \
+      "$(manifest_value '.repositories.intake_repos_source')" \
+      "$(manifest_value '.runbook_path')" \
+      "$(manifest_value '.install_manifest.path')"
+    do
+      [[ -z "$ref" ]] && continue
+      if [[ ! -e "$FLEET_OPS_REPO/$ref" ]]; then
+        log "manifest-check: referenced file missing: $ref"
+        violations=$((violations + 1))
+      fi
+    done
+
+    # 3. The new rebuild artifacts must be in MANIFEST if they are to be
+    #    installed on the live box.
+    for artifact in \
+      "bin/fleet-bare-metal-rebuild" \
+      "bin/fleet-bare-metal-rebuild-drill" \
+      "config/bare-metal-rebuild-manifest.json" \
+      "systemd/fleet-bare-metal-rebuild-drill.service" \
+      "systemd/fleet-bare-metal-rebuild-drill.timer"
+    do
+      if ! grep -Fxq "$artifact" "$manifest_srcs" 2>/dev/null; then
+        # The runbook is in docs/ and is not installed to a live path.
+        if [[ "$artifact" != "config/bare-metal-rebuild-manifest.json" && "$artifact" != *".md"* ]]; then
+          log "manifest-check: artifact not in MANIFEST (will be unavailable after install): $artifact"
+          violations=$((violations + 1))
+        fi
+      fi
+    done
+    rm -f "$manifest_srcs"
+    trap - EXIT
+  fi
+
+  # 3. Required JSON keys and non-empty lists.
+  if [[ "$(manifest_array_len '.packages.core')" -eq 0 ]]; then
+    log "manifest-check: packages.core is empty"
+    violations=$((violations + 1))
+  fi
+  if [[ "$(manifest_array_len '.manual_tools')" -eq 0 ]]; then
+    log "manifest-check: manual_tools is empty"
+    violations=$((violations + 1))
+  fi
+  if [[ "$(manifest_array_len '.env_files.paths')" -eq 0 ]]; then
+    log "manifest-check: env_files.paths is empty"
+    violations=$((violations + 1))
+  fi
+
+  # 3b. masked_units: every entry has a non-empty name and reason.
+  local mu_name mu_reason
+  while IFS= read -r mu_name; do
+    [[ -z "$mu_name" ]] && continue
+    mu_reason="$(jq -r --arg n "$mu_name" '.masked_units.units[] | select(.name==$n) | .reason // empty' "$MANIFEST_JSON" 2>/dev/null || true)"
+    if [[ -z "$mu_reason" ]]; then
+      log "manifest-check: masked_units entry missing reason: $mu_name"
+      violations=$((violations + 1))
+    fi
+  done < <(manifest_array '.masked_units.units[].name')
+
+  # 4. Runbook file exists.
+  local runbook
+  runbook="$FLEET_OPS_REPO/$(manifest_value '.runbook_path')"
+  if [[ ! -f "$runbook" ]]; then
+    log "manifest-check: runbook missing: $runbook"
+    violations=$((violations + 1))
+  fi
+
+  if [[ "$violations" -gt 0 ]]; then
+    fail "manifest-check: $violations violation(s)"
+  fi
+  log "manifest-check: OK — manifest is complete"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# live checks (--check)
+# ---------------------------------------------------------------------------
+
+live_check() {
+  load_manifest
+  local violations=0 pkg path
+
+  # 1. OS / user.
+  local target_user target_uid
+  target_user="$(manifest_value '.target.primary_user')"
+  target_uid="$(manifest_value '.target.primary_uid')"
+  if ! id -u "$target_user" >/dev/null 2>&1; then
+    log "check: user $target_user missing"
+    violations=$((violations + 1))
+  elif [[ "$(id -u "$target_user")" != "$target_uid" ]]; then
+    log "check: user $target_user has wrong uid (want $target_uid)"
+    violations=$((violations + 1))
+  else
+    log "check: user $target_user uid $target_uid OK"
+  fi
+
+  if [[ "$SKIP_LIVE" != "1" ]]; then
+    # 2. Apt packages.
+    while IFS= read -r pkg; do
+      [[ -z "$pkg" ]] && continue
+      if ! dpkg-query -W -f='${Status}\n' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+        log "check: apt package not installed: $pkg"
+        violations=$((violations + 1))
+      fi
+    done < <(manifest_array '.packages.core[]')
+
+    # 3. Manual tools.
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      if [[ ! -e "$path" ]]; then
+        log "check: manual tool missing: $path"
+        violations=$((violations + 1))
+      fi
+    done < <(manifest_array '.manual_tools[].install_path')
+
+    # 4. Fleet-ops checkout.
+    local canon
+    canon="$(manifest_value '.repositories.fleet_ops.canonical_checkout')"
+    if [[ ! -d "$canon/.git" ]] && [[ ! -f "$canon/.git" ]]; then
+      log "check: canonical fleet-ops checkout missing: $canon"
+      violations=$((violations + 1))
+    fi
+
+    # 5. Product repos from intake-repos.json.
+    local products_root intake_repos
+    products_root="$(manifest_value '.repositories.products_root')"
+    intake_repos="$FLEET_OPS_REPO/$(manifest_value '.repositories.intake_repos_source')"
+    if [[ -f "$intake_repos" ]]; then
+      local repo_name
+      while IFS= read -r repo_name; do
+        [[ -z "$repo_name" ]] && continue
+        if [[ ! -d "$products_root/$repo_name/.git" ]] && [[ ! -f "$products_root/$repo_name/.git" ]]; then
+          log "check: product checkout missing: $products_root/$repo_name"
+          violations=$((violations + 1))
+        fi
+      done < <(jq -r '.repos[].name' "$intake_repos" 2>/dev/null || true)
+    fi
+
+    # 6. Env files. Some live under /etc and are only visible as root.
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      if [[ ! -e "$path" ]] && ! sudo -n test -e "$path" >/dev/null 2>&1; then
+        log "check: env file missing: $path"
+        violations=$((violations + 1))
+      fi
+    done < <(manifest_array '.env_files.paths[]')
+
+    # 7. Critical user units are active.
+    local unit
+    for unit in fleet-heartbeat.timer fleet-restore-drill.timer fleet-resilience-drill.timer; do
+      if ! "$SYSTEMCTL" --user is-active "$unit" >/dev/null 2>&1; then
+        log "check: user unit not active: $unit"
+        violations=$((violations + 1))
+      fi
+    done
+
+    # 8. tailscaled is up and no public SSH.
+    local ts_state
+    ts_state="$($SYSTEMCTL show tailscaled.service --property=ActiveState --value 2>/dev/null || true)"
+    if [[ "$ts_state" != "active" ]]; then
+      log "check: tailscaled.service is not active (state=$ts_state)"
+      violations=$((violations + 1))
+    fi
+    if command -v ss >/dev/null 2>&1; then
+      if ss -ltn 2>/dev/null | grep -Eq '0\.0\.0\.0:22|[[:space:]]\*:22|[[:space:]]\[::\]:22'; then
+        log "check: public SSH listener on :22"
+        violations=$((violations + 1))
+      fi
+    fi
+
+    # 9. Hardware-absent system units are masked (fleet-ops#2122).
+    local mu_unmasked
+    mu_unmasked="$(count_unmasked_units)"
+    violations=$((violations + mu_unmasked))
+  else
+    log "check: SKIP_LIVE=1 — skipping live package/tool/unit checks"
+  fi
+
+  if [[ "$violations" -gt 0 ]]; then
+    fail "live check: $violations violation(s)"
+  fi
+  log "live check: OK"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# apply / rebuild
+# ---------------------------------------------------------------------------
+
+detect_live_box() {
+  # Heuristics to avoid accidentally rebuilding the live netcup box.
+  # If the canonical fleet-ops checkout already exists and has active timers,
+  # we are almost certainly on the live VPS.
+  local canon
+  canon="$(manifest_value '.repositories.fleet_ops.canonical_checkout')"
+  if [[ -d "$canon" || -f "$canon" ]] && [[ -d "$HOME/.config/systemd/user" ]]; then
+    if "$SYSTEMCTL" --user is-active fleet-heartbeat.timer >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+run_step() {
+  local step="$1"; shift
+  if [[ "$dry_run" == 1 ]]; then
+    log "DRY-RUN: $step: $*"
+    return 0
+  fi
+  log "$step: $*"
+  "$@"
+}
+
+apply_rebuild() {
+  load_manifest
+
+  if detect_live_box; then
+    if [[ "$force_live" != 1 ]]; then
+      fail "refusing to --apply on the live box; pass --force-live to override"
+    fi
+    log "WARNING: --force-live set on a box that looks live; proceeding"
+  fi
+
+  # Preflight.
+  if [[ "$EUID" -ne 0 ]]; then
+    # Allow running as nish with sudo, but fail if we cannot do anything.
+    if ! sudo -n true 2>/dev/null; then
+      fail "--apply needs root or passwordless sudo"
+    fi
+  fi
+
+  # 1. Create user.
+  local target_user target_uid home_dir
+  target_user="$(manifest_value '.target.primary_user')"
+  target_uid="$(manifest_value '.target.primary_uid')"
+  home_dir="$(manifest_value '.target.primary_home')"
+  if ! id -u "$target_user" >/dev/null 2>&1; then
+    run_step "user" useradd -m -u "$target_uid" -s /bin/bash -d "$home_dir" "$target_user"
+  fi
+  if ! id -nG "$target_user" | grep -qw sudo; then
+    run_step "group" usermod -aG sudo "$target_user"
+  fi
+  if ! id -nG "$target_user" | grep -qw docker; then
+    run_step "group" usermod -aG docker "$target_user"
+  fi
+  run_step "linger" loginctl enable-linger "$target_user" 2>/dev/null || true
+
+  # 2. Install packages.
+  run_step "apt-update" "$APT" update
+  local pkgs=()
+  mapfile -t pkgs < <(manifest_array '.packages.core[]')
+  run_step "apt-install" "$APT" install -y "${pkgs[@]}"
+
+  # 3. Restic restore if requested.
+  if [[ -n "$restore_env" ]]; then
+    if [[ ! -f "$restore_env" ]]; then
+      fail "restore env file not found: $restore_env"
+    fi
+    # Source the restic env, then restore the four backup roots to /.
+    local restic_env
+    restic_env="$restore_env"
+    run_step "restic-restore" bash -c "set -a; source '$restic_env'; set +a; restic -r \$RESTIC_REPOSITORY restore latest --target / --path / /home/nish /etc /root /usr/local"
+  fi
+
+  # 4. Clone fleet-ops.
+  local canon branch remote
+  canon="$(manifest_value '.repositories.fleet_ops.canonical_checkout')"
+  branch="$(manifest_value '.repositories.fleet_ops.branch')"
+  remote="$(manifest_value '.repositories.fleet_ops.remote')"
+  if [[ ! -d "$canon/.git" ]] && [[ ! -f "$canon/.git" ]]; then
+    run_step "clone-fleet-ops" mkdir -p "$(dirname "$canon")"
+    run_step "clone-fleet-ops" git clone --branch "$branch" "$remote" "$canon"
+  fi
+
+  # 5. Install fleet-ops.
+  run_step "install-user" bash -c "cd '$canon' && ./install.sh"
+  run_step "install-system" bash -c "cd '$canon' && sudo ./install.sh --system"
+
+  # 5b. Mask hardware-absent system units at provision time (fleet-ops#2122).
+  #     A unit listed in masked_units can never start on this host (e.g. IPMI
+  #     on a VPS); masking at provision stops it re-entering failed state and
+  #     paging SystemUnitFailed every alert cycle. disable --now first stops
+  #     any running instance; mask is idempotent and supersedes enable.
+  local mu_unit
+  while IFS= read -r mu_unit; do
+    [[ -z "$mu_unit" ]] && continue
+    if [[ "$dry_run" == 1 ]]; then
+      log "DRY-RUN: mask-unit: $mu_unit"
+    else
+      log "mask-unit: $mu_unit"
+      sudo -n "$SYSTEMCTL" disable --now "$mu_unit" >/dev/null 2>&1 || true
+      sudo -n "$SYSTEMCTL" mask "$mu_unit"
+    fi
+  done < <(manifest_array '.masked_units.units[].name')
+
+  # 6. Product repos and mirrors.
+  local products_root mirrors_root intake_repos repo_name
+  products_root="$(manifest_value '.repositories.products_root')"
+  mirrors_root="$(manifest_value '.repositories.mirrors_root')"
+  intake_repos="$FLEET_OPS_REPO/$(manifest_value '.repositories.intake_repos_source')"
+  run_step "mkdir-products" mkdir -p "$products_root" "$mirrors_root"
+  if [[ -f "$intake_repos" ]]; then
+    while IFS= read -r repo_name; do
+      [[ -z "$repo_name" ]] && continue
+      if [[ "$repo_name" == "fleet-ops" ]]; then
+        continue
+      fi
+      if [[ ! -d "$products_root/$repo_name/.git" ]] && [[ ! -f "$products_root/$repo_name/.git" ]]; then
+        run_step "clone-product" git clone --reference-if-able "$mirrors_root/$repo_name.git" \
+          "https://github.com/Nishfleet/$repo_name.git" "$products_root/$repo_name"
+      fi
+    done < <(jq -r '.repos[].name' "$intake_repos" 2>/dev/null || true)
+  fi
+
+  # 7. Reload and start user units.
+  run_step "daemon-reload" "$SYSTEMCTL" --user daemon-reload
+  # install.sh enables timers that have [Install]; explicitly start timers.
+  run_step "start-heartbeat" "$SYSTEMCTL" --user start fleet-heartbeat.timer
+
+  # 8. Run drills.
+  if [[ "$dry_run" != 1 ]]; then
+    log "rebuild complete; run the drills manually:"
+    log "  fleet-restore-drill"
+    log "  fleet-resilience-drill"
+    log "  fleet-bare-metal-rebuild-drill"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# main dispatch
+# ---------------------------------------------------------------------------
+
+case "$mode" in
+  manifest)
+    print_manifest
+    ;;
+  manifest-check)
+    manifest_check
+    ;;
+  check)
+    live_check
+    ;;
+  apply)
+    if [[ "$dry_run" == 1 ]]; then
+      log "DRY-RUN mode: --apply will not make changes"
+    fi
+    apply_rebuild
+    ;;
+  *)
+    echo "fleet-bare-metal-rebuild: unknown mode: $mode" >&2
+    exit 2
+    ;;
+esac

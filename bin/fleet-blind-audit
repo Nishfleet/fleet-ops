@@ -38,6 +38,12 @@
 #   AUDIT_FAKE_NOW          ISO-8601 UTC override for tests
 #   AUDIT_ALLOW_NONCANONICAL  if 1, do not retarget products/fleet-ops
 #   AUDIT_FILE_NONCANONICAL   if 0, skip auto-file of the #367 detector
+#   AUDIT_SEAM_EVIDENCE     JSON file of pre-enumerated seam candidates (tests)
+#   AUDIT_SEAM_SINCE        ISO timestamp; default last-blind-audit-run or 24h
+#   AUDIT_SEAM_LIB          manual-seam-lens.py path
+#   AUDIT_CYCLE_CRITERIA    gap-closure cycle-criteria markdown path
+#   AUDIT_MEMORYCTL_DIR AUDIT_ACTIONS_LOG AUDIT_GH_SEAM_EVENTS AUDIT_SYSTEMCTL_STARTS
+#                           optional live/fixture sources for the seam enumerator
 #   FLEET_OPS_WORKSPACES_ROOT overlay for tests (default /home/nish/workspaces)
 #   FLEET_OPS_CANONICAL_CHECKOUT overlay for tests (default <workspaces>/tooling/fleet-ops-deploy-clone)
 
@@ -67,10 +73,46 @@ AUDIT_NONCANON_MARKER="audit-target-noncanonical: fleet-ops#367"
 # Resolve this script's repo root for fallbacks when not installed yet.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 repo_fallback="$(cd "$here/.." && pwd)"
+
+# fleet-ops#1212: route issue filings through the same-problem dedupe gate.
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$here/fleet-issue-file}"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/blind-audit.md"
 
 SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 [ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+
+SEAM_LIB="${AUDIT_SEAM_LIB:-$HOME/.local/lib/pi-packet/manual-seam-lens.py}"
+[ -f "$SEAM_LIB" ] || SEAM_LIB="$repo_fallback/lib/manual-seam-lens.py"
+CYCLE_CRITERIA="${AUDIT_CYCLE_CRITERIA:-$repo_fallback/config/gap-closure-cycle-criteria.md}"
+
+# --- help ---------------------------------------------------------------
+# fleet-ops#1549: --help/-h must print usage and exit 0 without taking the
+# flock, calling pi, starting a unit, or writing a report directory.
+case "${1:-}" in
+    --help|-h)
+        cat <<'HELP'
+fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
+
+Usage: fleet-blind-audit [--help|-h]
+
+Environment:
+  AUDIT_REPO            repo to audit (default: Nishfleet/fleet-ops)
+  AUDIT_REPO_ROOT       checked-out repo path (default: canonical deploy-clone)
+  AUDIT_STATE_DIR       agent-state sink
+  AUDIT_PROMPT          prompt template (prompts/blind-audit.md)
+  AUDIT_DELIBERATE_STATES   docs/deliberate-states.md path
+  AUDIT_PLAN_FILE       fleet plan file for stamps
+  AUDIT_PI_BIN          pi binary
+  AUDIT_PANEL_BIN       panel binary
+  AUDIT_MAX_FINDINGS    cap on filed issues per run (default: 5)
+  AUDIT_DRY_RUN         if 1, do not run pi or file issues
+  AUDIT_DRILL           if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
+  AUDIT_FAKE_NOW        ISO-8601 UTC override for tests
+  AUDIT_ALLOW_NONCANONICAL  if 1, do not retarget products/fleet-ops
+HELP
+        exit 0
+        ;;
+esac
 
 mkdir -p "$STATE_DIR"
 
@@ -131,7 +173,7 @@ auto_file_audit_noncanonical() {
     # (which lists agent-ready only) sees the detector issue immediately,
     # without waiting for lifecycle-label-sweep. Same class as the #402
     # panel-PASS create site.
-    if gh issue create -R "$REPO" \
+    if "$ISSUE_FILE" file -R "$REPO" \
         --title "Blind audit targeted non-canonical fleet-ops checkout" \
         --body-file "$body_file" \
         --label gap-audit --label agent-ready >/dev/null 2>&1; then
@@ -213,6 +255,17 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# Read the previous run stamp BEFORE overwriting it — the seam window
+# starts there (or 24h back if this is the first run). fleet-ops#377.
+prev_audit_run=""
+if [ -f "$PLAN_FILE" ]; then
+    prev_audit_run=$(grep -m1 -E '^last-blind-audit-run:' "$PLAN_FILE" | sed 's/^last-blind-audit-run:[[:space:]]*//' || true)
+fi
+SEAM_SINCE="${AUDIT_SEAM_SINCE:-}"
+if [ -z "$SEAM_SINCE" ]; then
+    SEAM_SINCE=$(printf '%s' "$prev_audit_run" | grep -m1 -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' || true)
+fi
+
 update_plan_stamp "last-blind-audit-run" "$NOW_ISO (started)"
 
 # --- preflight -------------------------------------------------------------
@@ -224,6 +277,7 @@ if [ "$DRILL" != "1" ]; then
     [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
     [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
     [ -f "$SEAT_LIB" ] || { log "FATAL: seat-lib missing: $SEAT_LIB"; exit 2; }
+    [ -f "$SEAM_LIB" ] || { log "FATAL: seam lens missing: $SEAM_LIB"; exit 2; }
     # Source the shared seat logic. This also sets XDG_RUNTIME_DIR, HOME, etc.
     # shellcheck source=/dev/null
     source "$SEAT_LIB"
@@ -297,6 +351,8 @@ closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labe
 recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
 GATE_LIB="${AUDIT_MECHANISM_GATE:-$HOME/.local/lib/pi-packet/failure-mechanism-gate.py}"
 [ -f "$GATE_LIB" ] || GATE_LIB="$repo_fallback/lib/failure-mechanism-gate.py"
+MACHINERY_GATE_LIB="${AUDIT_MACHINERY_GATE:-$HOME/.local/lib/pi-packet/machinery-authorization-gate.py}"
+[ -f "$MACHINERY_GATE_LIB" ] || MACHINERY_GATE_LIB="$repo_fallback/lib/machinery-authorization-gate.py"
 
 # Parse deliberate-states into a JSON list for the packet.
 deliberate_json='[]'
@@ -333,6 +389,40 @@ PY
     )
 fi
 
+# --- manual-seam evidence (fleet-ops#377) ---------------------------------
+# Enumerate hand-performed operations since the last cycle so the reviewer
+# classifies them and the harness writes the seam table into the report.
+# Live sources fail soft (empty list) so tests stay hermetic unless a
+# fixture path is passed via AUDIT_SEAM_EVIDENCE.
+SEAM_CANDIDATES="$REPORT_DIR/seam-candidates.json"
+collect_args=(python3 "$SEAM_LIB" collect --since "$SEAM_SINCE" --now "$NOW_ISO")
+if [ -n "${AUDIT_SEAM_EVIDENCE:-}" ]; then
+    collect_args+=(--evidence-file "$AUDIT_SEAM_EVIDENCE")
+else
+    collect_args+=(--memoryctl-dir "${AUDIT_MEMORYCTL_DIR:-$HOME/workspaces/tooling/nish-vault/00 Inbox/agent-drop}")
+    collect_args+=(--actions-log "${AUDIT_ACTIONS_LOG:-$HOME/workspaces/agent-state/AUDITOR-LOG.md}")
+    if [ -n "${AUDIT_GH_SEAM_EVENTS:-}" ]; then
+        collect_args+=(--gh-events "$AUDIT_GH_SEAM_EVENTS")
+    else
+        gh_seam="$REPORT_DIR/gh-seam-events.json"
+        if gh issue list -R "$REPO" --state all --json number,title,body,createdAt -L 40 >"$REPORT_DIR/gh-seam-raw.json" 2>/dev/null; then
+            jq '[.[] | {kind:"issue", number, title, body, created_at:.createdAt}]' \
+                "$REPORT_DIR/gh-seam-raw.json" >"$gh_seam" 2>/dev/null \
+                || printf '%s\n' '[]' >"$gh_seam"
+        else
+            printf '%s\n' '[]' >"$gh_seam"
+        fi
+        collect_args+=(--gh-events "$gh_seam")
+    fi
+    if [ -n "${AUDIT_SYSTEMCTL_STARTS:-}" ]; then
+        collect_args+=(--systemctl-starts "$AUDIT_SYSTEMCTL_STARTS")
+    fi
+fi
+if ! "${collect_args[@]}" >"$SEAM_CANDIDATES"; then
+    log "WARN: seam collect failed; continuing with empty candidates"
+    printf '%s\n' '{"candidates":[]}' >"$SEAM_CANDIDATES"
+fi
+
 # --- build the packet ------------------------------------------------------
 # fleet-ops#786: do not in-place substitute {{...}} placeholders. The static
 # prompt body is byte-identical for cache hits; the volatile context is
@@ -357,6 +447,9 @@ pkt="$REPORT_DIR/packet.md"
     printf -- '- Repo file list: `%s`\n' "${repo_files:-}"
     printf -- '- Failed user systemd units: `%s`\n' "${systemctl_failed:-}"
     printf -- '- User systemd timers: `%s`\n' "${systemctl_timers:-}"
+    printf -- '- Gap-closure cycle criteria: `%s`\n' "$CYCLE_CRITERIA"
+    printf -- '- Manual-seam window start (last cycle): `%s`\n' "${SEAM_SINCE:-}"
+    printf -- '- Manual-seam evidence (hand-performed operations since last cycle): `%s`\n' "$(cat "$SEAM_CANDIDATES" 2>/dev/null || printf '%s' '{"candidates":[]}')"
 } > "$pkt"
 
 log "packet built: $pkt (${#pkt}B)"
@@ -458,6 +551,64 @@ else
     log "WARN: mechanical-fix gate missing ($GATE_LIB); recurrence hunt skipped"
 fi
 
+# --- mechanical machinery-authorization hunt (fleet-ops#1548) -------------
+# Hand-placed (non-symlink) user units not on the allowlist become automatic
+# findings. Merged here so filing does not depend on the reviewer noticing.
+if [ -f "$MACHINERY_GATE_LIB" ]; then
+    allowlist="${AUDIT_MACHINERY_ALLOWLIST:-$repo_fallback/config/machinery-allowlist.json}"
+    [ -f "$allowlist" ] || allowlist="$HOME/.local/state/pi-packet/machinery-allowlist.json"
+    mach_out=$(ALLOWLIST="$allowlist" python3 "$MACHINERY_GATE_LIB" hunt --allowlist "$allowlist" 2>/dev/null || echo '{"findings":[]}')
+    if ! printf '%s' "$mach_out" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        mach_out='{"findings":[]}'
+    fi
+    if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
+            findings=$(printf '%s' "$findings" | jq '{findings: .}')
+        else
+            findings='{"findings":[]}'
+        fi
+    fi
+    findings=$(jq -s '{findings: (.[0].findings + .[1].findings)}' \
+        <(printf '%s' "$findings") <(printf '%s' "$mach_out"))
+    log "machinery hunt merged ($(printf '%s' "$mach_out" | jq '.findings | length') hits)"
+else
+    log "WARN: machinery-authorization gate missing ($MACHINERY_GATE_LIB); machinery hunt skipped"
+fi
+
+# --- manual-seam lens: match, file unmatched, write the report table ------
+# fleet-ops#377: the harness writes the ## Manual-seam lens table into the
+# report even if the reviewer omitted it, and queues unmatched seams as
+# gap-audit findings so the hunt never depends on someone asking.
+if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+    if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
+        findings=$(printf '%s' "$findings" | jq '{findings: .}')
+    else
+        findings='{"findings":[]}'
+    fi
+fi
+printf '%s\n' "$findings" >"$FINDINGS_JSON"
+printf '%s\n' "${open_issues:-[]}" >"$REPORT_DIR/open-issues.json"
+set +e
+close_json=$(python3 "$SEAM_LIB" close \
+    --candidates "$SEAM_CANDIDATES" \
+    --findings "$FINDINGS_JSON" \
+    --open-issues "$REPORT_DIR/open-issues.json" \
+    --report "$REPORT_MD" \
+    --seams-out "$REPORT_DIR/seams.json" \
+    --since "$SEAM_SINCE" \
+    --now "$NOW_ISO" 2>"$REPORT_DIR/seam-close.err")
+close_rc=$?
+set -e
+if [ "$close_rc" -ne 0 ]; then
+    log "WARN: seam close failed (rc=$close_rc)"
+    if [ -s "$REPORT_DIR/seam-close.err" ]; then
+        log "WARN: $(head -c 500 "$REPORT_DIR/seam-close.err")"
+    fi
+else
+    log "seam lens: $close_json"
+    findings=$(jq -c . "$FINDINGS_JSON")
+fi
+
 # --- findings empty? -------------------------------------------------------
 findings_count=$(printf '%s' "$findings" | jq '(.findings // .) | length')
 if [ "$findings_count" -eq 0 ]; then
@@ -540,16 +691,24 @@ while IFS= read -r finding; do
         } > "$body_file"
 
         set +e
-        new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>&1)
+        new_issue=$("$ISSUE_FILE" file --json -R "$REPO" --title "[gap-audit] $title" --body-file "$body_file" --label gap-audit --label agent-ready 2>/dev/null)
         new_rc=$?
         set -e
         if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
-            issue_url=$(printf '%s\n' "$new_issue" | awk '/https?:\/\//{print; exit}')
-            [ -n "$issue_url" ] || issue_url="$new_issue"
+            issue_url=$(printf '%s' "$new_issue" | jq -r '.url // empty' 2>/dev/null)
+            if [ -z "$issue_url" ]; then
+                # Helper classified this as a duplicate and commented on the
+                # existing issue rather than filing. Carry the link so the
+                # verdict log still shows the dedupe.
+                issue_url=$(printf '%s' "$new_issue" | jq -r '.existing // empty' 2>/dev/null)
+            fi
+            if [ -n "$issue_url" ] && [[ "$issue_url" != http* ]]; then
+                issue_url="https://github.com/${issue_url#*github.com/}"
+            fi
             log "finding $rank: FILED $issue_url"
             filed=$((filed + 1))
         else
-            reason="gh issue create failed: $new_issue"
+            reason="fleet-issue-file failed: $new_issue"
             log "finding $rank: FAILED to file issue ($new_issue)"
             unfiled_pass=$((unfiled_pass + 1))
         fi

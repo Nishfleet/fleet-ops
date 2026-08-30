@@ -42,6 +42,8 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # pick_seat into prepaid (fleet-ops#108 / #142 / #509). The wedge-age
 # probe below turns this back on with a stubbed systemctl.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
+# fleet-ops#1409: skip the per-pick NO-USABLE-SEAT cooldown in tests.
+export PI_SEAT_NOUSABLE_COOLDOWN_S=0
 
 # A models.json with a deliberately non-allowlisted provider (groq) and a
 # non-allowlisted model on an allowlisted provider (ollama/gpt-oss:20b).
@@ -135,7 +137,10 @@ set -e
 if echo "$out" | grep -qE "^(groq|ollama.*gpt-oss)"; then
   fail "no-entry ledger: groq/gpt-oss must never be picked, got: $out"
 fi
-grep -qE "provider (groq not in cap-map allowlist|cap=0)" "$PI_PACKET_STATE/watch.log" \
+# fleet-ops#1456: groq is now pre-computed as not-in-allowlist:provider
+# (groq is in models.json but NOT in the scratch seat-caps.json). The
+# per-seat log line is silenced; the summary line is the evidence.
+grep -qE "(provider (groq not in cap-map allowlist|cap=0)|pick_seat: excluded.*not-in-allowlist)" "$PI_PACKET_STATE/watch.log" \
   || fail "no-entry ledger: groq must be rejected (cap=0 or allowlist)"
 
 # --- invariant 2b: provider with NO cap-map entry at all is rejected ------
@@ -172,7 +177,9 @@ set -e
 if echo "$out" | grep -q "notacredentialedprovider"; then
   fail "no-entry2 ledger: provider with no cap entry must never be picked, got: $out"
 fi
-grep -q "provider notacredentialedprovider not in cap-map allowlist" "$PI_PACKET_STATE/watch.log" \
+# fleet-ops#1456: notacredentialedprovider is pre-computed as
+# not-in-allowlist:provider; the per-seat log line is silenced.
+grep -qE "(provider notacredentialedprovider not in cap-map allowlist|pick_seat: excluded.*not-in-allowlist)" "$PI_PACKET_STATE/watch.log" \
   || fail "no-entry2 ledger: must log the allowlist rejection for a provider with no entry"
 export PI_MODELS_JSON="$scratch/models.json"
 
@@ -192,10 +199,19 @@ set -e
 [[ "$rc" == "0" ]] || fail "modelcap0: expected a free-lane pick, got rc=$rc out=$out"
 [[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
   || fail "modelcap0: expected a free lane, not a cap=0 prepaid model, got: $out"
-grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  || fail "modelcap0: must log model cap=0 skip for glm-5-2"
-grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  || fail "modelcap0: must log model cap=0 skip for swe-1-7"
+# fleet-ops#1449/#1456: the per-seat "skipped (model cap=0)" lines were the
+# source of the at_capacity_events flood (4492/2h). They are now folded
+# into a single per-pick summary; assert the summary is present and
+# the count covers both models. groq + opencode are in models.json but
+# NOT in the scratch seat-caps.json (not-in-allowlist:provider), and
+# ollama/gpt-oss:20b is in models.json but not in ollama's models map
+# (not-in-allowlist:model) -> not-in-allowlist: 3.
+grep -qE "pick_seat: excluded 5 seats \(cap=0: 2; dead: 0; not-in-allowlist: 3\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "modelcap0: must log per-pick summary line naming both devin models as cap=0, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Old per-seat line must NOT appear any more (silenced by the excluded set).
+if grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
+  fail "modelcap0: per-seat 'skipped (model cap=0)' line is silenced; the summary replaces it"
+fi
 
 # --- invariant 3b: cap=0 is per-model, not per-provider (fleet-ops#108) ---
 # Same provider, one model at 0, sibling at 4. A provider-wide block would
@@ -233,10 +249,17 @@ set -e
 [[ "$rc" == "0" ]] || fail "mixedcap: sibling swe-1-7 must stay pickable when glm-5-2 is cap=0, got rc=$rc out=$out"
 [[ "$out" == "devin	swe-1-7" ]] \
   || fail "mixedcap: expected devin/swe-1-7 (the cap>0 sibling), got: $out"
-grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  || fail "mixedcap: must skip glm-5-2 for model cap=0"
-grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log" \
-  && fail "mixedcap: must not skip the cap>0 sibling"
+# fleet-ops#1449: the per-seat "skipped (model cap=0)" line is now in
+# the per-pick summary. Only the cap=0 sibling is excluded; the cap>0
+# sibling stays live. Assert the count is exactly 1.
+grep -qE "pick_seat: excluded 1 seats \(cap=0: 1; dead: 0; not-in-allowlist: 0\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "mixedcap: must log per-pick summary with cap=0: 1 (only glm-5-2 is excluded), got log: $(cat "$PI_PACKET_STATE/watch.log")"
+if grep -q "seat devin/glm-5-2 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
+  fail "mixedcap: per-seat 'skipped (model cap=0)' line is silenced; the summary replaces it"
+fi
+if grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
+  fail "mixedcap: swe-1-7 is the cap>0 sibling and must not be in the summary"
+fi
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
@@ -263,6 +286,190 @@ set -e
 grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
   || fail "all-dead: must log the loud NO USABLE SEAT line"
 
+# --- invariant 1.5 (fleet-ops#1449): at_capacity_events flood fix --------
+# Before: pick_seat logged one "skipped (seat_dead=true)" line per dead
+# seat per call. With 9 dead seats and the intake loop calling pick_seat
+# every ~50ms, the watch.log accumulated at_capacity_events_last_2h=4492
+# (prev window 3936) on 2026-08-28. After the fix: one summary line per
+# pick_seat call, naming the dead count and a short sample.
+# This test pins the new contract: the loud per-seat UNUSABLE lines are
+# GONE, the summary line is present, the rc=1 stall is preserved.
+ledger="$scratch/ledger-atcap"
+mkdir -p "$ledger"
+fresh_obs=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+# Mark half the ladder as dead, half as alive. With the cap map, only
+# the dead half is excluded by the pre-compute; the alive half goes
+# through the normal selection path.
+for f in \
+  devin__glm-5-2.json devin__swe-1-7.json \
+  cursor__composer-2.5.json cursor__cursor-grok-4.6-high.json \
+  cline__cline-pass_deepseek-v4-flash.json cline__cline-pass_minimax-m3.json \
+  commandcode__deepseek_deepseek-v4-flash.json minimax__MiniMax-M3.json \
+  ollama__deepseek-v4-flash_0731.json; do
+  jq -n --arg obs "$fresh_obs" '{health_class:"credentials_bad",seat_dead:true,observed_at:$obs}' > "$ledger/$f"
+done
+export PI_PACKET_STATE="$scratch/state-atcap"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "atcap: expected rc=1 (every seat dead), got rc=$rc out=$out"
+[[ -z "$out" ]] || fail "atcap: must print nothing to stdout, got: $out"
+grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+  || fail "atcap: must still log the loud NO USABLE SEAT line"
+# The per-seat UNUSABLE (seat_dead=true) lines must be GONE — they were
+# the at_capacity_events flood source. Count them; the test passes iff
+# none were emitted.
+# grep -c prints the count AND exits 1 on no-match; `|| echo 0` would
+# append a second "0" and yield "0\n0", a syntax error in (( )). Use
+# `|| true` so only grep's own "0" is captured.
+dead_lines=$(grep -c "UNUSABLE (seat_dead=true" "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+dead_lines=${dead_lines:-0}
+if (( dead_lines > 0 )); then
+  fail "atcap: UNUSABLE (seat_dead=true) lines must be silenced (was: $dead_lines); the per-pick summary replaces them"
+fi
+# The new per-pick summary line must be present, naming the counts.
+# 9 seats are dead in the ledger; 2 of them (devin/glm-5-2 + devin/swe-1-7)
+# are ALSO cap=0 in the scratch cap map (which the test suite uses
+# throughout: devin cap=4 but both models cap=0). The summary counts
+# the UNION: 2 cap=0 + 9 dead = 11, with devin/glm-5-2 and devin/swe-1-7
+# appearing in both. The cap=0 and dead counters are independent, so
+# a seat marked in both is counted in both — the 11 total is the sum
+# of those counters, not 9 unique seats. The at_capacity_events metric
+# the issue tracks is the SUM of the per-seat log lines, which is also
+# 11 if the loop were re-logging them.
+# fleet-ops#1456: groq + opencode are in models.json but NOT in the
+# scratch seat-caps.json (not-in-allowlist:provider), and ollama/gpt-oss:20b
+# is not in ollama's models map (not-in-allowlist:model) -> not-in-allowlist: 3
+# (total 14).
+grep -qE "pick_seat: excluded 14 seats \(cap=0: 2; dead: 9; not-in-allowlist: 3\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "atcap: must log per-pick summary 'pick_seat: excluded 14 seats (cap=0: 2; dead: 9; not-in-allowlist: 3)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "atcap: per-pick summary replaces per-seat UNUSABLE (seat_dead=true) lines; 0 dead lines logged, 1 summary line"
+
+# --- fleet-ops#1297: fold the per-seat "not capable for heavy task" lines ---
+# The dominant watch.log flood on 2026-08-29 was a heavy-only fleet with no
+# capable seat: every heavy pick_seat re-logged each non-capable seat, ~28,243
+# "skipped (not capable for heavy task)" lines in 2h. Fixed by folding them
+# into ONE per-pick summary line (same pattern as #1449/#1624). This pins the
+# contract: a heavy pick where the ONLY allowlisted/alive/cap>0 seat is not
+# heavy-capable must NOT emit the per-seat line, must emit the summary, and
+# must still fail (rc=1) rather than route to a non-capable seat.
+cat >"$scratch/models-notcap.json" <<'JSON'
+{
+  "providers": {
+    "lightco": { "models": [ { "id": "tiny-lite", "cost": { "input": 0 } } ] },
+    "wallco":  { "models": [ { "id": "zeroed",    "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-notcap.json" <<'JSON'
+{
+  "providers": {
+    "lightco": { "cap": 1, "class": "free", "models": { "tiny-lite": 1 } },
+    "wallco":  { "cap": 0, "class": "free" }
+  }
+}
+JSON
+ledger="$scratch/ledger-notcap"
+mkdir -p "$ledger"
+export PI_MODELS_JSON="$scratch/models-notcap.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps-notcap.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export PI_PACKET_STATE="$scratch/state-notcap"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "notcap: heavy pick must fail (only seat is not capable), got rc=$rc out=$out"
+[[ -z "$out" ]] || fail "notcap: must print nothing to stdout, got: $out"
+# The per-seat "not capable for heavy task" lines must be GONE (flood source).
+nc_lines=$(grep -c "skipped (not capable for heavy task)" "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+nc_lines=${nc_lines:-0}
+if (( nc_lines > 0 )); then
+  fail "notcap: per-seat 'skipped (not capable for heavy task)' lines must be silenced (was: $nc_lines); the per-pick summary replaces them"
+fi
+# The per-seat "not in cap-map allowlist" line for wallco (cap=0 -> excluded)
+# must also stay folded; the summary must name the not-capable count.
+grep -qE "pick_seat: filtered-static 1 seats \\(not-capable: 1; quality-ban: 0\\)" "$PI_PACKET_STATE/watch.log" \
+  || fail "notcap: must log per-pick summary 'pick_seat: filtered-static 1 seats (not-capable: 1; quality-ban: 0)', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+  || fail "notcap: must still log the loud NO USABLE SEAT line"
+ok "notcap: heavy pick folds per-seat 'not capable for heavy task' lines into one per-pick summary (0 per-seat lines, 1 summary, rc=1)"
+# Restore the suite's default fixtures for the blocks that follow.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
+# --- fleet-ops#1297: per-pick_seat active-count cache -----------------------
+# count_active_on_provider / count_active_on_seat were called PER non-excluded
+# seat in the pick_seat loop, each re-reading the whole active-seats registry
+# (jq + systemctl per file) + legacy unit list (systemctl per unit). At 7
+# registry files + 8 live units and ~10 seats that was ~690 subprocess spawns
+# per pick_seat call (~4.4s measured) — the direct cause of load1=148 on
+# 2026-08-29 with 13520 at-capacity skips in 2h. The fix: _build_pick_active_cache
+# reads the registry + legacy list ONCE per pick_seat and the count functions
+# consult the cached counts. This pins the contract: the cached counts MUST
+# equal the uncached counts for provider, seat, issue and org, and pick_seat
+# MUST build the cache (so the loop pays the registry read once, not per seat).
+_cache_dir="$scratch/active-cache"
+mkdir -p "$_cache_dir/active-seats"
+export PI_PACKET_STATE="$_cache_dir"
+# Seed a mix of issue + packet registry entries across two providers.
+jq -nc --arg p "devin" --arg m "glm-5-2" --arg u "pi-issue-fleet-ops-1297" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T00:00:00Z"}' \
+    > "$_cache_dir/active-seats/pi-issue-fleet-ops-1297.json"
+jq -nc --arg p "devin" --arg m "swe-1-7" --arg u "pi-issue-fleet-ops-1300" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T00:00:00Z"}' \
+    > "$_cache_dir/active-seats/pi-issue-fleet-ops-1300.json"
+jq -nc --arg p "commandcode" --arg m "poolside" --arg u "pi-packet-alert-1" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T00:00:00Z"}' \
+    > "$_cache_dir/active-seats/pi-packet-alert-1.json"
+# Uncached counts (cache not built yet — PI_SEAT_LIB_CHECK_SYSTEMD=0 so the
+# legacy systemctl path is empty and only the registry files count).
+_unc_total=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_total' "$lib" 2>/dev/null)
+_unc_issue=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_issue' "$lib" 2>/dev/null)
+_unc_org=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_org' "$lib" 2>/dev/null)
+_unc_prov_devin=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_on_provider devin' "$lib" 2>/dev/null)
+_unc_prov_cc=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_on_provider commandcode' "$lib" 2>/dev/null)
+_unc_seat=$(bash -c 'source "$0"; load_seat_caps 2>/dev/null; count_active_on_seat devin glm-5-2' "$lib" 2>/dev/null)
+# Cached counts: pick_seat builds the cache, then the count functions consult it.
+_cach_out=$(bash -c '
+  source "$0"; load_seat_caps 2>/dev/null
+  _PICK_ACTIVE_CACHE_BUILT=0; _build_pick_active_cache 2>/dev/null
+  printf "%s\n%s\n%s\n%s\n%s\n%s\n" \
+    "$(count_active_total)" "$(count_active_issue)" "$(count_active_org)" \
+    "$(count_active_on_provider devin)" "$(count_active_on_provider commandcode)" \
+    "$(count_active_on_seat devin glm-5-2)"
+' "$lib" 2>/dev/null)
+_c_total=$(sed -n '1p' <<<"$_cach_out")
+_c_issue=$(sed -n '2p' <<<"$_cach_out")
+_c_org=$(sed -n '3p' <<<"$_cach_out")
+_c_prov_devin=$(sed -n '4p' <<<"$_cach_out")
+_c_prov_cc=$(sed -n '5p' <<<"$_cach_out")
+_c_seat=$(sed -n '6p' <<<"$_cach_out")
+[[ "$_unc_total" == "$_c_total" ]] \
+  || fail "1297-cache: total mismatch uncached=$_unc_total cached=$_c_total"
+[[ "$_unc_issue" == "$_c_issue" ]] \
+  || fail "1297-cache: issue mismatch uncached=$_unc_issue cached=$_c_issue"
+[[ "$_unc_org" == "$_c_org" ]] \
+  || fail "1297-cache: org mismatch uncached=$_unc_org cached=$_c_org"
+[[ "$_unc_prov_devin" == "$_c_prov_devin" ]] \
+  || fail "1297-cache: devin provider mismatch uncached=$_unc_prov_devin cached=$_c_prov_devin"
+[[ "$_unc_prov_cc" == "$_c_prov_cc" ]] \
+  || fail "1297-cache: commandcode provider mismatch uncached=$_unc_prov_cc cached=$_c_prov_cc"
+[[ "$_unc_seat" == "$_c_seat" ]] \
+  || fail "1297-cache: devin/glm-5-2 seat mismatch uncached=$_unc_seat cached=$_c_seat"
+# Sanity: the seeded counts are the expected values (2 issue + 1 org, 2 devin,
+# 1 commandcode, 1 devin/glm-5-2). count_active_total = issue + min(org, reserve).
+[[ "$_c_issue" == "2" ]] || fail "1297-cache: expected 2 issue workers, got $_c_issue"
+[[ "$_c_org" == "1" ]] || fail "1297-cache: expected 1 org worker, got $_c_org"
+[[ "$_c_prov_devin" == "2" ]] || fail "1297-cache: expected 2 devin workers, got $_c_prov_devin"
+[[ "$_c_prov_cc" == "1" ]] || fail "1297-cache: expected 1 commandcode worker, got $_c_prov_cc"
+[[ "$_c_seat" == "1" ]] || fail "1297-cache: expected 1 devin/glm-5-2 worker, got $_c_seat"
+ok "1297-cache: per-pick_seat active-count cache returns identical counts to uncached path (total=$_c_total issue=$_c_issue org=$_c_org devin=$_c_prov_devin cc=$_c_prov_cc seat=$_c_seat)"
+unset _cache_dir _unc_total _unc_issue _unc_org _unc_prov_devin _unc_prov_cc _unc_seat
+unset _cach_out _c_total _c_issue _c_org _c_prov_devin _c_prov_cc _c_seat
+
 # --- invariant 4: free lanes before prepaid on an empty (usable) ledger ---
 # Every allowlisted model has no health file -> usable. commandcode is free;
 # cursor/cline are prepaid-quota (subscription alias). Free wins.
@@ -277,6 +484,20 @@ set -e
 [[ "$rc" == "0" ]] || fail "clean ledger: expected a pick, got rc=$rc"
 [[ "$out" == "commandcode	deepseek/deepseek-v4-flash" || "$out" == "ollama	deepseek-v4-flash:0731" ]] \
   || fail "clean ledger: free-first expected commandcode or ollama, got: $out"
+# fleet-ops#1449: when NO seats are excluded (the common case), the
+# summary line must NOT be emitted — otherwise every clean pick_seat
+# call adds a line, defeating the flood fix. The clean-ledger test
+# inherits the scratch cap map (devin cap=4 but both devin models
+# cap=0), so the summary DOES fire for the cap=0 devin entries; the
+# assertion is that the dead-count is zero and the cap=0 count is the
+# expected two. groq + opencode + ollama/gpt-oss:20b add not-in-allowlist: 3.
+if grep -qE "pick_seat: excluded [0-9]+ seats \(cap=0: 2; dead: 0; not-in-allowlist: 3\)" "$PI_PACKET_STATE/watch.log"; then
+  ok "clean ledger: per-pick summary fires for cap=0 (the at_capacity fix path), with dead: 0"
+else
+  echo "DEBUG clean log:" >&2
+  cat "$PI_PACKET_STATE/watch.log" >&2
+  fail "clean ledger: per-pick summary shape is wrong (want cap=0: 2; dead: 0)"
+fi
 
 # --- invariant 5: rate_limited retry vs exclusion --------------------------
 now=$(date -u +%s)
@@ -305,18 +526,23 @@ set -e
 [[ "$rc" == "0" ]] || fail "rate-ledger: expected a pick (retry), got rc=$rc"
 [[ "$out" == "cline	cline-pass/deepseek-v4-flash" ]] \
   || fail "rate-ledger: expected cline ds-flash retry, got: $out"
+# fleet-ops#1409: per-seat UNUSABLE lines are folded into a per-pick summary.
+# The retry-on-stale-RL line is emitted (return-0 path, not silenced).
+# pick_seat returns on the first usable seat (cline-pass/deepseek-v4-flash),
+# so minimax is never reached in the loop — it stays excluded by the tried
+# list but does not appear in the unusable summary. The pick is the proof.
 grep -q "retrying after rate_limited" "$PI_PACKET_STATE/watch.log" \
   || fail "rate-ledger: must log the retrying-after-rate_limited line"
-grep -q "UNUSABLE (rate_limited until" "$PI_PACKET_STATE/watch.log" \
-  || fail "rate-ledger: minimax fresh-RL must stay excluded"
 
 # --- invariant 6/7: dead / credentials_bad / stale-observed ----------------
-# (7) stale observed_at -> usable: cursor marker from yesterday
+# (7) stale observed_at -> usable: ollama marker from yesterday
+# (cursor is keystone-only — fleet-ops#1167 — so a volume pick never
+# consults it; prove the stale fail-open on a volume/free seat instead.)
 ledger="$scratch/ledger-stale"
 mkdir -p "$ledger"
 jq -n --arg obs "2026-08-24T00:00:00Z" \
   '{health_class:"healthy",seat_dead:false,observed_at:$obs}' \
-  > "$ledger/cursor__composer-2.5.json"
+  > "$ledger/ollama__deepseek-v4-flash_0731.json"
 export PI_PACKET_STATE="$scratch/state-stale"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 set +e
@@ -630,8 +856,10 @@ set -e
 [[ -z "$out" ]] || fail "bench-pick: must print nothing to stdout, got: $out"
 grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
   || fail "bench-pick: must log NO USABLE SEAT (no attempt consumed on a benched seat)"
-grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "bench-pick: must log 'benched until' for the skipped cline seats"
+# fleet-ops#1409: per-seat 'benched until' lines are folded into the
+# per-pick unusable summary. The 2 cline seats still block the pick → rc=1.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "bench-pick: must log unusable summary for the benched cline seats"
 
 # 9e: once bench_until passes, the seat is offered again (fail-open).
 past_bu=$(date -u -d "@$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)
@@ -729,8 +957,9 @@ out=$(SEAT_CAPS_JSON="$SEAT_CAPS_JSON_MIMO" \
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "mimo-bench: pick_seat after bench must rc=1 (NO USABLE SEAT), got rc=$rc out='$out"
-grep -q "opencode/mimo-v2.5-free: benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "mimo-bench: pick_seat must log 'opencode/mimo-v2.5-free: benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+grep -q "unusable.*seats.*opencode" "$PI_PACKET_STATE/watch.log" \
+  || fail "mimo-bench: pick_seat must log unusable summary including opencode (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
 # Restore the canonical scratch ledger for any later sections.
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 
@@ -751,8 +980,10 @@ out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scr
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "stale-obs-bench: expected rc=1 (still benched despite stale observed_at), got rc=$rc out=$out"
-grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "stale-obs-bench: must skip on bench_until, not fail-open on stale observed_at"
+# fleet-ops#1409: bench_until still takes priority over stale fail-open;
+# per-seat 'benched until' is folded into the unusable summary.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-bench: must log unusable summary (bench_until > stale fail-open)"
 grep -q "stale >" "$PI_PACKET_STATE/watch.log" \
   && fail "stale-obs-bench: must NOT take the stale-observed_at fail-open path while bench_until is future"
 
@@ -1000,8 +1231,9 @@ set -e
 # ALL-benched commandcode returns rc=1 NO USABLE SEAT. The acceptance
 # criterion is: pick_seat does NOT return the benched commandcode row.
 [[ "$rc" == "1" ]] || fail "pick-after-overload: pick_seat must rc=1 (only seat benched), got rc=$rc out='$out'"
-grep -q "commandcode/minimax/minimax-m3-free: benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "pick-after-overload: must log the 'benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+grep -q "unusable.*seats.*commandcode" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log unusable summary including commandcode/minimax-m3-free (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
 [[ -z "$out" ]] || fail "pick-after-overload: stdout must be empty (no seat), got '$out'"
 # Distinct from quota path: the skip line mentions the overload bench class
 # (the auditor distinguishes them via health_class=overload_bench). The
@@ -1009,12 +1241,17 @@ grep -q "commandcode/minimax/minimax-m3-free: benched until" "$PI_PACKET_STATE/w
 # seat_usable reader logs 'benched until ... (overload_bench)' (underscore)
 # in the pick_seat PI_PACKET_STATE. Accept either, but NOT 'quota_bench' or
 # 'quota-bench:' — those would be the wrong class.
-grep -q "overload-bench:\|(overload_bench)" "$PI_PACKET_STATE/watch.log" \
-  || fail "pick-after-overload: must mention overload class (not quota); log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")"
-# Sanity: the quota class is NOT in this log (otherwise the bench class is
-# being mis-typed and the post-mortem rollup would be wrong).
-grep -q "quota-bench:\|(quota_bench)" "$PI_PACKET_STATE/watch.log" \
-  && fail "pick-after-overload: log must NOT mention quota class (would mis-classify the bench) — log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")" || true
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+# The overload class distinction lives in the ledger (health_class=overload_bench);
+# verify the ledger, not the per-seat log line.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log unusable summary (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+hc_ledger=$(jq -r '.health_class' "$cc_ledger_only/commandcode__minimax_minimax-m3-free.json")  || true
+[[ "$hc_ledger" == "overload_bench" ]] \
+  || fail "pick-after-overload: ledger health_class must be overload_bench, got '$hc_ledger'"
+# Sanity: the quota class is NOT in the ledger.
+[[ "$hc_ledger" != "quota_bench" ]] \
+  || fail "pick-after-overload: ledger health_class must NOT be quota_bench"
 
 # 9h-6: 503_bench_default_s field name. The live seat-caps.json uses the
 # 503_bench_default_s key; the alias overload_bench_default_s is also
@@ -1344,6 +1581,22 @@ set -e
 ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
 
 # --- fleet-ops#1163: xai-oauth (SuperGrok sub) prepaid weekly seat --------
+#
+# fleet-ops#1163 was closed by PR #1436 (merged 2026-08-28T01:02:18Z):
+#   - seat-caps.json: xai-oauth provider with cap=1, class=prepaid-quota
+#   - entitled-seats.json: xai-oauth entry with quota_window=weekly
+#   - bin/fleet-seat-live-validate: mirror grok CLI health onto xai-oauth
+#   - tests/seat-lib.test.sh: six tests (first-pick, alternation, cap=1,
+#     credentials_bad, expiry-order, P15 allowlist) — all green
+#   - models.json: xai-oauth provider with grok-4.6 + grok-4.5 entries
+#
+# fleet-ops#1406 ("leftover open: #1163 wire ticket still open after PR
+# #1257 landed the xai-oauth seat") was filed because #1163 stayed open
+# after PR #1257 merged. PR #1436 already closed #1163 with a Closes
+# trailer, so #1406 has ZERO remaining work. This comment is the receipt
+# — the xai-oauth seat is live, tested, canary-wired, and the closing
+# issue is gone. No new code.
+#
 # BINDING: prepaid seats ALTERNATE, never stack. xai-oauth enters the
 # prepaid-quota bucket with cap=1 and per-model cap=1. _rr_pick rotates
 # between grok-4.6 and grok-4.5 so the weekly meter is shared, not
@@ -1492,6 +1745,352 @@ set -e
 if echo "$out" | grep -q '^xai-oauth'; then fail "1163-stack: cap=1 must keep pick_seat off xai-oauth when 1 is already live, got: $out"; fi
 ok "1163-stack: cap=1 blocks a second xai-oauth worker (rc=$rc, no xai-oauth in output)"
 rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+
+# (c2) fleet-ops#1624: at-capacity skip churn flood fix. The per-seat
+#      "skipped (provider/model cap=N reached)" lines were the remaining
+#      at_capacity_events flood source after #1449 silenced cap=0/dead
+#      (1006 events/2h on 2026-08-29 against cap=1 seats). With one
+#      xai-oauth worker live and xai-oauth the only seat (cap=1), both
+#      grok models are at-capacity. The per-seat skip lines must be GONE
+#      and ONE per-pick at-capacity summary line must be present.
+#      Fresh state dir so the watch.log is clean for the assertion.
+export PI_PACKET_STATE="$scratch/1163/state-atcap-flood"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+unit="pi-test-xaistack-flood"
+jq -nc --arg p "xai-oauth" --arg m "grok-4.6" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1163-atcap-flood: cap=1 with one live worker must reject (rc=0 returned, out=$out)"
+# The per-seat "skipped (... cap=N reached)" lines must be GONE — they were
+# the at_capacity_events flood source. Count them; the test passes iff none.
+cap_reached_lines=$(grep -c "skipped (.*cap=.*reached" "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+cap_reached_lines=${cap_reached_lines:-0}
+if (( cap_reached_lines > 0 )); then
+  fail "1163-atcap-flood: per-seat 'skipped (cap reached)' lines must be silenced (was: $cap_reached_lines); the per-pick at-capacity summary replaces them. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# The new per-pick at-capacity summary line must be present. Both grok models
+# are at-capacity (provider cap=1 reached with one live worker).
+grep -qE "pick_seat: at-capacity 2 seats \[xai-oauth/grok-4\.5,xai-oauth/grok-4\.6\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1163-atcap-flood: must log per-pick at-capacity summary 'pick_seat: at-capacity 2 seats [...]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1163-atcap-flood: per-seat cap-reached lines silenced (0); 1 at-capacity summary line for 2 grok models"
+# (c3) fleet-ops#1611: pin the EXACT at_capacity_events_last_2h metric
+#      predicate. The heartbeat gather rolls up watch.log lines that carry
+#      BOTH "cap=" and "skipped" (any skip reason, not only "reached"). The
+#      grep above checks "skipped (.*cap=.*reached" — it requires "reached",
+#      so a defence-in-depth "skipped (provider cap=0)" / "skipped (model
+#      cap=0)" line (lines that the _build_excluded_set pre-compute normally
+#      suppresses) would match the live metric but NOT the grep above. This
+#      scenario loads the production cap map (load_seat_caps), so the cap=0
+#      providers (groq, inferx, opencode-anthropic, orcarouter, grok) and
+#      cap=0 models are present and MUST be pre-excluded — if the pre-compute
+#      ever regresses, their per-seat "skipped (... cap=0)" lines reappear,
+#      this count goes > 0, and at_capacity_events_last_2h climbs back over
+#      the issue's under-50 verification target. Pin the exact predicate so
+#      any future refactor that re-introduces a "cap=...skipped" line fails
+#      here, not in production.
+_metric_predicate_lines=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_metric_predicate_lines=${_metric_predicate_lines:-0}
+if (( _metric_predicate_lines > 0 )); then
+  fail "1163-atcap-flood (#1611): at_capacity_events metric predicate (cap= + skipped) must be 0, was $_metric_predicate_lines — a per-seat 'skipped (... cap=...)' line leaked past the #1624 log-fold or the #1449 cap=0 pre-exclusion. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1163-atcap-flood (#1611): at_capacity_events metric predicate (cap= + skipped) is 0 — under-50 verification target pinned"
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+# restore the 1163 state dir for later 1163 tests
+export PI_PACKET_STATE="$scratch/1163/state"
+
+# (c4) fleet-ops#1415: pin the exact at-capacity seat named in the dispatch-
+#      starvation window — commandcode/poolside/laguna-s-2.1-free (cap=1).
+#      In the 2026-08-27 19:30-21:30Z window (222 ready, 1 dispatch, 10691
+#      at-capacity skips) this seat sat at model cap alongside opencode/
+#      nemotron-3-ultra-free, and pick_seat logged it per-pick. The #1624
+#      fold must keep the opus at_capacity_events metric predicate
+#      ("cap=" AND "skipped") at 0 and emit exactly ONE per-pick
+#      "pick_seat: at-capacity" summary — never a per-seat flood. Uses a
+#      fresh fixture where laguna-s-2.1-free is the only routable seat and
+#      is already at its model cap of 1.
+mkdir -p "$scratch/1415"
+export PI_PACKET_STATE="$scratch/1415/state-atcap"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+cat >"$scratch/1415/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": { "cap": 2, "class": "free", "models": {
+        "poolside/laguna-s-2.1-free": 1
+    } }
+  }
+}
+JSON
+export SEAT_CAPS_JSON="$scratch/1415/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1415/ledger"
+# The model INVENTORY drives enumerate_seats (the cap map only allowlists
+# what the inventory emits). Prior 1163 blocks left PI_MODELS_JSON pointing
+# at a fixture with only ollama/xai-oauth models, so assert this seat's
+# inventory explicitly. No apiKey field -> provider_has_credential fails
+# open (the reactive seat-health ledger is the offline backstop).
+cat >"$scratch/1415/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": { "models": [ { "id": "poolside/laguna-s-2.1-free" } ] }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1415/models.json"
+unit="pi-test-1415-laguna"
+jq -nc --arg p "commandcode" --arg m "poolside/laguna-s-2.1-free" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+# laguna model cap=1 is reached by the one live worker -> no alternate, rc!=0
+[[ "$rc" != "0" ]] || fail "1415-atcap: cap=1 laguna with one live worker must reject (rc=0 returned, out=$out)"
+# at_capacity_events metric predicate (cap= + skipped) must be 0 — no per-seat
+# 'skipped (... cap=...)' line leaked past the #1624 fold. This is the exact
+# predicate the opus-heartbeat gather rolls up into at_capacity_events_last_2h.
+_1415_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1415_pred=${_1415_pred:-0}
+if (( _1415_pred > 0 )); then
+  fail "1415-atcap: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1415_pred — the #1624 per-pick fold regressed for commandcode/poolside/laguna-s-2.1-free. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# exactly ONE per-pick at-capacity summary (never a flood). watch.log lines
+# are timestamp-prefixed, so do not anchor at line start (the c2 fold test
+# matches the same unprefixed form).
+_1415_sum=$(grep -c 'pick_seat: at-capacity' "$PI_PACKET_STATE/watch.log" 2>/dev/null || true)
+_1415_sum=${_1415_sum:-0}
+if (( _1415_sum != 1 )); then
+  fail "1415-atcap: expected exactly 1 per-pick at-capacity summary line for the single pick, got $_1415_sum. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1415-atcap: commandcode/poolside/laguna-s-2.1-free at cap emits 0 metric-predicate flood lines and 1 per-pick at-capacity summary"
+# restore the prior 1163 model inventory so the following (d) 1163-dead
+# test still sees xai-oauth in the ladder (c4 overrode PI_MODELS_JSON).
+export PI_MODELS_JSON="$scratch/1163/models.json"
+rm -rf "$PI_PACKET_STATE/active-seats"
+
+# (c5) fleet-ops#1432: cap=0 seats classified as intentional (dead_decoy /
+#      money_only — by design, never re-audit) vs stale (broken endpoint /
+#      TPM ceiling / exhausted quota — re-audit when the external condition
+#      clears) surface in the per-pick excluded summary so the operator sees
+#      at a glance which cap=0 seats need re-audition and which are permanent.
+#      The per-seat "skipped (provider cap=0)" lines stay silenced (the
+#      at_capacity_events metric predicate stays 0); the classification is
+#      folded into the ONE excluded summary via the intentional_cap_zero
+#      annotation in the cap map.
+mkdir -p "$scratch/1432"
+export PI_PACKET_STATE="$scratch/1432/state"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+cat >"$scratch/1432/models.json" <<'JSON'
+{
+  "providers": {
+    "starco": { "models": [ { "id": "star-m1" } ] },
+    "dudco":  { "models": [ { "id": "dud-m1" } ] },
+    "freeco": { "models": [ { "id": "lite-free" } ] }
+  }
+}
+JSON
+cat >"$scratch/1432/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["freeco"],
+  "providers": {
+    "starco": { "cap": 0, "class": "metered", "intentional_cap_zero": "money_only" },
+    "dudco":  { "cap": 0, "class": "free",    "intentional_cap_zero": "stale" },
+    "freeco": { "cap": 2, "class": "free",    "models": { "lite-free": 2 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1432/models.json"
+export SEAT_CAPS_JSON="$scratch/1432/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1432/ledger"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1432-capclass: expected the freeco lane to be pickable, got rc=$rc out=$out"
+[[ "$out" == "freeco"$'\t'"lite-free" ]] \
+  || fail "1432-capclass: expected freeco/lite-free (the only cap>0 lane), got: $out"
+# One excluded summary naming both cap=0 seats AND the intentional/stale split.
+grep -qE "pick_seat: excluded 2 seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\) \[cap0-intentional: 1; cap0-stale: 1\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1432-capclass: summary must fold the cap=0 intentional/stale classification, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Per-seat cap=0 lines stay silenced (at_capacity_events metric predicate 0).
+_1432_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1432_pred=${_1432_pred:-0}
+if (( _1432_pred > 0 )); then
+  fail "1432-capclass: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1432_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1432-capclass: cap=0 classification (1 intentional / 1 stale) folded into the excluded summary; metric predicate 0"
+
+# (c6) fleet-ops#1418: dispatcher idle with 219 ready, 0 dispatches, 9229
+#      at-capacity skips. The window combined (a) a stale cap=0 quota seat,
+#      (b) a healthy provider absent from the cap map, (c) a light-only
+#      healthy seat, and (d) a single heavy-capable seat that was already
+#      at its model cap. The fix must (i) keep the at_capacity_events metric
+#      predicate at 0 (no per-seat 'skipped (cap=...)' flood), (ii) emit ONE
+#      per-pick excluded + at-capacity + filtered-static summary, and
+#      (iii) pick the heavy-capable seat the instant its single live worker
+#      frees, proving the dispatcher is not permanently wedged.
+mkdir -p "$scratch/1418"
+export PI_PACKET_STATE="$scratch/1418/state"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1418/ledger"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+cat >"$scratch/1418/models.json" <<'JSON'
+{
+  "providers": {
+    "heavyfree": {
+      "models": [ { "id": "heavy", "reasoning": true, "contextWindow": 250000 } ]
+    },
+    "lightfree": {
+      "models": [ { "id": "light", "contextWindow": 16000 } ]
+    },
+    "staleco": {
+      "models": [ { "id": "stale-model", "contextWindow": 250000 } ]
+    },
+    "notwired": {
+      "models": [ { "id": "new-model", "reasoning": true, "contextWindow": 250000 } ]
+    }
+  }
+}
+JSON
+cat >"$scratch/1418/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["heavyfree", "lightfree"],
+  "providers": {
+    "heavyfree": { "cap": 1, "class": "free", "models": { "heavy": 1 } },
+    "lightfree": { "cap": 2, "class": "free", "models": { "light": 2 } },
+    "staleco":   { "cap": 0, "class": "free", "intentional_cap_zero": "stale", "reason": "fleet-ops#1418 stale quota seat" }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1418/models.json"
+export SEAT_CAPS_JSON="$scratch/1418/caps.json"
+# healthy ledger for every inventory seat, including the absent-cap-map notwired.
+for _p in heavyfree lightfree staleco notwired; do
+  _m="heavy"; [[ "$_p" == "lightfree" ]] && _m="light"; [[ "$_p" == "staleco" ]] && _m="stale-model"; [[ "$_p" == "notwired" ]] && _m="new-model"
+  _obs=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -nc --arg p "$_p" --arg m "$_m" --arg obs "$_obs" \
+      '{provider:$p, model:$m, health_class:"healthy", seat_dead:false, observed_at:$obs, source:"after_provider_response"}' \
+      > "$PI_SEAT_HEALTH_LEDGER_DIR/${_p}__${_m}.json"
+done
+# one live heavyfree/heavy worker: the single heavy-capable seat is saturated.
+unit="pi-test-1418-heavy"
+jq -nc --arg p "heavyfree" --arg m "heavy" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1418-idle: with the only heavy-capable seat saturated, heavy pick must return empty (rc=0 returned, out=$out)"
+[[ -z "$out" ]] || fail "1418-idle: heavy pick must return empty stdout when no seat is available, got: $out"
+# Metric predicate "cap=" AND "skipped" must remain 0 — no per-seat flood.
+_1418_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1418_pred=${_1418_pred:-0}
+if (( _1418_pred > 0 )); then
+  fail "1418-idle: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1418_pred — per-seat 'skipped (... cap=...)' lines leaked. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# Exactly one per-pick excluded summary, naming both stale cap=0 and not-in-allowlist.
+grep -qE "pick_seat: excluded 2 seats \(cap=0: 1; dead: 0; not-in-allowlist: 1\) \[cap0-intentional: 0; cap0-stale: 1\] \[notwired/new-model,staleco/stale-model\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected excluded summary 'cap=0: 1; not-in-allowlist: 1 [cap0-intentional: 0; cap0-stale: 1] [notwired/new-model,staleco/stale-model]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Exactly one per-pick at-capacity summary for heavyfree/heavy.
+grep -qE "pick_seat: at-capacity 1 seats \[heavyfree/heavy\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected at-capacity summary for heavyfree/heavy, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Exactly one filtered-static summary for the light-only seat.
+grep -qE "pick_seat: filtered-static 1 seats \(not-capable: 1; quality-ban: 0\) \[lightfree/light\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected filtered-static summary for lightfree/light, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1418-idle: heavy-capable seat saturated + stale/not-in-allowlist healthy -> rc!=0, 0 per-seat flood, 3 per-pick summaries"
+# When the heavy-capable worker frees, the dispatcher must pick it immediately.
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1418-recover: freed heavy seat must be pickable, got rc=$rc"
+[[ "$out" == "heavyfree"$'\t'"heavy" ]] || fail "1418-recover: expected heavyfree/heavy, got: $out"
+ok "1418-recover: freed heavy-capable seat is picked, proving a real dispatch can land"
+# restore the env the following (d) 1163-dead test expects: the 1163 model
+# inventory + the 1415 caps map that c4 left in effect.
+
+# --- fleet-ops#1379: provider at-capacity short-circuit ----------------------
+# When a provider is already at its effective cap, every remaining model of
+# that provider is also at that provider-wide cap. The per-pick summary must
+# still count them, but pick_seat must NOT re-run count_active / effective_cap
+# / _aimd_probe_admitted for each one. We prove this by overriding
+# _aimd_probe_admitted to count calls and return 1 (probe rejected). With one
+# active worker on atcapco (cap=1) and two models, only the first model may
+# trigger _aimd_probe_admitted; the second must be short-circuited.
+mkdir -p "$scratch/1379"
+export PI_PACKET_STATE="$scratch/1379/state"
+export PI_MODELS_JSON="$scratch/1379/models.json"
+export SEAT_CAPS_JSON="$scratch/1379/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1379/ledger"
+mkdir -p "$PI_PACKET_STATE/active-seats" "$PI_SEAT_HEALTH_LEDGER_DIR"
+cat >"$PI_MODELS_JSON" <<'JSON'
+{
+  "providers": {
+    "atcapco": { "models": [ { "id": "m1" }, { "id": "m2" } ] },
+    "freeco": { "models": [ { "id": "free1" } ] }
+  }
+}
+JSON
+cat >"$SEAT_CAPS_JSON" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["freeco", "atcapco"],
+  "providers": {
+    "atcapco": { "cap": 1, "class": "free", "models": { "m1": 1, "m2": 1 } },
+    "freeco": { "cap": 1, "class": "free", "models": { "free1": 1 } }
+  }
+}
+JSON
+jq -nc --arg p "atcapco" --arg m "m1" --arg u "pi-issue-1379" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T10:00:00Z"}' \
+    >"$PI_PACKET_STATE/active-seats/pi-issue-1379.json"
+set +e
+out=$(bash -c '
+    source "$0"
+    load_seat_caps
+    aimd_calls=0
+    _aimd_probe_admitted() { aimd_calls=$((aimd_calls + 1)); return 1; }
+    pick_seat "" "" 0 >"$PI_PACKET_STATE/picked.txt" 2>/dev/null
+    rc=$?
+    seat=$(cat "$PI_PACKET_STATE/picked.txt" 2>/dev/null || true)
+    printf "rc=%s\nseat=%s\naimd=%s\n" "$rc" "$seat" "$aimd_calls"
+' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1379-shortcircuit: runner failed (rc=$rc): $out"
+[[ "$out" == *"rc=0"* ]] || fail "1379-shortcircuit: expected pick rc=0, got: $out"
+[[ "$out" == *"seat=freeco"$'\t'"free1"* ]] || fail "1379-shortcircuit: expected freeco/free1, got: $out"
+[[ "$out" == *"aimd=1"* ]] || fail "1379-shortcircuit: _aimd_probe_admitted must be called once for the first at-cap model only, got: $out"
+grep -qE "pick_seat: at-capacity 2 seats \[atcapco/m1,atcapco/m2\]" "$PI_PACKET_STATE/watch.log" \
+    || fail "1379-shortcircuit: expected at-capacity 2-seat summary for atcapco, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+_1379_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1379_pred=${_1379_pred:-0}
+if (( _1379_pred > 0 )); then
+  fail "1379-shortcircuit: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1379_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1379-shortcircuit: provider at-capacity backs off after first model; _aimd_probe_admitted called once"
+# restore the env the following (d) 1163-dead test expects.
+export PI_MODELS_JSON="$scratch/1163/models.json"
+export SEAT_CAPS_JSON="$scratch/1415/caps.json"
+rm -rf "$PI_PACKET_STATE/active-seats"
 
 # (d) Dead token means a dead seat: a credentials_bad ledger entry
 #     must keep pick_seat off xai-oauth (the 'never lie "ready" again'
@@ -1647,7 +2246,10 @@ set -e
 if echo "$out" | grep -q '^hetzner'; then
   fail "437-empty: hetzner must not be picked with an empty models map, got: $out"
 fi
-grep -q "not in cap-map allowlist for hetzner" "$PI_PACKET_STATE/watch.log" \
+# fleet-ops#1456: hetzner/Qwen is now pre-computed as not-in-allowlist:model
+# (hetzner has cap=2 but no models map in caps-empty.json). The per-seat log
+# line is silenced; the summary line is the evidence.
+grep -qE "(not in cap-map allowlist for hetzner|pick_seat: excluded.*not-in-allowlist)" "$PI_PACKET_STATE/watch.log" \
   || fail "437-empty: must log the allowlist skip for the live Qwen slug"
 ok "437-empty: cap=2 hetzner with no models map skips Qwen/Qwen3.6-35B-A3B-FP8"
 
@@ -1985,6 +2587,10 @@ bash "$here/ram-measure.test.sh" || fail "ram-measure tests failed"
 
 # fleet-ops#457: quality-weighted routing. Same CI constraint.
 bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
+# fleet-ops#424: AIMD re-land. Hosted here BEFORE role-quality-gates so a
+# pre-existing red catalog (fleet-ops#1563) cannot skip the AIMD drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml.
+bash "$here/seat-lib-aimd.test.sh" || fail "AIMD learned-cap tests failed"
 # fleet-ops#457: per-role gate audit. rule-enforcement.test.sh currently
 # fails validate-matrix on a pre-existing duplicate-source pair, so this
 # file is the listed CI host.
@@ -2001,6 +2607,22 @@ bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger test
 # fleet-ops#535: session-close lint for swallowed non-zero. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
+# fleet-ops#522: session-close lint for debug playbook notes. Same CI
+# constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-debug-playbook.test.sh" || fail "fleet-debug-playbook tests failed"
+# fleet-ops#526: session-close lint for a third identical correction.
+# Same CI constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-interventions-eliminated.test.sh" || fail "fleet-interventions-eliminated tests failed"
+# fleet-ops#1097 / #1099: bare `cat` of the stale
+#   /home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged
+# path (canonical is tooling/fleet-ops-deploy-clone/bin/...) returned
+# `cat: <path>: No such file or directory` + `Command exited with code 1`
+# and was walked past with thinking-only + find recovery. `cat` is NOT
+# an ls/grep no-match probe. Distinct from #945 (chained cat ENOENT
+# locked inside fleet-failed-command-flagged.test.sh) and from #1001
+# / #1255 (read-tool ENOENT of a stale checkout). Same CI constraint
+# (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-failed-command-cat-stale-fleet-ops.test.sh" || fail "fleet-failed-command-cat-stale-fleet-ops tests failed"
 # fleet-ops#651: read tool offset beyond end of file is a negative result.
 bash "$here/fleet-failed-command-read.test.sh" || fail "fleet-failed-command-read tests failed"
 # fleet-ops#953: `read` ENOENT with the live wording
@@ -2020,22 +2642,34 @@ bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh" || fail "fleet-
 # names the CAUSE (the packet was archived), not the FAILURE (the read
 # returned ENOENT). Cause prose is not a flag. Same CI constraint.
 bash "$here/fleet-failed-command-read-enoent-archived-packet.test.sh" || fail "fleet-failed-command-read-enoent-archived-packet tests failed"
-# fleet-ops#1170: a `read` tool result with "EISDIR: illegal operation on a
-# directory, read" (isError=true, no exit code) is a real swallowed
-# failure — the read tool was pointed at a directory path, and the
-# assistant walked it past with thinking-only recovery or unrelated
-# prose. Distinct from the #651 offset-beyond-end negative result and
-# the #953/#1001 read-ENOENT class: EISDIR has its own live wording
-# and must not be suppressed by a "directory read is benign" exemption
-# a future refactor might add. Same CI constraint (worker token cannot
-# add a P14 line in ci.yml).
+# fleet-ops#1170 / #1243: a `read` tool result with "EISDIR: illegal
+# operation on a directory, read" (isError=true, no exit code) is a
+# real swallowed failure — the read tool was pointed at a directory
+# path, and the assistant walked it past with thinking-only recovery
+# or unrelated prose. #1243 is the same class on a DIFFERENT session
+# slug (01a043ee reading 0509 e2e/fixtures, walked past with
+# printStackTrace prose). Distinct from the #651 offset-beyond-end
+# negative result and the #953/#1001 read-ENOENT class: EISDIR has
+# its own live wording and must not be suppressed by a "directory
+# read is benign" exemption a future refactor might add. Same CI
+# constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-read-eisdir.test.sh" || fail "fleet-failed-command-read-eisdir tests failed"
+# fleet-ops#1255: same read-ENOENT class as #953 / #1001 / #1059 but the
+# recovery is thinking-only cause-prose naming the OTHER checkout
+# ("The salvage-secret-scan is in fleet-ops-sync, not in fleet-ops-rg")
+# plus successful reads of unrelated files. Cause that names the wrong
+# checkout is not a flag. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-read-enoent-stale-rg.test.sh" || fail "fleet-failed-command-read-enoent-stale-rg tests failed"
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
 # fleet-ops#698: `gh api` 4xx/5xx walked past is a real swallowed failure.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-command-gh-api-404 tests failed"
+# fleet-ops#1253: `gh api /user` App-token 403
+# (`Resource not accessible by integration`) walked past is a real
+# swallowed failure. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-gh-api-403-integration.test.sh" || fail "fleet-failed-command-gh-api-403-integration tests failed"
 # fleet-ops#727: a verification canary script (e.g. `npm run canary:*`,
 # `node scripts/*-verification.mjs`) that legitimately exits 1 on a
 # failed gate walked past is the same class. Same CI constraint
@@ -2045,6 +2679,13 @@ bash "$here/fleet-failed-command-canary-script-exit-1.test.sh" || fail "fleet-fa
 # walked past is the same class. Same CI constraint (worker token cannot
 # add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-systemctl-status-failed.test.sh" || fail "fleet-failed-command-systemctl-status-failed tests failed"
+# fleet-ops#1221: compound `systemctl --user stop <unit> 2>&1;
+# systemctl --user reset-failed <unit> 2>&1` on a not-loaded unit
+# (exit 1, "Unit <name> not loaded.") walked past with thinking-only
+# recovery is the same class. The shape is distinct from #784
+# (systemctl status, exit 3, `× unit`, `Active: failed`). Same CI
+# constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-systemctl-stop-not-loaded.test.sh" || fail "fleet-failed-command-systemctl-stop-not-loaded tests failed"
 # fleet-ops#793: a debug script just written with the `write` tool,
 # then invoked as `bash /tmp/<script>` (no flags, no pipe), that
 # exits 1 with `(no output)  Command exited with code 1`. The
@@ -2065,6 +2706,26 @@ bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-
 # (cd + git status, exit 128, fatal: not a git repository). Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-clone-race-cd.test.sh" || fail "fleet-failed-command-clone-race-cd tests failed"
+# fleet-ops#1185: `git clone git@github.com:...` returns
+# `Permission denied (publickey)` + `fatal: Could not read from
+# remote repository` + exit 128. The next turn is thinking-only
+# "The SSH key doesn't have access. Let me try HTTPS" plus a silent
+# HTTPS / `gh repo clone` retry with no user-facing flag. Distinct
+# from #1217 (HTTPS clone racing a silenced cd, empty snippet, exit
+# 1) and #822 (git-ref probe, GIT_BENIGN_RE). Same CI constraint
+# (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-clone-ssh-publickey.test.sh" || fail "fleet-failed-command-clone-ssh-publickey tests failed"
+# fleet-ops#1242: a malformed Pi toolCall with an empty name
+# (id "", name "", arguments the non-JSON string "command") returns
+# `Tool  not found` (two spaces, isError=true, details={}, no
+# exit-code line). The live next turn was an empty assistant
+# message with an HTTP 400 `Tool name must be nonempty` errorMessage,
+# which is harness metadata not a user-facing flag. Distinct from
+# #937 (python3 ModuleNotFoundError on a named bash probe) and
+# #698 (`gh: Not Found (HTTP 404)`). Same CI constraint (worker
+# token cannot add a P14 line).
+bash "$here/fleet-failed-command-empty-tool-name.test.sh" || fail "fleet-failed-command-empty-tool-name tests failed"
+
 # fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main`
 # (or `git push --force-with-lease`) on the very branch the worktree
 # has checked out is refused with `fatal: cannot force update the
@@ -2112,6 +2773,14 @@ bash "$here/fleet-failed-command-git-cherry-pick-empty.test.sh" || fail "fleet-f
 # is an invalid `gh` flag and is a real swallowed failure. Same CI
 # constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-body.test.sh" || fail "fleet-failed-command-gh-issue-view-body tests failed"
+# fleet-ops#1107: a compound `echo "=== MERGED RECENT ==="` +
+# `gh pr list --sort -mergedAt ... 2>/dev/null` chain exits 1 with only
+# the echo marker visible (stderr silenced). Thinking-only recovery plus
+# later "Now I have the full picture" prose is not a flag. Distinct from
+# #1055 (visible `unknown flag: --body`) and grep POSIX no-match with
+# the same marker. Same CI constraint (worker token cannot add a P14
+# line).
+bash "$here/fleet-failed-command-gh-pr-list-invalid-sort.test.sh" || fail "fleet-failed-command-gh-pr-list-invalid-sort tests failed"
 # fleet-ops#1219: `gh issue view <N> -R ... --json body,title,comments,label`
 # (singular `label` instead of `labels`) is not a valid `--json` filter —
 # `gh` exits 1 with `Unknown JSON field: "label"` and the available-fields
@@ -2120,6 +2789,13 @@ bash "$here/fleet-failed-command-gh-issue-view-body.test.sh" || fail "fleet-fail
 # --body`) and #1003 (python `KeyError` after a valid `--json` filter).
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-issue-view-unknown-field.test.sh" || fail "fleet-failed-command-gh-issue-view-unknown-field tests failed"
+# fleet-ops#1193: `gh pr view <N> -R ... --json ...merged` (invalid field;
+# valid is `mergedAt`) piped through `2>&1 | head` masks gh's non-zero
+# exit (`head` exits 0, harness reports isError:false). Detector cannot
+# catch this without breaking the #1048/#1122 isError contract, so the
+# prevention is worker-side. Same CI constraint (worker token cannot
+# add a P14 line).
+bash "$here/fleet-worker-prompt-gh-pr-view-unknown-field.test.sh" || fail "fleet-worker-prompt-gh-pr-view-unknown-field tests failed"
 # fleet-ops#951: open-issue dedup must use the already-fetched open issue
 # list (open_json), not GitHub's search API (which has an indexing delay
 # that caused 7 duplicate filings of the same session). Same CI constraint.
@@ -2141,6 +2817,12 @@ bash "$here/fleet-failed-command-edit-unmatch.test.sh" || fail "fleet-failed-com
 # find edits[0] in <path>' (stale oldText on the first array element)
 # walked past. Same class; same CI constraint.
 bash "$here/fleet-failed-command-edit-array-unmatch.test.sh" || fail "fleet-failed-command-edit-array-unmatch tests failed"
+# fleet-ops#1286: `edit` with malformed arguments (top-level `path`
+# field omitted) returning 'Validation failed for tool "edit": - path:
+# must have required properties path' (the harness rejected the call
+# before dispatch) walked past. Same edit-failure class as the
+# #956/#1053/#1139/#1173 siblings; same CI constraint.
+bash "$here/fleet-failed-command-edit-schema-validation.test.sh" || fail "fleet-failed-command-edit-schema-validation tests failed"
 # fleet-ops#965: leftover duplicates of the same 01a03dee session signal
 # (index-delay filings #956/#965/#970/#975/#980) must ALL drain via
 # observe-to-close, not just the first match. Same CI constraint.
@@ -2162,6 +2844,16 @@ bash "$here/fleet-failed-command-python-traceback.test.sh" || fail "fleet-failed
 # constraint (worker token cannot add a P14 line in
 # `.github/workflows/ci.yml`).
 bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh" || fail "fleet-failed-command-python-module-not-found-hyphen tests failed"
+# fleet-ops#1174: a `python3 - <<'PY'` stdin script that calls
+# cryptography `load_pem_private_key` on the raw quoted
+# `NISHFLEET_WORKER_PRIVATE_KEY` env value (an env-via-heredoc, not
+# the PEM) crashes with File "<stdin>" + load_pem_private_key +
+# `ValueError: Could not deserialize key data` and
+# `Command exited with code 1`. Cause-prose ("malformed",
+# `NISHFLEET_PEM_EOF` heredoc) plus a successful re-extract is not
+# a user-facing flag. Same family as #957 (python traceback walked
+# past); same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-pem-deserialize.test.sh" || fail "fleet-failed-command-pem-deserialize tests failed"
 # fleet-ops#966: leftover-duplicate observe-to-close drain for the
 # 01a03e38 python-traceback pile. The drain mechanism is the same as
 # #965 (edit-unmatch pile); this test pins the citation chain and the
@@ -2193,8 +2885,19 @@ bash "$here/fleet-failed-command-observe-duplicate-1003.test.sh" || fail "fleet-
 # leftover exhaustion under the live 01a04105 signal. Same CI constraint
 # (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-observe-duplicate-git-branch-force.test.sh" || fail "fleet-failed-command-observe-duplicate-git-branch-force tests failed"
+# fleet-ops#1052: a `bin/fleet-no-agent-names-check` REJECT (exit 1 with
+# `REJECT: agent attribution found`) is a real swallowed failure when the
+# worker explains it away as the test exercising the tool. The live 01a041ea
+# session ran the gate against `tests/fleet-no-agent-names.test.sh` and walked
+# past the REJECT. Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-no-agent-names-reject.test.sh" || fail "fleet-failed-command-no-agent-names-reject tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
+# fleet-ops#1116: heartbeat tier-1 alarm-vs-failure separation. The
+# alarm channel (rc=1) must NOT propagate to unit-failure; the crash
+# channel (rc>=2) MUST. Same CI constraint (worker token cannot add
+# a P14 line in .github/workflows/ci.yml).
+bash "$here/fleet-heartbeat-alarm-rc-decoupling.test.sh" || fail "fleet-heartbeat-alarm-rc-decoupling tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/siterep-deploy-rollback-rc-propagation.test.sh" || fail "siterep-deploy-rollback-rc-propagation tests failed"
@@ -2258,3 +2961,128 @@ bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex 
 # is the listed CI host.
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 
+# fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
+# selection ledger. Hosted here (no workflow edit).
+bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
+
+# fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
+# privacy guard test, because workers cannot edit .github/workflows.
+bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
+
+# fleet-ops#902: empty-run verdict detection (tools=0, no final text) in
+# pi-issue-run + mark_seat_empty_run bench (15-min empty_run cooldown) +
+# pick_seat re-route. Hosted here (not ci-standards-audit) because this
+# file is listed directly in ci.yml and runs independent of the
+# p14-test-listing-gate, so the regression test runs even while pre-existing
+# orphan-listing gaps keep that gate red. The noop-bench test exercises
+# mark_seat_empty_run + pick_seat from lib/seat-lib.sh.
+bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
+
+# fleet-ops#2005: a successful pi worker session is blocked from closing if its
+# JSONL has two or more real failed attempts and no four-heading vault playbook.
+# The gate lives in bin/fleet-debug-playbook (session-close gate subcommand)
+# and is enforced by bin/pi-issue-run on the success path.
+bash "$here/pi-issue-run-debug-playbook-gate.test.sh" || fail "pi-issue-run-debug-playbook-gate tests failed"
+
+# fleet-ops#1408: a seat that no-ops or spawn-fails repeatedly must NOT re-enter
+# rotation at the base backoff every cycle. mark_seat_spawn_fail and
+# mark_seat_empty_run escalate the bench by consecutive_failure_count so each
+# repeated failure benches longer, breaking the re-seat loop. Hosted here for
+# the same reason as the noop-bench test above (listed in ci.yml, runs
+# independent of the p14-test-listing-gate).
+bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
+
+# fleet-ops#859 (fleet-ops#2001): tests/seat-lib-dispatch.test.sh is a seat
+# lane-fault dispatch regression test landed on main that was never listed in
+# ci.yml nor hosted by a listed test, leaving the P14 test-listing gate red on
+# main. Workers cannot edit .github/workflows/**, so host it here from this
+# already-listed seat-lib test to bring the gate back green.
+bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
+
+# fleet-ops#1362 (fleet-ops#1964): tests/seat-failure-ceiling.test.sh is the park-
+# past-failure-ceiling regression test landed on main in #2003 that was never
+# wired into ci.yml. Host it here from this already-listed seat-lib test so the
+# P14 test-listing gate goes green without a workflow edit.
+bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
+
+# fleet-ops#1348 (fleet-ops#1863, fleet-ops#2001): tests/seat-walled-probe.test.sh is a
+# walled-seat comeback probe regression test that landed on main without being
+# wired into ci.yml. Host it here from this already-listed seat-lib test so the
+# P14 test-listing gate goes green without a workflow edit.
+bash "$here/seat-walled-probe.test.sh" || fail "seat-walled-probe tests failed"
+
+# fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
+# later healthy observation that seat-health.ts writes to the per-seat ledger
+# (the clobber that re-admitted functionally-dead seats and kept
+# stop-escalation.service failing). The clobber-proof spawn-bench marker is
+# checked by seat_usable before the ledger. Hosted here for the same reason
+# as the noop-bench test above (listed in ci.yml, runs independent of the
+# p14-test-listing-gate).
+bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"
+
+# --- fleet-ops#1409: seat_usable per-seat fold + NO-USABLE-SEAT backoff ------
+# Isolated fixture: a single benched seat (quota_bench, future bench_until)
+# forces pick_seat into the NO USABLE SEAT path (rc=1), where the #1409 fix
+# (i) folds the per-seat 'benched until...' / 'UNUSABLE...' lines from
+# seat_usable() into ONE per-pick 'unusable N seats' summary, and (ii) backs
+# off -- sleeps PI_SEAT_NOUSABLE_COOLDOWN_S (default 5s, 0 disables) -- so a
+# systemd RestartSec loop stops re-running a full pick_seat pass every second
+# against an already-walled fleet. This is the mechanical guard for the
+# seat scheduler thrash (14717 at-capacity skips in 2h).
+mkdir -p "$scratch/1409"
+cat >"$scratch/1409/models.json" <<'JSON'
+{ "providers": { "opencode": { "models": [ { "id": "mimo-v2.5-free" } ] } } }
+JSON
+cat >"$scratch/1409/caps.json" <<'JSON'
+{ "ram_gb_per_worker": 1.5, "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 2, "class": "free", "models": { "mimo-v2.5-free": 2 } } } }
+JSON
+export PI_MODELS_JSON="$scratch/1409/models.json"
+export SEAT_CAPS_JSON="$scratch/1409/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1409/ledger"
+export PI_PACKET_STATE="$scratch/1409/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+bu_1409=$(date -u -d "@$(( $(date -u +%s) + 3600 ))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg bu "$bu_1409" \
+   '{health_class:"quota_bench", observed_at:"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'", bench_until:$bu}' \
+  > "$PI_SEAT_HEALTH_LEDGER_DIR/opencode__mimo-v2.5-free.json"
+
+# (a) the NO-USABLE-SEAT backoff is wired: a nonzero cooldown delays the rc=1
+#     return by ~cooldown seconds.
+set +e
+_p1409_start=$(date +%s.%N)
+PI_SEAT_NOUSABLE_COOLDOWN_S=2 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+_rc1409=$?
+_p1409_end=$(date +%s.%N)
+set -e
+_elapsed1409=$(awk "BEGIN{print ($_p1409_end - $_p1409_start)}")
+[[ "$_rc1409" == "1" ]] || fail "1409-backoff: pick_seat must rc=1 on a walled fleet, got rc=$_rc1409"
+awk "BEGIN{exit !($_elapsed1409 >= 1.5)}" \
+  || fail "1409-backoff: PI_SEAT_NOUSABLE_COOLDOWN_S=2 must delay rc=1 ~2s, elapsed=$_elapsed1409"
+ok "1409-backoff: NO-USABLE-SEAT return backs off PI_SEAT_NOUSABLE_COOLDOWN_S (2s, elapsed ${_elapsed1409}s)"
+
+# (b) cooldown=0 (what the test suite exports) returns fast with no sleep.
+set +e
+_p1409_start=$(date +%s.%N)
+PI_SEAT_NOUSABLE_COOLDOWN_S=0 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+_p1409_end=$(date +%s.%N)
+set -e
+_elapsed1409=$(awk "BEGIN{print ($_p1409_end - $_p1409_start)}")
+awk "BEGIN{exit !($_elapsed1409 < 0.8)}" \
+  || fail "1409-backoff: cooldown=0 must return fast, elapsed=$_elapsed1409"
+ok "1409-backoff: PI_SEAT_NOUSABLE_COOLDOWN_S=0 disables the sleep (${_elapsed1409}s)"
+
+# (c) the seat_usable per-seat UNUSABLE/'benched until' lines are folded into
+#     ONE per-pick 'unusable N seats' summary -- no per-seat line leaks.
+: >"$PI_PACKET_STATE/watch.log"
+set +e
+PI_SEAT_NOUSABLE_COOLDOWN_S=0 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+set -e
+grep -q "pick_seat: unusable 1 seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "1409-fold: must emit ONE per-pick 'unusable 1 seats' summary; log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
+  && fail "1409-fold: per-seat 'benched until' line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "UNUSABLE (quota_bench" "$PI_PACKET_STATE/watch.log" \
+  && fail "1409-fold: per-seat UNUSABLE line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1409-fold: seat_usable per-seat UNUSABLE/'benched until' folded into one summary (0 leaked)"

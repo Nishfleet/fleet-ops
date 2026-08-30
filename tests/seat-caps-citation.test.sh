@@ -57,7 +57,7 @@ ok "seat-caps.json parses"
 # A citation must mention a YYYY-MM-DD date AND at least one measurement
 # marker. Pure date without a measurement is a vibes line.
 date_pat='(20[0-9]{2}-[0-9]{2}-[0-9]{2})'
-meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9])'
+meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9]|meter|cost=null)'
 
 # 1. orcarouter: cap=0 + reason present
 echo "--- scenario 1: orcarouter cap=0 with non-empty reason ---"
@@ -83,17 +83,10 @@ if jq -e '.free_providers_in_order | index("orcarouter")' "$caps" >/dev/null; th
 fi
 ok "orcarouter removed from free_providers_in_order"
 
-# 5. Cross-fleet soft check: every cap=0 reason across the fleet
-#    ALSO carries a date. The measurement-marker check is owned by
-#    the sr-never-vibes canary (fleet-ops#538) so a single-source
-#    enforcer exists. This test only mirrors the date-presence part
-#    of the entitled-wired contract as a local pre-push sanity check.
-#    We do NOT fail the test on measurement-marker gaps here, because
-#    those are pre-existing canary findings for inferx, opencode-anthropic,
-#    and grok — they are out of scope for the orcarouter#703 fix and
-#    must be filed as their own issues, not retrofitted into this PR.
-#    A soft warn line is still emitted so the next pre-push run makes
-#    the gap visible to whoever touches the file.
+# 5. Cross-fleet check: every cap=0 reason across the fleet carries a
+#    date (the entitled-wired date contract). The measurement-marker
+#    check is enforced in scenario 6 below; this scenario only pins the
+#    date-presence invariant as a local pre-push sanity check.
 echo "--- scenario 5: every cap=0 reason across the fleet is dated ---"
 bad=0
 while IFS=$'\t' read -r prov reason; do
@@ -107,22 +100,145 @@ while IFS=$'\t' read -r prov reason; do
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
 [[ "$bad" == "0" ]] || fail "scenario5: $bad cap=0 reason(s) missing date — entitled-wired owns this; copy the test signal into a follow-up issue"
 
-# 6. Soft warn: cap=0 reasons that lack a measurement marker are
-#    pre-existing canary gaps (NOT failures of THIS test). They are
-#    filed as a follow-up issue rather than fixed in this PR, per the
-#    'stay inside the issue's scope' rule. Listed by name so the next
-#    worker who touches seat-caps.json sees the gap.
-echo "--- scenario 6 (warn-only): cap=0 reasons missing a measurement marker ---"
-soft_bad=0
+# 6. HARD check: every cap=0 reason carries a measurement marker (probe
+#    output, observed provider signal, sample size), either in .reason
+#    itself or in a top-level _comment_<prov> field (fleet-ops#878). The
+#    cross-fleet audit from #703 exposed inferx (date only, no marker),
+#    opencode-anthropic (money-decision, no measurement), and grok (evidence
+#    was in _comment_grok, not .reason). This test owns the fix: each
+#    cap=0 provider must carry date + marker in .reason OR have a
+#    _comment_<prov> top-level field with date + marker.
+echo "--- scenario 6: every cap=0 reason has a date + measurement marker ---"
+hard_bad=0
 while IFS=$'\t' read -r prov reason; do
     [[ -n "$prov" && -n "$reason" ]] || continue
-    if ! grep -qiE "$meas_pat" <<<"$reason"; then
-        echo "  WARN: $prov cap=0 reason has a date but no measurement marker (canary-owned; pre-existing, out of scope for #703)"
-        soft_bad=$((soft_bad + 1))
+    # Must have a date (enforced by scenario 5 above; re-check for
+    # self-containment).
+    if ! grep -qE "$date_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 reason missing date" >&2
+        hard_bad=$((hard_bad + 1))
+        continue
     fi
+    # Check marker in .reason itself.
+    if grep -qiE "$meas_pat" <<<"$reason"; then
+        ok "$prov: cap=0 reason has date + measurement marker"
+        continue
+    fi
+    # .reason has no marker — check a top-level _comment_<prov> field.
+    comment_field="_comment_${prov}"
+    prov_comment=$(jq -r --arg f "$comment_field" '.[$f] // empty' "$caps")
+    if [[ -n "$prov_comment" ]] && grep -qE "$date_pat" <<<"$prov_comment" && grep -qiE "$meas_pat" <<<"$prov_comment"; then
+        ok "$prov: cap=0 reason cites _comment_${prov} top-level field with date + measurement marker"
+        continue
+    fi
+    echo "  $prov: cap=0 reason has a date but no measurement marker (not in .reason or _comment_${prov})" >&2
+    hard_bad=$((hard_bad + 1))
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
-if (( soft_bad > 0 )); then
-    echo "  ($soft_bad cap=0 reason(s) lack a measurement marker; tracked under the follow-up issue filed by this PR, NOT fixed here)"
-fi
+[[ "$hard_bad" == "0" ]] || fail "scenario6: $hard_bad cap=0 reason(s) still lack a measurement marker after fleet-ops#878 — sr-never-vibes requires date + marker in .reason or _comment_<prov>"
 
-ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured"
+# 7. Cross-fleet check: every MODEL cap=0 entry has a dated _* reason
+#    field on its provider (fleet-ops#1456). #1506 re-audited all 8
+#    cap=0 entries and persisted dated reasons in _<sanitised>
+#    documentation fields, but scenario 5 only walks provider-level
+#    .cap — model-level cap=0 reasons (opencode/deepseek-v4-flash-free,
+#    x-preview-f-free, muse-spark-1.2-contributor-free) were unpinned
+#    here. The fleet-free-roster canary pins two of the three by exact
+#    field name (scenarios 14/17); this scenario enforces the contract
+#    for EVERY model cap=0 entry so a future addition or a silent
+#    reason-field deletion is caught before push, not on the next
+#    auditor re-probe. The reason field naming is _<sanitised-model>
+#    with inconsistent version handling (muse-spark-1.2 dropped the
+#    "1.2"), so the match is by distinctive token (model split on
+#    [-._], tokens of length >= 4, longest first) against _* field
+#    names whose value carries a YYYY-MM-DD date.
+echo "--- scenario 7: every model cap=0 entry has a dated _* reason field ---"
+mbad=0
+while IFS=$'\t' read -r prov model; do
+    [[ -n "$prov" && -n "$model" ]] || continue
+    # Distinctive tokens of the model name, longest first (most
+    # distinctive first reduces false matches on generic tokens like
+    # "free"). Tokens shorter than 4 chars (v4, 1, 2, f, x) are dropped.
+    tokens=$(printf '%s' "$model" \
+        | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
+        | sort -rn | cut -f2)
+    # Fallback for short-hyphenated slugs whose every [-._] part is < 4 chars
+    # (e.g. swe-1-7 -> swe,1,7 all dropped): use the sanitised full slug
+    # ([-._] stripped) as a single token when it is itself >= 4 chars. The
+    # sanitised slug is the MOST distinctive token possible, so this does not
+    # weaken the contract — it closes the gap for slugs the part-splitter
+    # could not tokenise (fleet-ops#2102).
+    if [[ -z "$tokens" ]]; then
+        slug=$(printf '%s' "$model" | tr -d -- '-._')
+        if [[ ${#slug} -ge 4 ]]; then
+            tokens="$slug"
+        else
+            echo "  $prov/$model: no >=4-char token to match a reason field" >&2
+            mbad=$((mbad+1)); continue
+        fi
+    fi
+    # Dated _* reason field names on this provider. Reason fields are
+    # _<sanitised-model> (NOT _comment_* — those are general provider
+    # notes), and must carry a YYYY-MM-DD date.
+    dated_fields=$(jq -r --arg p "$prov" '
+        .providers[$p] | to_entries[]
+        | select(.key|startswith("_"))
+        | select(.key|startswith("_comment")|not)
+        | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
+        | .key
+    ' "$caps")
+    # A token is "distinctive" iff it matches exactly ONE dated reason
+    # field. Generic tokens like "free" match several reason fields and
+    # cannot uniquely identify a model's audit trail, so they do NOT
+    # satisfy the contract. Require at least one distinctive token.
+    found=0
+    while IFS= read -r tok; do
+        [[ -n "$tok" ]] || continue
+        matches=0
+        while IFS= read -r fname; do
+            [[ -n "$fname" ]] || continue
+            case "$fname" in
+                *"$tok"*) matches=$((matches+1)) ;;
+            esac
+        done <<<"$dated_fields"
+        (( matches == 1 )) && { found=1; break; }
+    done <<<"$tokens"
+    if (( found == 0 )); then
+        echo "  $prov/$model: cap=0 but no dated _* reason field uniquely identified by a model token (audit trail would be lost on re-edit — fleet-ops#1456)" >&2
+        mbad=$((mbad+1))
+    else
+        ok "$prov/$model: model cap=0 has a dated _* reason field"
+    fi
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.models // {}) | to_entries[]
+    | select(.value == 0) | [$p, .key] | @tsv
+' "$caps")
+[[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing a dated _* reason field — audit durability gap (fleet-ops#1456)"
+
+ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 reasons pinned"
+
+# 8. OpenRouter paid flash lane (fleet-ops#384): the cheapest+best of
+#    Qwen 3.8 flash / GLM 5.3 flash / DeepSeek V4 flash is wired as a
+#    metered model row with a dated, measured citation. Pins the lane so a
+#    future revert (dropping the models map back to empty) is caught before
+#    push, not on the next heartbeat tick. The #384 canary header claims the
+#    lane is wired; this test is the local proof that the config actually
+#    carries the row (the prior 2026-08-26 attempt wrote the canary claim but
+#    never landed the seat-caps models map — fleet-ops#436).
+echo "--- scenario 8: OpenRouter paid flash lane wired with dated measured citation ---"
+or_models=$(jq -r '.providers.openrouter.models | length' "$caps")
+[[ "$or_models" -ge 1 ]] || fail "openrouter must have a non-empty models map (the #384 paid flash lane). Got: $or_models"
+or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] // empty' "$caps")
+[[ -n "$or_dsv4f" ]] || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
+[[ "$or_dsv4f" != "0" ]] || fail "openrouter deepseek/deepseek-v4-flash-0731 cap must be >0 (wired, not parked)"
+or_class=$(jq -r '.providers.openrouter.class // empty' "$caps")
+[[ "$or_class" == "metered" ]] || fail "openrouter class must be metered (paid lane — spend after free+prepaid). Got: $or_class"
+or_cite=$(jq -r '.providers.openrouter._comment_384 // ""' "$caps")
+[[ -n "$or_cite" ]] || fail "openrouter must carry a _comment_384 citation for the paid flash lane"
+grep -qE "$date_pat" <<<"$or_cite" || fail "openrouter _comment_384 must name a YYYY-MM-DD date"
+# measurement marker: a live price figure ($0.x) and a pi --list-models / catalog probe reference
+grep -qE '\$0\.[0-9]' <<<"$or_cite" || fail "openrouter _comment_384 must name a live price figure (\$0.x/M)"
+grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _comment_384 must name the probe source (pi --list-models or /models catalog)"
+# cheapest+best evidence: the citation must name DeepSeek V4 flash as cheapest vs the two alternatives
+grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
+ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered, cap=$or_dsv4f) with dated measured _comment_384 citation"

@@ -1,0 +1,15 @@
+{
+  "title": "Revert \"salvage: bank dying workers\"",
+  "body": "",
+  "headRefName": "revert/abc",
+  "merge_base": "1bdb61c",
+  "added_by_merge_base": ["bin/pi-salvage-worktree"],
+  "commit_touched": [
+    "bin/pi-salvage-worktree",
+    "bin/fleet-decisions-ledger"
+  ],
+  "merge_diff": {
+    "bin/pi-salvage-worktree": "D",
+    "bin/fleet-decisions-ledger": "M"
+  }
+}

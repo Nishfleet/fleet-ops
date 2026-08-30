@@ -1,0 +1,49 @@
+---
+description: Fleet packet contract for the Cursor keystone lane — packet in, verdict out, delivery evidence (fleet-ops#1545)
+alwaysApply: true
+---
+
+<!-- nish-cursor-packet-contract:start -->
+# Fleet packet contract — Cursor keystone lane (fleet-ops#1545)
+
+This lane works under the same three contracts the Pi lanes carry. The contract
+text below REUSES the Pi packet format and verdict-line grammar verbatim; do
+not rewrite either into a cursor-specific dialect.
+
+## 1. Packet in — work enters as a sealed packet, never an ad-hoc prompt
+
+- Take work only as a sealed packet from the queue, with claim discipline
+  identical to the pi-issue lane:
+  - claim the issue first: `claim/issue-<N>` branch, work only inside the
+    claimed worktree,
+  - never start from a bare "do this please" prompt that is not a packet,
+  - if work is not a packet, name the gap to Nish instead of improvising.
+- A packet run must carry its issue identity (`Nishfleet/<repo>#<N>` or
+  `claim/issue-<N>`) in the first user turn so the run is attributable.
+
+## 2. Verdict out — every run ends with a machine-checkable verdict line
+
+End EVERY run with a verdict line, same grammar as the Pi lanes (this is the
+line the pi packet-verdict extension and guard_pi_packet.py check):
+
+```
+PACKET-VERDICT tools=<n> class=<worked|no-tools>
+```
+
+- `tools=<n>` = number of tool calls made this run;
+- `class=worked` if any tool ran, `class=no-tools` if the run was text-only.
+- The line must be the LAST assistant text of the run. A run that ends without
+  a verdict line is an empty run — do not report it as dispatched/working.
+
+The file `lib/guard_cursor_packet.py` (fleet-ops) runs the same
+`guard_pi_packet` verdict-line grammar over cursor agent-transcripts; treat a
+`guard-cursor-packet:` warning on your transcript as a flagged empty run.
+
+## 3. Delivery evidence at close
+
+- Close means a PR (or commit with evidence), same as the Pi lanes: the close
+  must be earned by a merge, not by a comment.
+- Output flows through the identical merge gates as every other lane.
+- No agent attribution in commits, the PR, or comments.
+
+<!-- nish-cursor-packet-contract:end -->

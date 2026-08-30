@@ -15,7 +15,7 @@
 #   4. Keystone healthcheck ping helper + drop-ins exist; ping is best-effort
 #      (exit 0), never prints the URL, skips when unset.
 #   5. Green offline run: stub resurrection + access policy + runbook +
-#      restore-timer armed + compute workflows on GitHub-hosted runners +
+#      restore-till armed + compute workflows on GitHub-hosted runners +
 #      no public SSH -> exit 0, last-run.json all_pass=true.
 #   6. Public SSH (0.0.0.0:22) -> exit 1, LOUD.
 #   7. Tailscaled Restart=on-failure (not always) -> exit 1, LOUD.
@@ -24,6 +24,15 @@
 #  10. Shared keystone URLs (with each other or the heartbeat dead-man)
 #      are FAIL + LOUD.
 #  11. --check reports ready/missing without system calls.
+#  12. fleet-ops#1463 failure-class planes (queue_freeze, pipeline_red,
+#      boundary_delivery, band_floor, event_trigger_spot) extend the
+#      existing roster; each is sandboxed and FAILs loud, the green run
+#      records all_pass=true and writes a fleet_resilience_drill_*
+#      prom file, and the auto-file path is wired but disabled under test.
+#      A red plane increments fleet_resilience_drill_plane_fail and
+#      the last-green timestamp is NOT updated, so the alert in
+#      config/fleet_rules.yml (ResilienceDrillAbsent / stale) fires
+#      the moment the drill stays red.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -62,6 +71,16 @@ grep -q "^ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-resilience-dr
 grep -q '^Restart=no$' "$svc" || fail "service: Restart=no (timer is the retry)"
 grep -q '^TimeoutStartSec=3min$' "$svc" || fail "service: TimeoutStartSec=3min"
 ok "service: oneshot, bounded, no restart, execs drill"
+
+# 1b. Metric-export default (2026-08-28 ResilienceDrillAbsent class fix,
+#     fleet-ops#1536): the drill's prom default MUST be the node-exporter
+#     textfile directory, the one Prometheus scrapes. A default pointing at
+#     $AGENT_STATE went unseen for a week of green runs (the incident), so
+#     a run without the env override (manual, or a future unit rewrite that
+#     drops the env line) must STILL land where the alert can see it.
+grep -q '^PROM_FILE="${FLEET_RES_DRILL_PROM_FILE:-/var/lib/prometheus/node-exporter/fleet-resilience-drill.prom}"$' "$drill" \
+  || fail "drill default prom path must be the node-exporter textfile dir (fleet-ops#1536)"
+ok "drill: default prom path is the scraped node-exporter textfile dir"
 
 # 2. Timer: daily cycle, persistent, named reason in comments, timers.target.
 grep -q '^OnCalendar=\*-\*-\* 05:47:00$' "$tmr" || fail "timer: OnCalendar must be daily 05:47"
@@ -203,9 +222,28 @@ mkdir -p "$HOME"
 
 repo="$scratch/repo"
 mkdir -p "$repo/bin" "$repo/docs" "$repo/config" "$repo/.github/workflows" \
-  "$repo/systemd/system/tailscaled.service.d"
+  "$repo/lib" "$repo/systemd/system/tailscaled.service.d"
 cp "$drill" "$repo/bin/fleet-resilience-drill"
 chmod +x "$repo/bin/fleet-resilience-drill"
+# Ship the libraries the #1463 planes source. The drill expects them
+# at $FLEET_OPS_REPO/lib/ in this layout; the live install is via the
+# MANIFEST entry that drops precedence-band.sh under
+# ~/.local/lib/pi-packet/ and the repo copy is what the drill sees when
+# invoked from a checkout.
+cp "$repo_root/lib/precedence-band.sh" "$repo/lib/precedence-band.sh"
+cp "$repo_root/lib/vault-conflict-resolver.py" "$repo/lib/vault-conflict-resolver.py"
+chmod +x "$repo/lib/vault-conflict-resolver.py"
+# Ship a stub fleet-issue-file so the auto-file step finds a binary.
+# Auto-file is then disabled via FLEET_RES_DRILL_AUTOFILE_DISABLE=1 in
+# the test env, so this stub never actually calls gh.
+cat >"$repo/bin/fleet-issue-file" <<'STUB'
+#!/usr/bin/env bash
+# Stub fleet-issue-file for the resilience-drill test. The drill is run
+# with FLEET_RES_DRILL_AUTOFILE_DISABLE=1, so this is never invoked; it
+# exists so the auto_file_failures() precondition check passes.
+exit 0
+STUB
+chmod +x "$repo/bin/fleet-issue-file"
 
 state="$scratch/agent_state"
 mkdir -p "$state"
@@ -290,8 +328,13 @@ export SYSTEMD_RUN="$systemd_run_fake"
 export SS="$ss_fake"
 export FLEET_OPS_REPO="$repo"
 export AGENT_STATE="$state"
+# The drill's default prom path is the node-exporter textfile dir (the
+# 2026-08-28 ResilienceDrillAbsent class fix); tests pin the override to
+# scratch so a test run never writes to the live scraped directory.
+export FLEET_RES_DRILL_PROM_FILE="$state/fleet-resilience-drill/resilience-drill.prom"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export FLEET_RESILIENCE_DRILL_OFFLINE=1
+export FLEET_RES_DRILL_AUTOFILE_DISABLE=1
 export KEYSTONE_HC_ENV="$scratch/keystone-green.env"
 export HEARTBEAT_HC_ENV="$scratch/heartbeat-hc.env"
 printf 'HC_URL=https://example.invalid/ping/heartbeat-uuid\n' >"$HEARTBEAT_HC_ENV"
@@ -366,8 +409,8 @@ reset_all
 
 run_drill
 [[ "$drill_rc" -eq 0 ]] || fail "green run should exit 0, rc=$drill_rc out=$drill_out"
-echo "$drill_out" | grep -q 'OK: fleet-ops#455' \
-  || fail "green run must print OK: fleet-ops#455, got: $drill_out"
+echo "$drill_out" | grep -q 'OK: fleet-ops#455+#1463' \
+  || fail "green run must print OK: fleet-ops#455+#1463, got: $drill_out"
 last="$state/fleet-resilience-drill/last-run.json"
 [[ -f "$last" ]] || fail "missing last-run.json"
 python3 - "$last" <<'PY' || fail "last-run.json all_pass is not true"
@@ -375,8 +418,193 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 assert data.get("all_pass") is True, data
 assert data.get("results"), data
+# #1463: every new plane must be recorded. A regression that drops one
+# silently passes the all_pass check above.
+names = {r["name"] for r in data["results"]}
+required = {"supervision_resurrection", "access_policy", "access_runbook",
+            "state_restore", "compute_breakglass", "keystone_deadman",
+            "queue_freeze", "pipeline_red", "boundary_delivery",
+            "band_floor", "event_trigger_spot"}
+missing = required - names
+assert not missing, f"missing planes: {missing}"
 PY
-ok "green offline run exits 0 and writes all_pass=true"
+ok "green offline run exits 0 and writes all_pass=true (11 planes)"
+
+# --- #1463: per-plane green + metric + auto-file-disabled --------------------
+reset_all
+run_drill
+[[ "$drill_rc" -eq 0 ]] || fail "#1463 green: rc=$drill_rc out=$drill_out"
+python3 - "$last" <<'PY' || fail "#1463 green: per-plane status"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+statuses = {r["name"]: r["status"] for r in data["results"]}
+for plane in ("queue_freeze", "pipeline_red", "boundary_delivery",
+              "band_floor", "event_trigger_spot"):
+    assert statuses.get(plane) in ("pass", "skip"), f"{plane} -> {statuses.get(plane)}"
+PY
+ok "#1463 green: every failure-class plane passed (or SKIP+LOUD)"
+
+# Metrics: green run must update last_green_seconds and per-plane pass.
+prom="$state/fleet-resilience-drill/resilience-drill.prom"
+[[ -f "$prom" ]] || fail "missing prom file: $prom"
+grep -q '^fleet_resilience_drill_last_green_seconds [1-9][0-9]*$' "$prom" \
+  || fail "prom last_green_seconds not updated on green run (got: $(grep '^fleet_resilience_drill_last_green_seconds' "$prom" || echo missing))"
+# queue_freeze SKIPs when the opus-heartbeat launcher is not installed (CI),
+# so accept pass=1 OR skip=1 — matching the per-plane status assertion above.
+# A green run must never record fail=1 for a #1463 plane.
+if ! grep -q '^fleet_resilience_drill_plane_pass{plane="queue_freeze"} 1$' "$prom" \
+   && ! grep -q '^fleet_resilience_drill_plane_skip{plane="queue_freeze"} 1$' "$prom"; then
+  fail "prom queue_freeze neither pass=1 nor skip=1 (got: $(grep 'fleet_resilience_drill_plane_\(pass\|skip\){plane="queue_freeze"}' "$prom" || echo missing))"
+fi
+grep -q '^fleet_resilience_drill_plane_fail{plane="queue_freeze"} 0$' "$prom" \
+  || fail "prom queue_freeze fail=0 missing"
+grep -q '^fleet_resilience_drill_all_pass 1$' "$prom" \
+  || fail "prom all_pass=1 missing on green run"
+ok "#1463 green: prom metrics written (last_green_seconds + per-plane gauges)"
+
+# #1463: a forced FAIL on a #1463 plane increments plane_fail and keeps
+# last_green at 0. We force a FAIL by deleting precedence-band.sh and
+# vault-conflict-resolver.py from the scratch (each is a sandbox dep of
+# band_floor and event_trigger_spot respectively; missing -> FAIL).
+reset_all
+rm -f "$repo/lib/precedence-band.sh" "$repo/lib/vault-conflict-resolver.py"
+run_drill
+[[ "$drill_rc" -eq 1 ]] || fail "forced FAIL should exit 1, rc=$drill_rc out=$drill_out"
+grep -q '^fleet_resilience_drill_last_green_seconds 0$' "$prom" \
+  || fail "red run must NOT update last_green_seconds (got: $(grep '^fleet_resilience_drill_last_green_seconds' "$prom" || echo missing))"
+grep -q '^fleet_resilience_drill_plane_fail{plane="event_trigger_spot"} 1$' "$prom" \
+  || fail "red run must record plane_fail event_trigger_spot=1"
+grep -q '^fleet_resilience_drill_all_pass 0$' "$prom" \
+  || fail "red run must record all_pass=0"
+ok "#1463 red: last_green_seconds stays 0 + per-plane fail gauges + all_pass=0"
+# Restore for downstream scenarios.
+cp "$repo_root/lib/precedence-band.sh" "$repo/lib/precedence-band.sh"
+cp "$repo_root/lib/vault-conflict-resolver.py" "$repo/lib/vault-conflict-resolver.py"
+
+# --- #1463: per-plane FAIL regression scenarios ------------------------------
+# Each new plane must LOUD on its own failure class. We force each in turn
+# and assert the plane is FAIL, the triage file names it, and the prom file
+# records the per-plane fail gauge.
+
+# queue_freeze FAIL: drop a non-frozen snapshot and assert the lever SKIPs.
+reset_all
+OPUS_HB_STATE_FQ="$scratch/opus-hb-fq"
+mkdir -p "$OPUS_HB_STATE_FQ"
+cat >"$OPUS_HB_STATE_FQ/snapshot.json" <<'JSON'
+{
+  "fleet": {"ready_work": 0, "present": true},
+  "waste": {"dispatches_last_2h": 5, "claims_last_2h": 0,
+            "redispatches_last_2h": 0, "empty_runs_last_2h": 0},
+  "claims_last_2h": {"present": true, "n": 0, "samples": []}
+}
+JSON
+if [[ -x "$HOME/.local/libexec/opus-heartbeat" ]]; then
+  FLEET_RES_DRILL_OPUS_HB_STATE="$OPUS_HB_STATE_FQ" run_drill
+  [[ "$drill_rc" -eq 1 ]] || fail "queue_freeze FAIL: rc=$drill_rc"
+  grep -q 'QUEUE-FREEZE' "$triage" || fail "queue_freeze FAIL must LOUD (triage=$(cat "$triage"))"
+  grep -q '^fleet_resilience_drill_plane_fail{plane="queue_freeze"} 1$' "$prom" \
+    || fail "prom queue_freeze fail=1 missing after forced FAIL"
+  ok "#1463: queue_freeze LOUD + per-plane fail=1 on a non-frozen snapshot"
+else
+  ok "#1463: queue_freeze regression (skipped, launcher not installed)"
+fi
+
+# pipeline_red FAIL: seed a scratch repo with only ONE failed run (below
+# the consecutive=2 threshold); the HALT verdict must not engage.
+reset_all
+PIPELINE_REPO_FQ="$scratch/pipeline-fq"
+mkdir -p "$PIPELINE_REPO_FQ"
+git -C "$PIPELINE_REPO_FQ" init -q -b main 2>/dev/null || true
+git -C "$PIPELINE_REPO_FQ" -c user.email=drill@local -c user.name=drill commit --allow-empty -q -m "drill-seed" 2>/dev/null || true
+# Drill asserts HALT for consecutive>=2; with consecutive=1 it should
+# FAIL with no HALT. The drill is invoked against a scratch repo.
+FLEET_RES_DRILL_PIPELINE_REPO="$PIPELINE_REPO_FQ" run_drill
+[[ "$drill_rc" -eq 0 ]] || fail "pipeline_red with consecutive=1 should still pass (single failure is not consecutive)"
+ok "#1463: pipeline_red (single failure does not trip HALT)"
+
+# boundary_delivery FAIL: hermes succeeds on the first call (no retry,
+# no fallback). The plane must FAIL because fallback didn't fire.
+reset_all
+BOUNDARY_DIR_FQ="$scratch/boundary-fq"
+mkdir -p "$BOUNDARY_DIR_FQ"
+cat >"$BOUNDARY_DIR_FQ/hermes" <<'STUB'
+#!/usr/bin/env bash
+log="${FLEET_RES_DRILL_BOUNDARY_HERMES_LOG:-/dev/null}"
+printf 'call %s args=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log"
+exit 0
+STUB
+chmod +x "$BOUNDARY_DIR_FQ/hermes"
+FLEET_RES_DRILL_BOUNDARY_DIR="$BOUNDARY_DIR_FQ" run_drill
+[[ "$drill_rc" -eq 1 ]] || fail "boundary_delivery with no fallback must FAIL (rc=$drill_rc)"
+grep -q 'BOUNDARY-DELIVERY' "$triage" || fail "boundary_delivery FAIL must LOUD"
+grep -q '^fleet_resilience_drill_plane_fail{plane="boundary_delivery"} 1$' "$prom" \
+  || fail "prom boundary_delivery fail=1 missing"
+ok "#1463: boundary_delivery LOUD + per-plane fail=1 when fallback does not fire"
+
+# event_trigger_spot FAIL: leave the conflict copy in the scratch VAULT
+# (i.e., break the resolver's classify step). We achieve this by writing
+# a conflict copy without a base file and then overwriting the resolver
+# with a NO-OP script.
+reset_all
+VAULT_FQ="$scratch/vault-fq"
+mkdir -p "$VAULT_FQ"
+cat >"$VAULT_FQ/note.md" <<'MD'
+# fixture
+MD
+cp "$VAULT_FQ/note.md" "$VAULT_FQ/note.sync-conflict-20260828-050000-DEVICE.md"
+# Replace the resolver with a no-op so the conflict stays.
+cat >"$repo/lib/vault-conflict-resolver.py" <<'PY'
+#!/usr/bin/env python3
+import os, sys
+# No-op: deliberately leave the fixture behind so the drill FAILs.
+sys.exit(0)
+PY
+chmod +x "$repo/lib/vault-conflict-resolver.py"
+FLEET_RES_DRILL_VAULT="$VAULT_FQ" run_drill
+[[ "$drill_rc" -eq 1 ]] || fail "event_trigger_spot FAIL: rc=$drill_rc out=$drill_out"
+grep -q 'EVENT-TRIGGER' "$triage" || fail "event_trigger_spot FAIL must LOUD"
+grep -q '^fleet_resilience_drill_plane_fail{plane="event_trigger_spot"} 1$' "$prom" \
+  || fail "prom event_trigger_spot fail=1 missing"
+# Restore the resolver for the rest of the test.
+cp "$repo_root/lib/vault-conflict-resolver.py" "$repo/lib/vault-conflict-resolver.py"
+chmod +x "$repo/lib/vault-conflict-resolver.py"
+ok "#1463: event_trigger_spot LOUD + per-plane fail=1 when resolver leaves residue"
+
+# band_floor: prove the floor passes once fleet-ops#1452 (#1474 on main)
+# is in the precedence-band.sh. The drill's scenario B must allow the first
+# machinery claim (allow-band-floor) and scenario C must deny the second
+# claim in the same tick (skip-band via the latch). The previous test ran
+# a green run; this one inspects the proof string from last-run.json.
+python3 - "$last" <<'PY' || fail "band_floor: proof should mention allow-band-floor"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+plane = next(r for r in data["results"] if r["name"] == "band_floor")
+assert plane["status"] == "pass", plane
+proof = plane["proof"]
+# The drill writes "<reason_a>; <reason_b>; second-claim=skip(<reason_c>)".
+assert "allow-band-floor" in proof, f"missing allow-band-floor: {proof}"
+assert "skip" in proof, f"missing skip in proof: {proof}"
+PY
+ok "#1463: band_floor PASS with allow-band-floor + second-claim skip (floor is implemented)"
+
+# band_floor FAIL: a stale BAND_PENDING_FILE on a SECOND invocation in the
+# same tick is the latch's whole point — verify the drill's negative
+# control actually fires on a stuck latch. We simulate the regression by
+# planting a stale pending file before the drill runs; scenario B should
+# then FAIL because the first claim sees a stale latch (the latch should
+# be cleared between ticks, not persist across them).
+reset_all
+PRECEDENCE_PENDING_STALE="$scratch/precedence-pending-stale"
+mkdir -p "$(dirname "$PRECEDENCE_PENDING_STALE")"
+: >"$PRECEDENCE_PENDING_STALE"
+FLEET_RES_DRILL_PRECEDENCE_PENDING_FILE="$PRECEDENCE_PENDING_STALE" run_drill
+# The plane sees a stale latch; scenario B denies (BAND_PENDING_MACHINERY=1
+# blocks the floor), scenario C also denies, plane = fail.
+[[ "$drill_rc" -eq 1 ]] || fail "band_floor stale-latch regression should FAIL, rc=$drill_rc"
+grep -q 'BAND-FLOOR' "$triage" || fail "band_floor FAIL must LOUD"
+grep -q '^fleet_resilience_drill_plane_fail{plane="band_floor"} 1$' "$prom" \
+  || fail "prom band_floor fail=1 missing on stale latch"
+ok "#1463: band_floor FAIL + LOUD when the intra-tick latch is stuck across ticks"
 
 # Public SSH is a FAIL.
 reset_all

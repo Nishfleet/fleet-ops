@@ -1,0 +1,13 @@
+[Unit]
+Description=Github push-channel canary deadman timer (fleet-ops#1464)
+
+[Timer]
+# Offset from the canary tick (every 5 min, offset 90s) so the canary has
+# had time to land its metric before the deadman reads it. Random jitter
+# to avoid colliding with the canary timer.
+OnCalendar=*:00/5
+RandomizedDelaySec=90
+Persistent=true
+
+[Install]
+WantedBy=timers.target

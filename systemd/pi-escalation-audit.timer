@@ -1,0 +1,16 @@
+[Unit]
+Description=Senior escalation panel intake (hourly floor, fleet-ops#234)
+# The escalation bridge (fleet-ops#221) files `escalate-senior` issues on
+# GitHub-plane failures; this timer convenes the panel for any open one
+# within the next tick. Escalations are rare and the panel is network-bound,
+# so an hourly floor (with jitter) is plenty to keep time-to-panel under an
+# hour without saturating the box.
+
+[Timer]
+OnCalendar=*-*-* *:17:00
+RandomizedDelaySec=10min
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

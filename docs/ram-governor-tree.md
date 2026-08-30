@@ -133,7 +133,7 @@ is a side effect, not a design.
 | 2 — per-worker throttle | `systemd/pi-issue@.service` | `~/.config/systemd/user/pi-issue@.service` | `./install.sh` (default) |
 | 3 — stock neutralizer | `systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf` | `/etc/systemd/system/user@1000.service.d/...` | `./install.sh --system` (or manual) |
 | 4 — slice governor | `systemd/system/user-1000.slice.d/50-ram-governor.conf` | `/etc/systemd/system/user-1000.slice.d/...` | `./install.sh --system` (or manual) |
-| 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | out-of-band copy (pre-existing; see #71) |
+| 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | `./install.sh` (default) |
 
 Layers 3 and 4 are NEW in this repo as of issue #71; layers 1, 2 and 5 were
 already repo-owned.
@@ -172,10 +172,11 @@ Live sample 2026-08-26:
 - ratio 411.8
 
 fleet-ops#489 decided to keep `memory.current` for admission (not process
-VmRSS). fleet-ops#1168 then right-sized the live budget from that 1.5 GB
-p95*3 clamp to the measured typical-worker value: `config/seat-caps.json`
-sets `ram_gb_per_worker=0.6`. Process VmRSS is much smaller, so using it
-would raise lanes but undercount real cgroup cost.
+VmRSS). fleet-ops#1168 right-sized the live budget from that 1.5 GB p95*3
+clamp to the measured typical-worker value 0.6; fleet-ops#1558 then
+re-measured under per-repo MemoryMax drop-ins and `config/seat-caps.json`
+now holds `ram_gb_per_worker=0.5`. Process VmRSS is much smaller, so using
+it would raise lanes but undercount real cgroup cost.
 
 Do not cite the 35 MB figure as cgroup cost.
 

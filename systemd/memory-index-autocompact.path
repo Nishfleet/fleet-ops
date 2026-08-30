@@ -1,0 +1,27 @@
+# fleet-ops#1498: repo copy of the live hand-placed path unit (provenance: fleet-ops#1480 audit)
+# Adjudicated EXCEPTION-APPROVED — class (b) sanctioned maintenance script;
+# distinct from nish-memory-curator (vault memory vs Claude auto-memory).
+# install.sh symlinks this over the live file in place.
+[Unit]
+Description=Watch the Claude auto-memory index for growth past the truncation limit
+
+[Path]
+PathModified=/home/nish/.claude/projects/-home-nish/memory/MEMORY.md
+Unit=memory-index-autocompact.service
+
+[Install]
+WantedBy=default.target
+
+# /home/nish/.config/systemd/user/path.d/10-escalate.conf
+# Universal failure escalation — global drop-in for ALL user .path units.
+# systemd type drop-ins (path.d/) apply only to that unit type; service.d/
+# does not cover .path files. Without this file, a failed path unit
+# (fleet-seat-recovery.path hitting unit-start-limit-hit is the 2026-08-26
+# case) has empty OnFailure and never enters the SENIOR-AUDITOR pipeline.
+# fleet-ops#618.
+#
+# Same OnFailure target and exclusion story as service.d/10-escalate.conf:
+# unit-escalation-write refuses stop-escalation.path (and the rest of the
+# anti-recursion set) so this drop-in cannot feed the watcher its own failure.
+[Unit]
+OnFailure=unit-escalation@%n.service

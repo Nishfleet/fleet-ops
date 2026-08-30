@@ -1,0 +1,46 @@
+# Prometheus configuration — repo-sourced (fleet-ops#1534).
+#
+# Adds an am-executor scrape job (127.0.0.1:9095) so the RepairDispatchDown
+# alert (config/fleet_rules.yml) has a metric to fire on. am-executor exports
+# am_executor_errors_total{stage=...} and an implicit `up` gauge; the alert
+# keys on `up{job="am-executor"} == 0` for 2m, which fires only when the
+# webhook receiver is down (the repair path itself is broken — the one
+# meta-alert that means Nish must be paged).
+#
+# The Debian package owns /etc/prometheus/prometheus.yml; install.sh --system
+# deploys this as a copy (system-scope drop-in semantics, not a symlink,
+# because it crosses a privilege boundary). fleet-ops-deploy reloads prometheus
+# after the change.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 25s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: fleet-netcup-rs2000
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['127.0.0.1:9093']
+
+rule_files:
+  - /etc/prometheus/fleet_rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['127.0.0.1:9090']
+
+  - job_name: node
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+
+  # fleet-ops#1534: scrape am-executor so RepairDispatchDown can fire on
+  # up{job="am-executor"} == 0. The am-executor service
+  # (prometheus-am-executor.service) listens on 127.0.0.1:9095 and exports
+  # am_executor_errors_total{stage=...} plus the standard `up` gauge. When
+  # the service is down, `up` flips to 0 and the alert pages Nish (severity=page
+  # -> telegram, the only alertmanager route that reaches the phone).
+  - job_name: am-executor
+    static_configs:
+      - targets: ['127.0.0.1:9095']

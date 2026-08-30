@@ -366,4 +366,48 @@ verdict7=$(jq -r '.verdict' "$audit_dir/demo/48/devin.vote")
   || fail "scenario7: vote leaked to seat-lib STATE_DIR (/home/nish/.local/state/pi-packet/demo/48/devin.vote) — VOTE_DIR rename did not contain the clobber"
 ok "scenario7: seat-lib STATE_DIR clobber contained — vote lands in AUDIT_STATE_DIR, not in pi-packet"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained"
+# -----------------------------------------------------------------------------
+# Scenario 8: fully-walled auditor lane -> exit 0, NO vote written, no pi call.
+# fleet-ops#146 addendum: an auditor seat wall is a LANE FAULT (bounded retry
+# through the ladder, never charged to the candidate; candidate stays PENDING).
+# Before the fix, resolve_seat failure exited 1, which failed the unit, burned
+# StartLimitBurst, and the heartbeat's re-start of the failed unit tripped a
+# NEW STOP-REASON + auditor summon EVERY tick while the seat stayed walled
+# (2026-08-29: 73 straitly-audit unit failures in a day, 228 journal lines on
+# 0509#1440-straitly alone). The vote must stay MISSING so the heartbeat
+# re-starts this unit when the wall clears and a real PASS/FAIL lands.
+# -----------------------------------------------------------------------------
+reset_state
+wall_lib="$scratch/seat-lib-wall.sh"
+cat >"$wall_lib" <<'LIB'
+# shellcheck shell=bash
+# Total wall: every seat unusable.
+load_seat_caps() { :; }
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' straitly deepseek/deepseek-v4-pro
+  printf '%s\t%s\t-\t1\n' straitly gpt-5.6-sol
+  printf '%s\t%s\t-\t1\n' devin glm-5-2
+}
+class_of() { printf 'metered\n'; }
+model_cap() { printf '1\n'; }
+seat_usable() { return 1; }
+seat_ledger_path() { printf '%s/%s__%s.json\n' "/dev/null" "$1" "$2"; }
+LIB
+
+unset PI_SEAT_HEALTH_LEDGER_DIR
+set +e
+PI_PACKET_SEAT_LIB="$wall_lib" \
+  bash "$bin" 'demo--49--straitly' >"$scratch/scenario8.out" 2>"$scratch/scenario8.err"
+rc8=$?
+set -e
+unset PI_PACKET_SEAT_LIB
+
+[[ "$rc8" == 0 ]] || fail "scenario8: walled lane must exit 0 (lane fault), got $rc8 ($(cat "$scratch/scenario8.err"))"
+[[ ! -f "$state_dir/demo/49/straitly.vote" ]] \
+  || fail "scenario8: no vote must be written on a walled lane (vote file exists at $state_dir/demo/49/straitly.vote)"
+grep -q 'no usable seat' "$scratch/scenario8.err" \
+  || fail "scenario8: log must say 'no usable seat' ($(cat "$scratch/scenario8.err"))"
+[[ ! -s "$calls" ]] || fail "scenario8: pi must NOT be called on a walled lane (calls=$(cat "$calls"))"
+ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate stays PENDING, no escalation storm)"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault"

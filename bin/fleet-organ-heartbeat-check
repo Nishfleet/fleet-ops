@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# fleet-organ-heartbeat-check — organ-heartbeat invariant (fleet-ops#1010).
+#
+# Standing pattern (Nish, 2026-08-27): every fleet organ (timer/exporter/
+# guard/canary) must export a heartbeat metric and ship an
+# absent(<heartbeat_metric>) rule in config/fleet_rules.yml in the same PR.
+# An organ without an absent-rule is an organ whose death is invisible.
+#
+# Two subcommands:
+#   verify (default)  drill: enumerate config/fleet-organs.json and assert
+#                     each organ has an absent() rule in fleet_rules.yml.
+#   gate              PR-diff gate (#366 mechanical-fix gate for this class):
+#                     reject a PR that adds/changes an organ without
+#                     shipping/keeping its absent() rule.
+#
+# Usage:
+#   fleet-organ-heartbeat-check verify [--registry F] [--rules F]
+#   fleet-organ-heartbeat-check gate --name-status F --rules F \
+#       --rules-diff F --body F [--registry F]
+#
+# The implementation lives in lib/fleet-organ-heartbeat-check.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${FLEET_ORGAN_HEARTBEAT_LIB:-$here/../lib/fleet-organ-heartbeat-check.py}"
+[ -f "$lib" ] || lib="$here/../lib/pi-packet/fleet-organ-heartbeat-check.py"
+[ -f "$lib" ] || { echo "fleet-organ-heartbeat-check: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

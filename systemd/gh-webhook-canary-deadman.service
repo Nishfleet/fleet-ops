@@ -1,0 +1,29 @@
+[Unit]
+Description=Github push-channel canary deadman (fleet-ops#1464)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/1464
+
+# fleet-ops#1464 dead-man's switch. Fires every 5 minutes (offset from the
+# canary timer to avoid running simultaneously). Reads the
+# fleet_gh_webhook_canary_last_green_seconds series from the local
+# Prometheus textfile; if the series is missing OR more than 15 minutes
+# stale, this unit writes a loud entry to the alert-repair triage file
+# (and pings the healthchecks.io fail URL if configured).
+#
+# fleet-ops#1569: ALSO reads the receiver prom file
+# (fleet_gh_webhook_receiver_last_green_seconds). The canary only proves
+# the receiver's HTTP endpoint is alive — a receiver that returns 200
+# but writes un-scrapeable prom labels (single-quoted, the original
+# #1464 bug fixed in #1607) keeps the canary green while
+# FleetGhWebhookReceiverAbsent stays firing. The deadman must catch that
+# class by reading the receiver prom file directly (not via a Prometheus
+# scrape, which would already be failing — the point is to page BEFORE
+# Prometheus catches it).
+
+[Service]
+Type=oneshot
+Environment=GH_WEBHOOK_CANARY_PROM=/var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom
+Environment=GH_WEBHOOK_DEADMAN_STALE_AFTER=900
+Environment=GH_WEBHOOK_DEADMAN_TRIAGE_FILE=%h/.local/state/pi-packet/alert-repair-triage.md
+Environment=GH_WEBHOOK_HEALTHCHECKS_FAIL_URL=
+ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary-deadman
+TimeoutStartSec=20

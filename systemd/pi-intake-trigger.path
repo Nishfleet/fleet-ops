@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for pi-intake trigger files (heartbeat issue-filed events)
+# Event-driven: fires when trigger files appear in the triggers directory.
+# The 15-min pi-intake@* timers are kept as dead-man backstops (GitHub has no push channel to VPS).
+# This path unit catches heartbeat-filed issues immediately; the timers backstop the no-event case.
+
+[Path]
+PathChanged=/home/nish/workspaces/agent-state/pi-intake-triggers
+Unit=pi-intake-trigger.service
+
+[Install]
+WantedBy=default.target

@@ -2,7 +2,17 @@
 Description=Pi fleet issue intake schedule for Nishfleet/%i
 
 [Timer]
-OnCalendar=*:00/15
+# fleet-ops#1464: with the GitHub push channel live (workers/github-push-
+# forward/ + gh-webhook-receiver.service), the intake timer is no longer
+# the primary trigger — that is webhook → receiver → pi-intake@<repo>.
+# The timer is the RECONCILER: it catches what the webhook missed.
+# Cadence dropped from */15 to */20 (still inside the 15-30 min envelope
+# the issue names) so a healthy webhook path doesn't get its work pre-
+# empted by a stale poll, and so the fleet_intake_reconciler_caught_total
+# counter (in lib/pi-intake-tick.sh) rises only when the webhook path is
+# genuinely degraded. A rising counter means the dead-man's switch on
+# the canary + receiver should fire first.
+OnCalendar=*:00/20
 RandomizedDelaySec=120
 Persistent=true
 

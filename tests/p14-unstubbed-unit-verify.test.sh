@@ -307,6 +307,35 @@ printf '%s\n' "$seat_findings" | grep -q 'fleet-seat-recovery' \
   || fail "fixture seat-recovery-830 must name the VPS ExecStart, got: $seat_findings"
 ok "fixture: #830 inline verify of fleet-seat-recovery is flagged"
 
+# --- 4c. Fixture: the fleet-ops#884 SKIP block must stay in the units test -
+# fleet-ops#884: hosted-CI P14 red-fails with
+#   FAIL: systemd-analyze verify failed for fleet-seat-recovery.service:
+#   fleet-seat-recovery.service: Command /home/nish/.local/bin/fleet-seat-recovery
+#   is not executable: No such file or directory
+# because the inline verify needs the VPS bin present. The shipped fix in
+# tests/fleet-seat-recovery-units.test.sh step 3 SKIPs the verify when the
+# bin is absent and points at the dedicated unit-verify CI job as the syntax
+# gate. Pin the SKIP shape so a future edit that strips the SKIP and re-runs
+# the inline verify unconditionally cannot silently re-merge (it would
+# red-fail hosted CI run #N+1 instead).
+units_test="$repo_root/tests/fleet-seat-recovery-units.test.sh"
+[[ -f "$units_test" ]] || fail "missing $units_test"
+# Anchors must be CODE, not prose: comment-only references to the bin path
+# or to the unit-verify job would let a re-breakage that strips the guard
+# slip through (proven by the negative drill on 2026-08-30: the first pass
+# grepped 'SKIP' + 'unit-verify CI job', both satisfiable in comments, and
+# the lock held while the functional guard was gone).
+# 1. The existence guard on the VPS bin (the line that makes CI skip).
+grep -Fq 'if [[ -x /home/nish/.local/bin/fleet-seat-recovery ]]; then' "$units_test" \
+  || fail "fleet-seat-recovery-units.test.sh must gate verify on the VPS bin with -x (fleet-ops#884)"
+# 2. The bin-absent SKIP echo with its named reason (code line, not comment).
+grep -Fq 'echo "SKIP: fleet-seat-recovery bin absent' "$units_test" \
+  || fail "fleet-seat-recovery-units.test.sh bin-absent branch must SKIP with a named reason (fleet-ops#884)"
+# 3. The verify call must still exist for the VPS path (verify not deleted).
+grep -Fq 'systemd-analyze verify --man=no' "$units_test" \
+  || fail "fleet-seat-recovery-units.test.sh must still call systemd-analyze verify on the VPS path"
+ok "fixture: #884 SKIP block in fleet-seat-recovery-units.test.sh is locked"
+
 # --- 5. Live repo: agent-cron P14 test has no live verify -------------------
 agent_cron="$repo_root/tests/agent-cron-seat-rotation.test.sh"
 [[ -f "$agent_cron" ]] || fail "missing $agent_cron"
@@ -335,4 +364,4 @@ grep -Fq 'p14-unstubbed-unit-verify.test.sh' "$repo_root/tests/ci-standards-audi
   || fail "tests/ci-standards-audit.test.sh must invoke p14-unstubbed-unit-verify.test.sh"
 ok "lock is wired through tests/ci-standards-audit.test.sh (already in P14)"
 
-echo "OK: p14-unstubbed-unit-verify: #154 class lock holds"
+echo "OK: p14-unstubbed-unit-verify: #154 / #884 class lock holds"

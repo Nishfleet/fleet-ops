@@ -1,0 +1,27 @@
+[Unit]
+Description=Fleet vault conflict resolver — path watch for *.sync-conflict-* (replaces 10-min timer)
+Documentation=file:/home/nish/.local/bin/vault-conflict-resolver
+# Event-driven: fires when Syncthing creates a *.sync-conflict-* file.
+# The 10-min timer is kept as a dead-man backstop (silence stays loud).
+# systemd PathExistsGlob does NOT support ** recursive globbing (systemd 255),
+# so we watch the vault root and its top-level subdirectories. The resolver
+# scans the full tree; the path unit provides the fast trigger, the timer
+# backstops conflicts in deep subdirectories the path unit cannot see.
+# fleet-ops#1460: the .path unit can fire rapidly — a single file creation
+# generates multiple inotify events, and PathExistsGlob retriggers while the
+# conflict file exists. The default 5/10s burst is blown through in under a
+# second, wedging the path unit with start-limit-hit. Raise the limit so a
+# burst of conflict files cannot wedge the fast path. StartLimit* must live
+# in [Unit] for .path units (same convention as pi-intake@.service).
+StartLimitIntervalSec=1h
+StartLimitBurst=200
+
+[Path]
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/*.sync-conflict-*
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/00 Inbox/*.sync-conflict-*
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/03 Knowledge/*.sync-conflict-*
+PathExistsGlob=/home/nish/workspaces/tooling/nish-vault/_system/*.sync-conflict-*
+Unit=vault-conflict-resolver.service
+
+[Install]
+WantedBy=default.target

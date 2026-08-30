@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "title": "netcup-rs2000 bare-metal rebuild manifest",
+  "description": "Inventory of the packages, users, repositories, units, config files and secret locations required to rebuild the Nishfleet control plane on a fresh Ubuntu 24.04 LTS box. This file intentionally never stores secret values — only paths and recovery steps. Data is assumed to come from the existing restic backup; this manifest is about the machine and the installable surface.",
+  "issue": "fleet-ops#1135",
+  "target": {
+    "os": "Ubuntu 24.04 LTS",
+    "hostname": "netcup-rs2000",
+    "primary_user": "nish",
+    "primary_uid": 1000,
+    "primary_home": "/home/nish",
+    "shell": "/bin/bash"
+  },
+  "os_baseline": {
+    "ssh_public_only": true,
+    "tailscale_only_ssh": true,
+    "no_public_ssh_22": true,
+    "unattended_upgrades_security": true,
+    "timezone": "Asia/Kolkata"
+  },
+  "packages": {
+    "apt_repos": [
+      "docker",
+      "tailscale"
+    ],
+    "core": [
+      "systemd",
+      "systemd-oomd",
+      "git",
+      "git-lfs",
+      "jq",
+      "curl",
+      "ca-certificates",
+      "iproute2",
+      "util-linux",
+      "openssl",
+      "python3",
+      "python3-pip",
+      "python3-venv",
+      "python3-requests",
+      "restic",
+      "tailscale",
+      "prometheus",
+      "prometheus-node-exporter",
+      "prometheus-alertmanager",
+      "docker-ce",
+      "docker-ce-cli",
+      "docker-compose-plugin",
+      "build-essential",
+      "python3-dev"
+    ]
+  },
+  "manual_tools": [
+    {
+      "name": "gh",
+      "note": "GitHub CLI for `pi` issue workers. Download from https://github.com/cli/cli/releases and place at ~/.local/bin/gh, then `gh auth login` with the worker token path.",
+      "install_path": "/home/nish/.local/bin/gh"
+    },
+    {
+      "name": "node",
+      "note": "Node.js 22 LTS for pi, command-code and other agent harnesses. Install via NodeSource or the official tarball into ~/.local/bin and ~/.local/lib/node_modules.",
+      "install_path": "/home/nish/.local/bin/node"
+    },
+    {
+      "name": "npm",
+      "note": "Ships with the Node.js install; used to install pi and command-code under ~/.local/lib/node_modules.",
+      "install_path": "/home/nish/.local/bin/npm"
+    },
+    {
+      "name": "bun",
+      "note": "Download the single binary from https://bun.sh/ to ~/.local/bin/bun.",
+      "install_path": "/home/nish/.local/bin/bun"
+    },
+    {
+      "name": "claude",
+      "note": "Anthropic Claude Code CLI. Follow vendor install instructions; the live path is /usr/bin/claude, which is outside the restic /home/nish backup.",
+      "install_path": "/usr/bin/claude"
+    },
+    {
+      "name": "codex",
+      "note": "OpenAI Codex CLI. Install via pip or vendor instructions into ~/.local/bin/codex.",
+      "install_path": "/home/nish/.local/bin/codex"
+    },
+    {
+      "name": "cursor",
+      "note": "Cursor editor/agent CLI wrapper. The live path is a shell script in ~/.local/bin/cursor that points to ~/.local/share/cursor-agent.",
+      "install_path": "/home/nish/.local/bin/cursor"
+    },
+    {
+      "name": "pi",
+      "note": "Nishfleet worker harness. Install the @earendil-works/pi-coding-agent npm package under ~/.local/lib/node_modules and symlink ~/.local/bin/pi.",
+      "install_path": "/home/nish/.local/bin/pi"
+    },
+    {
+      "name": "command-code",
+      "note": "Command Code CLI. Install the command-code npm package under ~/.local/lib/node_modules and symlink ~/.local/bin/command-code.",
+      "install_path": "/home/nish/.local/bin/command-code"
+    },
+    {
+      "name": "coderabbit",
+      "note": "CodeRabbit CLI. Download the release binary to ~/.local/bin/coderabbit.",
+      "install_path": "/home/nish/.local/bin/coderabbit"
+    },
+    {
+      "name": "crgate",
+      "note": "Alias/wrapper for coderabbit.",
+      "install_path": "/home/nish/.local/bin/crgate"
+    }
+  ],
+  "users_and_groups": [
+    {
+      "user": "nish",
+      "uid": 1000,
+      "home": "/home/nish",
+      "shell": "/bin/bash",
+      "groups": ["sudo", "docker"]
+    }
+  ],
+  "repositories": {
+    "fleet_ops": {
+      "remote": "https://github.com/Nishfleet/fleet-ops.git",
+      "canonical_checkout": "/home/nish/workspaces/tooling/fleet-ops-deploy-clone",
+      "branch": "main",
+      "install_command": "./install.sh && ./install.sh --system"
+    },
+    "products_root": "/home/nish/workspaces/products",
+    "mirrors_root": "/home/nish/workspaces/.mirrors",
+    "intake_repos_source": "config/intake-repos.json"
+  },
+  "live_paths": {
+    "systemd_user": "/home/nish/.config/systemd/user",
+    "systemd_system": "/etc/systemd/system",
+    "local_bin": "/home/nish/.local/bin",
+    "local_lib": "/home/nish/.local/lib",
+    "local_libexec": "/home/nish/.local/libexec",
+    "local_state": "/home/nish/.local/state",
+    "local_share": "/home/nish/.local/share",
+    "pi_agent": "/home/nish/.pi",
+    "codex_config": "/home/nish/.codex",
+    "cursor_config": "/home/nish/.cursor",
+    "user_config": "/home/nish/.config",
+    "agent_state": "/home/nish/workspaces/agent-state",
+    "prometheus_etc": "/etc/prometheus",
+    "prometheus_default": "/etc/default/prometheus",
+    "restic_etc": "/etc/restic",
+    "usr_local_sbin": "/usr/local/sbin"
+  },
+  "install_manifest": {
+    "path": "MANIFEST",
+    "description": "One line per file: <repo-relative-src> <absolute-dest>. install.sh symlinks user-scope entries and sudo-copies system-scope entries. The manifest is the allowlist of what the repo installs."
+  },
+  "system_units": {
+    "description": "System-scope units that live outside the fleet-ops repo. Most are restored from restic or installed by the vendor packages (tailscale, prometheus, restic).",
+    "sources": [
+      "/etc/systemd/system/restic-r2-backup.*",
+      "/etc/systemd/system/restic-r2-restore-test.*",
+      "/etc/systemd/system/restic-r2-verify.*",
+      "/etc/systemd/system/restic-r2-maintenance.*",
+      "/etc/systemd/system/restic-r2-locked-copy.*",
+      "/etc/systemd/system/restic-r2-recover.*",
+      "/etc/systemd/system/tiny-studio-healthcheck.*",
+      "/etc/systemd/system/tailscaled.*"
+    ]
+  },
+  "masked_units": {
+    "description": "System units that must be masked on this host because the hardware they drive is absent (e.g. IPMI on a VPS). Masking at provision time stops the unit re-entering failed state and paging SystemUnitFailed every alert cycle. apply_rebuild masks each; live_check verifies each is masked so drift is caught. fleet-ops#2122.",
+    "units": [
+      {
+        "name": "openipmi.service",
+        "reason": "netcup-rs2000 is a VPS with no IPMI BMC; the unit can never start and re-enters failed state, paging SystemUnitFailed every cycle."
+      }
+    ]
+  },
+  "env_files": {
+    "description": "Environment files referenced by units and scripts. Values are not stored here.",
+    "paths": [
+      "/etc/restic/hostinger-r2.env",
+      "/home/nish/.config/fleet-heartbeat/hc.env",
+      "/home/nish/.config/fleet-ops/keystone-hc.env",
+      "/home/nish/.config/fleet-console/cf.env",
+      "/home/nish/.config/siterep-uptime/hc.env",
+      "/home/nish/.config/fleet-worker/nishfleet-worker.env",
+      "/etc/tiny-studio/heartbeats.env"
+    ]
+  },
+  "secrets_locations": {
+    "description": "Directories and files that hold credentials, tokens, keys and session material. These must be recovered from restic or re-provisioned; never stored in git.",
+    "directories": [
+      "/home/nish/.ssh",
+      "/home/nish/.claude",
+      "/home/nish/.codex",
+      "/home/nish/.cursor",
+      "/home/nish/.hermes",
+      "/home/nish/.docker",
+      "/home/nish/.config",
+      "/home/nish/.local/bin",
+      "/home/nish/.local/lib/node_modules",
+      "/home/nish/.local/share",
+      "/home/nish/.github",
+      "/etc/restic"
+    ],
+    "files": [
+      "/home/nish/.config/fleet-worker/nishfleet-worker.env",
+      "/home/nish/.config/fleet-heartbeat/hc.env",
+      "/home/nish/.config/fleet-ops/keystone-hc.env",
+      "/etc/restic/hostinger-r2.env"
+    ]
+  },
+  "backup": {
+    "tool": "restic",
+    "repo_env": "/etc/restic/hostinger-r2.env",
+    "exclude_file": "/etc/restic/hostinger-r2-excludes",
+    "sources": ["/home/nish", "/etc", "/root", "/usr/local"],
+    "restore_command": "sudo restic -r $RESTIC_REPOSITORY restore latest -t /"
+  },
+  "drills": [
+    "fleet-restore-drill",
+    "fleet-resilience-drill",
+    "fleet-bare-metal-rebuild-drill",
+    "oomd-drill"
+  ],
+  "runbook_path": "docs/bare-metal-rebuild.md",
+  "validation": {
+    "json_schema_required_keys": [
+      "version",
+      "title",
+      "description",
+      "target",
+      "packages",
+      "manual_tools",
+      "repositories",
+      "install_manifest",
+      "env_files",
+      "secrets_locations",
+      "backup",
+      "masked_units"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# fleet-precedence-band-canary — rent-paying band + overnight surge
+# (fleet-ops#1223; ledger 2026-08-27 | Precedence band + overnight
+# machinery surge (Nish)).
+#
+# STEP 0: ran `research-before-build-check --help` (the new-bin/ gate
+# this wrapper itself must satisfy) and `fleet-escalation-canary`,
+# `fleet-volume-lane-order-canary`, `fleet-quality-ratchet-canary`,
+# `fleet-heartbeat-undersaturation`: none of them reads the rent-paying
+# band policy, none of them enforces a per-phase cap on live machinery
+# units, and none of them rejects a machinery > 30% / product < 70% cap
+# loosening that lacks a dated WFR waiver. This canary is not a
+# restic-forget clone of those.
+#
+# Implementation lives in lib/precedence-band.sh (sourced) and
+# lib/pi-packet/precedence-band-canary.py (the actual check). Heartbeat-
+# tier1 block 36.
+#
+# Exit 0: gates clean. Exit 1: policy/phase/ratchet/wfr-waiver drift.
+# Exit 2: helper missing.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+lib="${FLEET_PRECEDENCE_BAND_LIB:-$here/../lib/pi-packet/precedence-band-canary.py}"
+[ -f "$lib" ] || lib="$here/../lib/precedence-band-canary.py"
+[ -f "$lib" ] || { echo "fleet-precedence-band-canary: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

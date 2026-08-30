@@ -4,11 +4,11 @@
 # CI drill for the 2026-08-27 token economy rebalance
 # (fleet-ops#1176). Locks the seat-cap configuration that implements the
 # rebalance from live meters:
-#   - volume prefix is first in prepaid_providers_in_order (ollama ->
-#     devin -> cline -> leftover cursor -> xai-oauth) per fleet-ops#1178
+#   - volume prefix is first (ollama -> devin -> commandcode -> cline)
+#     then leftover prepaid (xai-oauth; cursor is keystone-only, fleet-ops#1167)
 #   - xai-oauth (SuperGrok) is the last prepaid weekly seat, cap 1,
 #     alternating grok-4.6 and grok-4.5
-#   - cursor is capped at 1, leftover prepaid (not a free lane, not volume)
+#   - cursor is capped at 1, keystone/senior-review only (not a free lane, not volume)
 #   - leftover free lanes (commandcode/hetzner/opencode) sit after the
 #     volume prefix; metered (minimax/straitly/...) last
 #   - grok (the legacy grok.com/CLI slug) is cap=0 with a dated reason
@@ -61,15 +61,47 @@ xai_models=$(jq -r '.providers["xai-oauth"].models | keys | sort | join(" ")' "$
 
 ok "xai-oauth last in prepaid order, cap 1, weekly, models grok-4.5/4.6"
 
-# --- cursor: cap 1, after devin, not a free lane --------------------------
+# --- cursor: cap 1, keystone-only, leftover prepaid is xai-oauth ----------
 cursor_cap=$(jq -r '.providers.cursor.cap // empty' "$caps")
 [[ "$cursor_cap" == "1" ]] || fail "cursor cap must be 1, got: $cursor_cap"
 
 if jq -e '.free_providers_in_order | index("cursor")' "$caps" >/dev/null; then
   fail "cursor must not be in free_providers_in_order"
 fi
+if jq -e '.volume_providers_in_order | index("cursor")' "$caps" >/dev/null; then
+  fail "cursor must not be in volume_providers_in_order"
+fi
+if ! jq -e '.keystone_only_providers | index("cursor")' "$caps" >/dev/null; then
+  fail "cursor must be in keystone_only_providers (fleet-ops#1167)"
+fi
 
-ok "cursor cap 1, after devin, not a free lane"
+overage_model=$(jq -r '.cursor_overage.overage_model // empty' "$caps")
+[[ "$overage_model" == "cursor-grok-4.6-high" ]] \
+  || fail "cursor overage model must be cursor-grok-4.6-high, got: $overage_model"
+
+if ! jq -e '.cursor_overage.opens_after_included_exhausted == true' "$caps" >/dev/null; then
+  fail "cursor_overage.opens_after_included_exhausted must be true (fleet-ops#1179)"
+fi
+
+included=$(jq -r '.cursor_overage.included_exhausted' "$caps")
+[[ "$included" == "false" ]] \
+  || fail "cursor included_exhausted must be false until a meter check flips it, got: $included"
+daily=$(jq -r '.cursor_overage.daily_spend_target_usd // empty' "$caps")
+[[ "$daily" == "16" ]] || fail "cursor daily spend target must be 16, got: $daily"
+
+ok "cursor cap 1, keystone-only, overage model cursor-grok-4.6-high, opens_after_included_exhausted true, included still open, \$16/day target"
+
+# --- walled_comeback table (fleet-ops#1167) --------------------------------
+for k in min_probe_interval_s rate_limit_s daily_quota_s monthly_quota_s free_balance_exhausted_s credentials_bad_s; do
+  v=$(jq -r --arg k "$k" '.walled_comeback[$k] // empty' "$caps")
+  [[ "$v" =~ ^[0-9]+$ ]] || fail "walled_comeback.$k must be a positive integer, got: $v"
+done
+rl=$(jq -r '.walled_comeback.rate_limit_s' "$caps")
+[[ "$rl" == "900" ]] || fail "walled_comeback.rate_limit_s must be 900 (15min, the devin lesson), got: $rl"
+probe=$(jq -r '.walled_comeback.min_probe_interval_s' "$caps")
+[[ "$probe" == "900" ]] || fail "walled_comeback.min_probe_interval_s must be 900 (never hammer), got: $probe"
+
+ok "walled_comeback table is present with 15min rate-limit and 15min probe floor"
 
 # --- free lanes are the commandcode/hetzner/opencode allowlist ------------
 # leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
@@ -120,6 +152,13 @@ grep -q 'prepaid_providers_in_order' "$lib" \
 grep -q 'free_providers_in_order' "$lib" \
   || fail "lib/seat-lib.sh must read free_providers_in_order"
 
-ok "lib/seat-lib.sh enforces volume-first then leftover prepaid and reads provider orders"
+grep -q 'keystone/senior-review only' "$lib" \
+  || fail "lib/seat-lib.sh must skip cursor for non-keystone packets (fleet-ops#1167)"
+grep -q 'record_seat_selection' "$lib" \
+  || fail "lib/seat-lib.sh must record every pick for fleet_seat_selection_24h"
+grep -q 'fleet_seat_selection_24h' "$lib" \
+  || fail "lib/seat-lib.sh must export fleet_seat_selection_24h"
 
-ok "token economy: volume prefix first, xai-oauth last prepaid, cursor cap 1, leftover-free before metered, grok/Claude cap 0"
+ok "lib/seat-lib.sh enforces volume-first then leftover prepaid, cursor keystone-only, and seat-selection export"
+
+ok "token economy: volume prefix first, xai-oauth last prepaid, cursor keystone-only, leftover-free before metered, grok/Claude cap 0"

@@ -35,6 +35,10 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# SYSTEMCTL seam (fleet-ops#1546): tests inject a fake to drive the
+# start-limit healer + post-condition verification deterministically.
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
 [[ $# -ge 1 ]] || { echo "pi-intake-tick: need 1 arg: repo" >&2; exit 1; }
 REPO="$1"
 FULL="Nishfleet/${REPO}"
@@ -52,16 +56,49 @@ fi
 # ISSUE_STATE_DIR is used for the worker packet written for pi-issue-run.
 # It must NOT be named STATE_DIR: seat-lib.sh redefines that for its own
 # pi-packet state (watch.log, active-seats, attempts) when it is sourced below.
-ISSUE_STATE_DIR="/home/nish/.local/state/pi-issues"
+# Overridable for tests (like SEAT_LIB / PRECEDENCE_BAND_LIB / the other
+# PI_INTAKE_* knobs): a test drives the tick down its low=0 claim path, and
+# a hardcoded /home/nish path crashes `set -e` with exit 1 on a GitHub-hosted
+# runner where the runner user cannot create /home/nish (fleet-ops#1407).
+ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}"
+# fleet-ops#1455: the claims index is the durable record of which issues were
+# actually claimed in this tick. opus-heartbeat-gather counts it for
+# claims_last_2h; fleet-restore-drill (B.2) reads it to know which issues are
+# claimed after a restore. Overridable for tests so a GitHub-hosted runner
+# does not have to write under /home/nish.
+CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
 # fleet-ops#1250: claim-step prior-art gate. Tests override the path.
 PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
+# PRECEDENCE_BAND_LIB may be overridden by tests. Checkout fallback so a
+# worktree run still loads the sibling lib before install.sh copies it.
+PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
+_tick_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$PRECEDENCE_BAND_LIB" && -f "$_tick_dir/precedence-band.sh" ]]; then
+    PRECEDENCE_BAND_LIB="$_tick_dir/precedence-band.sh"
+fi
+[[ -f "$PRECEDENCE_BAND_LIB" ]] || {
+    echo "pi-intake-tick: precedence-band lib missing: $PRECEDENCE_BAND_LIB" >&2
+    exit 1
+}
 
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$SEAT_LIB"
+# shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
+. "$PRECEDENCE_BAND_LIB"
+# Each tick starts with a clean floor latch. The file is keyed on $$ so a
+# leftover from a recycled PID cannot freeze the floor for this tick
+# (fleet-ops#1452). The flock above already serializes fleet-ops ticks.
+precedence_band_pending_clear
+# Same for the starvation floor latch (fleet-ops#1448): both one-lane
+# reservations must start unspent each tick, else a recycled PID leaves the
+# starvation floor frozen for the whole tick.
+precedence_band_pending_starvation_clear
 
 if [[ ! -x "$PRIOR_ART_BIN" ]]; then
     echo "pi-intake-tick: prior-art-claim-check missing at $PRIOR_ART_BIN" >&2
@@ -69,10 +106,50 @@ if [[ ! -x "$PRIOR_ART_BIN" ]]; then
 fi
 
 # Step 1: list ready work
-issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 50 2>&1) || {
+# Limit 250 (auditor 2026-08-28, summon unit-failure fleet-heartbeat): the
+# prior --limit 50 returned only the 50 NEWEST agent-ready issues (gh issue
+# list sorts by creation desc). With 221 ready issues, the older
+# surge_leverage_issues (#1010-#1146) fell beyond position 50 and were
+# invisible to the tick — the surge phase then had nothing to dispatch
+# (all visible issues were non-leverage → skip-surge-leverage), causing
+# fleet starvation (222 ready, 0 running). 250 covers the observed ceiling
+# with headroom; the early surge skip below keeps the tick fast.
+issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
     echo "gh issue list failed: $issues_json" >&2
     exit 1
 }
+
+# fleet-ops#234: escalate-senior issues are senior-panel-owned, never a
+# regular-worker claim. The model-based orderer (pi-intake-priority order,
+# lib/intake-priority.sh) drops them via select(.escalation != true); the
+# deterministic tick must do the same or regular workers get dispatched on
+# senior-auditor escalations (the #2007 live class: pi-issue@fleet-ops-2007
+# claimed an [escalate-senior] scout-futility wrapper that
+# pi-escalation-audit was already convening a three-senior panel on). The
+# label is fetched above so the filter is a pure jq pass; the senior-auditor
+# panel lists escalate-senior directly (not agent-ready), so dropping them
+# here does not hide them from the panel.
+ESCALATE_LABEL="${PI_INTAKE_ESCALATE_LABEL:-escalate-senior}"
+issues_json=$(jq -c --arg esc "$ESCALATE_LABEL" \
+    '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($esc) == null)]' \
+    <<<"$issues_json" 2>/dev/null || printf '[]')
+
+# fleet-ops#1464 — reconciler-caught counter. Every time the poll finds
+# ready work, it means the GH webhook (workers/github-push-forward/ →
+# gh-webhook-receiver.service) DID NOT trigger pi-intake@<repo> for this
+# issue first. The counter bumps by the number of ready issues found, so
+# a sustained rise means the push channel is degraded and the dead-man
+# on the canary should also be firing. The metric is informational only:
+# it is NOT a blocker for the tick. A rising counter is what
+# fleet-intake-reconciler-stale alerts on (see config/fleet_rules.yml).
+#
+# Per-repo prom file (matches the existing per-repo metric convention,
+# e.g. fleet-opus-heartbeat.prom is repo-scoped via Pi seat labels):
+# a single shared file would be clobbered by parallel pi-intake@<repo>
+# timers. Naming: ${base}-<repo>.prom, default base fleet-intake-reconciler.
+reconciler_caught=0
+reconciler_prom_base="${PI_INTAKE_RECONCILER_PROM:-/var/lib/prometheus/node-exporter/fleet-intake-reconciler}"
+reconciler_prom="${reconciler_prom_base}-${REPO}.prom"
 
 # Blocker filter (auditor 2026-08-26, summon fleet-ops-87): an agent-ready
 # issue can carry a body `blocked-on:` line (machine-checkable dep or
@@ -83,11 +160,74 @@ issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number
 # (not just label) also covers the stale-label window where an issue is still
 # agent-ready but carries a blocker.
 blocked_filter() {
-    local n="$1"
-    local body
-    body=$(gh issue view "$n" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || return 1
+    local body="$1"
     if printf '%s' "$body" | grep -qE '^blocked-on:'; then
         return 0
+    fi
+    return 1
+}
+
+# Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
+# 0509's required-verifier-integrity gate blocks any PR that touches a
+# protected verifier/deploy file unless a repo admin posts an exact
+# `verifier-attest: <40-hex head sha>` comment. The repo has exactly one
+# collaborator, so independent APPROVED review is structurally impossible
+# and the sole-admin attestation is the only unblock — and workers must
+# NEVER post that comment (the 2026-08-26 attestation breach). During
+# Nish's vacation window, parking these issues at intake prevents workers
+# from opening attest-stuck PRs that sit red until Nish returns (existing
+# red PRs #1295/#1281/#1273 stay open; this only stops NEW claims).
+#
+# The skip is date-bounded: after PROTECTED_VERIFIER_VACATION_UNTIL the
+# filter passes and intake resumes — the issue stays agent-ready throughout
+# the window, so no unpark/relabel mechanism is needed. The gate itself is
+# unchanged (do not weaken or remove it). All seams are env-overridable so
+# the regression test can drive the date, repo, and file list without
+# touching the real 0509 checkout or the clock.
+PROTECTED_VERIFIER_VACATION_REPO="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_REPO:-0509}"
+PROTECTED_VERIFIER_VACATION_FROM="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_FROM:-2026-08-28}"
+PROTECTED_VERIFIER_VACATION_UNTIL="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_UNTIL:-2026-09-08}"
+# Mirrors the protected_files list in
+# 0509 .github/scripts/required-verifier-integrity.sh. A drift here vs.
+# that script is a follow-up, not a blocker for this park.
+_pvv_default_files=(
+    ".github/workflows/ci.yml"
+    ".github/workflows/secret-scan.yml"
+    ".github/workflows/required-verifier-integrity.yml"
+    ".github/scripts/required-verifier-integrity.sh"
+    ".github/scripts/test-required-verifier-integrity.sh"
+    ".github/workflows/deploy-production.yml"
+    ".github/workflows/finalize-production-soak.yml"
+    "scripts/ci-verify-production-candidate.sh"
+    "scripts/ci-verify-provider-main-cas.sh"
+)
+protected_verifier_vacation_filter() {
+    # $1 = issue body. Returns 0 (skip this issue) when a protected
+    # verifier/deploy path appears in the body AND today is inside the
+    # vacation window [FROM, UNTIL] inclusive. Returns 1 otherwise.
+    local body="$1"
+    [[ "$REPO" == "$PROTECTED_VERIFIER_VACATION_REPO" ]] || return 1
+    local today="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_TODAY:-$(date -u +%Y-%m-%d)}"
+    # YYYY-MM-DD lexicographic compare == chronological. Skip only inside
+    # the window; after UNTIL the filter passes so intake resumes.
+    if [[ "$today" < "$PROTECTED_VERIFIER_VACATION_FROM" \
+          || "$today" > "$PROTECTED_VERIFIER_VACATION_UNTIL" ]]; then
+        return 1
+    fi
+    local f
+    if [[ -n "${PI_INTAKE_PROTECTED_VERIFIER_VACATION_FILES:-}" ]]; then
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            if printf '%s' "$body" | grep -qF -- "$f"; then
+                return 0
+            fi
+        done <<<"$PI_INTAKE_PROTECTED_VERIFIER_VACATION_FILES"
+    else
+        for f in "${_pvv_default_files[@]}"; do
+            if printf '%s' "$body" | grep -qF -- "$f"; then
+                return 0
+            fi
+        done
     fi
     return 1
 }
@@ -102,6 +242,53 @@ if (( ready_count == 0 )); then
     echo "no ready issues"
     exit 0
 fi
+
+# fleet-ops#1464 — bump the reconciler-caught counter. We found ready
+# work via the SLOW poll; the GH webhook path either did not fire or did
+# not win the race for these issues. The counter is the visibility
+# signal that drives the dead-man / alert. Tests can override the
+# prom path via PI_INTAKE_RECONCILER_PROM (see
+# tests/fleet-intake-reconciler-counter.test.sh).
+#
+# Per-repo prom file means there is no read-modify-write race with
+# parallel pi-intake@<other>.timer ticks (each repo owns its own file).
+# Within the same repo, the flock at the top of the tick ensures only
+# one tick is in flight, so the read-modify-write below is safe.
+reconciler_caught=$ready_count
+reconciler_ts="$(date -u +%s)"
+
+# Read the previous cumulative value (if any) so we can add this tick's
+# delta. Default 0 when the file is missing or the line is malformed.
+_reconciler_prev_total=0
+if [[ -f "$reconciler_prom" ]]; then
+    _reconciler_prev_total=$(awk -v r="$REPO" '
+        $0 ~ "fleet_intake_reconciler_caught_total\\{repo=\""r"\"\\}" {
+            gsub(/[^0-9.]/, "", $2); v = int($2);
+            if (v > 0) print v; else print 0; exit
+        }
+        END { if (NR == 0) print 0 }
+    ' "$reconciler_prom" 2>/dev/null || echo 0)
+    _reconciler_prev_total="${_reconciler_prev_total:-0}"
+fi
+_reconciler_new_total=$(( _reconciler_prev_total + reconciler_caught ))
+
+mkdir -p "$(dirname "$reconciler_prom")" 2>/dev/null || true
+# Best-effort prom export: an if/then (not A && B || C) keeps set -e from
+# killing the tick on a transient prom-write failure (SC2015-safe).
+if {
+    printf '# HELP fleet_intake_reconciler_caught_total Cumulative number of agent-ready issues the slow poll caught that the GitHub webhook did not catch first (fleet-ops#1464).\n'
+    printf '# TYPE fleet_intake_reconciler_caught_total counter\n'
+    printf 'fleet_intake_reconciler_caught_total{repo="%s"} %d\n' "$REPO" "$_reconciler_new_total"
+    printf '# HELP fleet_intake_reconciler_last_caught_timestamp_seconds Epoch seconds of the last time the slow poll caught at least one ready issue.\n'
+    printf '# TYPE fleet_intake_reconciler_last_caught_timestamp_seconds gauge\n'
+    printf 'fleet_intake_reconciler_last_caught_timestamp_seconds{repo="%s"} %d\n' "$REPO" "$reconciler_ts"
+    printf '# HELP fleet_intake_reconciler_last_count Number of agent-ready issues found by the most recent slow poll (per repo).\n'
+    printf '# TYPE fleet_intake_reconciler_last_count gauge\n'
+    printf 'fleet_intake_reconciler_last_count{repo="%s"} %d\n' "$REPO" "$reconciler_caught"
+} > "$reconciler_prom.tmp" 2>/dev/null; then
+    mv "$reconciler_prom.tmp" "$reconciler_prom" 2>/dev/null || true
+fi
+echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
@@ -120,6 +307,45 @@ slots=$(( total_cap - active ))
 if (( slots <= 0 )); then
     echo "at capacity (total_cap=$total_cap, active=$active, issue=$issue, org=$org, org_reserve=$org_res)"
     exit 0
+fi
+
+# GitHub API rate-limit gate (fleet-ops#1350, 2026-08-27 #1167 ceiling
+# addendum). The 5000/hr core budget is the next binding constraint past
+# RAM: claiming N more issues this tick would burn N claim-pushes + N
+# issue-view body fetches + N future worker draws against the budget, and
+# a rate-limited fleet is slower than a governed one. The exporter writes
+# a side-car state file (agent-state/pi-intake/gh-rate-limit.json) every
+# 60s; we read it here and hold claims when ANY of the three consumed
+# resources (core/search/graphql) is below the 20% threshold. A missing
+# or unparseable file fails OPEN: the throttle is a soft gate, not a
+# blocker, and a dead exporter must not silently freeze the fleet. The
+# fetched_at age check (120s = 2x the 60s TTL) catches a stale file
+# without preventing the first run after a fresh start.
+gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+if [[ -r "$gh_rl_path" ]]; then
+    _gh_rl_json=$(cat "$gh_rl_path" 2>/dev/null) || _gh_rl_json=
+    if [[ -n "$_gh_rl_json" ]]; then
+        _gh_rl_low=$(printf '%s' "$_gh_rl_json" | jq -r '.low // 0' 2>/dev/null) || _gh_rl_low=0
+        _gh_rl_fetched=$(printf '%s' "$_gh_rl_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_fetched=0
+        _gh_rl_now=$(date +%s)
+        _gh_rl_age=$(( _gh_rl_now - ${_gh_rl_fetched%.*} ))
+        if (( _gh_rl_age > gh_rl_max_age )); then
+            echo "gh rate-limit state stale (age=${_gh_rl_age}s > max=${gh_rl_max_age}s); ignoring — gate: gh_rate_limit stale"
+        elif (( _gh_rl_low == 1 )); then
+            _gh_rl_remaining=$(printf '%s' "$_gh_rl_json" | jq -r '.remaining // 0' 2>/dev/null) || _gh_rl_remaining=0
+            _gh_rl_limit=$(printf '%s' "$_gh_rl_json" | jq -r '.limit // 0' 2>/dev/null) || _gh_rl_limit=0
+            _gh_rl_reset=$(printf '%s' "$_gh_rl_json" | jq -r '.reset // 0' 2>/dev/null) || _gh_rl_reset=0
+            _gh_rl_wait=$(( _gh_rl_reset - _gh_rl_now ))
+            (( _gh_rl_wait < 0 )) && _gh_rl_wait=0
+            echo "gh rate-limit low (remaining=${_gh_rl_remaining}/${_gh_rl_limit}, resets in ${_gh_rl_wait}s); holding claims this tick — gate: gh_rate_limit low"
+            exit 0
+        fi
+    else
+        echo "gh rate-limit state file unreadable or empty; failing open — gate: gh_rate_limit missing"
+    fi
+else
+    echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing"
 fi
 
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
@@ -150,6 +376,32 @@ mkdir -p "$ISSUE_STATE_DIR"
 # Step 3: process issues in ascending number order
 mapfile -t numbers < <(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")
 mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
+mapfile -t labels  < <(jq -c 'sort_by(.number) | .[].labels'  <<<"$issues_json")
+
+# Cache the precedence-band phase once (auditor 2026-08-28): with 221 ready
+# issues, calling precedence_band_phase per-issue would re-read the JSON 221
+# times. The phase cannot change mid-tick (it is a clock comparison).
+_band_phase="$(precedence_band_phase 2>/dev/null || echo unknown)"
+
+# fleet-ops#1431: surge-exhaustion probe. During the precedence-band surge
+# phase, fleet-ops intake claims only surge_leverage_issues. When NONE of
+# those are currently agent-ready (all claimed / blocked / done), a pure skip
+# leaves the queue at 0 dispatches for up to the whole surge window, which
+# watchers misread as "dispatcher starvation" and auto-file a false issue
+# cluster. The ready set is already in hand, so detect exhaustion ONCE here
+# and let the early surge skip below fall through to `precedence_band_allow_claim`,
+# whose surge floor admits exactly one machinery/repair lane so the queue can
+# never hard-stall. `precedence_band_is_leverage_issue` is a cheap jq probe on
+# the same policy JSON already loaded by precedence_band_phase.
+_surge_has_leverage=0
+if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
+    for _probe in "${numbers[@]}"; do
+        if precedence_band_is_leverage_issue "$_probe" 2>/dev/null; then
+            _surge_has_leverage=1
+            break
+        fi
+    done
+fi
 
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
@@ -158,6 +410,27 @@ for i in "${!numbers[@]}"; do
     if (( slots <= 0 )); then
         echo "issue $N ($title): skipped-capacity"
         continue
+    fi
+
+    # Early surge-phase skip (auditor 2026-08-28, summon unit-failure
+    # fleet-heartbeat): during surge, only surge_leverage_issues are
+    # claimable. Checking this BEFORE the body fetch avoids 200+ gh issue
+    # view + git fetch + git ls-remote calls for non-leverage issues that
+    # would be skipped anyway. The body is only needed for the blocker
+    # filter (both phases) and the band-multiplier check (band phase only).
+    # Product repos are never gated (allow-product) so this only applies to
+    # the machinery repo (fleet-ops).
+    # fleet-ops#1431: when surge work is exhausted (no leverage issue in the
+    # ready set), the early skip is RELAXED so the ordinary
+    # precedence_band_allow_claim path runs and its surge floor can admit one
+    # repair lane — the queue must never hard-stall at 0 dispatches through a
+    # surge window. Leverage work, when present, keeps strict priority (skip
+    # everything non-leverage cheaply, claim the leverage issues).
+    if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" && "$_surge_has_leverage" == "1" ]]; then
+        if ! precedence_band_is_leverage_issue "$N" 2>/dev/null; then
+            echo "issue $N ($title): skipped-precedence-band (skip-surge-leverage)"
+            continue
+        fi
     fi
 
     # Per-issue fetch (keeps origin/main fresh)
@@ -176,10 +449,20 @@ for i in "${!numbers[@]}"; do
         continue
     fi
 
+    # One body fetch serves the blocker filter (blocked-on: in body).
+    # The rent-paying band (band-multiplier) now uses labels (priority/emergency)
+    # from the initial issue list. A failed view is fail-closed: skip
+    # this issue this tick rather than claim a possibly-blocked or
+    # out-of-band issue. The next tick retries.
+    body=$(gh issue view "$N" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || {
+        echo "issue $N ($title): skipped-body-unreadable"
+        continue
+    }
+
     # Blocker filter: never claim an issue whose body carries a blocked-on:
     # line (machine dep or nish-decision). The claim is a no-op spawn churn
     # otherwise. Audit finding 2026-08-26: fleet-ops#87 looped exactly this way.
-    if blocked_filter "$N"; then
+    if blocked_filter "$body"; then
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
@@ -200,6 +483,31 @@ for i in "${!numbers[@]}"; do
         exit 1
     fi
 
+    # Vacation park (fleet-ops#1165, audit finding 12): for 0509, skip
+    # claiming any agent-ready issue whose body names a protected
+    # verifier/deploy file while inside the vacation window. This is the
+    # intake-side prevention so workers do not open attest-stuck PRs that
+    # sit red until Nish returns. The issue stays agent-ready and becomes
+    # claimable again after the window; the gate is unchanged.
+    if protected_verifier_vacation_filter "$body"; then
+        echo "issue $N ($title): skipped-protected-verifier-vacation"
+        continue
+    fi
+
+    # Rent-paying band (fleet-ops#1223): until cutoff_utc, fleet-ops intake
+    # claims only surge_leverage_issues; after cutoff, a new machinery claim
+    # that would push live share over machinery_max_pct is skipped unless the
+    # issue carries a `priority` or `emergency` label. One repair lane always runs when
+    # live machinery == 0 (fleet-ops#1452 floor). Skip, do not fail the tick —
+    # product ticks still run, and the next fleet-ops tick retries when a
+    # slot opens.
+    # Legit-work guard (fleet-ops#1516): pass title and body for quality classification
+    # to allow empty-product surge expansion only for upgrade/repair work.
+    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "${labels[$i]}" "$body" "$title") || {
+        echo "issue $N ($title): skipped-precedence-band ($band_reason)"
+        continue
+    }
+
     # Atomic create-only claim push (claim branch IS the work branch)
     status=0
     push_out=$(git -C "$REPO_DIR" push --force-with-lease="refs/heads/claim/issue-$N:" origin "origin/main:refs/heads/claim/issue-$N" 2>&1) || status=$?
@@ -212,17 +520,56 @@ for i in "${!numbers[@]}"; do
         exit 1
     fi
 
-    # Mark the issue
-    edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || {
-        echo "gh issue edit failed for $N: $edit_out" >&2
-        exit 1
-    }
+    # Mark the issue — retry on GitHub secondary rate limits.
+    # Tolerate permanent label-state errors (agent-ready already removed
+    # by a prior tick/auditor): if agent-in-progress is already set and
+    # agent-ready is gone, the issue is in the desired state — no-op.
+    edit_out=""
+    edit_rc=0
+    for _ in 1 2 3; do
+        edit_rc=0
+        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
+        if [[ $edit_rc -eq 0 ]]; then break; fi
+        case "$edit_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *) break ;;
+        esac
+    done
+    if [[ $edit_rc -ne 0 ]]; then
+        labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
+        if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
+            echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
+        else
+            echo "gh issue edit failed for $N: $edit_out" >&2
+            exit 1
+        fi
+    fi
 
+    # GitHub secondary rate limits on addComment ("submitted too quickly")
+    # are transient — retry with backoff (fleet-ops#1350 pattern). A
+    # permanent failure (auth, 404, etc.) still exits 1 after exhaustion.
     comment_body="claimed by pi-issue-${REPO}-${N} at $(date -u +%FT%TZ)"
-    comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || {
-        echo "gh issue comment failed for $N: $comment_out" >&2
-        exit 1
-    }
+    comment_out=""
+    comment_rc=0
+    for _ in 1 2 3; do
+        comment_rc=0
+        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
+        if [[ $comment_rc -eq 0 ]]; then break; fi
+        case "$comment_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *) break ;;  # permanent error — do not retry
+        esac
+    done
+    if [[ $comment_rc -ne 0 ]]; then
+        # The comment is a GH-visibility nicety, not load-bearing: the claim
+        # branch + label flip + claims log are the authoritative record, and
+        # the worker packet + unit start below do not depend on it. A
+        # sustained GitHub secondary rate limit ("submitted too quickly")
+        # must not abandon an otherwise-valid claim and orphan the worker
+        # spawn — that is the same loss the set -e guard above prevents.
+        # Log loud and continue to spawn the worker.
+        echo "issue $N: claim comment skipped (gh secondary rate limit after 3 retries: $comment_out)" >&2
+    fi
 
     # Write the worker packet so pi-issue-run can pick its own seat at run time
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
@@ -239,20 +586,120 @@ for i in "${!numbers[@]}"; do
     # completion and failure. If the unit is already active/activating, skip it
     # so another agent's worker is not double-started.
     unit="pi-issue@${REPO}-${N}.service"
-    pre_state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+    pre_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
     if [[ "$pre_state" == "active" || "$pre_state" == "activating" ]]; then
         echo "issue $N ($title): skipped-already-live"
         continue
     fi
 
+    # fleet-ops#1558: per-repo MemoryMax/MemoryHigh via per-instance drop-in
+    # before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this overrides
+    # for known repos (fleet-ops light 1536M/1G, 0509 browser 2G/1536M). Missing
+    # table row = keep template. daemon-reload so the fresh drop-in is seen
+    # on the subsequent start (oneshot units are not lingering-loaded).
+    mem_row=$(worker_memory_for_repo "$REPO" 2>/dev/null || true)
+    if [[ -n "$mem_row" ]]; then
+        IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
+        drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
+        mkdir -p "$drop_dir"
+        drop_tmp="$drop_dir/memory.conf.tmp.$$"
+        {
+            printf '# fleet-ops#1558: per-repo memory cap (written by intake)\n'
+            printf '[Service]\n'
+            [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
+            [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+        } > "$drop_tmp"
+        if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
+            mv -f "$drop_tmp" "$drop_dir/memory.conf"
+            systemctl --user daemon-reload 2>/dev/null || true
+        else
+            rm -f "$drop_tmp"
+        fi
+    fi
+
+    # fleet-ops#1587: per-repo Environment variables via per-instance drop-in.
+    # Limits test parallelism (vitest forks, playwright workers) on browser-
+    # heavy repos so per-worker MemoryPeak stays under the lowered cap.
+    env_lines=$(worker_env_for_repo "$REPO" 2>/dev/null || true)
+    if [[ -n "$env_lines" ]]; then
+        drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
+        mkdir -p "$drop_dir"
+        drop_tmp="$drop_dir/environment.conf.tmp.$$"
+        {
+            printf '# fleet-ops#1587: per-repo test-parallelism limit (written by intake)\n'
+            printf '[Service]\n'
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && printf 'Environment=%s\n' "$line"
+            done <<<"$env_lines"
+        } > "$drop_tmp"
+        if ! cmp -s "$drop_tmp" "$drop_dir/environment.conf" 2>/dev/null; then
+            mv -f "$drop_tmp" "$drop_dir/environment.conf"
+            systemctl --user daemon-reload 2>/dev/null || true
+        else
+            rm -f "$drop_tmp"
+        fi
+    fi
+
+    # fleet-ops#1546: start-limit lockout healer + post-condition verification.
+    # After a seat storm (402/429/503), dozens of pi-issue@ units sit in
+    # `failed` state with StartLimitBurst exhausted. `systemctl start --no-block`
+    # returns exit 0 even when the unit is in `failed`/start-limit lockout —
+    # the unit never runs, but the intake logged `claimed+spawned` (the
+    # spawn-vs-alive divergence: 56 claimed+spawned, 2 alive). Two fixes:
+    #
+    # (a) Start-limit healer: after start --no-block, check ActiveState. If
+    #     `failed`, the unit is in start-limit lockout — reset-failed (the
+    #     systemd-native way to clear it) and retry start once. This is the
+    #     mechanical clear the issue asks for ("systemd-native: OnFailure
+    #     reset, or StartLimitIntervalSec tuned"). One retry, not a loop —
+    #     a second failure is reported, not papered over.
+    # (b) Post-condition verification: only print `claimed+spawned` after
+    #     verifying the unit is active/activating AND the packet file exists
+    #     AND the claim branch exists on remote. Intentions are not success.
     start_status=0
-    start_out=$(systemctl --user start --no-block "$unit" 2>&1) || start_status=$?
+    start_out=$("$SYSTEMCTL" --user start --no-block "$unit" 2>&1) || start_status=$?
     if (( start_status != 0 )); then
         echo "issue $N ($title): spawn failed for ${REPO}-${N}: $start_status; output: $start_out"
         continue
     fi
 
+    # --no-block returns exit 0 even when the unit is in `failed`
+    # (start-limit lockout). Verify the unit actually activated; if it is
+    # still `failed`, reset-failed and retry once (the systemd-native
+    # start-limit clear). A second failure is reported, not logged as success.
+    post_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    if [[ "$post_state" == "failed" ]]; then
+        "$SYSTEMCTL" --user reset-failed "$unit" >/dev/null 2>&1 || true
+        "$SYSTEMCTL" --user start --no-block "$unit" >/dev/null 2>&1 || true
+        post_state=$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)
+    fi
+
+    # Post-condition verification (fleet-ops#1546): claimed+spawned must
+    # mean branch + packet + unit all exist, not that start --no-block
+    # returned 0. A unit that is not active/activating did not spawn.
+    if [[ "$post_state" != "active" && "$post_state" != "activating" ]]; then
+        echo "issue $N ($title): spawn failed (start-limit lockout, unit=$post_state) for ${REPO}-${N}"
+        continue
+    fi
+    [[ -f "$packet_path" ]] || {
+        echo "issue $N ($title): spawn failed (packet missing after write) for ${REPO}-${N}"
+        continue
+    }
+    # Verify the claim branch survived on the remote (post-condition, not
+    # intention). A missing branch means the push was rolled back or lost.
+    branch_check=$(git -C "$REPO_DIR" ls-remote origin "refs/heads/claim/issue-$N" 2>/dev/null || true)
+    if [[ -z "$branch_check" ]]; then
+        echo "issue $N ($title): spawn failed (claim branch missing post-spawn) for ${REPO}-${N}"
+        continue
+    fi
+
     echo "issue $N ($title): claimed+spawned"
+    # fleet-ops#1455: write a durable claim record so opus-heartbeat-gather
+    # and fleet-restore-drill can see the claim. Guard above means we only
+    # append after a verified branch+packet+unit spawn.
+    _claims_dir="$(dirname "$CLAIMS_LOG")"
+    mkdir -p "$_claims_dir" 2>/dev/null || true
+    printf '%s claimed line=%s repo=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$N" "$REPO" >> "$CLAIMS_LOG" 2>/dev/null || true
     slots=$(( slots - 1 ))
 done
 

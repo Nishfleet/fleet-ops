@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# fleet-bare-metal-rebuild-drill — prove the bare-metal rebuild manifest is
+# complete and the rebuild script works on a fresh Ubuntu container
+# (fleet-ops#1135).
+#
+# Planes:
+#   1. manifest_completeness — the manifest is valid JSON, the MANIFEST srcs
+#      exist, and every file in the installable repo dirs is covered.
+#   2. container_proof — run the rebuild script's --manifest-check inside a
+#      Docker ubuntu:24.04 container with the repo mounted read-only. Proves
+#      the script can bootstrap from a fresh OS.
+#
+# Result JSON: $AGENT_STATE/fleet-bare-metal-rebuild-drill/last-run.json
+# LOUD lines go to the heartbeat triage file. A SKIP is LOUD and does not fail
+# the unit. A FAIL exits 1.
+#
+# Usage:
+#   fleet-bare-metal-rebuild-drill
+#   fleet-bare-metal-rebuild-drill --check          # repo files + manifest only
+#   fleet-bare-metal-rebuild-drill --container      # force container proof
+#   fleet-bare-metal-rebuild-drill --no-container   # skip container proof
+#
+# Env:
+#   FLEET_OPS_REPO
+#   AGENT_STATE
+#   FLEET_HEARTBEAT_TRIAGE
+#   DOCKER
+#   FLEET_BARE_METAL_REBUILD_DRILL_CONTAINER  auto|required|skip (default auto)
+#   FLEET_BARE_METAL_REBUILD_DRILL_TIMEOUT    default 600 (seconds)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE_DIR="$AGENT_STATE/fleet-bare-metal-rebuild-drill"
+RESULTS="$STATE_DIR/last-run.json"
+DOCKER="${DOCKER:-docker}"
+CONTAINER_MODE="${FLEET_BARE_METAL_REBUILD_DRILL_CONTAINER:-auto}"
+TIMEOUT="${FLEET_BARE_METAL_REBUILD_DRILL_TIMEOUT:-600}"
+
+RESULTS_LOG="$STATE_DIR/results.jsonl"
+
+REBUILD="$FLEET_OPS_REPO/bin/fleet-bare-metal-rebuild"
+MANIFEST_JSON="$FLEET_OPS_REPO/config/bare-metal-rebuild-manifest.json"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+  printf '[%s] [fleet-bare-metal-rebuild-drill] %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+  local tag="$1"; shift
+  local msg="$*"
+  log "LOUD [$tag] $msg"
+  {
+    printf '\n[%s] [%s] %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+  } >> "$TRIAGE" 2>/dev/null || true
+}
+
+fail() {
+  loud "BARE-METAL-REBUILD-DRILL-FAIL" "$*"
+  exit 1
+}
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+: >"$RESULTS_LOG"
+
+record() {
+  jq -c -n --arg name "$1" --arg status "$2" --arg proof "$3" \
+    '{name:$name, status:$status, proof:$proof}' >>"$RESULTS_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# --check / plane 1: manifest completeness
+# ---------------------------------------------------------------------------
+
+check_env() {
+  local rc=0
+  for f in \
+    bin/fleet-bare-metal-rebuild \
+    bin/fleet-bare-metal-rebuild-drill \
+    config/bare-metal-rebuild-manifest.json \
+    docs/bare-metal-rebuild.md \
+    systemd/fleet-bare-metal-rebuild-drill.service \
+    systemd/fleet-bare-metal-rebuild-drill.timer
+  do
+    if [[ -e "$FLEET_OPS_REPO/$f" ]]; then
+      log "ready: $f"
+    else
+      log "MISSING: $f"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+plane_manifest() {
+  local name="manifest_completeness"
+  log "plane 1: manifest completeness"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    record "$name" "fail" "jq missing"
+    loud "MANIFEST-DRILL" "jq missing — cannot parse manifest"
+    return 1
+  fi
+
+  if [[ ! -f "$MANIFEST_JSON" ]]; then
+    record "$name" "fail" "manifest missing: $MANIFEST_JSON"
+    loud "MANIFEST-DRILL" "manifest missing: $MANIFEST_JSON"
+    return 1
+  fi
+
+  if ! jq -e . "$MANIFEST_JSON" >/dev/null 2>&1; then
+    record "$name" "fail" "manifest is not valid JSON"
+    loud "MANIFEST-DRILL" "manifest is not valid JSON"
+    return 1
+  fi
+
+  # Run the rebuild script's static manifest check.
+  if ! "$REBUILD" --manifest-check; then
+    record "$name" "fail" "fleet-bare-metal-rebuild --manifest-check failed"
+    loud "MANIFEST-DRILL" "static manifest check failed"
+    return 1
+  fi
+
+  record "$name" "pass" "manifest valid, MANIFEST srcs present, all installable files covered"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# plane 2: container proof
+# ---------------------------------------------------------------------------
+
+plane_container() {
+  local name="container_proof"
+  log "plane 2: container proof (mode=$CONTAINER_MODE)"
+
+  if [[ "$CONTAINER_MODE" == "skip" ]]; then
+    record "$name" "skip" "FLEET_BARE_METAL_REBUILD_DRILL_CONTAINER=skip"
+    loud "MANIFEST-DRILL" "container proof skipped by configuration"
+    return 0
+  fi
+
+  if ! command -v "$DOCKER" >/dev/null 2>&1; then
+    if [[ "$CONTAINER_MODE" == "required" ]]; then
+      record "$name" "fail" "docker not installed and container proof is required"
+      loud "MANIFEST-DRILL" "docker not installed; container proof is required"
+      return 1
+    fi
+    record "$name" "skip" "docker not installed"
+    loud "MANIFEST-DRILL" "docker not installed — container proof skipped"
+    return 0
+  fi
+
+  if ! "$DOCKER" info >/dev/null 2>&1; then
+    if [[ "$CONTAINER_MODE" == "required" ]]; then
+      record "$name" "fail" "docker daemon not reachable and container proof is required"
+      loud "MANIFEST-DRILL" "docker daemon not reachable; container proof is required"
+      return 1
+    fi
+    record "$name" "skip" "docker daemon not reachable"
+    loud "MANIFEST-DRILL" "docker daemon not reachable — container proof skipped"
+    return 0
+  fi
+
+  # Use a local image if it exists; otherwise pull. On a metered box, pull only
+  # when required.
+  if [[ "$($DOCKER images -q ubuntu:24.04 2>/dev/null | wc -l)" -eq 0 ]]; then
+    if [[ "$CONTAINER_MODE" == "auto" ]]; then
+      record "$name" "skip" "ubuntu:24.04 image not present locally; set FLEET_BARE_METAL_REBUILD_DRILL_CONTAINER=required to pull"
+      loud "MANIFEST-DRILL" "ubuntu:24.04 image not present locally; container proof skipped (set required to pull)"
+      return 0
+    fi
+    log "pulling ubuntu:24.04..."
+    if ! "$DOCKER" pull ubuntu:24.04 >/dev/null 2>&1; then
+      record "$name" "fail" "docker pull ubuntu:24.04 failed"
+      loud "MANIFEST-DRILL" "docker pull ubuntu:24.04 failed"
+      return 1
+    fi
+  fi
+
+  # Run the rebuild script's static manifest check inside the container.
+  # Mount the repo read-only and install jq/curl/git/python3 so the check can
+  # run without the live box's state.
+  local cmd
+  cmd=$(cat <<'DOCKER'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null
+apt-get install -y -qq --no-install-recommends jq git curl ca-certificates python3 >/dev/null 2>&1
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export FLEET_BARE_METAL_REBUILD_SKIP_LIVE=1
+/repo/bin/fleet-bare-metal-rebuild --manifest-check
+DOCKER
+)
+
+  log "running container proof with timeout ${TIMEOUT}s"
+  if timeout "$TIMEOUT" "$DOCKER" run --rm \
+      --mount type=bind,source="$FLEET_OPS_REPO",target=/repo,readonly \
+      --env FLEET_BARE_METAL_REBUILD_SKIP_LIVE=1 \
+      ubuntu:24.04 \
+      bash -c "$cmd"; then
+    record "$name" "pass" "fleet-bare-metal-rebuild --manifest-check passed inside ubuntu:24.04 container"
+    return 0
+  else
+    record "$name" "fail" "container proof failed (timeout or command error)"
+    loud "MANIFEST-DRILL" "container proof failed — the rebuild script did not pass on a fresh Ubuntu container"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+run_drill() {
+  log "bare-metal rebuild drill starting (repo=$FLEET_OPS_REPO container_mode=$CONTAINER_MODE)"
+  local rc=0
+  plane_manifest || rc=1
+  plane_container || rc=1
+
+  local all_pass
+  all_pass="$(jq -s -c 'all(.[]; .status == "pass" or .status == "skip")' "$RESULTS_LOG")"
+  jq -s -c --arg ran "$(now_iso)" --argjson all_pass "$all_pass" \
+    '{ran_at:$ran, all_pass:$all_pass, results:.}' "$RESULTS_LOG" >"$RESULTS"
+
+  if [[ "$rc" == 0 ]]; then
+    log "OK: fleet-bare-metal-rebuild-drill pass (see $RESULTS)"
+    exit 0
+  fi
+  log "FAIL: one or more planes failed (see $RESULTS)"
+  exit 1
+}
+
+case "${1:-}" in
+  --check)
+    check_env
+    ;;
+  --container)
+    CONTAINER_MODE=required
+    run_drill
+    ;;
+  --no-container)
+    CONTAINER_MODE=skip
+    run_drill
+    ;;
+  "")
+    run_drill
+    ;;
+  *)
+    log "usage: fleet-bare-metal-rebuild-drill [--check|--container|--no-container]"
+    exit 2
+    ;;
+esac

@@ -7,6 +7,8 @@
 
 set -euo pipefail
 
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/fleet-issue-file}"
+
 short="$(git rev-parse --short=7 "$HEAD_SHA")"
 subject="$(git log --format=%s -n 1 "$HEAD_SHA")"
 parents="$(git rev-list --parents -n 1 "$HEAD_SHA")"
@@ -56,7 +58,7 @@ halt () {
         || true
     done <<< "$extras"
   else
-    gh issue create --repo "$REPO" --title "$title" --body "$body" --label auto-revert-halt
+    "$ISSUE_FILE" file --repo "$REPO" --title "$title" --body "$body" --label auto-revert-halt
   fi
 }
 

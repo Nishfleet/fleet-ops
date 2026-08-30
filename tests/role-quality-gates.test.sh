@@ -63,10 +63,40 @@ if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
 PY
 ok "catalog: researcher role is gated (fleet-ops#592)"
 
-# fleet-ops#592 / #636 / #1180: session-reap, vault-conflict-resolver, the
-# vault knowledge-format lint timer, and the fleet-metrics-export Prometheus
-# textfile exporter are plumbing, not work-producing roles. Dropping any
-# prefix re-reds the audit (the live catalog test is not enough if the
+# fleet-ops#1571: the 2026-08-28 main CI red was caused by the gap-closure
+# conference/research prompts and auditor/conference units landing without
+# catalog rows. Dropping them must fail even if the live audit happens to be
+# green for other reasons.
+python3 - "$catalog" <<'PY' || fail "senior-auditor catalog row missing gap-closure gates (fleet-ops#1571)"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+row = next((r for r in data["roles"] if r.get("id") == "senior-auditor"), None)
+if row is None:
+    raise SystemExit("senior-auditor role missing")
+required_prompts = (
+    "gap-closure-conference.md",
+    "gap-closure-conference-round2.md",
+    "gap-closure-research.md",
+    "gap-closure-research-round2.md",
+)
+missing_prompts = [p for p in required_prompts if p not in (row.get("prompts") or [])]
+if missing_prompts:
+    raise SystemExit("senior-auditor prompts missing: " + ", ".join(missing_prompts))
+required_units = (
+    "fleet-gap-closure-auditor@.service",
+    "fleet-gap-closure-conference.service",
+)
+missing_units = [u for u in required_units if u not in (row.get("units") or [])]
+if missing_units:
+    raise SystemExit("senior-auditor units missing: " + ", ".join(missing_units))
+PY
+ok "catalog: senior-auditor role gates gap-closure conference/research (fleet-ops#1571)"
+
+# fleet-ops#592 / #636 / #1180 / #1151 / #1513: session-reap, vault-conflict-resolver,
+# the vault knowledge-format lint timer, the fleet-metrics-export Prometheus
+# textfile exporter, the fleet-baseline-delta weekly pre-pass, and the
+# pi-intake-trigger oneshot are plumbing, not work-producing roles. Dropping
+# any prefix re-reds the audit (the live catalog test is not enough if the
 # unit file is also gone).
 python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
 import importlib.util
@@ -81,6 +111,13 @@ required = (
     "vault-knowledge-format",
     "vault-conflict",
     "fleet-metrics-export",
+    "fleet-baseline-delta",
+    "standing-rules-render",
+    "fleet-aeo",
+    "pi-intake-trigger",
+    "fleet-gap-closure-drill",
+    "fleet-gap-closure-loop",
+    "gap-closure-drill",
 )
 missing = [p for p in required if p not in mod.NON_ROLE_UNIT_PREFIXES]
 if missing:
@@ -94,13 +131,79 @@ leaked = [
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
         "fleet-metrics-export.service",
+        "fleet-baseline-delta.service",
+        "standing-rules-render.service",
+        "fleet-aeo-probe.service",
+        "pi-intake-trigger.service",
+        "fleet-gap-closure-drill.service",
+        "fleet-gap-closure-loop.service",
+        "gap-closure-drill-stub-fail.service",
+        "gap-closure-drill-stub-mask.service",
     )
     if u in units
 ]
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export (fleet-ops#1180)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, baseline-delta, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1151, #1152, #1236, #180, #1513)"
+
+# fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
+# standing-rules-render.service on disk (the canonical-render unit that
+# the auditor flagged as ungated-role in CI) and prove the audit emits no
+# `unit:standing-rules-render.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1152=$(mktemp -d -t role-gates-1152.XXXXXX)
+trap 'rm -rf "$scratch1152"' EXIT INT TERM
+mkdir -p "$scratch1152/systemd" "$scratch1152/prompts" "$scratch1152/bin" "$scratch1152/config" "$scratch1152/tests"
+cat >"$scratch1152/systemd/standing-rules-render.service" <<'UNIT'
+[Unit]
+Description=Regenerate standing-rules regions (fixture for fleet-ops#1152)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/bin/render-standing-rules.py --render
+UNIT
+# Minimal catalog so the auditor can parse it.
+cp "$catalog" "$scratch1152/config/role-quality-gates.json"
+audit1152_out=$(python3 "$lib" audit --repo-root "$scratch1152" --catalog "$scratch1152/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1152_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1152_out"
+if echo "$audit1152_out" | jq -e '.findings[] | select(.id == "unit:standing-rules-render.service")' >/dev/null; then
+  fail "fleet-ops#1152 regression: standing-rules-render.service leaked into ungated-role findings: $(echo "$audit1152_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line CI reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit1152_out" | jq -e '.findings[] | select(.detail | test("standing-rules-render.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1152 regression: exact issue symptom re-appeared: $(echo "$audit1152_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: standing-rules-render.service is not flagged (fleet-ops#1152)"
+
+# fleet-ops#1236: behaviour-locked. Build a scratch repo with a real
+# fleet-aeo-probe.service on disk and prove the audit emits no
+# `unit:fleet-aeo-probe.service` finding. The structural-prefix test
+# above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1236=$(mktemp -d -t role-gates-1236.XXXXXX)
+trap 'rm -rf "$scratch1152" "$scratch1236"' EXIT INT TERM
+mkdir -p "$scratch1236/systemd" "$scratch1236/prompts" "$scratch1236/bin" "$scratch1236/config" "$scratch1236/tests"
+cat >"$scratch1236/systemd/fleet-aeo-probe.service" <<'UNIT'
+[Unit]
+Description=Weekly AEO visibility probe for 0509 (fixture for fleet-ops#1236)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-aeo-probe.py --config /home/nish/.config/fleet-aeo/probe.json
+UNIT
+cp "$catalog" "$scratch1236/config/role-quality-gates.json"
+audit1236_out=$(python3 "$lib" audit --repo-root "$scratch1236" --catalog "$scratch1236/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1236_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1236_out"
+if echo "$audit1236_out" | jq -e '.findings[] | select(.id == "unit:fleet-aeo-probe.service")' >/dev/null; then
+  fail "fleet-ops#1236 regression: fleet-aeo-probe.service leaked into ungated-role findings: $(echo "$audit1236_out" | jq -c '.findings')"
+fi
+detail_hit=$(echo "$audit1236_out" | jq -e '.findings[] | select(.detail | test("fleet-aeo-probe.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1236 regression: exact issue symptom re-appeared: $(echo "$audit1236_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: fleet-aeo-probe.service is not flagged (fleet-ops#1236)"
 
 # fleet-ops#709: behaviour-locked. Build a scratch repo with a real
 # vault-knowledge-format.service on disk and prove the audit emits no
@@ -163,8 +266,89 @@ if [[ "$detail_hit" == "yes" ]]; then
 fi
 ok "behaviour lock: fleet-metrics-export.service is not flagged (fleet-ops#1180)"
 
+# fleet-ops#1513: behaviour-locked. Build a scratch repo with a real
+# pi-intake-trigger.service on disk and prove the audit emits no
+# `unit:pi-intake-trigger.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+scratch1513=$(mktemp -d -t role-gates-1513.XXXXXX)
+trap 'rm -rf "$scratch1180" "$scratch1513"' EXIT INT TERM
+mkdir -p "$scratch1513/systemd" "$scratch1513/prompts" "$scratch1513/bin" "$scratch1513/config" "$scratch1513/tests"
+cat >"$scratch1513/systemd/pi-intake-trigger.service" <<'UNIT'
+[Unit]
+Description=Event-driven intake trigger (fixture for fleet-ops#1513)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/pi-intake-trigger
+UNIT
+# Minimal catalog so the auditor can parse it.
+cp "$catalog" "$scratch1513/config/role-quality-gates.json"
+audit1513_out=$(python3 "$lib" audit --repo-root "$scratch1513" --catalog "$scratch1513/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1513_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1513_out"
+if echo "$audit1513_out" | jq -e '.findings[] | select(.id == "unit:pi-intake-trigger.service")' >/dev/null; then
+  fail "fleet-ops#1513 regression: pi-intake-trigger.service leaked into ungated-role findings: $(echo "$audit1513_out" | jq -c '.findings')"
+fi
+# Mirror the exact detail line the issue reported so future refactors see the
+# exact failure mode if the skip is ever dropped.
+detail_hit=$(echo "$audit1513_out" | jq -e '.findings[] | select(.detail | test("pi-intake-trigger.service is not in the role-quality-gates catalog"))' >/dev/null && echo yes || echo no)
+if [[ "$detail_hit" == "yes" ]]; then
+  fail "fleet-ops#1513 regression: exact issue symptom re-appeared: $(echo "$audit1513_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: pi-intake-trigger.service is not flagged (fleet-ops#1513)"
+
+# fleet-ops#1563: behaviour-locked. Build a scratch repo with the real
+# gap-closure plumbing/fixture units on disk (the loop oneshot, the drill
+# runner, and the two throwaway stubs the live audit flagged in #1563) and
+# prove the audit emits no `unit:<name>` finding for any of them. The
+# structural-prefix test above would still pass if a future refactor moved
+# the skip out of NON_ROLE_UNIT_PREFIXES; this behaviour test would not.
+# Covers all three skip prefixes: fleet-gap-closure-loop,
+# fleet-gap-closure-drill, gap-closure-drill. The work-producing
+# fleet-gap-closure-auditor@/conference units are catalogued under
+# senior-auditor (PR #1601) and are covered by the live-catalog check above.
+scratch1563=$(mktemp -d -t role-gates-1563.XXXXXX)
+trap 'rm -rf "$scratch1563" "$scratch1513"' EXIT INT TERM
+mkdir -p "$scratch1563/systemd" "$scratch1563/prompts" "$scratch1563/bin" "$scratch1563/config" "$scratch1563/tests"
+cat >"$scratch1563/systemd/fleet-gap-closure-loop.service" <<'UNIT'
+[Unit]
+Description=Fleet gap-closure loop (one phase transition per start)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-gap-closure-loop
+UNIT
+cat >"$scratch1563/systemd/fleet-gap-closure-drill.service" <<'UNIT'
+[Unit]
+Description=Fleet gap-closure detector drills (stub units only)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-gap-closure-drill
+UNIT
+cat >"$scratch1563/systemd/gap-closure-drill-stub-fail.service" <<'UNIT'
+[Unit]
+Description=Throwaway failing stub for gap-closure detector drills
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+UNIT
+cat >"$scratch1563/systemd/gap-closure-drill-stub-mask.service" <<'UNIT'
+[Unit]
+Description=Throwaway service for the mask-detection drill timer
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+UNIT
+cp "$catalog" "$scratch1563/config/role-quality-gates.json"
+audit1563_out=$(python3 "$lib" audit --repo-root "$scratch1563" --catalog "$scratch1563/config/role-quality-gates.json" 2>&1) || true
+echo "$audit1563_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit1563_out"
+for u in fleet-gap-closure-loop.service fleet-gap-closure-drill.service gap-closure-drill-stub-fail.service gap-closure-drill-stub-mask.service; do
+  if echo "$audit1563_out" | jq -e --arg u "unit:$u" '.findings[] | select(.id == $u)' >/dev/null; then
+    fail "fleet-ops#1563 regression: $u leaked into ungated-role findings: $(echo "$audit1563_out" | jq -c '.findings')"
+  fi
+done
+ok "behaviour lock: gap-closure loop/drill/stub units are not flagged (fleet-ops#1563)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
-trap 'rm -rf "$scratch"' EXIT INT TERM
+trap 'rm -rf "$scratch1563" "$scratch1513" "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
 : >"$scratch/triage.md"
 : >"$scratch/gh.log"

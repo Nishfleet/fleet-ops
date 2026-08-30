@@ -21,6 +21,7 @@
 #   scout-candidate
 #   nish-reserved
 #   noise-class
+#   observe-to-close
 #   drill:*   (any label whose name starts with drill:)
 #
 # Classification of issues that currently have none of those:
@@ -30,12 +31,37 @@
 #       → nish-reserved
 #   title starts with "drill:" (any case)
 #       → drill:lifecycle
+#   title starts with "fix(failed-command):" and ends with
+#       "— failed command walked past, never flagged", and the body
+#       carries `signal: failed-command-flagged/<slug>`
+#       → observe-to-close  (detector observe-to-close, no work left)
+#   title starts with "fix(decisions-ledger):" and ends with
+#       "— decided question was re-asked", and the body carries
+#       `signal: decisions-ledger/<slug>`
+#       → observe-to-close  (detector observe-to-close, no work left)
 #   gap-audit topic label already present
 #       → agent-ready  (already judged by the blind-audit panel)
 #   repo is Nishfleet/fleet-ops (control-plane)
 #       → agent-ready  (builder gate: CI + conference + auto-revert)
 #   otherwise (product repos)
 #       → scout-candidate  (fleet-ops#457: admission, not blank approval)
+#
+# Class-lock reclassification (fleet-ops#1083): a `fix(failed-command):` or
+# `fix(decisions-ledger):` issue whose class-lock PR (the `claim/issue-<N>`
+# branch, merged with `Relates to #<N>` not `Closes #<N>`) has already
+# merged is reclassified to `observe-to-close` regardless of its current
+# lifecycle label. A class-lock PR does NOT close the issue (it uses
+# `Relates to #<N>`), and the release paths (tier1 §3, pi-issue-failed-reap,
+# undersaturation label-hygiene) flip it back to `agent-ready` after the
+# worker hits StartLimitBurst, so intake re-claims it every tick until the
+# 24h observe-to-close window expires — wasted worker spawns on work that
+# is already done (the live #958 loop). Parking it under observe-to-close
+# makes intake blind to it (intake only lists `-l agent-ready`) while the
+# detector's own observe-to-close still closes it on session age-out. The
+# merged-PR probe is `gh pr list --head claim/issue-<N> --state merged`,
+# which survives branch deletion (PRs keep their head ref; verified live on
+# the deleted claim/issue-958 branch). Fail-open: a gh blip leaves the
+# label untouched and the next tick retries.
 #
 # Environment (tests override all of these):
 #   LIFECYCLE_SWEEP_REPOS       newline-separated owner/name list
@@ -60,14 +86,39 @@ set -euo pipefail
 export HOME="${HOME:-/home/nish}"
 export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
 classify() {
     local title="$1"
     local repo="${2:-}"
+    local body="${3:-}"
     local lower short
     if [[ "$title" == "AUTO-REVERT SKIP"* || "$title" == "AUTO-REVERT HALT"* ]]; then
         printf '%s\n' "noise-class"
         return 0
+    fi
+    # fleet-ops#1401: failed-command observe-to-close issues are filed by
+    # bin/fleet-failed-command-flagged; no implementation work left. Match
+    # the exact title template and the body signal marker.
+    if [[ "$title" == "fix(failed-command):"* ]] \
+        && [[ "$title" == *" — failed command walked past, never flagged" ]]; then
+        if [ -z "$body" ] \
+            || printf '%s' "$body" | grep -qE 'signal: failed-command-flagged/[a-z0-9-]+'; then
+            printf '%s\n' "observe-to-close"
+            return 0
+        fi
+    fi
+    # fleet-ops#1083: decisions-ledger observe-to-close issues are filed by
+    # bin/fleet-decisions-ledger (fleet-ops#1138); same shape as the
+    # failed-command observe-to-close class. Match the title template and
+    # the body signal marker.
+    if [[ "$title" == "fix(decisions-ledger):"* ]] \
+        && [[ "$title" == *" — decided question was re-asked" ]]; then
+        if [ -z "$body" ] \
+            || printf '%s' "$body" | grep -qE 'signal: decisions-ledger/[a-z0-9-]+'; then
+            printf '%s\n' "observe-to-close"
+            return 0
+        fi
     fi
     lower=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')
     if [[ "$lower" == *"flag-for-nish"* ]]; then
@@ -123,6 +174,7 @@ label_color() {
     case "$1" in
         nish-reserved)   printf '%s' "5319E7" ;;
         noise-class)     printf '%s' "CFD3D7" ;;
+        observe-to-close) printf '%s' "BFD4F2" ;;
         drill:lifecycle) printf '%s' "EDEDED" ;;
         agent-ready)     printf '%s' "0E8A16" ;;
         scout-candidate) printf '%s' "FBCA04" ;;
@@ -134,6 +186,7 @@ label_desc() {
     case "$1" in
         nish-reserved)   printf '%s' "Reserved for Nish; agents must not claim" ;;
         noise-class)     printf '%s' "Not work (halt notices, noise); not agent-ready" ;;
+        observe-to-close) printf '%s' "Waiting for detector observe-to-close; do not claim (fleet-ops#1401)" ;;
         drill:lifecycle) printf '%s' "Lifecycle-label drill fixture (fleet-ops#376)" ;;
         agent-ready)     printf '%s' "Auto: ready for a worker to claim" ;;
         scout-candidate) printf '%s' "Queued for senior admission; not yet agent-ready" ;;
@@ -144,7 +197,7 @@ label_desc() {
 is_lifecycle_label() {
     local name="$1"
     case "$name" in
-        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate) return 0 ;;
+        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate|observe-to-close) return 0 ;;
         drill:*) return 0 ;;
     esac
     return 1
@@ -160,6 +213,34 @@ issue_has_lifecycle() {
         fi
     done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
     return 1
+}
+
+# fleet-ops#1083: a class-lock issue is one auto-filed by
+# bin/fleet-failed-command-flagged or bin/fleet-decisions-ledger. Its
+# class-lock PR uses `Relates to #<N>` (not `Closes #<N>`) on branch
+# claim/issue-<N>, so merging it does NOT close the issue. The detector's
+# own observe-to-close closes it later on session age-out. Until then the
+# release paths keep flipping it back to agent-ready and intake re-claims
+# it. This predicate names the title prefixes that need the merged-PR
+# reclassification below.
+is_class_lock_title() {
+    local title="$1"
+    [[ "$title" == "fix(failed-command):"* ]] && return 0
+    [[ "$title" == "fix(decisions-ledger):"* ]] && return 0
+    return 1
+}
+
+# Has the class-lock PR for issue <num> already merged? gh pr list keeps the
+# head ref on the PR record after branch deletion, so this works even once
+# the release paths have deleted claim/issue-<num>. Returns 0 (merged) / 1
+# (not merged or probe failed — fail-open to the existing label).
+class_lock_pr_merged() {
+    local repo="$1" num="$2"
+    local merged_json
+    merged_json=$(gh pr list -R "$repo" --head "claim/issue-${num}" \
+        --state merged --json number 2>/dev/null) || return 1
+    [ -n "$merged_json" ] || return 1
+    printf '%s' "$merged_json" | jq -e 'length > 0' >/dev/null 2>&1
 }
 
 mkdir -p "$LOCKDIR"
@@ -189,6 +270,7 @@ NOW_ISO=$(now_iso)
 relabeled=0
 skipped=0
 failed=0
+reclassified=0
 drill_repo=""
 drill_num=""
 
@@ -202,6 +284,31 @@ ensure_label() {
         return 0
     fi
     gh label create "$name" -R "$repo" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
+}
+
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1"
+    local py
+    py=$(spec_gate_py)
+    if [ ! -f "$py" ]; then
+        log "SPEC-GATE missing at $py — refuse agent-ready (fail closed)"
+        return 1
+    fi
+    printf '%s' "$body" | python3 "$py" check-body >/dev/null
 }
 
 apply_label() {
@@ -221,6 +328,37 @@ apply_label() {
     return 0
 }
 
+# fleet-ops#1083: reclassify a class-lock issue whose class-lock PR merged
+# to observe-to-close. Unlike apply_label (add-only, for unlabeled issues),
+# this removes the intake-visible lifecycle label(s) first so intake stops
+# listing the issue, then adds observe-to-close. Non-lifecycle labels
+# (gap-audit, escalate-senior, etc.) are left in place.
+reclassify_to_observe_close() {
+    local repo="$1" num="$2" labels_json="$3"
+    local remove_args=() name
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        case "$name" in
+            agent-ready|agent-in-progress|agent-blocked)
+                remove_args+=(--remove-label "$name")
+                ;;
+        esac
+    done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
+    local body
+    body="lifecycle-label: observe-to-close by fleet-heartbeat at ${NOW_ISO} (class-lock PR merged; fleet-ops#1083). Intake will not claim this; the detector's observe-to-close still closes it on session age-out."
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: reclassify → observe-to-close (drop: ${remove_args[*]:-none})"
+        return 0
+    fi
+    ensure_label "$repo" "observe-to-close"
+    if ! gh issue edit "$num" -R "$repo" "${remove_args[@]}" --add-label observe-to-close >/dev/null 2>&1; then
+        log "  $repo#$num: reclassify to observe-to-close FAILED — retry next tick"
+        return 1
+    fi
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    return 0
+}
+
 if [ "$DRILL" = "1" ]; then
     drill_repo=$(printf '%s\n' "$repos" | awk 'NF{print; exit}')
     [ -n "$drill_repo" ] || { log "FATAL: drill needs a repo"; exit 2; }
@@ -228,7 +366,7 @@ if [ "$DRILL" = "1" ]; then
         log "DRY drill: would file unlabeled fixture on $drill_repo"
         drill_num="0"
     else
-        drill_url=$(gh issue create -R "$drill_repo" \
+        drill_url=$("$ISSUE_FILE" file -R "$drill_repo" \
             --title "drill: unlabeled-lifecycle fixture" \
             --body "Unlabeled fixture for fleet-ops#376. The sweep must apply a lifecycle label within this tick, then this issue is closed." \
             2>/dev/null) || {
@@ -251,7 +389,7 @@ while IFS= read -r repo; do
     log "repo $repo"
 
     if ! list_json=$(gh issue list -R "$repo" --state open \
-        --json number,title,labels --limit 500 2>/dev/null); then
+        --json number,title,labels,body --limit 500 2>/dev/null); then
         log "  $repo: gh issue list FAILED — skip"
         continue
     fi
@@ -261,6 +399,7 @@ while IFS= read -r repo; do
         num=$(printf '%s' "$row" | jq -r '.number')
         title=$(printf '%s' "$row" | jq -r '.title // ""')
         labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
 
         if issue_has_lifecycle "$labels_json"; then
             skipped=$((skipped + 1))
@@ -273,7 +412,22 @@ while IFS= read -r repo; do
         if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
             label="agent-ready"
         else
-            label=$(classify "$title" "$repo")
+            label=$(classify "$title" "$repo" "$issue_body")
+        fi
+        # fleet-ops#543: first admission to agent-ready needs a spec.
+        # gap-audit leftovers already passed the panel; skip the body check.
+        if [ "$label" = "agent-ready" ] \
+            && ! printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
+            if ! issue_passes_spec_gate "$issue_body"; then
+                log "  $repo#$num: SPEC-GATE-REFUSED agent-ready ($title)"
+                if [ "$DRY" != "1" ]; then
+                    gh issue comment "$num" -R "$repo" \
+                        --body "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
+                        >/dev/null 2>&1 || true
+                fi
+                skipped=$((skipped + 1))
+                continue
+            fi
         fi
         log "  $repo#$num: unlabeled → $label ($title)"
         if apply_label "$repo" "$num" "$label"; then
@@ -282,11 +436,44 @@ while IFS= read -r repo; do
             failed=$((failed + 1))
         fi
     done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#1083: class-lock reclassification pass. A class-lock issue
+    # (fix(failed-command): / fix(decisions-ledger):) whose class-lock PR
+    # has merged is parked under observe-to-close so intake stops
+    # re-claiming it. This runs on issues that ALREADY have a lifecycle
+    # label (the unlabeled pass above skipped them) — the release paths
+    # flip them to agent-ready after StartLimitBurst, so they re-enter the
+    # intake queue every tick. Only agent-ready / agent-in-progress /
+    # agent-blocked are candidates; an issue already under observe-to-close
+    # is left alone (idempotent). The merged-PR probe fail-opens: a gh blip
+    # leaves the label untouched and the next tick retries.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        is_class_lock_title "$title" || continue
+        # Only reclassify the intake-visible / hold labels. observe-to-close
+        # and nish-reserved/noise-class/scout-candidate/drill:* are not the
+        # loop this issue owns.
+        case "$(printf '%s' "$labels_json" | jq -r '.[].name // empty' | paste -sd, -)" in
+            *agent-ready*|*agent-in-progress*|*agent-blocked*) ;;
+            *) continue ;;
+        esac
+        if class_lock_pr_merged "$repo" "$num"; then
+            log "  $repo#$num: class-lock PR merged → observe-to-close ($title)"
+            if reclassify_to_observe_close "$repo" "$num" "$labels_json"; then
+                reclassified=$((reclassified + 1))
+            else
+                failed=$((failed + 1))
+            fi
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
-log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed"
-printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s\n' \
-    "$relabeled" "$skipped" "$failed"
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s\n' \
+    "$relabeled" "$skipped" "$failed" "$reclassified"
 
 if [ "$DRILL" = "1" ]; then
     if [ "$DRY" = "1" ]; then

@@ -95,3 +95,43 @@ bash "$here/pi-intake-tick-seat-gate.test.sh"
 # fleet-ops#1250: claim-step prior-art bounce (CI hook; keep this call).
 # ci.yml lists this file; workers cannot add a new verify-command line.
 bash "$here/prior-art-claim-check.test.sh"
+# --- 6. fleet-ops#1546 spawn post-condition + start-limit healer (CI hook) --
+# tests/pi-intake-tick-spawn-postcondition.test.sh locks the healer
+# (reset-failed on a start-limit-locked unit) and the post-condition
+# verification (branch + packet + unit exist before claimed+spawned). ci.yml
+# lists this file, so the drill runs from here instead of a new workflow line.
+bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
+# --- 7. fleet-ops#1350 gh rate-limit throttle gate (CI hook) ---------------
+# tests/pi-intake-gh-rate-limit.test.sh locks the side-car throttle in
+# lib/pi-intake-tick.sh. ci.yml lists this file, so the drill runs here.
+bash "$here/pi-intake-gh-rate-limit.test.sh"
+# --- 8. fleet-ops#1455 claims-index write (CI hook) -----------------------
+# tests/pi-intake-tick-claims-log.test.sh locks the append to
+# ready-work-claims.log on each successful claim+spawn. Without it the
+# heartbeat reports claims_last_2h=0 while claims are happening, and
+# watchers auto-file false "Intake starvation" issues. ci.yml lists this
+# file, so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-claims-log.test.sh"
+# --- 9. fleet-ops#234/#2007 escalate-senior exclusion (CI hook) -----------
+# tests/pi-intake-tick-escalate-senior-exclusion.test.sh (added by PR
+# #2044) locks the exclude-escalate-senior filter in
+# lib/pi-intake-tick.sh: a regular worker must never be dispatched on a
+# senior-auditor-owned escalation (the #2007 live class). ci.yml lists
+# this file, so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-escalate-senior-exclusion.test.sh"
+# --- 10. fleet-ops#2040 set -e claim-set-e guard (CI hook) ---------------
+# tests/pi-intake-tick-claim-set-e-guard.test.sh (added by PR #2040) locks
+# the retry guards in lib/pi-intake-tick.sh so a GitHub secondary rate
+# limit on gh issue edit/comment cannot abort the tick before the worker
+# spawns (fleet-ops#2040 live class). ci.yml lists this file, so the drill
+# runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-claim-set-e-guard.test.sh"
+# --- 11. fleet-ops#1165 protected-verifier vacation park (CI hook) -------
+# tests/pi-intake-tick-protected-verifier-vacation.test.sh locks the
+# 0509-only, date-bounded skip in lib/pi-intake-tick.sh that parks
+# agent-ready issues whose body names a protected verifier/deploy file
+# during Nish's vacation, so workers do not open attest-stuck PRs that
+# sit red on the required-verifier-integrity gate until Nish returns.
+# ci.yml lists this file, so the drill runs here instead of a new
+# workflow line (workers cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-protected-verifier-vacation.test.sh"

@@ -19,6 +19,9 @@
 #      of checkout-vs-itself is impossible).
 #  11. Enable-link into a volatile path (/tmp outside the checkout) fails
 #      DRIFT-VOLATILE.
+#  11b. A MANIFEST unit's wants-link hijacked to /tmp (fragment symlink still
+#      correct, so install.sh --check is clean) fails DRIFT-VOLATILE and
+#      auto-files a deduped issue — the exact fleet-ops#369 shape.
 #  12. install.sh refuses to overwrite a live file newer than the repo copy,
 #      and removes the paper-over heartbeat drop-in.
 #  12c. install.sh refuses a seat-caps cap drop even when the repo file has
@@ -43,6 +46,11 @@
 #      from a leftover service) is still red (fleet-ops#774). The class is
 #      binary — branch is main or not — so the `resolved-at:` comment must
 #      not wait for the whole canary to be green.
+#  18. fleet-ops-deploy invokes install.sh --system after the user-scope
+#      install (fleet-ops#1247). A --system failure fails the deploy.
+#  19. The drift canary rc is captured explicitly, not inverted: a canary
+#      that exits nonzero with success-looking output fails the deploy with
+#      the rc logged; a canary that exits 0 passes (fleet-ops#463).
 #
 # The real bin/fleet-ops-drift.py and bin/fleet-ops-deploy are exercised.
 
@@ -89,7 +97,7 @@ grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must refuse a non-canonical FLEET_OPS_CHECKOUT"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag live dests that point outside the canonical checkout"
-grep -q 'gh issue create' "$repo_root/bin/fleet-ops-drift.py" \
+grep -q 'issue-file.py' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file a canonical-checkout drift issue"
 grep -q 'DRIFT-MISSING-EXEC' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag user units whose ExecStart binary is missing"
@@ -131,6 +139,10 @@ grep -A3 'if \[ -f "$here/systemd/intake-reconcile.path" \]' "$repo_root/install
 grep -A3 'if \[ -f "$here/systemd/intake-reconcile.timer" \]' "$repo_root/install.sh" \
     | grep -q 'enable --now intake-reconcile.timer' \
     || fail "install.sh must enable intake-reconcile.timer only when the unit file exists in the checkout (fleet-ops#559)"
+grep -q 'run_install "install.sh --system" --system' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must run install.sh --system (fleet-ops#1247)"
+grep -q 'sudo -n systemctl reload prometheus' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must HUP prometheus after --system so fleet_rules.yml loads (fleet-ops#1247)"
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
@@ -307,6 +319,11 @@ case "$cmd" in
     ;;
   start)
     exit 0
+    ;;
+  is-active)
+    # Deploy probes prometheus before HUPing it. Tests have no prometheus.
+    printf 'inactive\n'
+    exit 3
     ;;
   *)
     printf 'unexpected systemctl call: %s %s\n' "$cmd" "$*" >&2
@@ -606,6 +623,81 @@ fi
 ok "scenario11: enable-link into a volatile path fails DRIFT-VOLATILE"
 rm -f "$HOME/.config/systemd/user/timers.target.wants/rogue.timer"
 
+# --- scenario 11b: MANIFEST unit's wants-link hijacked to /tmp (fleet-ops#369)
+# The exact #369 shape: the fragment symlink is correct (points at the
+# checkout, so install.sh --check is clean), but the wants-link systemctl
+# enable created resolves into /tmp — one tmpfiles-clean from dangling.
+# install.sh --check only verifies MANIFEST fragment dests, not wants-links,
+# so the drift canary is the only guard. Prove it catches the class AND
+# auto-files a deduped issue (parity with every other DRIFT-* class).
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+mkdir -p "$HOME/.config/systemd/user/timers.target.wants" "$scratch/volatile-p13"
+printf '[Timer]\nOnCalendar=*:17\n' > "$scratch/volatile-p13/demo.timer"
+# Fragment symlink stays correct (install.sh --check would pass this).
+# Wants-link is the hijacked one — the #369 bug.
+ln -sfn "$scratch/volatile-p13/demo.timer" \
+    "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+vol_gh_log="$scratch/gh-volatile.log"
+vol_gh="$scratch/gh-volatile"
+: >"$vol_gh_log"
+echo '[]' >"$scratch/open-volatile.json"
+cat >"$vol_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/3690"
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$vol_gh"
+run_volatile_canary() {
+  GH="$vol_gh" \
+  GH_LOG="$vol_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-volatile.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+}
+if out=$(run_volatile_canary); then
+    fail "scenario11b: canary should fail on a MANIFEST unit's hijacked wants-link, got: $out"
+fi
+[[ "$out" == *"DRIFT-VOLATILE"* ]] \
+    || fail "scenario11b: hijacked wants-link did not produce DRIFT-VOLATILE (got: $out)"
+[[ "$out" == *"timers.target.wants/demo.timer"* ]] \
+    || fail "scenario11b: must name the hijacked wants-link (got: $out)"
+grep -q 'issue create' "$vol_gh_log" \
+    || fail "scenario11b: must auto-file (log=$(cat "$vol_gh_log"))"
+ok "scenario11b: MANIFEST unit wants-link into /tmp fails DRIFT-VOLATILE and auto-files (fleet-ops#369)"
+
+# Dedup: an open issue carrying the marker must not be filed twice.
+: >"$vol_gh_log"
+jq -n --arg b $'body\nvolatile-unit-path: fleet-ops#369\n' \
+  '[{number: 369, body: $b}]' >"$scratch/open-volatile.json"
+if out=$(
+  GH="$vol_gh" \
+  GH_LOG="$vol_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-volatile.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+    fail "scenario11b-dedup: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$vol_gh_log" \
+    && fail "scenario11b-dedup: must not file a duplicate (log=$(cat "$vol_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario11b-dedup: expected dedup log, got: $out"
+ok "scenario11b-dedup: open issue with the marker is not filed twice"
+rm -f "$HOME/.config/systemd/user/timers.target.wants/demo.timer"
+
 # --- scenario 12: install.sh refuses newer live config; removes paper-over ---
 stale="$scratch/stale-repo"
 mkdir -p "$stale/config"
@@ -811,7 +903,7 @@ exit 0
 FAKE
 chmod +x "$hot_gh"
 set +e
-hot_out=$(PATH="$scratch:$PATH" GH="$hot_gh" GH_LOG="$hot_gh_log" FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" "$hot_repo/install.sh" 2>&1)
+hot_out=$(PATH="$scratch:$PATH" GH="$hot_gh" GH_LOG="$hot_gh_log" FLEET_OPS_DRIFT_FILE=1 FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" "$hot_repo/install.sh" 2>&1)
 hot_rc=$?
 set -e
 [[ "$hot_rc" -eq 1 ]] || fail "scenario12g: hot-patched newer live file should refuse (rc=1), got rc=$hot_rc out=$hot_out"
@@ -875,6 +967,7 @@ run_orphan_canary() {
   GH_OPEN_ISSUES="$scratch/open-orphan.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 }
 if out=$(run_orphan_canary); then
@@ -948,6 +1041,7 @@ run_paper_canary() {
   GH_OPEN_ISSUES="$scratch/open-paper.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 }
 if out=$(run_paper_canary); then
@@ -968,6 +1062,7 @@ if out=$(
   GH_OPEN_ISSUES="$scratch/open-paper.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 ); then
     fail "scenario14b: canary should still fail on drop-in after dedup, got: $out"
@@ -1061,6 +1156,12 @@ case "$*" in
     fi
     exit 0
     ;;
+  *"issue close"*)
+    if [ -n "${GH_CLOSED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_CLOSED"
+    fi
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
@@ -1071,6 +1172,7 @@ if out=$(
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_deploy
 ); then
     fail "scenario17: deploy should block on a named non-main branch, got: $out"
@@ -1096,6 +1198,7 @@ if out=$(
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   FLEET_OPS_DRIFT_FILE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_canary
 ); then
     fail "scenario17b: canary should fail on a named non-main branch, got: $out"
@@ -1160,7 +1263,9 @@ git -C "$checkout" checkout -q -B main origin/main
 : >"$enabled_units"
 printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
 off_comment_log="$scratch/gh-off-main-commented.log"
+off_closed_log="$scratch/gh-off-main-closed.log"
 : >"$off_comment_log"
+: >"$off_closed_log"
 : >"$off_gh_log"
 jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' \
   '[{number: 477, body: $b, comments: []}]' >"$scratch/open-off-main.json"
@@ -1169,7 +1274,9 @@ if out=$(
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
   FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
     run_canary
 ); then
@@ -1185,12 +1292,19 @@ grep -q 'issue comment' "$off_gh_log" \
   || fail "scenario17e: must call gh issue comment (log=$(cat "$off_gh_log"))"
 grep -q '^477$' "$off_comment_log" \
   || fail "scenario17e: must comment on #477 (commented=$(cat "$off_comment_log"))"
+# First green tick posts resolved-at but must NOT close same tick (fleet-ops#1156).
+grep -q 'issue close' "$off_gh_log" \
+  && fail "scenario17e: must not close on the same tick as the comment (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_closed_log" ]] \
+  || fail "scenario17e: must not close same tick (closed=$(cat "$off_closed_log"))"
 ok "scenario17e: green canary observes-to-close on open off-main issue (fleet-ops#620)"
 
-# Replay: canary must not comment twice. The open issue now carries the
-# resolved-at comment, so the canary dedups instead of re-posting.
+# Replay: a later green tick. The open issue now carries the resolved-at
+# comment, so the canary CLOSES it (two-tick close, fleet-ops#1156) instead
+# of re-posting.
 : >"$off_gh_log"
 : >"$off_comment_log"
+: >"$off_closed_log"
 jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
   '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
 if out=$(
@@ -1198,7 +1312,9 @@ if out=$(
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
   GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
   FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
     run_canary
 ); then
@@ -1206,13 +1322,48 @@ if out=$(
 else
   fail "scenario17e replay: canary should pass on main (got: $out)"
 fi
-[[ "$out" == *"dedup observe"* ]] \
-  || fail "scenario17e replay: expected dedup observe (got: $out)"
+[[ "$out" == *"OBSERVE-CLOSED"* ]] \
+  || fail "scenario17e replay: expected OBSERVE-CLOSED (got: $out)"
+grep -q 'issue close' "$off_gh_log" \
+  || fail "scenario17e replay: must call gh issue close (log=$(cat "$off_gh_log"))"
+grep -q '^477$' "$off_closed_log" \
+  || fail "scenario17e replay: must close #477 (closed=$(cat "$off_closed_log"))"
 grep -q 'issue comment' "$off_gh_log" \
   && fail "scenario17e replay: must not call gh issue comment again (log=$(cat "$off_gh_log"))"
 [[ ! -s "$off_comment_log" ]] \
   || fail "scenario17e replay: must not record a second comment (commented=$(cat "$off_comment_log"))"
-ok "scenario17e replay: off-main observe-to-close does not repeat"
+ok "scenario17e replay: later green tick closes the resolved off-main issue (fleet-ops#1156)"
+
+# Replay with FLEET_OPS_DRIFT_CLOSE=0: comment-only mode must NOT close, only
+# dedup. This is the path tests and one-off runs take when closing is opted
+# out (mirrors fleet-exec-review-canary CLOSE_ISSUES=0).
+: >"$off_gh_log"
+: >"$off_comment_log"
+: >"$off_closed_log"
+jq -n --arg b $'body\ndeploy-clone-off-main: fleet-ops#477\n' --arg c $'resolved-at: deploy-clone-off-main: fleet-ops#477\n' \
+  '[{number: 477, body: $b, comments: [{body: $c}]}]' >"$scratch/open-off-main.json"
+if out=$(
+  GH="$off_gh" \
+  GH_LOG="$off_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-off-main.json" \
+  GH_COMMENTED="$off_comment_log" \
+  GH_CLOSED="$off_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=0 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario17e close=0: canary should pass on main (got: $out)"
+fi
+[[ "$out" == *"dedup observe"* ]] \
+  || fail "scenario17e close=0: expected dedup observe (got: $out)"
+grep -q 'issue close' "$off_gh_log" \
+  && fail "scenario17e close=0: must not call gh issue close (log=$(cat "$off_gh_log"))"
+[[ ! -s "$off_closed_log" ]] \
+  || fail "scenario17e close=0: must not close (closed=$(cat "$off_closed_log"))"
+ok "scenario17e close=0: comment-only mode dedups without closing (fleet-ops#1156)"
 
 # --- scenario 17f: off-main observe-to-close fires even when a later check
 # is red (fleet-ops#774). The canary is on main and clean, but a leftover
@@ -1254,6 +1405,113 @@ grep -q '^774$' "$off_comment_log" \
   || fail "scenario17f: must comment on #774 (commented=$(cat "$off_comment_log"))"
 ok "scenario17f: off-main observe-to-close fires despite a later red check (fleet-ops#774)"
 rm -f "$HOME/.config/systemd/user/leftover-774.service"
+
+# --- scenario 19: deploy drift canary rc is captured, not inverted (#463) ----
+# The 2026-08-26 regression: the drift canary step logged "drift canary
+# failed" while its own output said the checkout was clean — an inverted
+# `if canary_out=$(...)` capture swallowed the real rc. Pin the explicit
+# canary_rc=$? path: a canary that exits nonzero with success-looking text
+# must fail the deploy with the rc logged, and a canary that exits 0 must
+# pass with its output on the success line.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+
+# 19a: canary exits 1 while printing a clean-checkout message.
+stub_canary_fail="$scratch/stub-canary-fail.sh"
+cat >"$stub_canary_fail" <<'STUB'
+#!/usr/bin/env bash
+echo "[fleet-ops-drift] checkout is at origin/main and clean"
+exit 1
+STUB
+chmod +x "$stub_canary_fail"
+if out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$stub_canary_fail" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario19a: deploy must fail when the canary exits nonzero, got: $out"
+fi
+[[ "$out" == *"drift canary failed (rc=1)"* ]] \
+    || fail "scenario19a: expected 'drift canary failed (rc=1)' (got: $out)"
+# The inverted-capture bug logged the canary output on the SUCCESS line even
+# on failure. The fix must not: a failing canary's text rides the failed line.
+[[ "$out" != *"drift canary output:"* ]] \
+    || fail "scenario19a: failing canary must not hit the success 'drift canary output:' line (got: $out)"
+ok "scenario19a: canary exiting nonzero fails deploy with rc captured (fleet-ops#463)"
+
+# 19b: canary exits 0 with output → deploy succeeds, output on the success line.
+stub_canary_ok="$scratch/stub-canary-ok.sh"
+cat >"$stub_canary_ok" <<'STUB'
+#!/usr/bin/env bash
+echo "[fleet-ops-drift] checkout is at origin/main and clean"
+exit 0
+STUB
+chmod +x "$stub_canary_ok"
+if ! out=$(
+  PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$stub_canary_ok" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    "$deploy" 2>&1
+); then
+    fail "scenario19b: deploy should succeed when the canary exits 0, got: $out"
+fi
+[[ "$out" == *"drift canary output:"* ]] \
+    || fail "scenario19b: expected 'drift canary output:' on success (got: $out)"
+[[ "$out" != *"drift canary failed"* ]] \
+    || fail "scenario19b: passing canary must not log 'drift canary failed' (got: $out)"
+ok "scenario19b: canary exiting 0 passes deploy and logs output (fleet-ops#463)"
+
+# --- scenario 18: deploy runs install.sh --system (fleet-ops#1247) ----------
+# Do not rewrite checkout/install.sh here: that dirties a tracked file and
+# DEPLOY-BLOCKs before either install runs. The deploy log names both.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+if ! out=$(run_deploy); then
+    fail "scenario18: deploy should succeed and run --system, got: $out"
+fi
+[[ "$out" == *"ran install.sh (rc=0)"* ]] \
+    || fail "scenario18: expected user-scope install.sh (got: $out)"
+[[ "$out" == *"ran install.sh --system (rc=0)"* ]] \
+    || fail "scenario18: expected install.sh --system (got: $out)"
+ok "scenario18: deploy invokes install.sh then install.sh --system"
+
+# --- scenario 18b: --system failure fails the deploy -----------------------
+# Push the stub to origin/main and leave the checkout behind so deploy
+# fast-forwards onto it. Rewriting install.sh in place would DEPLOY-BLOCK.
+behind18=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b fail-system-1247
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--system" ]; then
+  echo "simulated --system failure" >&2
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "stub install.sh --system failure"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q "$behind18"
+if out=$(run_deploy); then
+    fail "scenario18b: deploy should fail when install.sh --system fails, got: $out"
+fi
+[[ "$out" == *"DEPLOY-INSTALL"* ]] \
+    || fail "scenario18b: expected DEPLOY-INSTALL (got: $out)"
+[[ "$out" == *"install.sh --system failed"* ]] \
+    || fail "scenario18b: expected --system in the LOUD line (got: $out)"
+ok "scenario18b: install.sh --system failure fails deploy"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 

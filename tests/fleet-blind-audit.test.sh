@@ -45,7 +45,7 @@ grep -q 'Do not file "test is not in the CI P14 list"' "$repo_root/prompts/blind
 # fleet-ops#402: panel-PASS findings must be filed with agent-ready or
 # intake/pi-issue never see them. This grep is the class guard — a create
 # that only stamps gap-audit is a failed run.
-grep -E 'gh issue create .*--label agent-ready' "$bin" \
+grep -E '"\$ISSUE_FILE" file .*--label agent-ready' "$bin" \
     || fail "fleet-blind-audit must file panel-PASS findings with --label agent-ready (fleet-ops#402)"
 
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)
@@ -146,6 +146,17 @@ pick_seat() {
 }
 FAKE_SEAT_LIB
 
+# fleet-ops#377: stub the recurrence and machinery-authorization gates so the
+# harness does not pull live systemd state from the host. Those hunts are
+# covered by their own tests; this test owns the audit harness mechanics.
+cat > "$scratch/noop-gate.py" <<'NOOP_GATE'
+#!/usr/bin/env python3
+import sys
+sys.stdin.read()
+print('{"findings":[]}')
+NOOP_GATE
+chmod +x "$scratch/noop-gate.py"
+
 plan="$scratch/plan.md"
 cat > "$plan" <<'EOF'
 last-heartbeat: 2026-08-26T05:43:00Z (durable-timer)
@@ -153,6 +164,10 @@ EOF
 
 mkdir -p "$scratch/state"
 : > "$scratch/gh-create.log"
+# fleet-ops#377: feed an empty seam-evidence fixture so the harness does not
+# touch live memoryctl/actions-log sources, and prove the seam table still
+# appears in the report with no seams in the window.
+printf '%s\n' '{"candidates":[]}' >"$scratch/empty-seams.json"
 
 # Capture the binary's exit code without tripping set -e so the fail block
 # below actually prints. Under set -e a failing bin would exit the test
@@ -171,6 +186,9 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
   AUDIT_MAX_FINDINGS="5" \
+  AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
+  AUDIT_MECHANISM_GATE="$scratch/noop-gate.py" \
+  AUDIT_MACHINERY_GATE="$scratch/noop-gate.py" \
   "$bin" >"$scratch/run.log" 2>&1 || rc=$?
 
 [[ $rc == 0 ]] || { cat "$scratch/run.log"; fail "fleet-blind-audit exited $rc"; }
@@ -205,6 +223,10 @@ grep -qE '^last-blind-audit-run:' "$plan" || fail "plan file missing last-blind-
 # Durable report and findings must exist.
 [[ -f "$report_dir/report.md" ]] || fail "report.md missing"
 [[ -f "$report_dir/findings.json" ]] || fail "findings.json missing"
+# fleet-ops#377: the harness writes the Manual-seam lens table into the
+# report even when the window has no seams.
+grep -q '## Manual-seam lens' "$report_dir/report.md" \
+  || fail "report.md must contain the Manual-seam lens table even with no seams"
 
 # Step 6 must write the filed URL into the durable report AND the verdict log.
 # The 2026-08-26 live run filed #367-#371 but left report.md saying "no GitHub
@@ -495,4 +517,17 @@ grep -F 'Blind audit targeted non-canonical' "$dedup_log" >/dev/null \
 grep -F 'dedup:' "$scratch/dedup.log" >/dev/null \
     || fail "dedup run did not log dedup: $(cat "$scratch/dedup.log")"
 ok "open #367-marker issue suppresses a second detector file"
+
+# fleet-ops#377: host the seam-lens unit test from the listed blind-audit test
+# so it runs in CI without a workflow-file edit (P14 hosted-test pattern).
+bash "$here/manual-seam-lens.test.sh"
+
+# fleet-ops#838: no | head -N truncation pipes survive under set -o pipefail.
+# grep -mN is the safe replacement; head -c on a file is fine.
+if grep -nE '\| +head +-[0-9]' "$bin"; then
+    fail "fleet-blind-audit contains | head -N pipe that risks SIGPIPE (fleet-ops#838)"
+fi
+ok "no head -N truncation pipes in fleet-blind-audit"
+
+echo "OK: fleet-blind-audit.test.sh"
 

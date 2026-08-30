@@ -275,7 +275,7 @@ def _running_units():
     env = dict(os.environ, XDG_RUNTIME_DIR=XDG)
     out = subprocess.run(
         ["systemctl", "--user", "list-units", "--type=service",
-         "--state=running", "--no-legend", "--plain"],
+         "--state=running,activating", "--no-legend", "--plain"],
         capture_output=True, text=True, timeout=8, env=env,
     )
     if out.returncode != 0:
@@ -308,7 +308,11 @@ def _invokes_pi_print(unit):
         ["systemctl", "--user", "show", "-p", "ExecStart", "--value", unit],
         capture_output=True, text=True, timeout=5, env=env,
     )
-    return "pi --print" in (out.stdout or "")
+    execstart = out.stdout or ""
+    # fleet-ops#1451: issue workers exec via the pi-issue-run wrapper; its
+    # ExecStart path is as honest a pi-invocation signal as a literal
+    # `pi --print` (still ExecStart-based, never a unit-name prefix — #1155).
+    return ("pi --print" in execstart) or ("/pi-issue-run " in execstart) or ("/pi-issue-start" in execstart)
 
 
 def _pi_argv_count():

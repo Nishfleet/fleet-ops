@@ -351,6 +351,12 @@ ok "scenario8: hours>=12 and ready>=lanes -> no dispatch"
 
 ok "low-water-mark: dispatch on ready<lanes or hours<12; skip otherwise"
 
+# fleet-ops#1435 (fleet-ops#2020): tests/fleet-merged-pr-close.test.sh proves the
+# heartbeat tier1 observe-to-close path. Host it here from this already-listed
+# fleet-heartbeat-low-water-mark test so the P14 test-listing gate goes green
+# without a workflow edit.
+bash "$here/fleet-merged-pr-close.test.sh"
+
 # fleet-ops#616 / #619: workers cannot add a ci.yml line. The auditor
 # panel drill rides on this listed #146 test so it stays in P14.
 bash "$here/fleet-heartbeat-auditor.test.sh"

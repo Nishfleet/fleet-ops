@@ -1,0 +1,39 @@
+{
+  "title": "fix(decisions-ledger): ignore systemd should-we self-talk",
+  "body": "Closes #1138",
+  "headRefName": "claim/issue-1138",
+  "merge_base": "1bdb61c",
+  "added_by_merge_base": [
+    "bin/pi-salvage-worktree",
+    "tests/pi-salvage-worktree.test.sh",
+    "systemd/vps-weekly-update.service.d/20-wip-gc.conf"
+  ],
+  "commit_touched": [
+    "MANIFEST",
+    "bin/fleet-decisions-ledger",
+    "bin/pi-salvage-worktree",
+    "bin/pi-systemd-run",
+    "lib/decisions-ledger.py",
+    "prompts/worker.md",
+    "systemd/pi-issue@.service",
+    "systemd/vps-weekly-update.service.d/20-wip-gc.conf",
+    "tests/fleet-decisions-ledger.test.sh",
+    "tests/pi-salvage-worktree.test.sh",
+    "tests/pi-systemd-run.test.sh",
+    "tests/seat-lib.test.sh"
+  ],
+  "merge_diff": {
+    "MANIFEST": "M",
+    "bin/fleet-decisions-ledger": "M",
+    "bin/pi-salvage-worktree": "D",
+    "bin/pi-systemd-run": "M",
+    "lib/decisions-ledger.py": "M",
+    "prompts/worker.md": "M",
+    "systemd/pi-issue@.service": "M",
+    "systemd/vps-weekly-update.service.d/20-wip-gc.conf": "D",
+    "tests/fleet-decisions-ledger.test.sh": "M",
+    "tests/pi-salvage-worktree.test.sh": "D",
+    "tests/pi-systemd-run.test.sh": "M",
+    "tests/seat-lib.test.sh": "M"
+  }
+}

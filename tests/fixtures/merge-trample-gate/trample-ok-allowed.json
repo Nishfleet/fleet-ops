@@ -1,0 +1,15 @@
+{
+  "title": "chore: drop the helper we just landed",
+  "body": "trample-ok: intentional delete of the salvage helper this PR replaces\nCloses #9",
+  "headRefName": "claim/issue-9",
+  "merge_base": "1bdb61c",
+  "added_by_merge_base": ["bin/pi-salvage-worktree"],
+  "commit_touched": [
+    "bin/pi-salvage-worktree",
+    "bin/new-helper"
+  ],
+  "merge_diff": {
+    "bin/pi-salvage-worktree": "D",
+    "bin/new-helper": "A"
+  }
+}

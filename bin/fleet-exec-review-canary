@@ -50,6 +50,7 @@ export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
 _canon_script=$(readlink -f "$0")
 _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
@@ -239,7 +240,7 @@ Do not close until the detector reports this clean on a real heartbeat tick (obs
 
 $signal"
         set +e
-        created=$("$GH" issue create -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+        created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
         create_rc=$?
         set -e
         if [[ "$create_rc" -eq 0 && -n "$created" ]]; then
