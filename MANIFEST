@@ -613,6 +613,13 @@ config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-a
 # runs `tailscale status` with no sudo and fails loud. Heartbeat-tier1
 # block 42.
 bin/fleet-tailscale-localapi-canary /home/nish/.local/bin/fleet-tailscale-localapi-canary
+# fleet-ops#528: loose-ends canary (sr-nothing-half-done, Nish 2026-08-20).
+# Fail-loud (rc>=2) when the three-class detector (unanswered QUESTIONS.md
+# rows, half-done worker PRs, stale worktrees) is broken. exit 1 = watcher
+# missing or MANIFEST dest uninstalled — already loud via HELPER-MISSING.
+# Heartbeat-tier1 block 43.
+bin/fleet-loose-ends-canary /home/nish/.local/bin/fleet-loose-ends-canary
+lib/loose-ends.py /home/nish/.local/lib/fleet-ops/loose-ends.py
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
