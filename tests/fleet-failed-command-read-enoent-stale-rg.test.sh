@@ -171,24 +171,34 @@ count=$(jq '.findings | length' <<<"$report")
 ok "other-checkout cause prose alone (no failure named) is still flagged"
 rm -f "$sessions/read-enoent-stale-rg-cause-prose.jsonl"
 
-# --- 5. worker.md cites fleet-ops#1255 (prompt-side lock) -------------------
+# --- 5. worker.md cites fleet-ops#1255 and fleet-ops#1100 (prompt-side lock) ---
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1255' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1255 (prompt-side lock for the stale-rg salvage-scan read-ENOENT class)"
+grep -q 'fleet-ops#1100' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1100 (prompt-side lock for the stale-checkout read-ENOENT class)"
 grep -q 'salvage-secret-scan' "$worker" \
   || fail "prompts/worker.md must name salvage-secret-scan so workers flag the live #1255 path"
 grep -q 'fleet-ops-rg' "$worker" \
   || fail "prompts/worker.md must name fleet-ops-rg so workers flag the live #1255 stale-checkout shape"
-ok "worker.md cites fleet-ops#1255 and the live stale-rg salvage-scan path"
+grep -q 'fleet-failed-command-flagged' "$worker" \
+  || fail "prompts/worker.md must name fleet-failed-command-flagged so workers flag the live #1100 stale-checkout shape"
+ok "worker.md cites fleet-ops#1255, fleet-ops#1100 and the live stale-checkout paths"
 
-# --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#1255 --------
+# --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#1255 and fleet-ops#1100 ---
 grep -q 'fleet-ops#1255' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#1255 (detector-side lock)"
+grep -q 'fleet-ops#1100' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#1100 (detector-side lock for the stale-checkout read-ENOENT class)"
 grep -q '01a04402' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the 01a04402 salvage-scan session next to the #1255 citation"
+grep -q '01a042d4' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name the 01a042d4 failed-command-flagged session next to the #1100 citation"
 grep -q 'salvage-secret-scan' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name salvage-secret-scan next to the #1255 citation"
-ok "lib/failed-command-flagged.py docstring cites fleet-ops#1255"
+grep -q 'fleet-failed-command-flagged' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must name fleet-failed-command-flagged next to the #1100 citation"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#1255 and fleet-ops#1100"
 
 # --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) --------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-stale-rg.test.sh"' \
@@ -196,4 +206,4 @@ grep -Fq 'bash "$here/fleet-failed-command-read-enoent-stale-rg.test.sh"' \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-read-enoent-stale-rg: live #1255 stale fleet-ops-rg salvage-scan ENOENT drill"
+echo "OK: fleet-failed-command-read-enoent-stale-rg: live #1255 stale fleet-ops-rg salvage-scan ENOENT drill + #1100 stale fleet-ops path drill"

@@ -37,7 +37,7 @@ repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
 `read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, #953,
-fleet-ops#958, #972, #967, #977, #1001, #1059, #1170, #1243, #1255) is a
+fleet-ops#958, #972, #967, #977, #1001, #1059, #1100, #1170, #1243, #1255) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. The EISDIR class (#1170 / #1243) is the `read` tool pointed at
 a directory path instead of a file — Pi returns `EISDIR: illegal operation
@@ -110,7 +110,19 @@ refactor must not treat "it's in fleet-ops-sync, not in fleet-ops-rg"
 as naming the failure, and must not treat later successful reads of
 unrelated files as discharging the read-ENOENT of salvage-secret-scan.
 The dedicated regression test
-tests/fleet-failed-command-read-enoent-stale-rg.test.sh pins that.
+tests/fleet-failed-command-read-enoent-stale-rg.test.sh pins that. #1100 (fleet-ops#1100) is the same read-ENOENT shape as #953 / #1001 / #1059 / #1255 but
+on a DIFFERENT session slug (the 01a042d4 failed-command-flagged session, where the worker `read`
+`/home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged` — a stale,
+non-canonical checkout that does not carry the file — instead of the canonical
+`/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/fleet-failed-command-flagged`,
+got the live `ENOENT: no such file or directory, access '<path>'` shape, and walked
+past it with thinking-only recovery plus later unrelated prose that never named the
+failure). Thinking-only cause that names the wrong checkout is the same swallowed-failure
+class as the #953 thinking-only recovery, the #1001 "clear picture" prose, the #1059
+"The file was archived" prose, and the #1255 "it's in fleet-ops-sync, not in fleet-ops-rg"
+prose: the user is never told the command failed. A future detector refactor must not
+treat thinking-only recovery as naming the failure, and must not treat later unrelated
+prose as discharging the read-ENOENT of the stale-checkout path.
 A bare `cat` of a stale, non-canonical checkout path like
 `/home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged`
 (the canonical path is `tooling/fleet-ops-deploy-clone/bin/...`) that
