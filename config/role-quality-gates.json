@@ -124,7 +124,8 @@
       ],
       "units": [
         "fleet-heartbeat.service",
-        "pi-packet@.service"
+        "pi-packet@.service",
+        "memory-index-autocompact.service"
       ],
       "prompts": [
         "heartbeat.md"

@@ -119,6 +119,7 @@ jobs:
             /home/nish/.local/bin/fleet-escalation-completion \
             /home/nish/.local/bin/fleet-asset-census \
             /home/nish/.local/bin/agent-scheduler-drift-check \
+            /home/nish/.local/bin/memory-index-autocompact \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"

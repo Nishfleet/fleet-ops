@@ -702,6 +702,16 @@ bin/sgscan /home/nish/.local/bin/sgscan
 # the symlink and reads it. Do not MANIFEST-install into nish-vault — that
 # dirties the vault git tree. Recall prefers the vault path when present.
 bin/memoryctl-recall.py /home/nish/.local/bin/memoryctl-recall
+# fleet-ops#1498: memory-index-autocompact — class (b) sanctioned maintenance
+# script (audited EXCEPTION-APPROVED). Distinct from nish-memory-curator:
+# this compacts the Claude auto-memory index (~/.claude/projects/.../MEMORY.md),
+# the curator compiles the vault (~/workspaces/tooling/nish-vault/...).
+# The script has tier-1 deterministic dedupe + tier-2 Opus headless compaction.
+# Path unit watches the index file; service is oneshot. install.sh symlinks
+# over the live hand-placed units in place.
+bin/memory-index-autocompact /home/nish/.local/bin/memory-index-autocompact
+systemd/memory-index-autocompact.service /home/nish/.config/systemd/user/memory-index-autocompact.service
+systemd/memory-index-autocompact.path /home/nish/.config/systemd/user/memory-index-autocompact.path
 # fleet-ops#1212: filing-time same-problem dedupe. All auto-filers route
 # through this instead of raw `gh issue create`.
 bin/fleet-issue-file /home/nish/.local/bin/fleet-issue-file
