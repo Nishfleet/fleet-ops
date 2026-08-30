@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# Weekly full-stack update window for this VPS.
+# Phase 2 of 2: quiesce (T-15) has already stopped all NEW work.
+# Nothing here is agent-specific: it drives systemd, apt, npm, docker and
+# first-party self-updaters only.
+set -uo pipefail
+# shellcheck disable=SC1091
+. /home/nish/.local/bin/vps-maintenance-lib
+exec > >(tee "$STATE/update.log") 2>&1
+
+FAILURES=(); SKIPS=()
+fail() { FAILURES+=("$1"); printf '!! FAIL: %s\n' "$1"; }
+skipped() { SKIPS+=("$1"); printf '   SKIP: %s\n' "$1"; }
+
+versions() {
+  {
+    dpkg-query -W -f='apt:${binary:Package}=${Version}\n' claude-code docker-ce linux-image-generic 2>/dev/null
+    npm -g ls --depth=0 --json 2>/dev/null \
+      | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+for k,v in d.get("dependencies",{}).items(): print("npm:%s=%s"%(k,v.get("version")))'
+    for t in bun uv rclone gh semgrep trufflehog gitleaks yt-dlp coderabbit cursor-agent claude pi; do
+      command -v "$t" >/dev/null || continue
+      printf 'bin:%s=%s\n' "$t" "$(timeout 60 "$t" --version 2>&1 | head -1 | tr -d '\r')"
+    done
+    docker image ls --format '{{.Repository}}:{{.Tag}}={{.ID}}' 2>/dev/null | sed 's/^/img:/'
+  } 2>/dev/null | sort -u
+}
+
+# --------------------------------------------------------------- 1. PAUSE
+say "PAUSE — stopping in-flight work (15 min of drain already elapsed)"
+set_flag paused "weekly VPS update running" "$(date -Is -d '+60 min')"
+broadcast "MAINTENANCE WINDOW OPEN — agent work is stopping now."
+
+# Privileged-path probe: write a probe file via sudo and fail-fast if empty.
+# This catches a silent sudoers revert before we burn 60 min in QUIESCE.
+SUDO_PROBE="$STATE/sudo-probe.txt"
+sudo -n systemctl is-active systemd-journald 2>&1 | sudo -n tee "$SUDO_PROBE" >/dev/null || true
+if [ ! -s "$SUDO_PROBE" ]; then
+  fail "privileged path broken (sudo probe empty) — aborting before QUIESCE"
+fi
+note "privileged path OK (sudo probe written)"
+
+if [ ! -s "$STATE/paused-timers" ]; then
+  fail "no quiesce snapshot found — running the quiesce phase inline"
+  /home/nish/.local/bin/vps-maintenance-quiesce || true
+fi
+
+mapfile -t TIMERS < "$STATE/paused-timers"
+UNITS=()
+for t in "${TIMERS[@]}"; do
+  [ -n "$t" ] || continue
+  u=$(systemctl --user show "$t" -p Unit --value 2>/dev/null)
+  [ -n "$u" ] && UNITS+=("$u")
+done
+# Stop timers again (idempotent — covers a manual run with no quiesce phase).
+[ ${#TIMERS[@]} -gt 0 ] && systemctl --user stop "${TIMERS[@]}" 2>/dev/null
+# SIGTERM to the work itself; systemd blocks until it is really gone. No poll loop.
+[ ${#UNITS[@]}  -gt 0 ] && { systemctl --user stop "${UNITS[@]}" || fail "stopping agent services"; }
+
+if [ -s "$STATE/paused-paths" ]; then
+  mapfile -t PATHS < "$STATE/paused-paths"
+  systemctl --user stop "${PATHS[@]}" 2>/dev/null
+else
+  PATHS=()
+fi
+
+# Transient/dispatched work lives in per-prefix slices; stopping the slice drains it.
+mapfile -t SLICES < <(systemctl --user list-units --type=slice --state=active --no-legend --plain \
+  | awk '{print $1}' | grep -E '^(app-(pi|fleet|siterep|agent)|fleet)' || true)
+[ ${#SLICES[@]} -gt 0 ] && { systemctl --user stop "${SLICES[@]}" || fail "stopping agent slices"; }
+
+systemctl --user stop "${HOLD_SERVICES[@]}" || fail "stopping hold services"
+
+# Record — never touch — work that would be lost if anyone reset a worktree.
+say "UNCOMMITTED WORK AUDIT (recorded only, never modified)"
+: > "$STATE/dirty-worktrees.txt"
+while read -r g; do
+  d=$(dirname "$g")
+  s=$(git -C "$d" status --porcelain 2>/dev/null)
+  [ -n "$s" ] && { echo "### $d"; echo "$s"; } >> "$STATE/dirty-worktrees.txt"
+done < <(find /home/nish/workspaces -maxdepth 4 -name .git -not -path '*/node_modules/*' 2>/dev/null)
+DIRTY=$(grep -c '^### ' "$STATE/dirty-worktrees.txt" 2>/dev/null || echo 0)
+note "$DIRTY repos with uncommitted changes (listed in $STATE/dirty-worktrees.txt)"
+
+BEFORE=$(versions)
+
+# --------------------------------------------------------------- 2. UPDATE
+say "APT"
+sudo -n apt-get update -qq                                   || fail "apt-get update"
+sudo -n apt-get -y -o Dpkg::Options::=--force-confdef \
+                    -o Dpkg::Options::=--force-confold dist-upgrade \
+                                                             || fail "apt dist-upgrade"
+sudo -n apt-get -y autoremove --purge                        || fail "apt autoremove"
+sudo -n apt-get -y autoclean                                 || true
+
+say "NPM GLOBALS"
+# A pi reinstall has wiped ~/.pi/agent/extensions before; back it up and verify after.
+rm -rf "$STATE/pi-extensions.bak"
+cp -a /home/nish/.pi/agent/extensions "$STATE/pi-extensions.bak" 2>/dev/null || true
+mapfile -t PKGS < <(npm -g ls --depth=0 --json 2>/dev/null \
+  | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+print("\n".join(d.get("dependencies",{})))')
+for p in "${PKGS[@]}"; do
+  [ -n "$p" ] || continue
+  note "npm -g install $p@latest"
+  npm -g install "$p@latest" --no-fund --no-audit --silent || fail "npm global $p"
+done
+if [ -f "$STATE/pi-extensions.bak/spawn-guard-core.ts" ] \
+   && [ ! -f /home/nish/.pi/agent/extensions/spawn-guard-core.ts ]; then
+  cp -a "$STATE/pi-extensions.bak/." /home/nish/.pi/agent/extensions/
+  fail "pi upgrade wiped ~/.pi/agent/extensions — RESTORED from backup, re-verify the depth guard loads"
+fi
+
+say "SELF-UPDATERS"
+run_update() {  # run_update <binary> <cmd...>
+  local n=$1; shift
+  command -v "$n" >/dev/null || { skipped "$n not installed"; return 0; }
+  local out rc
+  out=$(timeout 900 "$@" 2>&1); rc=$?
+  printf -- '-- %s (rc=%s)\n%s\n' "$n" "$rc" "$(echo "$out" | tail -5)"
+  [ $rc -eq 0 ] && return 0
+  # A tool that simply has no self-update subcommand is not a failure.
+  # A tool that cannot self-update by design is a SKIP, not a failure — but it is
+  # reported every week so the version never drifts out of sight unnoticed.
+  echo "$out" | grep -qiE 'unknown (command|flag)|unrecognized|invalid (command|choice)|no such command|only available for|not supported|installed (with|via)' \
+    && { skipped "$n cannot self-update (update it by hand): $(echo "$out" | head -1)"; return 0; }
+  fail "$n self-update (rc=$rc)"
+}
+run_update bun          bun upgrade
+run_update uv           uv self update
+run_update rclone       rclone selfupdate
+run_update yt-dlp       yt-dlp -U
+run_update cursor-agent cursor-agent update
+run_update coderabbit   coderabbit update
+run_update gh           gh extension upgrade --all
+
+say "DOCKER"
+DOCKER_PRE=$(docker ps -q | wc -l)
+mapfile -t COMPOSE_DIRS < <(docker ps -q | xargs -r -n1 docker inspect \
+  -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep -v '^$' | sort -u)
+for d in "${COMPOSE_DIRS[@]}"; do
+  note "compose pull+up in $d"
+  (cd "$d" && docker compose pull --ignore-buildable && docker compose up -d) || fail "docker compose in $d"
+done
+mapfile -t LOOSE < <(docker ps --format '{{.Image}}' | rg -v ':local$' | sort -u)
+for i in "${LOOSE[@]}"; do docker pull -q "$i" >/dev/null || fail "docker pull $i"; done
+docker image prune -f >/dev/null 2>&1 || true
+
+# --------------------------------------------------------------- 3. VERIFY
+say "VERIFY"
+AFTER=$(versions)
+CHANGED=$(diff <(echo "$BEFORE") <(echo "$AFTER") | grep '^>' | sed 's/^> /  + /')
+[ -z "$CHANGED" ] && CHANGED="  (nothing changed)"
+echo "$CHANGED"
+
+for t in pi claude gh docker node npm; do
+  command -v "$t" >/dev/null || continue
+  timeout 90 "$t" --version >/dev/null 2>&1 || fail "$t is broken after update (--version failed)"
+done
+[ -f /home/nish/.pi/agent/extensions/spawn-guard-core.ts ] || fail "pi depth guard spawn-guard-core.ts is MISSING"
+# apt upgrades tailscale, and SSH to this box is Tailscale-only.
+sudo -n tailscale status >/dev/null 2>&1 || fail "tailscale DOWN after update — SSH path at risk"
+if command -v pi-transport-check >/dev/null; then
+  timeout 120 pi-transport-check >/dev/null 2>&1 || fail "pi transport check failed after the pi upgrade"
+fi
+DOCKER_POST=$(docker ps -q | wc -l)
+[ "$DOCKER_POST" -ge "$DOCKER_PRE" ] || fail "containers dropped: $DOCKER_PRE -> $DOCKER_POST"
+
+# --------------------------------------------------------------- 4. REBOOT OR RESUME
+SKIPTXT=""
+[ ${#SKIPS[@]} -gt 0 ] && SKIPTXT="
+Manual attention: $(printf '%s; ' "${SKIPS[@]}")"
+SUMMARY="VPS weekly update on $(hostname): ${#FAILURES[@]} failures, $DIRTY repos dirty.
+$CHANGED$SKIPTXT"
+
+if [ -f /var/run/reboot-required ]; then
+  say "REBOOT REQUIRED"
+  touch "$STATE/resume-after-boot"
+  PKGS_R=$(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)
+  MSG="$SUMMARY
+REBOOTING now for: $PKGS_R"
+  if [ ${#FAILURES[@]} -gt 0 ]; then
+    notify urgent "$MSG
+FAILURES: $(printf '%s; ' "${FAILURES[@]}")"
+  else
+    notify routine "$MSG"
+  fi
+  broadcast "MAINTENANCE: rebooting now for $PKGS_R"
+  sync
+  sudo -n systemctl reboot
+  exit 0
+fi
+
+say "RESUME"
+[ ${#TIMERS[@]} -gt 0 ] && { start_units "${TIMERS[@]}" || fail "timers that would not restart: ${START_FAILED[*]}"; }
+[ ${#PATHS[@]}  -gt 0 ] && { start_units "${PATHS[@]}"  || fail "path units that would not restart: ${START_FAILED[*]}"; }
+start_units "${HOLD_SERVICES[@]}" || fail "hold services that would not restart: ${START_FAILED[*]}"
+set_flag clear '' ''
+broadcast "MAINTENANCE WINDOW CLOSED — agents resumed."
+
+# Work we terminated mid-flight lands in `failed`. That is the window's doing,
+# not a fault: clear only the ones that were healthy going in, then re-check.
+touch "$STATE/failed-before"
+CUR=$(systemctl --user list-units --state=failed --no-legend --plain | awk '{print $1}' | sort)
+NEWFAIL=$(comm -13 "$STATE/failed-before" <(echo "$CUR") | tr '\n' ' ')
+[ -n "${NEWFAIL// /}" ] && { note "clearing window-caused failures: $NEWFAIL"; systemctl --user reset-failed "$NEWFAIL"; }
+PRE=$(tr '\n' ' ' < "$STATE/failed-before")
+[ -n "${PRE// /}" ] && note "pre-existing failures, untouched: $PRE"
+
+sleep 20
+UF=$(systemctl --user list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
+[ -n "${UF// /}" ] && fail "units still failed after resume: $UF"
+
+if [ ${#FAILURES[@]} -gt 0 ]; then
+  notify urgent "$SUMMARY
+FAILURES: $(printf '%s; ' "${FAILURES[@]}") — log: $STATE/update.log"
+  exit 1
+fi
+# Agents are back; an undeliverable routine report must not fail the window
+# (it is kept in $STATE/undelivered.log and in update.log either way).
+notify routine "$SUMMARY
+All agents resumed, 0 failed units." || true
+exit 0
