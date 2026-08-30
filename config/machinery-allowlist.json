@@ -375,7 +375,10 @@
     {
       "unit": "quality-baseline-research",
       "banned_class": "dispatcher",
-      "follow_up": "filed"
+      "follow_up": "filed",
+      "adjudicated": "MECHANICAL-INSTEAD",
+      "verdict": "deleted; quality research is owned by the sanctioned quality-research-weekly (class (a), repo-sourced) per docs/organ-catalog.md. The hand-placed quality-baseline-research.service/.timer + ~/.local/bin/quality-baseline-refresh was a hand-rolled dispatcher (banned class 'Hand-rolled dispatcher -> Pi stock dispatch') with no repo base, built 2026-08-25 (the day before the 2026-08-26 ban). Both runs (2026-08-25, 2026-08-28) produced SKIP-WITH-NUDGE — zero research ran in 5 days because no gate it depends on is live. visual-quality-waves.md stays (it is the canonical never-say-next SENIOR-AUDITOR escalation-layer program doc, referenced by stop-escalation-dispatch / escalation-daily-sweep / memory-index-autocompact); only the dispatcher was deleted. Same shape as the ready-work dispatcher adjudication (#1493).",
+      "resolved_by": "#1497"
     },
     {
       "unit": "memory-index-autocompact",
