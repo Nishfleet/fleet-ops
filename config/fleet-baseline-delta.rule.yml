@@ -1,0 +1,33 @@
+# Prometheus rule fragment for the baseline-delta pre-pass (fleet-ops#1151).
+#
+# Source of truth for these rules. The live /etc/prometheus/fleet_rules.yml
+# carries the assembled copy. Standing pattern: every new organ ships its
+# heartbeat metric + absent() rule in the same PR.
+#
+# The metric is written by bin/fleet-baseline-delta to
+# /var/lib/prometheus/node-exporter/fleet-baseline-delta.prom on every
+# completed run (same per-organ-.prom pattern as fleet-completion-canary).
+#
+# These rules watch the ORGAN, not the anomalies. A high |z| is a report
+# line for the weekly review conference. It is not a page.
+#
+# These rules belong in the `fleet_watchdog` group alongside
+# FleetHeartbeatStale / FleetCompletionCanaryAbsent / FleetWeeklyReviewAbsent.
+- alert: FleetBaselineDeltaAbsent
+  expr: absent(fleet_baseline_delta_last_run_seconds)
+  for: 3h
+  labels:
+    severity: critical
+    service: fleet
+  annotations:
+    summary: "baseline-delta metrics absent — the week-over-week strangeness pre-pass is missing or dead"
+    description: "Repair worker: bin/fleet-baseline-delta must emit fleet_baseline_delta_last_run_seconds. Check unit fleet-baseline-delta.timer / fleet-baseline-delta.service first. The organ heartbeat must export within 3h of its first scheduled run (Sun 05:10 IST)."
+- alert: FleetBaselineDeltaStale
+  expr: (time() - fleet_baseline_delta_last_run_seconds) > (9 * 24 * 3600)
+  for: 2h
+  labels:
+    severity: critical
+    service: fleet
+  annotations:
+    summary: "baseline-delta has not run in 9+ days"
+    description: "fleet-baseline-delta.timer has not fired a completed run in over a week plus a 2-day grace. The Weekly Fleet Review is flying without its unknown-unknown pre-pass. Check the timer is armed and the unit is not stuck in state=failed."
