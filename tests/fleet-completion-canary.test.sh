@@ -807,6 +807,113 @@ grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-
 
 ok "escalated run chain terminates (terminal=escalated + cooldown), rail drains (fleet-ops#2367)"
 
+# --- 9h. laddered verify chain re-open re-parks, does NOT re-ladder (fleet-ops#2397) --
+# Live incident: FleetQueueSelfMaintenanceRatioHigh's repair unit exited
+# non-zero (EXIT CONTRACT) but --collect unloaded it, so unit_status saw
+# LoadState=not-found + a Started-only journal and misread it as SUCCESS →
+# hop=verify. The verify stall laddered (STOP-REASON + REDISPATCH-log), then
+# closed detector-red at the verify deadline. When that cooldown expired the
+# SAME dispatch unit re-opened and RE-LADDERED (fresh STOP-REASON, fresh
+# REDISPATCH), so the verify hop sat open past its cycle budget forever
+# (re-ladder every cooldown, alive 13:07Z → 14:22Z → auditor hand-park).
+# Fix: the terminal close persists the ladder marker + dispatch_unit; a
+# re-open of the same unit re-parks (extends cooldown, stays drained, no
+# new STOP-REASON, no REDISPATCH).
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+rm -f "$scratch/STOP-REASON.json"
+
+# Alert STILL firing; DISPATCH made long ago; unit --collect unloaded with a
+# Started-only journal → unit_status journal fallback reads it as SUCCESS →
+# classify = hop=verify stalled (the verify shape #1610 targets).
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "VerifyLoop"},
+   "activeAt": "2026-08-30T11:10:27Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-30T11:10:27Z] DISPATCH alertname=VerifyLoop seat=a/Model unit=u-VL-20260830T111027Z
+PYEND
+printf 'Started u-VL-20260830T111027Z.service\n' >"$scratch/sysctl/u-VL-20260830T111027Z.service.journal"
+
+# Seed the EXACT terminal marker the fixed close writes: ladder=stop-reason,
+# terminal=detector-red, dead_until already EXPIRED, dispatch_unit == the
+# current dispatch's unit (this is the re-open the old code re-laddered).
+mkdir -p "$scratch/state/open"
+echo '{"alertname":"VerifyLoop","hop":"verify","terminal":"detector-red","ladder":"stop-reason","stall_count":2,"dead_until":"2026-08-30T14:00:00Z","dispatch_unit":"u-VL-20260830T111027Z"}' \
+  >"$scratch/state/open/VerifyLoop.json"
+
+# Tick 1 (well past the expired cooldown): must RE-PARK, not re-ladder.
+rc=$(run_bin "2026-08-30T16:00:00Z")
+[[ "$rc" == "0" ]] || fail "9h tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# No new REDISPATCH receipt (the ladder writes one each re-ladder).
+if grep -q 'REDISPATCH alertname=VerifyLoop' "$scratch/actions.log" \
+   || grep -q -i 'VerifyLoop' "$scratch/redispatch.log" 2>/dev/null; then
+  fail "9h tick-1: re-open must NOT re-ladder/spawn, got: $(grep -i verifyloop "$scratch/actions.log" "$scratch/redispatch.log" 2>/dev/null)"
+fi
+# No new STOP-REASON write (the escalation was already handed to the senior
+# conference on the original ladder — re-summoning is the bug).
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  && fail "9h tick-1: re-open must NOT write a new STOP-REASON"
+# The chain must be re-parked: dead_until slid forward, terminal marker intact.
+python3 - "$scratch/state/open/VerifyLoop.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("dead_until") == "2026-08-30T17:00:00Z", d.get("dead_until")
+assert d.get("terminal") == "detector-red", d
+assert d.get("ladder") == "stop-reason", d
+assert d.get("dispatch_unit") == "u-VL-20260830T111027Z", d
+PY
+# The rail must stay drained: verify open/stalled 0 (the parked chain is not
+# an open/stalled chain on the re-open tick).
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9h tick-1: verify open must be 0 (re-parked), got: $(grep verify "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9h tick-1: verify stalled must be 0 (re-parked), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+# Tick 2 (within the new cooldown): still drained, no STOP-REASON.
+rc=$(run_bin "2026-08-30T16:30:00Z")
+[[ "$rc" == "0" ]] || fail "9h tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  && fail "9h tick-2: cooldown must stay quiet (no new STOP-REASON)"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9h tick-2: verify stalled must stay 0 during re-park"
+
+# Tick 3: a FRESH dispatch unit for the same alertname must NOT be parked —
+# the marker belongs to the old unit; the new dispatch opens a clean chain
+# that takes the normal ladder (this is the incident's recovery path).
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "VerifyLoop"},
+   "activeAt": "2026-08-30T11:10:27Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-30T11:10:27Z] DISPATCH alertname=VerifyLoop seat=a/Model unit=u-VL-20260830T111027Z
+[2026-08-30T17:00:00Z] DISPATCH alertname=VerifyLoop seat=b/Model2 unit=u-VL-20260830T170000Z
+PYEND
+printf 'Started u-VL-20260830T170000Z.service\n' >"$scratch/sysctl/u-VL-20260830T170000Z.service.journal"
+rc=$(run_bin "2026-08-30T17:30:00Z")
+[[ "$rc" == "0" ]] || fail "9h tick-3 rc=$rc stderr=$(cat "$scratch/err.log")"
+# The new chain must be counted (not parked): verify open=1 with the fresh
+# unit's dispatch.
+python3 - "$scratch/state/open/VerifyLoop.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("dispatch_unit") == "u-VL-20260830T170000Z", d.get("dispatch_unit")
+assert d.get("dead_until") in (None, ""), d
+assert d.get("terminal") in (None, ""), d
+PY
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 1' "$scratch/fleet-chains.prom" \
+  || fail "9h tick-3: fresh dispatch must open verify=1, got: $(grep verify "$scratch/fleet-chains.prom")"
+
+ok "laddered verify chain re-open re-parks, fresh dispatch re-opens (fleet-ops#2397)"
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================

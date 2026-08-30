@@ -27,6 +27,10 @@ Ladder (this process takes it; no human):
     (seat pick is `--print-seat`, not a copy of _pick_seat)
   twice-failed / verify stall / synthetic CanaryDrill → STOP-REASON.json
     (reason=alert-repair-stalled) which summons the senior conference
+  terminal close persists the ladder marker; a re-open of the SAME dispatch
+    unit re-parks (sliding cooldown, fleet-ops#2397) instead of re-laddering
+    — an escalation already owned by the senior conference must not keep
+    summoning new STOP-REASONs for the same dead unit.
 
 CanaryDrill is skip-listed in the dispatcher (like FleetTestAlert) so a
 drill never spawns a real repair worker. The canary still tracks a fake
@@ -1362,6 +1366,49 @@ def main() -> int:
             cooldown_until = parse_iso(existing["dead_until"])
             if cooldown_until is not None and now < cooldown_until:
                 continue
+        # fleet-ops#2397: a chain whose SAME dispatch unit already reached
+        # ladder=stop-reason (STOP-REASON handed to the senior conference)
+        # and was closed terminal must NOT re-ladder when its cooldown
+        # expires. Re-opening re-wrote STOP-REASON and held the verify hop
+        # open past its cycle budget forever (live: FleetQueueSelfMaintenance
+        # RatioHigh — detector-red close 13:07:38Z, re-ladder 14:22:11Z, so
+        # the auditor had to hand-park dead_until=+6h). A re-open of the
+        # same unit (or a legacy marker without a unit) re-parks (sliding
+        # cooldown) and stays drained. Only a genuinely fresh trip — a
+        # different dispatch unit (re-fire or machinery re-dispatch) —
+        # resets the stale marker and opens a clean chain with the normal
+        # ladder. The alert leaving 9090 still closes via the green path.
+        if existing.get("terminal") and existing.get("ladder") == "stop-reason":
+            same_unit = (
+                existing.get("dispatch_unit")
+                and decision.get("dispatch_unit")
+                and decision.get("dispatch_unit") == existing.get("dispatch_unit")
+            )
+            if same_unit or not existing.get("dispatch_unit"):
+                park_until = now + timedelta(seconds=VERIFY_DEADLINE)
+                existing["dead_until"] = iso(park_until)
+                existing["dispatch_unit"] = (
+                    existing.get("dispatch_unit")
+                    or decision.get("dispatch_unit") or ""
+                )
+                save_chain_state(name, existing)
+                log(f"re-park {name} hop={decision.get('hop')} "
+                    f"unit={existing.get('dispatch_unit')} — escalation owns "
+                    f"the chain; cooldown extended to "
+                    f"{existing['dead_until']} (no re-ladder, no new STOP-REASON)")
+                continue
+            # Fresh trip: the old unit's escalation is settled. Reset the
+            # stale marker so this dispatch opens a clean chain.
+            existing.pop("terminal", None)
+            existing.pop("dead_until", None)
+            existing.pop("verify_deadline_ts", None)
+            existing["ladder"] = ""
+            existing["stall_count"] = 0
+            existing["dispatch_unit"] = decision.get("dispatch_unit") or ""
+            save_chain_state(name, existing)
+            log(f"fresh trip {name}: dispatch unit changed to "
+                f"{existing.get('dispatch_unit')} — stale escalation marker "
+                f"reset, chain opens clean")
         hop = decision.get("hop")
         if not hop:
             continue
@@ -1402,6 +1449,12 @@ def main() -> int:
                             "hop": "verify",
                             "terminal": "detector-red",
                             "dead_until": iso(cooldown_deadline),
+                            # fleet-ops#2397: persist the terminal marker so a
+                            # re-open of the same dispatch unit re-parks via
+                            # the guard in main() instead of re-laddering.
+                            "ladder": state.get("ladder") or "stop-reason",
+                            "stall_count": int(state.get("stall_count") or 0),
+                            "dispatch_unit": decision.get("dispatch_unit") or "",
                         })
                         # The chain terminated this tick — do not count it as
                         # still-open/stalled (fleet-ops#1610). Without this the
@@ -1466,6 +1519,12 @@ def main() -> int:
                         "hop": hop,
                         "terminal": "escalated",
                         "dead_until": iso(cooldown_deadline),
+                        # fleet-ops#2397: persist the terminal marker so a
+                        # re-open of the same dispatch unit re-parks via the
+                        # guard in main() instead of re-laddering.
+                        "ladder": "stop-reason",
+                        "stall_count": int(state.get("stall_count") or 0),
+                        "dispatch_unit": decision.get("dispatch_unit") or "",
                     })
                     # The chain terminated this tick — do not count it as
                     # still-open/stalled (same exclusion as the verify close).
