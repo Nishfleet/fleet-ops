@@ -590,6 +590,14 @@ bin/fleet-work-supply-canary /home/nish/.local/bin/fleet-work-supply-canary
 bin/fleet-tailscale-acl-canary /home/nish/.local/bin/fleet-tailscale-acl-canary
 lib/tailscale-acl-lockdown.py /home/nish/.local/bin/tailscale-acl-lockdown.py
 config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-acl-lockdown.json
+# fleet-ops#2151: tailscaled localapi socket reachability as the
+# UNPRIVILEGED user. The ACL canary (block 28) reads netmap via sudo,
+# which bypasses the /run/tailscale socket-dir permission; a 0700
+# RuntimeDirectoryMode reads CLEAN to the ACL watch while unprivileged
+# `tailscale status` (the SSH-over-Tailscale path) is dead. This canary
+# runs `tailscale status` with no sudo and fails loud. Heartbeat-tier1
+# block 42.
+bin/fleet-tailscale-localapi-canary /home/nish/.local/bin/fleet-tailscale-localapi-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
