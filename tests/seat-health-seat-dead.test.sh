@@ -30,11 +30,17 @@
 #   D8  shouldMarkSeatDead(none, c=100) = false (healthy never dead)
 #   D9  shouldMarkSeatDead(credentials_bad, c=1) = true (401/403 already dead)
 #   D10 writeSeatLedgerEntry: 25 transient_http failures -> seat_dead=true
-#       and usable_at at the 24h quarantine cap (the 1422 wall still fires).
-#   D11 a healthy write after D10 resets seat_dead=false and count=0 (recovery
-#       via a successful probe — never a permanent bench).
-#   D12 below threshold (c=24) seat_dead stays false (the quarantine wall
-#       fires at 20 but the corpse mark only at 25).
+#       AND the ledger class reclassifies to the TERMINAL "corpse" class
+#       (fleet-ops#2327) — a corpse is retired, not a walled-transient seat
+#       that "transient backoff keeps re-benching forever". usable_at stays
+#       at the 24h quarantine cap (the 1422 wall still fires).
+#   D11 a healthy write after D10 resets seat_dead=false, count=0, and the
+#       class back to "healthy" (recovery via a successful probe — never a
+#       permanent bench).
+#   D12 below threshold (c=24) seat_dead stays false and the class stays
+#       "transient_fault" (the quarantine wall fires at 20 but the corpse
+#       mark — and the reclassification — only at 25).
+#   D13 quota_exhausted corpse (age 25h) also reclassifies to "corpse".
 #
 # Environment seams:
 #   FLEET_SEAT_HEALTH_TS    absolute path to seat-health.ts. Default:
@@ -163,18 +169,29 @@ const p = seatLedgerPath('opencode', 'muse-spark-1.2-contributor-free');
 const read = () => JSON.parse(readFileSync(p, 'utf8'));
 const out = [];
 // 24 failures: c climbs 1..24, all below the corpse threshold (25). The
-// quarantine wall fires at c=20 (1h->...->24h cap) but seat_dead stays false.
+// quarantine wall fires at c=20 (1h->...->24h cap) but seat_dead stays false
+// and the class stays transient_fault (the corpse mark — and the fleet-ops#2327
+// terminal reclassification — only at 25).
 for (let i = 0; i < 24; i++) writeSeatLedgerEntry(obs({}));
 let e = read();
-out.push(['c24-count', e.consecutive_failure_count, 'c24-dead', String(e.seat_dead), 'c24-wall', Math.round((Date.parse(e.usable_at) - now) / 1000)]);
-// 25th failure: c=25 -> seat_dead=true, wall at the 24h quarantine cap.
+out.push(['c24-count', e.consecutive_failure_count, 'c24-dead', String(e.seat_dead), 'c24-class', e.health_class, 'c24-wall', Math.round((Date.parse(e.usable_at) - now) / 1000)]);
+// 25th failure: c=25 -> seat_dead=true, class reclassifies to corpse, wall
+// at the 24h quarantine cap.
 writeSeatLedgerEntry(obs({}));
 e = read();
-out.push(['c25-count', e.consecutive_failure_count, 'c25-dead', String(e.seat_dead), 'c25-wall', Math.round((Date.parse(e.usable_at) - now) / 1000)]);
-// healthy write: count -> 0, seat_dead -> false (recovery via a probe).
+out.push(['c25-count', e.consecutive_failure_count, 'c25-dead', String(e.seat_dead), 'c25-class', e.health_class, 'c25-wall', Math.round((Date.parse(e.usable_at) - now) / 1000)]);
+// healthy write: count -> 0, seat_dead -> false, class -> healthy (recovery
+// via a probe).
 writeSeatLedgerEntry({ ...base, http_status: 200, health_class: 'healthy', failure_mode: 'none', observed_at: new Date(now + 1000).toISOString(), usable_at: null, consecutive_failure_count: 0 });
 e = read();
-out.push(['healthy-count', e.consecutive_failure_count, 'healthy-dead', String(e.seat_dead), 'healthy-usable', String(e.usable_at)]);
+out.push(['healthy-count', e.consecutive_failure_count, 'healthy-dead', String(e.seat_dead), 'healthy-class', e.health_class, 'healthy-usable', String(e.usable_at)]);
+// D13: quota_exhausted corpse (402 observed 25h ago, count 73) also
+// reclassifies to corpse — the billing wall that has not cleared is a corpse
+// too, with the same terminal class.
+const qp = seatLedgerPath('minimax', 'MiniMax-M3');
+writeSeatLedgerEntry({ ...base, provider: 'minimax', model: 'MiniMax-M3', http_status: 402, health_class: 'quota_exhausted', failure_mode: 'quota_exhausted', observed_at: new Date(now - 25 * 3600 * 1000).toISOString(), usable_at: null, consecutive_failure_count: 73 });
+const qe = JSON.parse(readFileSync(qp, 'utf8'));
+out.push(['quota-count', qe.consecutive_failure_count, 'quota-dead', String(qe.seat_dead), 'quota-class', qe.health_class]);
 console.log('RESULT_JSON:' + JSON.stringify(out));
 " 2>&1 | tail -n1)
 if [[ "$last" != RESULT_JSON:* ]]; then
@@ -190,17 +207,26 @@ expect() {
     fi
     ok "${label} (${want})"
 }
-# c24: count=24, seat_dead=false, wall=57600 (16h quarantine step, c>=20)
+# c24: count=24, seat_dead=false, class=transient_fault, wall=57600 (16h quarantine step, c>=20)
 expect "24" "0,1" "D12: c24-count (below corpse threshold)"
 expect "false" "0,3" "D12: c24-dead (quarantine wall fires, corpse mark does not)"
-expect "57600" "0,5" "D12: c24-wall (16h quarantine step at c=24)"
-# c25: count=25, seat_dead=true, wall=86400
+expect "transient_fault" "0,5" "D12: c24-class (class unchanged below the corpse threshold)"
+expect "57600" "0,7" "D12: c24-wall (16h quarantine step at c=24)"
+# c25: count=25, seat_dead=true, class=corpse, wall=86400
 expect "25" "1,1" "D10: c25-count (at corpse threshold)"
 expect "true" "1,3" "D10: c25-dead (corpse marked)"
-expect "86400" "1,5" "D10: c25-wall (24h quarantine cap held alongside seat_dead)"
-# healthy: count=0, seat_dead=false, usable_at=null
+expect "corpse" "1,5" "D10: c25-class (fleet-ops#2327 terminal reclassification)"
+expect "86400" "1,7" "D10: c25-wall (24h quarantine cap held alongside seat_dead)"
+# healthy: count=0, seat_dead=false, class=healthy, usable_at=null
 expect "0" "2,1" "D11: healthy-count (probe recovery resets)"
 expect "false" "2,3" "D11: healthy-dead (corpse cleared on success)"
-expect "null" "2,5" "D11: healthy-usable (wall cleared)"
+expect "healthy" "2,5" "D11: healthy-class (class rebuilt on recovery)"
+expect "null" "2,7" "D11: healthy-usable (wall cleared)"
+# quota corpse: seat_dead=true, class=corpse. count is merged prev+1 (fresh
+# file -> 1); the 402-death path is TIME-based (age >= 24h) so the count is
+# not what drives the corpse mark — the class reclassification is.
+expect "1" "3,1" "D13: quota-count (first write on a fresh file)"
+expect "true" "3,3" "D13: quota-dead (402 not cleared in 24h -> corpse)"
+expect "corpse" "3,5" "D13: quota-class (terminal reclassification, billing wall)"
 
-ok "fleet-ops#2145 closure: corpses (transient c>=25, quota age>=24h) are seat_dead=true; below-threshold and healthy behaviour unchanged; a successful probe recovers"
+ok "fleet-ops#2145/#2327 closure: corpses (transient c>=25, quota age>=24h) are seat_dead=true AND reclassify to the terminal corpse class; below-threshold and healthy behaviour unchanged; a successful probe recovers"
