@@ -172,10 +172,11 @@ Live sample 2026-08-26:
 - ratio 411.8
 
 fleet-ops#489 decided to keep `memory.current` for admission (not process
-VmRSS). fleet-ops#1168 then right-sized the live budget from that 1.5 GB
-p95*3 clamp to the measured typical-worker value: `config/seat-caps.json`
-sets `ram_gb_per_worker=0.6`. Process VmRSS is much smaller, so using it
-would raise lanes but undercount real cgroup cost.
+VmRSS). fleet-ops#1168 right-sized the live budget from that 1.5 GB p95*3
+clamp to the measured typical-worker value 0.6; fleet-ops#1558 then
+re-measured under per-repo MemoryMax drop-ins and `config/seat-caps.json`
+now holds `ram_gb_per_worker=0.5`. Process VmRSS is much smaller, so using
+it would raise lanes but undercount real cgroup cost.
 
 Do not cite the 35 MB figure as cgroup cost.
 
