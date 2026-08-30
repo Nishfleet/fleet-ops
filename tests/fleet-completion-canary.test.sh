@@ -27,7 +27,8 @@
 #  13. Dispatch plane: in-flight (active) → leave open.
 #  14. Dispatch plane: orphan before deadline → waiting, no re-dispatch.
 #  15. Dispatch plane: --collect unit, Started-only journal → completed-success.
-#  16. Issue-close evidence: closed without PR/commit evidence is flagged.
+#  18. Dispatch plane (fleet-ops#2414): verbose --collect journal (>20 lines,
+#      Started pushed past a -n 20 tail window) → completed-success, not orphan.
 #  17. Escalated dispatch/run chain terminates as terminal=escalated (not parked)
 #      — the fleet-ops#2367 drain (STOP-REASON hand-off is the terminal).
 set -euo pipefail
@@ -103,18 +104,34 @@ FAKE
 chmod +x "$scratch/systemctl"
 
 # Fake journalctl for the dispatch plane (fleet-ops#1009).
+# FAITHFUL to real journalctl: honors `-n N` (tail truncation). Without `-n`
+# it cats the FULL fixture. journal_text reads the full journal (fleet-ops#2414),
+# so fixtures whose "Started" line sits beyond a -n 20 tail window model the
+# live verbose-run shape and would orphan under the old truncating reader.
 cat >"$scratch/journalctl" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 store="${SYSCTL_STORE:?}"
 unit=""
-for a in "$@"; do
-  case "$a" in
-    -*) ;;
-    *.service) unit="$a" ;;
+count=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n)
+      count="${2:-}"; shift 2 ;;
+    -n[0-9]*)
+      count="${1#-n}"; shift ;;
+    -*) shift ;;
+    *.service) unit="$1"; shift ;;
+    *) shift ;;
   esac
 done
-[ -f "$store/$unit.journal" ] && cat "$store/$unit.journal"
+if [ -f "$store/$unit.journal" ]; then
+  if [ -n "$count" ]; then
+    tail -n "$count" "$store/$unit.journal"
+  else
+    cat "$store/$unit.journal"
+  fi
+fi
 exit 0
 FAKE
 chmod +x "$scratch/journalctl"
@@ -1163,8 +1180,93 @@ grep -q 'fleet_chain_open{plane="dispatch",hop="run"} 0' "$scratch7/fleet-chains
 
 ok "dispatch plane: --collect unit with Started-only journal -> completed-success, not orphaned (fleet-ops#1295)"
 
+# --- 18. verbose --collect journal (Started past the -n 20 tail window)   ---
+#         -> completed-success, not orphaned (fleet-ops#2414)
+# Live incident shape: SystemUnitFailed + FleetSloMainGreenSlowBurn both RAN
+# to completion on 2026-08-30, but their 24-line journals pushed the systemd
+# "Started" line (the FIRST entry) beyond the old journal_text `-n 20` tail.
+# classify_dispatch read verdict=None + started=False -> "orphan" -> the
+# dispatch entries sat open past their 90-min deadline, were re-dispatched as
+# duplicates, and the redispatch tick lit the FleetChainStalled rail.
+# journal_text now reads the FULL journal; the faithful fake truncates only
+# when `-n N` is passed, so this fixture orphans under the old reader and
+# closes completed/success under the fixed one.
+scratch18="$(mktemp -d -t dispatch-canary18.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch18/systemctl"
+ln -s "$scratch/journalctl" "$scratch18/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch18/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch18/dispatcher"
+mkdir -p "$scratch18/sysctl" "$scratch18/as/dispatch-packets"
+
+pkt18="$scratch18/as/dispatch-packets/synth-18.md"
+echo "synthetic packet 18" > "$pkt18"
+: > "$scratch18/dispatch-ledger.jsonl"
+: > "$scratch18/redispatch.log"
+
+# No state files -> LoadState=not-found (--collect unit already unloaded).
+# Journal: systemd "Started" line FIRST, then 23 lines of worker output.
+# Total 24 lines: exactly the live incident size, Started outside any
+# tail-20 window.
+{
+  echo "Started synth-18.service - Pi packet synth-18 (session-independent)."
+  for i in $(seq 1 23); do
+    echo "synth-18 worker output line $i"
+  done
+} > "$scratch18/sysctl/synth-18.service.journal"
+# Sanity: the Started line must sit OUTSIDE the tail-20 window (bug shape).
+[[ "$(tail -n 20 "$scratch18/sysctl/synth-18.service.journal" | grep -c "Started synth-18.service")" == "0" ]] \
+  || fail "test-18 fixture: Started line must sit outside the tail-20 window"
+
+write_dispatch_entry "$scratch18/dispatch-ledger.jsonl" "id-18" "chain-18" 0 "synth-18" "$pkt18" 0 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch18/as" \
+FLEET_COMPLETION_STATE="$scratch18/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch18/actions.log" \
+FLEET_COMPLETION_PROM="$scratch18/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch18/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch18/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch18/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch18/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch18/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch18/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch18/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch18/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch18/sysctl" \
+DISPATCH_LOG="$scratch18/dispatch.log" \
+REDISPATCH_LOG="$scratch18/redispatch.log" \
+HOME="$scratch18" \
+  python3 "$bin" >/dev/null 2>"$scratch18/err.log"
+rc18=$?
+set -e
+[[ "$rc18" == "0" ]] || fail "dispatch test 18 rc=$rc18 stderr=$(cat "$scratch18/err.log")"
+
+# Ledger must close completed/verdict=success, NOT orphan/re-dispatch.
+tail -1 "$scratch18/dispatch-ledger.jsonl" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); assert d['status']=='completed', d; assert d['verdict']=='success', d" \
+  || fail "verbose --collect unit must close completed/success; stderr=$(cat "$scratch18/err.log")"
+
+# No re-dispatch (a completed run is never re-run).
+[[ ! -s "$scratch18/redispatch.log" ]] \
+  || fail "verbose completed unit must NOT be re-dispatched; log=$(cat "$scratch18/redispatch.log")"
+
+# No STOP-REASON.
+[[ ! -f "$scratch18/STOP-REASON.json" ]] \
+  || fail "STOP-REASON must NOT be written for a completed verbose unit"
+
+# Dispatch metrics: open=0, stalled=0 (the run hop terminated this tick).
+grep -q 'fleet_chain_open{plane="dispatch",hop="run"} 0' "$scratch18/fleet-chains.prom" \
+  || fail "dispatch open must be 0 after closing the verbose --collect success entry"
+grep -q 'fleet_chain_stalled{plane="dispatch",hop="run"} 0' "$scratch18/fleet-chains.prom" \
+  || fail "dispatch stalled must be 0 (no orphan re-dispatch)"
+
+ok "dispatch plane: verbose --collect journal (Started past tail window) -> completed-success, not orphaned (fleet-ops#2414)"
+
 # Cleanup dispatch-plane scratch dirs.
-rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6" "$scratch7"
+rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6" "$scratch7" "$scratch18"
 
 # ============================================================================
 # Issue-close evidence check (fleet-ops#1527)

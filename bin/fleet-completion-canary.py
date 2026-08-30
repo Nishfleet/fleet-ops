@@ -883,12 +883,24 @@ def show_prop(unit: str, prop: str) -> str:
 
 
 def journal_text(unit: str) -> str:
-    """Return last 20 journal lines for a unit (cat format)."""
+    """Return a unit's journal (cat format), FULL, not tail-truncated.
+
+    The full journal is the receipt, not a tail window. systemd writes
+    "Started <unit>.service" as the FIRST entry; a verbose run -- pi workers
+    log their whole transcript to the journal -- pushes that line out of any
+    `-n 20` tail. A completed --collect unit then reads as an orphan and is
+    needlessly re-dispatched (fleet-ops#2414: SystemUnitFailed +
+    FleetSloMainGreenSlowBurn both ran to completion on 2026-08-30, but their
+    24-line journals hid "Started" from the tail window, so their dispatch
+    entries sat open past the deadline, were re-dispatched, and lit the
+    FleetChainStalled rail). Failure markers land at the END of the journal,
+    so the full scan still catches them first.
+    """
     try:
         r = subprocess.run(
             [JOURNALCTL, "--user", "-u",
              unit if unit.endswith(".service") else f"{unit}.service",
-             "-o", "cat", "-n", "20"],
+             "-o", "cat"],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -917,6 +929,9 @@ def journal_has_started(text: str) -> bool:
     A --collect unit that was loaded and started but whose "Succeeded" line
     was suppressed still leaves a "Started <unit>.service" line. Its presence
     means the unit loaded and ran to completion without a failure log.
+    text must be the FULL journal (journal_text reads it untruncated): a
+    verbose run pushes the Started line past any fixed tail window
+    (fleet-ops#2414).
     """
     return bool(re.search(r"Started .+\.service", text))
 
@@ -936,7 +951,10 @@ def classify_dispatch(rec: dict) -> str:
     -- leaving the dispatch ledger entry open until the deadline fires. When
     the journal has a "Started" line but no "Failed", the unit loaded and
     ran to completion: classify as completed-success. A truly empty journal
-    (unit never started) remains an orphan.
+    (unit never started) remains an orphan. journal_text reads the FULL
+    journal (fleet-ops#2414): a -n 20 tail window hides the Started line on any
+    verbose run and re-brands a completed unit as an orphan, re-dispatching
+    a duplicate of work that already finished.
     """
     unit = rec.get("unit") or ""
     if not unit:
