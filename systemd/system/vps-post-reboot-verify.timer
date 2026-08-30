@@ -1,0 +1,16 @@
+[Unit]
+Description=Re-verify agent stack after maintenance-window reboot (one-shot, 30 min post-reboot)
+# Runs ~30 min after vps-weekly-update (Sun 03:30 IST) to catch delayed tailscale recovery.
+# ConditionPathExists on the service ensures it only fires if the first verify
+# did not clear the resume-after-boot marker. This timer is system-scope because
+# the service it triggers is system-scope (runs After=network-online.target,
+# early in boot before user sessions). A user-scope timer cannot activate a
+# system-scope service (fleet-ops#1160).
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
