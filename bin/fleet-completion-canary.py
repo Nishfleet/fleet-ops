@@ -549,8 +549,28 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict) -> str:
     name = chain["alertname"]
     synthetic = name in SYNTHETIC
     stall_count = int(state.get("stall_count") or 0)
-    if stall_count >= 1 or state.get("ladder"):
-        log(f"chain {name} already laddered ({state.get('ladder')}); metrics only")
+    prev_ladder = state.get("ladder") or ""
+    if stall_count >= 1 or prev_ladder:
+        # fleet-ops#2247: a prior redispatch at dispatch/run returned rc=0,
+        # but rc=0 only proves the dispatcher SPAWNED an async unit — it is
+        # not evidence the repair ran or the alert resolved. If the chain is
+        # STILL stalled on a later tick (take_ladder is only called when
+        # decision["stalled"] is True), the redispatch was a no-op: the
+        # alert kept firing. Fail loud — write STOP-REASON and escalate to
+        # the senior conference — instead of parking the chain at "already"
+        # forever, which left FleetMainRed stuck through endless rc=0
+        # redispatches that never turned main green.
+        if prev_ladder == "redispatch" and hop in {"dispatch", "run"}:
+            write_stop_reason(chain, hop, age)
+            loud("UNREPAIRED-FAIL",
+                 f"alertname={name} hop={hop} age={age}s — redispatch no-op: "
+                 f"alert still firing after rc=0 redispatch; STOP-REASON "
+                 f"alert-repair-stalled (senior conference)")
+            state["ladder"] = "stop-reason"
+            state["hop"] = hop
+            state["age"] = age
+            return "stop-reason"
+        log(f"chain {name} already laddered ({prev_ladder}); metrics only")
         return "already"
 
     exclude = None
