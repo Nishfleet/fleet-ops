@@ -360,8 +360,13 @@ cmd_end() {
         is_uint "$after_hours" || after_hours="$after"
         dry=$(read_field "$file" consecutive_dry)
         is_uint "$dry" || dry=0
-        last_run=$(read_field "$file" last_run_epoch)
-        is_uint "$last_run" || last_run=0
+        # fleet-ops#1277: ExecStopPost still runs when ExecCondition skipped
+        # the scout (the rest-skip path), so begin never wrote this tick's
+        # epoch. The missing-snapshot branch is reached exactly when no begin
+        # ran for this tick, so refresh last_run_epoch to now_s: a
+        # deliberately-resting supply line (|hours_of_work| >= BUFFER_H) stays
+        # liveness-observable instead of tripping FleetScoutStale every 8h.
+        last_run="$now_s"
         if ! is_uint "$after"; then
             after=""
             after_hours=""

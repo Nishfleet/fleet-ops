@@ -204,7 +204,7 @@ run_scenario() {
 # --- scenario 1: alarm-stub (rc=1) on every alarm detector -> exits 0 ------
 run_scenario 1 \
     deploy_rc=1 redpr_rc=1 canary_rc=1 \
-    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1
+    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1 undersat_rc=1
 if [ "$rc" -ne 0 ]; then
     fail "scenario 1: alarm-stub (rc=1) on every alarm detector made propagation exit $rc — alarm-vs-failure separation broken. output: $out"
 fi
@@ -213,7 +213,7 @@ ok "scenario 1: alarm-stub (rc=1) on alarm detectors -> propagation exits 0 (ala
 # --- scenario 2: crash-stub (rc=7) on every alarm detector -> exits 7 ------
 run_scenario 2 \
     deploy_rc=7 redpr_rc=7 canary_rc=7 \
-    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7
+    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7 undersat_rc=7
 if [ "$rc" -ne 7 ]; then
     fail "scenario 2: crash-stub (rc=7) on every alarm detector made propagation exit $rc — real crashes must surface. output: $out"
 fi
@@ -245,7 +245,7 @@ ok "scenario 4: all-cans-pass baseline: propagation exits 0, logs 'tier 1 comple
 # the source for the six -ge 2 lines and assert they are present, and
 # we grep the rest of the file to ensure the OLD `-ne 0` shape is not
 # reintroduced for those six vars.
-declare -a D_VARS=(deploy_rc redpr_rc canary_rc decisions_ledger_rc failed_command_rc unjustified_rc)
+declare -a D_VARS=(deploy_rc redpr_rc canary_rc decisions_ledger_rc failed_command_rc unjustified_rc undersat_rc)
 D_PASS=0
 D_TOTAL=0
 for v in "${D_VARS[@]}"; do

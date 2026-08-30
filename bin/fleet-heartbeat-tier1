@@ -1209,9 +1209,18 @@ fi
 # Delegates to bin/fleet-heartbeat-undersaturation. The helper counts ready/
 # claimed work vs live pi-issue workers; on a wedge (work>0, running==0) it
 # repairs on the first tick and fails LOUD on the second consecutive one. It
-# also emits a per-tick THROUGHPUT line. A non-zero exit here propagates so
-# fleet-heartbeat.service lands in --state=failed -> unit-escalation; that is
-# the deliberate fail-loud signal, not an error to swallow.
+# also emits a per-tick THROUGHPUT line.
+#
+# Alarm-vs-failure separation (fleet-ops#1116 pattern, auditor 2026-08-30
+# 15:58Z trip): the helper exits 1 when it FOUND undersaturation (the
+# wedged/below-admit-floor state) — that is the alarm, and it is already
+# LOUD + auto-filed (UNDERSAT-FAIL-LOUD line + Triage). It exits >=2 only
+# when the helper itself CRASHED (missing intake-repos.json, jq missing,
+# seat-lib failure). We propagate ONLY the crash (rc >= 2) to
+# fleet-heartbeat.service --state=failed. Waiting on exit 1 every 30 min
+# re-summoned the senior auditor for a seat-quota wall (cline/straitly
+# quota-exhausted, devin caps 0) that no reset can fix; the alert-repair
+# rail (Prometheus FleetUndersaturated) is the repair owner for the alarm.
 UNDERSAT_BIN="${FLEET_HEARTBEAT_UNDERSAT:-/home/nish/.local/bin/fleet-heartbeat-undersaturation}"
 undersat_rc=0
 if require_manifest_helper "$UNDERSAT_BIN"; then
@@ -2528,7 +2537,7 @@ fi
 if [ "${stale_revert_rc:-0}" -ne 0 ]; then
     exit "$stale_revert_rc"
 fi
-if [ "$undersat_rc" -ne 0 ]; then
+if [ "${undersat_rc:-0}" -ge 2 ]; then
     exit "$undersat_rc"
 fi
 if [ "${claim_reconcile_rc:-0}" -ne 0 ]; then
