@@ -375,7 +375,14 @@ grep -q 'fleet-issue-file file' "$calls_log" || \
     fail "wrapper must call fleet-issue-file to file a renewal issue: $(cat "$calls_log")"
 ok "auto-file: PRE-EXPIRY-DETECTED files a renewal issue via fleet-issue-file"
 
-# 24b. existing issue with the signal -> deduped (no new file).
+# 24b. existing issue with the signal -> deduped (no new file) + REPEAT-TICK
+# ADVISORY (fleet-ops#2134): once an open renewal issue exists, the heal path
+# (grok-token-refresh.timer for xai-oauth) owns the repair. Re-paging the
+# auditor every tick for an already-tracked, self-healing credential is pure
+# token burn — the stop-escalation hash drifts each tick (remaining_s/
+# timestamps change) so unit-escalation summons a senior auditor unboundedly.
+# The wrapper downgrades a fully-deduped tick to rc=0 + a LOUD advisory so
+# the auditor is paged ONCE (first detection) not every tick.
 export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"...signal: cred-expiry/xai-oauth...","title":"renew"}]'
 : >"$calls_log"
 set +e
@@ -384,10 +391,13 @@ out="$("$bin" --app-returns "$app_ok" \
     --now "$PROBE_NOW" 2>&1)"
 rc=$?
 set -e
-[[ "$rc" -eq 1 ]] || fail "dedupe run must exit 1, got $rc: $out"
+[[ "$rc" -eq 0 ]] || \
+    fail "repeat-tick (all deduped) must exit 0 (CRED-EXPIRY-TRACKED advisory), got $rc: $out"
+grep -q 'CRED-EXPIRY-TRACKED' <<<"$out" || \
+    fail "repeat-tick must print the LOUD CRED-EXPIRY-TRACKED advisory: $out"
 grep -q 'fleet-issue-file file' "$calls_log" && \
     fail "wrapper must NOT re-file when an open issue already carries the signal: $(cat "$calls_log")"
-ok "auto-file: existing renewal issue is deduped (no re-file)"
+ok "repeat-tick advisory: existing renewal issue -> rc=0 + CRED-EXPIRY-TRACKED, no re-file (no auditor burn)"
 
 # 24c. observe-to-close: signal cleared this tick -> comment + close.
 export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
@@ -407,6 +417,12 @@ grep -q 'gh issue close 42' "$calls_log" || \
 ok "observe-to-close: cleared signal comments + closes the renewal issue"
 
 # 24d. observe-to-close does NOT close a still-detected provider.
+# The provider is still detected AND already has an open issue -> this is the
+# repeat-tick advisory case (rc=0, CRED-EXPIRY-TRACKED). The point of 24d is
+# the observe-to-close gate: the open issue must NOT be closed while the
+# provider is still detected. The rc change from 1 -> 0 is the intended
+# fleet-ops#2134 repeat-tick-advisory fix (24b proves the advisory); here we
+# only assert the no-close invariant.
 export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
 : >"$calls_log"
 set +e
@@ -415,10 +431,33 @@ out="$("$bin" --app-returns "$app_ok" \
     --now "$PROBE_NOW" 2>&1)"
 rc=$?
 set -e
-[[ "$rc" -eq 1 ]] || fail "still-detected run must exit 1, got $rc: $out"
+[[ "$rc" -eq 0 ]] || \
+    fail "still-detected + already-tracked must exit 0 (repeat-tick advisory), got $rc: $out"
+grep -q 'CRED-EXPIRY-TRACKED' <<<"$out" || \
+    fail "still-detected + already-tracked must print CRED-EXPIRY-TRACKED: $out"
 grep -q 'gh issue close 42' "$calls_log" && \
     fail "observe-to-close must NOT close an issue whose provider is still detected: $(cat "$calls_log")"
-ok "observe-to-close: still-detected provider is not closed"
+ok "observe-to-close: still-detected provider is not closed (repeat-tick advisory rc=0)"
+
+# 24e. REJECT (dead App / PAT expires ≤ window end) stays fail-loud.
+# The repeat-tick advisory must ONLY fire on the PRE-EXPIRY-DETECTED path
+# (detected_count > 0). The App/PAT REJECT path leaves pre_expiry_detected
+# empty (detected_count == 0) — those conditions are NOT self-healing (a dead
+# App or an expiring PAT does not auto-rotate) and MUST stay fail-loud so the
+# auditor is paged. Simulate the REJECT path: GET /app 401, no auth-entries,
+# filing enabled with a stub open list. Assert rc=1 and NO CRED-EXPIRY-TRACKED.
+export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
+: >"$calls_log"
+set +e
+out="$("$bin" --app-returns '{}' --app-status 401 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || \
+    fail "REJECT (dead App, detected_count==0) must stay fail-loud rc=1, got $rc: $out"
+grep -q 'REJECT' <<<"$out" || fail "REJECT must print REJECT: $out"
+grep -q 'CRED-EXPIRY-TRACKED' <<<"$out" && \
+    fail "REJECT path (detected_count==0) must NOT emit the CRED-EXPIRY-TRACKED advisory: $out"
+ok "REJECT (dead App) stays fail-loud — repeat-tick advisory does not fire when detected_count==0"
 
 # Restore the offline defaults for any later checks.
 export FLEET_CRED_EXPIRY_FILE_ISSUES=0
