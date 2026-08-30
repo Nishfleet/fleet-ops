@@ -42,6 +42,10 @@ HARNESS_BLOCK_RE = re.compile(
     r"Dangerous command blocked \(no UI for confirmation\)",
     re.I,
 )
+SCHEMA_BLOCK_RE = re.compile(
+    r"Validation failed for tool",
+    re.I,
+)
 HEADING_RES = (
     re.compile(r"\bSIGNATURE\b", re.I),
     re.compile(r"ROOT CAUSE", re.I),
@@ -122,6 +126,8 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
 def result_failed(msg: dict[str, Any], command: str) -> tuple[bool, str]:
     text = _text_chunks(msg.get("content"))
     if HARNESS_BLOCK_RE.search(text):
+        return False, text
+    if SCHEMA_BLOCK_RE.search(text):
         return False, text
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
