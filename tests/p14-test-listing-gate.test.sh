@@ -85,6 +85,10 @@ live_skip[opus-heartbeat-replayed-frozen-snapshot.test.sh]=1
 # (the launcher binary, the gather script, the judge prompt, and the
 # thorough service unit). Live/VPS-only — cannot run in hosted CI.
 live_skip[opus-heartbeat-thorough-mode.test.sh]=1
+# fleet-ops#2152: opus-heartbeat-seat-comeback invokes the VPS-deployed
+# opus-heartbeat-gather launcher (/home/nish/.local/libexec/), which is
+# absent on hosted runners. Live/VPS-only — cannot run in hosted CI.
+live_skip[opus-heartbeat-seat-comeback.test.sh]=1
 # fleet-ops#1740 added gh-webhook-receiver-live-e2e.test.sh (live webhook →
 # Prometheus → alert e2e) but omitted the live_skip entry, leaving main red
 # on this required gate. The test skips gracefully in hosted CI (no live
