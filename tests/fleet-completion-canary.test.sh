@@ -14,6 +14,8 @@
 #   3. DISPATCH + RESOLVED → chains.terminated.jsonl terminal=green + cycle.
 #   4. Firing real alert, no DISPATCH, past 10 min → AMX redispatch.
 #   5. Watchdog firing is ignored.
+#  5c. FleetSloSeatAvailSlowBurn firing is ignored (WFR-input slow-burn class —
+#      no dispatch exists by design, fleet-ops#2429).
 #   6. VERIFY ... resolved counts as terminal-green.
 #   7. Unit-escalation STOP-REASON within 24h budget → open, not stalled,
 #      and this canary does not overwrite it.
@@ -349,6 +351,33 @@ if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
   fail "pending must not AMX-redispatch; log=$(cat "$scratch/dispatch.log")"
 fi
 ok "pending alerts (for: still counting) are ignored"
+
+# --- 5c. FleetSloSeatAvailSlowBurn firing is ignored (fleet-ops#2429) --------
+# A WFR-input slow-burn SLO alert: the dispatcher skip-list means no DISPATCH
+# is ever expected, so a firing-without-dispatch chain must NOT open (it
+# would ladder: redispatch -> STOP-REASON -> escalate the senior conference
+# for a measurement). Same SKIP_FIRING treatment as Watchdog.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-08-27T05:27:33Z",
+   "labels":{"alertname":"FleetSloSeatAvailSlowBurn"}}
+]}}, open(sys.argv[1],"w"))
+PY
+rc=$(run_bin "2026-08-27T15:00:00Z")  # ~9.5h after firing, far past all hop clocks
+[[ "$rc" == "0" ]] || fail "seat-avail rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
+  || fail "FleetSloSeatAvailSlowBurn must not open a chain; prom=$(cat "$scratch/fleet-chains.prom")"
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "FleetSloSeatAvailSlowBurn must not AMX-redispatch; log=$(cat "$scratch/dispatch.log")"
+fi
+[[ ! -f "$scratch/STOP-REASON.json" ]] \
+  || fail "FleetSloSeatAvailSlowBurn must not write STOP-REASON"
+ok "FleetSloSeatAvailSlowBurn firing is ignored (WFR-input slow-burn class)"
 
 # --- 6. VERIFY resolved is terminal -----------------------------------------
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
