@@ -102,19 +102,34 @@ esac
 FAKE
 chmod +x "$scratch/systemctl"
 
-# Fake journalctl for the dispatch plane (fleet-ops#1009).
+# Fake journalctl for the dispatch plane (fleet-ops#1009). Mirrors the real
+# journald options the canary uses: plain cat (tests 10-15), and the
+# -g <pattern> / -n <count> pair journal_started passes (fleet-ops#2414).
 cat >"$scratch/journalctl" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 store="${SYSCTL_STORE:?}"
 unit=""
+grep_pat=""
+last_n=""
+prev=""
 for a in "$@"; do
+  if [ "$prev" = "-g" ]; then grep_pat="$a"; prev=""; continue; fi
+  if [ "$prev" = "-n" ]; then last_n="$a"; prev=""; continue; fi
   case "$a" in
+    -g|-n) prev="$a" ;;
     -*) ;;
     *.service) unit="$a" ;;
   esac
 done
-[ -f "$store/$unit.journal" ] && cat "$store/$unit.journal"
+[ -n "$unit" ] || exit 0
+jf="$store/$unit.journal"
+[ -f "$jf" ] || exit 0
+if [ -n "$grep_pat" ]; then
+  grep -E "$grep_pat" "$jf" | tail -n "${last_n:-1000000}"
+else
+  tail -n "${last_n:-1000000}" "$jf"
+fi
 exit 0
 FAKE
 chmod +x "$scratch/journalctl"
@@ -1323,6 +1338,90 @@ ok "dispatch plane: --collect unit with Started-only journal -> completed-succes
 
 # Cleanup dispatch-plane scratch dirs.
 rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6" "$scratch7"
+
+# --- 16. --collect unit, verbose journal hides "Started" past the -n 20 window -> completed-success (fleet-ops#2414) ----
+# Live fleet-ops#2414: two alert-repair units (SystemUnitFailed, FleetSloMainGreenSlowBurn)
+# dispatched at 15:37/15:38Z really ran to completion (journal shows
+# PACKET-VERDICT class=worked + RESOLVED receipts) but their dispatch-ledger
+# entries stayed open until the 90-min deadline. The unit journals were 24 lines
+# and the systemd "Started" line is ALWAYS the first entry, so journal_text's
+# -n 20 window hid it: journal_has_started returned False -> classified orphan ->
+# re-dispatched the SAME packet at 17:22Z (duplicate repair work) ->
+# fleet_chain_stalled{plane=dispatch,hop=run}=2.0 -> FleetChainStalled critical.
+# The fix: journal_started greps the FULL journal for the exact start marker.
+scratch16="$(mktemp -d -t dispatch-canary16.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch16/systemctl"
+ln -s "$scratch/journalctl" "$scratch16/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch16/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch16/dispatcher"
+mkdir -p "$scratch16/sysctl" "$scratch16/as/dispatch-packets"
+
+pkt16="$scratch16/as/dispatch-packets/synth-16.md"
+echo "synthetic packet 16" > "$pkt16"
+: > "$scratch16/dispatch-ledger.jsonl"
+: > "$scratch16/redispatch.log"
+
+# No state files -> LoadState=not-found (--collect unit that exited). Journal has
+# "Started" at line 1 followed by a verbose 24-line transcript and NO
+# "Succeeded"/"Failed" summary (suppressed on --collect unload) — the exact
+# live shape where -n 20 drops the start marker.
+{
+  echo "Started synth-16.service - Pi packet synth-16 (session-independent)."
+  for i in $(seq 1 24); do
+    echo "pi packet verbose transcript line $i"
+  done
+} > "$scratch16/sysctl/synth-16.service.journal"
+
+write_dispatch_entry "$scratch16/dispatch-ledger.jsonl" "id-16" "chain-16" 0 "synth-16" "$pkt16" 0 \
+    "2026-08-29T00:00:00Z" "2026-08-29T00:05:00Z"
+
+set +e
+AGENT_STATE="$scratch16/as" \
+FLEET_COMPLETION_STATE="$scratch16/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch16/actions.log" \
+FLEET_COMPLETION_PROM="$scratch16/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch16/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch16/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch16/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch16/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch16/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch16/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch16/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch16/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-29T01:00:00Z" \
+SYSCTL_STORE="$scratch16/sysctl" \
+DISPATCH_LOG="$scratch16/dispatch.log" \
+REDISPATCH_LOG="$scratch16/redispatch.log" \
+HOME="$scratch16" \
+  python3 "$bin" >/dev/null 2>"$scratch16/err.log"
+rc16=$?
+set -e
+[[ "$rc16" == "0" ]] || fail "dispatch test 16 rc=$rc16 stderr=$(cat "$scratch16/err.log")"
+
+# Before the fix: the verbose journal hides "Started", the unit is orphaned and
+# past deadline -> re-dispatch of the SAME packet. After the fix: journal_started
+# finds the marker in the full journal -> completed-success, no re-dispatch.
+tail -1 "$scratch16/dispatch-ledger.jsonl" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); assert d['status']=='completed', d; assert d['verdict']=='success', d" \
+  || fail "ledger must close with status=completed verdict=success despite verbose journal (fleet-ops#2414); stderr=$(cat "$scratch16/err.log")"
+
+# No re-dispatch must have happened (the unit completed; the packet is not stale).
+[[ ! -s "$scratch16/redispatch.log" ]] \
+  || fail "redispatch must NOT be called on a completed --collect unit with a verbose journal (fleet-ops#2414)"
+
+# No STOP-REASON must have been written.
+[[ ! -f "$scratch16/STOP-REASON.json" ]] \
+  || fail "STOP-REASON must NOT be written for a completed unit"
+
+# Metrics: dispatch stalled must be 0 (no orphan re-dispatch/escalation this tick).
+grep -q 'fleet_chain_stalled{plane="dispatch",hop="run"} 0' "$scratch16/fleet-chains.prom" \
+  || fail "dispatch stalled must be 0 (completed unit closed, not re-dispatched); got: $(grep -E 'dispatch.*stalled|stalled.*dispatch' "$scratch16/fleet-chains.prom")"
+
+ok "dispatch plane: verbose --collect journal (Started hidden by -n 20) -> completed-success, no redispatch (fleet-ops#2414)"
+
+rm -rf "$scratch16"
+
 
 # ============================================================================
 # Issue-close evidence check (fleet-ops#1527)
