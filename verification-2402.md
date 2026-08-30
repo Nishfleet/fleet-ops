@@ -26,23 +26,22 @@ fix forward or revert, and prove main green with a fresh run.
    halted with this fix-forward-tracked issue (scenario A: only the
    non-required P14 check failed) instead of reverting.
 5. Fix-forward: PR #2406 (`b7e19b5`, merged 15:40:33Z) hosted the orphan from
-   `tests/ci-standards-audit.test.sh` (line 324). Main CI green since; current
-   head `dc2c566` fresh push run 33326410637 = success.
+   `tests/ci-standards-audit.test.sh` (line 324). Main CI green since.
 
-## Fresh-run proof
+## Fresh-run proof (current head)
 
-- Remote: run 33326410637 on `dc2c566` (event=push, created 17:51:14Z,
-  completed 17:58:30Z, conclusion=success) — a fresh run, not a rerun (a
-  rerun would pin the old reusable-workflow SHA). All 9 check-runs on the head
-  completed: 7 success, 2 skipped (auto-revert, mass-close guard) -> rollup
-  SUCCESS, so `fleet_main_ci_green` resolves 1.
-- Local at `dc2c566` (this worktree, no local changes):
-  - `bash tests/p14-test-listing-gate.test.sh` -> all OK (311 files accounted
-    for; the previously-orphaned test is now in the reachable set).
+- Remote: run 33331499649 on `da10f9950` (current main head, event=push,
+  created 2026-08-30T19:39:54Z, conclusion=success) — a fresh run, not a
+  rerun (a rerun would pin the old reusable-workflow SHA). All check-runs on
+  the head completed: P14 tests, Gitleaks, Semgrep, Shellcheck,
+  systemd-analyze all success (auto-revert + mass-close guard skipped) ->
+  rollup SUCCESS, so `fleet_main_ci_green` resolves 1.
+- Local at `da10f9950` (this worktree, no local changes):
+  - `bash tests/p14-test-listing-gate.test.sh` -> OK (previously-orphaned
+    `unit-escalation-write-journal-evidence.test.sh` is now in the reachable set).
   - `bash tests/unit-escalation-write-journal-evidence.test.sh` -> OK
     (journal evidence-pinning proven).
-  - `bash tests/manifest-shape.test.sh`, `bash tests/intake-repos-shape.test.sh`,
-    `bash tests/escalation-units-shape.test.sh` -> all OK.
+  - `bash tests/escalation-units-shape.test.sh` -> OK.
 
 ## Prevention (mechanical-fix for the failure class)
 
@@ -61,18 +60,21 @@ CI red until a fix-forward lands.
   branch-protection config under Administration scope. The nishfleet-worker
   app token is 403 on branch-protection read/write (verified:
   GET /repos/Nishfleet/fleet-ops/branches/main/protection/required_status_checks
-  -> 403 Resource not accessible by integration; bin/fleet-escalation-canary
-  documents the same), and workers are platform-rejected from
-  `.github/workflows/**` edits. P14 non-required is the fleet's documented
-  design (tests/auto-revert-required-check-gate.test.sh); flipping it is an
-  admin/design decision with a merge-throughput cost, not a worker change.
+  -> 403 Resource not accessible by integration), and workers are
+  platform-rejected from `.github/workflows/**` edits. P14 non-required is the
+  fleet's documented design (tests/auto-revert-required-check-gate.test.sh);
+  flipping it is an admin/design decision with a merge-throughput cost, not a
+  worker change.
 
-## Out-of-scope finding filed separately
+## Out-of-scope finding (filed, then resolved)
 
-`tests/ci-standards-audit.test.sh` on the VPS fails at
+`tests/ci-standards-audit.test.sh` on the VPS failed at
 `tests/seat-health-seat-dead.test.sh` D10 (c25-wall: got null, expected
-86400). Pre-existing on current main, unrelated to #2402: the live
-`~/.pi/agent/extensions/seat-health.ts` (hot-patched 2026-08-30T18:21Z for
-the open #2415) now deliberately sets `usable_at=null` for corpse-class
-seats, and the in-repo closure test expectation is stale. CI cannot see it
-(the test skips when the extension is not installed). Filed as its own issue.
+86400) — pre-existing on main, unrelated to #2402: the live
+`~/.pi/agent/extensions/seat-health.ts` (hot-patched 2026-08-30T18:21Z for the
+open #2415) sets `usable_at=null` for corpse-class seats, and the in-repo
+closure test expectation was stale. CI cannot see it (the test skips when the
+extension is not installed). Filed as #2422; since resolved by #2425
+(`c455587`, fix(seat-health): corpse carries no usable_at retry clock, merged
+2026-08-30T19:05Z) — current main's `tests/seat-health-seat-dead.test.sh`
+D10 expectation matches the extension's null `usable_at`.
