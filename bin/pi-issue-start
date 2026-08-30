@@ -131,4 +131,4 @@ if [[ -f "$SEAT_LIB" ]]; then
     fi
 fi
 
-exec "$SYSTEMCTL" --user start "$unit"
+exec "$SYSTEMCTL" --user start --no-block "$unit"
