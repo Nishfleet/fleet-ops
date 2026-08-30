@@ -235,11 +235,53 @@ grep -q "alert: FleetVerifiedMergeRegression" "$rules" \
   || fail "fleet_rules.yml missing FleetVerifiedMergeRegression"
 grep -q "fleet_verified_merge_ratio - fleet_verified_merge_ratio offset 24h" "$rules" \
   || fail "verified-merge regression must be ratio - ratio offset 24h (trend delta)"
-# Queue composition 64% tripwire (scope addition): sustained level, not a delta.
+# Queue composition 64% tripwire (fleet-ops#2171): a LEVEL held above 0.64
+# (not a delta), but smoothed over the trailing 7d so a momentary dip or
+# export gap cannot reset a raw for: and keep the alert pending forever.
 grep -q "alert: FleetQueueSelfMaintenanceRatioHigh" "$rules" \
   || fail "fleet_rules.yml missing FleetQueueSelfMaintenanceRatioHigh"
-grep -q "fleet_queue_self_maintenance_ratio > 0.64" "$rules" \
-  || fail "queue tripwire must be a sustained level (> 0.64), not a delta"
+grep -q "avg_over_time(fleet_queue_self_maintenance_ratio\[7d\]) > 0.64" "$rules" \
+  || fail "queue tripwire must be the 7d-smoothed level (> 0.64) — an instant value with a long for: never fires (fleet-ops#2171)"
+# The same tripwire must reach FIRING within its for: on a realistic series
+# (high ratio with recurring dips), not sit pending forever — proved with
+# promtool test rules (the live 2026-08-30 shape: ratio > 0.64 100% of the
+# time but the 1w for: never completed, fleet-ops#2171).
+if command -v promtool >/dev/null 2>&1; then
+  unit_yml="$scratch/fleet-queue-ratio.test.yml"
+  cat >"$unit_yml" <<YOAML
+rule_files:
+  - $rules
+evaluation_interval: 6h
+tests:
+  - interval: 6h
+    input_series:
+      - series: 'fleet_queue_self_maintenance_ratio{queue="agent-ready"}'
+        # 32 steps cover the 7d window; recurring 0.50 dips would reset a raw
+        # instant + 1w for: rule but not the 7d average (real fleet-ops#2171 shape).
+        values: '0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85 0.50 0.85 0.85'
+    alert_rule_test:
+      - eval_time: 12h
+        alertname: FleetQueueSelfMaintenanceRatioHigh
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetQueueSelfMaintenanceRatioHigh
+              queue: agent-ready
+              service: fleet
+              severity: warning
+            exp_annotations:
+              summary: 'queue agent-ready 7-day self-maintenance ratio stayed above 64% (fleet2 death-number) for 6 hours'
+              description: 'avg_over_time(fleet_queue_self_maintenance_ratio{queue="agent-ready"}[7d]) has been above 0.64 (the fleet2 death-number) for 6+ hours. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The 7d window absorbs the momentary dips and export gaps that reset the old 1w for: and kept this alert pending forever (fleet-ops#2171). The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue.'
+YOAML
+  # promtool test rules exits 1 on a failed case AND prints FAILED to
+  # stdout, so gate on both: exit code (loud) and output text (catches
+  # the exit-0-print-FAILED quirk on other builds).
+  if ! out="$(promtool test rules "$unit_yml" 2>&1)"; then
+    fail "promtool test rules exited non-zero on the queue-tripwire unit test: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules: queue tripwire must transition pending->firing within for: 6h on the smoothed 7d window ($out)"
+  ok "promtool test rules: queue tripwire fires despite momentary dips (fleet-ops#2171)"
+fi
 ok "fleet_rules.yml: absent heartbeat + 3 regression-trend rules + queue tripwire"
 
 # =========================================================================

@@ -112,8 +112,9 @@ TYPE_MAINT = "# TYPE fleet_maintenance_quiescing gauge"
 #   fleet_queue_total{queue="agent-ready"|"ready-work"} — total open issues
 #   fleet_queue_self_maintenance_total{queue="agent-ready"|"ready-work"} — self-maintenance issues
 #   fleet_queue_self_maintenance_ratio{queue="agent-ready"|"ready-work"} — ratio 0..1 (omitted when total=0)
-# The 64% tripwire (fleet2 death-number) is enforced by a TREND alert on the
-# 7-day window (offset 7d), not a level — levels are Nish's policy.
+# The 64% tripwire (fleet2 death-number) is a LEVEL held above 0.64,
+# smoothed over the trailing 7 days (avg_over_time[7d]) so momentary dips
+# and export gaps cannot reset it (fleet-ops#2171).
 HELP_QT = "# HELP fleet_queue_total Open agent-ready issues by queue. queue=agent-ready: all Nishfleet repos. queue=ready-work: enrolled repos only (intake-repos.json)."
 TYPE_QT = "# TYPE fleet_queue_total gauge"
 HELP_QSM = "# HELP fleet_queue_self_maintenance_total Self-maintenance agent-ready issues by queue. Self-maintenance = repos in config/self-maintenance-repos.json (default fleet-ops)."
@@ -2067,7 +2068,9 @@ def main():
     # Queue composition: "agent-ready" (all Nishfleet repos) and "ready-work"
     # (enrolled repos only). Both export total, self-maintenance count, and
     # ratio (omitted when total=0). The 64% fleet2 death-number tripwire
-    # is a TREND alert (offset 7d), not a level.
+    # is a 7d-smoothed level (avg_over_time[7d] > 0.64) — see
+    # config/fleet_rules.yml FleetQueueSelfMaintenanceRatioHigh
+    # (fleet-ops#2171).
     # HELP/TYPE is emitted once per metric name; the per-queue samples
     # follow. Duplicate HELP/TYPE lines make the textfile unparseable
     # (promtool rejects them), so they must stay outside the loop.
