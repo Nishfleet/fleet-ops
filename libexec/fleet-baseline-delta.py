@@ -268,6 +268,9 @@ def http_json(url: str, path: str, params: dict[str, str], timeout: float, metho
         )
     req.add_header("User-Agent", "fleet-baseline-delta/1151")
     try:
+        # Operator/prom.url is operator-controlled localhost Prometheus; http_json
+        # refuses non-http(s) schemes before this call.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
