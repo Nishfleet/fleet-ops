@@ -69,6 +69,25 @@ SEAT_LEDGER_DIR = os.environ.get(
     "SEAT_LEDGER_DIR",
     "/home/nish/workspaces/agent-state/lanes/seats",
 )
+# fleet-ops#2429: the completion-canary's parked-chain markers. The canary
+# parks a chain (terminal + dead_until sliding cooldown, fleet-ops#2397/#1610)
+# when an alert's repair can no longer clear it in-turn: escalated
+# (STOP-REASON handed to the senior conference), detector-red (unit succeeded,
+# alert still firing), or auditor-resolved (mechanism-impossible / structural /
+# date-gate recovery). A parked chain is the canary's declaration that the
+# senior conference owns the alert and no further repair is dispatched until
+# the alert resolves on its own clock. But AlertManager re-sends a firing
+# alert every repeat_interval (6h) and each repeat hit this dispatcher, so
+# fresh workers were spawned into the SAME parked, unrepairable alert every
+# ~6h (live FleetSloSeatAvailSlowBurn: dispatches 07:00/11:57/17:57, each
+# failing and re-escalating), burning a seat and re-summoning the conference.
+# This path is the latch the dispatcher reads to stop re-dispatching a parked
+# chain; the canary drops the marker when the alert leaves 9090 (green close),
+# so a genuinely NEW incident on the same alertname dispatches normally.
+CHAIN_STATE_DIR = os.environ.get(
+    "FLEET_COMPLETION_STATE_DIR",
+    "/home/nish/workspaces/agent-state/fleet-completion-canary/open",
+)
 FALLBACK_LADDER = [
     ("devin", "glm-5-2"),
     ("minimax", "MiniMax-M3"),
@@ -203,6 +222,35 @@ def _seat_walled(provider, model):
     return _in_future(d.get("usable_at") or "")
 
 
+def _chain_parked(alertname):
+    """True when the completion-canary has already parked this alert's chain.
+
+    A chain is parked when the canary's per-alert state file carries a
+    `terminal` marker (escalated / detector-red / auditor-resolved) and a
+    `dead_until` sliding-cooldown that is in the future. That is the canary's
+    machine-readable declaration that the alert's repair is settled and owned
+    by the senior conference (mechanism-impossible / structural / date-gate
+    recovery), so a repeating webhook for the SAME firing must not spawn a
+    fresh worker into it. Missing state file or unparseable -> not parked
+    (fail-open, so a missing marker never starves a real repair). The canary
+    drops the file when the alert leaves 9090, so a later NEW incident
+    dispatches normally.
+    """
+    fname = _sanitise(alertname) + ".json"
+    try:
+        d = json.loads((Path(CHAIN_STATE_DIR) / fname).read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not d.get("terminal"):
+        return False
+    du = d.get("dead_until") or ""
+    if not du:
+        # Legacy parked marker without a clock: the canary adds dead_until on
+        # its next tick. Treat as parked so one stray repeat cannot reopen it.
+        return True
+    return _in_future(du)
+
+
 def _enumerate_ledger_seats():
     """Yield (provider, model) pairs from the per-seat ledger directory.
 
@@ -335,6 +383,25 @@ def main():
                 )
             print(f"[{utcnow()}] SKIP alertname={name} (in skip-list)", file=sys.stderr)
             return 0
+
+    # fleet-ops#2429: a chain the completion-canary has already PARKED
+    # (terminal marker + sliding dead_until — mechanism-impossible / structural /
+    # date-gate recovery, owned by the senior conference) must not re-receive
+    # repair workers on every AlertManager repeat. Each repeat that slips
+    # through costs a seat + a failed unit + a STOP-REASON re-escalation, and
+    # the alert resolves on its own clock (seats recovering, a Nish decision)
+    # — not from another dispatch into the same genuine state. The canary
+    # closes the chain green (and drops the marker) when the alert leaves
+    # 9090, so a different incident later still dispatches normally.
+    if any(_chain_parked(n) for n in alertnames):
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIP alertname={'+'.join(alertnames)} "
+                f"receiver={receiver} reason=chain-parked\n"
+            )
+        print(f"[{utcnow()}] SKIP alertname={'+'.join(alertnames)} "
+              "(chain parked; no re-dispatch)", file=sys.stderr)
+        return 0
 
     # Common (group) labels.
     common_labels = {

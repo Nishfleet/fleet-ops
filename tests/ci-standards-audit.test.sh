@@ -168,6 +168,13 @@ bash "$here/p14-unstubbed-unit-verify.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#2429: alert-repair dispatcher parked-chain latch (an alert whose
+# chain the completion-canary parked — mechanism-impossible / structural /
+# date-gate recovery — must not re-receive repair workers on every 6h
+# AlertManager repeat). Hosted here so P14 runs it without a workflow-file
+# edit (the worker App cannot push .github/workflows/**).
+bash "$here/alert-repair-chain-parked.test.sh"
+
 # fleet-ops#1457: stop-the-line detector drill. The detector + watch
 # workflows landed in #1465, but the test was never registered in ci.yml
 # (workers cannot push .github/workflows/**), so the p14-test-listing-gate
