@@ -27,11 +27,13 @@ say "TAILSCALE RECOVER"
 if ! sudo -n tailscale status >/dev/null 2>&1; then
   note "tailscale DOWN — attempting recover (re-enable + restart tailscaled)"
   sudo -n systemctl enable --now tailscaled.service 2>&1 | tee -a "$STATE/post-reboot.log" || true
+  # LEGAL-BRAKE: hardware — wait for tailscaled to come back up after re-enable/restart
   sleep 5
   if ! sudo -n tailscale status >/dev/null 2>&1; then
     # Harder recover: tailscale up --reset (non-interactive, uses auth key if configured)
     note "tailscale still down — attempting 'tailscale up --reset'"
     sudo -n tailscale up --reset 2>&1 | tee -a "$STATE/post-reboot.log" || true
+    # LEGAL-BRAKE: hardware — wait for tailscale up --reset to re-establish the network path
     sleep 5
   fi
   if ! sudo -n tailscale status >/dev/null 2>&1; then
@@ -47,6 +49,7 @@ fi
 set_flag clear '' ''
 rm -f "$STATE/resume-after-boot"
 
+# LEGAL-BRAKE: hardware — let boot-time units settle before judging them
 sleep 30  # let boot-time units settle before judging them
 UF=$(systemctl --user list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
 SF=$(systemctl        list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')

@@ -216,6 +216,13 @@ bash "$here/auditor-stdio-test-deleted.test.sh"
 bash "$here/quality-baseline-research-deleted.test.sh"
 bash "$here/memory-index-autocompact-migrated.test.sh"
 
+# fleet-ops#1160: tests/fleet-ops-1160-regression.test.sh pins the tailscale
+# RECOVER / sudo-probe / Persistent-timer logic in bin/vps-post-reboot-verify
+# and bin/vps-weekly-update. Hosted here from this already-listed
+# ci-standards-audit test so the P14 test-listing gate goes green without a
+# workflow edit.
+bash "$here/fleet-ops-1160-regression.test.sh"
+
 # fleet-ops#1157: self-auditing console (verify field, DISPUTED, ConsoleLying).
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/console-tile-verify.test.sh"

@@ -211,6 +211,7 @@ NEWFAIL=$(comm -13 "$STATE/failed-before" <(echo "$CUR") | tr '\n' ' ')
 PRE=$(tr '\n' ' ' < "$STATE/failed-before")
 [ -n "${PRE// /}" ] && note "pre-existing failures, untouched: $PRE"
 
+# LEGAL-BRAKE: hardware — let the post-reboot system settle before re-checking failed units
 sleep 20
 UF=$(systemctl --user list-units --state=failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
 [ -n "${UF// /}" ] && fail "units still failed after resume: $UF"
