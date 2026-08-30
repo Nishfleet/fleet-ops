@@ -24,7 +24,6 @@
 #   SEAT_CAPS_JSON
 #   FLEET_STRAITLY_DS4PRO_MODELS_JSON  models.json fixture
 #   FLEET_STRAITLY_DS4PRO_CATALOG      pi --list-models stdout fixture
-#   FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS active-seats dir override
 #   FLEET_HEARTBEAT_TRIAGE
 #   FLEET_STRAITLY_DS4PRO_REPO         default Nishfleet/fleet-ops
 #   FLEET_STRAITLY_DS4PRO_FILE         1 (default) file issues; 0 skip
@@ -53,8 +52,6 @@ MODELS_JSON="${FLEET_STRAITLY_DS4PRO_MODELS_JSON:-${HOME}/.pi/agent/models.json}
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_STRAITLY_DS4PRO_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_STRAITLY_DS4PRO_FILE:-1}"
-
-ACTIVE_SEATS_DIR="${FLEET_STRAITLY_DS4PRO_ACTIVE_SEATS:-${HOME}/.local/state/pi-packet/active-seats}"
 
 APPROVED_MODEL="deepseek/deepseek-v4-pro"
 
