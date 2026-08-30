@@ -92,6 +92,9 @@ bash "$here/intake-priority.test.sh"
 # (workers cannot edit .github/workflows/ci.yml). Same bash "$here/..."
 # host pattern as the priority drill above.
 bash "$here/pi-intake-tick-seat-gate.test.sh"
+# fleet-ops#1250: claim-step prior-art bounce (CI hook; keep this call).
+# ci.yml lists this file; workers cannot add a new verify-command line.
+bash "$here/prior-art-claim-check.test.sh"
 # --- 6. fleet-ops#1546 spawn post-condition + start-limit healer (CI hook) --
 # tests/pi-intake-tick-spawn-postcondition.test.sh locks the healer
 # (reset-failed on a start-limit-locked unit) and the post-condition

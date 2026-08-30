@@ -49,9 +49,9 @@
     },
     {
       "id": "sr-research-before-build",
-      "source": "global-standing-rules.md: Research before build — always (Nish, 2026-08-18)",
-      "mechanism": "PR gate: a new bin/ file requires a research: line naming last30days/official docs/live search plus compared options; worker prompt runs the checker; drill rejects a fixture that skips it",
-      "proof": "bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#517",
+      "source": "global-standing-rules.md: Research before build \u2014 always (Nish, 2026-08-18)",
+      "mechanism": "Two chokes. (1) Claim-step gate: a build-shaped agent-ready issue (build a / write a script / create a service) requires a Prior art section or intake bounces it with agent-blocked and does not push the claim branch (fleet-ops#1250). (2) PR gate: a new bin/ file requires a research: line naming last30days/official docs/live search plus compared options; worker prompt runs the checker; drill rejects a fixture that skips it (fleet-ops#517)",
+      "proof": "bin/prior-art-claim-check; tests/prior-art-claim-check.test.sh; lib/pi-intake-tick.sh; prompts/intake.md; prompts/scout.md; bin/research-before-build-check; tests/research-before-build-check.test.sh; prompts/worker.md; fleet-ops#1250; fleet-ops#517",
       "status": "enforced"
     },
     {

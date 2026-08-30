@@ -37,6 +37,15 @@ precedence_band_allow_claim() { return 0; }
 SH
 chmod +x "$stubs"
 
+# Stub prior-art-claim-check (fleet-ops#1250) so the claim-step gate passes
+# and the tick reaches the rate-limit path under test. Exits 0 = CLAIM_OK.
+prior_art_stub="$scratch/prior-art-claim-check"
+cat >"$prior_art_stub" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$prior_art_stub"
+
 # Functions beat PATH, so we override gh/git/systemctl in the child bash.
 gh() {
     if [[ "$1" == "issue" && "$2" == "list" ]]; then
@@ -102,6 +111,7 @@ run_tick() {
         PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
         SEAT_LIB="$stubs" \
         PRECEDENCE_BAND_LIB="$stubs" \
+        PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
         FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
         bash "$tick" fleet-ops 2>&1
 }
