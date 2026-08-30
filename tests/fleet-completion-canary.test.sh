@@ -992,4 +992,116 @@ ok "dispatch plane: --collect unit with Started-only journal -> completed-succes
 # Cleanup dispatch-plane scratch dirs.
 rm -rf "$scratch2" "$scratch3" "$scratch4" "$scratch5" "$scratch6" "$scratch7"
 
-echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane, --collect success"
+# ============================================================================
+# Issue-close evidence check (fleet-ops#1527)
+# ============================================================================
+# Fake gh for issue evidence tests
+cat >"$scratch/gh" <<'GHFAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="$1"; shift
+case "$cmd" in
+  issue)
+    subcmd="$1"; shift
+    case "$subcmd" in
+      list)
+        # Parse args to find repo and flags
+        repo=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            -R) repo="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        # Return mock closed issues
+        if [[ "$repo" == "Nishfleet/fleet-ops" ]]; then
+          cat <<'JSON'
+[
+  {"number": 1001, "title": "Issue with PR evidence", "closedAt": "2026-08-28T10:00:00Z", "closedByPullRequestsReferences": [{"number": 1002}]},
+  {"number": 1003, "title": "Issue without evidence", "closedAt": "2026-08-28T11:00:00Z", "closedByPullRequestsReferences": []},
+  {"number": 1004, "title": "Old issue outside lookback", "closedAt": "2026-08-20T10:00:00Z", "closedByPullRequestsReferences": []}
+]
+JSON
+        elif [[ "$repo" == "Nishfleet/0509" ]]; then
+          cat <<'JSON'
+[
+  {"number": 2001, "title": "0509 issue with PR", "closedAt": "2026-08-28T12:00:00Z", "closedByPullRequestsReferences": [{"number": 2002}]}
+]
+JSON
+        else
+          echo '[]'
+        fi
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  api)
+    # Mock commit search - return empty for issue 1003 (no commit evidence)
+    # Return a commit for other issues if needed
+    if [[ "$*" == *"1003"* ]]; then
+      echo ''
+    else
+      echo 'abc123'
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+GHFAKE
+chmod +x "$scratch/gh"
+
+# Test 16: Issue evidence check - issues without PR/commit evidence are flagged
+scratch16="$(mktemp -d -t evidence-test.XXXXXX)"
+ln -s "$scratch/systemctl" "$scratch16/systemctl"
+ln -s "$scratch/journalctl" "$scratch16/journalctl"
+ln -s "$scratch/pi-systemd-run" "$scratch16/pi-systemd-run"
+ln -s "$scratch/dispatcher" "$scratch16/dispatcher"
+ln -s "$scratch/gh" "$scratch16/gh"
+mkdir -p "$scratch16/sysctl" "$scratch16/as" "$scratch16/state"
+: > "$scratch16/actions.log"
+: > "$scratch16/dispatch.log"
+write_alerts <<<'[]'
+
+set +e
+AGENT_STATE="$scratch16/as" \
+FLEET_COMPLETION_STATE="$scratch16/state" \
+FLEET_COMPLETION_ACTIONS_LOG="$scratch16/actions.log" \
+FLEET_COMPLETION_PROM="$scratch16/fleet-chains.prom" \
+FLEET_COMPLETION_ALERTS_JSON="$scratch16/alerts.json" \
+FLEET_COMPLETION_DISPATCHER="$scratch16/dispatcher" \
+FLEET_COMPLETION_SYSTEMCTL="$scratch16/systemctl" \
+FLEET_COMPLETION_JOURNALCTL="$scratch16/journalctl" \
+FLEET_COMPLETION_PI_SYSTEMD_RUN="$scratch16/pi-systemd-run" \
+FLEET_DISPATCH_LEDGER="$scratch16/dispatch-ledger.jsonl" \
+FLEET_DISPATCH_CANARY_SEAT_MODE="healthy" \
+FLEET_STOP_REASON="$scratch16/STOP-REASON.json" \
+FLEET_COMPLETION_TRIAGE="$scratch16/triage.md" \
+FLEET_COMPLETION_NOW="2026-08-28T13:00:00Z" \
+FLEET_COMPLETION_ISSUE_EVIDENCE_LOOKBACK_HOURS="24" \
+FLEET_COMPLETION_ISSUE_EVIDENCE_REPOS_FILE="$repo_root/config/intake-repos.json" \
+SYSCTL_STORE="$scratch16/sysctl" \
+DISPATCH_LOG="$scratch16/dispatch.log" \
+REDISPATCH_LOG="$scratch16/redispatch.log" \
+PATH="$scratch:$PATH" \
+HOME="$scratch16" \
+  python3 "$bin" >/dev/null 2>"$scratch16/err.log"
+rc16=$?
+set -e
+[[ "$rc16" == "0" ]] || fail "evidence test 16 rc=$rc16 stderr=$(cat "$scratch16/err.log")"
+
+# Check metrics: should have 1 issue without evidence (fleet-ops#1003)
+grep -q 'fleet_issue_closed_without_evidence_total 1' "$scratch16/fleet-chains.prom" \
+  || fail "evidence test 16: expected fleet_issue_closed_without_evidence_total 1, got: $(grep fleet_issue_closed_without_evidence_total "$scratch16/fleet-chains.prom")"
+grep -q 'fleet_issue_closed_total 3' "$scratch16/fleet-chains.prom" \
+  || fail "evidence test 16: expected fleet_issue_closed_total 3 (2 recent fleet-ops + 1 0509), got: $(grep fleet_issue_closed_total "$scratch16/fleet-chains.prom")"
+grep -q 'fleet_issue_closed_without_evidence{repo="fleet-ops"} 1' "$scratch16/fleet-chains.prom" \
+  || fail "evidence test 16: expected fleet-ops=1, got: $(grep 'fleet_issue_closed_without_evidence{repo=' "$scratch16/fleet-chains.prom")"
+
+# Check LOUD was logged
+grep -q 'ISSUE-CLOSE-NO-EVIDENCE' "$scratch16/triage.md" \
+  || fail "evidence test 16: LOUD ISSUE-CLOSE-NO-EVIDENCE not in triage"
+
+ok "issue evidence check: flags issues closed without PR/commit evidence (fleet-ops#1527)"
+
+rm -rf "$scratch16"
+
+echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane, --collect success, issue evidence"

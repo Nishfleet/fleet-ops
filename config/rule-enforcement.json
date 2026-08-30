@@ -898,6 +898,13 @@
       "mechanism": "AMENDS the 25-worker floor: the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000 (currently ~11 mixed; #1587's browser-memory squeeze raises it — new measured ceiling becomes the new floor automatically). Undersaturation below the measured ceiling with ready supply stays a fault that auto-dispatches repair (existing undersaturation canary). Quality gates untouched.",
       "proof": "config/seat-caps.json; bin/fleet-heartbeat-undersaturation; lib/seat-lib.sh; bin/ram-measure; fleet-ops#1587",
       "status": "enforced"
+    },
+    {
+      "id": "led-2026-08-28-issue-close-evidence",
+      "source": "decisions-ledger.md: 2026-08-28 | Manual verification of worker delivery (fleet-ops#1521 line 6)",
+      "mechanism": "Completion canary checks recently closed issues in enrolled repos for PR/commit evidence (Closes #N in merged PR, or commit referencing issue). Flags issues closed without evidence via fleet_issue_closed_without_evidence_total metric and LOUD triage entry. Drill: fleet-completion-canary test 16 proves detection works.",
+      "proof": "bin/fleet-completion-canary.py check_closed_issues_without_evidence; tests/fleet-completion-canary.test.sh test 16; fleet-heartbeat-tier1 block (completion canary)",
+      "status": "enforced"
     }
   ]
 }

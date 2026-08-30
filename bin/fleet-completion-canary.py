@@ -78,7 +78,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = os.environ.get("HOME", "/home/nish")
@@ -135,6 +135,17 @@ VERIFY_DEADLINE = int(os.environ.get(
     "FLEET_COMPLETION_VERIFY_DEADLINE", str(CLOCK_VERIFY * 2)
 ))
 UE_BUDGET = int(os.environ.get("FLEET_ESCALATION_COMPLETION_BUDGET", "86400"))
+
+# Issue-close evidence check (fleet-ops#1527): look back this many hours for
+# closed issues to verify they have PR/commit evidence.
+ISSUE_EVIDENCE_LOOKBACK_HOURS = int(os.environ.get(
+    "FLEET_COMPLETION_ISSUE_EVIDENCE_LOOKBACK_HOURS", "24"
+))
+# Repos to check (from intake-repos.json enrolled repos).
+ISSUE_EVIDENCE_REPOS_FILE = os.environ.get(
+    "FLEET_COMPLETION_ISSUE_EVIDENCE_REPOS_FILE",
+    f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json",
+)
 
 SKIP_FIRING = {
     "Watchdog",
@@ -608,7 +619,8 @@ def observe_unit_escalation(now: datetime) -> tuple[int, int]:
 
 def emit_metrics(open_hops: dict, stalled_hops: dict, ue_open: int, ue_stalled: int,
                  cycles: list[tuple[str, str, int]], now: datetime,
-                 dispatch_counts: dict | None = None) -> None:
+                 dispatch_counts: dict | None = None,
+                 issue_evidence: dict | None = None) -> None:
     lines = [
         "# HELP fleet_chain_open Open failure chains not yet at a legal terminal.",
         "# TYPE fleet_chain_open gauge",
@@ -671,6 +683,22 @@ def emit_metrics(open_hops: dict, stalled_hops: dict, ue_open: int, ue_stalled: 
         f"fleet_chain_completion_timestamp_seconds {epoch(now)}",
         "",
     ]
+    # Issue-close evidence metrics (fleet-ops#1527)
+    if issue_evidence is not None:
+        lines += [
+            "# HELP fleet_issue_closed_without_evidence_total Issues closed without PR/commit evidence.",
+            "# TYPE fleet_issue_closed_without_evidence_total counter",
+            f'fleet_issue_closed_without_evidence_total {issue_evidence.get("total_without_evidence", 0)}',
+            "# HELP fleet_issue_closed_total Total issues closed in lookback window.",
+            "# TYPE fleet_issue_closed_total counter",
+            f'fleet_issue_closed_total {issue_evidence.get("total_closed", 0)}',
+            "",
+        ]
+        for repo, count in sorted(issue_evidence.get("by_repo", {}).items()):
+            lines.append(
+                f'fleet_issue_closed_without_evidence{{repo="{prom_label(repo)}"}} {count}'
+            )
+        lines.append("")
     atomic_write(PROM, "\n".join(lines))
     log(f"wrote {PROM}")
 
@@ -1145,6 +1173,124 @@ def process_dispatch_plane(now: datetime) -> dict:
     return counts
 
 
+def check_closed_issues_without_evidence(now: datetime) -> dict:
+    """Check enrolled repos for issues closed without PR/commit evidence.
+
+    Returns a dict with:
+      - total_closed: total issues closed in lookback window
+      - total_without_evidence: issues closed without PR/commit evidence
+      - by_repo: dict of repo -> count of issues without evidence
+      - details: list of {repo, issue_number, title, closed_at} for flagged issues
+    """
+    result = {
+        "total_closed": 0,
+        "total_without_evidence": 0,
+        "by_repo": {},
+        "details": [],
+    }
+    
+    # Load enrolled repos from intake-repos.json
+    repos_file = Path(ISSUE_EVIDENCE_REPOS_FILE)
+    if not repos_file.is_file():
+        log(f"WARN: intake-repos.json not found at {repos_file}")
+        return result
+    
+    try:
+        with repos_file.open() as f:
+            intake_config = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        log(f"WARN: failed to load intake-repos.json: {exc}")
+        return result
+    
+    enrolled_repos = [r.get("name") for r in intake_config.get("repos", []) if r.get("name")]
+    if not enrolled_repos:
+        log("WARN: no enrolled repos found in intake-repos.json")
+        return result
+    
+    # Calculate lookback cutoff
+    cutoff = now - timedelta(hours=ISSUE_EVIDENCE_LOOKBACK_HOURS)
+    cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    
+    for repo in enrolled_repos:
+        full_repo = f"Nishfleet/{repo}"
+        try:
+            # Query closed issues in the lookback window
+            # Use --json to get structured data including closedByPullRequestsReferences
+            cmd = [
+                "gh", "issue", "list",
+                "-R", full_repo,
+                "--state", "closed",
+                "--limit", "100",
+                "--json", "number,title,closedAt,closedByPullRequestsReferences",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+            if proc.returncode != 0:
+                log(f"WARN: gh issue list failed for {full_repo}: {proc.stderr.strip()[:200]}")
+                continue
+            
+            issues = json.loads(proc.stdout or "[]")
+            if not isinstance(issues, list):
+                continue
+            
+            repo_without_evidence = 0
+            for issue in issues:
+                closed_at_str = issue.get("closedAt")
+                if not closed_at_str:
+                    continue
+                closed_at = parse_iso(closed_at_str)
+                if not closed_at or closed_at < cutoff:
+                    continue
+                
+                result["total_closed"] += 1
+                
+                # Check for PR evidence: closedByPullRequestsReferences
+                pr_refs = issue.get("closedByPullRequestsReferences") or []
+                has_pr_evidence = len(pr_refs) > 0
+                
+                # Check for commit evidence: search commits referencing the issue
+                # This is done via a separate gh api call for commits mentioning the issue
+                has_commit_evidence = False
+                if not has_pr_evidence:
+                    issue_num = issue.get("number")
+                    if issue_num:
+                        # Search for commits referencing the issue number
+                        # Using gh api to search commits
+                        search_cmd = [
+                            "gh", "api",
+                            f"/repos/Nishfleet/{repo}/commits",
+                            "--jq", f".[] | select(.commit.message | contains(\"#{issue_num}\")) | .sha",
+                        ]
+                        search_proc = subprocess.run(search_cmd, capture_output=True, text=True, timeout=15, check=False)
+                        if search_proc.returncode == 0 and search_proc.stdout.strip():
+                            has_commit_evidence = True
+                
+                if not has_pr_evidence and not has_commit_evidence:
+                    result["total_without_evidence"] += 1
+                    repo_without_evidence += 1
+                    result["details"].append({
+                        "repo": repo,
+                        "issue_number": issue.get("number"),
+                        "title": issue.get("title", "")[:100],
+                        "closed_at": closed_at_str,
+                    })
+                    log(f"FLAG: {full_repo}#{issue.get('number')} closed without PR/commit evidence: {issue.get('title', '')[:80]}")
+            
+            if repo_without_evidence > 0:
+                result["by_repo"][repo] = repo_without_evidence
+        
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as exc:
+            log(f"WARN: error checking {full_repo}: {exc}")
+            continue
+    
+    if result["total_without_evidence"] > 0:
+        loud(
+            "ISSUE-CLOSE-NO-EVIDENCE",
+            f"{result['total_without_evidence']} issue(s) closed without PR/commit evidence in last {ISSUE_EVIDENCE_LOOKBACK_HOURS}h"
+        )
+    
+    return result
+
+
 def main() -> int:
     from datetime import timedelta
     STATE.mkdir(parents=True, exist_ok=True)
@@ -1272,14 +1418,17 @@ def main() -> int:
     ue_open, ue_stalled = observe_unit_escalation(now)
     dispatch_counts = process_dispatch_plane(now)
     cycles = load_ledger_cycles()
+    issue_evidence = check_closed_issues_without_evidence(now)
     emit_metrics(open_hops, stalled_hops, ue_open, ue_stalled, cycles, now,
-                 dispatch_counts)
+                 dispatch_counts, issue_evidence)
 
     log(
         f"tick open_ar={dict(open_hops)} stalled_ar={dict(stalled_hops)} "
         f"ue_open={ue_open} ue_stalled={ue_stalled} "
         f"laddered={laddered_this_tick} firing={sorted(firing)} "
-        f"dispatch={dispatch_counts}"
+        f"dispatch={dispatch_counts} "
+        f"issue_evidence_closed={issue_evidence.get('total_closed', 0)} "
+        f"issue_evidence_no_evidence={issue_evidence.get('total_without_evidence', 0)}"
     )
     # Exit 0: ladder taken or nothing stalled. Fail-loud (1) only when a
     # stalled chain could not be laddered (no dispatcher, unwritable STOP-REASON)
