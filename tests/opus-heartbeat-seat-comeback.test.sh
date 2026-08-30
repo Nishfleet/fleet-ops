@@ -18,7 +18,12 @@
 #   - fleet-ops#2407: seat_table RELEASES a walled seat the moment its wall
 #     clock (usable_at/bench_until) passes on the fail-open classes, so the
 #     census stops counting a router-usable seat as walled until something
-#     re-observes it; held quota walls and corpses stay walled.
+#     re-observes it; held quota walls stay walled (corpses are dead, below).
+#   - fleet-ops#2435: a corpse (seat_dead=true, terminal "corpse" class, NO
+#     comeback clock by construction) is DEAD capacity, not walled —
+#     seat_table counts it in dead_n and never in walled_n, and the
+#     comeback probe skips it entirely. Walled means a wall clock that will
+#     fail open; a corpse never does (manual repair only, fleet-ops#2415).
 #
 # Sandbox: scratch SEATS_DIR with fixture files only. No live ledger touched.
 #
@@ -87,6 +92,15 @@ cat > "$SEATDIR/opencode__mimo-v2.5-free.json" << 'EOF'
 {"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":60,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-28T01:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-28T01:01:00Z","consecutive_failure_count":1}
 EOF
 
+# 7. A corpse (fleet-ops#2435): seat_dead=true, terminal "corpse" class, NO
+#    usable_at/bench_until comeback clock (#2415), high consecutive count.
+#    Must be DEAD in the census (dead_n, never walled_n) and absent from the
+#    per-walled-seat comeback probe. Live shape: opencode/muse-spark-1.2-
+#    contributor-free at c=150 straight HTTP 500s.
+cat > "$SEATDIR/opencode__muse-spark-1.2-contributor-free.json" << 'EOF'
+{"provider":"opencode","model":"muse-spark-1.2-contributor-free","http_status":500,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T08:03:59.641Z","source":"seat_health_extension","failure_mode":"transient_http","usable_at":null,"consecutive_failure_count":150}
+EOF
+
 # --- Run gather in THOROUGH mode with scratch SEATS_DIR ------------------
 # PROM_URL to dead port so promql degrades gracefully (defensive gather).
 # OPUS_HB_THOROUGH=1 so the thorough battery (incl. seat_probes_walled_comebacks)
@@ -103,9 +117,10 @@ snap = json.load(open(sys.argv[1]))
 # --- seat_table assertions ---
 seats = snap.get("seats") or {}
 assert seats.get("present") is True, "seats table must be present"
-# 6 fixture files total, 2 excluded (1 spawn-bench + 1 test__), 1 healthy
-# -> n = 4 real seats, healthy_n = 1, walled_n = 3, excluded_n = 2
-assert seats.get("n") == 4, f"seat n must be 4 (6 fixtures - 2 excluded), got {seats.get('n')}"
+# 7 fixture files total, 2 excluded (1 spawn-bench + 1 test__), 1 healthy,
+# 1 corpse -> n = 5 real seats, healthy_n = 1, walled_n = 1, released_n = 2,
+# dead_n = 1, excluded_n = 2
+assert seats.get("n") == 5, f"seat n must be 5 (7 fixtures - 2 excluded), got {seats.get('n')}"
 assert seats.get("healthy_n") == 1, f"healthy_n must be 1, got {seats.get('healthy_n')}"
 assert seats.get("excluded_n") == 2, f"excluded_n must be 2, got {seats.get('excluded_n')}"
 ids = [r["id"] for r in seats.get("seats", [])]
@@ -119,17 +134,21 @@ print("OK: seat_table excludes spawn-bench and test__ fixtures")
 # router (seat_usable fail-opens it), so the census must not keep counting
 # it as walled until the next observation reclassifies it. Release applies
 # to the fail-open classes (overload_bench/quota_bench/hang_bench/
-# transient_fault/rate_limited); quota_exhausted and seat_dead corpses stay
-# walled until a healthy observation.
+# transient_fault/rate_limited); quota_exhausted stays walled until a
+# healthy observation. seat_dead corpses are DEAD (fleet-ops#2435), never
+# walled — dead_n in the census, not walled_n.
 #   #1 cline quota_exhausted, usable_at Sept 19 (future)     -> walled 2/6
 #   #2 commandcode overload_bench, usable_at in PAST         -> RELEASED
 #   #6 opencode mimo rate_limited, usable_at in PAST         -> RELEASED
-# -> walled_n drops 3 -> 1, released_n = 2, healthy_n stays 1, n stays 4.
+#   #7 opencode muse corpse, seat_dead=true                  -> DEAD (not walled)
+# -> walled_n drops 4 -> 1, released_n = 2, dead_n = 1, healthy_n stays 1,
+#    n stays 5.
 assert seats.get("walled_n") == 1, (
-    f"walled_n must be 1 after release-at-usable_at (only the future-wall "
-    f"quota seat), got {seats.get('walled_n')}"
+    f"walled_n must be 1 after release-at-usable_at + corpse-dead "
+    f"(only the future-wall quota seat), got {seats.get('walled_n')}"
 )
 assert seats.get("released_n") == 2, f"released_n must be 2, got {seats.get('released_n')}"
+assert seats.get("dead_n") == 1, f"dead_n must be 1, got {seats.get('dead_n')}"
 row_by_id = {r["id"]: r for r in seats.get("seats", [])}
 cmd = row_by_id.get("commandcode__minimax_minimax-m3-free")
 assert cmd is not None and cmd.get("released") is True, \
@@ -143,6 +162,18 @@ assert cl is not None and cl.get("released") is False, \
     f"quota_exhausted with future usable_at must NOT be released: {cl}"
 assert cl.get("walled") is True, f"future-wall quota seat must stay walled: {cl}"
 print("OK: seat_table releases expired walls (fleet-ops#2407), keeps held quota walls")
+
+# --- seat_table corpse semantics (fleet-ops#2435) ---
+# A seat_dead=true corpse (terminal "corpse" class, no comeback clock) is
+# DEAD capacity, not walled capacity: it never releases and is re-entered
+# only by manual repair, so counting it walled misrepresents real capacity.
+corpse = row_by_id.get("opencode__muse-spark-1.2-contributor-free")
+assert corpse is not None, f"corpse row missing from seat table: {list(row_by_id)}"
+assert corpse.get("dead") is True, f"corpse must be dead: {corpse}"
+assert corpse.get("walled") is False, f"corpse must NOT be walled: {corpse}"
+assert corpse.get("released") is False, f"corpse must not be released: {corpse}"
+assert corpse.get("wall_class") == "corpse", f"wall_class must stay corpse: {corpse}"
+print("OK: seat_table counts seat_dead corpses as dead, not walled (fleet-ops#2435)")
 
 # --- t_seat_probes_walled_comebacks assertions (thorough) ---
 thorough = snap.get("thorough")
@@ -161,6 +192,12 @@ assert cb.get("comeback_overdue_n") == 2, (
 )
 
 walled = cb.get("walled", [])
+# fleet-ops#2435: the corpse (seat_dead=true) is terminal — it must not
+# appear in the per-walled-seat comeback probe at all (no comeback clock
+# by construction, #2415). The other three non-healthy seats stay listed.
+assert not any("muse-spark" in (r.get("id") or "") for r in walled), (
+    f"corpse must not appear in walled_comebacks: {[r.get('id') for r in walled]}"
+)
 # Find the cline seat (the one with retry_after=1857600)
 cline = [r for r in walled if "cline-pass_deepseek" in r.get("id", "")]
 assert len(cline) == 1, f"cline seat not found in walled list"

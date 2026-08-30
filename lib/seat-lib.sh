@@ -304,7 +304,12 @@ load_seat_caps() {
         [[ "$hard" == "true" ]] && SEAT_PROVIDER_HARD_CEILING["$p"]=1
         [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
         # fleet-ops#1432: classification of cap=0 seats (intentional vs stale).
-        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" ]]; then
+        # fleet-ops#2435: "corpse" joins the intentional set — a model whose
+        # ledger is seat_dead (terminal "corpse" class, no comeback clock)
+        # is retired, never re-auditioned, so its cap-0 skip classifies as
+        # intentional (by design), not stale (re-audit when the external
+        # condition clears).
+        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
             SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p"]="$icz"
         elif [[ "$icz" == "stale" ]]; then
             SEAT_CAP_ZERO_CLASS_STALE["$p"]="$icz"
@@ -342,7 +347,9 @@ load_seat_caps() {
         if [[ ! "$cap" =~ ^[0-9]+$ ]]; then
             local icz
             icz=$(jq -r '.intentional_cap_zero // ""' <<<"$cap" 2>/dev/null || true)
-            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" ]]; then
+            # fleet-ops#2435: "corpse" is intentional too — see the provider
+            # loop comment. Matches the ledger's terminal corpse class.
+            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
                 SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]="$icz"
             elif [[ "$icz" == "stale" ]]; then
                 SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"

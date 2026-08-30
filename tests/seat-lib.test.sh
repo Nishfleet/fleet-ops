@@ -1962,10 +1962,12 @@ export PI_MODELS_JSON="$scratch/1163/models.json"
 rm -rf "$PI_PACKET_STATE/active-seats"
 
 # (c5) fleet-ops#1432: cap=0 seats classified as intentional (dead_decoy /
-#      money_only — by design, never re-audit) vs stale (broken endpoint /
-#      TPM ceiling / exhausted quota — re-audit when the external condition
-#      clears) surface in the per-pick excluded summary so the operator sees
-#      at a glance which cap=0 seats need re-audition and which are permanent.
+#      money_only / corpse — by design, never re-audit) vs stale (broken
+#      endpoint / TPM ceiling / exhausted quota — re-audit when the external
+#      condition clears) surface in the per-pick excluded summary so the
+#      operator sees at a glance which cap=0 seats need re-audition and
+#      which are permanent. (fleet-ops#2435 adds the corpse class: a model
+#      whose ledger is seat_dead is retired, never re-auditioned.)
 #      The per-seat "skipped (provider cap=0)" lines stay silenced (the
 #      at_capacity_events metric predicate stays 0); the classification is
 #      folded into the ONE excluded summary via the intentional_cap_zero
@@ -1980,7 +1982,7 @@ cat >"$scratch/1432/models.json" <<'JSON'
   "providers": {
     "starco": { "models": [ { "id": "star-m1" } ] },
     "dudco":  { "models": [ { "id": "dud-m1" } ] },
-    "freeco": { "models": [ { "id": "lite-free" } ] }
+    "freeco": { "models": [ { "id": "lite-free" }, { "id": "lite-corpse" } ] }
   }
 }
 JSON
@@ -1991,7 +1993,7 @@ cat >"$scratch/1432/caps.json" <<'JSON'
   "providers": {
     "starco": { "cap": 0, "class": "metered", "intentional_cap_zero": "money_only" },
     "dudco":  { "cap": 0, "class": "free",    "intentional_cap_zero": "stale" },
-    "freeco": { "cap": 2, "class": "free",    "models": { "lite-free": 2 } }
+    "freeco": { "cap": 2, "class": "free",    "models": { "lite-free": 2, "lite-corpse": { "cap": 0, "intentional_cap_zero": "corpse" } } }
   }
 }
 JSON
@@ -2006,16 +2008,18 @@ set -e
 [[ "$rc" == "0" ]] || fail "1432-capclass: expected the freeco lane to be pickable, got rc=$rc out=$out"
 [[ "$out" == "freeco"$'\t'"lite-free" ]] \
   || fail "1432-capclass: expected freeco/lite-free (the only cap>0 lane), got: $out"
-# One excluded summary naming both cap=0 seats AND the intentional/stale split.
-grep -qE "pick_seat: excluded 2 seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\) \[cap0-intentional: 1; cap0-stale: 1\]" "$PI_PACKET_STATE/watch.log" \
-  || fail "1432-capclass: summary must fold the cap=0 intentional/stale classification, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# One excluded summary naming all three cap=0 seats AND the intentional/
+# stale split: starco (money_only) + lite-corpse (corpse) are intentional,
+# dudco (stale) is stale (fleet-ops#2435 corpse joins the intentional set).
+grep -qE "pick_seat: excluded 3 seats \(cap=0: 3; dead: 0; not-in-allowlist: 0\) \[cap0-intentional: 2; cap0-stale: 1\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1432-capclass: summary must fold the cap=0 intentional/stale/corpse classification, got log: $(cat "$PI_PACKET_STATE/watch.log")"
 # Per-seat cap=0 lines stay silenced (at_capacity_events metric predicate 0).
 _1432_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
 _1432_pred=${_1432_pred:-0}
 if (( _1432_pred > 0 )); then
   fail "1432-capclass: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1432_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
 fi
-ok "1432-capclass: cap=0 classification (1 intentional / 1 stale) folded into the excluded summary; metric predicate 0"
+ok "1432-capclass: cap=0 classification (2 intentional incl. corpse / 1 stale) folded into the excluded summary; metric predicate 0"
 
 # (c6) fleet-ops#1418: dispatcher idle with 219 ready, 0 dispatches, 9229
 #      at-capacity skips. The window combined (a) a stale cap=0 quota seat,
