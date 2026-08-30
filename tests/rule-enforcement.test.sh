@@ -909,6 +909,18 @@ grep -q 'OBSERVE-CLOSED' <<<"$env_out" || fail "observe-to-close close: must log
 ok "drill: canary-covered marker is not posted twice"
 ok "drill: observe-to-close closes #479 (marker + enforced); queued #78 stays open"
 
+# fleet-ops#528: sr-nothing-half-done enforcer (questions/stale-PR/
+# stale-worktree detection + observe-to-close drain). Hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/fleet-loose-ends-canary.test.sh" || fail "loose-ends-canary drill failed"
+ok "rule-enforcement: loose-ends-canary drill"
+# fleet-ops#1467: unit-escalation-write must not write STOP-REASON while a
+# Restart=on-failure retry cycle is still in flight. Hosted here so P14
+# runs it without a workflow-file edit.
+bash "$here/unit-escalation-write-retry-absorb.test.sh" || fail "unit-escalation retry-absorb drill failed"
+ok "rule-enforcement: unit-escalation retry-absorb drill"
+
 # fleet-ops#519: run the no-agent-names gate drill as part of the
 # rule-enforcement suite so it is exercised in CI without a workflow edit.
 bash "$here/fleet-no-agent-names.test.sh" || fail "no-agent-names gate drill failed"

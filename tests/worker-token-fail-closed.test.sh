@@ -150,6 +150,12 @@ bash "$here/pi-issue-run-failure-reason.test.sh"
 # behavioural test, now green. Same P14-host constraint as above.
 bash "$here/pi-issue-run-scratch-home-identity.test.sh"
 bash "$here/pi-issue-run-tried-reset.test.sh"
+# fleet-ops#2133: the pi-issue-run hang/stall-bench detectors (devin
+# long-hang-then-ETIMEDOUT + spawn-hang) previously lived only as a live
+# hot-patch; this drill pins them firing and benching the seat. Hosted here
+# so P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 # fleet-ops#1233: legal-basics inventory lock. Named ci.yml step is out of
 # band for the worker App (Contents cannot push workflow files).
 bash "$here/legal-basics-surfaces.test.sh"
