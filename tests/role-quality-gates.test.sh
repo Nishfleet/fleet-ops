@@ -92,11 +92,12 @@ if missing_units:
 PY
 ok "catalog: senior-auditor role gates gap-closure conference/research (fleet-ops#1571)"
 
-# fleet-ops#592 / #636 / #1180 / #1513: session-reap, vault-conflict-resolver,
+# fleet-ops#592 / #636 / #1180 / #1151 / #1513: session-reap, vault-conflict-resolver,
 # the vault knowledge-format lint timer, the fleet-metrics-export Prometheus
-# textfile exporter, and the pi-intake-trigger oneshot are plumbing, not
-# work-producing roles. Dropping any prefix re-reds the audit (the live
-# catalog test is not enough if the unit file is also gone).
+# textfile exporter, the fleet-baseline-delta weekly pre-pass, and the
+# pi-intake-trigger oneshot are plumbing, not work-producing roles. Dropping
+# any prefix re-reds the audit (the live catalog test is not enough if the
+# unit file is also gone).
 python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
 import importlib.util
 import sys
@@ -110,6 +111,7 @@ required = (
     "vault-knowledge-format",
     "vault-conflict",
     "fleet-metrics-export",
+    "fleet-baseline-delta",
     "standing-rules-render",
     "fleet-aeo",
     "pi-intake-trigger",
@@ -129,6 +131,7 @@ leaked = [
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
         "fleet-metrics-export.service",
+        "fleet-baseline-delta.service",
         "standing-rules-render.service",
         "fleet-aeo-probe.service",
         "pi-intake-trigger.service",
@@ -142,7 +145,7 @@ leaked = [
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1152, #1236, #180, #1513)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, baseline-delta, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1151, #1152, #1236, #180, #1513)"
 
 # fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
 # standing-rules-render.service on disk (the canonical-render unit that

@@ -27,8 +27,9 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # interactive-session-reap (fleet-ops#592) reaps idle scopes; it is not a
 # work-producing role. vault-conflict-resolver (fleet-ops#529 / #636) is the
 # Syncthing freeze handler; vault-knowledge-format is the daily lint timer
-# for vault shape (fleet-ops#525). Both are plumbing, same class.
-# fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
+# for vault shape (fleet-ops#525). fleet-baseline-delta (fleet-ops#1151) is
+# the weekly MAD strangeness pre-pass — deterministic plumbing, not a
+# judging role. fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
 # exporter (writes /var/lib/prometheus/node-exporter/fleet.prom every 5m);
 # it is observability plumbing, not a judging/building role.
 # fleet-aeo-probe (fleet-ops#1236) is the weekly 0509 citation probe; it
@@ -58,6 +59,11 @@ NON_ROLE_UNIT_PREFIXES = (
     "app-pi",
     "vault-conflict",
     "vault-knowledge-format",
+    # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the
+    # Weekly Fleet Review. Writes a ranked |z|>3 report to the review
+    # input dir + fleet-baseline-delta.prom. Deterministic plumbing, not
+    # a judging role.
+    "fleet-baseline-delta",
     "fleet-metrics-export",
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs

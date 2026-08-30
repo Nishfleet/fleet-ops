@@ -33,6 +33,7 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | OOM drill hog | oomd-drill-hog | `oomd-drill-hog.service` | #1010 |
 | Weekly review / watches | fleet-weekly-fleet-review | `fleet-weekly-fleet-review.timer` | #1146 |
 | Asset census | fleet-asset-census | `fleet-asset-census.timer` | #1149 |
+| Baseline-delta | fleet-baseline-delta | `fleet-baseline-delta.timer` | #1151 |
 | GEO/AEO probe | fleet-aeo-probe | `fleet-aeo-probe.timer` | #1245 |
 | Console tile truth | fleet-console-pi | `fleet-console-pi.timer` | #1157 |
 | Seat recovery | fleet-seat-recovery | `fleet-seat-recovery.{path,service}` | seat governor |
