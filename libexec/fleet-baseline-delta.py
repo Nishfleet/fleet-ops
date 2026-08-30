@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
+# Prometheus URLs are operator-controlled (default http://127.0.0.1:9090);
+# http_json refuses any non-http(s) scheme before urlopen, so the dynamic-
+# urllib file-read vector semgrep flags is closed by construction. Same
+# suppression as bin/fleet-completion-canary.py / bin/gh-webhook-canary.py.
 """fleet-baseline-delta — week-over-week MAD strangeness report (fleet-ops#1151).
 
 Queries Prometheus for every fleet_* series and a small set of key node_*
