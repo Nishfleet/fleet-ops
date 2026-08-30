@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Gate + headless compaction for the Claude auto-memory index.
+#
+# WHY THIS EXISTS: MEMORY.md is injected into every session but truncated at
+# ~24KB, so entries past that point are SILENTLY invisible. On 2026-08-24 it had
+# grown to 51KB with 161 entries duplicated verbatim -- half the index was dead
+# weight nobody could see. This makes the compaction automatic instead of
+# depending on a human noticing.
+#
+# SHAPE (deliberate, per Nish's standing rules):
+#   - No orchestration here. No poll loop, no cooldown, no retry engine, no
+#     scheduling. systemd owns triggering (a PathModified path unit); this
+#     script is one linear pass that runs once and exits.
+#   - Event-driven, not scheduled: it reacts to the file actually changing.
+#   - TWO TIERS, cheapest first. Tier 1 is a deterministic rebuild from the
+#     last known-good baseline (no model, ~0 cost) and handles the ONLY
+#     corruption actually observed: the harness re-emitting its stale cached
+#     copy and appending it. Tier 2 -- a headless Opus pass -- runs only when
+#     tier 1 cannot get the file under the threshold, i.e. there is real new
+#     content to compress. This matters: "aggressively conserve Claude" is the
+#     top conservation tier, and paying an Opus run to delete duplicate lines
+#     would be burning the most expensive seat on a mechanical edit.
+#   - Tier 2 reuses Anthropic's shipped `consolidate-memory` skill for the
+#     method rather than reinventing it. Two of that skill's rules are
+#     OVERRIDDEN below because they are wrong for this index -- see PROMPT.
+#   - Fails LOUD. Every failure path exits non-zero so the unit lands in
+#     `systemctl --user list-units --state=failed`, which is checked every
+#     session. It must never degrade to a silent skip -- the known VPS gotcha is
+#     Claude auth rotating/dying ([[vps-claude-auth-rotation]]), and that has to
+#     surface as a failed unit, not as "nothing to do".
+set -uo pipefail
+
+MEM_DIR=/home/nish/.claude/projects/-home-nish/memory
+IDX="$MEM_DIR/MEMORY.md"
+# Canonical last-known-good compacted index. Deliberately a dotfile with no .md
+# extension so the harness never indexes it as a memory.
+BASELINE="$MEM_DIR/.MEMORY.compacted"
+DEDUPE=/home/nish/.local/libexec/memory-index-dedupe.py
+
+# Trip point. Below this, exit 0 immediately -- this is also what stops the
+# path unit self-triggering forever: after a compaction the file is well under
+# the threshold, so the write we just made fires the unit once and it no-ops.
+THRESHOLD="${MEMORY_INDEX_AUTOCOMPACT_THRESHOLD:-20480}"
+# Hard ceiling. Compaction that leaves the file at or above this did not work.
+FAIL_AT="${MEMORY_INDEX_AUTOCOMPACT_FAIL_AT:-24576}"
+TARGET="${MEMORY_INDEX_AUTOCOMPACT_TARGET:-15360}"
+MODEL="${MEMORY_INDEX_AUTOCOMPACT_MODEL:-claude-opus-5}"
+
+die() { echo "MEMORY-AUTOCOMPACT FAIL: $*" >&2; exit 1; }
+
+# Every index link must resolve to a real file. Echoes any that do not.
+broken_links() {
+  grep -oP '\]\(\K[^)]+\.md' "$1" | sort -u | while read -r f; do
+    [[ -f "$MEM_DIR/$f" ]] || echo "$f"
+  done
+}
+
+snapshot_baseline() {
+  cp -p "$IDX" "$BASELINE.tmp" && mv -f "$BASELINE.tmp" "$BASELINE" \
+    && echo "MEMORY-AUTOCOMPACT: baseline refreshed ($(stat -c%s "$BASELINE")B)"
+}
+
+[[ -f "$IDX" ]] || die "index missing at $IDX"
+
+size=$(stat -c%s "$IDX") || die "cannot stat $IDX"
+if (( size < THRESHOLD )); then
+  echo "MEMORY-AUTOCOMPACT: ${size}B < ${THRESHOLD}B threshold -- nothing to do."
+  exit 0
+fi
+
+echo "MEMORY-AUTOCOMPACT: ${size}B >= ${THRESHOLD}B -- repairing (tier 1 deterministic, tier 2 model only if needed)."
+
+# --- TIER 1: deterministic rebuild from the baseline (no model) -------------
+if [[ -f "$BASELINE" && -f "$DEDUPE" ]]; then
+  tmp="$IDX.dedupe-tmp.$$"
+  if python3 "$DEDUPE" "$BASELINE" "$IDX" "$tmp"; then
+    dsize=$(stat -c%s "$tmp")
+    dbroken=$(broken_links "$tmp")
+    if (( dsize < THRESHOLD )) && [[ -z "$dbroken" ]]; then
+      cp -p "$IDX" "$IDX.autocompact-bak-$(date +%Y%m%d-%H%M%S)"
+      mv -f "$tmp" "$IDX"
+      echo "MEMORY-AUTOCOMPACT: tier-1 deterministic rebuild ${size}B -> ${dsize}B (no model spend)"
+      snapshot_baseline
+      echo "MEMORY-AUTOCOMPACT: OK"
+      exit 0
+    fi
+    echo "MEMORY-AUTOCOMPACT: tier-1 result ${dsize}B not usable (threshold ${THRESHOLD}B${dbroken:+, broken links}); escalating to the model." >&2
+  else
+    echo "MEMORY-AUTOCOMPACT: tier-1 refused (see above); escalating to the model." >&2
+  fi
+  rm -f "$tmp"
+else
+  echo "MEMORY-AUTOCOMPACT: no baseline yet; tier-1 unavailable, using the model."
+fi
+
+# --- TIER 2: headless model compaction --------------------------------------
+echo "MEMORY-AUTOCOMPACT: tier-2 compacting with $MODEL."
+backup="$IDX.autocompact-bak-$(date +%Y%m%d-%H%M%S)"
+cp -p "$IDX" "$backup" || die "could not back up the index"
+echo "MEMORY-AUTOCOMPACT: backup at $backup"
+
+read -r -d '' PROMPT <<PROMPT_EOF
+Run the memory-consolidation pass on this project's auto-memory directory:
+$MEM_DIR
+
+Use the shipped \`consolidate-memory\` skill's method (Phase 1 take stock ->
+Phase 2 consolidate -> Phase 3 tidy the index). If that skill is available,
+invoke it. Its structure is right, but TWO of its rules are WRONG here and are
+overridden by the contract below -- the contract wins on every conflict.
+
+OVERRIDE 1 - SIZE. The skill says "under 200 lines and ~25KB". That is too
+loose: this index is injected into every session and TRUNCATED at ~24KB, so
+anything past that point is silently invisible. Target is under $TARGET bytes.
+Compress hooks to the minimum that lets a future session decide whether to open
+the file (aim <=120 chars, most should be far shorter).
+
+OVERRIDE 2 - NEVER DELETE. The skill says to "retire the file" for dated
+memories. Do NOT. This is Nish's operational memory and losing a fact is
+unacceptable. Never delete a memory .md file and never drop a fact. You may only
+compress index lines and MOVE detail into the linked topic file. Any detail you
+cut from a hook must already exist in, or be appended to, that topic file --
+verify with grep before cutting, do not assume.
+
+The rest of the contract:
+- Keep the format exactly: one line per entry, \`- [Title](file.md) - hook\`.
+- Merge superseded families into ONE index line pointing at a rollup topic file
+  (proper frontmatter: name, description, metadata.type: project) that lists each
+  member as a one-liner linking its original file. Existing rollups are
+  fleet-history-pre-pi.md, detection-lessons-history.md and hermes-gotchas.md --
+  extend these rather than creating near-duplicates. Context: the fleet control
+  plane and launcher layer were DELETED 2026-08-23 ("Everything runs through Pi,
+  directly. No launchers."), so fleet1/fleet2 machinery, lane managers, idle
+  alarms, launcher ladders and governed-run dispatch are all history.
+- Do NOT merge or soften entries encoding standing orders or live gotchas
+  (act-dont-ask, fix-it-dont-report-it, conserve Fable, token tiers, model
+  routing, VPS/Claude auth, Tailscale, memoryctl, anything security-relevant).
+  Those stay as individual lines with compressed hooks.
+- Newest and most operationally-live entries nearer the top; rollup lines at the
+  bottom under a \`## History rollups\` heading.
+- Every .md file in the directory must stay reachable from MEMORY.md in at most
+  two hops (directly, or via a rollup that links it). Verify this before you
+  finish, and verify no index link is broken.
+- If you find the index contains duplicated entries, dedupe them -- that has
+  happened before and is the single biggest win.
+
+Finish by printing the final byte size, the line count, and the count of
+individual lines versus rollup lines.
+PROMPT_EOF
+
+cd /home/nish || die "cannot cd to /home/nish"
+
+# Headless, single pass. systemd owns the timeout (TimeoutStartSec).
+printf '%s' "$PROMPT" | claude -p \
+  --model "$MODEL" \
+  --permission-mode bypassPermissions \
+  --add-dir "$MEM_DIR"
+rc=$?
+
+if (( rc != 0 )); then
+  cp -p "$backup" "$IDX"
+  die "headless claude exited $rc (auth dead? quota?). Index restored from $backup."
+fi
+
+# --- validate, or roll back ---------------------------------------------------
+[[ -f "$IDX" ]] || { cp -p "$backup" "$IDX"; die "index vanished during compaction; restored."; }
+
+if [[ "$(head -n1 "$IDX")" != "# Memory Index" ]]; then
+  cp -p "$backup" "$IDX"
+  die "index no longer starts with '# Memory Index'; restored from $backup."
+fi
+
+# Every link in the index must resolve to a real file.
+missing=$(broken_links "$IDX")
+if [[ -n "$missing" ]]; then
+  cp -p "$backup" "$IDX"
+  die "broken index links after compaction ($(echo "$missing" | tr '\n' ' ')); restored from $backup."
+fi
+
+new=$(stat -c%s "$IDX")
+echo "MEMORY-AUTOCOMPACT: ${size}B -> ${new}B"
+
+if (( new >= FAIL_AT )); then
+  die "index is still ${new}B (>= ${FAIL_AT}B truncation limit) after compaction. New file kept for inspection; previous at $backup."
+fi
+
+if (( new >= TARGET )); then
+  echo "MEMORY-AUTOCOMPACT: WARNING ${new}B is over the ${TARGET}B target but under the ${FAIL_AT}B hard limit." >&2
+fi
+
+snapshot_baseline
+echo "MEMORY-AUTOCOMPACT: OK"
+exit 0

@@ -334,6 +334,12 @@
       "class": "a",
       "source": "hand-placed",
       "note": "infra tool"
+    },
+    {
+      "unit": "memory-index-autocompact",
+      "class": "b",
+      "source": "repo",
+      "endorsement": "fleet-ops#1498: class (b) sanctioned maintenance script; EXCEPTION-APPROVED per #1480 audit adjudication. Distinct from nish-memory-curator (vault vs Claude auto-memory). install.sh symlinks over live hand-placed units."
     }
   ],
   "pending_adjudication_class_c": [
@@ -366,7 +372,10 @@
     {
       "unit": "memory-index-autocompact",
       "banned_class": "borderline b/c",
-      "follow_up": "filed"
+      "follow_up": "filed",
+      "adjudicated": "EXCEPTION-APPROVED",
+      "verdict": "migrated to repo as class (b) sanctioned maintenance script; distinct from nish-memory-curator (vault memory vs Claude auto-memory). Script has tier-1 deterministic dedupe + tier-2 Opus headless compaction; path unit triggers on MEMORY.md growth.",
+      "resolved_by": "#1498"
     }
   ],
   "adjudicated": [
