@@ -72,6 +72,19 @@
 # #1059 "The file was archived" shape). This is the shape most at risk
 # of a future "benign no-op" exemption; scenarios 10-12 forbid it.
 #
+# fleet-ops#1140: same 0-match wording as #956, different recovery. Live
+# session 2026-08-27T12-07-48-699Z_01a0431e-84db-7863-9473-719a7cf6064e
+# edited /home/nish/workspaces/agent-state/READY-WORK.md; the edit
+# returned "Could not find the exact text in <path>", isError=true,
+# details={}. The next turns were thinking ("Let me read the exact text
+# around where I need to insert"), a grep, a re-read, then a successful
+# bash `cat >>` append of the SAME path. Later user-facing prose
+# ("The ready-work system re-dispatched issue #1001 from READY-WORK.md")
+# moved on without naming the failure. A successful append/rewrite of
+# the same file is recovery, not a flag. Do NOT add a "successful write
+# of the same path" exemption. observe-to-close ages out at
+# 2026-08-28T12:07:48Z. Scenarios 15-19 lock this sibling.
+#
 # Scenarios:
 #   1. live #956 shape: edit unmatch + silent read/grep recovery -> finding.
 #   2. same shape plus a later thinking-only note that the file was
@@ -103,6 +116,17 @@
 #      (prompt-side lock).
 #  14. lib/failed-command-flagged.py cites fleet-ops#1139
 #      (detector-side lock).
+#  15. live #1140 shape: edit "Could not find the exact text" of
+#      READY-WORK.md + thinking + grep + re-read + successful bash
+#      `cat >>` append of the same path -> finding.
+#  16. same #1140 shape plus later unrelated "re-dispatched" prose
+#      -> still a finding.
+#  17. same #1140 shape plus a later "the edit call failed" user-facing
+#      flag -> clean.
+#  18. worker.md cites fleet-ops#1140, READY-WORK.md, and `cat >>`
+#      (prompt-side lock).
+#  19. lib/failed-command-flagged.py cites fleet-ops#1140, READY-WORK.md,
+#      and `cat >>` (detector-side lock).
 
 set -euo pipefail
 
@@ -370,4 +394,82 @@ grep -q 'The replacement produced identical content' "$lib" \
   || fail "lib/failed-command-flagged.py must name the live #1139 no-op wording"
 ok "lib/failed-command-flagged.py cites fleet-ops#1139 and the no-op wording"
 
-echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053/#1139 edit unmatch drills"
+# --- 15. live #1140 shape: exact-text unmatch + cat>> append recovery ------
+# Exact replay of session 01a0431e: the `edit` of READY-WORK.md returned
+# isError=true with the 0-match wording; the assistant answered with
+# thinking that names the next action, grepped, re-read, then appended
+# via `cat >>`. None of that names the failure. The snippet must carry
+# the exact-text wording and the live READY-WORK.md path.
+write_session "edit-unmatch-cat-append" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Now I'll add the #1001 entry to READY-WORK.md and write the AUDITOR-LOG.md."},{"type":"toolCall","id":"call_edit10","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-state/READY-WORK.md","edits":[{"oldText":"catch-all sweep: quiet on all 5 channels.\n\n## SENIOR AUDITOR 2026-08-27 (unit-failure trip fleet-heartbeat.service, deploy-clone off-main)\n","newText":"catch-all sweep: quiet on all 5 channels.\n\n## SENIOR AUDITOR 2026-08-27T17:38Z\n"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit10","toolName":"edit","content":[{"type":"text","text":"Could not find the exact text in /home/nish/workspaces/agent-state/READY-WORK.md. The old text must match exactly including all whitespace and newlines."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me read the exact text around where I need to insert."},{"type":"toolCall","id":"call_grep10","name":"bash","arguments":{"command":"grep -n \"catch-all sweep: user failed units 0 (heartbeat reset-failed)\" /home/nish/workspaces/agent-state/READY-WORK.md"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_grep10","toolName":"bash","isError":false,"content":[{"type":"text","text":"167:catch-all sweep: user failed units 0 (heartbeat reset-failed); system failed units 0; hermes cron list empty (no scheduled jobs); STOP-REASON re-read matches the heartbeat trip (no second trip landed during this turn); open AUTO-REVERT HALT issues across Nishfleet — 0. catch-all sweep: quiet on all 5 channels."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me read the exact content around line 167 to get the exact whitespace."},{"type":"toolCall","id":"call_read10","name":"read","arguments":{"path":"/home/nish/workspaces/agent-state/READY-WORK.md","offset":165,"limit":10}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_read10","toolName":"read","isError":false,"content":[{"type":"text","text":"catch-all sweep: quiet on all 5 channels."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"OK, the issue is that the file ends with a newline after line 167. Let me try a different approach - append to the file using bash."},{"type":"toolCall","id":"call_append10","name":"bash","arguments":{"command":"cat >> /home/nish/workspaces/agent-state/READY-WORK.md << 'AUDITOR_EOF'\n\n## SENIOR AUDITOR 2026-08-27T17:38Z\nAUDITOR_EOF\necho \"Appended OK\""}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_append10","toolName":"bash","isError":false,"content":[{"type":"text","text":"Appended OK"}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #1140 edit unmatch with cat>> append recovery should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Could not find the exact text' <<<"$snippet" \
+  || fail "finding snippet should mention Could not find the exact text (got $snippet)"
+grep -q 'READY-WORK.md' <<<"$snippet" \
+  || fail "finding snippet should mention READY-WORK.md (got $snippet)"
+ok "live #1140: edit 'Could not find the exact text' with silent cat>> append recovery is flagged"
+rm -f "$sessions/edit-unmatch-cat-append.jsonl"
+
+# --- 16. #1140 shape plus later unrelated re-dispatch prose ---------------
+# The live session later said the ready-work system re-dispatched #1001.
+# That is user-facing text that moves on without naming the edit failure.
+write_session "edit-unmatch-cat-append-prose" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit11","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-state/READY-WORK.md","edits":[{"oldText":"catch-all sweep: quiet on all 5 channels."}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit11","toolName":"edit","content":[{"type":"text","text":"Could not find the exact text in /home/nish/workspaces/agent-state/READY-WORK.md. The old text must match exactly including all whitespace and newlines."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me read the exact text around where I need to insert."},{"type":"toolCall","id":"call_append11","name":"bash","arguments":{"command":"cat >> /home/nish/workspaces/agent-state/READY-WORK.md << 'AUDITOR_EOF'\n## SENIOR AUDITOR\nAUDITOR_EOF"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_append11","toolName":"bash","isError":false,"content":[{"type":"text","text":"Appended OK"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The ready-work system re-dispatched issue #1001 from READY-WORK.md. The unit is running with commandcode/poolside/laguna-s-2.1-free. Let me verify the dispatch was correct."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "edit unmatch with cat>> recovery and later re-dispatch prose should be a finding (got $count) $report"
+ok "live #1140: edit unmatch with cat>> recovery and later unrelated prose is still flagged"
+rm -f "$sessions/edit-unmatch-cat-append-prose.jsonl"
+
+# --- 17. #1140 shape plus a later user-facing flag is clean ---------------
+write_session "edit-unmatch-cat-append-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit12","name":"edit","arguments":{"path":"/home/nish/workspaces/agent-state/READY-WORK.md","edits":[{"oldText":"catch-all sweep: quiet on all 5 channels."}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_edit12","toolName":"edit","content":[{"type":"text","text":"Could not find the exact text in /home/nish/workspaces/agent-state/READY-WORK.md. The old text must match exactly including all whitespace and newlines."}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the edit call failed with Could not find the exact text — oldText was stale, appending via cat instead."},{"type":"toolCall","id":"call_append12","name":"bash","arguments":{"command":"cat >> /home/nish/workspaces/agent-state/READY-WORK.md << 'AUDITOR_EOF'\n## SENIOR AUDITOR\nAUDITOR_EOF"}}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "edit unmatch with cat>> recovery plus later user-facing flag should be clean (got $count) $report"
+ok "live #1140: edit unmatch plus later user-facing flag is clean"
+rm -f "$sessions/edit-unmatch-cat-append-flagged.jsonl"
+
+# --- 18. worker.md cites fleet-ops#1140 (prompt-side lock) ----------------
+grep -q 'fleet-ops#1140' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#1140 (prompt-side lock for the READY-WORK.md cat>> append shape)"
+grep -q 'READY-WORK.md' "$worker" \
+  || fail "prompts/worker.md must name READY-WORK.md as the live #1140 path"
+grep -q 'cat >>' "$worker" \
+  || fail "prompts/worker.md must name the live #1140 bash cat >> append recovery so workers know it is not a flag"
+ok "worker.md cites fleet-ops#1140, the live path, and the cat >> append recovery"
+
+# --- 19. lib/failed-command-flagged.py cites fleet-ops#1140 ---------------
+# A future "successful write of the same path" exemption would go next to
+# READ_OFFSET_RE or in result_failed. It must name #1140 and forbid it.
+grep -q 'fleet-ops#1140' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1140 (detector-side lock)"
+grep -q 'READY-WORK.md' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1140 READY-WORK.md path"
+grep -q 'cat >>' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1140 cat >> append recovery"
+ok "lib/failed-command-flagged.py cites fleet-ops#1140 and the live path"
+
+echo "OK: fleet-failed-command-edit-unmatch: live #956/#1079/#1053/#1139/#1140 edit unmatch drills"
