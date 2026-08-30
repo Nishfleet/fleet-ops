@@ -470,6 +470,12 @@
       "cadence": "weekly",
       "source": "user-config"
     },
+    "vps-post-reboot-verify.timer": {
+      "reason": "Re-verify agent stack ~30 min after expected reboot (fleet-ops#1160) — catches delayed tailscale recovery or failed unit recovery that the first vps-post-reboot-verify.service missed; Persistent=true so it survives a reboot during the maintenance window",
+      "classification": "scheduled",
+      "cadence": "weekly",
+      "source": "repo"
+    },
     "grok-token-refresh.timer": {
       "reason": "Headless OAuth refresh of SuperGrok xai-oauth seat — access token lifetime is 6h; 4h cadence keeps ~/.pi/agent/auth.json fresh so an idle prepaid seat does not wake into a 401 (fleet-ops#41).",
       "classification": "scheduled",

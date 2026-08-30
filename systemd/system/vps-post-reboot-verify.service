@@ -1,0 +1,17 @@
+[Unit]
+Description=Verify and resume the agent stack after a maintenance-window reboot
+After=network-online.target tailscaled.service docker.service
+Wants=network-online.target
+ConditionPathExists=/home/nish/.local/state/vps-maintenance/resume-after-boot
+
+[Service]
+Type=oneshot
+User=nish
+Group=nish
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/usr/bin/systemctl is-system-running --wait
+ExecStart=/home/nish/.local/bin/vps-post-reboot-verify
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target
