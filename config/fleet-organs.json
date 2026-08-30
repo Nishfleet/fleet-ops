@@ -154,6 +154,18 @@
       "files": [
         "libexec/fleet-metrics-export.py"
       ]
+    },
+    {
+      "name": "baseline-delta",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_baseline_delta_last_run_seconds",
+      "absent_alert": "FleetBaselineDeltaAbsent",
+      "files": [
+        "bin/fleet-baseline-delta",
+        "systemd/fleet-baseline-delta.service",
+        "systemd/fleet-baseline-delta.timer",
+        "config/fleet-baseline-delta.rule.yml"
+      ]
     }
   ]
 }

@@ -1009,6 +1009,11 @@ ok "rule-enforcement: quality-research-weekly drill"
 bash "$here/weekly-fleet-review.test.sh" || fail "weekly-fleet-review drill failed"
 ok "rule-enforcement: weekly-fleet-review drill"
 
+# fleet-ops#1151: weekly baseline-delta strangeness pre-pass (WFR input).
+# Nested host so this token does not need a workflow edit.
+bash "$here/fleet-baseline-delta.test.sh" || fail "baseline-delta drill failed"
+ok "rule-enforcement: baseline-delta drill"
+
 # fleet-ops#1236: weekly AEO visibility probe. Nested host so this token
 # does not need a workflow edit.
 bash "$here/aeo-probe.test.sh" || fail "aeo-probe drill failed"

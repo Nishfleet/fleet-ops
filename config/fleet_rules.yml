@@ -128,6 +128,31 @@ groups:
           summary: "alert-repair-dispatch webhook receiver is down — the repair path is broken"
           description: "prometheus-am-executor.service (127.0.0.1:9095) has been down for 2+ minutes. No critical/warning alert can spawn a repair worker while this is down. Nish must restart it manually: systemctl --user restart prometheus-am-executor."
 
+      # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
+      # Fleet Review. These rules watch the ORGAN, not the anomalies — a high
+      # |z| is a report line for the review conference, never a page. The
+      # metric is written by bin/fleet-baseline-delta to
+      # /var/lib/prometheus/node-exporter/fleet-baseline-delta.prom on every
+      # completed run. Source of truth: config/fleet-baseline-delta.rule.yml.
+      - alert: FleetBaselineDeltaAbsent
+        expr: absent(fleet_baseline_delta_last_run_seconds)
+        for: 3h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "baseline-delta metrics absent — the week-over-week strangeness pre-pass is missing or dead"
+          description: "Repair worker: bin/fleet-baseline-delta must emit fleet_baseline_delta_last_run_seconds. Check unit fleet-baseline-delta.timer / fleet-baseline-delta.service first. The organ heartbeat must export within 3h of its first scheduled run (Sun 05:10 IST)."
+      - alert: FleetBaselineDeltaStale
+        expr: (time() - fleet_baseline_delta_last_run_seconds) > (9 * 24 * 3600)
+        for: 2h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "baseline-delta has not run in 9+ days"
+          description: "fleet-baseline-delta.timer has not fired a completed run in over a week plus a 2-day grace. The Weekly Fleet Review is flying without its unknown-unknown pre-pass. Check the timer is armed and the unit is not stuck in state=failed."
+
   - name: host_and_system
     rules:
       - alert: SystemUnitFailed
