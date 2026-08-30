@@ -126,6 +126,19 @@ Masking at provision time stops the unit re-entering failed state and paging
 `SystemUnitFailed` every alert cycle. `fleet-bare-metal-rebuild --check`
 verifies each is still masked, so drift is caught.
 
+### No revival quarantine-boot gate
+
+There is no quarantine-boot gate and none is required. A 2026-08-28 ledger
+entry once queued a `hostinger-kvm4` revival with a quarantine-boot
+requirement (its disk predates the purges); a same-day entry retired and
+**voided** that revival — the box is decommissioned, "never revive, never
+investigate", and `netcup-rs2000` is the sole fleet host. The
+`masked_units` provision-time masking above is the only mask-all-old-units
+gate this host needs, because there is no second host rejoining the fleet.
+See `config/rule-enforcement.json` rows `led-2026-08-28-hostinger-kvm4-revival`
+(voided) and `led-2026-08-28-hostinger-kvm4-retired`, and the decisions
+ledger for 2026-08-28. Closes fleet-ops#2136.
+
 ### 8. Verify the live state
 
 Run the drills:
