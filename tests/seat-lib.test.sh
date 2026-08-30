@@ -534,6 +534,44 @@ set -e
 grep -q "retrying after rate_limited" "$PI_PACKET_STATE/watch.log" \
   || fail "rate-ledger: must log the retrying-after-rate_limited line"
 
+# --- invariant 5b: rate_limited conservative bench (fleet-ops#1156 salvage) -
+# The salvage hot-patch makes usable_at the authoritative signal: a fresh
+# 429 marker with NO usable_at must NOT be retried immediately (conservative
+# bench), and a stale marker with a FUTURE usable_at must still be benched
+# (respect the explicit reset window). Both were retried under the old logic.
+ledger="$scratch/ledger-rl-conservative"
+mkdir -p "$ledger"
+# cline ds-flash: fresh marker (1 min old), NO usable_at -> UNUSABLE (conservative)
+fresh_obs_no_use=$(date -u -d "@$((now-60))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$fresh_obs_no_use" \
+  '{health_class:"rate_limited",seat_dead:false,observed_at:$obs,usable_at:null}' \
+  > "$ledger/cline__cline-pass_deepseek-v4-flash.json"
+export PI_PACKET_STATE="$scratch/state-rl-conservative"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/deepseek-v4-flash" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "rate-conservative: fresh marker + no usable_at must be UNUSABLE (conservative bench), seat_usable returned 0"
+grep -q "UNUSABLE (rate_limited, observed" "$PI_PACKET_STATE/watch.log" \
+  || fail "rate-conservative: must log the no-usable_at UNUSABLE line"
+ok "rate_limited: fresh marker + no usable_at -> UNUSABLE (conservative bench)"
+
+# minimax: stale marker (40 min old), usable_at 5 min in future -> UNUSABLE
+stale_obs_future_use=$(date -u -d "@$((now-2400))" +%Y-%m-%dT%H:%M:%SZ)
+future_use=$(date -u -d "@$((now+300))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$stale_obs_future_use" --arg use "$future_use" \
+  '{health_class:"rate_limited",seat_dead:false,observed_at:$obs,usable_at:$use}' \
+  > "$ledger/cline__cline-pass_minimax-m3.json"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/minimax-m3" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "rate-conservative: stale marker + future usable_at must be UNUSABLE (respect bench window), seat_usable returned 0"
+grep -q "UNUSABLE (rate_limited until $future_use" "$PI_PACKET_STATE/watch.log" \
+  || fail "rate-conservative: must log the future-usable_at UNUSABLE line"
+ok "rate_limited: stale marker + future usable_at -> UNUSABLE (respect bench window)"
+
 # --- invariant 6/7: dead / credentials_bad / stale-observed ----------------
 # (7) stale observed_at -> usable: ollama marker from yesterday
 # (cursor is keystone-only — fleet-ops#1167 — so a volume pick never

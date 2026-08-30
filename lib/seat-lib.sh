@@ -1281,16 +1281,21 @@ seat_usable() {
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
         return 1
     fi
-    # rate_limited: trust only while the marker is fresh (<30 min) AND usable_at
-    # is still in the future. A fresh marker with usable_at in the past means the
-    # window already reset -> usable. A stale marker (>30 min) means the rate
-    # limit may have reset -> retry (usable).
+    # rate_limited: the authoritative signal is usable_at. If usable_at is in
+    # the future, the seat is still benched — regardless of marker freshness.
+    # Only when usable_at has passed (or is empty) do we consider marker freshness:
+    #   - fresh marker + no usable_at -> still unusable (conservative)
+    #   - stale marker + usable_at passed/empty -> retry (rate limit may have reset)
     if [[ "$hc" == "rate_limited" ]]; then
-        if _seat_rate_limit_fresh "$observed" && [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
+        if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
             (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (rate_limited until $usable_at, observed ${observed:-<empty>})"
             return 1
         fi
-        seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s or usable_at passed) — assuming usable"
+        if _seat_rate_limit_fresh "$observed"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (rate_limited, observed ${observed:-<empty>}, no usable_at or usable_at passed)"
+            return 1
+        fi
+        seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s, usable_at passed or empty) — assuming usable"
         return 0
     fi
     if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then

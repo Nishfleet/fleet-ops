@@ -211,9 +211,9 @@ ok "worker.md cites fleet-ops#1001 and the live stale-checkout path"
 # prompt, lib docstring, and the test that runs in CI.
 lib="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$lib" ]] || fail "missing $lib"
-grep -q 'fleet-ops#958, #972, #967, #977, #1001' "$lib" \
-  || fail "lib/failed-command-flagged.py docstring must cite #1001 next to the read-ENOENT citation chain"
-ok "lib/failed-command-flagged.py docstring cites fleet-ops#1001"
+grep -q 'fleet-ops#958, #972, #967, #977, #1001, #1059, #1100, #1170, #1243, #1255' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite #1001, #1100, #1255 next to the read-ENOENT citation chain"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#1001, #1100, #1255"
 
 # --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-thinking.test.sh"' \
