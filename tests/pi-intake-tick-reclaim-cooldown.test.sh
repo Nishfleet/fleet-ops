@@ -9,7 +9,7 @@
 #
 # Proves:
 #   1. RECLAIM_COOLDOWN_S env var is defined (testability + tunability).
-#   2. The cooldown file path uses the per-issue ATTEMPTS_DIR convention.
+#   2. The cooldown file path uses the tick-local COOLDOWN_DIR convention.
 #   3. The cooldown skip fires when age < RECLAIM_COOLDOWN_S and emits
 #      skipped-reclaim-cooldown.
 #   4. The cooldown marker is removed after expiry (issue becomes claimable).
@@ -36,10 +36,19 @@ grep -qF 'RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"' "$tick" \
     || fail "RECLAIM_COOLDOWN_S env var not found (must be overridable for tests)"
 ok "Test 1: RECLAIM_COOLDOWN_S env var defined (default 900s, overridable)"
 
-# === Test 2: cooldown file path uses ATTEMPTS_DIR convention ===
-grep -qF '_cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"' "$tick" \
-    || fail "cooldown file path must use ATTEMPTS_DIR/pi-issue-\${REPO}-\${N}.cooldown"
-ok "Test 2: cooldown file path uses per-issue ATTEMPTS_DIR convention"
+# === Test 2: cooldown file path uses COOLDOWN_DIR convention ===
+# fleet-ops#2326: the tick must own its cooldown-dir variable (COOLDOWN_DIR,
+# overridable via PI_INTAKE_COOLDOWN_DIR). The earlier code referenced
+# $ATTEMPTS_DIR (a private variable from seat-lib.sh) which made the tick
+# crash under `set -u` whenever a test stubbed SEAT_LIB without defining it.
+grep -qF '_cooldown_file="$COOLDOWN_DIR/pi-issue-${REPO}-${N}.cooldown"' "$tick" \
+    || fail "cooldown file path must use COOLDOWN_DIR/pi-issue-\${REPO}-\${N}.cooldown"
+# COOLDOWN_DIR must default to the same path pi-issue-failed-reap writes to
+# (its $ATTEMPTS_DIR, i.e. $PI_PACKET_STATE/attempts) so the writer/reader
+# pair stays in lockstep on production defaults.
+grep -qF 'COOLDOWN_DIR="${PI_INTAKE_COOLDOWN_DIR:-/home/nish/.local/state/pi-packet/attempts}"' "$tick" \
+    || fail "COOLDOWN_DIR default must mirror pi-issue-failed-reap's ATTEMPTS_DIR default"
+ok "Test 2: cooldown file path uses tick-local COOLDOWN_DIR (mirrors failed-reap writer)"
 
 # === Test 3: cooldown skip fires when age < RECLAIM_COOLDOWN_S ===
 grep -qF 'skipped-reclaim-cooldown' "$tick" \
@@ -57,7 +66,7 @@ ok "Test 4: cooldown marker removed after expiry (issue becomes claimable)"
 # The tick has a pre-loop fetch (line ~362) and a per-issue fetch inside the
 # loop. The cooldown check is inside the loop and must precede the per-issue
 # fetch + ls-remote so a cooldown'd issue costs zero network calls.
-cooldown_line=$(grep -n '_cooldown_file="$ATTEMPTS_DIR' "$tick" | head -1 | cut -d: -f1)
+cooldown_line=$(grep -n '_cooldown_file="$COOLDOWN_DIR' "$tick" | head -1 | cut -d: -f1)
 # Per-issue fetch: the one that says "failed for issue $N" (inside the loop).
 fetch_line=$(grep -n 'git fetch origin failed for issue $N' "$tick" | head -1 | cut -d: -f1)
 # The fetch call is 2 lines above the error message; back up to find it.

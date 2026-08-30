@@ -76,6 +76,15 @@ CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work
 # bench backoff (300s) and ~2x the intake timer interval, so recovery is
 # automatic once the cooldown expires. Overridable for tests.
 RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
+# fleet-ops#2133 (fleet-ops#2326): the tick reads the cooldown marker from
+# the same path pi-issue-failed-reap writes it to (its $ATTEMPTS_DIR, which
+# is $PI_PACKET_STATE/attempts). The tick must NOT depend on seat-lib.sh's
+# private $ATTEMPTS_DIR because (a) tests stub SEAT_LIB without defining it
+# and `set -u` aborts the tick on the first miss, and (b) seat-lib.sh may
+# rename or relocate $ATTEMPTS_DIR in the future. Override the tick-local
+# COOLDOWN_DIR via PI_INTAKE_COOLDOWN_DIR for tests so a GitHub-hosted
+# runner cannot be forced to mkdir under /home/nish (fleet-ops#1407 class).
+COOLDOWN_DIR="${PI_INTAKE_COOLDOWN_DIR:-/home/nish/.local/state/pi-packet/attempts}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
@@ -448,7 +457,7 @@ for i in "${!numbers[@]}"; do
     # seat-health ledger gets time to bench the killing seat). After expiry,
     # remove the marker and allow the claim. Checked BEFORE the git fetch /
     # ls-remote so a cooldown'd issue costs zero network calls this tick.
-    _cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"
+    _cooldown_file="$COOLDOWN_DIR/pi-issue-${REPO}-${N}.cooldown"
     if [[ -f "$_cooldown_file" ]]; then
         _cd_ts=$(cat "$_cooldown_file" 2>/dev/null || true)
         _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null || echo 0)
