@@ -334,6 +334,40 @@ if grep -q 'claim/issue-101' "$scratch/triage.md"; then
 fi
 ok "12: fresh worktree skipped"
 
+# --- 12b. LIVE WALK (JSONL → array) must not crash -------------------------
+# The fixture path above feeds a hand-written JSON array. The LIVE path
+# walks WORKTREES_ROOT and appends one bare object per worktree; if that
+# file is not coalesced into a single JSON array, >=2 worktrees make it
+# invalid JSON and lib/loose-ends.py json.loads() raises "Extra data" →
+# rc=2 → LOOSE-ENDS-BROKEN → fleet-heartbeat.service fails every tick
+# (fleet-ops#528 live regression). This test proves the live walk emits a
+# valid single-document array and the helper classifies without breaking.
+wt_root="$scratch/livewt"
+mkdir -p "$wt_root/a" "$wt_root/b" "$wt_root/c"
+for d in "$wt_root/a" "$wt_root/b" "$wt_root/c"; do
+    git init -q "$d"
+    mkdir -p "$d/.git/refs/heads"
+    printf 'ref: refs/heads/claim/issue-%s\n' "$(basename "$d")" >"$d/.git/HEAD"
+done
+set +e
+env -u FLEET_LOOSE_ENDS_NAG_HOURS \
+    FLEET_LOOSE_ENDS_WORKTREES_ROOT="$wt_root" \
+    FLEET_LOOSE_ENDS_WORKTREES_FILE= \
+    FLEET_LOOSE_ENDS_SCAN_PRS="0" \
+    FLEET_LOOSE_ENDS_SCAN_WORKTREES="1" \
+    FLEET_LOOSE_ENDS_FILE="0" FLEET_LOOSE_ENDS_CLOSE="0" \
+    "$bin" --worktrees-only >"$scratch/w2.out" 2>"$scratch/w2.err"
+w2_rc=$?
+set -e
+if [ "$w2_rc" -ne 0 ] || grep -q 'LOOSE-ENDS-BROKEN' "$scratch/w2.err"; then
+    echo "w2 rc=$w2_rc" >&2
+    tail -5 "$scratch/w2.err" >&2
+    fail "12b: live walk (JSONL→array) must not crash"
+fi
+grep -Eq 'worktrees: scanned=[0-9]+' "$scratch/w2.err" \
+    || fail "12b: live walk must report a scan count"
+ok "12b: live walk (JSONL→array) does not break"
+
 # --- 13. Auto-file dedupes the marker -------------------------------------
 # Use a fake already-open issue that carries our marker and re-run.
 cat >"$scratch/q.md" <<'MD'
