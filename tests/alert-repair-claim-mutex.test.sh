@@ -164,6 +164,39 @@ mock_invokes=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
     || fail "mock pi-systemd-run should run exactly once, got $mock_invokes"
 ok 'exactly one worker spawned (mock pi-systemd-run invoked once)'
 
+# --- 2b. fleet-ops#2429: skip-list class never spawns a repair worker ------
+# FleetSloSeatAvailSlowBurn is a WFR-input slow-burn SLO alert
+# (fleet-ops#1291/2429): repair is mechanism-impossible (seat supply is
+# operator-owned), so it lives in SKIP_SET exactly like WasteRatioRising.
+# Firing it through the dispatcher must log SKIP reason=skip-list, exit 0,
+# spawn NOTHING (no DISPATCH line, no pi-systemd-run invocation) and never
+# touch the claim mutex.
+fire_skip() {
+    AMX_ALERT_1_LABEL_alertname="FleetSloSeatAvailSlowBurn" \
+    AMX_ALERT_1_LABEL_severity="warning" \
+    AMX_ALERT_1_LABEL_service="fleet" \
+    AMX_LABEL_repo="fleet-ops" \
+    AMX_STATUS="firing" \
+    AMX_RECEIVER="test-receiver" \
+    PATH="$mock_bin:$PATH" \
+    HOME="$scratch" \
+    "$dispatch_bin" \
+        >"$scratch/dispatch-skip.out" 2>"$scratch/dispatch-skip.err"
+}
+
+fire_skip; skip_rc=$?
+[[ "$skip_rc" == 0 ]] || fail "skip-list dispatch must exit 0, got rc=$skip_rc (stderr: $(cat "$scratch/dispatch-skip.err"))"
+grep -q 'SKIP alertname=FleetSloSeatAvailSlowBurn.*reason=skip-list' "$PACKET_DIR/actions.log" \
+    || fail "skip-list dispatch must log SKIP reason=skip-list; actions.log: $(cat "$PACKET_DIR/actions.log" 2>/dev/null || true)"
+dispatched_after=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
+[[ "$dispatched_after" == "1" ]] \
+    || fail "skip-list dispatch must not add a DISPATCH line, got $dispatched_after:
+$(cat "$PACKET_DIR/actions.log")"
+mock_invokes_after=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$mock_invokes_after" == "1" ]] \
+    || fail "skip-list dispatch must not spawn a worker, mock invoked $mock_invokes_after times"
+ok 'skip-list (FleetSloSeatAvailSlowBurn): SKIP reason=skip-list, no DISPATCH, no spawn'
+
 # --- 3. ratchet: FleetMainRed must stay at `for: 30m` ----------------------
 # Threshold ships together with the mutex. A future loosening has to land
 # as a new issue + the same atomic guard.

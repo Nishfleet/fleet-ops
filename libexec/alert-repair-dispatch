@@ -46,9 +46,21 @@ LOG = PACKET_DIR / "actions.log"
 # spawn a real repair worker; the canary drives the drill by faking a
 # DISPATCH line + a transient unit and watching the ladder.
 # WasteRatioRising (fleet-ops#1211) is a TREND alert for Weekly Review.
+# FleetSloSeatAvailSlowBurn (fleet-ops#2429) is the same WFR-input class:
+# the seat_availability SLO is a slow-burn gauge that "feeds the weekly
+# fleet review" (fleet-ops#1291). Repair is mechanism-impossible — seat
+# compliance is operator/Nish-owned (credentials, quotas, seat health);
+# no repair worker can raise it. The metric bug (compliance pinned at
+# 1/13 regardless of real health) was fixed in PR #2377; the remaining
+# signal (e.g. 0.846 < 0.9) is honest and clears only when seats recover
+# + the 6h smoothing window flushes. Without the skip, Alertmanager's 6h
+# repeat spawned a worker every cycle into the same unrepairable alert
+# (live 2026-08-30 dispatches 07:00/11:57/17:57, each running, failing
+# and escalating — the 'chain ran and failed to clear it' loop).
 # severity=none is not enough: this dispatcher keys on alertname, not
 # severity, so the name must live in SKIP_SET or a firing trend pages.
-SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill", "WasteRatioRising"}
+SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
+           "WasteRatioRising", "FleetSloSeatAvailSlowBurn"}
 
 # Seat selection — pick a healthy lane instead of hardcoding one. The
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed

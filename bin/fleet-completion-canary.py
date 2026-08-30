@@ -164,6 +164,14 @@ SKIP_FIRING = {
     # by spawning an alert-repair worker to rebuild the canary.
     "FleetCompletionCanaryAbsent",
     "FleetChainStalled",
+    # FleetSloSeatAvailSlowBurn is a WFR-input slow-burn SLO alert
+    # (fleet-ops#1291/2429): the dispatcher skip-list means no DISPATCH is
+    # ever expected, so a firing-without-dispatch chain must not ladder —
+    # it would redispatch (skipped, rc=0), then write STOP-REASON and
+    # escalate the senior conference for a measurement. Repair is
+    # mechanism-impossible (seat supply is operator-owned); the alert
+    # clears only when compliance >= 0.9 + the smoothing window flushes.
+    "FleetSloSeatAvailSlowBurn",
 }
 SYNTHETIC = {"CanaryDrill"}
 SELF_UNITS = ("fleet-completion-canary",)
