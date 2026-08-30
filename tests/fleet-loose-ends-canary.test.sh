@@ -451,17 +451,24 @@ grep -q '^lib/loose-ends.py ' "$manifest" \
     || fail "16: MANIFEST missing lib/loose-ends.py"
 ok "16b: MANIFEST entries installed"
 
-# Heartbeat-tier1: block 42 wires the canary.
+# Heartbeat-tier1: block 43 wires the canary (block 42 is the Tailscale
+# localapi canary added on main, fleet-ops#2151).
 grep -q 'LOOSE_ENDS_CANARY_BIN' "$tier1" \
     || fail "16: heartbeat-tier1 missing LOOSE_ENDS_CANARY_BIN"
-grep -q '42. loose-ends canary' "$tier1" \
-    || fail "16: heartbeat-tier1 missing block 42 header"
-ok "16c: heartbeat-tier1 block 42 wired"
+grep -q '43. loose-ends canary' "$tier1" \
+    || fail "16: heartbeat-tier1 missing block 43 header"
+ok "16c: heartbeat-tier1 block 43 wired"
 
-# Worker prompt: PR-body gate that references the canary's marker.
-grep -q 'sr-nothing-half-done\|loose-ends-canary' "$worker" \
-    || fail "16: worker prompt missing loose-ends reference"
-ok "16d: prompts/worker.md references the canary"
+# Canary bin header documents the marker shape and the standing rule.
+# (Not in prompts/worker.md — that prompt sits at the 32 KB packet ceiling
+# and cannot absorb a new note without re-introducing the fleet-ops#1902
+# empty-run bloat class. The bin header is where workers read the marker.)
+canary_bin="$repo_root/bin/fleet-loose-ends-canary"
+grep -q 'sr-nothing-half-done' "$canary_bin" \
+    || fail "16: canary bin header missing sr-nothing-half-done reference"
+grep -q 'loose-ends-canary:' "$canary_bin" \
+    || fail "16: canary bin header missing the loose-ends-canary: marker shape"
+ok "16d: canary bin header documents the marker shape"
 
 # No bin/loose-ends dispatcher (depth-1 spawn-guard, no retries).
 if [[ -x "$repo_root/bin/loose-ends" ]]; then

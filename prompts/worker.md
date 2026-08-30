@@ -113,13 +113,6 @@ with a real run-cue or a `run-proof:` line. Run
 before opening the PR. A worker that skipped the run is a failed run
 (fleet-ops#537). Heartbeat scans recent worker PRs and auto-files any skip.
 
-The sr-nothing-half-done enforcer (fleet-ops#528, `bin/fleet-loose-ends-canary`)
-also fires every tick: it auto-files a ticket for any QUESTIONS.md OPEN /
-expired-HOLD row, any open MERGEABLE worker PR older than 24h without
-auto-merge, and any stale worktree with no live worker unit. A worker that
-closes the issue it was filed for by landing the work is the loudest
-resolution; abandoners stay loud until observe-to-close drains them.
-
 A PR that adds a new file under `bin/` is not done without a `research:` line
 naming a last-30-days-scale pass (`last30days`, official docs, or equivalent
 live search), the existing options that were compared, and why they lost or

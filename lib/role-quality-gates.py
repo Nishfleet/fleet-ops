@@ -116,6 +116,12 @@ NON_ROLE_UNIT_PREFIXES = (
     # no work items — its gate is tests/seat-walled-probe.test.sh plus the
     # absent() rule on the timer.
     "seat-walled-probe",
+    # fleet-ops#2227: fleet-worktree-reaper is GC plumbing (reaps orphan
+    # agent worktrees on merged+terminal claims). It runs no model, owns no
+    # prompt and produces no work items — its gate is the worktree-remove
+    # lessons check plus the absent() rule on the timer. Same class as
+    # fleet-completion-canary above.
+    "fleet-worktree-reaper",
 )
 
 

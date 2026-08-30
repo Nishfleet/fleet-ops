@@ -116,6 +116,12 @@
       "cadence": "weekly",
       "source": "repo"
     },
+    "fleet-worktree-reaper.timer": {
+      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227) — worktree accumulation is monotonic with no event signal; daily catches a day's worker churn within one waking window. Reaper is fail-safe (4 gates, dry-run capable)",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "repo"
+    },
     "fleet-baseline-delta.timer": {
       "reason": "Weekly baseline-delta strangeness pre-pass (fleet-ops#1151) — unknown-unknown metric strangeness has no event to subscribe to; fires Sun 04:00 IST, 30 min before the 04:30 WFR whose input dir it writes (after quiesce 03:15 / vps-weekly-update 03:30)",
       "classification": "scheduled",

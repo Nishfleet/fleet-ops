@@ -47,7 +47,6 @@
 #   FLEET_LOOSE_ENDS_LIVE_UNITS_FILE skip live systemctl when set
 #   FLEET_LOOSE_ENDS_NOW             ISO timestamp
 #   FLEET_LOOSE_ENDS_IDLE_HOURS      default 24
-#   FLEET_LOOSE_ENDS_NAG_HOURS       default 24
 #   FLEET_LOOSE_ENDS_FILE            1 (default) / 0
 #   FLEET_LOOSE_ENDS_CLOSE           1 (default) / 0
 #   FLEET_LOOSE_ENDS_ISSUE_REPO      default Nishfleet/fleet-ops
@@ -79,7 +78,6 @@ LIVE_UNITS_FILE="${FLEET_LOOSE_ENDS_LIVE_UNITS_FILE:-}"
 WORKTREES_FILE="${FLEET_LOOSE_ENDS_WORKTREES_FILE:-}"
 NOW_ISO="${FLEET_LOOSE_ENDS_NOW:-}"
 IDLE_HOURS="${FLEET_LOOSE_ENDS_IDLE_HOURS:-24}"
-NAG_HOURS="${FLEET_LOOSE_ENDS_NAG_HOURS:-24}"
 FILE_ISSUES="${FLEET_LOOSE_ENDS_FILE:-1}"
 CLOSE_ISSUES="${FLEET_LOOSE_ENDS_CLOSE:-1}"
 ISSUE_REPO="${FLEET_LOOSE_ENDS_ISSUE_REPO:-Nishfleet/fleet-ops}"
@@ -554,7 +552,6 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
         num=$(jq -r '.number // empty' <<<"$irow")
         [[ -n "$num" && "$num" != "null" ]] || continue
         body=$(jq -r '.body // ""' <<<"$irow")
-        signal=$(grep -oE 'signal: rule-enforcement/sr-nothing-half-done' <<<"$body" | head -1 || true)
         # We only drain loose-ends-canary tickets. Anything else stays
         # untouched — other rule-enforcement sources have their own
         # observe-to-close logic in their own canaries.
