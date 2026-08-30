@@ -2929,6 +2929,32 @@ bash "$here/fleet-failed-command-observe-duplicate-git-branch-force.test.sh" || 
 # session ran the gate against `tests/fleet-no-agent-names.test.sh` and walked
 # past the REJECT. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-no-agent-names-reject.test.sh" || fail "fleet-failed-command-no-agent-names-reject tests failed"
+# fleet-ops#1244: an UNPIPED `gh pr view --json mergedAt,merged` returns
+# `Unknown JSON field: "merged"` + exit 1 (isError=true); a thinking-only
+# note plus a silent `--json title,state` retry does not name the failure.
+# The piped `2>&1 | head` sibling is #1193 (isError=false, stays clean).
+# Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-gh-pr-view-merged.test.sh" || fail "fleet-failed-command-gh-pr-view-merged tests failed"
+# fleet-ops#1142: a `gh issue view --comments --json author,body,createdAt |
+# python3 -c "...d['comments']..."` pipe crashing with `KeyError: 'comments'`,
+# recovered by a successful `gh api graphql` comments query with only a
+# thinking "the same bug" note, is still a swallowed failure. Same #1003
+# class on a DIFFERENT session. Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-gh-json-graphql-recovery.test.sh" || fail "fleet-failed-command-gh-json-graphql-recovery tests failed"
+# fleet-ops#1254: a `bash tests/fleet-failed-command-edit-unmatch.est.sh`
+# (truncated `.test.sh` typo) returning `bash: ...: No such file or directory`
+# + `Command exited with code 127` (isError=true), with no prior harness
+# block, recovered by a silent retry of the real `.test.sh`, is a real
+# swallowed failure (the #677 127-ENOENT cascade exemption needs a prior
+# block; a typo is not a probe). Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-typo-est-sh.test.sh" || fail "fleet-failed-command-typo-est-sh tests failed"
+# fleet-ops#1220: a `bin/fleet-failed-command-flagged` invocation returning
+# `findings=N` + `LOUD [FAILED-COMMAND-SWALLOWED]` + `Command exited with
+# code 1` (isError=true) is a real swallowed failure — the detector's
+# contract is to exit 1 on findings (not a probe), and the
+# FAILED-COMMAND-SWALLOWED lines name OTHER sessions (not a flag of THIS
+# command). Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-detector-bin-exit.test.sh" || fail "fleet-failed-command-detector-bin-exit tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#1116: heartbeat tier-1 alarm-vs-failure separation. The
