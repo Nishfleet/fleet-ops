@@ -174,6 +174,14 @@ grep -q 'escalation-daily-sweep.timer' "$unit_write" \
   || fail "unit-escalation-write: must exclude escalation-daily-sweep.timer"
 grep -q 'resilience-drill-stub\*' "$unit_write" \
   || fail "unit-escalation-write: must exclude resilience-drill-stub* (#455 drill stubs)"
+grep -q 'notify-probe.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude notify-probe.service (deliberate-failure probe)"
+grep -q 'notify-probe.onfail.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude notify-probe.onfail.service (deliberate-failure probe onfail)"
+grep -qF 'probe-*.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude probe-*.service (fleet-ops#1526 live-drill scaffolding)"
+grep -qF 'multi-*-sink.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude multi-*-sink.service (fleet-ops#1526 live-drill scaffolding)"
 ok "unit-escalation-write self-trigger guard"
 
 # 12. systemd-analyze verify on the unit files (.service, .path, .timer).
