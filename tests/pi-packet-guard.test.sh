@@ -112,3 +112,8 @@ run_guard "{\"tool_input\":{\"command\":\"nohup pi --print --provider devin --mo
 ok "nohup run with a verdict is not blocked"
 
 ok "pi-packet-guard distinguishes launcher faults from lane faults"
+
+# fleet-ops#1545: cursor keystone lane output wrapper reuses this guard's
+# verdict grammar verbatim. Hosted here (not a new ci.yml line — workers
+# cannot push .github/workflows/**) so P14 runs it without a workflow edit.
+bash "$here/guard-cursor-packet.test.sh"
