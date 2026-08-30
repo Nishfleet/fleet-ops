@@ -110,6 +110,12 @@
       "cadence": "weekly",
       "source": "repo"
     },
+    "fleet-baseline-delta.timer": {
+      "reason": "Weekly baseline-delta strangeness pre-pass (fleet-ops#1151) — unknown-unknown metric strangeness has no event to subscribe to; fires Sun 05:10 IST, 20 min before the 05:30 WFR conference whose input dir it writes",
+      "classification": "scheduled",
+      "cadence": "weekly",
+      "source": "repo"
+    },
     "fleet2-digest.timer": {
       "reason": "DEPRECATED: fleet2 legacy digest timer — to be removed per fleet-ops simplification",
       "classification": "deprecated",
