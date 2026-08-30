@@ -481,6 +481,12 @@
       "classification": "scheduled",
       "cadence": "4h",
       "source": "repo"
+    },
+    "fleet-seat-comeback-release.timer": {
+      "reason": "15-min ACTIVE come-back release (fleet-ops#2421): a walled seat whose wall clock (bench_until ?? usable_at) has passed is re-probed with a 1-token reply-OK dispatch and a provably-usable seat is unwalled (healthy observation written to the ledger, priming fleet-seat-recovery). Loud stalled check: expired walls remain with zero releases -> exit 1 + fleet_seat_comeback_release_stalled=1",
+      "classification": "scheduled",
+      "cadence": "15min",
+      "source": "repo"
     }
   }
 }

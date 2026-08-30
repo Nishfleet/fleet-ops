@@ -106,6 +106,38 @@ groups:
           summary: "seat comeback overdue — wall past usable_at, still unobserved"
           description: "One or more seats are still classed non-healthy with their usable_at/bench_until in the past (fleet-ops#2407): the router has fail-opened them but nothing re-observed them since, so they linger as an unproven walled state. The per-seat fleet_seat_comeback_overdue series names each seat. Repair worker: probe each named seat (a 1-token reply-OK probe or a real dispatch); a success writes a healthy observation and clears it, a fresh failure re-anchors usable_at and clears it. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats."
 
+      # fleet-ops#2421: the ACTIVE release path (fleet-seat-comeback-release)
+      # re-probes a seat whose wall clock has passed and unwalls a
+      # provably-usable seat, so an expired wall self-heals within one 15-min
+      # tick instead of lingering classed walled. A sweep that finds expired
+      # walls and releases nothing (probe blocked / extension not
+      # re-anchoring) renders stall=1 and skips the last-green write, so the
+      # release-path-is-dead condition is loud twice: this stalled alert and
+      # the absent/stale alert below. 1h-for matches FleetSeatComebackOverdue.
+      - alert: FleetSeatComebackReleaseStalled
+        expr: fleet_seat_comeback_release_stalled == 1
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "seat come-back release stalled — expired walls remain and nothing was released"
+          description: "fleet-seat-comeback-release swept but walled seats still hold EXPIRED wall clocks and released_this_run was 0 (fleet-ops#2421): neither a release (healthy probe) nor a re-anchor (extension write) happened, so the release path is broken for those seats. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, journalctl --user -u fleet-seat-comeback-release.service, and the pi/seat-health extension state. A seat named by the organ's LOUD line is either unroutable via pi (provider config) or failing without a ledger write (seat-health extension)."
+
+      # fleet-ops#2421: organ heartbeat. fleet_seat_comeback_release_last_green_seconds
+      # is written only by a clean sweep (no stuck release path), so absent()
+      # catches a missing file, ==0/stale catches a stuck organ. 2h = 8 missed
+      # 15-min cycles.
+      - alert: FleetSeatComebackReleaseAbsent
+        expr: absent(fleet_seat_comeback_release_last_green_seconds) or fleet_seat_comeback_release_last_green_seconds == 0 or (time() - fleet_seat_comeback_release_last_green_seconds) > 7200
+        for: 2h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet seat come-back release organ absent — no clean sweep in 2h"
+          description: "fleet-seat-comeback-release has not written a clean (unstalled) sweep in over 2 hours (fleet-ops#2421). Repair worker: check the timer (fleet-seat-comeback-release.timer) is enabled and journalctl --user -u fleet-seat-comeback-release.service. The organ re-probes walled seats whose wall clock has passed and unwalls provably-usable ones; its death means released_n stays 0 again."
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h
