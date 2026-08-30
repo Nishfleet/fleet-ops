@@ -1,77 +1,78 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
-
 ## Why
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+The straitly ds4-pro first-draw canary (fleet-ops#546) auto-files a
+meter-check ticket whenever an active `deepseek/deepseek-v4-pro` worker is
+seen without a recent dated meter evidence file. Workers cannot complete
+those tickets: the public Straitly API exposes no non-admin balance
+endpoint — `/v1/chat/completions` returns per-call `usage.cost` only,
+`/v1/admin/keys/{key_hash}/spend` is admin-scoped (403 on the wired key),
+and remaining credits live behind a Firebase console login. Ticket #1248 is
+the live example: a worker proved all three paths and had to stop.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+The issue asks to either document a non-admin balance endpoint (none
+exists) or stop auto-filing tickets the API cannot satisfy. This PR does
+the second: the meter-check observe-to-open is removed from
+`bin/fleet-straitly-ds4-pro-canary`. The canary keeps every fail-loud
+gate (seat-caps class/caps, single-slug allowlist, no double-wire,
+models.json + `pi --list-models` proof) and stays green for config/routing
+violations; it just stops spawning a ticket whose only satisfier is a
+human with console access.
 
 ## Scope
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+- `bin/fleet-straitly-ds4-pro-canary`: deleted the meter-check block 8
+  (`first_draw_started_at`, `meter_check_recent_for`, the
+  `STRAITLY-DS4PRO-METER-CHECK-NEEDED` loud + `file_finding "meter-check"`
+  call), the `FLEET_STRAITLY_DS4PRO_METER` / `_METER_WINDOW` seams, and the
+  now-dead `ACTIVE_SEATS_DIR` seam. Header comment updated.
+- `config/rule-enforcement.json`: `led-straitly-ds4-pro-workers` mechanism
+  text no longer claims the canary auto-files a meter-check ticket;
+  notes the removal reason.
+- `tests/fleet-straitly-ds4-pro-canary.test.sh`: scenario 11 replaced the
+  three meter-check scenarios with a regression proving an active
+  straitly/ds4-pro worker with no meter evidence exits 0, files nothing,
+  and raises no METER-CHECK loud. Production/wiring scenarios renumbered.
+  `test-removal-justified:` trailer on the commit names why scenarios
+  11-13 were deleted and what replaces them (the auto-filing behavior they
+  locked is the thing being removed; the regression scenario keeps the
+  guard proved).
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+Out of scope: #1248 stays open (it needs a human with console access to
+paste the number — the blocker lived there, not in the canary).
 
 ## Tradeoffs
 
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
+- The ledger line's "meter check within minutes of first draws" intent is
+  not enforced by automation anymore. It cannot be: no API path returns
+  remaining credits. A human with the console can still check and the
+  evidence file contract is not enforced either way; nothing in this PR
+  prevents a manual check.
 
 ## Blast Radius
 
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+- `fleet-heartbeat-tier1` block 25 runs the canary and captures its exit
+  code; the canary's exit semantics for the fail-loud gates are unchanged,
+  so tier-1 wiring is untouched.
+- The triage tag `STRAITLY-DS4PRO-METER-CHECK-NEEDED` had no consumer
+  outside the canary (verified by grep). Removing it breaks nothing.
+- No new unit, timer, workflow, or bin/ file; no heartbeat metric.
 
 ## Verification
 
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
+- `bash tests/fleet-straitly-ds4-pro-canary.test.sh` — all 13 scenarios
+  pass, including the new regression (active straitly worker, no meter
+  evidence → exit 0, no `issue create`, no METER-CHECK loud).
+- A/B guard proof: ran the pre-change canary from `origin/main` against
+  the same fixture (active straitly seat, no meter file) — it raised
+  `STRAITLY-DS4PRO-METER-CHECK-NEEDED` and attempted the file; the new
+  canary on the identical fixture exits 0 with `STRAITLY-DS4PRO-OK` and no
+  gh call.
+- `sgscan` — no new security findings.
+- `bash tests/rule-enforcement.test.sh` — the weekly-fleet-review drill
+  fails on origin/main too (pre-existing 8-lens prompt drift, tracked as
+  #2186); unrelated to this diff.
+- gate: `fleet-exec-review-canary`, `fleet-no-agent-names-check`,
+  `fleet-token-efficiency-check`, `fleet-wipe-lessons-check scan` all run
+  below.
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
-
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
-
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #1338
