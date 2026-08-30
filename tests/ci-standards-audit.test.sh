@@ -316,3 +316,9 @@ bash "$here/fleet-loose-ends-canary.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 bash "$here/unit-escalation-write-retry-absorb.test.sh"
 bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
+# fleet-ops#2399 added unit-escalation-write-journal-evidence.test.sh (ledger
+# 2026-08-28: pin journal evidence into STOP-REASON) without a ci.yml listing
+# or host, leaving p14-test-listing-gate red on main -> FleetMainRed. Hosted
+# here alongside its sibling unit-escalation-write-* tests so P14 runs it
+# without a workflow-file edit.
+bash "$here/unit-escalation-write-journal-evidence.test.sh"
