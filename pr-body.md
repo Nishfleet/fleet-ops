@@ -1,77 +1,59 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+Wire the #1263 TTL layer into the live `memoryctl context` path so every assembled packet goes through recall.
 
-## Why
+`memoryctl-recall` (PR #1317) TTL-checks notes when assembling from a notes directory. Live agents never ran that layer: the standing rule still called raw `memoryctl context`, so expired claims reached preambles as if fresh.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+## What changed
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
-
-## Scope
-
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
-
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+- `memoryctl-recall context` — new context mode on the existing binary (no new organ): runs `memoryctl context` with the same flags (`--agent/--query/--repo/--scope/--limit/--max-chars/--kb`, `--vault` forwarded) and wires the packet through the same TTL engine.
+  - Every packet prints `[recall: N loaded, M UNVERIFIED]` before the first section.
+  - Expired section bodies are rewritten `UNVERIFIED: <body>` plus their literal `check-command` — printed, never executed (same contract as directory mode, locked by the existing no-exec drill).
+  - Sections whose source path does not resolve to a vault file (KB surfaces/records) pass through untouched and are not counted.
+  - `memoryctl` vault-gate failures (stale curator, pending approvals, secrets) propagate with the same exit code and stderr — nothing is swallowed.
+- Standing rule (`lib/standing-rules/canonical.md`): live agents now run `/home/nish/.local/bin/memoryctl-recall context --agent {{SURFACE_AGENT}} ...`. Propagation to `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` is the existing `standing-rules-render.path` unit (vault symlink → canonical, fires on merge).
+- Lock test extended (`tests/memoryctl-ttl-provenance.test.sh`): hermetic stub `memoryctl` prints a canned packet; asserts the receipt, the UNVERIFIED rewrite, the literal check-command, no-execution, KB passthrough, and vault-gate propagation.
 
 ## Verification
 
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+$ bash tests/memoryctl-ttl-provenance.test.sh
+OK: ... (directory mode, unchanged) ...
+OK: context-mode receipt is [recall: 3 loaded, 2 UNVERIFIED]
+OK: context-mode keeps the memoryctl packet header intact
+OK: context-mode fresh note keeps the original body
+OK: context-mode rewrites expired bodies and prints the check-command
+OK: context-mode prints check-commands without executing them
+OK: context-mode passes non-vault sections through untouched
+OK: context-mode propagates memoryctl vault-gate failures
+ALL OK: TTL applied exactly when (now - observed) > ttl; receipt matches
+rc=0
+
+$ bash tests/standing-rules-drift.test.sh
+ALL OK: 8/8 assertions passed
+rc=0
+
+$ bash tests/p14-test-listing-gate.test.sh
+OK: p14-test-listing-gate.test.sh: P14 test list is closed
+rc=0
+
+$ bash tests/ci-standards-audit.test.sh
+ALL PASS; rc=0 (hosts the TTL drill; runs 300+ hosted tests green)
+
+$ python3 bin/memoryctl-recall.py context --agent fleet2-vps --query "fleet heartbeat timers and seats" --repo /home/nish --limit 10
+rc=0
+# Task Memory Packet
+...
+Treat these as leads. Re-verify drift-prone facts against the live repo or runtime.
+
+[recall: 10 loaded, 0 UNVERIFIED]
+
+## _system/shared-memory/agent-contract.md
+...
 ```
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+run-proof: transcript above — live `memoryctl-recall context` against the real vault + real `memoryctl` exits 0 and every packet carries the `[recall: N loaded, M UNVERIFIED]` receipt. (A live vault-gate state on first attempt — curator-health stale, memoryctl exit 2 — was propagated verbatim by the wrapper, then the curator timer was re-armed and the run went green; the recurring timer fault is filed as a new issue.)
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+sgscan: no new findings. shellcheck on the test: only SC2015 info (the `|| fail` intent is fail-on-any-missing, matching file style). No `.github/workflows/**` touched.
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+Gate note — `fleet-token-efficiency-check` rule 6 (markdown `{{}}` before 70% mark) REJECTs `lib/standing-rules/canonical.md`. This is pre-existing on main (first `{{SURFACE_PREIMPLEMENT_PHRASE}}` sits at line 48/105 there too): the file is a living template whose tokens must stay inline where the renderer substitutes them (`{{SURFACE_AGENT}}` inside the command string), so "move placeholders to the end" is not satisfiable without breaking the standing-rules templating. This diff adds zero new `{{` placeholders and no new assemblers.
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #1320
