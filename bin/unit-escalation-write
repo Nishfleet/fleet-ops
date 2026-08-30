@@ -36,6 +36,15 @@ export HOME="${HOME:-/home/nish}"
 
 AS=${UNIT_ESCALATION_AGENT_STATE:-/home/nish/workspaces/agent-state}
 SR=${UNIT_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
+# scout-futility dedupe seams (see the pi-scout gate below). GH is the gh CLI
+# (issue-list hit is scoped to scout units only, so a slow gh call never
+# touches non-scout failures). SCOUT_FUTILITY_* match scout-futility-check so
+# tests can redirect both sides to a scratch dir.
+GH=${UNIT_ESCALATION_GH:-gh}
+FUT_FDIR=${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}
+FUT_REPO=${SCOUT_FUTILITY_REPO:-Nishfleet/fleet-ops}
+FUT_N=${SCOUT_FUTILITY_N:-3}
+case "$FUT_N" in ''|*[!0-9]*) FUT_N=3 ;; esac
 UNIT="${1:-}"
 
 if [ -z "$UNIT" ]; then
@@ -93,6 +102,35 @@ if [ "$_restart_mode" = "on-failure" ] || [ "$_restart_mode" = "always" ]; then
         exit 0
     fi
 fi
+
+# scout-futility dedupe (proven loop 2026-08-30): pi-scout@<repo> and
+# pi-scout-repair@<repo> die on EVERY run while the repo is in a structural
+# scout-dry state (drained backlog + no healthy heavy-capable seat — the
+# 0509 class: trips at 08:15:07Z and 10:01:19Z on the same root cause, each
+# summoning a fresh SENIOR AUDITOR). scout-futility-check owns this class and
+# escalates it ONCE per repo (marker `signal: scout-futility/<repo>`, filed as
+# escalate-senior; consecutive_dry pins at >= N once filed). A unit failure on
+# top of an OPEN futility escalation is the same famine re-firing, not a new
+# fault. Skip writing STOP-REASON then; log LOUD so the skip is visible in the
+# unit journal. When the futility issue closes or the state resets, the gate
+# reopens and fresh failures escalate normally again. Fail-open: a gh read
+# error returns no marker issue, so the writer escalates (no silent sick scout).
+case "$UNIT" in
+  pi-scout@*.service|pi-scout-repair@*.service)
+    _repo="${UNIT#pi-scout}"
+    _repo="${_repo#@}"; _repo="${_repo#-repair@}"; _repo="${_repo%.service}"
+    _dry=$(grep -m1 '^consecutive_dry=' "$FUT_FDIR/$_repo.state" 2>/dev/null | cut -d= -f2-) || true
+    _dry=${_dry:-0}
+    if [[ "$_dry" =~ ^[0-9]+$ ]] && [ "$_dry" -ge "$FUT_N" ]; then
+      _open=$("$GH" issue list -R "$FUT_REPO" --state open --limit 200 \
+          --json number,body --jq '.[] | select((.body // "") | contains("signal: scout-futility/'"$_repo"'")) | .number' 2>/dev/null | head -n1 || true)
+      if [ -n "$_open" ]; then
+        echo "unit-escalation-write: skipping '$UNIT' (scout-futility for '$_repo' already escalated: $FUT_REPO#$_open, consecutive_dry=$_dry — same structural famine, not a new fault)" >&2
+        exit 0
+      fi
+    fi
+    ;;
+esac
 
 # Last 5 journal lines for the failed unit (user scope). Best-effort: empty
 # array if journalctl is unavailable or the unit left no logs.
