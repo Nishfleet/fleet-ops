@@ -263,8 +263,10 @@ if [[ "$mode" == "all" || "$mode" == "worktrees" ]]; then
         log "worktrees: scan disabled (FLEET_LOOSE_ENDS_SCAN_WORKTREES=$SCAN_WORKTREES)"
     else
         wt_json="$scratch/worktrees.json"
+        wt_jsonl="$scratch/worktrees.jsonl"
         live_units_file="$scratch/live-units.txt"
         : >"$wt_json"
+        : >"$wt_jsonl"
         : >"$live_units_file"
         if [[ -n "$WORKTREES_FILE" ]]; then
             if [[ ! -f "$WORKTREES_FILE" ]]; then
@@ -406,9 +408,16 @@ if [[ "$mode" == "all" || "$mode" == "worktrees" ]]; then
                     --argjson dirty "$dirty" \
                     --arg unit "$unit" \
                     '{path:$path,branch:$branch,last_commit_ts:$ts,dirty:$dirty,live:false,unit:$unit}' \
-                    >>"$wt_json"
+                    >>"$wt_jsonl"
             done < <(find "$WORKTREES_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
                 | sort)
+            # Coalesce the JSONL rows into a single JSON array — the
+            # classifier (lib/loose-ends.py) reads the file with
+            # json.loads() and expects one document. Appending bare
+            # objects per worktree (JSONL) made the file invalid JSON
+            # the moment the walk found >=2 worktrees, so the worktrees
+            # helper exited rc=2 and every heartbeat tick failed.
+            jq -s '.' "$wt_jsonl" >"$wt_json"
         fi
 
         w_args=(worktrees --worktrees "$wt_json" --live-units "$live_units_file" \
