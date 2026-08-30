@@ -1279,14 +1279,18 @@ seat_usable() {
     fi
     # fleet-ops#2327: a corpse (seat_dead=true) is TERMINALLY excluded. The
     # stale-observed_at fail-open below must NOT resurrect it: a seat that
-    # failed past the corpse threshold stays off the ladder until a probe
-    # succeeds (seat-walled-probe, weekly cadence) and writes a healthy
-    # observation (seat_dead=false, count=0, class back to healthy). Before
-    # this change a corpse whose observed_at aged past STALE_SECS was
+    # failed past the corpse threshold stays off the ladder until a healthy
+    # observation (seat_dead=false, count=0, class back to healthy) is
+    # recorded. Before this change a corpse whose observed_at aged past
+    # STALE_SECS was
     # "assumed usable" again — workers re-picked the guaranteed-failing seat
     # and the consecutive_failure_count kept climbing (muse-spark:
     # 80 -> 150 straight 500s while it sat cap=0 in the map). Death is not a
-    # freshness question; only a probe success resurrects.
+    # freshness question; no fleet mechanism auto-writes the healthy
+    # observation anymore (the seat-walled-probe weekly probe was deleted,
+    # fleet-ops#2394) — a corpse re-enters only after manual intervention
+    # (re-auth / provider recovery), surfaced by the FleetDeadCredentialSeats
+    # alert.
     if [[ "$dead" == "true" ]]; then
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
         return 1
