@@ -1,0 +1,30 @@
+# fleet-seat-comeback-release.service — the ACTIVE release path for a seat
+# whose wall clock has passed (fleet-ops#2421).
+#
+# The 2026-08-30 census: straitly/gpt-5.6-sol quota_exhausted with usable_at
+# an hour in the past still walled, released_n=0 across the whole roster.
+# fleet-ops#2407 only reclassified the census; nothing re-probed. This organ
+# probes expired-wall seats through the real router and unwalls a
+# provably-usable seat. The healthy write lands in the per-seat ledger, so
+# fleet-seat-recovery.path fires and pi-intake is primed the moment a
+# released seat re-enters the ladder.
+#
+# Loud: a sweep that finds expired walls and releases nothing (probe blocked
+# / extension not re-anchoring) exits 1 (global OnFailure escalates) and
+# writes fleet_seat_comeback_release_stalled=1.
+
+[Unit]
+Description=Re-probe and unwall seats whose wall clock has passed (fleet-ops#2421)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/2421
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-seat-comeback-release'
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=10min

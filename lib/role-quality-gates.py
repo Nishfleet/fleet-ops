@@ -70,6 +70,13 @@ NON_ROLE_UNIT_PREFIXES = (
     # prompt, produces no work items). Deterministic plumbing, not a role;
     # its gate is tests/fleet-worktree-reaper.test.sh.
     "fleet-worktree-reaper",
+    # fleet-ops#2421: fleet-seat-comeback-release is plumbing (re-probes a
+    # walled seat whose wall clock has passed and unwalls a provably-usable
+    # one), not a work-producing role — it runs no model of its own, owns no
+    # judging prompt and produces no work items. Its gate is
+    # tests/fleet-seat-comeback-release.test.sh plus the absent()/stalled
+    # rules on its heartbeat metric.
+    "fleet-seat-comeback-release",
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no

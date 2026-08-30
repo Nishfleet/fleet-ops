@@ -34,6 +34,12 @@ ok()   { echo "OK: $*"; }
 # bin-transition checks below.
 bash "$here/fleet-seat-recovery-units.test.sh"
 
+# fleet-ops#2421: the ACTIVE come-back release path (re-probe + unwall of
+# expired-wall seats) is the release half of seat recovery — hosted here so
+# the P14 closure reaches it without a ci.yml edit (workers cannot touch
+# .github/workflows/**). Runs in its own process (scratch ledger + stub pi).
+bash "$here/fleet-seat-comeback-release.test.sh"
+
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 
