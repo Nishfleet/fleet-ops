@@ -1,77 +1,40 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+## What
 
-## Why
+`FleetSloSeatAvailSlowBurn` is a **WFR-input slow-burn SLO alert**: its own annotation says it "feeds the weekly fleet review" (fleet-ops#1291). Seat compliance is operator/Nish-owned (credentials, quotas, seat health) — **no repair worker can raise it**, so the alert-repair chain can never terminate green while compliance < 0.9. This is the explicit `mechanism-impossible` declaration the issue asked for.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+The metric bug (compliance pinned at 1/13 regardless of real health) was already fixed in PR #2377; the remaining signal (0.846 < 0.9 at last check) is honest and clears only when seats recover + the 6h smoothing window flushes. There is no in-turn repair.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+Before this PR, Alertmanager's 6h repeat spawned a repair worker into this unrepairable alert every cycle — live 2026-08-30 dispatches at 07:00Z, 11:57Z and 17:57Z, each running a seat, failing with `GENUINE_STRUCTURAL_SIGNAL`, and re-escalating the senior conference (STOP-REASON) via the completion-canary ladder. That is the "chain ran and failed to clear it" loop, and it feeds the self-maintenance ratio issue (ask #1 below).
 
-## Scope
+## The fix (deletion-first, mirrors the WasteRatioRising precedent)
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+- `libexec/alert-repair-dispatch`: `FleetSloSeatAvailSlowBurn` added to `SKIP_SET` (like `WasteRatioRising`) — no repair worker is ever spawned; the dispatcher logs `SKIP ... reason=skip-list` and exits 0 before the claim mutex.
+- `bin/fleet-completion-canary.py`: same alert added to `SKIP_FIRING` — a firing-without-dispatch never opens a chain, so it cannot ladder → redispatch → STOP-REASON → escalate the senior conference for a measurement.
+- The alert itself is untouched in `config/fleet_rules.yml` — it stays firing honestly in Prometheus as a WFR input until compliance recovers (minimax/straitly quota walls reset 2026-08-31, then 6h flush). When it leaves 9090, the existing detector-green path closes the (never-opened) chain. Silencing is not part of this change.
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+## Ask #1 (queue self-maintenance ratio) is NOT duplicated here
 
-## Tradeoffs
+fleet-ops#2110 is the same class ("Queue self-maintenance ratio stuck at 86%", `agent-blocked` on `nish-decision` — the durable un-enroll/gating decision is Nish's). This PR's in-scope cut is the seat-avail repair churn class: 3-4 worker dispatches per day removed from the queue entirely. The remaining decision stays tracked by #2110.
 
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
+## mechanism-impossible declaration
 
-## Blast Radius
+`mechanism-impossible: no repair worker can raise seat_availability compliance (operator/Nish-owned supply: credentials, quotas, seat health); terminal=green is unreachable while compliance < 0.9 and is by-design achieved only when the SLO recovers and the alert leaves 9090 (detector-green).`
 
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+## Prevention mechanism (fleet-ops#366)
+
+- Dispatcher regression drill in `tests/alert-repair-claim-mutex.test.sh`: firing `FleetSloSeatAvailSlowBurn` must log `SKIP reason=skip-list`, exit 0, add no DISPATCH line and never invoke the worker (mock `pi-systemd-run` count unchanged).
+- Canary regression test in `tests/fleet-completion-canary.test.sh` (5c): a firing `FleetSloSeatAvailSlowBurn` far past every hop clock must open no chain, AMX-redispatch nothing, and write no STOP-REASON.
 
 ## Verification
 
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
+- `bash tests/alert-repair-claim-mutex.test.sh` → all OK incl. `skip-list (FleetSloSeatAvailSlowBurn): SKIP reason=skip-list, no DISPATCH, no spawn`.
+- `bash tests/fleet-completion-canary.test.sh` → all OK incl. `FleetSloSeatAvailSlowBurn firing is ignored (WFR-input slow-burn class)`.
+- Full CI verify-command (59 hermetic test files from .github/workflows/ci.yml, pyyaml already importable) → rc=0.
+- LIVE dispatcher run with the changed `libexec/alert-repair-dispatch` (scratch packet dir): `[2026-08-30T21:13:21Z] SKIP alertname=FleetSloSeatAvailSlowBurn receiver=live-skip-verify reason=skip-list`, rc=0, packet dir contains only actions.log (no packet, no spawn).
+- LIVE canary tick with the changed `bin/fleet-completion-canary.py` (the same binary the 5-min timer runs): rc=0, tick log `firing=['FleetQueueSelfMaintenanceRatioHigh']` — FleetSloSeatAvailSlowBurn is absent from the firing set and from `fleet_chain_open/stalled` (all 0).
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+run-proof: live dispatcher SKIP line `[2026-08-30T21:13:21Z] SKIP alertname=FleetSloSeatAvailSlowBurn receiver=live-skip-verify reason=skip-list` (rc=0, no spawn); live canary tick 2026-08-30T21:13:57Z rc=0 with `firing=['FleetQueueSelfMaintenanceRatioHigh']` and `open_ar={dispatch: 0, run: 0, verify: 0}`, no STOP-REASON.
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+Closes #2429
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Follow-up filed: #2440 (sibling WFR-input alerts — FleetSloWasteRatioOverTarget, FleetSloGhRateLimitHeadroomLow, WasteRatioRising — can still spawn repair workers / open canary chains when they fire; FleetSloMainGreenSlowBurn stays dispatchable, it is repairable in-turn).
