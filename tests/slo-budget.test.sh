@@ -95,6 +95,20 @@ m.SLO_DEFS_DEFAULT = Path(slo_defs)
 m.SLO_DEFS_FALLBACK = Path(slo_defs)
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+# Stub the per-seat health ledger so seat_availability compliance is emitted
+# hermetically. Without this the exporter reads the real SEAT_LEDGER
+# (/home/nish/...), which exists on the VPS but not in CI, so the SLO reports
+# instrumented=0 and the "instrumented SLOs emit compliance" loop fails
+# (fleet-ops#2377 red-on-main 2026-08-30). Two healthy enrolled providers of
+# 13 -> compliance is emitted (the exact value is not asserted here; section
+# 3b pins the rollup math).
+seat_dir = Path(scratch) / "seats"
+seat_dir.mkdir(exist_ok=True)
+for prov in ("devin", "cursor"):
+    (seat_dir / f"{prov}__m1.json").write_text(json.dumps({
+        "provider": prov, "model": "m1",
+        "health_class": "healthy", "seat_dead": False}))
+m.SEAT_LEDGER = seat_dir
 # Stub waste prom
 wp = Path(scratch) / "fleet-waste.prom"
 wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
