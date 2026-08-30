@@ -596,13 +596,14 @@ grep -q "stale >21600s) — assuming usable" "$PI_PACKET_STATE/watch.log" \
 # --- invariant 7b: corpse (seat_dead=true) is TERMINALLY excluded --------
 # fleet-ops#2327: the stale-observed fail-open above applies to HEALTHY/
 # transient markers (retry a seat that may have recovered), NEVER to a
-# seat_dead=true corpse. Between weekly probes a corpse's observed_at
+# seat_dead=true corpse. Between observations a corpse's observed_at
 # naturally ages past STALE_SECS; re-admitting it on staleness is the exact
 # re-pick loop that grew opencode/muse-spark-1.2-contributor-free's count
 # 80 -> 150 straight 500s (workers kept picking it, it kept 500'ing). Death
-# is not a freshness question: a corpse stays off the ladder until a probe
-# succeeds (seat-walled-probe, weekly) and writes a healthy observation
-# (seat_dead=false, count=0). Prove both seat_usable and the pick-seat
+# is not a freshness question: a corpse stays off the ladder until a healthy
+# observation (seat_dead=false, count=0) is recorded — the seat-walled-probe
+# auto-probe that used to write one weekly was deleted (fleet-ops#2394), so
+# recovery is manual, not automatic. Prove both seat_usable and the pick-seat
 # excluded-set refuse a stale corpse.
 ledger="$scratch/ledger-corpse"
 mkdir -p "$ledger"
@@ -3115,12 +3116,6 @@ bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
 # wired into ci.yml. Host it here from this already-listed seat-lib test so the
 # P14 test-listing gate goes green without a workflow edit.
 bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
-
-# fleet-ops#1348 (fleet-ops#1863, fleet-ops#2001): tests/seat-walled-probe.test.sh is a
-# walled-seat comeback probe regression test that landed on main without being
-# wired into ci.yml. Host it here from this already-listed seat-lib test so the
-# P14 test-listing gate goes green without a workflow edit.
-bash "$here/seat-walled-probe.test.sh" || fail "seat-walled-probe tests failed"
 
 # fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
 # later healthy observation that seat-health.ts writes to the per-seat ledger

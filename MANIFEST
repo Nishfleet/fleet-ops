@@ -848,12 +848,10 @@ systemd/grok-token-refresh.timer /home/nish/.config/systemd/user/grok-token-refr
 # Wired into fleet-heartbeat-tier1; fail-loud on violation -> unit-escalation.
 bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 
-# fleet-ops#1348: polite 1-token "reply OK" probe for walled seats whose
-# usable_at has passed; weekly credentials_bad probe files an agent-ready issue.
-# Coordinates with fleet-asset-census (#1149) — no second sweeper.
-bin/seat-walled-probe /home/nish/.local/bin/seat-walled-probe
-systemd/seat-walled-probe.service /home/nish/.config/systemd/user/seat-walled-probe.service
-systemd/seat-walled-probe.timer /home/nish/.config/systemd/user/seat-walled-probe.timer
+# fleet-ops#1348 REMOVED (fleet-ops#2394 deletion review): seat-walled-probe
+# (probe bin + service + timer) deleted — 14-day 100% fail (Unknown provider
+# "test" on stale ledger fixtures), zero issues filed, seat-transition duty
+# overlaps fleet-seat-recovery + seat-lib comeback clocks.
 
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir

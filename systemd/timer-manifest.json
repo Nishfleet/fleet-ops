@@ -392,12 +392,6 @@
       "cadence": "weekly",
       "source": "repo"
     },
-    "seat-walled-probe.timer": {
-      "reason": "15-min probe of walled seats whose usable_at has expired — sends a 1-token 'reply OK' probe so a seat re-enters the ladder only after a confirmed-healthy response, not a blind fail-open; credentials_bad probes weekly and files an agent-ready issue (fleet-ops#1348)",
-      "classification": "scheduled",
-      "cadence": "15min",
-      "source": "repo"
-    },
     "siterep-deploy.timer": {
       "reason": "DISABLED: siterep.net autonomous deploy drift tick — deliberately NOT installed per packet p51; kept for reference",
       "classification": "disabled",
