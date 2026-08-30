@@ -1,0 +1,16 @@
+[Unit]
+Description=Weekly baseline-delta strangeness report — Sun 05:10 IST
+# Named reason: the Weekly Fleet Review conference sits at 05:30 IST.
+# This job is its pre-pass (fleet-ops#1151). Metric strangeness has no
+# event to subscribe to, so a Sunday calendar fire after the maintenance
+# window (quiesce 03:15, dead-man 05:00) and 20 minutes before the
+# conference is the correct trigger. Persistent so a missed Sunday still
+# writes the input dir before the next review.
+
+[Timer]
+OnCalendar=Sun *-*-* 05:10:00 Asia/Kolkata
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
