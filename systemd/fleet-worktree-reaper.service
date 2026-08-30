@@ -1,0 +1,25 @@
+[Unit]
+Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# worktree accumulation is a monotonic growth invariant with no event signal.
+# A merged claim leaves its ~440MB worktree behind silently; only a periodic
+# sweep closes the gap. The reaper is fail-safe (merged + terminal + clean
+# gates, dry-run capable) and cheap, so a daily cadence is proportionate.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-worktree-reaper.service), so a failed reaper
+# escalates via the standard matrix.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-worktree-reaper'
+# A full sweep over ~1200 worktrees + one gh pr list per repo is bounded
+# well under five minutes.
+TimeoutStartSec=10min
+# Never restart: the timer is the retry. A failed reaper escalates via the
+# global drop-in, not via Restart=.
+Restart=no
