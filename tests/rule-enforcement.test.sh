@@ -1092,6 +1092,13 @@ ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-t
 bash "$here/install-enabled-but-inactive-timer.test.sh" || fail "install enabled-but-inactive timer self-heal drill failed"
 ok "rule-enforcement: install enabled-but-inactive timer self-heal drill"
 
+# fleet-ops#1307: install.sh --system must reload prometheus after a changed
+# config/fleet_rules.yml (ExecReload is kill -HUP; a merged alert rule
+# otherwise sits on disk) and prove every group is in GET /api/v1/rules.
+# Nested host so the worker token does not edit .github/workflows/**.
+bash "$here/install-prometheus-rules-reload.test.sh" || fail "install prometheus rules-reload drill failed"
+ok "rule-enforcement: install prometheus rules-reload drill"
+
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
 bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"

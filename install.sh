@@ -21,6 +21,12 @@
 #                          re-reads the drop-ins. --system takes no part in
 #                          daemon-reload for the user instance — call without
 #                          --system first for that.
+#                          A changed config/fleet_rules.yml also gets
+#                          `sudo systemctl reload prometheus` (ExecReload is
+#                          kill -HUP), and every group in the installed file
+#                          is proven present in GET /api/v1/rules
+#                          (fleet-ops#1307); the reload is skipped when the
+#                          file bytes did not change.
 #   --check --system     — drift detection for system-scope entries only.
 #                          Useful for "is this box up to date?" without
 #                          changing anything.
@@ -34,6 +40,7 @@ mode=""
 check_system=0
 user_unit_changed=0
 system_unit_changed=0
+system_rules_changed=0
 declare -a to_enable=()
 for arg in "$@"; do
   case "$arg" in
@@ -314,6 +321,48 @@ remove_papered_heartbeat_dropin() {
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
 #
+# fleet-ops#1307: after a prometheus HUP, prove every group in the installed
+# fleet_rules.yml is actually loaded via GET /api/v1/rules (PM_RULES_URL;
+# file:// allowed for tests). A parse error in one group silently drops it
+# from the API while prometheus keeps serving the old rules — the class of
+# gap that left a merged alert rule unloaded. Reads the installed file
+# (PM_RULES_FILE). Exit 0 = every file group is loaded; exit 1 = proof
+# failed, and install.sh --system must be loud.
+prove_rules_loaded() {
+    local rules_file=$1 url=$2
+    python3 - "$rules_file" "$url" <<'PY'
+import json, re, sys, urllib.request
+
+rules_file, url = sys.argv[1], sys.argv[2]
+try:
+    with open(rules_file, encoding="utf-8") as f:
+        text = f.read()
+except OSError as exc:
+    sys.stderr.write(f"install.sh rules-proof: cannot read {rules_file}: {exc}\n")
+    sys.exit(1)
+expected = sorted(set(g.strip(chr(34) + chr(39)) for g in re.findall(r"(?m)^\s*-\s*name:\s*(\S+)", text)))
+if not expected:
+    sys.stdout.write(f"install.sh rules-proof: {rules_file} defines no groups; nothing to prove\n")
+    sys.exit(0)
+try:
+    payload = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+except Exception as exc:
+    sys.stderr.write(f"install.sh rules-proof: cannot fetch {url}: {exc}\n")
+    sys.exit(1)
+try:
+    loaded = sorted(set(g["name"] for g in json.loads(payload)["data"]["groups"]))
+except (KeyError, TypeError, ValueError) as exc:
+    sys.stderr.write(f"install.sh rules-proof: unexpected {url} payload: {exc}\n")
+    sys.exit(1)
+missing = [g for g in expected if g not in loaded]
+if missing:
+    sys.stderr.write(f"install.sh rules-proof: FAIL groups not loaded: {missing} (fleet-ops#1307)\n")
+    sys.exit(1)
+sys.stdout.write(f"install.sh rules-proof: {len(expected)} group(s) loaded: {' '.join(expected)}\n")
+sys.exit(0)
+PY
+}
+
 # Comment-junk check (fleet-ops#156 finding 11): the old MANIFEST parser
 # created symlinks named after the second token of a comment line (e.g.
 # `# P14: ...` became a symlink called `P14: ...`). This scans the MANIFEST
@@ -374,6 +423,15 @@ process_entry() {
     fi
     if [[ "$src" == systemd/system/* ]] && ! unit_file_matches "$dest" "$repo"; then
         system_unit_changed=1
+    fi
+    # fleet-ops#1307: prometheus re-reads fleet_rules.yml only on HUP
+    # (systemctl reload; ExecReload is kill -HUP), so a changed copy needs a
+    # reload + proof, not just the systemd daemon-reload below. Byte-compare
+    # BEFORE install: a diff or a first install sets the flag; a
+    # byte-identical re-install skips the reload. PM_RULES_FILE overrides
+    # the live file path for tests.
+    if [[ "$src" == config/fleet_rules.yml ]] && ! cmp -s "${PM_RULES_FILE:-$dest}" "$repo" 2>/dev/null; then
+        system_rules_changed=1
     fi
     sudo install -D -m 0644 -o root -g root "$repo" "$dest"
     echo "installed (system): $dest"
@@ -534,6 +592,26 @@ elif [ "$do_system_install" = 1 ]; then
   # session, so it must go through sudo.
   if [ "$system_unit_changed" = 1 ]; then
     sudo systemctl daemon-reload
+  fi
+  # fleet-ops#1307: install -D does not HUP prometheus (ExecReload is
+  # kill -HUP), so a changed fleet_rules.yml would sit unloaded until the
+  # next restart. Reload only when the file bytes actually changed, then
+  # prove every group in the installed file appears in GET /api/v1/rules —
+  # a group that fails to parse never loads, and Prometheus keeps serving
+  # the old rules.
+  if [ "$system_rules_changed" = 1 ]; then
+    if sudo systemctl is-active --quiet prometheus 2>/dev/null; then
+      if ! sudo systemctl reload prometheus; then
+        echo "install.sh: prometheus reload failed after fleet_rules.yml change (fleet-ops#1307)" >&2
+        rc=1
+      elif ! prove_rules_loaded "${PM_RULES_FILE:-/etc/prometheus/fleet_rules.yml}" \
+                                "${PM_RULES_URL:-http://127.0.0.1:9090/api/v1/rules}"; then
+        echo "install.sh: rules proof failed — new fleet_rules.yml groups not all loaded (fleet-ops#1307)" >&2
+        rc=1
+      fi
+    else
+      echo "install.sh: prometheus not active — skipped reload + rules proof (fleet-ops#1307)" >&2
+    fi
   fi
 fi
 exit "$rc"
