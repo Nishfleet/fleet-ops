@@ -65,6 +65,11 @@ NON_ROLE_UNIT_PREFIXES = (
     # a judging role.
     "fleet-baseline-delta",
     "fleet-metrics-export",
+    # fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on
+    # merged+terminal claims (deletes git worktrees, runs no model, owns no
+    # prompt, produces no work items). Deterministic plumbing, not a role;
+    # its gate is tests/fleet-worktree-reaper.test.sh.
+    "fleet-worktree-reaper",
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no

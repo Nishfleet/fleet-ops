@@ -1146,4 +1146,10 @@ ok "rule-enforcement: slo-budget drill"
 bash "$here/fleet-tailscale-localapi-canary.test.sh" || fail "tailscale localapi canary drill failed"
 ok "rule-enforcement: tailscale localapi canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, and tailscale-localapi-canary drills"
+# fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on merged+
+# terminal claims. Hermetic (fake gh/systemctl, local bare repos). Hosted
+# here so P14 runs it without a workflow edit.
+bash "$here/fleet-worktree-reaper.test.sh" || fail "worktree-reaper drill failed"
+ok "rule-enforcement: worktree-reaper drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, and worktree-reaper drills"

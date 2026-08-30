@@ -458,6 +458,12 @@
       "cadence": "weekly",
       "source": "repo"
     },
+    "fleet-worktree-reaper.timer": {
+      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227) — merged+terminal claims leave worktrees behind silently; daily catches a day's worker churn within one waking window without noising triage every tick. Fail-safe (4 gates, dry-run capable) and cheap (git + one gh pr list per repo).",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "repo"
+    },
     "vps-maintenance-quiesce.timer": {
       "reason": "Weekly maintenance quiesce (T-15) — stops NEW work only; Sun 03:15 IST before vps-weekly-update",
       "classification": "scheduled",
