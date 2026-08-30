@@ -19,7 +19,9 @@
 #   5. rate_limited: excluded while marker fresh (<30min) AND usable_at
 #      future; RETRIED once the marker ages past 30min or usable_at passes.
 #   6. seat_dead=true / credentials_bad / quota_exhausted -> unusable.
-#   7. Stale observed_at (>6h) -> usable (the P4-A inversion fix).
+#   7. Stale observed_at (>6h) -> usable (the P4-A inversion fix), EXCEPT a
+#      seat_dead=true corpse, which is TERMINALLY excluded regardless of
+#      staleness (fleet-ops#2327 — only a successful probe resurrects it).
 #   8. quota_bench (fleet-ops#90): a 429-with-window seats the advertised
 #      reset; pick_seat skips until then and fail-opens after; all-benched
 #      returns rc=1 (existing no-seat path) without consuming an attempt.
@@ -590,6 +592,49 @@ set -e
 [[ "$rc" == "0" ]] || fail "stale ledger: expected a pick, got rc=$rc"
 grep -q "stale >21600s) — assuming usable" "$PI_PACKET_STATE/watch.log" \
   || fail "stale ledger: stale seat must be assumed usable"
+
+# --- invariant 7b: corpse (seat_dead=true) is TERMINALLY excluded --------
+# fleet-ops#2327: the stale-observed fail-open above applies to HEALTHY/
+# transient markers (retry a seat that may have recovered), NEVER to a
+# seat_dead=true corpse. Between weekly probes a corpse's observed_at
+# naturally ages past STALE_SECS; re-admitting it on staleness is the exact
+# re-pick loop that grew opencode/muse-spark-1.2-contributor-free's count
+# 80 -> 150 straight 500s (workers kept picking it, it kept 500'ing). Death
+# is not a freshness question: a corpse stays off the ladder until a probe
+# succeeds (seat-walled-probe, weekly) and writes a healthy observation
+# (seat_dead=false, count=0). Prove both seat_usable and the pick-seat
+# excluded-set refuse a stale corpse.
+ledger="$scratch/ledger-corpse"
+mkdir -p "$ledger"
+# The live muse-spark shape: seat_dead=true, class corpse, observed_at a
+# week old (stale >6h), usable_at long past, count 150.
+jq -n \
+  '{health_class:"corpse",seat_dead:true,observed_at:"2026-08-24T00:00:00Z",usable_at:"2026-08-25T00:00:00Z"}' \
+  > "$ledger/opencode__muse-spark-1.2-contributor-free.json"
+export PI_PACKET_STATE="$scratch/state-corpse"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+# 7b.1 seat_usable must refuse the stale corpse outright.
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "opencode" "muse-spark-1.2-contributor-free" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "corpse: seat_usable must refuse a stale seat_dead=true corpse (got usable rc=0)"
+grep -q "UNUSABLE (seat_dead=true" "$PI_PACKET_STATE/watch.log" \
+  || fail "corpse: seat_usable must log the UNUSABLE (seat_dead=true) line for a stale corpse"
+ok "corpse: seat_usable refuses a stale seat_dead=true corpse (terminal exclusion)"
+# 7b.2 the excluded-set (what pick_seat consults) must also refuse the
+# stale corpse. Exercise _build_excluded_set + _seat_is_dead directly: the
+# corpse ledger is the ONLY seat in the dir, so a correct set marks it dead
+# and _seat_is_dead reports it (rc-1 shape on the pre-fix code: the stale
+# guard skipped it and the set stayed empty).
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; declare -A _EXCLUDED_REASON=() _EXCLUDED_LIST=(); _build_excluded_set _EXCLUDED_REASON _EXCLUDED_LIST >/dev/null; if _seat_is_dead opencode muse-spark-1.2-contributor-free; then echo DEAD-EXCLUDED; else echo NOT-EXCLUDED; fi' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "corpse: _build_excluded_set/_seat_is_dead probe failed (rc=$rc)"
+[[ "$out" == "DEAD-EXCLUDED" ]] \
+  || fail "corpse: stale corpse must be in the excluded set (got: $out)"
+ok "corpse: stale seat_dead=true corpse stays in the excluded set (no resurrection)"
 
 # --- invariant 8: credential precheck (fleet-ops#36) -----------------------
 # An allowlisted provider (cap>0, model cap>0) is STILL rejected when its

@@ -118,7 +118,11 @@ seat_health_ok_for_call() {
             local hc
             hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
             case "$hc" in
-                transient_fault|rate_limited)
+                # fleet-ops#2327: "corpse" is the terminal dead class the
+                # extension writes when seat_dead fires — a corpse is retired,
+                # never routable. seat_usable already blocks it upstream; this
+                # preflight skips it too (defense in depth).
+                transient_fault|rate_limited|corpse)
                     log "seat_health preflight: $p/$m class=$hc -> SKIP"
                     return 1
                     ;;
@@ -139,7 +143,7 @@ seat_health_ok_for_call() {
     # provider+model. A different recorded seat is no signal here.
     [ "$rec_p" = "$p" ] && [ "$rec_m" = "$m" ] || return 0
     case "$hc" in
-        transient_fault|rate_limited) return 1 ;;
+        transient_fault|rate_limited|corpse) return 1 ;;
     esac
     return 0
 }

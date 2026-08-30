@@ -1164,8 +1164,11 @@ _seat_in_future() {
 #
 # Decision:
 #   - no file / unparseable / stale observed_at (> STALE_SECS) -> USABLE, but
-#     log a loud "no health data" line (do not brick the ladder).
-#   - seat_dead=true                              -> unusable (credentials_bad)
+#     log a loud "no health data" line (do not brick the ladder). EXCEPTION:
+#     a seat_dead=true corpse is UNUSABLE regardless of observed_at staleness
+#     (fleet-ops#2327 — death is not a freshness question; only a probe
+#     success writes a healthy observation and clears the corpse).
+#   - seat_dead=true                              -> unusable (corpse, terminal)
 #   - health_class in {credentials_bad, quota_exhausted} -> unusable
 #   - quota_bench (fleet-ops#90): a hard-capped seat benched for its advertised
 #     reset window. UNUSABLE while bench_until is in the future (one log line
@@ -1269,13 +1272,23 @@ seat_usable() {
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
         return 1
     fi
-    if ! _seat_observed_fresh "$observed"; then
-        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
-        return 0
-    fi
+    # fleet-ops#2327: a corpse (seat_dead=true) is TERMINALLY excluded. The
+    # stale-observed_at fail-open below must NOT resurrect it: a seat that
+    # failed past the corpse threshold stays off the ladder until a probe
+    # succeeds (seat-walled-probe, weekly cadence) and writes a healthy
+    # observation (seat_dead=false, count=0, class back to healthy). Before
+    # this change a corpse whose observed_at aged past STALE_SECS was
+    # "assumed usable" again — workers re-picked the guaranteed-failing seat
+    # and the consecutive_failure_count kept climbing (muse-spark:
+    # 80 -> 150 straight 500s while it sat cap=0 in the map). Death is not a
+    # freshness question; only a probe success resurrects.
     if [[ "$dead" == "true" ]]; then
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
         return 1
+    fi
+    if ! _seat_observed_fresh "$observed"; then
+        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
+        return 0
     fi
     if [[ "$hc" == "quota_exhausted" || "$hc" == "credentials_bad" ]]; then
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
@@ -2147,15 +2160,16 @@ _build_excluded_set() {
     fi
 
     # 2) seat_dead=true in the ledger -> exclude that seat.
-    # Walk the ledger directory; for every JSON file with a fresh
-    # observed_at and seat_dead=true, mark the seat excluded. This is
-    # the equivalent of seat_usable()'s dead-branch but does it once
-    # for the whole ladder instead of N times in the loop.
-    # We use the SANITISED form (matching the ledger file name) and
-    # the loop consults _is_seat_excluded_sanitised which sanitises
-    # its (raw) provider/model and looks the seat up.
+    # Walk the ledger directory; for every JSON file with seat_dead=true,
+    # mark the seat excluded. fleet-ops#2327: this is NOT freshness-gated —
+    # between weekly probes a corpse's observed_at naturally ages past
+    # STALE_SECS, and re-admitting it on staleness is the exact re-pick loop
+    # that grew muse-spark's count 80 -> 150. The P4-A stale-retry inversion
+    # applies to HEALTHY/transient markers (retry a seat that may have
+    # recovered), never to a corpse: only a successful probe writes a
+    # healthy observation and clears seat_dead. This mirrors seat_usable().
     if [[ -d "$LEDGER_DIR" ]] && command -v jq >/dev/null 2>&1; then
-        local f hc dead observed
+        local f dead
         while IFS= read -r f; do
             [[ -f "$f" ]] || continue
             # Cheap pre-check: only files that contain a seat_dead=true
@@ -2164,15 +2178,8 @@ _build_excluded_set() {
             # a space after the colon ("seat_dead": true), so the pattern
             # tolerates optional whitespace.
             grep -qE '"seat_dead":[[:space:]]*true' "$f" 2>/dev/null || continue
-            IFS=$'\x1f' read -r hc dead observed < <(
-                jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//"")] | join("\u001f")' "$f" 2>/dev/null || true
-            )
+            dead=$(jq -r '.seat_dead // false | tostring' "$f" 2>/dev/null || echo false)
             [[ "$dead" == "true" ]] || continue
-            if ! _seat_observed_fresh "$observed"; then
-                # Stale observed_at -> the P4-A inversion says retry;
-                # a stale dead marker is not authoritative.
-                continue
-            fi
             # Decode provider/model from the file name
             # "<sanitised-provider>__<sanitised-model>.json"
             local base="${f##*/}"
