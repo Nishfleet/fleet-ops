@@ -17,20 +17,24 @@
 #      A provider no-op (pi ran, exited 0, produced < 20 B) is a SEAT
 #      FAULT — same class as a verdict-based empty run (tools=0, no final
 #      text, fleet-ops#902) — so both are benched via mark_seat_empty_run
-#      before re-seating in-process. The bench escalates by
-#      consecutive_failure_count (fleet-ops#1408) so a repeat offender
-#      stays benched longer each cycle, and seat-health.ts resets the count
-#      on a healthy observation so a recovered seat is re-tried at the base
-#      backoff. The in-process retry loop avoids burning the item's
-#      StartLimitBurst dispatch budget (only exits 1 after
-#      EMPTY_RUN_RETRY_MAX consecutive empty runs).
+#      before re-seating in-process. The bench is a FLAT cooldown
+#      (mark_seat_empty_run, EMPTY_RUN_BACKOFF_S = 15 min) — a provider
+#      no-op is NOT a wall, so the fleet-ops#1408 count ladder does NOT
+#      apply (fleet-ops#2343: the old ladder churned healthy seats); only
+#      the fleet-ops#1362 60-failure ceiling park (24h wall) lengthens it.
+#      seat-health.ts resets the count on a healthy observation so a
+#      recovered seat is re-tried after the flat cooldown. The in-process
+#      retry loop avoids burning the item's StartLimitBurst dispatch budget
+#      (only exits 1 after EMPTY_RUN_RETRY_MAX consecutive empty runs).
 #      History: fleet-ops#1416 treated a provider no-op as a LANE fault
 #      (no bench) on the theory that a single 0B stdout was a provider
 #      hiccup on a healthy seat. fleet-ops#1298 reversed that: without a
 #      bench, an intake re-spawn (fresh claim, empty tried-seats) re-picked
 #      the same no-op'ing seat and burned 8 runs/2h on
-#      straitly/deepseek-v4-pro. The escalating bench breaks the loop
-#      without walling a recovered seat (fail-open after usable_at).
+#      straitly/deepseek-v4-pro. The flat cooldown breaks the loop
+#      without walling a recovered seat (fail-open after usable_at) and
+#      without over-punishing a healthy provider that no-ops occasionally
+#      (fleet-ops#2343).
 #      fleet-ops#1873 determination (window 2026-08-29T02:30-04:30Z: 14
 #      empty runs vs 3 dispatches, ready_work=119, samples fleet-ops-1360/
 #      -628/-1350/-1390 on straitly/deepseek-v4-pro, openrouter/deepseek-
@@ -579,7 +583,9 @@ if (( out_bytes < OUT_MIN )); then
     # theory a single 0B stdout was a provider hiccup on a healthy seat;
     # without the bench an intake re-spawn re-picked the same no-op'ing
     # seat and burned 8 runs/2h on straitly/deepseek-v4-pro (#1298).
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, escalating backoff) and re-seating in-process"
+    # fleet-ops#2343: flat 900s no-op cooldown (mark_seat_empty_run), not
+    # the escalating #1408 ladder — a provider no-op is not a wall.
+    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, flat cooldown) and re-seating in-process"
     if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
         seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
     else
