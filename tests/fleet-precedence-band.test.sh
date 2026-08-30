@@ -395,8 +395,8 @@ printf '%s\n' "$mech" | grep -qE 'machinery_max_pct(<=|<)30' \
   || fail "mechanism must lock machinery to <=30% (got: $mech)"
 printf '%s\n' "$mech" | grep -qE 'product_min_pct(>=|>)70' \
   || fail "mechanism must lock product to >=70% (got: $mech)"
-printf '%s\n' "$mech" | grep -q 'band-multiplier' \
-  || fail "mechanism must lock band-multiplier escape (got: $mech)"
+printf '%s\n' "$mech" | grep -qE 'priority|emergency' \
+  || fail "mechanism must lock priority or emergency label escape (got: $mech)"
 printf '%s\n' "$mech" | grep -q 'weekly-fleet-review' \
   || fail "mechanism must name weekly-fleet-review as the dial owner (got: $mech)"
 printf '%s\n' "$mech" | grep -q 'tighten' \
@@ -457,7 +457,7 @@ set +e
 # 17a: non-leverage WITH a live machinery worker running is still surge-skipped
 # (the fleet-ops queue is not hard-stalled — a machinery lane is in flight).
 : >"$scratch/units.txt"; printf 'pi-issue@fleet-ops-101.service\n' >>"$scratch/units.txt"
-reason=$(precedence_band_allow_claim fleet-ops 9999 "")
+reason=$(precedence_band_allow_claim fleet-ops 9999 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage with live machinery must rc=1, got $rc ($reason)"
@@ -472,7 +472,7 @@ set +e
 export BAND_PENDING_FILE="$scratch/pending.latch"
 rm -f "$BAND_PENDING_FILE"
 : >"$scratch/units.txt"
-reason=$(precedence_band_allow_claim fleet-ops 9998 "")
+reason=$(precedence_band_allow_claim fleet-ops 9998 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17a2: surge floor must rc=0, got $rc ($reason)"
@@ -483,7 +483,7 @@ ok "scenario17a2: surge admits one repair lane when no machinery is live (floor)
 # 17a3: the surge floor is latched — a SECOND non-leverage claim in the same
 # tick is refused (exactly one lane, not a drain of the overnight queue).
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 9997 "")
+reason=$(precedence_band_allow_claim fleet-ops 9997 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17a3: surge floor latch must refuse the second claim, got $rc ($reason)"
@@ -492,7 +492,7 @@ set -e
 ok "scenario17a3: surge floor is latched — one lane per tick, then skip"
 
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1223 "")
+reason=$(precedence_band_allow_claim fleet-ops 1223 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17b: surge leverage must rc=0, got $rc ($reason)"
@@ -529,7 +529,7 @@ pi-issue@fleet-ops-103.service
 UNITS
 # 3 machinery / 3 total; a fourth machinery claim is 4/4 = 100% > 30%.
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 "")
+reason=$(precedence_band_allow_claim fleet-ops 104 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17e: band over-cap must rc=1, got $rc ($reason)"
@@ -538,13 +538,13 @@ set -e
 ok "scenario17e: band skips a machinery claim that would breach the cap"
 
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 $'band-multiplier: 2\n')
+reason=$(precedence_band_allow_claim fleet-ops 104 '[{"name": "priority"}]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17f: multiplier must rc=0, got $rc ($reason)"
 [[ "$reason" == "allow-multiplier" ]] \
   || fail "scenario17f: expected allow-multiplier, got $reason"
-ok "scenario17f: band-multiplier lets machinery jump the cap"
+ok "scenario17f: priority label lets machinery jump the cap"
 
 # --- 17g. legit-work quality classification function -----------------------
 # shellcheck source=/dev/null
@@ -705,7 +705,7 @@ rm -f "$BAND_PENDING_FILE"
 
 # Empty product, legit work (feat) -> allow-band-surge-legit
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 "" "feat: add new feature")
+reason=$(precedence_band_allow_claim fleet-ops 104 '[]' "" "feat: add new feature")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17s: empty-product + feat must rc=0, got $rc ($reason)"
@@ -715,7 +715,7 @@ ok "scenario17s: empty-product surge allows legit work (feat/upgrade)"
 # Empty product, legit work (fix) -> allow-band-surge-legit
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 105 "" "fix: resolve bug")
+reason=$(precedence_band_allow_claim fleet-ops 105 '[]' "" "fix: resolve bug")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17t: empty-product + fix must rc=0, got $rc ($reason)"
@@ -725,7 +725,7 @@ ok "scenario17t: empty-product surge allows legit work (fix/repair)"
 # Empty product, legit work (test) -> allow-band-surge-legit
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 106 "" "test: add unit test")
+reason=$(precedence_band_allow_claim fleet-ops 106 '[]' "" "test: add unit test")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17u: empty-product + test must rc=0, got $rc ($reason)"
@@ -735,7 +735,7 @@ ok "scenario17u: empty-product surge allows legit work (test/repair)"
 # Empty product, churn work (chore) -> skip-band
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 107 "" "chore: update deps")
+reason=$(precedence_band_allow_claim fleet-ops 107 '[]' "" "chore: update deps")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17v: empty-product + chore must rc=1, got $rc ($reason)"
@@ -745,7 +745,7 @@ ok "scenario17v: empty-product surge rejects churn work (chore)"
 # Empty product, churn work (refactor) -> skip-band
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 108 "" "refactor: clean up code")
+reason=$(precedence_band_allow_claim fleet-ops 108 '[]' "" "refactor: clean up code")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17w: empty-product + refactor must rc=1, got $rc ($reason)"
@@ -755,7 +755,7 @@ ok "scenario17w: empty-product surge rejects churn work (refactor)"
 # Empty product, churn work (no prefix) -> skip-band (safe catch-all)
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 109 "" "random title no prefix")
+reason=$(precedence_band_allow_claim fleet-ops 109 '[]' "" "random title no prefix")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17x: empty-product + no-prefix must rc=1, got $rc ($reason)"
@@ -765,7 +765,7 @@ ok "scenario17x: empty-product surge rejects churn work (no-prefix catch-all)"
 # Empty product, empty title -> skip-band (safe catch-all)
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 110 "" "")
+reason=$(precedence_band_allow_claim fleet-ops 110 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17y: empty-product + empty-title must rc=1, got $rc ($reason)"
@@ -783,7 +783,7 @@ UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-with-product.txt"
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 "" "feat: add new feature")
+reason=$(precedence_band_allow_claim fleet-ops 104 '[]' "" "feat: add new feature")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17z: product-not-empty + feat must rc=1, got $rc ($reason)"
@@ -800,7 +800,7 @@ UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-empty.txt"
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 9999 "")
+reason=$(precedence_band_allow_claim fleet-ops 9999 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17aa: bootstrap must rc=0, got $rc ($reason)"
@@ -826,7 +826,7 @@ for product_n in 1 2 3; do
   done
   export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
   set +e
-  reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+  reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
   rc=$?
   set -e
   [[ "$rc" == "0" ]] \
@@ -845,7 +845,7 @@ pi-issue@fleet-ops-101.service
 UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] \
@@ -868,14 +868,14 @@ pi-issue@0509-1302.service
 UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario19e: first floor claim must rc=0, got $rc ($reason)"
 [[ "$reason" == "allow-band-floor" ]] \
   || fail "scenario19e: expected allow-band-floor, got $reason"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1453 "")
+reason=$(precedence_band_allow_claim fleet-ops 1453 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19e: second claim same process must rc=1, got $rc ($reason)"
@@ -912,7 +912,7 @@ export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-starvation.txt"
 # Starvation-class issue (dispatch pipeline not consuming the queue) must get
 # the reserved lane despite over-cap and saturated product.
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1449 "" "Intake starvation: 224 ready items, 2 dispatches in 2h with 13 healthy seats")
+reason=$(precedence_band_allow_claim fleet-ops 1449 '[]' "" "Intake starvation: 224 ready items, 2 dispatches in 2h with 13 healthy seats")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario19f: starvation must rc=0, got $rc ($reason)"
@@ -922,7 +922,7 @@ ok "scenario19f: starvation-class issue gets one floor lane despite over-cap+sat
 # The starvation floor is latched: a SECOND starvation claim in the same
 # tick is refused so it cannot drain the overnight queue.
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1450 "" "Intake starvation: 229 ready items, 0 claims in 2h")
+reason=$(precedence_band_allow_claim fleet-ops 1450 '[]' "" "Intake starvation: 229 ready items, 0 claims in 2h")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19g: starvation latch must rc=1, got $rc ($reason)"
@@ -933,7 +933,7 @@ ok "scenario19g: starvation floor is latched — one lane per tick, then skip"
 # position is still skip-band (only starvation-class is floor-eligible).
 rm -f "$BAND_PENDING_STARVATION_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1451 "" "fix: resolve a specific booking bug")
+reason=$(precedence_band_allow_claim fleet-ops 1451 '[]' "" "fix: resolve a specific booking bug")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19h: non-starvation over-cap must rc=1, got $rc ($reason)"
@@ -943,7 +943,7 @@ ok "scenario19h: non-starvation repair stays skip-band (only starvation is floor
 # Starvation detection must NOT fire on an empty title/body (safe catch-all).
 rm -f "$BAND_PENDING_STARVATION_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1452 "" "")
+reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19i: empty starvation title must rc=1, got $rc ($reason)"
