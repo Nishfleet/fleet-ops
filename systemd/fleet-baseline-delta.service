@@ -1,0 +1,27 @@
+[Unit]
+Description=Weekly baseline-delta strangeness report (fleet-ops#1151)
+# Named reason (fleet-ops#378): unknown-unknown metric strangeness has no
+# event to subscribe to. The Weekly Fleet Review (#1146, Sun 04:30 IST)
+# needs a ranked pre-pass of fleet_* and key node_* series before it
+# sits. A Sunday calendar fire after the maintenance window
+# (quiesce 03:15, vps-weekly-update 03:30) and before the review is the
+# only correct trigger. Output is a report for the review conference,
+# never a page.
+# ExecStart is /usr/bin/python3 + the installed libexec path (same shape
+# as fleet-metrics-export.service) so CI systemd-analyze verify needs no
+# host-binary stub. Restart=on-failure re-seats a transient Prometheus
+# blip inside the maintenance window so the 04:30 review still gets its
+# pre-pass; StartLimitIntervalSec caps a hard failure mode.
+StartLimitIntervalSec=2h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-baseline-delta.py
+TimeoutStartSec=15min
+Restart=on-failure
+RestartSec=300

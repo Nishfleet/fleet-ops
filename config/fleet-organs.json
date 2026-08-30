@@ -6,14 +6,22 @@
       "kind": "exporter",
       "heartbeat_metric": "node_textfile_mtime_seconds",
       "absent_alert": "FleetMetricsExportMissing",
-      "files": ["libexec/fleet-metrics-export.py", "systemd/fleet-metrics-export.service", "systemd/fleet-metrics-export.timer"]
+      "files": [
+        "libexec/fleet-metrics-export.py",
+        "systemd/fleet-metrics-export.service",
+        "systemd/fleet-metrics-export.timer"
+      ]
     },
     {
       "name": "completion-canary",
       "kind": "canary",
       "heartbeat_metric": "fleet_chain_open",
       "absent_alert": "FleetCompletionCanaryAbsent",
-      "files": ["bin/fleet-completion-canary.py", "systemd/fleet-completion-canary.service", "systemd/fleet-completion-canary.timer"]
+      "files": [
+        "bin/fleet-completion-canary.py",
+        "systemd/fleet-completion-canary.service",
+        "systemd/fleet-completion-canary.timer"
+      ]
     },
     {
       "name": "undersaturation-guard",
@@ -153,6 +161,17 @@
       "absent_alert": "FleetGhRateLimitAbsent",
       "files": [
         "libexec/fleet-metrics-export.py"
+      ]
+    },
+    {
+      "name": "baseline-delta",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_baseline_delta_last_run_seconds",
+      "absent_alert": "FleetBaselineDeltaAbsent",
+      "files": [
+        "libexec/fleet-baseline-delta.py",
+        "systemd/fleet-baseline-delta.service",
+        "systemd/fleet-baseline-delta.timer"
       ]
     }
   ]

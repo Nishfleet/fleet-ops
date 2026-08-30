@@ -804,3 +804,11 @@ bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 bin/seat-walled-probe /home/nish/.local/bin/seat-walled-probe
 systemd/seat-walled-probe.service /home/nish/.config/systemd/user/seat-walled-probe.service
 systemd/seat-walled-probe.timer /home/nish/.config/systemd/user/seat-walled-probe.timer
+
+# fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
+# Fleet Review. Deterministic stdlib Python; writes the WFR input dir
+# (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;
+# heartbeat metric + absent() rule. Not an alert.
+libexec/fleet-baseline-delta.py /home/nish/.local/libexec/fleet-baseline-delta.py
+systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service
+systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer

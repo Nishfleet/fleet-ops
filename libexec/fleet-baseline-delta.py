@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+"""fleet-baseline-delta — week-over-week MAD strangeness report (fleet-ops#1151).
+
+Queries Prometheus for every fleet_* series and a small set of key node_*
+series, compares this week to a trailing 4-week baseline using median + MAD,
+and writes a ranked top-20 |z|>3 report into the Weekly Fleet Review input
+dir (/home/nish/workspaces/agent-state/WFR, the dir the review prompt already
+reads — fleet-ops#1146). This is a pre-pass for the review conference, not
+an alert: nothing pages on a high z-score.
+
+Heartbeat: writes fleet-baseline-delta.prom so FleetBaselineDeltaAbsent can
+notice a dead organ. The ranked list itself never becomes a Prometheus alert.
+
+Stdlib + Prometheus HTTP API only. No new dependencies.
+
+Environment (tests may override):
+  BASELINE_DELTA_PROM_URL   default http://127.0.0.1:9090
+  BASELINE_DELTA_OUT_DIR    default .../agent-state/WFR
+  BASELINE_DELTA_PROM       textfile path
+  BASELINE_DELTA_TOP        ranked cap (default 20)
+  BASELINE_DELTA_Z          |z| threshold (default 3)
+  BASELINE_DELTA_TIMEOUT    HTTP timeout seconds (default 30)
+  BASELINE_DELTA_NOW        unix timestamp override
+  BASELINE_DELTA_FIXTURE    JSON fixture (skip HTTP; tests)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import statistics
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+WEEK = 7 * 24 * 3600
+BASELINE_WEEKS = 4
+MAD_TO_SIGMA = 1.4826  # consistency constant: MAD -> sigma for normal data
+DEFAULT_Z = 3.0
+DEFAULT_TOP = 20
+DEFAULT_TIMEOUT = 30
+DEFAULT_STEP = "6h"
+KEY_NODE = (
+    "node_load1",
+    "node_load5",
+    "node_load15",
+    "node_memory_MemAvailable_bytes",
+    "node_memory_MemTotal_bytes",
+    "node_memory_SwapFree_bytes",
+    "node_filesystem_avail_bytes",
+    "node_cpu_seconds_total",
+    "node_network_receive_bytes_total",
+    "node_network_transmit_bytes_total",
+    "node_disk_io_time_seconds_total",
+    "node_disk_read_bytes_total",
+    "node_disk_written_bytes_total",
+    "node_procs_running",
+    "node_forks_total",
+    "node_context_switches_total",
+)
+
+# Monotone clock metrics are schedule facts, not strangeness: for a clock
+# that updates on a steady cadence (fleet_*_last_run_seconds, *_timestamp_
+# seconds, *_reset), this week's median sits roughly one week above the
+# trailing medians every single week, so a robust-z pass would re-flag the
+# whole clock family each week as noise. Exclude them by name shape; genuine
+# duration gauges (fleet_chain_cycle_seconds, fleet_probe_latency_seconds)
+# do not match and stay in the scan.
+CLOCK_NAME_RE = re.compile(
+    r"(last_run|last_green|last_success|last_trigger|last_admission|fetched|observed|timestamp|heartbeat)_seconds$"
+    r"|_reset$"
+)
+
+
+def log(msg: str) -> None:
+    print(f"[fleet-baseline-delta] {msg}", file=sys.stderr)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    os.chmod(path, 0o644)
+
+
+def series_id(metric: dict[str, str]) -> str:
+    name = metric.get("__name__", "unknown")
+    labels = {k: v for k, v in metric.items() if k != "__name__"}
+    if not labels:
+        return name
+    inner = ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
+    return f"{name}{{{inner}}}"
+
+
+def modified_z(this_week: float, baseline: list[float]) -> float | None:
+    """Return (x - median) / (1.4826 * MAD). None if fewer than 2 baseline points.
+
+    MAD == 0 and x != median -> signed infinity (a real jump off a constant).
+    """
+    if len(baseline) < 2:
+        return None
+    med = statistics.median(baseline)
+    spread = statistics.median([abs(x - med) for x in baseline])
+    if spread == 0:
+        if this_week == med:
+            return 0.0
+        return math.inf if this_week > med else -math.inf
+    return (this_week - med) / (MAD_TO_SIGMA * spread)
+
+
+def z_json(z: float) -> int | float | str:
+    if math.isinf(z):
+        return "+inf" if z > 0 else "-inf"
+    if abs(z) >= 100:
+        return round(z, 1)
+    return round(z, 3)
+
+
+def bucket_weekly(
+    points: list[tuple[float, float]], now: float, kind: str
+) -> list[float | None]:
+    """Oldest-first weekly values. Index -1 is this week (age 0..7d).
+
+    Gauges: median of samples in the week.
+    Counters: last sample minus first sample in the week (increase).
+    """
+    buckets: list[list[tuple[float, float]]] = [[] for _ in range(BASELINE_WEEKS + 1)]
+    for ts, val in points:
+        age = now - ts
+        if age < 0:
+            continue
+        week = int(age // WEEK)
+        if 0 <= week <= BASELINE_WEEKS:
+            buckets[week].append((ts, val))
+    out: list[float | None] = []
+    for bucket in reversed(buckets):
+        if not bucket:
+            out.append(None)
+            continue
+        bucket.sort()
+        if kind == "counter":
+            if len(bucket) < 2:
+                out.append(None)
+            else:
+                out.append(bucket[-1][1] - bucket[0][1])
+        else:
+            out.append(statistics.median([v for _, v in bucket]))
+    return out
+
+
+def score_series(
+    metric: dict[str, str],
+    points: list[tuple[float, float]],
+    now: float,
+    kind: str,
+    z_thresh: float,
+) -> dict[str, Any] | None:
+    """Weekly-only grading. The issue's method is weekly: this week vs the
+    trailing 4 weekly medians (median + MAD, |z|>3). When the TSDB has less
+    than two populated baseline weeks (fresh retention, warm-up period) the
+    series is skipped, never fallback-flagged: a last-day-vs-earlier-days
+    comparison produces MAD=0 inf flags from day-level noise, which is the
+    alert-storm class this report exists to avoid. The skipped count in the
+    report tells the review the baseline is still accumulating."""
+    weekly = bucket_weekly(points, now, kind)
+    this_week = weekly[-1]
+    baseline = [v for v in weekly[:-1] if v is not None]
+    if this_week is None or len(baseline) < 2:
+        return {
+            "id": series_id(metric),
+            "kind": kind,
+            "grain": "weekly",
+            "this_week": this_week,
+            "baseline": baseline,
+            "median": None,
+            "mad": None,
+            "z": None,
+            "flagged": False,
+            "skip": "insufficient-history",
+        }
+    med = statistics.median(baseline)
+    spread = statistics.median([abs(x - med) for x in baseline])
+    z = modified_z(this_week, baseline)
+    if z is None:
+        return None
+    flagged = abs(z) > z_thresh
+    return {
+        "id": series_id(metric),
+        "kind": kind,
+        "grain": "weekly",
+        "this_week": this_week,
+        "baseline_n": len(baseline),
+        "median": med,
+        "mad": spread,
+        "z": z,
+        "flagged": flagged,
+        "skip": None,
+    }
+
+
+def parse_matrix(payload: dict[str, Any]) -> list[tuple[dict[str, str], list[tuple[float, float]]]]:
+    data = payload.get("data") or {}
+    result = data.get("result") or []
+    out = []
+    for row in result:
+        metric = {str(k): str(v) for k, v in (row.get("metric") or {}).items()}
+        values = []
+        for pair in row.get("values") or []:
+            if not isinstance(pair, list) or len(pair) < 2:
+                continue
+            try:
+                ts = float(pair[0])
+                val = float(pair[1])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(val):
+                values.append((ts, val))
+        out.append((metric, values))
+    return out
+
+
+def http_json(url: str, path: str, params: dict[str, str], timeout: float, method: str = "GET") -> dict[str, Any]:
+    # Scheme allowlist: urllib follows file:// and other schemes, so a
+    # mis-set BASELINE_DELTA_PROM_URL must not turn this organ into a local
+    # file reader. Prometheus is http(s) only.
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise RuntimeError(
+            f"prometheus url must be http(s), got scheme {parsed.scheme!r}: {url}"
+        )
+    encoded = urllib.parse.urlencode(params)
+    if method == "POST":
+        req = urllib.request.Request(
+            url.rstrip("/") + path,
+            data=encoded.encode("utf-8"),
+            method="POST",
+        )
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    else:
+        req = urllib.request.Request(
+            url.rstrip("/") + path + ("?" + encoded if encoded else ""),
+            method="GET",
+        )
+    req.add_header("User-Agent", "fleet-baseline-delta/1151")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"prometheus HTTP {exc.code} on {path}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"prometheus unreachable at {url}: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"prometheus timeout on {path}") from exc
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"prometheus returned non-JSON from {path}") from exc
+    if payload.get("status") != "success":
+        raise RuntimeError(
+            f"prometheus {path} status={payload.get('status')} error={payload.get('error')}"
+        )
+    return payload
+
+
+def metric_kind(metadata: dict[str, Any], name: str) -> str:
+    rows = metadata.get(name) or []
+    if rows and isinstance(rows[0], dict):
+        t = str(rows[0].get("type") or "gauge").lower()
+        if t == "counter":
+            return "counter"
+    return "gauge"
+
+
+def load_fixture(path: Path, now: float, z_thresh: float) -> list[dict[str, Any]]:
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    now = float(blob.get("now") or now)
+    scored = []
+    for row in blob.get("series") or []:
+        metric = {str(k): str(v) for k, v in (row.get("metric") or {}).items()}
+        kind = str(row.get("kind") or "gauge")
+        weekly = row.get("weekly")
+        if weekly is not None:
+            # Oldest-first weekly values; last is this week. Synthesize
+            # timestamps so bucket_weekly reconstructs them.
+            points = []
+            n = len(weekly)
+            for i, val in enumerate(weekly):
+                age_weeks = n - 1 - i
+                # Two samples per week so counters can compute an increase.
+                ts0 = now - age_weeks * WEEK - WEEK + 1
+                ts1 = now - age_weeks * WEEK - 1
+                if kind == "counter":
+                    # Interpret weekly[i] as the week's increase.
+                    base = 1000.0 * (i + 1)
+                    points.append((ts0, base))
+                    points.append((ts1, base + float(val)))
+                else:
+                    points.append((ts0, float(val)))
+                    points.append((ts1, float(val)))
+        else:
+            points = [
+                (float(ts), float(val)) for ts, val in (row.get("points") or [])
+            ]
+        result = score_series(metric, points, now, kind, z_thresh)
+        if result is not None:
+            scored.append(result)
+    return scored
+
+
+def collect_live(url: str, now: float, timeout: float, z_thresh: float) -> list[dict[str, Any]]:
+    names_payload = http_json(url, "/api/v1/label/__name__/values", {}, timeout)
+    names = [n for n in (names_payload.get("data") or []) if isinstance(n, str)]
+    wanted = [
+        n
+        for n in names
+        if (n.startswith("fleet_") or n in KEY_NODE)
+        and not CLOCK_NAME_RE.search(n)
+    ]
+    if not wanted:
+        log("no fleet_* / key node_* names from prometheus")
+        return []
+    try:
+        meta_payload = http_json(url, "/api/v1/metadata", {}, timeout)
+        metadata = meta_payload.get("data") or {}
+    except RuntimeError as exc:
+        log(f"metadata fetch failed ({exc}); treating all as gauges")
+        metadata = {}
+    start = now - (BASELINE_WEEKS + 1) * WEEK
+    scored: list[dict[str, Any]] = []
+    for name in sorted(wanted):
+        kind = metric_kind(metadata, name)
+        try:
+            payload = http_json(
+                url,
+                "/api/v1/query_range",
+                {
+                    "query": name,
+                    "start": str(start),
+                    "end": str(now),
+                    "step": DEFAULT_STEP,
+                },
+                timeout,
+                method="POST",
+            )
+        except RuntimeError as exc:
+            log(f"query_range failed for {name}: {exc}")
+            continue
+        for metric, points in parse_matrix(payload):
+            if "__name__" not in metric:
+                metric = dict(metric)
+                metric["__name__"] = name
+            result = score_series(metric, points, now, kind, z_thresh)
+            if result is not None:
+                scored.append(result)
+    return scored
+
+
+def render_report(
+    scored: list[dict[str, Any]],
+    now: float,
+    z_thresh: float,
+    top_n: int,
+    prom_url: str,
+) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
+    flagged = [s for s in scored if s.get("flagged")]
+    flagged.sort(
+        key=lambda s: (
+            -math.inf if isinstance(s.get("z"), float) and math.isinf(s["z"]) else -abs(s.get("z") or 0.0),
+            s["id"],
+        )
+    )
+    ranked = flagged[:top_n]
+    skipped = [s for s in scored if s.get("skip")]
+    iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+    lines = [
+        f"# Baseline-delta strangeness — {iso}",
+        "",
+        "Pre-pass for the Weekly Fleet Review (fleet-ops#1146 / #1151).",
+        "Not an alert. Conference input only. Ranked |z|>3, capped at top 20.",
+        "",
+        f"- generated: {iso}",
+        f"- prometheus: {prom_url}",
+        f"- scanned: {len(scored)} series",
+        f"- flagged (|z|>{z_thresh:g}): {len(flagged)}",
+        f"- ranked: {len(ranked)}",
+        f"- skipped (insufficient history): {len(skipped)}",
+        "- method: this week vs trailing 4-week baseline (per-week median;",
+        "  median + MAD, robust z = (x - med) / (1.4826*MAD)); series without",
+        "  >=2 populated baseline weeks are skipped while retention accrues.",
+        "",
+        "## Ranked anomalies",
+        "",
+    ]
+    if not ranked:
+        lines.append("None this week.")
+        lines.append("")
+    else:
+        lines.append("| rank | |z| | z | this | median | MAD | series |")
+        lines.append("| ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+        for i, row in enumerate(ranked, 1):
+            z = row["z"]
+            z_abs = "inf" if isinstance(z, float) and math.isinf(z) else f"{abs(z):.3g}"
+            z_s = z_json(z)
+            lines.append(
+                f"| {i} | {z_abs} | {z_s} | {row['this_week']:.6g} | "
+                f"{row['median']:.6g} | {row['mad']:.6g} | `{row['id']}` |"
+            )
+        lines.append("")
+    payload = {
+        "generated": iso,
+        "prometheus": prom_url,
+        "z_threshold": z_thresh,
+        "top": top_n,
+        "scanned": len(scored),
+        "flagged": len(flagged),
+        "ranked_n": len(ranked),
+        "skipped": len(skipped),
+        "grain": "weekly",
+        "paging": False,
+        "ranked": [
+            {
+                "rank": i,
+                "id": row["id"],
+                "kind": row["kind"],
+                "grain": row["grain"],
+                "this_week": row["this_week"],
+                "median": row["median"],
+                "mad": row["mad"],
+                "z": z_json(row["z"]),
+            }
+            for i, row in enumerate(ranked, 1)
+        ],
+    }
+    return "\n".join(lines) + "\n", payload, ranked
+
+
+def write_heartbeat(path: Path, now: float, ranked_n: int, scanned: int) -> None:
+    body = "\n".join(
+        [
+            "# HELP fleet_baseline_delta_last_run_seconds Unix time of last successful baseline-delta report (fleet-ops#1151).",
+            "# TYPE fleet_baseline_delta_last_run_seconds gauge",
+            f"fleet_baseline_delta_last_run_seconds {now:.3f}",
+            "# HELP fleet_baseline_delta_anomalies Ranked |z|>3 series in the latest report (capped at 20).",
+            "# TYPE fleet_baseline_delta_anomalies gauge",
+            f"fleet_baseline_delta_anomalies {ranked_n}",
+            "# HELP fleet_baseline_delta_series_scanned Series compared in the latest run.",
+            "# TYPE fleet_baseline_delta_series_scanned gauge",
+            f"fleet_baseline_delta_series_scanned {scanned}",
+            "",
+        ]
+    )
+    atomic_write(path, body)
+
+
+def main(argv: list[str] | None = None) -> int:
+    home = os.environ.get("HOME", "/home/nish")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Week-over-week MAD strangeness report for fleet_* and key node_* "
+            "series. Writes the Weekly Fleet Review input dir. Does not page."
+        )
+    )
+    parser.add_argument("--prom-url", default=os.environ.get("BASELINE_DELTA_PROM_URL", "http://127.0.0.1:9090"))
+    parser.add_argument(
+        "--out-dir",
+        default=os.environ.get(
+            "BASELINE_DELTA_OUT_DIR",
+            str(Path(home) / "workspaces/agent-state/WFR"),
+        ),
+    )
+    parser.add_argument(
+        "--prom-file",
+        default=os.environ.get(
+            "BASELINE_DELTA_PROM",
+            "/var/lib/prometheus/node-exporter/fleet-baseline-delta.prom",
+        ),
+    )
+    parser.add_argument("--top", type=int, default=int(os.environ.get("BASELINE_DELTA_TOP", DEFAULT_TOP)))
+    parser.add_argument("--z-threshold", type=float, default=float(os.environ.get("BASELINE_DELTA_Z", DEFAULT_Z)))
+    parser.add_argument("--timeout", type=float, default=float(os.environ.get("BASELINE_DELTA_TIMEOUT", DEFAULT_TIMEOUT)))
+    parser.add_argument("--now", type=float, default=float(os.environ.get("BASELINE_DELTA_NOW", "0") or 0))
+    parser.add_argument("--fixture", default=os.environ.get("BASELINE_DELTA_FIXTURE", ""))
+    args = parser.parse_args(argv)
+
+    now = args.now if args.now > 0 else time.time()
+    try:
+        if args.fixture:
+            scored = load_fixture(Path(args.fixture), now, args.z_threshold)
+        else:
+            scored = collect_live(args.prom_url, now, args.timeout, args.z_threshold)
+        md, payload, ranked = render_report(
+            scored, now, args.z_threshold, args.top, args.prom_url
+        )
+        out_dir = Path(args.out_dir)
+        atomic_write(out_dir / "baseline-delta.md", md)
+        atomic_write(out_dir / "baseline-delta.json", json.dumps(payload, indent=2) + "\n")
+        write_heartbeat(Path(args.prom_file), now, len(ranked), len(scored))
+    except Exception as exc:
+        log(f"FAILED: {exc}")
+        return 1
+    log(
+        f"wrote {args.out_dir}/baseline-delta.md "
+        f"scanned={len(scored)} ranked={len(ranked)}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -123,7 +123,14 @@ grep -q '"lens": "throughput|quality|machinery|truth|outside|security"' "$prompt
   || fail "prompt lens enum must include security"
 grep -q 'DIGEST::' "$prompt" \
   || fail "prompt must tell the agent to emit DIGEST:: for agent-cron-run"
-ok "(f) prompt locks the 5-action cap, signal, blind 6-lens structure (incl. SECURITY), claimed-work-only"
+# fleet-ops#1151: the baseline-delta pre-pass is a review input. The prompt
+# must read it (missing file / 'None this week' = no strangeness, not a
+# fail) and must not page on it. Locks the WFR-input wiring of #1151.
+grep -q 'WFR/baseline-delta.md' "$prompt" \
+  || fail "prompt must read WFR/baseline-delta.md (baseline-delta pre-pass, fleet-ops#1151)"
+grep -q 'never pages' "$prompt" \
+  || fail "prompt must state the pre-pass never pages"
+ok "(f) prompt locks the 5-action cap, signal, blind 6-lens structure (incl. SECURITY), claimed-work-only, baseline-delta input"
 
 # (g) role-quality-gates catalog + bypass check helper
 jq -e '.roles[] | select(.id == "weekly-fleet-review")' "$role_gates" >/dev/null \

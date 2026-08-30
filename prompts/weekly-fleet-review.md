@@ -20,7 +20,7 @@ This is **NOT** the daily quality delta sweep (fleet-ops#541). That one
 tracks frontier deltas; this one audits the fleet against its current bar
 and proposes up to 5 changes that move the bar. Same seat, different lens.
 
-## Inputs (read all six before acting)
+## Inputs (read all seven before acting)
 
 1. `/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md`
    — what Nish has already decided. Never re-recommend a decided item.
@@ -39,6 +39,13 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
    `fleet_aeo_cited`. Missing file means the probe has not run yet, not a
    fail. `engine_up=0` means that engine had no API seat this week. Do
    not treat that as "0509 is invisible".
+6. The baseline-delta pre-pass (fleet-ops#1151):
+   `/home/nish/workspaces/agent-state/WFR/baseline-delta.md` — a ranked,
+   top-20 list of week-over-week anomalies across every `fleet_*` and key
+   `node_*` Prometheus series (this week vs trailing 4-week median + MAD
+   baseline, |z|>3). Missing file or "None this week" means nothing
+   crossed the threshold this week, not a fail. It feeds the conference
+   only; it never pages.
 
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.
