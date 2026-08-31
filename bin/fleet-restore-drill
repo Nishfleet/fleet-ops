@@ -12,7 +12,7 @@
 #
 # It does NOT run restic restore itself: the restic repo credentials live in
 # /etc/restic/hostinger-r2.env (root-only; nish has no sudo). Instead it proves
-# the rebuild story on three planes every run, LOUD on any doubt:
+# the rebuild story on four planes every run, LOUD on any doubt:
 #
 #   A. Backup mechanism is proven (system restic units, readable via
 #      `systemctl show` without sudo):
@@ -42,6 +42,18 @@
 #      includes the control plane — the files proven in (B) are under a
 #      backed-up root, and the mechanism proven in (A) can return them.
 #
+#   D. A dated artifact marker exists and is fresh (fleet-ops#2471). Every run
+#      whose A/B/C planes pass writes $AGENT_STATE/alert-repair/
+#      fleet-restore-drill-marker (mtime = the run's timestamp; the body is
+#      an ISO date). The opus-heartbeat thorough gather stats that exact path
+#      for its backup_freshness.newest_backup_marker — a green timer with no
+#      marker proves nothing (the 2026-08-31 monitor-lie class). The drill
+#      itself fails when the marker is absent or older than the timer cadence
+#      plus slack (default 8h on the 6h cadence): a run that did not leave a
+#      fresh artifact cannot go green. A missing/stale marker does NOT block
+#      the marker refresh when A/B/C passed, so a transient absence self-heals
+#      on the next 6h cycle; a marker write that keeps failing stays escalated.
+#
 # Result line goes to the heartbeat triage file (the same surface tier1/tier2
 # write LOUD lines to). On any failure: LOUD + exit 1. The global
 # service.d/10-escalate.conf drop-in turns that exit 1 into a
@@ -56,7 +68,8 @@
 #   SYSTEMCTL, FLEET_OPS_REPO, AGENT_STATE, FLEET_HEARTBEAT_TRIAGE,
 #   SEAT_CAPS_JSON, CLAIMS_LOG, RESTIC_BACKUP_TIMER, RESTIC_BACKUP_SERVICE,
 #   RESTIC_RESTORE_TEST_SERVICE, RESTIC_VERIFY_SERVICE, STALENESS_HOURS,
-#   FLEET_RESTORE_DRILL_SKIP_SYSTEM (1 = skip plane A for offline tests)
+#   FLEET_RESTORE_DRILL_SKIP_SYSTEM (1 = skip plane A for offline tests),
+#   FLEET_RESTORE_DRILL_MARKER (artifact path), FLEET_RESTORE_DRILL_MARKER_MAX_AGE_S
 
 set -Eeuo pipefail
 
@@ -81,6 +94,25 @@ if ! [[ "$STALENESS_HOURS" =~ ^[0-9]+$ ]]; then
   STALENESS_HOURS="$STALENESS_HOURS_DEFAULT"
 fi
 readonly STALENESS_HOURS
+
+# Dated artifact marker the heartbeat can stat (fleet-ops#2471). The
+# opus-heartbeat thorough gather globs $AGENT_STATE/alert-repair for
+# fleet-restore-drill* / backup* to report
+# backup_freshness.newest_backup_marker; this path is the contract with it.
+# The heartbeat stats mtime, so mtime IS the run timestamp; the body carries
+# the same date for humans.
+MARKER="${FLEET_RESTORE_DRILL_MARKER:-$AGENT_STATE/alert-repair/fleet-restore-drill-marker}"
+readonly MARKER
+
+# Freshness bound for the marker: the 6h timer cadence plus 2h slack
+# (RandomizedDelaySec=15min + AccuracySec=30min + jitter margin). A marker
+# older than this means a timer run failed to leave an artifact behind.
+MARKER_MAX_AGE_S_DEFAULT=28800
+MARKER_MAX_AGE_S="${FLEET_RESTORE_DRILL_MARKER_MAX_AGE_S:-$MARKER_MAX_AGE_S_DEFAULT}"
+if ! [[ "$MARKER_MAX_AGE_S" =~ ^[0-9]+$ ]]; then
+  MARKER_MAX_AGE_S="$MARKER_MAX_AGE_S_DEFAULT"
+fi
+readonly MARKER_MAX_AGE_S
 
 # The restic backup sources (from /usr/local/sbin/restic-r2-backup). The drill
 # asserts the critical fleet paths live under one of these — the logical proof
@@ -318,6 +350,48 @@ plane_c_backup_coverage() {
 }
 
 # ----------------------------------------------------------------------------
+# plane D: dated artifact marker exists + fresh (fleet-ops#2471)
+# ----------------------------------------------------------------------------
+plane_d_artifact_freshness() {
+  log "D. checking restore-drill artifact marker freshness"
+  if [[ ! -f "$MARKER" ]]; then
+    loud "RESTORE-DRILL-ARTIFACT-MISSING" "no restore-drill artifact marker at $MARKER — the heartbeat's newest_backup_marker would be null. A green timer with no artifact proves nothing (monitor-lie class)."
+    return 1
+  fi
+  local mtime now age
+  mtime="$(stat -c %Y "$MARKER" 2>/dev/null || true)"
+  if [[ -z "$mtime" ]]; then
+    loud "RESTORE-DRILL-ARTIFACT-MISSING" "cannot stat restore-drill artifact marker at $MARKER"
+    return 1
+  fi
+  now="$(date +%s)"
+  age=$(( now - mtime ))
+  log "D.  - marker mtime age ${age}s (max ${MARKER_MAX_AGE_S}s)"
+  if (( age > MARKER_MAX_AGE_S )); then
+    loud "RESTORE-DRILL-ARTIFACT-STALE" "restore-drill artifact marker at $MARKER is ${age}s old — older than the timer run by more than the ${MARKER_MAX_AGE_S}s bound (6h cadence + 2h slack). The drill has not produced a fresh artifact since then; the rebuild story is unproven."
+    return 1
+  fi
+  log "D.  - OK: artifact marker present and fresh (age ${age}s)"
+  return 0
+}
+
+# Write the dated artifact marker. Only called when planes A/B/C passed.
+# Atomic (tmp + mv) so a partially-written file is never stat'd as the
+# artifact; the heartbeat stats mtime, so mtime IS the run timestamp and the
+# body carries the same date for humans.
+write_marker() {
+  mkdir -p "$(dirname "$MARKER")" 2>/dev/null || true
+  local tmp="$MARKER.tmp.$$"
+  {
+    printf '%s OK control plane rebuildable (backup fresh + success, restore + verify proven, fleet files parseable, paths covered)\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$tmp"
+  chmod 644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$MARKER"
+  log "D: artifact marker written to $MARKER"
+}
+
+# ----------------------------------------------------------------------------
 # --check: report whether the drill units + script are installed (no system
 # calls). Mirrors oomd-drill --check.
 # ----------------------------------------------------------------------------
@@ -345,12 +419,23 @@ check_env() {
 # ----------------------------------------------------------------------------
 run_drill() {
   log "fleet restore drill starting (repo=$FLEET_OPS_REPO staleness=${STALENESS_HOURS}h)"
-  local rc=0
+  local rc=0 abc_ok=1
   plane_a_backup_mechanism || rc=1
   plane_b_fleet_files || rc=1
   plane_c_backup_coverage || rc=1
+  (( rc == 0 )) || abc_ok=0
+  plane_d_artifact_freshness || rc=1
+  # The marker is refreshed whenever A/B/C passed — including a run whose
+  # plane D failed for a missing/stale marker. That is the self-heal: a
+  # transiently absent/old marker trips one LOUD failure and is rewritten,
+  # so the next 6h cycle goes green; a marker write that keeps failing is an
+  # aborting script error (set -e) that stays escalated. A run where a
+  # rebuild plane (A/B/C) failed must NOT refresh the marker.
+  if (( abc_ok == 1 )); then
+    write_marker
+  fi
   if (( rc == 0 )); then
-    loud "RESTORE-DRILL-OK" "control plane rebuildable: backup fresh + success, restore + verify proven, fleet files parseable, paths covered by restic"
+    loud "RESTORE-DRILL-OK" "control plane rebuildable: backup fresh + success, restore + verify proven, fleet files parseable, paths covered by restic, artifact marker fresh"
     log "PASS: control plane rebuild story proven"
     exit 0
   fi
