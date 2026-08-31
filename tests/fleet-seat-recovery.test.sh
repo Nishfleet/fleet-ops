@@ -40,6 +40,15 @@ bash "$here/fleet-seat-recovery-units.test.sh"
 # .github/workflows/**). Runs in its own process (scratch ledger + stub pi).
 bash "$here/fleet-seat-comeback-release.test.sh"
 
+# fleet-ops#2469: the TERMINAL retirement step (move corpse seat ledgers
+# out of lanes/seats/ into a dated seats-corpse-retired-<ts>/ dir). Sits
+# beside fleet-seat-comeback-release because they are sibling lifecycle
+# operations on the seat-health ledger (active release vs terminal
+# retirement); hosting both here keeps the seat-recovery suite contiguous
+# in P14 without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/fleet-seat-corpse-retire.test.sh"
+
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 

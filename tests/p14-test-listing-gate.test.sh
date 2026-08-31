@@ -357,6 +357,24 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2462-claim-cap\.test\.
   || fail "fleet-ops-2462-claim-cap.test.sh must not be a known orphan (fleet-ops#2462)"
 ok "fleet-ops-2462-claim-cap.test.sh is pinned in the P14 reachable set (fleet-ops#2462)"
 
+# fleet-ops#2469: hard-pin the host line for fleet-seat-corpse-retire. The
+# test landed on the #2469 fix branch (corpse ledger retirement, fleet-ops
+# #2145/#2327/#2415/#2435 paper trail) without a ci.yml listing, and was
+# hosted from tests/fleet-seat-recovery.test.sh (already in P14, already
+# hosting its sibling fleet-seat-comeback-release.test.sh) — the worker
+# App cannot push .github/workflows/** so the host was the only path.
+# Class-prevention: a future drop of the host line cannot park the test
+# on known_orphans to silence the generic $bad[] message — it fails by
+# name here first, same shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-seat-corpse-retire\.test\.sh"?' \
+  "$here/fleet-seat-recovery.test.sh" \
+  || fail "fleet-seat-recovery.test.sh must bash-invoke fleet-seat-corpse-retire.test.sh (fleet-ops#2469)"
+[[ -n "${reachable[fleet-seat-corpse-retire.test.sh]:-}" ]] \
+  || fail "fleet-seat-corpse-retire.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2469)"
+[[ -z "${known_orphan_set[fleet-seat-corpse-retire.test.sh]:-}" ]] \
+  || fail "fleet-seat-corpse-retire.test.sh must not be a known orphan (fleet-ops#2469)"
+ok "fleet-seat-corpse-retire.test.sh is pinned in the P14 reachable set (fleet-ops#2469)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob

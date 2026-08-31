@@ -195,6 +195,17 @@
         "systemd/fleet-aeo-probe.service",
         "systemd/fleet-aeo-probe.timer"
       ]
+    },
+    {
+      "name": "fleet-seat-corpse-retire",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_seat_corpse_retire_last_run_seconds",
+      "absent_alert": "FleetSeatCorpseRetireAbsent",
+      "files": [
+        "bin/fleet-seat-corpse-retire",
+        "systemd/fleet-seat-corpse-retire.service",
+        "systemd/fleet-seat-corpse-retire.timer"
+      ]
     }
   ]
 }

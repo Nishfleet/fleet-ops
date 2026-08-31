@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+# fleet-seat-corpse-retire — physically retire corpse seat ledgers past the
+# seat-dead threshold (fleet-ops#2469).
+#
+# Why this exists
+# ---------------
+# fleet-ops#2145/#2327/#2415 made a corpse (seat_dead=true, class corpse, no
+# usable_at comeback clock) the TERMINAL state for a chronic-failure seat.
+# fleet-ops#2435 made the seat-roster census count corpses as `dead_n`
+# rather than `walled_n` so they don't depress the walled/healthy ratio.
+# The remaining gap (the live 2026-08-31 census: 28-seat roster, dead_n=1,
+# opencode/muse-spark-1.2-contributor-free at c=150 straight HTTP 500s):
+# the corpse ledger still sits in the LIVE roster directory
+# `/home/nish/workspaces/agent-state/lanes/seats/`. Every consumer that
+# counts files in that dir — the daily-digest "Total seen" (28), the
+# opus-heartbeat-gather seat_table `n` (28), and any future capacity
+# denominator — sees a dead seat as live roster capacity. The
+# seat-avail SLO denominator is inflated by exactly the corpse count.
+#
+# What this bin does
+# ------------------
+# For every `<sanitised-provider>__<sanitised-model>.json` ledger in the
+# seat-health ledger directory, decide if it is a CORPSE that the lifecycle
+# should retire OUT of the live roster:
+#   - seat_dead=true AND consecutive_failure_count >= seat_dead_consecutive_threshold
+#     (default 25, fleet-ops#2145). Captures the transient_http / rate_limit /
+#     cli_timeout / transient_other / empty_run classes whose count climbed
+#     past the threshold.
+#   - OR health_class=quota_exhausted (HTTP 402, hard billing wall) AND
+#     observed_at older than seat_dead_quota_age_s (default 24h). Captures
+#     the billing wall that has not cleared in 24h — also a corpse
+#     (#2145/#2415), just driven by time instead of count.
+# A qualifying seat is moved into a DATED retirement directory
+# (`seats-corpse-retired-<UTC-timestamp>/`) — same pattern as
+# `seats-deadcred-quarantine-*` for credentials-bad seats. The original
+# ledger file is atomically renamed into the retirement dir, leaving the
+# live roster directory free of the corpse.
+#
+# Heartbeat + alert
+# -----------------
+# Writes `fleet_seat_corpse_retire_last_run_seconds` (always, even on a
+# no-op sweep) to the textfile collector, so a missing/stale rule
+# (FleetSeatCorpseRetireAbsent, config/fleet_rules.yml) catches a dead
+# organ. The bin's exit code is the run's success signal; the heartbeat
+# metric is the time-of-last-green-run signal.
+#
+# Idempotent + safe to run on a clean ledger
+# ------------------------------------------
+# A clean ledger (no corpses) is a no-op: the bin reports retired_n=0 and
+# exits 0. Re-running it on a partially-retired roster moves the remaining
+# corpses only. The retirement directory is append-only (one per run, never
+# deleted by this bin) so a failed past retirement is preserved for audit.
+#
+# Design (no new machinery beyond the smallest possible organ)
+# ------------------------------------------------------------
+# - Idempotent: a clean run is exit 0 with retired_n=0; safe to invoke
+#   repeatedly.
+# - Atomic: the ledger move is `mv` (atomic on the same filesystem); a
+#   partial write leaves the live ledger intact (mv is binary-safe).
+# - Loud on failure: an unreadable ledger or a parse error is logged and
+#   counted; the run still proceeds to the next ledger and exits non-zero
+#   if ANYTHING went wrong.
+# - No polling: this is invoked by the systemd timer (daily) and by the
+#   repair-worker one-shot. The ledger is read once and acted on.
+#
+# Environment seams (tests):
+#   FLEET_SEAT_CORPSE_LEDGER_DIR   seat ledger dir (default
+#                                   /home/nish/workspaces/agent-state/lanes/seats)
+#   FLEET_SEAT_CORPSE_AGENT_STATE   agent-state root (default
+#                                   /home/nish/workspaces/agent-state)
+#   FLEET_SEAT_CORPSE_RETIRED_DIR   retirement dir override (default
+#                                   <agent-state>/lanes/seats-corpse-retired-<UTC-ts>)
+#   FLEET_SEAT_CORPSE_PROM         textfile .prom (default
+#                                   /var/lib/prometheus/node-exporter/fleet-seat-corpse-retire.prom)
+#   FLEET_SEAT_CORPSE_THRESHOLD    seat_dead_consecutive_threshold override
+#                                   (default: read from seat-caps.json walled_comeback)
+#   FLEET_SEAT_CORPSE_QUOTA_AGE_S  seat_dead_quota_age_s override (same)
+#   FLEET_SEAT_CORPSE_SEAT_CAPS    seat-caps.json path (default
+#                                   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json,
+#                                   or $REPO/config/seat-caps.json when invoked
+#                                   from a worktree)
+#   FLEET_SEAT_CORPSE_NOW           ISO timestamp override (tests)
+#   FLEET_SEAT_CORPSE_DRY_RUN       1 = list candidates + write prom, do not move
+#   FLEET_SEAT_CORPSE_RETIRED_BASE  base name for the retirement dir (default
+#                                   seats-corpse-retired)
+#
+# Exit: 0 clean (zero or more retirements, no errors). 1 on internal error
+# (unreadable ledger, parse failure on the threshold config, atomic-rename
+# failure). 2 on invalid arguments.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AGENT_STATE="${FLEET_SEAT_CORPSE_AGENT_STATE:-/home/nish/workspaces/agent-state}"
+LEDGER_DIR="${FLEET_SEAT_CORPSE_LEDGER_DIR:-$AGENT_STATE/lanes/seats}"
+RETIRED_BASE="${FLEET_SEAT_CORPSE_RETIRED_BASE:-seats-corpse-retired}"
+PROM_FILE="${FLEET_SEAT_CORPSE_PROM:-/var/lib/prometheus/node-exporter/fleet-seat-corpse-retire.prom}"
+SEAT_CAPS="${FLEET_SEAT_CORPSE_SEAT_CAPS:-}"
+NOW_ISO="${FLEET_SEAT_CORPSE_NOW:-}"
+DRY_RUN="${FLEET_SEAT_CORPSE_DRY_RUN:-0}"
+
+if [[ -z "$SEAT_CAPS" ]]; then
+    # Resolve the canonical seat-caps.json (worktree-aware: prefer the
+    # repo copy in $REPO, fall back to the deploy-clone).
+    repo_root="${REPO:-}"
+    if [[ -n "$repo_root" && -f "$repo_root/config/seat-caps.json" ]]; then
+        SEAT_CAPS="$repo_root/config/seat-caps.json"
+    elif [[ -f "/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json" ]]; then
+        SEAT_CAPS="/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/seat-caps.json"
+    fi
+fi
+
+log() {
+    printf '[%s] [fleet-seat-corpse-retire] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_iso() {
+    if [[ -n "$NOW_ISO" ]]; then
+        printf '%s\n' "$NOW_ISO"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+usage() {
+    cat <<'USAGE'
+fleet-seat-corpse-retire — retire corpse seat ledgers past the seat-dead
+threshold (fleet-ops#2469). See the file header for design and env seams.
+
+Usage: fleet-seat-corpse-retire [--dry-run] [--help]
+  --dry-run   list candidates and write the prom metric; do not move files
+  --help      show this help
+USAGE
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --help|-h) usage; exit 0 ;;
+        *) printf 'unknown arg: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+# --- thresholds (config-driven, with safe defaults) --------------------------
+# Defaults: 25 consecutive failures OR quota_exhausted observed >= 24h old,
+# matching seat-caps.json walled_comeback. Tests override via env. The env
+# overrides win over the config (the explicit test-time knob is the source
+# of truth in test scenarios; the config is the production source of truth).
+THRESHOLD="${FLEET_SEAT_CORPSE_THRESHOLD:-}"
+QUOTA_AGE_S="${FLEET_SEAT_CORPSE_QUOTA_AGE_S:-}"
+if [[ -n "$SEAT_CAPS" && -f "$SEAT_CAPS" ]] && command -v jq >/dev/null 2>&1; then
+    [[ -n "$THRESHOLD" ]] || v=$(jq -r '.walled_comeback.seat_dead_consecutive_threshold // empty' "$SEAT_CAPS" 2>/dev/null || true)
+    [[ -z "${THRESHOLD:-}" && -n "${v:-}" && "$v" =~ ^[0-9]+$ ]] && THRESHOLD="$v"
+    [[ -n "$QUOTA_AGE_S" ]] || v=$(jq -r '.walled_comeback.seat_dead_quota_age_s // empty' "$SEAT_CAPS" 2>/dev/null || true)
+    [[ -z "${QUOTA_AGE_S:-}" && -n "${v:-}" && "$v" =~ ^[0-9]+$ ]] && QUOTA_AGE_S="$v"
+fi
+[[ "$THRESHOLD" =~ ^[0-9]+$ ]] || THRESHOLD=25
+[[ "$QUOTA_AGE_S" =~ ^[0-9]+$ ]] || QUOTA_AGE_S=86400
+
+# --- textfile metric --------------------------------------------------------
+write_prom() {
+    local last_run="$1" retired="$2" scanned="$3" candidates="$4" errors="$5"
+    mkdir -p "$(dirname "$PROM_FILE")" 2>/dev/null || return 0
+    {
+        printf '# HELP fleet_seat_corpse_retire_last_run_seconds Last fleet-seat-corpse-retire run epoch (fleet-ops#2469).\n'
+        printf '# TYPE fleet_seat_corpse_retire_last_run_seconds gauge\n'
+        if [[ -n "$last_run" ]]; then
+            printf 'fleet_seat_corpse_retire_last_run_seconds %s\n' "$last_run"
+        fi
+        printf '# HELP fleet_seat_corpse_retire_retired Seat ledgers retired this run (fleet-ops#2469).\n'
+        printf '# TYPE fleet_seat_corpse_retire_retired gauge\n'
+        printf 'fleet_seat_corpse_retire_retired %s\n' "$retired"
+        printf '# HELP fleet_seat_corpse_retire_scanned Seat ledgers inspected this run (fleet-ops#2469).\n'
+        printf '# TYPE fleet_seat_corpse_retire_scanned gauge\n'
+        printf 'fleet_seat_corpse_retire_scanned %s\n' "$scanned"
+        printf '# HELP fleet_seat_corpse_retire_candidates Seat ledgers matching the corpse criteria this run (fleet-ops#2469).\n'
+        printf '# TYPE fleet_seat_corpse_retire_candidates gauge\n'
+        printf 'fleet_seat_corpse_retire_candidates %s\n' "$candidates"
+        printf '# HELP fleet_seat_corpse_retire_errors Errors hit while reading or moving seat ledgers this run (fleet-ops#2469).\n'
+        printf '# TYPE fleet_seat_corpse_retire_errors gauge\n'
+        printf 'fleet_seat_corpse_retire_errors %s\n' "$errors"
+    } > "$PROM_FILE.tmp.$$" 2>/dev/null || { rm -f "$PROM_FILE.tmp.$$" 2>/dev/null || true; return 0; }
+    mv "$PROM_FILE.tmp.$$" "$PROM_FILE" 2>/dev/null || { rm -f "$PROM_FILE.tmp.$$" 2>/dev/null || true; return 0; }
+}
+
+# --- decision: is this ledger a corpse that should retire? -------------------
+# Args: ledger path -> exit 0 = retire, exit 1 = leave alone. stdout: the
+# reason string (printed into the audit log when we retire).
+#
+# Authority is the LEDGER ITSELF: a ledger is a corpse iff its own
+# seat_dead=true record says so. The seat-health.ts extension is the writer
+# of seat_dead (via shouldMarkSeatDead, fleet-ops#2145): it sets true when
+# consecutive_failure_count crosses seat_dead_consecutive_threshold (25)
+# for transient classes, or when observed_at crosses seat_dead_quota_age_s
+# (24h) for quota_exhausted. The THRESHOLD / QUOTA_AGE_S env knobs exist
+# purely so a CONFIG-DRIVEN post-hoc check matches the EXTENSION's
+# threshold — if the extension hasn't written yet (stale ledger), the bin
+# still retires the matching record so the roster converges even before
+# the extension re-observes.
+#
+# Two paths, both retired the same way:
+#   - Path A: seat_dead=true ledger with count >= threshold (the live
+#     muse-spark case: c=150, dead=true, class corpse, no usable_at).
+#   - Path B: quota_exhausted ledger with observed_at older than
+#     seat_dead_quota_age_s (default 24h). The spec for fleet-ops#2145
+#     says such a ledger IS a corpse needing billing repair; the extension
+#     writes seat_dead=true on its next observation, but a stale
+#     un-observed ledger is also a corpse by spec.
+#
+# NOT retired:
+#   - quota_exhausted with a future usable_at — a known scheduled wall
+#     (weekly ClinePass cap at fleet-ops#90) whose recovery is timed, not
+#     abandoned. Retiring it would lose the schedule.
+#   - transient_fault / rate_limited below the threshold — alive but
+#     walled, the router (seat_usable) handles the wait.
+is_corpse() {
+    local f="$1" dead hc count mode observed observed_s now_s age_s
+    dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || echo "false")
+    hc=$(jq -r '(.health_class // "")' "$f" 2>/dev/null || echo "")
+    count=$(jq -r '(.consecutive_failure_count // 0)' "$f" 2>/dev/null || echo 0)
+    mode=$(jq -r '(.failure_mode // "")' "$f" 2>/dev/null || echo "")
+    observed=$(jq -r '(.observed_at // "")' "$f" 2>/dev/null || echo "")
+    observed_s=$(date -u -d "$observed" +%s 2>/dev/null || echo 0)
+    [[ "$dead" =~ ^(true|false)$ ]] || return 1
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$observed_s" =~ ^[0-9]+$ ]] || observed_s=0
+
+    # Path A: seat_dead=true. The extension wrote the corpse flag; the
+    # count threshold check is a SECONDARY sanity check (so a config bug
+    # that flips the seat_dead flag prematurely can't retire every
+    # transient). A flag=true + count<threshold ledger is logged and
+    # skipped — it's likely an extension bug, and silently retiring it
+    # would lose the diagnostic signal.
+    if [[ "$dead" == "true" ]] && (( count >= THRESHOLD )); then
+        printf 'seat_dead=true count=%s >= threshold=%s mode=%s\n' "$count" "$THRESHOLD" "$mode"
+        return 0
+    fi
+
+    # Path B: quota_exhausted at >= seat_dead_quota_age_s old, AND no
+    # future usable_at / retry_after (a known scheduled wall is not a
+    # corpse — it's a wall with a clock, fleet-ops#90 / #2415). This is
+    # the post-hoc check for stale un-observed ledgers; the extension
+    # would set seat_dead=true on the next observation, but a corpse that
+    # has been sitting in lanes/seats for 24h+ is already long past
+    # recovery.
+    if [[ "$hc" == "quota_exhausted" ]] && (( observed_s > 0 )); then
+        now_s=$(now_epoch)
+        age_s=$((now_s - observed_s))
+        if (( age_s >= QUOTA_AGE_S )); then
+            # If the seat has a future usable_at, it is a SCHEDULED wall,
+            # not a corpse (the ClinePass weekly cap pattern, fleet-ops#90).
+            # The schedule must stay so the wall-recovery / comeback-release
+            # paths can act on it. A corpse has no usable_at (fleet-ops#2415).
+            local ua ua_s
+            ua=$(jq -r '(.usable_at // .bench_until // "")' "$f" 2>/dev/null || echo "")
+            if [[ -n "$ua" ]]; then
+                ua_s=$(date -u -d "$ua" +%s 2>/dev/null || echo 0)
+                if [[ "$ua_s" =~ ^[0-9]+$ ]] && (( ua_s > now_s )); then
+                    return 1
+                fi
+            fi
+            printf 'quota_exhausted observed_at=%s age_s=%s >= quota_age_s=%s no_future_usable_at\n' "$observed" "$age_s" "$QUOTA_AGE_S"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+main() {
+    if [[ ! -d "$LEDGER_DIR" ]]; then
+        log "ledger dir missing: $LEDGER_DIR"
+        write_prom "$(now_epoch)" 0 0 0 0
+        return 1
+    fi
+
+    # Build the dated retirement dir. The timestamp is the SAME across the
+    # whole run so a multi-seat retirement lands in a single dir (cleaner
+    # audit). Idempotent on re-run: each invocation gets its own dir; a
+    # corpus already retired is no longer in the live roster, so a re-run
+    # finds nothing to move.
+    local stamp retired_dir ts_dir_arg
+    stamp=$(now_iso)
+    ts_dir_arg=$(printf '%s/%s-%s' "$AGENT_STATE/lanes" "$RETIRED_BASE" "$stamp")
+    retired_dir="${FLEET_SEAT_CORPSE_RETIRED_DIR:-$ts_dir_arg}"
+
+    mkdir -p "$retired_dir" 2>/dev/null || {
+        log "could not create retirement dir: $retired_dir"
+        write_prom "$(now_epoch)" 0 0 0 1
+        return 1
+    }
+
+    local scanned=0 candidates=0 retired=0 errors=0
+    local f base p m reason
+    # shellcheck disable=SC2045  # we want the glob (handles empty ledger)
+    for f in "$LEDGER_DIR"/*__*.json; do
+        # The glob returns the literal pattern when nothing matches under
+        # nullglob-disabled shells — guard against that.
+        [[ -f "$f" ]] || continue
+        # Skip pseudo-seat / fixture files (same exclusions as
+        # fleet-seat-comeback-release: the spawn-bench markers and any
+        # test fixtures are never part of the live roster).
+        case "$(basename "$f")" in
+            *.spawn-bench.json) continue ;;
+            *.spawn-bench.json.*.tmp) continue ;;
+        esac
+        base="$(basename "$f")"
+        scanned=$((scanned + 1))
+
+        # Cheap pre-check: only parse files that mention seat_dead OR are
+        # quota_exhausted. The grep keeps the per-file cost O(scanned) rather
+        # than O(scanned * jq parse).
+        if ! grep -qE '"seat_dead":[[:space:]]*true|"health_class":[[:space:]]*"quota_exhausted"' "$f" 2>/dev/null; then
+            continue
+        fi
+
+        # Defensive parse: a malformed ledger is logged + counted as an
+        # error but does not abort the sweep. A failed parse typically means
+        # a partial write — leaving the file in place is the safe default.
+        if ! p=$(jq -r '(.provider // "")' "$f" 2>/dev/null); then
+            log "parse-failed: $f (unreadable ledger, leaving in place)"
+            errors=$((errors + 1))
+            continue
+        fi
+        m=$(jq -r '(.model // "")' "$f" 2>/dev/null || echo "")
+        if [[ -z "$p" || -z "$m" || "$p" == "test" ]]; then
+            continue
+        fi
+
+        if ! reason=$(is_corpse "$f"); then
+            continue
+        fi
+        candidates=$((candidates + 1))
+
+        if (( DRY_RUN )); then
+            log "DRY-RUN candidate: $p/$m ($reason)"
+            continue
+        fi
+
+        # Atomic move: rename on the same filesystem is atomic. A successful
+        # rename leaves no copy in the live roster; a failed rename leaves
+        # the live roster untouched. The same-named file at the destination
+        # (a previous partial run?) is overwritten by `mv -f` semantics
+        # implicit in `mv` — but since the source is unique under the
+        # sanitised-name contract, a same-name collision implies a manual
+        # duplicate, which is exactly the case we want to overwrite.
+        if mv "$f" "$retired_dir/$base" 2>/dev/null; then
+            log "RETIRED $p/$m -> $retired_dir/$base ($reason)"
+            retired=$((retired + 1))
+        else
+            log "RETIRE-FAILED $p/$m: mv returned non-zero (live roster unchanged)"
+            errors=$((errors + 1))
+        fi
+    done
+
+    # Always write the heartbeat, even on a no-op sweep. A clean run with
+    # retired_n=0 is a green tick (the bin did its job and found nothing).
+    if (( DRY_RUN )); then
+        log "DRY-RUN sweep: scanned=$scanned candidates=$candidates retired=0 errors=$errors"
+    else
+        log "sweep complete: scanned=$scanned candidates=$candidates retired=$retired errors=$errors (retirement dir=$retired_dir)"
+    fi
+
+    write_prom "$(now_epoch)" "$retired" "$scanned" "$candidates" "$errors"
+
+    # Loud failure: any error -> exit 1. A successful sweep with retired=0
+    # is a green tick (exit 0).
+    if (( errors > 0 )); then
+        return 1
+    fi
+    return 0
+}
+
+main "$@"

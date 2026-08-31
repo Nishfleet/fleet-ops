@@ -138,6 +138,31 @@ groups:
           summary: "fleet seat come-back release organ absent — no clean sweep in 2h"
           description: "fleet-seat-comeback-release has not written a clean (unstalled) sweep in over 2 hours (fleet-ops#2421). Repair worker: check the timer (fleet-seat-comeback-release.timer) is enabled and journalctl --user -u fleet-seat-comeback-release.service. The organ re-probes walled seats whose wall clock has passed and unwalls provably-usable ones; its death means released_n stays 0 again."
 
+      # fleet-ops#2469: daily corpse seat ledger retirement. A seat past the
+      # seat-dead threshold (consecutive_failure_count >= 25 OR
+      # quota_exhausted observed_at >= 24h old, fleet-ops#2145/#2415) is a
+      # terminal corpse. The retirement organ (fleet-seat-corpse-retire) is
+      # the lifecycle step that MOVES the corpse ledger out of the live
+      # roster (lanes/seats -> lanes/seats-corpse-retired-<ts>/) so the
+      # daily-digest, opus-heartbeat-gather seat_table, and any future
+      # capacity denominator stop counting it as live capacity. Without
+      # this organ the seat-avail SLO denominator is inflated by exactly
+      # the corpse count (live 2026-08-31: 28-seat roster, dead_n=1).
+      # 2 missed daily cycles (48h) before "dead" matches the
+      # baseline-delta/asset-census doctrine of two missed cycles. The bin
+      # writes fleet_seat_corpse_retire_last_run_seconds on every run
+      # (including no-op sweeps), so absent() catches a missing file or a
+      # stopped timer.
+      - alert: FleetSeatCorpseRetireAbsent
+        expr: absent(fleet_seat_corpse_retire_last_run_seconds) or fleet_seat_corpse_retire_last_run_seconds == 0 or (time() - fleet_seat_corpse_retire_last_run_seconds) > 172800
+        for: 2h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet seat corpse retirement organ absent — no sweep in 48h"
+          description: 'fleet-seat-corpse-retire has not written a sweep in over 48 hours (fleet-ops#2469). Repair worker: check the timer (fleet-seat-corpse-retire.timer) is enabled and journalctl --user -u fleet-seat-corpse-retire.service. The organ retires corpse seat ledgers (seat_dead=true with count >= 25, or quota_exhausted observed >= 24h old) out of the live roster so the seat-avail SLO denominator stops counting dead seats; its death lets corpses pile up in lanes/seats/ and inflate the daily-digest `Total seen` / opus-heartbeat seat_table `n` / any future capacity denominator. The seat-health ledger lives at /home/nish/workspaces/agent-state/lanes/seats; corpses that should be retired live there as seat_dead=true with consecutive_failure_count >= 25.'
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h
