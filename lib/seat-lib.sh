@@ -3439,7 +3439,13 @@ is_quota_cap_error() {
     fi
     # Hard-cap keyword alone (e.g. "weekly Clinepass limit") with no window
     # text still qualifies: the caller falls back to the provider default.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR' <<<"$combined"; then
+    # FreeUsageLimitError (OpenCode free tiers) and a bare HTTP 429 status
+    # are also hard caps — the provider has explicitly rate-limited the
+    # model to zero usable capacity until its own reset. Without this,
+    # is_quota_cap_error matched "rate limit exceeded" in stage 1 but failed
+    # stage 2 (no window text, no weekly/daily keyword), so the seat was
+    # never benched and workers re-picked it every intake tick (fleet-ops#650/#661).
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError' <<<"$combined"; then
         return 0
     fi
     return 1

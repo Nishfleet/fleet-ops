@@ -821,6 +821,20 @@ rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_quota: empty input must NOT match"
 
+# 9b-mimo: OpenCode FreeUsageLimitError (HTTP 429, no reset window in body)
+# (fleet-ops#650/#661). is_quota_cap_error stage 1 matches "rate limit exceeded"
+# but stage 2a finds no reset-window text and stage 2b has no hard-cap keyword,
+# so the seat was NOT benched — workers re-picked it every intake tick.
+# The FreeUsageLimitError type name is a hard-cap signal: the provider has
+# explicitly exhausted the model's free quota. The writer falls back to the
+# provider default (quota_bench_default_s=900 on opencode).
+mimo_err='429: {"type":"FreeUsageLimitError","message":"Error from provider (Console): Rate limit exceeded. Please try again later."}'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "$mimo_err" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: FreeUsageLimitError (429, no window) must match -> provider default fallback (rc=$rc)"
+
 # 9b-devin: Devin "message rate limit" + "reset in 35 minutes" (fleet-ops#381).
 # Live miss 2026-08-26: is_quota_cap_error required "rate limit exceeded" and
 # _parse_reset_window_s required "resets in 35m", so systemd Restart burned
