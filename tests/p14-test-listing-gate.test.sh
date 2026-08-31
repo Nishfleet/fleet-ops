@@ -89,6 +89,11 @@ live_skip[opus-heartbeat-thorough-mode.test.sh]=1
 # opus-heartbeat-gather launcher (/home/nish/.local/libexec/), which is
 # absent on hosted runners. Live/VPS-only — cannot run in hosted CI.
 live_skip[opus-heartbeat-seat-comeback.test.sh]=1
+# fleet-ops#2517: opus-heartbeat-fabricated-transcript-gate reads VPS-local
+# state (the launcher binary at /home/nish/.local/libexec/opus-heartbeat
+# and the judge prompt at /home/nish/.local/share/opus-heartbeat/
+# judge-prompt.md). Live/VPS-only — cannot run in hosted CI.
+live_skip[opus-heartbeat-fabricated-transcript-gate.test.sh]=1
 # fleet-ops#1498: memory-index-autocompact-migrated runs `systemd-analyze verify`
 # on a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
 # (VPS-only), absent on hosted runners. Live/VPS-only — cannot run in hosted CI.
