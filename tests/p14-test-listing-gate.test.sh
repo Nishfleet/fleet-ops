@@ -338,6 +338,25 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-protected-verifie
   || fail "pi-intake-tick-protected-verifier-vacation.test.sh must not be a known orphan (fleet-ops#1165)"
 ok "pi-intake-tick-protected-verifier-vacation.test.sh is pinned in the P14 reachable set (fleet-ops#1165)"
 
+# fleet-ops#2462: hard-pin the host line for fleet-ops-2462-claim-cap. The
+# test landed on main in PR #2482 (the #2462 fix PR) without a ci.yml listing
+# and was hosted from tests/ci-standards-audit.test.sh (already in P14) —
+# the worker App cannot push .github/workflows/** so the host was the only
+# path. P14 ran red on "1 test file(s) are neither in ci.yml, hosted by a
+# listed test, live/destructive, nor a known orphan:
+# fleet-ops-2462-claim-cap.test.sh". This named pin is class-prevention so
+# a future drop of the host line cannot park the test on known_orphans to
+# silence the generic $bad[] message — it fails by name here first, same
+# shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2462-claim-cap\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-ops-2462-claim-cap.test.sh (fleet-ops#2462)"
+[[ -n "${reachable[fleet-ops-2462-claim-cap.test.sh]:-}" ]] \
+  || fail "fleet-ops-2462-claim-cap.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2462)"
+[[ -z "${known_orphan_set[fleet-ops-2462-claim-cap.test.sh]:-}" ]] \
+  || fail "fleet-ops-2462-claim-cap.test.sh must not be a known orphan (fleet-ops#2462)"
+ok "fleet-ops-2462-claim-cap.test.sh is pinned in the P14 reachable set (fleet-ops#2462)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob

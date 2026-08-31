@@ -322,3 +322,11 @@ bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
 # here alongside its sibling unit-escalation-write-* tests so P14 runs it
 # without a workflow-file edit.
 bash "$here/unit-escalation-write-journal-evidence.test.sh"
+
+# fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
+# + systemic-failure skip (.systemic marker when every tried seat is benched).
+# Hosts the 11-test gate (MAX_RECLAIMS env var, tick read path, skip+escalate,
+# .systemic marker, reaper increment+reset, run init+reset, shellcheck) so
+# P14 covers it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/fleet-ops-2462-claim-cap.test.sh"
