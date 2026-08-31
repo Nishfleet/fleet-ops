@@ -637,6 +637,87 @@ set -e
   || fail "corpse: stale corpse must be in the excluded set (got: $out)"
 ok "corpse: stale seat_dead=true corpse stays in the excluded set (no resurrection)"
 
+# --- invariant 7c: transient-dead seat is RE-ADMITTED by a healthy
+# observation (fleet-ops#2531, 2026-08-31) --------------------------------
+# 7b proves a corpse is TERMINALLY excluded. This is the complementary
+# half: the terminal flag must not be STICKY for a seat that was marked
+# dead from a TRANSIENT overload. Live case: a human hand-marked
+# commandcode/poolside/laguna-s-2.1-free seat_dead=true after 4x 503
+# overloaded_error (06:50Z, source manual_override_after_repeated_503,
+# no wall clock) — the terminal flag applied to a transient condition.
+# seat_usable must refuse it while dead, but a fresh healthy observation
+# (200, count 0, seat_dead false — the 12:29:26Z live-probe shape that
+# revived it via the seat-health extension) must re-admit the seat onto
+# the ladder. The literal incident-time ledger shapes are used.
+p_scratch="$scratch/2531-poolside"
+mkdir -p "$p_scratch/ledger"
+cat >"$p_scratch/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": {
+      "models": [ { "id": "poolside/laguna-s-2.1-free", "cost": { "input": 0 } } ]
+    }
+  }
+}
+JSON
+cat >"$p_scratch/seat-caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": { "cap": 2, "class": "free", "models": { "poolside/laguna-s-2.1-free": 2 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$p_scratch/models.json"
+export SEAT_CAPS_JSON="$p_scratch/seat-caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$p_scratch/ledger"
+export PI_PACKET_STATE="$p_scratch/state"
+# The literal 2026-08-31T06:50:00.000Z dead shape (live seat ledger).
+jq -n '{provider:"commandcode",model:"poolside/laguna-s-2.1-free",http_status:503,retry_after:null,health_class:"unhealthy",retryable:true,seat_dead:true,poison_ladder:false,observed_at:"2026-08-31T06:50:00.000Z",source:"manual_override_after_repeated_503",failure_mode:"overloaded_error",usable_at:null,consecutive_failure_count:4}' \
+  > "$p_scratch/ledger/commandcode__poolside_laguna-s-2.1-free.json"
+# 7c.1 dead shape -> seat_usable refuses (terminal exclusion, as for a corpse).
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "commandcode" "poolside/laguna-s-2.1-free" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] \
+  || fail "2531-poolside: seat_usable must refuse the hand-marked seat_dead=true shape (got usable rc=0)"
+ok "2531-poolside: seat_usable refuses the transient-dead manual_override shape"
+# 7c.2 pick_seat must NOT hand the dead lane out while it is dead.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] \
+  || fail "2531-poolside: pick_seat must return no seat while the only lane is seat_dead=true (got rc=0 out=$out)"
+grep -qi "poolside" <<<"$out" \
+  && fail "2531-poolside: pick_seat must not hand out a seat_dead=true lane (got: $out)"
+ok "2531-poolside: pick_seat refrains while the lane is seat_dead=true (no usable seat)"
+# 7c.3 the healthy observation lands (seat-health extension, live probe —
+# the literal 2026-08-31T12:29:26.902Z shape) and the lane is RE-ADMITTED.
+jq -n '{provider:"commandcode",model:"poolside/laguna-s-2.1-free",http_status:200,retry_after:null,health_class:"healthy",retryable:false,seat_dead:false,poison_ladder:false,observed_at:"2026-08-31T12:29:26.902Z",source:"after_provider_response",failure_mode:"none",usable_at:null,consecutive_failure_count:0}' \
+  > "$p_scratch/ledger/commandcode__poolside_laguna-s-2.1-free.json"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "commandcode" "poolside/laguna-s-2.1-free" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] \
+  || fail "2531-poolside: seat_usable must re-admit after the healthy observation (got rc=$rc)"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] \
+  || fail "2531-poolside: pick_seat must pick the revived lane (got rc=$rc out=$out)"
+[[ "$out" == "commandcode	poolside/laguna-s-2.1-free" ]] \
+  || fail "2531-poolside: expected the revived lane picked, got: $out"
+ok "2531-poolside: healthy observation re-admits the transient-dead lane (pick_seat picks it)"
+# Restore the file-level fixtures for the invariants that follow.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+unset PI_SEAT_HEALTH_LEDGER_DIR PI_PACKET_STATE
+
 # --- invariant 8: credential precheck (fleet-ops#36) -----------------------
 # An allowlisted provider (cap>0, model cap>0) is STILL rejected when its
 # apiKey resolves to empty — defence in depth on top of the cap map. Prove:
