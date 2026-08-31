@@ -184,6 +184,17 @@
         "systemd/fleet-seat-comeback-release.service",
         "systemd/fleet-seat-comeback-release.timer"
       ]
+    },
+    {
+      "name": "fleet-aeo-probe",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_aeo_probe_last_run_seconds",
+      "absent_alert": "FleetAeoProbeAbsent",
+      "files": [
+        "libexec/fleet-aeo-probe.py",
+        "systemd/fleet-aeo-probe.service",
+        "systemd/fleet-aeo-probe.timer"
+      ]
     }
   ]
 }

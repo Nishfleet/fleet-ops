@@ -775,3 +775,25 @@ groups:
         annotations:
           summary: "weekly baseline-delta strangeness pass has not run in 14+ days"
           description: "Repair worker: fleet_baseline_delta_last_run_seconds is absent or older than 14d (two weekly timer cycles). fleet-baseline-delta (#1151) queries Prometheus for every fleet_* and key node_* series, compares this week vs a trailing 4-week median+MAD baseline, and writes the ranked top-20 strangeness report the Weekly Fleet Review reads; a dead job means week-over-week anomalies are invisible to the review. Check journalctl --user -u fleet-baseline-delta.service and systemctl --user list-timers fleet-baseline-delta.timer. Helper: /home/nish/.local/libexec/fleet-baseline-delta.py. fleet-ops#1151."
+
+  - name: fleet_aeo_probe_supply
+    rules:
+      # fleet-ops#1236 / #1010: weekly AEO visibility probe for 0509. The
+      # probe writes fleet_aeo_probe_last_run_seconds to
+      # /var/lib/prometheus/node-exporter/fleet-aeo.prom on every completed
+      # run (missing API seats skip the query but still land the heartbeat),
+      # so this rule fires only when the weekly timer stops. 14d is two
+      # missed weekly timer cycles (Sun 03:30 IST), matching the
+      # baseline-delta/asset-census doctrine of two missed cycles before
+      # "dead". severity: critical because a dead probe makes 0509's
+      # search-visibility signal (vs StockX/GOAT) go dark with no alert —
+      # the exact class that took down quality-research-weekly on 2026-08-30.
+      - alert: FleetAeoProbeAbsent
+        expr: absent(fleet_aeo_probe_last_run_seconds) or (time() - fleet_aeo_probe_last_run_seconds) > 1209600
+        for: 15m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "weekly AEO probe has not run in 14+ days"
+          description: "Repair worker: fleet_aeo_probe_last_run_seconds is absent or older than 14d (two weekly timer cycles). The AEO probe (#1236) is 0509's outermost search-visibility line — it proves 0509 ranks for money-queries against StockX/GOAT and feeds the weekly senior conference; a dead probe goes dark silently, so the repair rail must resurrect fleet-aeo-probe.timer. Check journalctl --user -u fleet-aeo-probe.service and systemctl --user list-timers fleet-aeo-probe.timer. Helper: /home/nish/.local/libexec/fleet-aeo-probe.py. fleet-ops#1236."
