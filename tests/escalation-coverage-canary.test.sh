@@ -1174,6 +1174,11 @@ bash "$here/fleet-resilience-drill.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-escalation-completion.test.sh"
 
+# fleet-ops#2444: quality-SLO scoreboard recompute-on-tick + >24h staleness
+# guard. Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/quality-slo-staleness.test.sh"
+
 # fleet-ops#468/#1610: alert-repair COMPLETION canary (hop clocks + stall
 # ladder + bounded verify timeout so a verify hop cannot hold the chain open
 # indefinitely). Invoked from this CI-listed file so hosted runners run it
