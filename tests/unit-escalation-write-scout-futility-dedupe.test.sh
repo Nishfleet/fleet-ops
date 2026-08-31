@@ -142,4 +142,44 @@ export GH_STUB_HAS_FUTILITY=1
 "$writer" "fleet-heartbeat.service" >/dev/null 2>&1
 expect_written "fleet-heartbeat.service" "scenario 6 (non-scout unit unaffected)"
 
-echo "ALL OK: unit-escalation-write scout-futility dedupe (6 scenarios)"
+# Scenario 7: scout in provider-wall crash loop (consecutive_wall>=N) + open
+# marker issue -> SKIP (same famine class, deduped like green-and-empty).
+printf 'consecutive_dry=0\nconsecutive_wall=3\n' > "$FUTDIR/0509.state"
+export GH_STUB_HAS_FUTILITY=1
+rm -f "$AS/STOP-REASON.json"
+expect_skipped "pi-scout@0509.service" "scenario 7 (wall-crash loop, consecutive_wall>=N, marker open)"
+
+# Scenario 8: scout-repair in provider-wall crash loop -> SKIP (repair twin).
+rm -f "$AS/STOP-REASON.json"
+expect_skipped "pi-scout-repair@0509.service" "scenario 8 (wall-crash repair twin)"
+
+# Scenario 9: scout, consecutive_wall>=N, but NO open marker issue -> WRITE
+# (fail-open: no marker issue means escalation hasn't fired yet).
+rm -f "$AS/STOP-REASON.json"
+unset GH_STUB_HAS_FUTILITY
+"$writer" "pi-scout@0509.service" >/dev/null 2>&1
+expect_written "pi-scout@0509.service" "scenario 9 (wall-crash, no open marker still escalates)"
+
+# Scenario 10: scout, consecutive_wall below threshold (0) + open marker ->
+# WRITE (wall-crash not tripped, not the same famine).
+rm -f "$AS/STOP-REASON.json"
+printf 'consecutive_dry=0\nconsecutive_wall=0\n' > "$FUTDIR/0509.state"
+export GH_STUB_HAS_FUTILITY=1
+"$writer" "pi-scout@0509.service" >/dev/null 2>&1
+expect_written "pi-scout@0509.service" "scenario 10 (wall-crash below threshold still escalates)"
+
+# Scenario 11: missing consecutive_wall field + dry>=N + marker -> SKIP
+# (backward compat: old state file without consecutive_wall should still
+# dedupe on consecutive_dry).
+rm -f "$AS/STOP-REASON.json"
+printf 'consecutive_dry=14\n' > "$FUTDIR/0509.state"
+"$writer" "pi-scout@0509.service" >/dev/null 2>&1
+expect_skipped "pi-scout@0509.service" "scenario 11 (missing consecutive_wall field, dry>=N dedupes)"
+
+# Scenario 12: scout, BOTH counters >= N (corner case) + marker -> SKIP.
+rm -f "$AS/STOP-REASON.json"
+printf 'consecutive_dry=5\nconsecutive_wall=5\n' > "$FUTDIR/0509.state"
+export GH_STUB_HAS_FUTILITY=1
+expect_skipped "pi-scout@0509.service" "scenario 12 (both counters >= N, marker open)"
+
+echo "ALL OK: unit-escalation-write scout-futility dedupe (12 scenarios)"
