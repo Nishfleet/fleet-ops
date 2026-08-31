@@ -182,6 +182,8 @@ grep -qF 'probe-*.service' "$unit_write" \
   || fail "unit-escalation-write: must exclude probe-*.service (fleet-ops#1526 live-drill scaffolding)"
 grep -qF 'multi-*-sink.service' "$unit_write" \
   || fail "unit-escalation-write: must exclude multi-*-sink.service (fleet-ops#1526 live-drill scaffolding)"
+grep -qF 'pi-issue@*.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude pi-issue@*.service (#2133/#2475 amplifier: pi-issue workers have own failure handling via OnFailure=pi-issue-failed@%i)"
 ok "unit-escalation-write self-trigger guard"
 
 # 12. systemd-analyze verify on the unit files (.service, .path, .timer).
