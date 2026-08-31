@@ -60,13 +60,14 @@ fi
 # resurrection-plane stubs the drill DELIBERATELY SIGKILLs to prove
 # Restart=always; that intentional kill is the drill working, not a fault
 # (a real drill failure escalates normally via the drill unit itself).
-# notify-probe.service*/notify-probe.onfail.service are local OnFailure-chain
-# test probes (systemd *does not* let a drop-in clear a lower-priority
-# OnFailure= — it is append-only, proven 2026-08-30) whose deliberate
-# ExecStart=/bin/false failure is the probe test itself, not a fault; the
-# probe's own onfail handler is the assertion sink.
+# probe-<n>.service / probe-<n>a.service / probe-<n>b.service / multi-<n>-sink.service
+# are the fleet-ops#1526 live-drill scaffolding (deliberate
+# ExecStart=/bin/false probes that empirically test the OnFailure= chain,
+# MONITOR_UNIT delivery, and the multi-source MONITOR_UNIT-absent shape).
+# Their failure is the probe test itself, not a fault; the probe's own
+# onfail handler is the assertion sink.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|multi-*-sink.service)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger)" >&2
     exit 0
     ;;
