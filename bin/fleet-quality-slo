@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# fleet-quality-slo — computed quality scoreboard (fleet-ops#456).
+#
+# Existing tick step (fleet-heartbeat-tier1). No new scheduler.
+# Reads GitHub + journals, never agent self-scores. Writes a snapshot to
+# agent-state, renders it for conference packets, and on FAIL files an
+# escalate-senior finding and comments loop-reopen on fleet-ops#180.
+#
+# Exit 0: snapshot written (PASS or FAIL verdict).
+# Exit 1: generator broken or a primary metric silently stopped computing.
+# Exit 2: usage / missing library.
+#
+# Environment seams (tests):
+#   FLEET_QUALITY_SLO_EVENTS     events JSON (skip live gh)
+#   FLEET_QUALITY_SLO_DIR        snapshot directory
+#   FLEET_QUALITY_SLO_LIB        lib/quality-slo.py
+#   FLEET_QUALITY_SLO_NOW        ISO timestamp
+#   FLEET_QUALITY_SLO_FILE       1 (default) file issues; 0 skip gh writes
+#   FLEET_QUALITY_SLO_REPO       default Nishfleet/fleet-ops
+#   FLEET_QUALITY_SLO_LOOP       default 180
+#   FLEET_HEARTBEAT_TRIAGE       triage file
+#   AGENT_STATE                  /home/nish/workspaces/agent-state
+#   GH                           gh binary
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+LIB="${FLEET_QUALITY_SLO_LIB:-$FLEET_OPS_REPO/lib/quality-slo.py}"
+if [[ ! -f "$LIB" && -f "${HOME}/.local/lib/pi-packet/quality-slo.py" ]]; then
+    LIB="${HOME}/.local/lib/pi-packet/quality-slo.py"
+fi
+if [[ ! -f "$LIB" ]]; then
+    printf 'fleet-quality-slo: library missing: %s\n' "$LIB" >&2
+    exit 2
+fi
+
+AGENT_STATE="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+STATE_DIR="${FLEET_QUALITY_SLO_DIR:-$AGENT_STATE/quality-slo}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AGENT_STATE/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_QUALITY_SLO_REPO:-Nishfleet/fleet-ops}"
+LOOP_ISSUE="${FLEET_QUALITY_SLO_LOOP:-180}"
+FILE_ISSUES="${FLEET_QUALITY_SLO_FILE:-1}"
+NOW="${FLEET_QUALITY_SLO_NOW:-}"
+EVENTS_FILE="${FLEET_QUALITY_SLO_EVENTS:-}"
+# fleet-ops#2444: a snapshot older than this ceiling means the fleet was
+# silently serving stale quality numbers. 86400 = 24h. Exposed as an env
+# seam so tests can shrink it.
+STALE_MAX_AGE="${FLEET_QUALITY_SLO_STALE_MAX_AGE:-86400}"
+PROM_FILE="${FLEET_QUALITY_SLO_PROM:-/var/lib/prometheus/node-exporter/fleet-quality-slo.prom}"
+
+SIGNAL="signal: quality-slo/regression"
+LOOP_MARKER="loop-reopen: quality-slo"
+
+log() {
+    printf '[%s] [fleet-quality-slo] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+mkdir -p "$STATE_DIR"
+snap="$STATE_DIR/snapshot.json"
+prev="$STATE_DIR/previous.json"
+work="$(mktemp)"
+trap 'rm -f "$work"' EXIT INT TERM
+
+if [[ -z "$EVENTS_FILE" ]]; then
+    EVENTS_FILE="$STATE_DIR/events.json"
+    python3 - "$EVENTS_FILE" "$STATE_DIR/verdicts.jsonl" <<'PY'
+import json, os, sys
+path, verdicts_path = sys.argv[1], sys.argv[2]
+verdicts = []
+if os.path.isfile(verdicts_path):
+    with open(verdicts_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                verdicts.append(row)
+sidecar = os.path.join(os.path.dirname(path), "sidecar.json")
+extra = {}
+if os.path.isfile(sidecar):
+    with open(sidecar, encoding="utf-8") as fh:
+        try:
+            loaded = json.load(fh)
+        except json.JSONDecodeError:
+            loaded = {}
+    if isinstance(loaded, dict):
+        extra = loaded
+events = {
+    "window_days": extra.get("window_days", 14),
+    "conference_verdicts": extra.get("conference_verdicts", verdicts),
+    "merges": extra.get("merges", []),
+    "auto_reverts": extra.get("auto_reverts", []),
+    "defect_issues": extra.get("defect_issues", []),
+    "file_churn": extra.get("file_churn", {}),
+    "drills": extra.get("drills", {}),
+    "canary_regressions": extra.get("canary_regressions"),
+    "scout": extra.get("scout", {}),
+    "throughput": extra.get("throughput", {}),
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(events, fh)
+PY
+    # Overlay live GitHub counts when gh is available. A gh miss stays
+    # sidecar/empty rather than crashing the tick into silence.
+    if command -v "$GH" >/dev/null 2>&1; then
+        merges_json="$STATE_DIR/gh-merges.json"
+        if "$GH" pr list -R "$REPO" --state merged --limit 100 \
+            --json number,title,headRefName,mergedAt >"$merges_json" 2>/dev/null; then
+            python3 - "$EVENTS_FILE" "$merges_json" <<'PY'
+import json, sys
+events_path, merges_path = sys.argv[1], sys.argv[2]
+with open(events_path, encoding="utf-8") as fh:
+    events = json.load(fh)
+with open(merges_path, encoding="utf-8") as fh:
+    prs = json.load(fh)
+if not isinstance(prs, list):
+    prs = []
+merges = []
+reverts = []
+for pr in prs:
+    if not isinstance(pr, dict):
+        continue
+    title = str(pr.get("title") or "")
+    head = str(pr.get("headRefName") or "")
+    if head.startswith("revert/") or title.startswith("Revert ") or title.lower().startswith("auto-revert"):
+        reverts.append(pr)
+    else:
+        merges.append(pr)
+if not events.get("merges"):
+    events["merges"] = merges
+if not events.get("auto_reverts"):
+    events["auto_reverts"] = reverts
+with open(events_path, "w", encoding="utf-8") as fh:
+    json.dump(events, fh)
+PY
+        else
+            log "WARN: gh pr list failed; using sidecar/empty events"
+        fi
+    fi
+fi
+
+[[ -f "$EVENTS_FILE" ]] || {
+    loud "QUALITY-SLO-BROKEN" "events file missing: $EVENTS_FILE"
+    exit 1
+}
+
+# fleet-ops#2444: before recomputing, if the pre-run snapshot is already
+# older than the ceiling, the fleet HAS been serving stale numbers. Record
+# it loudly so it is never silent, then let the recompute heal it this tick.
+if [[ -f "$snap" ]]; then
+    pre_stale="$(python3 "$LIB" stale --snapshot "$snap" \
+        --max-age-seconds "$STALE_MAX_AGE" 2>/dev/null || true)"
+    if jq -e '.stale == true' <<<"$pre_stale" >/dev/null 2>&1; then
+        pre_age="$(jq -r '.age_seconds // "?"' <<<"$pre_stale" 2>/dev/null || echo '?')"
+        loud "QUALITY-SLO-STALE" "pre-run snapshot ${pre_age}s old (ceiling ${STALE_MAX_AGE}s) — stale numbers were served; recomputing (fleet-ops#2444)"
+    fi
+fi
+
+compute_args=(python3 "$LIB" compute --events "$EVENTS_FILE")
+if [[ -f "$snap" ]]; then
+    cp -a "$snap" "$prev"
+    compute_args+=(--previous "$prev")
+fi
+if [[ -n "$NOW" ]]; then
+    compute_args+=(--now "$NOW")
+fi
+
+if ! "${compute_args[@]}" >"$work"; then
+    loud "QUALITY-SLO-BROKEN" "compute failed"
+    exit 1
+fi
+
+mv "$work" "$snap"
+trap - EXIT INT TERM
+
+# fleet-ops#2444: export when the snapshot was last computed so a dead
+# recompute path is loud (absent() / >24h alert), never silently serving
+# old numbers. Written only after a successful compute (fresh snapshot).
+if command -v jq >/dev/null 2>&1; then
+    last_epoch=0
+    comp="$(jq -r '.computed_at // empty' "$snap" 2>/dev/null || true)"
+    if [[ -n "$comp" ]]; then
+        last_epoch="$(date -u -d "$comp" +%s 2>/dev/null || echo 0)"
+    fi
+    if [[ "$last_epoch" != "0" ]]; then
+        if mkdir -p "$(dirname "$PROM_FILE")" 2>/dev/null \
+            && printf '%s\n' \
+                '# HELP fleet_quality_slo_last_computed_seconds Epoch time the quality-SLO snapshot was last computed (fleet-ops#2444).' \
+                '# TYPE fleet_quality_slo_last_computed_seconds gauge' \
+                "fleet_quality_slo_last_computed_seconds $last_epoch" > "$PROM_FILE" 2>/dev/null; then
+            log "24h staleness guard armed: $PROM_FILE (last_computed=$last_epoch)"
+        else
+            log "WARN: could not write prom staleness file $PROM_FILE"
+        fi
+    fi
+fi
+
+stale_args=(python3 "$LIB" stale --snapshot "$snap")
+if [[ -n "$NOW" ]]; then
+    stale_args+=(--now "$NOW")
+fi
+stale_json=""
+stale_rc=0
+set +e
+stale_json=$("${stale_args[@]}" 2>/dev/null)
+stale_rc=$?
+set -e
+if [[ "$stale_rc" -ne 0 ]]; then
+    loud "QUALITY-SLO-STALE" "a primary metric stopped being computed: $stale_json"
+    if [[ "$FILE_ISSUES" == "1" ]]; then
+        marker="signal: quality-slo/stale"
+        existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+            --json number,body 2>/dev/null \
+            | python3 -c 'import json,sys; m=sys.argv[1]; data=json.load(sys.stdin)
+print(next((str(i.get("number","")) for i in data if m in str(i.get("body") or "")),""))' \
+            "$marker" || true)
+        if [[ -z "$existing" ]]; then
+            "$GH" issue create -R "$REPO" \
+                --title "quality-slo: a primary metric stopped being computed" \
+                --body "A quality metric silently stopped being computed.
+
+${stale_json}
+
+${marker}
+" >/dev/null 2>&1 || log "WARN: gh issue create failed for stale"
+        else
+            log "dedup: open $REPO#$existing already carries $marker"
+        fi
+    fi
+    exit 1
+fi
+
+verdict=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("cycle",{}).get("verdict",""))' "$snap")
+reasons=$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("cycle",{}).get("reasons") or []))' "$snap")
+
+if [[ "$verdict" == "FAIL" ]]; then
+    loud "QUALITY-SLO-FAIL" "cycle verdict FAIL: $reasons"
+    if [[ "$FILE_ISSUES" == "1" ]]; then
+        existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+            --json number,body 2>/dev/null \
+            | python3 -c 'import json,sys; m=sys.argv[1]; data=json.load(sys.stdin)
+print(next((str(i.get("number","")) for i in data if m in str(i.get("body") or "")),""))' \
+            "$SIGNAL" || true)
+        body="Quality cycle FAIL (fleet-ops#456).
+
+Primary metric regression or baseline miss. Throughput cannot override.
+
+${reasons}
+
+Reopens the gap-closure loop (fleet-ops#${LOOP_ISSUE}).
+
+${SIGNAL}
+"
+        if [[ -z "$existing" ]]; then
+            if "$GH" issue create -R "$REPO" --label escalate-senior \
+                --title "quality-slo regression: cycle FAIL" \
+                --body "$body" >/dev/null 2>&1; then
+                log "filed quality-slo regression"
+            else
+                # Label may be missing in a fixture repo; retry unlabeled.
+                "$GH" issue create -R "$REPO" \
+                    --title "quality-slo regression: cycle FAIL" \
+                    --body "${body}
+label: escalate-senior
+" >/dev/null 2>&1 || log "WARN: gh issue create failed for regression"
+            fi
+        else
+            log "dedup: open $REPO#$existing already carries $SIGNAL"
+        fi
+        loop_body="quality-slo-verdict: FAIL
+
+${LOOP_MARKER}
+
+${reasons}
+"
+        "$GH" issue comment "$LOOP_ISSUE" -R "$REPO" --body "$loop_body" \
+            >/dev/null 2>&1 || log "WARN: could not comment on #$LOOP_ISSUE"
+        "$GH" issue reopen "$LOOP_ISSUE" -R "$REPO" >/dev/null 2>&1 || true
+    fi
+    log "cycle FAIL recorded; tick stays up (finding is the page)"
+    exit 0
+fi
+
+loud "QUALITY-SLO-PASS" "cycle verdict PASS"
+exit 0

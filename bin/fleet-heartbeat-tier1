@@ -1829,7 +1829,39 @@ else
 fi
 
 # ============================================================================
-# 19. PER-ROLE QUALITY-GATE AUDIT (fleet-ops#457)
+# 19. QUALITY SLO SCOREBOARD — recompute + 24h staleness guard (fleet-ops#2444)
+# ============================================================================
+# Every tick, recompute the north-star quality snapshot from GitHub + journals
+# (never agent self-scores) so the scoreboard is never 4-days stale while a
+# live ratio alert needs it. A pre-run snapshot older than the 24h ceiling is
+# LOUD (stale numbers were served) before the recompute heals it. The
+# generator exports fleet_quality_slo_last_computed_seconds; a dead recompute
+# path trips the FleetQualitySloStale absent()/>24h alert (config/fleet_rules.yml)
+# instead of silently serving old numbers. No new scheduler — this is the
+# existing heartbeat tick. The generator's own cycle FAIL files escalate-senior
+# and is the page (tick stays up); a broken generator fails this block.
+QUALITY_SLO_BIN="${FLEET_QUALITY_SLO:-/home/nish/.local/bin/fleet-quality-slo}"
+quality_slo_rc=0
+if require_manifest_helper "$QUALITY_SLO_BIN"; then
+    log "19. quality-slo scoreboard starting"
+    if "$QUALITY_SLO_BIN"; then
+        log "19. quality-slo scoreboard complete"
+    else
+        quality_slo_rc=$?
+        log "19. quality-slo generator FAILED (rc=$quality_slo_rc) — metric stopped computing or compute broke; unit will land in --state=failed (fleet-ops#2444)"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "quality-slo missing at $QUALITY_SLO_BIN — MANIFEST dest; silent skip would leave the north star scoreboard stale (fleet-ops#2444)"
+        quality_slo_rc=1
+    else
+        log "19. quality-slo missing at $QUALITY_SLO_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
+# 20. PER-ROLE QUALITY-GATE AUDIT (fleet-ops#457)
 # ============================================================================
 # Every role's output must pass a gate it cannot bypass. This mechanical
 # checker re-runs the catalog every tick so a new role cannot ship gateless.
@@ -1838,19 +1870,19 @@ fi
 ROLE_GATE_BIN="${FLEET_ROLE_GATE_AUDIT:-/home/nish/.local/bin/fleet-role-gate-audit}"
 role_gate_rc=0
 if [ -x "$ROLE_GATE_BIN" ]; then
-    log "19. role-gate audit starting"
+    log "20. role-gate audit starting"
     if "$ROLE_GATE_BIN"; then
-        log "19. role-gate audit complete"
+        log "20. role-gate audit complete"
     else
         role_gate_rc=$?
-        log "19. role-gate audit FAILED (rc=$role_gate_rc) — auditor broken; unit will land in --state=failed"
+        log "20. role-gate audit FAILED (rc=$role_gate_rc) — auditor broken; unit will land in --state=failed"
     fi
 else
-    log "19. role-gate audit missing at $ROLE_GATE_BIN — skip (not installed)"
+    log "20. role-gate audit missing at $ROLE_GATE_BIN — skip (not installed)"
 fi
 
 # ============================================================================
-# 20. RESEARCHER DISPATCH (fleet-ops#458)
+# 21. RESEARCHER DISPATCH (fleet-ops#458)
 # ============================================================================
 # Auditors judge the current bar. Researchers move the bar to the frontier.
 # No new scheduler: this tick evaluates named triggers and starts
@@ -1861,15 +1893,15 @@ fi
 RESEARCHER_DISPATCH_BIN="${FLEET_RESEARCHER_DISPATCH:-/home/nish/.local/bin/fleet-researcher-dispatch}"
 researcher_dispatch_rc=0
 if [ -x "$RESEARCHER_DISPATCH_BIN" ]; then
-    log "20. researcher dispatch starting"
+    log "21. researcher dispatch starting"
     if "$RESEARCHER_DISPATCH_BIN"; then
-        log "20. researcher dispatch complete"
+        log "21. researcher dispatch complete"
     else
         researcher_dispatch_rc=$?
-        log "20. researcher dispatch FAILED (rc=$researcher_dispatch_rc) — helper broken; unit will land in --state=failed"
+        log "21. researcher dispatch FAILED (rc=$researcher_dispatch_rc) — helper broken; unit will land in --state=failed"
     fi
 else
-    log "20. researcher dispatch missing at $RESEARCHER_DISPATCH_BIN — skip (not installed)"
+    log "21. researcher dispatch missing at $RESEARCHER_DISPATCH_BIN — skip (not installed)"
 fi
 
 # ============================================================================
@@ -2509,7 +2541,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -2572,6 +2604,9 @@ if [ "${opencode_m3_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${paid_flash_canary_rc:-0}" -ne 0 ]; then
     exit "$paid_flash_canary_rc"
+fi
+if [ "${quality_slo_rc:-0}" -ne 0 ]; then
+    exit "$quality_slo_rc"
 fi
 if [ "${role_gate_rc:-0}" -ne 0 ]; then
     exit "$role_gate_rc"

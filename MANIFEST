@@ -399,6 +399,8 @@ bin/fleet-gap-closure-conference /home/nish/.local/bin/fleet-gap-closure-confere
 bin/fleet-gap-closure-tally /home/nish/.local/bin/fleet-gap-closure-tally
 bin/fleet-gap-closure-drill /home/nish/.local/bin/fleet-gap-closure-drill
 bin/fleet-gap-closure-slo /home/nish/.local/bin/fleet-gap-closure-slo
+bin/fleet-quality-slo /home/nish/.local/bin/fleet-quality-slo
+lib/quality-slo.py /home/nish/.local/lib/pi-packet/quality-slo.py
 bin/fleet-gap-closure-auditor /home/nish/.local/bin/fleet-gap-closure-auditor
 bin/fleet-gap-closure-yield /home/nish/.local/bin/fleet-gap-closure-yield
 bin/fleet-gap-closure-order /home/nish/.local/bin/fleet-gap-closure-order
