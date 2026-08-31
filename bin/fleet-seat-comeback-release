@@ -82,6 +82,20 @@ STATE_FILE="${FLEET_SEAT_COMEBACK_STATE:-$HOME/.local/state/fleet-seat-comeback-
 PROM_FILE="${FLEET_SEAT_COMEBACK_PROM:-/var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom}"
 MIN_INTERVAL="${FLEET_SEAT_COMEBACK_MIN_INTERVAL_S:-900}"
 PROBE_TIMEOUT="${FLEET_SEAT_COMEBACK_TIMEOUT_S:-45}"
+# fleet-ops#2493: when a probe fails, the seat-health extension can only
+# re-anchor the wall clock if a real HTTP response arrived. A probe that
+# timed out (rc=124) or exited with a generic failure (rc=1) leaves the
+# ledger with a STALE wall clock in the past; the next 15-min tick finds
+# the same expired wall, probes again, fails again — an indefinite loop
+# that wastes probe budget and keeps the FleetSeatComebackOverdue metric
+# pending. Re-bench HERE on probe failure: advance usable_at/bench_until
+# to now + REBENCH_BACKOFF_S so the wall is in the future and the next
+# tick skips the seat until the new window passes. The next probe
+# (after the new window) either refreshes the wall (real response
+# -> extension re-anchors) or unwalls the seat (probe succeeds) or
+# re-benches again. Without this, a perpetually-failing seat burns a
+# slot every 15 min and the loud-stall check fires forever.
+REBENCH_BACKOFF_S="${FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S:-900}"
 NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
@@ -225,6 +239,78 @@ unwall_seat() {
     return 0
 }
 
+# Write a fresh bench for a seat whose probe failed. The probe-failed
+# branch of probe_seat logs "seat stays walled; the extension re-anchors
+# on the real response", but that re-anchor only fires when the probe
+# actually returned an HTTP response the extension could classify — a
+# timeout (rc=124) or a generic failure (rc=1) leaves the ledger with
+# a STALE wall clock in the past. Without re-benching, the next 15-min
+# tick finds the same expired wall, re-probes, re-fails, and the loop
+# runs forever (the loud-stall check fires every tick, the
+# FleetSeatComebackOverdue metric stays pending).
+#
+# Re-bench advances usable_at AND bench_until to now + REBENCH_BACKOFF_S
+# so the wall-in-future check above skips the seat on the next tick
+# (the only remaining throttle). The new ledger entry carries
+# source: "comeback_release_rebench" so the failure provenance is
+# distinguishable from a fresh provider-side failure (the next probe
+# after the new window either refreshes the wall or unwalls the seat
+# — a perpetual re-bench loop converges the same way a perpetual
+# probe-fail loop would, but at a slower cadence: 1 bench window per
+# failed probe instead of 1 probe every 15 min).
+#
+# Guarded: only writes if the current wall clock is STILL in the past
+# (a concurrent fresh provider failure that re-anchored to the future
+# must win). Merges consecutive_failure_count from the prior entry so
+# the count keeps climbing across re-benches and the corpse / quarantine
+# thresholds eventually engage on a chronically-walled seat.
+rebench_seat() {
+    local p="$1" m="$2" f="$3" wall_end we now_e now_utc bench_until usable_at
+    now_e=$(now_epoch)
+    now_utc=$(now_iso)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    if [[ -n "$we" ]] && (( we >= now_e )); then
+        log "skip rebench $p/$m: wall moved to the future ($wall_end) — concurrent failure re-anchored"
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would rebench $p/$m (write fresh bench, backoff=${REBENCH_BACKOFF_S}s)"
+        return 0
+    fi
+    bench_until=$(date -u -d "@$((now_e + REBENCH_BACKOFF_S))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    usable_at="$bench_until"
+    local prev_count=0
+    if [[ -f "$f" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+    local tmp="$f.$$.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg now "$now_utc" \
+        --arg bench "$bench_until" --arg usable "$usable_at" \
+        --argjson backoff "$REBENCH_BACKOFF_S" --argjson merged "$merged_count" \
+        '{provider:$provider, model:$model, http_status:null, retry_after:null,
+          health_class:"transient_fault", retryable:true, seat_dead:false,
+          poison_ladder:false, observed_at:$now, source:"comeback_release_rebench",
+          failure_mode:"comeback_rebench", usable_at:$usable, bench_until:$bench,
+          bench_window_s:$backoff, consecutive_failure_count:$merged}' \
+        > "$tmp" 2>/dev/null; then
+        log "rebench $p/$m: jq compose FAILED — bench NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! mv "$tmp" "$f" 2>/dev/null; then
+        log "rebench $p/$m: rename FAILED at $f — bench NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    log "REBENCHED $p/$m (fresh bench until $bench_until, backoff=${REBENCH_BACKOFF_S}s, count=$merged_count)"
+    return 0
+}
+
 # --- sweep -------------------------------------------------------------------
 main() {
     local now state probed_total released_total probed=0 released_this_run=0
@@ -303,9 +389,28 @@ main() {
             fi
         else
             ((probed++)) || true
-            # The extension re-anchors usable_at from the real response; if
-            # it does NOT (broken extension / unroutable provider), the seat
-            # stays expired and the stalled check below renders loud.
+            # fleet-ops#2493: re-bench HERE on probe failure. The comment
+            # above used to say "the extension re-anchors usable_at from
+            # the real response; if it does NOT (broken extension /
+            # unroutable provider), the seat stays expired and the stalled
+            # check below renders loud" — true for the loud signal, but
+            # the seat also stays overdue for the next 15-min tick,
+            # which re-probes the same stale wall and re-fails. Re-bench
+            # advances the wall clock to now + REBENCH_BACKOFF_S so the
+            # next tick skips the seat (wall-in-future check) until the
+            # new window passes. Without this, a chronically-walled seat
+            # burns a probe slot every 15 min and the overdue metric
+            # stays pending forever (the lived fleet-ops#2493 case:
+            # straitly/deepseek-v4-pro and opencode/mimo-v2.5-free both
+            # past usable_at, both re-probed-and-re-failed across many
+            # ticks). On the next tick after the re-bench, the wall-in-
+            # future check skips the seat; when the re-bench window
+            # expires, the next tick probes again. A successful probe
+            # then unwalls (the common recovery path); a failed probe
+            # re-benches again at the slower cadence. The loud-stall
+            # check below still fires when EVERY probe attempt keeps
+            # failing across re-bench windows (the genuine stuck case).
+            rebench_seat "$p" "$m" "$f" || true
         fi
         last_probe["$base"]="$(now_epoch)"
     done
