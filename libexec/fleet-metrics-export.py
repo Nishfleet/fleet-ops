@@ -332,13 +332,21 @@ SLO_DEFS_DEFAULT = Path(
 )
 SLO_DEFS_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/slo-definitions.json"
-)
+) 
 # fleet-waste-export writes fleet_waste_ratio here; the SLO emitter reads
 # the live value rather than recomputing it (single source of truth).
 WASTE_PROM = Path(
     os.environ.get(
         "FLEET_WASTE_OUT",
         "/var/lib/prometheus/node-exporter/fleet-waste.prom",
+    )
+)
+# fleet-completion-canary writes fleet_chain_repair_duration_seconds here;
+# the SLO emitter reads the live p95 value for chain_repair_latency.
+CHAIN_PROM = Path(
+    os.environ.get(
+        "FLEET_CHAIN_PROM",
+        "/var/lib/prometheus/node-exporter/fleet-chains.prom",
     )
 )
 # seat-caps.json is the source of truth for enrolled-seat count
@@ -1742,6 +1750,31 @@ def _read_waste_ratio():
     return None
 
 
+def _read_chain_repair_duration():
+    """Read the live fleet_chain_repair_duration_seconds gauge from fleet-chains.prom, or None.
+
+    fleet-completion-canary emits the p95 chain duration; the SLO emitter reads
+    its published value rather than recomputing it. Returns None when the prom
+    file is missing or the gauge is absent (e.g., a fresh install before the
+    completion canary has run once) — the chain_repair_latency SLO then reports
+    instrumented=0 for this tick.
+    """
+    try:
+        text = CHAIN_PROM.read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("fleet_chain_repair_duration_seconds "):
+            try:
+                return float(line.split()[-1])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
 def _enrolled_seat_providers():
     """Return the set of enrolled provider names (cap > 0 in seat-caps.json).
 
@@ -2077,9 +2110,17 @@ def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
             return None, False
         target = slo["target"]
         return (waste_ratio / target) if target > 0 else None, True
-    # chain_repair_latency / 0509_user_journey / digest_delivery: source
-    # metrics pending instrumentation (follow-up issues). Even if flagged
-    # instrumented=true in config, no live reader exists yet → not instrumented.
+    if sid == "chain_repair_latency":
+        # Gauge "below" SLO: compliance = p95_duration / target (>1 means over budget).
+        # Target is 1800 seconds (30 min). p95 comes from fleet-completion-canary.
+        chain_duration = _read_chain_repair_duration()
+        if chain_duration is None:
+            return None, False
+        target = slo["target"]
+        return (chain_duration / target) if target > 0 else None, True
+    # 0509_user_journey / digest_delivery: source metrics pending instrumentation
+    # (follow-up issues). Even if flagged instrumented=true in config, no live
+    # reader exists yet → not instrumented.
     return None, False
 
 
@@ -2087,10 +2128,11 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
     """Append the fleet_slo_* gauge family for every SLO in the config.
 
     Called from main() with the data it has already gathered. Reads
-    fleet-waste.prom and seat-caps.json for the two SLOs whose sources live
-    outside this exporter. Always emits the family (even on a missing
-    config — zeros with instrumented=0) so FleetSloMetricsAbsent never
-    false-fires on a config glitch; a missing config is logged to stderr.
+    fleet-waste.prom, fleet-chains.prom, and seat-caps.json for the SLOs
+    whose sources live outside this exporter. Always emits the family (even
+    on a missing config — zeros with instrumented=0) so FleetSloMetricsAbsent
+    never false-fires on a config glitch; a missing config is logged to
+    stderr.
     """
     sb = _slo_budget_mod()
     defs = _load_slo_defs()

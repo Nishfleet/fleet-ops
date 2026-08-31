@@ -740,6 +740,22 @@ groups:
           summary: "SLO waste_ratio over target — fleet waste ratio above 10% for 1h+"
           description: "WFR input: the waste_ratio SLO (fleet waste ≤ 10%) is over target. Read fleet_waste_runs{kind=...} and the per-lane fleet_waste_empty_runs_24h / fleet_waste_retries_24h families (fleet-ops#1211). WasteRatioRising is the trend sibling. fleet-ops#1291."
 
+      # --- chain_repair_latency: threshold-gauge SLO, target 1800s (max p95) ---
+      # Canonical threshold-window alert (burn-rate ratio model does not fit
+      # a single gauge). Fires when p95 alert-repair chain duration exceeds
+      # 30 min for a sustained window. Source metric is
+      # fleet_chain_repair_duration_seconds (p95 gauge from
+      # fleet-completion-canary).
+      - alert: FleetSloChainRepairLatencyOverTarget
+        expr: (fleet_slo_instrumented{slo="chain_repair_latency"} == 1) and (fleet_chain_repair_duration_seconds > 1800)
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO chain_repair_latency over target — p95 alert-repair chain duration above 30 min for 30m+"
+          description: 'WFR input: the chain_repair_latency SLO (p95 alert-repair chain duration ≤ 30 min) is over target. The p95 is computed from chain cycle times in fleet-completion-canary (fleet_chain_repair_duration_seconds). Check fleet_chain_cycle_seconds{stat="p95"} and the terminated chains ledger at agent-state/alert-repair/chains.terminated.jsonl. fleet-ops#2168.'
+
       # --- gh_rate_limit_headroom: threshold-gauge SLO, target 0.20 (min) ---
       # Fires when min(remaining/limit) across core/search/graphql drops
       # below 20% for 30m. The existing FleetGhRateLimitLow level alert and

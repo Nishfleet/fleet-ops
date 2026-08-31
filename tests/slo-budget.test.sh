@@ -121,6 +121,10 @@ m.SEAT_LEDGER = seat_dir
 wp = Path(scratch) / "fleet-waste.prom"
 wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
 m.WASTE_PROM = wp
+# Stub chain prom (fleet-ops#2168) for chain_repair_latency SLO
+cp = Path(scratch) / "fleet-chains.prom"
+cp.write_text("# HELP fleet_chain_repair_duration_seconds ...\n# TYPE fleet_chain_repair_duration_seconds gauge\nfleet_chain_repair_duration_seconds 1200\n")
+m.CHAIN_PROM = cp
 # Stub actions.log (empty) so per-alertname parser returns {}
 m.ACTIONS_LOG = Path(scratch) / "actions.log"
 m.ACTIONS_LOG.write_text("")
