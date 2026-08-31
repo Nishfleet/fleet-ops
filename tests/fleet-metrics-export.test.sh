@@ -768,3 +768,113 @@ PY
 
 # fleet-ops#1350: GitHub API rate-limit metrics + pi-intake sidecar.
 bash "$here/fleet-gh-rate-limit.test.sh" || fail "fleet-gh-rate-limit tests failed"
+
+# =========================================================================
+# 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy
+#     observation. The seat-health extension's after_provider_response
+#     re-writes the ledger as health_class=healthy on a 200 OK, but the
+#     wrapper's spawn-bench marker (written for an empty run / no-op /
+#     spawn-fail) persists in the same directory. The census said
+#     "healthy" while pick_seat said "no usable seat" — fleet-ops#2493
+#     closed that gap. The seat MUST drop out of the availability rollup
+#     while the bench is in the future, and return when the bench expires.
+# =========================================================================
+SB_SEATS="$scratch/sb-seats"
+mkdir -p "$SB_SEATS"
+python3 - "$exporter" "$repo_root/config/seat-caps.json" "$SB_SEATS" <<'PY' || fail "spawn-bench vs healthy ledger test failed"
+import importlib.util, json, sys, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+exporter, seat_caps, seat_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+now = time.time()
+def iso(offset_s):
+    return datetime.fromtimestamp(now + offset_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+FUT = iso(3600)   # bench 1h in the future
+PAST = iso(-3600) # bench 1h in the past (expired)
+
+caps = json.loads(Path(seat_caps).read_text())
+enrolled = [p for p, cfg in caps.get("providers", {}).items()
+            if isinstance(cfg, dict) and isinstance(cfg.get("cap"), (int, float))
+            and cfg.get("cap") > 0]
+assert "opencode" in enrolled, "fixture provider opencode must be enrolled"
+
+# Seed every enrolled provider with a healthy fixture -> baseline = len(enrolled).
+for prov in enrolled:
+    (Path(seat_dir) / f"{prov}__fixture.json").write_text(json.dumps({
+        "provider": prov, "model": "fixture", "health_class": "healthy",
+        "seat_dead": False, "usable_at": None, "bench_until": None,
+    }))
+m.SEAT_LEDGER = Path(seat_dir)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+base = m._healthy_enrolled_seat_count()
+assert base == len(enrolled), f"baseline must be {len(enrolled)}, got {base}"
+
+# Scenario A: a healthy opencode ledger + a HELD spawn-bench sibling.
+# Pre-#2493 the census counted opencode as healthy (the ledger says so).
+# Post-#2493 the bench wins: opencode must drop out of the rollup.
+(Path(seat_dir) / "opencode__fixture.json").write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "usable_at": None, "bench_until": None,
+}))
+(Path(seat_dir) / "opencode__fixture.spawn-bench.json").write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": FUT,
+    "reason": "no_block:rc=0", "backoff_s": 900,
+}))
+held = m._healthy_enrolled_seat_count()
+assert held == len(enrolled) - 1, \
+    f"opencode with held spawn-bench must drop out ({len(enrolled)-1}), got {held}"
+print(f"OK: held wrapper spawn-bench outranks healthy ledger (opencode dropped, {held}/{len(enrolled)})")
+
+# Scenario B: same fixture, but the bench is EXPIRED (1h in the past).
+# The bench is no longer authoritative — the healthy ledger wins, opencode
+# returns to the rollup. The bench file is best-effort metadata: when it
+# expires the seat_usable fail-opens the seat, and the census mirrors that.
+(Path(seat_dir) / "opencode__fixture.spawn-bench.json").write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": PAST,
+    "reason": "no_block:rc=0", "backoff_s": 900,
+}))
+expired = m._healthy_enrolled_seat_count()
+assert expired == len(enrolled), \
+    f"expired bench must not gate the rollup ({len(enrolled)}), got {expired}"
+print("OK: expired bench does not gate the rollup (mirrors seat_usable fail-open)")
+
+# Scenario C: missing ledger file. The fixture's ledger file is removed;
+# the bench becomes the only signal. The bench alone is NOT enough to
+# count the seat as healthy (no ledger file -> not proven healthy,
+# fail-safe). The census still excludes opencode.
+(Path(seat_dir) / "opencode__fixture.json").unlink()
+missing_ledger = m._healthy_enrolled_seat_count()
+assert missing_ledger == len(enrolled) - 1, \
+    f"missing ledger with active bench must not count healthy ({len(enrolled)-1}), got {missing_ledger}"
+print("OK: missing ledger + active bench -> not proven healthy (fail-safe)")
+
+# Restore the fixture for any later scenarios.
+(Path(seat_dir) / "opencode__fixture.json").write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "usable_at": None, "bench_until": None,
+}))
+(Path(seat_dir) / "opencode__fixture.spawn-bench.json").unlink()
+
+# Scenario D: malformed / future-dated bench. Garbage in the spawn-bench
+# file must not crash the exporter or pin a seat healthy; _spawn_bench_active
+# returns False on bad data and the healthy ledger wins.
+(Path(seat_dir) / "opencode__fixture.spawn-bench.json").write_text("not-json")
+bad = m._healthy_enrolled_seat_count()
+assert bad == len(enrolled), \
+    f"malformed bench must not gate ({len(enrolled)}), got {bad}"
+(Path(seat_dir) / "opencode__fixture.spawn-bench.json").write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": "garbage",
+}))
+bad2 = m._healthy_enrolled_seat_count()
+assert bad2 == len(enrolled), \
+    f"garbage usable_at must not gate ({len(enrolled)}), got {bad2}"
+(Path(seat_dir) / "opencode__fixture.spawn-bench.json").unlink()
+print("OK: malformed / garbage spawn-bench does not gate the rollup")
+PY
+ok "fleet-ops#2493: held wrapper spawn-bench outranks a later healthy observation (census honest)"

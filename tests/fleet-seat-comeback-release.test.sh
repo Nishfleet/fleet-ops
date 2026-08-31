@@ -158,9 +158,17 @@ grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
   || fail "prom last-green must be written on a green sweep: $(cat "$PROM")"
 ok "successful probes release (unwall) both expired seats; green prom, exit 0"
 
-# --- 3. loud stall: probes FAIL and nothing re-anchors --------------------
-# Fresh scratch fixture set: the two expired seats only (run 2 unwalled
-# them; the stall math only needs the expired population).
+# --- 3. re-bench on probe failure (fleet-ops#2493) -----------------------
+# The fleet-ops#2493 fix: a probe that fails with no real HTTP response
+# (rc=124 timeout, or rc=1 generic failure) leaves the ledger with a
+# STALE wall clock in the past. Without re-benching, the next 15-min
+# tick finds the same expired wall, re-probes, re-fails, and the loop
+# runs forever. Re-bench HERE on probe failure: advance usable_at and
+# bench_until to now + REBENCH_BACKOFF_S so the next tick skips the
+# seat (wall-in-future check) until the new window passes. The post-
+# sweep expired count is 0 (re-benched) so the loud-stall check does
+# NOT fire — the release path IS operating, it just couldn't unwall.
+# Fresh scratch fixture set: the two expired seats only.
 rm -rf "$SEATDIR"
 mkdir -p "$SEATDIR"
 cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
@@ -180,16 +188,92 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     bash "$BIN" >/dev/null 2>"$TMPD/live-fail.err"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "failed probes with no re-anchor: expected exit 1 (loud), got $rc ($(cat "$TMPD/live-fail.err"))"
-grep -q "LOUD \[COMEBACK-RELEASE-STALLED\]" "$TMPD/live-fail.err" \
-  || fail "stall must render the LOUD line: $(cat "$TMPD/live-fail.err")"
-grep -q "^fleet_seat_comeback_release_stalled 1$" "$PROM" \
-  || fail "prom stalled must be 1: $(cat "$PROM")"
-grep -qE "^fleet_seat_comeback_release_walled_expired 2$" "$PROM" \
-  || fail "prom walled_expired must be 2: $(cat "$PROM")"
+[[ "$rc" == "0" ]] || fail "re-bench path: expected exit 0 (re-benched, not loud), got $rc ($(cat "$TMPD/live-fail.err"))"
+grep -q "REBENCHED commandcode/poolside/laguna-s-2.1-free" "$TMPD/live-fail.err" \
+  || fail "re-bench: must log REBENCHED for the overload_bench seat: $(cat "$TMPD/live-fail.err")"
+grep -q "REBENCHED straitly/gpt-5.6-sol" "$TMPD/live-fail.err" \
+  || fail "re-bench: must log REBENCHED for the quota_exhausted seat: $(cat "$TMPD/live-fail.err")"
+# The ledger now carries the fresh bench: usable_at and bench_until are
+# in the future (now + 900s = 2026-08-30T12:15:00Z) and the source is
+# comeback_release_rebench. The prior class is replaced (the wall is
+# the truth now, not the prior failure class).
+new_usable=$(jq -r '.usable_at' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+new_usable_epoch=$(date -u -d "$new_usable" +%s 2>/dev/null || echo 0)
+(( new_usable_epoch > NOW_EPOCH )) || fail "re-bench: usable_at must be in the future, got $new_usable (epoch=$new_usable_epoch, now=$NOW_EPOCH)"
+jq -e '.source == "comeback_release_rebench" and .failure_mode == "comeback_rebench" and .health_class == "transient_fault" and .consecutive_failure_count == 6' \
+  "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
+  || fail "re-bench: ledger must carry source=comeback_release_rebench, count incremented: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
+jq -e '.source == "comeback_release_rebench" and .consecutive_failure_count == 24' \
+  "$SEATDIR/straitly__gpt-5.6-sol.json" >/dev/null \
+  || fail "re-bench: quota seat count must increment: $(cat "$SEATDIR/straitly__gpt-5.6-sol.json")"
+# Prom reflects the re-bench (not a stall): stalled=0, walled_expired=0,
+# probed_total advanced, last-green written.
+grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
+  || fail "re-bench: prom stalled must be 0 (re-benched, not stalled): $(cat "$PROM")"
+grep -qE "^fleet_seat_comeback_release_walled_expired 0$" "$PROM" \
+  || fail "re-bench: prom walled_expired must be 0 (walls advanced): $(cat "$PROM")"
 grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
-  && fail "stalled sweep must NOT write last-green: $(cat "$PROM")"
-ok "loud stall: expired walls + zero releases -> exit 1, stalled=1, no last-green"
+  || fail "re-bench: prom last-green must be written (the release path is operating): $(cat "$PROM")"
+grep -q "^fleet_seat_comeback_release_probed_total 2$" "$PROM" \
+  || fail "re-bench: prom probed_total must be 2: $(cat "$PROM")"
+ok "re-bench: probe failure advances the wall to now+REBENCH_BACKOFF_S; no loud stall, next tick skips"
+
+# --- 3b. re-bench: subsequent tick with future wall skips the seat -------
+# After re-bench, the wall is in the future. The next 15-min tick should
+# skip the seat via the wall-in-future check (the only remaining
+# throttle). A second probe attempt must NOT happen (no point — the
+# wall is fresh, the next probe is owed only after the new window).
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"transient_fault","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T12:05:00Z","source":"comeback_release_rebench","failure_mode":"comeback_rebench","usable_at":"2026-08-30T13:00:00Z","bench_until":"2026-08-30T13:00:00Z","bench_window_s":900,"consecutive_failure_count":6}
+EOF
+STATE="$TMPD/state-rebench-skip.json"
+PROM="$TMPD/release-rebench-skip.prom"
+out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-ok" \
+    bash "$BIN" --dry-run 2>&1)
+grep -qi "poolside" <<<"$out" \
+  && fail "re-bench follow-up: future-wall seat must NOT be re-probed: $out"
+released_total=$(jq -r '.released_total' "$STATE" 2>/dev/null || echo 0)
+[[ "$released_total" == "0" ]] || fail "re-bench follow-up: released_total must be 0, got $released_total"
+ok "re-bench follow-up: future-wall seat is skipped by the wall-in-future check (no probe, no release)"
+
+# --- 3c. loud stall: re-bench itself FAILS (ledger unwritable) -----------
+# The loud-stall check still fires when re-bench cannot advance the
+# wall (e.g. the ledger directory is read-only). The release path is
+# then genuinely stuck: probes fail AND re-bench fails, so the wall
+# stays in the past. Simulate by making the ledger dir read-only so
+# the re-bench write errors out (mv fails). Note: bash atomic write
+# creates a tmp file in the same dir, so a read-only dir blocks BOTH
+# the re-bench and any future write.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":5}
+EOF
+STATE="$TMPD/state-stall.json"
+PROM="$TMPD/release-stall.prom"
+chmod 0555 "$SEATDIR"  # read+exec only; writes blocked
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/live-stall.err"
+stall_rc=$?
+set -e
+chmod 0755 "$SEATDIR"  # restore for cleanup
+[[ "$stall_rc" == "1" ]] || fail "re-bench-fails: expected exit 1 (loud), got $stall_rc ($(cat "$TMPD/live-stall.err"))"
+grep -q "LOUD \[COMEBACK-RELEASE-STALLED\]" "$TMPD/live-stall.err" \
+  || fail "re-bench-fails: must render the LOUD line: $(cat "$TMPD/live-stall.err")"
+grep -q "^fleet_seat_comeback_release_stalled 1$" "$PROM" \
+  || fail "re-bench-fails: prom stalled must be 1: $(cat "$PROM")"
+ok "loud stall still fires when re-bench cannot advance the wall (read-only ledger)"
 
 # --- 4. override: wall-expired + recent probe -> probe anyway (unstick) --
 # The fleet-ops#2421 follow-up (2026-08-31 straitly/gpt-5.6-sol): a probe

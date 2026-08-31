@@ -1896,6 +1896,65 @@ def _read_comeback_overdue():
     return len(seats), seats
 
 
+def _spawn_bench_active(ledger_path: Path) -> bool:
+    """True if the per-seat spawn-bench marker is fresh and in the future.
+
+    fleet-ops#1512: the wrapper writes a `.<base>.spawn-bench.json` file
+    next to the per-seat ledger whenever mark_seat_spawn_fail /
+    mark_seat_empty_run benches a seat. seat_usable checks it FIRST, so
+    the router already excludes the seat while the bench is held. The
+    metrics export used to ignore it — a seat whose ledger shows
+    health_class=healthy (the seat-health extension's after_provider_response
+    re-wrote it on a later 200 OK) but whose spawn-bench is still in the
+    future was counted as healthy in the seat_availability SLO, even
+    though the router refused to route work to it. The census said
+    "healthy" while pick_seat said "no usable seat" — fleet-ops#2493
+    closed that gap: read the spawn-bench and treat a held bench as
+    non-healthy (an active wrapper bench is always operator- or wrapper-
+    authored and is more authoritative than a later healthy observation
+    on the same seat).
+
+    Returns False on a missing / unreadable / past-due marker; never
+    raises. The path argument is the per-seat ledger file; the spawn-
+    bench sibling is `<base>.spawn-bench.json` in the same directory.
+    """
+    if not ledger_path.is_file():
+        return False
+    # Per lib/seat-lib.sh seat_spawn_bench_path, the spawn-bench file lives
+    # beside the ledger as `<provider>__<model>.spawn-bench.json` — i.e.
+    # the same base name as the ledger with the .json suffix replaced by
+    # `.spawn-bench.json`, NOT a separate suffix appended to the full
+    # ledger filename. Construct it via stem + suffix so a ledger like
+    # `opencode__nemotron-3-ultra-free.json` maps to
+    # `opencode__nemotron-3-ultra-free.spawn-bench.json` (matching the
+    # live state at /home/nish/workspaces/agent-state/lanes/seats/).
+    spawn_bench = ledger_path.with_name(ledger_path.stem + ".spawn-bench.json")
+    if not spawn_bench.is_file():
+        return False
+    try:
+        marker = json.loads(spawn_bench.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    usable_at = marker.get("usable_at")
+    if not isinstance(usable_at, str) or not usable_at:
+        return False
+    try:
+        # Parse the ISO timestamp as UTC (the seat ledger is always
+        # UTC-Z). time.mktime is local-timezone-dependent and would
+        # give a wrong epoch on a non-UTC host (the live VPS runs
+        # IST, +5:30; a future-Z timestamp would parse to a
+        # past-local epoch and the helper would incorrectly return
+        # False). Use calendar.timegm to treat the parsed tuple as
+        # UTC, then compare to the UTC wall clock.
+        from calendar import timegm
+        usable_epoch = timegm(time.strptime(usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return False
+    return usable_epoch > int(time.time())
+
+
 def _healthy_enrolled_seat_count():
     """Count enrolled providers with >=1 healthy or released, non-dead ledger.
 
@@ -1916,6 +1975,18 @@ def _healthy_enrolled_seat_count():
     (2026-08-30: three such seats past usable_at still counted walled).
     The comeback-overdue metric above fails loud when that release is
     unobserved, so no dead seat hides behind this relaxation.
+
+    fleet-ops#2493: a held wrapper spawn-bench is operator- or wrapper-
+    authored and is MORE authoritative than a later healthy observation
+    on the same seat. The seat-health extension's after_provider_response
+    re-writes the ledger as health_class=healthy on a 200 OK, but the
+    wrapper's spawn-bench marker (written for an empty run / no-op /
+    spawn-fail) persists in the same directory. Without this check the
+    census says "healthy" while pick_seat says "no usable seat" — a
+    silent mismatch that pinned opencode/nemotron-3-ultra-free as
+    "healthy" across 6 empty runs in 2h (fleet-ops#2493 lived snapshot).
+    Read the spawn-bench sibling; if it is in the future, the seat is
+    NOT healthy for the rollup.
 
     Providers with no ledger file at all are counted unhealthy (not proven
     healthy — fail-safe toward the alert). Returns None when the ledger
@@ -1938,6 +2009,14 @@ def _healthy_enrolled_seat_count():
             if not isinstance(data, dict):
                 continue
             if data.get("seat_dead") is True:
+                continue
+            # fleet-ops#2493: a held wrapper spawn-bench outranks a later
+            # healthy observation. The wrapper wrote the bench for an
+            # empty run / no-op / spawn-fail; the seat-health extension
+            # then re-wrote the ledger as healthy on a 200 OK. The bench
+            # is the more recent operational truth — count the seat as
+            # non-healthy until the bench expires.
+            if _spawn_bench_active(f):
                 continue
             if data.get("health_class") != "healthy" and not _seat_is_released(data):
                 continue
