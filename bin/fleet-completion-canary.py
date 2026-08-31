@@ -733,6 +733,21 @@ def emit_metrics(open_hops: dict, stalled_hops: dict, ue_open: int, ue_stalled: 
         f"fleet_chain_completion_timestamp_seconds {epoch(now)}",
         "",
     ]
+    # fleet_chain_repair_duration_seconds — p95 of chain cycle times (fleet-ops#2168).
+    # This is the source metric for the chain_repair_latency SLO (p95 ≤ 30 min).
+    lines += [
+        "# HELP fleet_chain_repair_duration_seconds p95 alert-repair chain duration (seconds).",
+        "# TYPE fleet_chain_repair_duration_seconds gauge",
+    ]
+    if cycles:
+        secs = sorted([c[2] for c in cycles])
+        # p95 index (nearest-rank method, same as Prometheus histogram_quantile).
+        idx = max(0, min(len(secs) - 1, int(len(secs) * 0.95)))
+        p95 = secs[idx]
+        lines.append(f"fleet_chain_repair_duration_seconds {p95}")
+    else:
+        lines.append("fleet_chain_repair_duration_seconds 0")
+    lines.append("")
     # Issue-close evidence metrics (fleet-ops#1527)
     if issue_evidence is not None:
         lines += [
