@@ -399,6 +399,27 @@ if ! heavy_seat=$(pick_seat "" "" 1 2>/dev/null); then
     exit 0
 fi
 
+# Product-first precedence (fleet-ops#2519): when the queue
+# self-maintenance ratio exceeds PRODUCT_FIRST_SELF_RATIO_MAX (default
+# 0.5), hold the self-maintenance repo (fleet-ops) in the intake buffer —
+# its agent-ready issues are not admitted to the dispatch queue, so fleet
+# capacity goes to product repos. Product repos are never gated. Fails
+# open (admits) when the ratio is unavailable, so a dead metrics exporter
+# never freezes the fleet; the fleet_queue_product_ratio metric is
+# exported best-effort every tick so the precedence is observable.
+#
+# Only the self-maintenance repo is held: the gate checks
+# config/self-maintenance-repos.json (default ["fleet-ops"]), not a
+# hardcoded name, so a repo graduating to product is not gated.
+product_first_export_product_ratio
+if product_first_is_self_maintenance "$REPO"; then
+    _pfirst_ratio="$(product_first_ratio 2>/dev/null || echo unavail)"
+    if product_first_hold; then
+        echo "held-in-buffer: ($REPO is self-maintenance, self-maintenance ratio $_pfirst_ratio > $PRODUCT_FIRST_SELF_RATIO_MAX) — product-first precedence, product repos only"
+        exit 0
+    fi
+fi
+
 # Pre-fetch origin once before the loop
 git -C "$REPO_DIR" fetch origin 2>&1 || {
     echo "git fetch origin failed" >&2

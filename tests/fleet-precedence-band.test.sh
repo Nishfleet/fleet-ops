@@ -980,3 +980,108 @@ grep -q 'phase=surge' <<<"$out" \
 ok "scenario18: run_canary default NOW is pinned (time-invariant drill)"
 
 ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick"
+
+# --- 20. Product-first precedence (fleet-ops#2519) ------------------------
+# When the queue self-maintenance ratio exceeds 0.5, the intake tick holds
+# the self-maintenance repo (fleet-ops) in the intake buffer: its agent-ready
+# issues are NOT admitted to the dispatch queue, so fleet capacity goes to
+# product repos. Product repos are never gated; an unavailable cache fails
+# OPEN (admits) so a dead metrics exporter never freezes the fleet. Proves:
+#   a. The tick wires the gate (static grep) BEFORE the claim loop, so a
+#      hold yields 0 fleet-ops dispatches.
+#   b. A synthetic queue with 70% fleet-ops (self=7, total=10) HOLDS
+#      fleet-ops dispatch.
+#   c. The same synthetic queue ADMITS a product repo.
+#   d. ratio / product-ratio math (0.7 -> 0.3).
+#   e. A below-threshold queue (0.4) admits fleet-ops.
+#   f. Unavailable cache fails open (admits).
+#   g. fleet_queue_product_ratio is exported to the prom path.
+
+tick="$repo_root/lib/pi-intake-tick.sh"
+grep -qF 'product_first_export_product_ratio' "$tick" \
+    || fail "scenario20a: tick must call product_first_export_product_ratio"
+grep -qF 'product_first_hold' "$tick" \
+    || fail "scenario20a: tick must call product_first_hold"
+grep -qF 'held-in-buffer' "$tick" \
+    || fail "scenario20a: tick must print held-in-buffer when the precedence holds"
+gate_line=$(grep -n 'product_first_export_product_ratio' "$tick" | head -1 | cut -d: -f1)
+loop_line=$(grep -nF 'for i in "${!numbers[@]}"' "$tick" | head -1 | cut -d: -f1)
+[[ -n "$gate_line" && -n "$loop_line" && "$gate_line" -lt "$loop_line" ]] \
+    || fail "scenario20a: product-first gate must precede the claim loop (gate line $gate_line, loop line $loop_line)"
+ok "scenario20a: tick wires the product-first gate before the claim loop"
+
+qc_70="$scratch/qc-70.json"
+printf '%s\n' '{"ts": 0, "data": {"agent-ready": {"total": 10, "self": 7}, "ready-work": {"total": 10, "self": 7}}}' >"$qc_70"
+qc_40="$scratch/qc-40.json"
+printf '%s\n' '{"ts": 0, "data": {"agent-ready": {"total": 10, "self": 4}, "ready-work": {"total": 10, "self": 4}}}' >"$qc_40"
+
+# Reproduce the tick's gate decision: source the shlib with the synthetic
+# cache and evaluate the exact functions the tick calls.
+drill_product_first_gate() {
+    local repo="$1" cache="$2"
+    (
+        # shellcheck disable=SC2030,SC2031
+        export PRODUCT_FIRST_QUEUE_CACHE="$cache"
+        # shellcheck disable=SC2030,SC2031
+        export PRODUCT_FIRST_QUEUE="agent-ready"
+        # shellcheck disable=SC2030,SC2031
+        export PRODUCT_FIRST_SELF_RATIO_MAX="0.5"
+        . "$shlib"
+        product_first_is_self_maintenance "$repo" || { echo admit-product; exit 0; }
+        if product_first_hold; then
+            echo hold
+        else
+            echo admit
+        fi
+    )
+}
+
+out=$(drill_product_first_gate fleet-ops "$qc_70")
+[[ "$out" == hold ]] \
+    || fail "scenario20b: 70%% fleet-ops synthetic queue must HOLD fleet-ops dispatch, got $out"
+ok "scenario20b: 70%% fleet-ops synthetic queue yields 0 fleet-ops dispatches (hold)"
+
+out=$(drill_product_first_gate 0509 "$qc_70")
+[[ "$out" == admit-product ]] \
+    || fail "scenario20c: product repo must admit at 70%% self-maintenance, got $out"
+ok "scenario20c: product repos still dispatch despite high self-maintenance ratio"
+
+(
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE_CACHE="$qc_70"
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE="agent-ready"
+    . "$shlib"
+    r=$(product_first_ratio) || fail "scenario20d: product_first_ratio failed"
+    [[ "$r" == "0.700000" ]] || fail "scenario20d: expected ratio 0.700000, got $r"
+    pr=$(product_first_product_ratio) || fail "scenario20d: product_first_product_ratio failed"
+    [[ "$pr" == "0.300000" ]] || fail "scenario20d: expected product ratio 0.300000, got $pr"
+)
+ok "scenario20d: ratio/product-ratio math (0.7 self -> 0.3 product)"
+
+out=$(drill_product_first_gate fleet-ops "$qc_40")
+[[ "$out" == admit ]] \
+    || fail "scenario20e: 40%% fleet-ops queue must ADMIT fleet-ops, got $out"
+ok "scenario20e: below-threshold queue admits fleet-ops (ratio cools -> dispatch resumes)"
+
+out=$(drill_product_first_gate fleet-ops "$scratch/does-not-exist.json")
+[[ "$out" == admit ]] \
+    || fail "scenario20f: unavailable cache must fail open (admit), got $out"
+ok "scenario20f: unavailable queue cache fails open (dead exporter never freezes the fleet)"
+
+prom_dir="$scratch/prom"
+(
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE_CACHE="$qc_70"
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE="agent-ready"
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_PROM="$prom_dir/fleet-queue-product-ratio.prom"
+    . "$shlib"
+    product_first_export_product_ratio
+)
+grep -q 'fleet_queue_product_ratio{queue="agent-ready"} 0.300000' "$prom_dir/fleet-queue-product-ratio.prom" \
+    || fail "scenario20g: fleet_queue_product_ratio not exported correctly"
+ok "scenario20g: fleet_queue_product_ratio exported by the intake tick path (1 - self-maintenance ratio)"
+
+ok "precedence-band: product-first precedence (fleet-ops#2519) — 70%% fleet-ops holds, product admits, metric exported"
