@@ -248,6 +248,71 @@ if [[ "$issue_state" == "OPEN" ]]; then
         fi
         log_to_triage "RECLAIM-COOLDOWN-SET" "instance=$instance repo=$repo_slug issue=$issue cooldown=$cooldown_file"
     fi
+
+    # fleet-ops#2462: reclaim-count increment. Each failed re-claim is one
+    # strike against MAX_RECLAIMS (see pi-intake-tick.sh). The first claim is
+    # counted by pi-issue-run on success; every failed re-claim (this path)
+    # increments the counter. When the count reaches the cap, intake escalates
+    # the issue instead of re-claiming. A successful PR open resets it.
+    _rc_file="$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count"
+    _rc_prev=0
+    if [[ -f "$_rc_file" ]]; then
+        _rc_prev=$(cat "$_rc_file" 2>/dev/null || echo 0)
+        _rc_prev=${_rc_prev//[^0-9]/}
+        _rc_prev=${_rc_prev:-0}
+    fi
+    _rc_new=$(( _rc_prev + 1 ))
+    if printf '%s' "$_rc_new" > "$_rc_file" 2>/dev/null; then
+        log "incremented reclaim-count to $_rc_new for $instance (was $_rc_prev)"
+        log_to_triage "RECLAIM-COUNT-INCREMENTED" "instance=$instance count=$_rc_new"
+    else
+        log "WARN: could not write reclaim-count $_rc_file"
+    fi
+
+    # fleet-ops#2462: systemic-failure detection. When the issue has failed
+    # on every seat in the tried-seats list AND all those seats are now
+    # benched (seat-health ledger says unusable), the failure is systemic —
+    # a provider-wide outage (503/429/500 storm), not per-seat faults.
+    # Write a .systemic marker so the next intake tick skips re-claiming
+    # until the seat pool recovers, instead of spawning another worker
+    # into a dead provider. The tried-seats list is the evidence: one entry
+    # per failed attempt; if every entry is benched, the issue has exhausted
+    # every available seat.
+    _tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
+    _systemic_file="$ATTEMPTS_DIR/pi-issue-${instance}.systemic"
+    if [[ -f "$_tried_file" ]]; then
+        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+        _src_seat_lib=""
+        if [[ -f "$_seat_lib" ]]; then
+            # shellcheck disable=SC1090
+            _src_seat_lib=$(source "$_seat_lib" 2>/dev/null && echo yes || echo no)
+        fi
+        _all_benched=1
+        _seat_scan_total=0
+        _seat_scan_benched=0
+        while IFS= read -r _ts_line; do
+            [[ -z "$_ts_line" ]] && continue
+            _ts_provider="${_ts_line%%/*}"
+            _ts_model="${_ts_line#*/}"
+            [[ -n "$_ts_provider" && -n "$_ts_model" ]] || continue
+            _seat_scan_total=$(( _seat_scan_total + 1 ))
+            if [[ "$_src_seat_lib" == "yes" ]] && declare -F seat_usable >/dev/null 2>&1; then
+                if ! seat_usable "$_ts_provider" "$_ts_model" 2>/dev/null; then
+                    _seat_scan_benched=$(( _seat_scan_benched + 1 ))
+                fi
+            fi
+        done < "$_tried_file"
+        # A systemic marker fires only when every tried seat is benched AND
+        # we saw at least one seat (otherwise there is no exhaustion to signal).
+        # If seat-lib is absent (CI), we cannot evaluate seat_usable — skip
+        # the marker (fail-open: re-claim normally).
+        if (( _seat_scan_total > 0 && _seat_scan_total == _seat_scan_benched )); then
+            if date -u +%Y-%m-%dT%H:%M:%SZ > "$_systemic_file" 2>/dev/null; then
+                log "SYSTEMIC-FAILURE detected for $instance: all $_seat_scan_total tried seats are benched — writing .systemic marker (intake will skip re-claim until recovery)"
+                log_to_triage "SYSTEMIC-FAILURE-DETECTED" "instance=$instance seats_tried=$_seat_scan_total seats_benched=$_seat_scan_benched"
+            fi
+        fi
+    fi
 elif [[ "$issue_state" == "CLOSED" ]]; then
     label_ok=no
     if [[ "$in_progress" == "yes" ]]; then
@@ -260,6 +325,14 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
     fi
     should_archive_packets=1
     log_to_triage "CLAIM-CLOSED-CLEANUP" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_removed=$label_ok"
+    # fleet-ops#2462: reset reclaim-count + clear systemic marker on close.
+    # A closed issue means the work shipped (merged PR): the per-issue state
+    # files must clear so a future re-open starts fresh, not inheriting a
+    # stale cap or systemic marker from a prior failure cycle.
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.systemic" 2>/dev/null || true
+    log "reset reclaim-count + cleared systemic marker for $instance (issue closed)"
+    log_to_triage "CLAIM-CLOSED-RESET" "instance=$instance repo=$repo_slug"
 else
     log "unknown issue state '$issue_state' for $repo_slug#$issue; leaving labels"
     log_to_triage "CLAIM-REAP-UNKNOWN-STATE" "instance=$instance state=$issue_state"
