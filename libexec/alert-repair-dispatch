@@ -36,6 +36,21 @@ PACKET_DIR = Path(os.environ.get(
     "/home/nish/workspaces/agent-state/alert-repair",
 ))
 LOG = PACKET_DIR / "actions.log"
+
+# Class-park awareness (auditor 2026-08-31T11:1xZ, fleet-ops#2495 follow-up).
+# fleet-completion-canary writes `decision_class_until` into per-alert
+# state files under fleet-completion-canary/open/<alertname>.json when it
+# parks a still-firing structural-red alert's class so a fresh dispatch
+# unit on the SAME alert no longer re-summons the senior-auditor pipeline.
+# Alertmanager's AMX receiver fires every repeat_interval (6h) regardless
+# of the canary's verdict; without this mirror, this dispatcher spawns a
+# new unit that walks into the same lane fault + escalates again — the
+# observed 7-dispatch loop for FleetQueueSelfMaintenanceRatioHigh
+# (2026-08-30..31).
+CLASS_PARK_DIR = Path(os.environ.get(
+    "CLASS_PARK_DIR",
+    "/home/nish/workspaces/agent-state/fleet-completion-canary/open",
+))
 # LoadStorm is handled deterministically by load-storm-brake (wired in
 # prometheus-am-executor config.yml via match_labels). The LLM root-cause
 # worker for that class comes AFTER, via the STOP-REASON.json the brake
@@ -173,6 +188,27 @@ def _in_future(ts):
             time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return False
+
+
+def _class_park_active(name):
+    """Return iso `decision_class_until` if the canary has parked this
+    alert's class and the park is still in the future, else None.
+
+    Reads agent-state/fleet-completion-canary/open/<name>.json (the same
+    file the canary writes — no new contract, no new state). A missing
+    file or unparseable timestamp means "not parked" (fail-open: a flaky
+    read must not block every dispatch, mirroring the alert-repair-claim
+    posture for rc=2). The canary already enforces equivalence via
+    `now < class_dt`; this helper reuses the same _in_future comparison.
+    """
+    try:
+        d = json.loads((CLASS_PARK_DIR / f"{name}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    until = d.get("decision_class_until")
+    if not until:
+        return None
+    return until if _in_future(until) else None
 
 
 def _fresh(ts):
@@ -346,6 +382,25 @@ def main():
                     f"reason=skip-list\n"
                 )
             print(f"[{utcnow()}] SKIP alertname={name} (in skip-list)", file=sys.stderr)
+            return 0
+
+    # Class-park skip (auditor 2026-08-31T11:1xZ): honor fleet-completion-canary's
+    # `decision_class_until` verdict. If the canary has parked this alert's
+    # class (e.g. FleetQueueSelfMaintenanceRatioHigh — a structural-signal
+    # alert whose Nish-reserved root cannot be cleared in-turn), a fresh
+    # AMX dispatch MUST NOT spawn a new unit; the existing chain owns the
+    # escalation. Park expiry re-opens the dispatch window on the next
+    # AMX fire after `decision_class_until + repeat_interval`.
+    for name in alertnames:
+        until = _class_park_active(name)
+        if until:
+            with LOG.open("a") as f:
+                f.write(
+                    f"[{utcnow()}] SKIP alertname={name} receiver={receiver} "
+                    f"reason=class-park until={until}\n"
+                )
+            print(f"[{utcnow()}] SKIP alertname={name} (class-park "
+                  f"until={until})", file=sys.stderr)
             return 0
 
     # Common (group) labels.
