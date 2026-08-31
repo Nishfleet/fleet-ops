@@ -144,6 +144,20 @@ VERIFY_DEADLINE = int(os.environ.get(
 ))
 UE_BUDGET = int(os.environ.get("FLEET_ESCALATION_COMPLETION_BUDGET", "86400"))
 
+# Decision-pending class park (2026-08-31 senior auditor): a structural alert
+# whose chain escalated to the senior conference (ladder=stop-reason) and was
+# closed out (terminal=escalated/detector-red) while STILL firing is a
+# Nish-reserved decision, not a fresh fault. Without a class-level park, each
+# new dispatch unit resets the stale ladder marker (fleet-ops#2397 fresh-trip
+# branch) and the whole cycle re-runs: spawn repair worker -> verify fail ->
+# STOP-REASON -> senior summon. Live: FleetQueueSelfMaintenanceRatioHigh — 6
+# repair dispatches + 4 escalations in ~48h for one undecided policy question.
+# Park the CLASS (not just the instance) for PARK_CLASS seconds: while parked,
+# a fresh unit on the same still-firing alert re-parks (metrics only, no new
+# STOP-REASON, no worker). Park expiry re-opens ONE bounded nag per window so
+# a pending decision cannot rot silently.
+PARK_CLASS = int(os.environ.get("FLEET_COMPLETION_PARK_CLASS", "86400"))
+
 # Issue-close evidence check (fleet-ops#1527): look back this many hours for
 # closed issues to verify they have PR/commit evidence.
 ISSUE_EVIDENCE_LOOKBACK_HOURS = int(os.environ.get(
@@ -1439,6 +1453,33 @@ def main() -> int:
                     f"the chain; cooldown extended to "
                     f"{existing['dead_until']} (no re-ladder, no new STOP-REASON)")
                 continue
+            # Decision-pending class park: the senior conference adjudicated
+            # this still-firing alert and the root is a Nish-reserved decision
+            # (PARK_CLASS window still open). A NEW dispatch unit on the SAME
+            # alertname must NOT reset the stale marker — that reset is the
+            # churn vector that re-spawned repair workers and re-summoned the
+            # senior conference every cycle (live: FleetQueueSelfMaintenance
+            # RatioHigh, 08-29..08-31). Re-park instead; the alert leaving
+            # 9090 still closes via the green path; park expiry re-opens one
+            # bounded nag.
+            class_until = existing.get("decision_class_until")
+            if class_until:
+                class_dt = parse_iso(class_until)
+                if class_dt is not None and now < class_dt:
+                    cd = parse_iso(existing.get("dead_until") or "")
+                    if cd is None or now >= cd:
+                        existing["dead_until"] = iso(
+                            now + timedelta(seconds=VERIFY_DEADLINE)
+                        )
+                    existing["dispatch_unit"] = (
+                        existing.get("dispatch_unit")
+                        or decision.get("dispatch_unit") or ""
+                    )
+                    save_chain_state(name, existing)
+                    log(f"decision-pending park {name} class_until={class_until} "
+                        f"new_unit={decision.get('dispatch_unit') or 'none'} — no "
+                        f"ladder reset, no new STOP-REASON, metrics only")
+                    continue
             # Fresh trip: the old unit's escalation is settled. Reset the
             # stale marker so this dispatch opens a clean chain.
             existing.pop("terminal", None)
@@ -1516,6 +1557,13 @@ def main() -> int:
                 state["ladder"] = action
                 state["hop"] = hop
                 state["age"] = decision["age"]
+                if action == "stop-reason" and name not in SYNTHETIC:
+                    # Senior conference owns the escalation; park the class so a
+                    # still-firing structural alert does not re-ladder on each
+                    # fresh dispatch unit (churn loop; see PARK_CLASS).
+                    state["decision_class_until"] = iso(
+                        now + timedelta(seconds=PARK_CLASS)
+                    )
                 # Bump the verify_deadline_ts marker set inside take_ladder
                 # to now + VERIFY_DEADLINE.
                 if hop == "verify" and state.get("verify_deadline_ts"):
