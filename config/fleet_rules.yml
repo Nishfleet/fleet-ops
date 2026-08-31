@@ -70,14 +70,14 @@ groups:
           description: "Repair worker: (re)build per /home/nish/workspaces/agent-state/alert-repair/packet-13-undersaturation-guard.md until fleet_pi_workers_active exports. Check unit undersat-guard-r2-20260827 first."
 
       - alert: FleetPiSeatUnhealthy
-        expr: fleet_pi_seat_healthy == 0
+        expr: fleet_pi_seat_unhealthy_total > 0 or fleet_pi_seat_healthy == 0
         for: 30m
         labels:
           severity: warning
           service: fleet
         annotations:
           summary: "Pi seat unhealthy for 30+ minutes"
-          description: "pi-seat-health.json reports a non-healthy seat class."
+          description: "Either the single-seat pi-seat-health.json is non-healthy OR at least one enrolled per-seat ledger entry has health_class set and != healthy (fleet_pi_seat_unhealthy_total > 0). The per-seat series names each unhealthy seat; inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats and either retire the seat (set cap=0 in config/seat-caps.json with a dated reason — the metric drops on the next exporter tick) or fix the root cause. fleet-ops#2524."
 
       - alert: FleetDeadCredentialSeats
         expr: fleet_pi_seat_dead_credential_total > 0

@@ -67,6 +67,10 @@ HELP_CB = "# HELP fleet_seat_comeback_overdue_total Number of seats still classe
 TYPE_CB = "# TYPE fleet_seat_comeback_overdue_total gauge"
 HELP_CBP = "# HELP fleet_seat_comeback_overdue 1 for each seat whose wall clock has passed but is still classed non-healthy (fleet-ops#2407)."
 TYPE_CBP = "# TYPE fleet_seat_comeback_overdue gauge"
+HELP_UNT = "# HELP fleet_pi_seat_unhealthy_total Number of enrolled per-seat ledger entries whose health_class is set and != healthy (fleet-ops#2524). Catches the gap where FleetPiSeatUnhealthy only watched the single-seat pi-seat-health.json and FleetDeadCredentialSeats only watched credentials_bad seats: a manually-overridden seat_dead=true + health_class=unhealthy seat sat invisible to every alert for hours. The per-seat series names each unhealthy enrolled seat; FleetPiSeatUnhealthy fires when this gauge is > 0."
+TYPE_UNT = "# TYPE fleet_pi_seat_unhealthy_total gauge"
+HELP_UNS = "# HELP fleet_pi_seat_unhealthy 1 for each enrolled per-seat ledger entry whose health_class is set and != healthy (fleet-ops#2524)."
+TYPE_UNS = "# TYPE fleet_pi_seat_unhealthy gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -543,6 +547,74 @@ def _read_dead_credentials():
                     "model": data.get("model", ""),
                     "http_status": data.get("http_status"),
                 })
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
+def _read_unhealthy_seats():
+    """Scan the per-seat ledger for enrolled, non-healthy seats.
+
+    fleet-ops#2524: the FleetPiSeatUnhealthy alert used to watch ONLY the
+    single-seat gauge fleet_pi_seat_healthy (one file: pi-seat-health.json)
+    and FleetDeadCredentialSeats only watched credentials_bad seats. A
+    manually-overridden seat with seat_dead=true + health_class=unhealthy
+    sat invisible to every fleet alert: not credentials_bad (so no
+    FleetDeadCredentialSeats trip), not a walled comeback-overdue
+    (seat_dead=true is excluded from that census), and the single-seat
+    gauge was healthy on its own file. Result: the seat ledger carried
+    health_class=unhealthy for hours without any page.
+
+    This scan fills the gap: a per-seat (provider, model) ledger entry
+    whose health_class is set and != "healthy" AND whose (provider, model)
+    is still enrolled (cap > 0 in seat-caps.json, the source of truth for
+    the live roster) is counted. Includes seat_dead=true seats — those
+    are exactly the gap FleetPiSeatUnhealthy used to miss. Excludes:
+      - synthetic fixtures (spawn-bench markers, test__ provider fixtures)
+      - retired seats (cap <= 0 in seat-caps.json), so a seat retired by
+        setting cap=0 in this repo's seat-caps.json drops from the rollup
+        on the next exporter tick — no manual ledger move needed
+      - seats whose ledger is health_class=healthy (the seat_availability
+        SLO rollup owns those; this gauge is the COMPLEMENT, "anything
+        wrong")
+
+    Returns (count, [ {provider, model, health_class}, ... ]). Always a
+    (count, list) pair — never raises on a missing/unreadable ledger or
+    missing/unparseable seat-caps.json. Returns (0, []) when the seat
+    roster is empty / unreadable.
+    """
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    enrolled = _enrolled_seat_models()
+    if enrolled is None:
+        return 0, seats
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            provider = data.get("provider", "")
+            model = data.get("model", "")
+            if not provider or not model or provider == "test":
+                continue
+            if (provider, model) not in enrolled:
+                continue
+            hc = data.get("health_class")
+            if not hc or hc == "healthy":
+                continue
+            seats.append({
+                "provider": provider,
+                "model": model,
+                "health_class": hc,
+            })
     except OSError:
         return 0, []
     return len(seats), seats
@@ -1814,6 +1886,52 @@ def _enrolled_seat_total():
     return len(enrolled) if enrolled else None
 
 
+def _enrolled_seat_models():
+    """Return the set of enrolled (provider, model) pairs (cap > 0).
+
+    fleet-ops#2524: per-model enrollment is the source of truth for whether
+    the seat is in the live roster. A model whose cap is 0 in
+    seat-caps.json (dead decoys, deliberately retired, money-only rows) is
+    not a seat the fleet routes to, so it must not count in the unhealthy-
+    seat rollup. Mirrors the read-side fence in lib/seat-lib.sh seat_usable
+    (which uses seat-caps.json via the load_seat_caps path), so a
+    cap=0 retirement in this repo's seat-caps.json drops the seat from
+    every per-seat metric the next exporter tick — no manual ledger move
+    required. Models nested as `{ "cap": N, "class": ... }` (the explicit
+    per-model class object, fleet-ops#384 / cline) are accepted via the
+    dict-of-dict shape; bare numeric caps (the common case) are accepted
+    as int. Returns None when the config is missing/unparseable so
+    callers can report source-unavailable rather than guess.
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        enrolled = set()
+        for prov, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            models = cfg.get("models") or {}
+            if not isinstance(models, dict):
+                continue
+            for model, model_cap in models.items():
+                cap = None
+                if isinstance(model_cap, (int, float)):
+                    cap = model_cap
+                elif isinstance(model_cap, dict):
+                    raw = model_cap.get("cap", 0)
+                    if isinstance(raw, (int, float)):
+                        cap = raw
+                if cap is not None and cap > 0:
+                    enrolled.add((prov, model))
+        return enrolled if enrolled else None
+    return None
+
+
 # fleet-ops#2407: release-at-usable_at classes — the classes whose router
 # (lib/seat-lib.sh seat_usable) FAIL-OPENS the seat once its wall clock
 # (bench_until ?? usable_at) has passed. quota_exhausted / credentials_bad /
@@ -2254,6 +2372,29 @@ def main():
         _hc = _prom_label(str(_s.get("health_class") or ""))
         lines.append(
             f'fleet_seat_comeback_overdue{{seat="{_seat_label}",health_class="{_hc}"}} 1'
+        )
+    # fleet-ops#2524: per-seat unhealthy signal. Closes the FleetPiSeatUnhealthy
+    # gap — a seat with health_class set and != healthy in the per-seat ledger
+    # whose (provider, model) is still enrolled. The total gauge drives the
+    # alert rule; the per-seat series names each unhealthy seat so the repair
+    # worker knows who to fix (or retire via cap=0 in seat-caps.json).
+    # .spawn-bench markers and test__ fixtures are synthetic and excluded
+    # inside _read_unhealthy_seats.
+    _un_n, _un = _read_unhealthy_seats()
+    lines.append("")
+    lines.append(HELP_UNT)
+    lines.append(TYPE_UNT)
+    lines.append(f"fleet_pi_seat_unhealthy_total {_un_n}")
+    lines.append("")
+    lines.append(HELP_UNS)
+    lines.append(TYPE_UNS)
+    for _s in _un:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _hc = _prom_label(str(_s.get("health_class") or ""))
+        lines.append(
+            f'fleet_pi_seat_unhealthy{{seat="{_seat_label}",health_class="{_hc}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)

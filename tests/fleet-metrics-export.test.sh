@@ -878,3 +878,292 @@ assert bad2 == len(enrolled), \
 print("OK: malformed / garbage spawn-bench does not gate the rollup")
 PY
 ok "fleet-ops#2493: held wrapper spawn-bench outranks a later healthy observation (census honest)"
+
+# =========================================================================
+# 14. fleet-ops#2524: per-seat unhealthy rollup closes the FleetPiSeatUnhealthy gap
+# =========================================================================
+# The single-seat fleet_pi_seat_healthy gauge reads only pi-seat-health.json;
+# FleetDeadCredentialSeats only watches credentials_bad seats; FleetSeatComebackOverdue
+# excludes seat_dead=true seats. A manually-overridden seat_dead=true + health_class=unhealthy
+# seat (the live 2026-08-31 poolside/laguna-s-2.1-free case) sat invisible to every
+# alert. The fleet_pi_seat_unhealthy_total rollup closes the gap. Pin:
+#   A. Per-seat ledger with one healthy + one unhealthy enrolled seat — the
+#      exporter emits total=1 and exactly the unhealthy seat in the per-seat
+#      series.
+#   B. Healthy-only ledger — total=0, no per-seat series (mirror of accept
+#      criteria "healthy seat clears it").
+#   C. Unhealthy seat whose (provider, model) cap is 0 in seat-caps.json —
+#      total=0; retirement is the fix surface, no manual ledger move needed.
+#   D. fleet_rules.yml FleetPiSeatUnhealthy expr must trip on either the
+#      per-seat total OR the single-seat gauge (the union closes the gap).
+UN_OUT="$scratch/un-out.prom"
+UN_SEAT_LEDGER="$scratch/un-seat-ledger"
+UN_SEAT_CAPS="$scratch/un-seat-caps.json"
+mkdir -p "$UN_SEAT_LEDGER"
+
+cat >"$UN_SEAT_CAPS" <<'JSON'
+{
+  "providers": {
+    "opencode": {"cap": 1, "models": {"healthy-lane-free": 1, "retired-lane-free": 0}},
+    "commandcode": {"cap": 1, "models": {"poolside/laguna-s-2.1-free": 1}}
+  }
+}
+JSON
+
+# Scenario A: one healthy enrolled seat, one unhealthy enrolled seat, plus
+# one retired seat (cap=0), one unhealthy seat with NO seat-caps.json entry
+# (the "model not in roster" case), and one synthetic fixture — only the
+# unhealthy enrolled seat must appear in the per-seat series.
+cat >"$UN_SEAT_LEDGER/opencode__healthy-lane-free.json" <<'JSON'
+{"provider":"opencode","model":"healthy-lane-free","http_status":200,"health_class":"healthy","seat_dead":false,"observed_at":"2026-08-31T12:00:00Z","source":"after_provider_response"}
+JSON
+cat >"$UN_SEAT_LEDGER/commandcode__poolside_laguna-s-2.1-free.json" <<'JSON'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"health_class":"unhealthy","seat_dead":true,"observed_at":"2026-08-31T06:50:00Z","source":"manual_override_after_repeated_503","failure_mode":"overloaded_error","consecutive_failure_count":4}
+JSON
+cat >"$UN_SEAT_LEDGER/opencode__retired-lane-free.json" <<'JSON'
+{"provider":"opencode","model":"retired-lane-free","http_status":503,"health_class":"unhealthy","seat_dead":false,"observed_at":"2026-08-31T09:00:00Z","source":"provider_fetch"}
+JSON
+cat >"$UN_SEAT_LEDGER/opencode__unknown-lane-free.json" <<'JSON'
+{"provider":"opencode","model":"unknown-lane-free","http_status":503,"health_class":"transient_fault","seat_dead":false,"observed_at":"2026-08-31T11:14:40Z","source":"provider_fetch"}
+JSON
+cat >"$UN_SEAT_LEDGER/test__fixture.json" <<'JSON'
+{"provider":"test","model":"fixture","http_status":500,"health_class":"unhealthy","seat_dead":false,"observed_at":"2026-08-31T09:00:00Z","source":"test"}
+JSON
+cat >"$UN_SEAT_LEDGER/commandcode__poolside_laguna-s-2.1-free.spawn-bench.json" <<'JSON'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","usable_at":"2026-09-01T00:00:00Z","reason":"no_block:rc=0"}
+JSON
+
+python3 - "$exporter" "$UN_OUT" "$UN_SEAT_LEDGER" "$UN_SEAT_CAPS" <<'PY' || fail "scenario A (mixed ledger) failed"
+import importlib.util, os, sys
+from pathlib import Path
+exporter, out_path, seat_ledger, seat_caps = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps-fallback.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
+m.GH_RATE_LIMIT_STATE = Path(os.path.dirname(out_path)) / "rl.state.json"
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 1, "self": 0},
+    "agent-ready": {"total": 1, "self": 0},
+}
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._gh_rate_limit = lambda: None
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+
+# Help + Type emitted exactly once (the #1844/#1855 family-dup rule applies
+# to the new family too — a future edit cannot silently blind the alert).
+help_count = sum(1 for ln in body.splitlines() if ln.startswith("# HELP fleet_pi_seat_unhealthy_total"))
+type_count = sum(1 for ln in body.splitlines() if ln.startswith("# TYPE fleet_pi_seat_unhealthy_total"))
+assert help_count == 1, f"fleet_pi_seat_unhealthy_total HELP count {help_count}\n{body}"
+assert type_count == 1, f"fleet_pi_seat_unhealthy_total TYPE count {type_count}\n{body}"
+help_per = sum(1 for ln in body.splitlines() if ln.startswith("# HELP fleet_pi_seat_unhealthy ") or ln.startswith("# HELP fleet_pi_seat_unhealthy{"))
+type_per = sum(1 for ln in body.splitlines() if ln.startswith("# TYPE fleet_pi_seat_unhealthy ") or ln.startswith("# TYPE fleet_pi_seat_unhealthy{"))
+assert help_per == 1, f"fleet_pi_seat_unhealthy HELP count {help_per}\n{body}"
+assert type_per == 1, f"fleet_pi_seat_unhealthy TYPE count {type_per}\n{body}"
+
+# The unhealthy enrolled seat (commandcode/poolside/laguna-s-2.1-free) MUST
+# appear; the healthy enrolled seat MUST NOT; the retired seat (cap=0) and
+# the synthetic test__ fixture MUST NOT — those are excluded by the
+# (provider, model) enrollment filter and the .spawn-bench / test provider
+# filter respectively.
+assert "fleet_pi_seat_unhealthy_total 1" in body, body
+assert 'fleet_pi_seat_unhealthy{seat="commandcode__poolside_laguna-s-2.1-free",health_class="unhealthy"} 1' in body, body
+assert "healthy-lane-free" not in body, f"healthy enrolled seat must not appear: {body}"
+assert "retired-lane-free" not in body, f"retired (cap=0) seat must not appear: {body}"
+assert "test__fixture" not in body, f"synthetic test provider must not appear: {body}"
+assert ".spawn-bench" not in body, f".spawn-bench marker must not appear: {body}"
+print("OK A: scenario A — mixed ledger emits the unhealthy enrolled seat only")
+PY
+
+# Scenario B: healthy-only ledger -> total=0, no per-seat series.
+HEALTHY_ONLY_LEDGER="$scratch/healthy-only-ledger"
+mkdir -p "$HEALTHY_ONLY_LEDGER"
+cat >"$HEALTHY_ONLY_LEDGER/opencode__healthy-lane-free.json" <<'JSON'
+{"provider":"opencode","model":"healthy-lane-free","http_status":200,"health_class":"healthy","seat_dead":false,"observed_at":"2026-08-31T12:00:00Z","source":"after_provider_response"}
+JSON
+python3 - "$exporter" "$scratch/healthy-out.prom" "$HEALTHY_ONLY_LEDGER" "$UN_SEAT_CAPS" <<'PY' || fail "scenario B (healthy-only) failed"
+import importlib.util, os, sys
+from pathlib import Path
+exporter, out_path, seat_ledger, seat_caps = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps-fallback.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
+m.GH_RATE_LIMIT_STATE = Path(os.path.dirname(out_path)) / "rl.state.json"
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: None
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._gh_rate_limit = lambda: None
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+assert "fleet_pi_seat_unhealthy_total 0" in body, body
+# Healthy-only ledger: no per-seat series — the per-seat family emits a
+# zero-count total only.
+assert "fleet_pi_seat_unhealthy{" not in body, body
+print("OK B: scenario B — healthy-only ledger emits total=0 and no per-seat series")
+PY
+
+# Scenario C: retired-only seat (cap=0) -> total=0 (the alert-clearing path
+# for fleet-ops#2524's own fix: setting cap=0 for poolside/laguna-s-2.1-free
+# must drop the metric on the next exporter tick, no manual ledger move).
+RETIRED_LEDGER="$scratch/retired-ledger"
+mkdir -p "$RETIRED_LEDGER"
+cat >"$RETIRED_LEDGER/opencode__retired-lane-free.json" <<'JSON'
+{"provider":"opencode","model":"retired-lane-free","http_status":503,"health_class":"unhealthy","seat_dead":false,"observed_at":"2026-08-31T09:00:00Z","source":"provider_fetch"}
+JSON
+python3 - "$exporter" "$scratch/retired-out.prom" "$RETIRED_LEDGER" "$UN_SEAT_CAPS" <<'PY' || fail "scenario C (retired cap=0) failed"
+import importlib.util, os, sys
+from pathlib import Path
+exporter, out_path, seat_ledger, seat_caps = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps-fallback.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
+m.GH_RATE_LIMIT_STATE = Path(os.path.dirname(out_path)) / "rl.state.json"
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: None
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._gh_rate_limit = lambda: None
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+assert "fleet_pi_seat_unhealthy_total 0" in body, body
+assert "retired-lane-free" not in body, f"cap=0 seat must not appear: {body}"
+print("OK C: scenario C — cap=0 retired seat does not count")
+PY
+
+# Scenario D: fleet_rules.yml FleetPiSeatUnhealthy expr must trip on either
+# branch. Verify by parsing the rule and asserting the union is present.
+# promtool proves the rule fires on the per-seat total in fleet_pi_seat_unhealthy_total.
+grep -q "alert: FleetPiSeatUnhealthy" "$rules" \
+  || fail "fleet_rules.yml missing FleetPiSeatUnhealthy"
+grep -q "fleet_pi_seat_unhealthy_total > 0" "$rules" \
+  || fail "FleetPiSeatUnhealthy must trip on fleet_pi_seat_unhealthy_total > 0 (fleet-ops#2524)"
+grep -q "fleet_pi_seat_healthy == 0" "$rules" \
+  || fail "FleetPiSeatUnhealthy must keep the single-seat gauge branch (legacy pi-seat-health.json coverage)"
+grep -q "fleet_pi_seat_unhealthy" "$rules" \
+  || fail "FleetPiSeatUnhealthy description must reference fleet_pi_seat_unhealthy (fleet-ops#2524)"
+
+if command -v promtool >/dev/null 2>&1; then
+  un_yml="$scratch/fleet-pi-seat-unhealthy.test.yml"
+  cat >"$un_yml" <<YOAML
+rule_files:
+  - $rules
+evaluation_interval: 6h
+tests:
+  - interval: 6h
+    input_series:
+      - series: 'fleet_pi_seat_unhealthy_total'
+        # 30 minutes of total=1 with a brief gap to catch any reset
+        # behaviour. Alert fires after `for: 30m` so the eval at 6h must
+        # show exp_alerts with the warning severity.
+        values: '0+0x30m 1+0x30m'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: FleetPiSeatUnhealthy
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetPiSeatUnhealthy
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: 'Pi seat unhealthy for 30+ minutes'
+              description: 'Either the single-seat pi-seat-health.json is non-healthy OR at least one enrolled per-seat ledger entry has health_class set and != healthy (fleet_pi_seat_unhealthy_total > 0).'
+YOAML
+  if ! out="$(promtool test rules "$un_yml" 2>&1)"; then
+    fail "promtool test rules exited non-zero on FleetPiSeatUnhealthy unit test: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules: FleetPiSeatUnhealthy must fire on fleet_pi_seat_unhealthy_total > 0 ($out)"
+  ok "promtool: FleetPiSeatUnhealthy fires on fleet_pi_seat_unhealthy_total > 0 (fleet-ops#2524)"
+fi
+
+ok "fleet-ops#2524: per-seat unhealthy rollup + alert tripwire + retirement path"
