@@ -27,6 +27,14 @@
 #   - future-wall: a seat whose usable_at is still in the future is
 #     never probed (the wall-in-future check is the only remaining
 #     throttle; it precedes the min-interval check).
+#   - overdue-clears (fleet-ops#2520): the FleetSeatComebackOverdue alert
+#     keys on the metrics-side fleet_seat_comeback_overdue_total, exported
+#     from _read_comeback_overdue against the SAME ledger. A past-wall
+#     seat must count overdue BEFORE the sweep; after the sweep the count
+#     must be 0 — probed+unwalled on a successful probe, or re-benched
+#     into the future on a probe failure (the #2493 timeouts). The count
+#     legitimately stays 1 only in the one stuck case: the wall cannot be
+#     advanced (read-only ledger, section 3c).
 #
 # Sandbox: scratch SEATS_DIR/state/prom + stub pi only. No live ledger,
 # no live pi, no systemd.
@@ -39,7 +47,26 @@ BIN="$repo_root/bin/fleet-seat-comeback-release"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
+# Metrics-side overdue count (_read_comeback_overdue in
+# libexec/fleet-metrics-export.py) over $SEATDIR, evaluated at NOW_EPOCH
+# (the sweep's frozen now). This is exactly what feeds
+# fleet_seat_comeback_overdue_total, the FleetSeatComebackOverdue alert
+# source — asserting 0 here proves the sweep cleared the overdue metric.
+overdue_n() {
+    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$SEATDIR" "$NOW_EPOCH" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.SEAT_LEDGER = Path(sys.argv[2])
+m.time.time = lambda: int(sys.argv[3])
+cb_n, _ = m._read_comeback_overdue()
+print(cb_n)
+PY
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq missing"
+command -v python3 >/dev/null 2>&1 || fail "python3 required (exporter overdue assertion, fleet-ops#2520)"
 
 # Fixed NOW so the test is stable regardless of when it runs.
 NOW_ISO="2026-08-30T12:00:00Z"
@@ -61,7 +88,11 @@ cat > "$TMPD/pi-fail" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-chmod +x "$TMPD/pi-ok" "$TMPD/pi-fail"
+cat > "$TMPD/pi-timeout" <<'EOF'
+#!/usr/bin/env bash
+exit 124
+EOF
+chmod +x "$TMPD/pi-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout"
 
 # --- synthetic fixtures ---------------------------------------------------
 # 1. Walled, wall clock EXPIRED, release-at-expiry class (overload_bench,
@@ -273,7 +304,13 @@ grep -q "LOUD \[COMEBACK-RELEASE-STALLED\]" "$TMPD/live-stall.err" \
   || fail "re-bench-fails: must render the LOUD line: $(cat "$TMPD/live-stall.err")"
 grep -q "^fleet_seat_comeback_release_stalled 1$" "$PROM" \
   || fail "re-bench-fails: prom stalled must be 1: $(cat "$PROM")"
-ok "loud stall still fires when re-bench cannot advance the wall (read-only ledger)"
+# The overdue metric must STAY 1 here — this is the one honest stuck case
+# (wall cannot be advanced), and it is what keeps the alert loud instead
+# of the sweep clearing the overdue count while the seat is unreachable.
+stuck_overdue=$(overdue_n)
+[[ "$stuck_overdue" == "1" ]] \
+  || fail "re-bench-fails: overdue count must stay 1 (wall cannot be advanced), got $stuck_overdue"
+ok "loud stall still fires when re-bench cannot advance the wall (read-only ledger); overdue stays 1"
 
 # --- 4. override: wall-expired + recent probe -> probe anyway (unstick) --
 # The fleet-ops#2421 follow-up (2026-08-31 straitly/gpt-5.6-sol): a probe
@@ -341,5 +378,72 @@ grep -qi "nemotron" <<<"$out" \
 released_total=$(jq -r '.released_total' "$STATE")
 [[ "$released_total" == "0" ]] || fail "future-wall seat must not increment released_total: $released_total"
 ok "future-wall seat: skipped via wall-in-future check, no probe, no release"
+
+# --- 6. overdue metric clears (fleet-ops#2520) -----------------------------
+# The FleetSeatComebackOverdue alert keys on fleet_seat_comeback_overdue_total
+# (exported from _read_comeback_overdue). A sweep that re-probes + unwalls
+# (success) or advances the wall (re-bench on a probe failure with no real
+# response, fleet-ops#2493) must leave the ledger with that count at 0 —
+# otherwise a fixed sweep still leaves the alert stuck, which is exactly
+# the sustained-overdue failure this issue names. Both paths are pinned
+# end-to-end against the real exporter function on the SAME scratch ledger
+# the sweep just operated on.
+
+# 6a. probe SUCCEEDS: past-wall seat is overdue before, unwalled after.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/straitly__gpt-5.6-sol.json" << 'EOF'
+{"provider":"straitly","model":"gpt-5.6-sol","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:00:00.000Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T09:30:21.000Z","consecutive_failure_count":23}
+EOF
+STATE="$TMPD/state-overdue-ok.json"
+PROM="$TMPD/release-overdue-ok.prom"
+before=$(overdue_n)
+[[ "$before" == "1" ]] || fail "overdue-clears: past-wall seat must count overdue BEFORE the sweep (got $before)"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/overdue-ok.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "overdue-clears: sweep must exit 0 on success path, got $rc ($(cat "$TMPD/overdue-ok.err"))"
+health=$(jq -r '.health_class' "$SEATDIR/straitly__gpt-5.6-sol.json")
+[[ "$health" == "healthy" ]] || fail "overdue-clears: seat must be unwalled (healthy), got $health"
+after=$(overdue_n)
+[[ "$after" == "0" ]] || fail "overdue-clears: _read_comeback_overdue must be 0 AFTER the sweep (unwall), got $after"
+ok "overdue metric clears: past-wall seat probed + unwalled -> comeback-overdue count 0"
+
+# 6b. probe FAILS with no real response (rc=124 timeout, the #2493 shape):
+#     the wall cannot be re-anchored by the extension, so the sweep must
+#     re-bench it into the future. The pre-#2505 bin left the wall in the
+#     past after such a failure (next tick re-probes, re-fails, alert
+#     sustains) — this assertion is the regression pin for that class.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/straitly__gpt-5.6-sol.json" << 'EOF'
+{"provider":"straitly","model":"gpt-5.6-sol","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:00:00.000Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T09:30:21.000Z","consecutive_failure_count":23}
+EOF
+STATE="$TMPD/state-overdue-rebench.json"
+PROM="$TMPD/release-overdue-rebench.prom"
+before=$(overdue_n)
+[[ "$before" == "1" ]] || fail "overdue-rebench: past-wall seat must count overdue BEFORE the sweep (got $before)"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    FLEET_SEAT_COMEBACK_TIMEOUT_S=2 \
+    PI_BIN="$TMPD/pi-timeout" \
+    bash "$BIN" >/dev/null 2>"$TMPD/overdue-rebench.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "overdue-rebench: sweep must exit 0 (re-benched, not loud), got $rc ($(cat "$TMPD/overdue-rebench.err"))"
+grep -q "REBENCHED straitly/gpt-5.6-sol" "$TMPD/overdue-rebench.err" \
+  || fail "overdue-rebench: must log REBENCHED: $(cat "$TMPD/overdue-rebench.err")"
+after=$(overdue_n)
+[[ "$after" == "0" ]] || fail "overdue-rebench: _read_comeback_overdue must be 0 AFTER the sweep (wall advanced), got $after"
+ok "overdue metric clears: probe failure re-benches the wall into the future -> comeback-overdue count 0 (fleet-ops#2520 regression pin)"
 
 echo "ALL OK: active come-back release path (fleet-ops#2421)"
