@@ -27,6 +27,38 @@ MECHANICAL_BODY_RE = re.compile(
 MECHANICAL_TITLE_RE = re.compile(
     r"(?i)^\[gap-audit\]|^AUTO-REVERT"
 )
+# Automated escalation log patterns (fleet-ops#2115): these are written by
+# stop-escalation-dispatch, the SENIOR AUDITOR, and the seat-management
+# machinery as part of the automated escalation/seat system, not manual
+# human operations. Filter them out so the manual-seam lens doesn't flag
+# the automation's own logs as seams.
+# Note: this matches against `rest` (the line after the ISO timestamp is stripped).
+ESCALATION_LOG_RE = re.compile(
+    r"^(?:"
+    r"DISPATCH(?:-NO-BLOCK|-OUTPUT)?|TIMEOUT-KILL(?:-OUTPUT)?|KILL-RETRY(?:-OUTPUT)?|STOP-ESCALATION(?:-FAULT)?"
+    r"|LADDER-WALLED"
+    r"|\*\*Summoning trip:\*\*|\*\*Root cause"
+    r"|dispatched auditor|EXTLOAD-|PACKET-)"
+    r"|STOP-REASON\.json re-read"
+    r"|`STOP-REASON\.json` re-read"
+    r"|Read the alert, identified"
+    r"|escalated via OnFailure="
+    r"|cline/cline-pass/"
+    r"|pick_seat "
+    r"|Seat pool:"
+    r"|Non-heavy seats:"
+    r"|Heavy seats "
+    r"|catch-all sweep:"
+    r"|Verified drill "
+    r"|The actual root cause:"
+    r"|Armed auto-merge "
+    r"|Re-armed auto-merge "
+    r"|FleetSlo"
+    r"|Closest peer session:"
+    r"|## .* — SENIOR AUDITOR"
+    r"|AUDITOR-LOG\.md"
+    r"|auditor_claimed\(\)"
+)
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HEADING_RE = re.compile(r"^## Manual-seam lens\b", re.M)
 
@@ -208,6 +240,9 @@ def collect_actions_log(log_path, since_dt, now):
         if not rest or len(rest) < 8:
             continue
         if WORKER_CLAIM_RE.search(rest):
+            continue
+        # Skip automated escalation log entries (fleet-ops#2115)
+        if ESCALATION_LOG_RE.search(rest):
             continue
         out.append(candidate(rest[:200], "actions-log", stamp.strftime("%Y-%m-%dT%H:%M:%SZ"), str(p)))
         if len(out) >= 50:
