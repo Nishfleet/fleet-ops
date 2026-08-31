@@ -1960,21 +1960,21 @@ fi
 # sentinel here, per call.
 CANARY_GH_FAILURE_BIN="${FLEET_CANARY_GH_FAILURE_BIN:-/home/nish/.local/bin/fleet-canary-gh-failure-detector}"
 if [ -x "$CANARY_GH_FAILURE_BIN" ]; then
-    log "22. canary gh-failure data-plane detector starting"
+    log "44. canary gh-failure data-plane detector starting"
     canary_gh_failure_sentinel="${FLEET_CANARY_GH_FAILURE_SENTINEL:-/run/user/$(id -u)/fleet-canary-gh-failure-trusted}"
     mkdir -p "$(dirname "$canary_gh_failure_sentinel")" 2>/dev/null || true
     touch "$canary_gh_failure_sentinel" 2>/dev/null || \
-        log "22. WARN: could not refresh $canary_gh_failure_sentinel; observe-to-close will skip"
+        log "44. WARN: could not refresh $canary_gh_failure_sentinel; observe-to-close will skip"
     if FLEET_CANARY_GH_FAILURE_OK_TO_CLOSE=1 \
        FLEET_CANARY_GH_FAILURE_SENTINEL="$canary_gh_failure_sentinel" \
        "$CANARY_GH_FAILURE_BIN"; then
-        log "22. canary gh-failure data-plane detector complete"
+        log "44. canary gh-failure data-plane detector complete"
     else
         canary_gh_failure_rc=$?
-        log "22. canary gh-failure detector FAILED (rc=$canary_gh_failure_rc)"
+        log "44. canary gh-failure detector FAILED (rc=$canary_gh_failure_rc)"
     fi
 else
-    log "22. canary gh-failure detector missing at $CANARY_GH_FAILURE_BIN — skip (not installed)"
+    log "44. canary gh-failure detector missing at $CANARY_GH_FAILURE_BIN — skip (not installed)"
 fi
 
 # ============================================================================

@@ -301,4 +301,32 @@ if grep -q 'fleet-issue-file file' "$issue_log"; then
 fi
 ok "scenario11: --dry-run reports would_file=1 signal=canary-gh-failure/<canary>"
 
-echo "OK: fleet-canary-gh-failure-detector (fleet-ops#2538) — 11 scenarios green"
+# --- Scenario 12: the default journal command evals --since as one token -----
+# Regression (live 2026-08-31): the default JOURNAL_CMD lost the quotes around
+# `1 hour ago`, so eval ran `journalctl --since 1 hour ago` as broken separate
+# args (rc=1, empty) and the detector silently reported warn_count=0 from a
+# journal that actually had WARNs. Guard it: eval the default command through a
+# fake journalctl and assert --since gets a single `1 hour ago` token.
+default_cmd=$(sed -n 's/^JOURNAL_CMD=.*:-\(journalctl[^}]*\)}.*/\1/p' "$bin")
+[[ -n "$default_cmd" ]] || fail "scenario12: could not extract default journal command from $bin"
+jtbin="$scratch/jtbin"
+jtlog="$scratch/jt.log"
+mkdir -p "$jtbin"
+cat >"$jtbin/journalctl" <<FAKE_J
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$jtlog"
+exit 0
+FAKE_J
+chmod +x "$jtbin/journalctl"
+: >"$jtlog"
+bash -c "PATH=\"$jtbin:\$PATH\"; eval \"$default_cmd\"" >/dev/null 2>&1
+args=$(cat "$jtlog")
+if ! grep -q -- '--since' <<<"$args"; then
+  fail "scenario12: default journal command must include --since (got: $args)"
+fi
+if ! grep -q -- '--since 1 hour ago' <<<"$args"; then
+  fail "scenario12: default journal command must pass --since \"1 hour ago\" as one token (got: $args)"
+fi
+ok "scenario12: default journal command evals --since \"1 hour ago\" as a single token"
+
+echo "OK: fleet-canary-gh-failure-detector (fleet-ops#2538) — 12 scenarios green"

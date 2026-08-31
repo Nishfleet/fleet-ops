@@ -69,7 +69,7 @@ GH="${GH:-gh}"
 ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 
-JOURNAL_CMD="${FLEET_CANARY_GH_FAILURE_JOURNAL:-journalctl --user -u fleet-heartbeat.service -u fleet-credential-expiry-canary.service --since "1 hour ago" --no-pager}"
+JOURNAL_CMD="${FLEET_CANARY_GH_FAILURE_JOURNAL:-journalctl --user -u fleet-heartbeat.service -u fleet-credential-expiry-canary.service --since \"1 hour ago\" --no-pager}"
 MARKER_DIR="${FLEET_CANARY_GH_FAILURE_MARKER_DIR:-$HOME/workspaces/agent-state/canary-gh-failures}"
 WINDOW_S="${FLEET_CANARY_GH_FAILURE_WINDOW_S:-3600}"
 THRESHOLD="${FLEET_CANARY_GH_FAILURE_THRESHOLD:-3}"
