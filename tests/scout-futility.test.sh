@@ -481,7 +481,12 @@ echo '[]' >"$open_issues"
 rm -f "$state/fleet-ops.state"
 export SCOUT_FUTILITY_READY_COUNT=16
 
-# Stub journalctl that emits a 503 overloaded_error line on every -p err query.
+# Stub journalctl that emulates journald filtering: `-p err` returns only
+# err-priority lines, `-n N` truncates to the last N lines, and priority
+# tags are stripped like `journalctl -o cat`. The provider wall error is
+# printed by the pi script at info priority, so the err-priority view never
+# sees it and only the all-priority -n 50 view (the hot-patch, fleet-ops
+# #2521) reaches it.
 # Body is written to a separate file and read by the stub so JSON quotes
 # inside the body don't conflict with the stub's quoting.
 mkdir -p "$scratch/bin"
@@ -489,16 +494,24 @@ write_journalctl_stub() {
     cat >"$scratch/bin/journalctl" <<'EOFSTUB'
 #!/usr/bin/env bash
 # Body is read from $JOURNALCTL_BODY_FILE (set by the test) so JSON quotes
-# inside the body never touch this script's quoting.
+# inside the body never touch this script's quoting. Fixture lines may carry
+# a `info:` / `err:` priority tag; -o cat output strips them.
 body_file="${JOURNALCTL_BODY_FILE:-/dev/null}"
-case "$*" in
-    *"-p err"*)
-        if [[ -f "$body_file" ]]; then
-            cat "$body_file"
-        fi
-        ;;
-    *) exit 0 ;;
-esac
+n=10
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "-n" ]]; then
+        case "$arg" in ''|*[!0-9]*) ;; *) n="$arg" ;; esac
+    fi
+    prev="$arg"
+done
+if [[ -f "$body_file" ]]; then
+    if [[ "$*" == *"-p err"* ]]; then
+        grep '^err:' "$body_file" | tail -n "$n" | sed 's/^err: //'
+    else
+        sed 's/^\(info\|err\): //' "$body_file" | tail -n "$n"
+    fi
+fi
 exit 0
 EOFSTUB
     chmod +x "$scratch/bin/journalctl"
@@ -675,6 +688,64 @@ echo '[]' >"$open_issues"
 grep -q 'SCOUT-FUTILITY' "$triage" \
   || fail "scenario17g: opencode 404 wall-crash must LOUD on N=3 (triage=$(cat "$triage"))"
 ok "scenario17g: opencode 404 'Provider returned error' is wall-class"
+
+# Scenario 17h: provider wall at INFO priority, 40 lines back (fleet-ops
+# #2521). The pi script prints the 503/429 wall error to stdout/stderr at
+# info priority, not err. A long run pushes it far back. The pattern merged
+# in PR #2498 scanned `-p err -n 10`: it loses the case twice — the
+# err-priority filter drops the info line entirely, and a 10-line tail
+# window cannot reach 40 lines back. The hot-patch scans the last 50 lines
+# at all priorities. Fixture: 50 info-priority lines, the explicit
+# `503 overloaded_error` at line 10 (40 lines from the tail), the rest a
+# retry storm that also carries the wall pattern so EVERY line in the
+# 50-line window matches (the strict all-lines rule for wall class).
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+{
+    i=1
+    while [[ $i -le 50 ]]; do
+        if [[ $i -eq 10 ]]; then
+            printf 'info: INFO pi: HTTP 503 overloaded_error: Upstream model provider is temporarily unavailable\n'
+        else
+            printf 'info: INFO pi: retry %d/60 (overloaded_error)\n' "$i"
+        fi
+        i=$((i + 1))
+    done
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+
+# The OLD invocation shape (-p err -n 10) sees nothing: the wall line is
+# info priority, 40 lines back.
+old_out=$("$scratch/bin/journalctl" --user -u pi-scout@fleet-ops.service -p err -n 10 --no-pager -o cat 2>/dev/null || true)
+[[ -z "$old_out" ]] \
+  || fail "scenario17h: err-priority view must be empty for an info-priority wall line, got: $old_out"
+# Even at all priorities, a 10-line tail window stops 40 lines short.
+tail10=$("$scratch/bin/journalctl" --user -u pi-scout@fleet-ops.service -n 10 --no-pager -o cat 2>/dev/null || true)
+! grep -q '503 overloaded_error' <<<"$tail10" \
+  || fail "scenario17h: -n 10 tail must not reach the wall line 40 lines back"
+# The fixed invocation (-n 50, all priorities) reaches 40 lines back and
+# surfaces the info-priority 503.
+window50=$("$scratch/bin/journalctl" --user -u pi-scout@fleet-ops.service -n 50 --no-pager -o cat 2>/dev/null || true)
+grep -q '503 overloaded_error' <<<"$window50" \
+  || fail "scenario17h: -n 50 window must include the wall line 40 lines back"
+
+# The helper source must keep the all-priority 50-line scan (a re-narrowing
+# to -p err -n 10 would break this scenario AND silently miss info-priority
+# wall crashes in production).
+grep -q -- '--user -u "\$unit" -n 50' "$bin" \
+  || fail "scenario17h: helper must scan the last 50 lines at all priorities"
+! grep -q -- '-p err -n 10' "$bin" \
+  || fail "scenario17h: helper must not filter -p err (info-priority wall lines would vanish)"
+
+# End-to-end through the real helper: one crash on this journal counts as a
+# wall crash (detect_provider_wall returns true; consecutive_wall bumps).
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17h: info-priority 503 40 lines back must count as wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17h: provider wall at info priority 40 lines back is detected (all priorities, -n 50)"
 
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
