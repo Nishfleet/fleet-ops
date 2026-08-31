@@ -357,6 +357,25 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2462-claim-cap\.test\.
   || fail "fleet-ops-2462-claim-cap.test.sh must not be a known orphan (fleet-ops#2462)"
 ok "fleet-ops-2462-claim-cap.test.sh is pinned in the P14 reachable set (fleet-ops#2462)"
 
+# fleet-ops#2475 (PR #2193 follow-up): hard-pin the host line for
+# unit-escalation-write-pi-issue-exclusion. The test landed on main in this
+# PR without a ci.yml listing and was hosted from tests/ci-standards-audit.test.sh
+# (already in P14) — the worker App cannot push .github/workflows/** so the
+# host was the only path. P14 would run red on "1 test file(s) are neither in
+# ci.yml, hosted by a listed test, live/destructive, nor a known orphan:
+# unit-escalation-write-pi-issue-exclusion.test.sh". This named pin is
+# class-prevention so a future drop of the host line cannot park the test
+# on known_orphans to silence the generic $bad[] message — it fails by name
+# here first, same shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/unit-escalation-write-pi-issue-exclusion\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke unit-escalation-write-pi-issue-exclusion.test.sh (fleet-ops#2475)"
+[[ -n "${reachable[unit-escalation-write-pi-issue-exclusion.test.sh]:-}" ]] \
+  || fail "unit-escalation-write-pi-issue-exclusion.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2475)"
+[[ -z "${known_orphan_set[unit-escalation-write-pi-issue-exclusion.test.sh]:-}" ]] \
+  || fail "unit-escalation-write-pi-issue-exclusion.test.sh must not be a known orphan (fleet-ops#2475)"
+ok "unit-escalation-write-pi-issue-exclusion.test.sh is pinned in the P14 reachable set (fleet-ops#2475)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob

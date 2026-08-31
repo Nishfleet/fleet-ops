@@ -323,6 +323,19 @@ bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
 # without a workflow-file edit.
 bash "$here/unit-escalation-write-journal-evidence.test.sh"
 
+# fleet-ops#2133 / #2475 (PR #2193): pi-issue@*.service exclusion from
+# unit-escalation-write. The worker has its own OnFailure=pi-issue-failed@%i
+# reaper + Restart=on-failure with StartLimitBurst=3, so the SENIOR AUDITOR
+# path was redundant and amplified pi-issue failures into seat-burning
+# auditor dispatches (measured 2026-08-30 05:00Z: 59/62/33). The runtime
+# test (4 cases: real-instance skip, template skip, reaper NOT excluded,
+# unrelated unit NOT excluded) is the loud proof that the writer exits 0
+# with a "skipping excluded unit" message instead of writing STOP-REASON
+# for pi-issue@*. Hosts here alongside its sibling unit-escalation-write-*
+# tests so P14 runs it without a workflow-file edit (the worker App cannot
+# push .github/workflows/**).
+bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
+
 # fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
 # + systemic-failure skip (.systemic marker when every tried seat is benched).
 # Hosts the 11-test gate (MAX_RECLAIMS env var, tick read path, skip+escalate,
