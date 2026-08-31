@@ -239,6 +239,20 @@ fi
 mkdir -p "$session_dir"
 
 empty_run_attempt=0
+
+# fleet-ops#2462: reclaim-count initialization. The intake tick's first claim
+# of this issue is the first strike; failed re-claims are counted by
+# pi-issue-failed-reap (which increments the counter on each failure).
+# Write count=1 if no file exists so the counter starts at the first claim,
+# not the first failure. A successful run does NOT reset it here — the
+# reset happens on PR open (fleet-merged-pr-close / the open-PR shortcut in
+# failed-reap sees the PR and skips the reap entirely, so no increment).
+_rc_init_file="$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count"
+if [[ ! -f "$_rc_init_file" ]]; then
+    printf '1' > "$_rc_init_file" 2>/dev/null || true
+    seat_log "pi-issue-run: $inst initialized reclaim-count=1 (first claim)"
+fi
+
 while true; do
 
 # First attempt: no exclusions. Subsequent attempts (after a restart) carry
@@ -667,4 +681,13 @@ fi
 # with the full seat pool, not the stale list of seats that failed before the
 # one that worked.
 : >"$tried_file"
+
+# fleet-ops#2462: reclaim-count reset on success. A successful run means the
+# issue is resolved (PR will be opened). Clear the counter + systemic marker
+# so a future re-open of this issue starts fresh, not inheriting a stale
+# cap or marker from this failure cycle.
+rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" 2>/dev/null || true
+rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
+seat_log "pi-issue-run: $inst SUCCESS reset reclaim-count + systemic marker (issue resolved)"
+
 exit 0

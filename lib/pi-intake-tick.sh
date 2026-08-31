@@ -76,6 +76,21 @@ CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work
 # bench backoff (300s) and ~2x the intake timer interval, so recovery is
 # automatic once the cooldown expires. Overridable for tests.
 RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
+# fleet-ops#2462: hard cap on total re-claims per issue. The reclaim cooldown
+# (above) breaks the tight spawn-die-respawn loop, but an issue whose every
+# seat fails with a systemic provider error (503/429/500 storm, fleet-ops#1526)
+# still drains the seat pool one 900s cooldown at a time — 27 re-claims in
+# 24h despite the cooldown. MAX_RECLAIMS caps the TOTAL number of times an
+# issue can be re-claimed (first claim + re-claims) across all seats before
+# intake stops re-claiming it and escalates. The counter is per-issue in
+# $ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count; pi-issue-failed-reap
+# increments it when it releases a failed claim, and pi-issue-run records
+# the first (initial) claim. A successful PR open resets the counter to 0
+# so a legitimately-fixed issue is never permanently locked out.
+# Default 8: 1 initial + 7 re-claims gives the seat pool time to recover
+# (each seat bench is 600-900s, so 8 passes covers ~2h of provider storm)
+# without letting a stuck item starve the fleet for days.
+MAX_RECLAIMS="${PI_INTAKE_MAX_RECLAIMS:-8}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
 # — the same dir pi-issue-failed-reap writes (both use
 # ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
@@ -461,7 +476,7 @@ for i in "${!numbers[@]}"; do
     _cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"
     if [[ -f "$_cooldown_file" ]]; then
         _cd_ts=$(cat "$_cooldown_file" 2>/dev/null || true)
-        _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null || echo 0)
+        _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null) || _cd_epoch=0
         _now_epoch=$(date -u +%s)
         _cd_age=$(( _now_epoch - _cd_epoch ))
         if (( _cd_epoch > 0 && _cd_age < RECLAIM_COOLDOWN_S )); then
@@ -470,6 +485,52 @@ for i in "${!numbers[@]}"; do
         fi
         # Cooldown expired — clear the marker so the issue is claimable again.
         rm -f "$_cooldown_file" 2>/dev/null || true
+    fi
+
+    # fleet-ops#2462: reclaim-count cap. A failed worker's claim is released
+    # by pi-issue-failed-reap, which increments a per-issue reclaim-count file.
+    # If the issue has been re-claimed past MAX_RECLAIMS, intake stops
+    # re-claiming and escalates: the issue is labelled agent-blocked with a
+    # machine-readable blocked-on line so a human reviews why every seat fails.
+    # A successful PR open resets the counter so a legitimately-fixed issue is
+    # never permanently locked out. Checked before the git fetch / ls-remote
+    # for zero network cost.
+    _rc_now_epoch=$(date -u +%s)
+    _reclaim_count_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
+    _rc_current=0
+    if [[ -f "$_reclaim_count_file" ]]; then
+        _rc_current=$(cat "$_reclaim_count_file" 2>/dev/null || echo 0)
+        _rc_current=${_rc_current//[^0-9]/}
+        _rc_current=${_rc_current:-0}
+    fi
+    if (( _rc_current >= MAX_RECLAIMS )); then
+        echo "issue $N ($title): skipped-max-reclaims (count=$_rc_current >= $MAX_RECLAIMS) - escalating to agent-blocked" >&2
+        gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
+        gh issue comment "$N" -R "$FULL" --body "fleet-ops#2462: issue $N has been re-claimed $_rc_current times (cap=$MAX_RECLAIMS). Every usable seat has failed with provider errors; re-claiming would starve the seat pool. Escalating to senior conference for review.
+
+blocked-on: nish-decision" 2>/dev/null || true
+        continue
+    fi
+
+    # fleet-ops#2462: systemic-failure skip. When every usable seat fails
+    # for the same issue within a recovery window, the failure is systemic
+    # (a provider-wide outage, not a seat fault). pi-issue-failed-reap writes
+    # a .systemic marker when it detects the issue exhausted every usable
+    # seat. Intake respects it: the issue stays agent-ready but is not
+    # re-claimed until the marker ages out, giving the seat pool time to
+    # recover from the provider storm.
+    _systemic_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.systemic"
+    if [[ -f "$_systemic_file" ]]; then
+        _sys_ts=$(cat "$_systemic_file" 2>/dev/null || true)
+        if [[ -n "$_sys_ts" ]]; then
+            _sys_epoch=$(date -u -d "$_sys_ts" +%s 2>/dev/null) || _sys_epoch=0
+            _sys_age=$(( _rc_now_epoch - _sys_epoch ))
+            if (( _sys_epoch > 0 && _sys_age < RECLAIM_COOLDOWN_S )); then
+                echo "issue $N ($title): skipped-systemic-failure (seeded $_sys_age ago, all seats failed - waiting for provider recovery)"
+                continue
+            fi
+            rm -f "$_systemic_file" 2>/dev/null || true
+        fi
     fi
 
     # Per-issue fetch (keeps origin/main fresh)
@@ -767,6 +828,16 @@ for i in "${!numbers[@]}"; do
     _claims_dir="$(dirname "$CLAIMS_LOG")"
     mkdir -p "$_claims_dir" 2>/dev/null || true
     printf '%s claimed line=%s repo=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$N" "$REPO" >> "$CLAIMS_LOG" 2>/dev/null || true
+    # fleet-ops#2462: initialize the reclaim-count to 1 on the first claim.
+    # pi-issue-failed-reap increments it on each failed re-claim; when it
+    # reaches MAX_RECLAIMS, intake skips the issue. A stale count file from
+    # a prior claim cycle would have been cleared by the success/reset path
+    # -- only write if absent so a re-claim (after cooldown expiry) does not
+    # clobber an already-incremented count.
+    _rc_init_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
+    if [[ ! -f "$_rc_init_file" ]]; then
+        printf '1' > "$_rc_init_file" 2>/dev/null || true
+    fi
     slots=$(( slots - 1 ))
 done
 

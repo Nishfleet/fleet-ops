@@ -69,6 +69,10 @@ WINDOW_DAYS="${MERGED_PR_CLOSE_WINDOW_DAYS:-7}"
 NOW_ISO="${MERGED_PR_CLOSE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 TRIAGE="${MERGED_PR_CLOSE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 INTAKE_JSON="${MERGED_PR_CLOSE_INTAKE_JSON:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json}"
+# fleet-ops#2462: per-issue state dir for reclaiming the reclaim-count and
+# systemic-failure markers on close. Matches the path used by
+# pi-intake-tick.sh and pi-issue-failed-reap.
+ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
 
 log() {
     printf '[%s] [fleet-merged-pr-close] %s\n' "$NOW_ISO" "$*" >&2
@@ -293,8 +297,15 @@ while IFS= read -r repo; do
             loud "MERGED-PR-CLOSE-ERR" "$repo#$num: gh issue close failed — will retry next tick"
             continue
         fi
+        # fleet-ops#2462: reset reclaim-count + clear systemic marker on close.
+        # The merged PR shipped the work; a future re-open of the issue must
+        # start fresh, not inherit a stale cap/marker from this failure cycle.
+        _rc_clear_file="$ATTEMPTS_DIR/pi-issue-${repo}-${num}.reclaim-count"
+        _sys_clear_file="$ATTEMPTS_DIR/pi-issue-${repo}-${num}.systemic"
+        rm -f "$_rc_clear_file" "$_sys_clear_file" 2>/dev/null || true
+
         closed=$((closed + 1))
-        log "  $repo#$num: CLOSED (delivered by merged PR #$mnum)"
+        log "  $repo#$num: CLOSED (delivered by merged PR #$mnum) -- reset reclaim-count + systemic marker"
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
