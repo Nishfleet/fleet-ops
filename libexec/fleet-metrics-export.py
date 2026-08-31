@@ -57,7 +57,7 @@ HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0.
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
 HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
-HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
+HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with >=1 model cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291, routable-allowlist fleet-ops#2522)."
 TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
 HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true and health_class=credentials_bad (HTTP 401/403) that need re-auth and will not recover until re-authenticated (fleet-ops#1445)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
@@ -350,7 +350,8 @@ CHAIN_PROM = Path(
     )
 )
 # seat-caps.json is the source of truth for enrolled-seat count
-# (fleet_pi_seat_total) — providers with cap>0 are enrolled.
+# (fleet_pi_seat_total) — providers with >=1 model cap>0 are enrolled
+# (the router's cap-map allowlist; fleet-ops#2522).
 SEAT_CAPS_DEFAULT = Path(
     "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json"
 )
@@ -1775,14 +1776,41 @@ def _read_chain_repair_duration():
     return None
 
 
-def _enrolled_seat_providers():
-    """Return the set of enrolled provider names (cap > 0 in seat-caps.json).
+def _model_cap_value(raw):
+    """Normalise one seat-caps models-map value to an integer cap.
 
-    Enrollment is per-provider: a provider whose cap is 0 (dead decoys,
-    deliberately-capped, money-only rows) is not a seat the fleet routes
-    to, so it must not count in the seat_availability SLO numerator or
-    denominator family. Returns None when the config is missing/unparseable
-    (callers then report source-unavailable rather than guessing).
+    A model row is either a bare number ("cap": 1) or an object
+    ({"cap": 2, "class": "free"} — the per-model-class override form used
+    by cline/z-ai/glm-5.3-flash and zenmux/z-ai/glm-4.7-flash-free). Mirrors
+    lib/seat-lib.sh load_seat_caps' object handling: extract .cap, fail
+    closed to 0 on any non-integer shape. Returns an int.
+    """
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, (int, float)):
+        return int(raw) if raw > 0 else 0
+    if isinstance(raw, dict):
+        cap = raw.get("cap", 0)
+        if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0:
+            return int(cap)
+    return 0
+
+
+def _enrolled_models_by_provider():
+    """Return {provider: {model: cap>0}} for the routable allowlist, or None.
+
+    Enrollment mirrors the router's cap-map allowlist (lib/seat-lib.sh
+    load_seat_caps + pick_seat): a provider is enrolled iff it can actually
+    route work — i.e. it declares a models map with at least one model whose
+    cap > 0. A provider whose cap is 0 (dead decoys, deliberately-capped,
+    money-only rows) OR whose models are all capped 0 (devin after the
+    2026-08-30 dead-credential cap-0, xai-oauth after the 2026-08-30 Grok
+    402 drain) is NOT a seat the fleet routes to, so it must not count in
+    the seat_availability SLO numerator or denominator family (fleet-ops#2522).
+    A provider with cap>0 and NO models map keeps the legacy bare-cap form
+    (pre-#2377 fixtures; no live row) — it is enrolled via the provider cap.
+    Returns None when the config is missing/unparseable (callers then report
+    source-unavailable rather than guessing).
     """
     for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
         try:
@@ -1792,19 +1820,49 @@ def _enrolled_seat_providers():
         providers = data.get("providers") or {}
         if not isinstance(providers, dict):
             continue
-        enrolled = set()
+        enrolled = {}
         for prov, cfg in providers.items():
             if not isinstance(cfg, dict):
                 continue
             cap = cfg.get("cap", 0)
-            if isinstance(cap, (int, float)) and cap > 0:
-                enrolled.add(prov)
+            if not (isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0):
+                continue
+            models = cfg.get("models")
+            if not isinstance(models, dict):
+                # Legacy bare-cap form: no models map declared, provider cap
+                # alone means enrolled (pre-#2377 fixtures; not live today).
+                enrolled[prov] = {}
+                continue
+            enrolled_models = {
+                m: c for m, c in ((m, _model_cap_value(v)) for m, v in models.items())
+                if c > 0
+            }
+            if enrolled_models or not models:
+                # Declared models map with >=1 cap>0 => enrolled. An EMPTY
+                # models dict is the bare-cap form too (enrolled via cap).
+                enrolled[prov] = enrolled_models
         return enrolled if enrolled else None
     return None
 
 
+def _enrolled_seat_providers():
+    """Return the set of enrolled provider names (>=1 model cap>0).
+
+    Enrollment is per-provider and mirrors the router's cap-map allowlist:
+    a provider is enrolled iff the fleet can actually route work to it
+    (>=1 model with cap>0 in seat-caps.json). Providers whose models are
+    all capped 0 drop out of BOTH the numerator and denominator family
+    (fleet-ops#2522 — devin glm-5-2/swe-1-7 and xai-oauth grok-4.6/grok-4.5
+    were counted enrolled by provider cap alone while pick_seat could not
+    route to them). Returns None when the config is missing/unparseable
+    (callers then report source-unavailable rather than guessing).
+    """
+    enrolled = _enrolled_models_by_provider()
+    return set(enrolled) if enrolled else None
+
+
 def _enrolled_seat_total():
-    """Count enrolled seats (providers with cap>0) from seat-caps.json.
+    """Count enrolled seats from seat-caps.json.
 
     fleet_pi_seat_total is the denominator for the seat_availability SLO.
     Returns None when the config is missing/unparseable so the SLO reports
@@ -1988,77 +2046,130 @@ def _spawn_bench_active(ledger_path: Path) -> bool:
     return usable_epoch > int(time.time())
 
 
+def _seat_ledger_path(provider, model):
+    """Per-seat ledger file path for one (provider, model), sanitised the way
+    lib/seat-lib.sh seat_ledger_path sanitises it: chars outside
+    [A-Za-z0-9._-] become '_' so model ids with '/' survive on disk.
+    """
+    def _s(v):
+        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(v))
+    return SEAT_LEDGER / f"{_s(provider)}__{_s(model)}.json"
+
+
 def _healthy_enrolled_seat_count():
-    """Count enrolled providers with >=1 healthy or released, non-dead ledger.
+    """Count enrolled providers the router would currently route work to.
 
     Rollup for the seat_availability SLO (fleet-ops#1291): the spec says
     "Fraction of enrolled seats that are healthy (rollup)" — i.e. a
     per-seat healthy/not tally over the whole fleet, not one provider's
-    single 0/1. Each per-seat health ledger file under SEAT_LEDGER is one
-    (provider, model) observation; a provider counts healthy when ANY of
-    its model ledgers reports health_class=healthy and seat_dead != true
-    (a provider with a live model is an enrolled seat that is healthy).
+    single 0/1. enrollment is the router's cap-map allowlist (providers
+    with >=1 model cap>0, see _enrolled_models_by_provider); a provider
+    counts healthy when the router (lib/seat-lib.sh pick_seat + seat_usable)
+    could pick it right now — ANY of its enrolled models passes seat_usable.
 
-    fleet-ops#2407: a ledger whose wall clock has EXPIRED is released — the
-    router (seat_usable) fail-opens it at now >= usable_at, so it is
-    available capacity and counts toward the rollup even though no fresh
-    observation has reclassified it yet. Without this, an overload_bench /
-    transient_fault seat whose wall passed sat "walled" in the rollup until
-    the next probe, depressing seat availability for the whole window
-    (2026-08-30: three such seats past usable_at still counted walled).
-    The comeback-overdue metric above fails loud when that release is
-    unobserved, so no dead seat hides behind this relaxation.
+    Per-model decision mirrors seat_usable exactly:
+      - NO ledger file for the model -> USABLE (fail-open). seat_usable
+        treats absence of a ledger as proof of nothing and refuses to brick
+        the ladder over it ("NO HEALTH DATA (no ledger file) — assuming
+        usable"). The SLO previously counted unledgered providers unhealthy
+        (fail-safe), so the SLO said the fleet was at 6/13 while pick_seat
+        was routing work to a ~11/11 usable ladder — the primary slow-burn
+        driver (fleet-ops#2522). Ledgers exist only when a pi worker
+        actually exercised the seat (the seat-health extension writes on
+        provider response), so a healthy-but-idle seat — ollama, bai,
+        hetzner, cursor, zenmux on 2026-08-31 — has no ledger and was
+        silently counted dead.
+      - seed_dead=true corpse -> UNUSABLE (terminal; FleetDeadCredentialSeats
+        owns recovery, seat_usable refuses unconditionally).
+      - held wrapper spawn-bench (fleet-ops#2493) -> UNUSABLE until it
+        expires (seat_usable checks the bench FIRST, before the ledger).
+      - health_class=healthy -> USABLE.
+      - release-at-expiry class (overload_bench/quota_bench/hang_bench/
+        transient_fault/rate_limited, see _SEAT_RELEASE_AT_EXPIRY_CLASSES)
+        with an EXPIRED wall clock -> USABLE (fleet-ops#2407: seat_usable
+        fail-opens at now >= usable_at; without this the rollup counted a
+        past-wall seat walled until the next observation, depressing the
+        whole window).
+      - anything else (quota_exhausted, credentials_bad, held wall) ->
+        UNUSABLE.
 
-    fleet-ops#2493: a held wrapper spawn-bench is operator- or wrapper-
-    authored and is MORE authoritative than a later healthy observation
-    on the same seat. The seat-health extension's after_provider_response
-    re-writes the ledger as health_class=healthy on a 200 OK, but the
-    wrapper's spawn-bench marker (written for an empty run / no-op /
-    spawn-fail) persists in the same directory. Without this check the
-    census says "healthy" while pick_seat says "no usable seat" — a
-    silent mismatch that pinned opencode/nemotron-3-ultra-free as
-    "healthy" across 6 empty runs in 2h (fleet-ops#2493 lived snapshot).
-    Read the spawn-bench sibling; if it is in the future, the seat is
-    NOT healthy for the rollup.
-
-    Providers with no ledger file at all are counted unhealthy (not proven
-    healthy — fail-safe toward the alert). Returns None when the ledger
-    directory is missing/unreadable so the SLO reports instrumented=0.
+    Returns None when the ledger directory is missing/unreadable so the SLO
+    reports instrumented=0.
     """
-    enrolled = _enrolled_seat_providers()
-    if not enrolled:
+    enrolled_models = _enrolled_models_by_provider()
+    if not enrolled_models:
         return None
     if not SEAT_LEDGER.is_dir():
         return None
     healthy = set()
     try:
-        for f in SEAT_LEDGER.iterdir():
-            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+        for prov, models in enrolled_models.items():
+            if prov in healthy:
                 continue
-            try:
-                data = json.loads(f.read_text())
-            except (OSError, json.JSONDecodeError):
+            if not models:
+                # Legacy bare-cap provider (no models map): any single
+                # healthy-or-released ledger for it proves availability;
+                # with no ledger at all the router fails open -> healthy.
+                ledgers = [f for f in SEAT_LEDGER.iterdir()
+                           if f.is_file() and f.name.endswith(".json")
+                           and "__" in f.name]
+                proven = False
+                for f in ledgers:
+                    try:
+                        data = json.loads(f.read_text())
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(data, dict) or data.get("provider") != prov:
+                        continue
+                    if _ledger_router_usable(f, data):
+                        proven = True
+                        break
+                if not proven:
+                    healthy.add(prov)
                 continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("seat_dead") is True:
-                continue
-            # fleet-ops#2493: a held wrapper spawn-bench outranks a later
-            # healthy observation. The wrapper wrote the bench for an
-            # empty run / no-op / spawn-fail; the seat-health extension
-            # then re-wrote the ledger as healthy on a 200 OK. The bench
-            # is the more recent operational truth — count the seat as
-            # non-healthy until the bench expires.
-            if _spawn_bench_active(f):
-                continue
-            if data.get("health_class") != "healthy" and not _seat_is_released(data):
-                continue
-            prov = data.get("provider")
-            if isinstance(prov, str) and prov in enrolled:
-                healthy.add(prov)
+            for model in models:
+                lp = _seat_ledger_path(prov, model)
+                if not lp.is_file():
+                    # No observation at all — the router fail-opens this
+                    # model, so the provider is routable (fleet-ops#2522).
+                    healthy.add(prov)
+                    break
+                try:
+                    data = json.loads(lp.read_text())
+                except (OSError, json.JSONDecodeError):
+                    data = None
+                if data is not None and isinstance(data, dict) \
+                        and _ledger_router_usable(lp, data):
+                    healthy.add(prov)
+                    break
     except OSError:
         return None
     return len(healthy)
+
+
+def _ledger_router_usable(ledger_path, data):
+    """Mirror lib/seat-lib.sh seat_usable's decision for ONE ledger file.
+
+    True when the router would (re)admit this seat at this instant. Shared
+    by the enrolled-model walk and the legacy bare-cap path above. Kept in
+    lock-step with seat_usable's branches: corpse first, then the held
+    wrapper spawn-bench, then healthy/released-else-unusable.
+    """
+    if data.get("seat_dead") is True:
+        return False
+    # fleet-ops#2493: a held wrapper spawn-bench outranks a later healthy
+    # observation (and a missing ledger never gets here with one held — the
+    # wrapper writes benches beside ledgers; a no-ledger provider is the
+    # pure fail-open case handled by the caller).
+    if _spawn_bench_active(ledger_path):
+        return False
+    if data.get("health_class") == "healthy":
+        return True
+    if _seat_is_released(data):
+        # fleet-ops#2407: wall clock expired for a release-at-expiry class —
+        # seat_usable fail-opens the seat now; count it available.
+        return True
+    return False
 
 
 def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
