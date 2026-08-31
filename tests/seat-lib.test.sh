@@ -853,6 +853,23 @@ devin_bw=$(jq -r '.bench_window_s' "$devin_lf")
 [[ "$devin_hc" == "quota_bench" ]] || fail "writer: Devin health_class expected quota_bench, got $devin_hc"
 [[ "$devin_bw" == "2100" ]] || fail "writer: Devin bench_window_s expected 2100, got $devin_bw"
 
+# 9b-mimo: OpenCode free-tier FreeUsageLimitError (HTTP 429, no reset window).
+# Stage 1 matches 'rate limit exceeded'; stage 2a (no 'resets in' / 'retry-after'
+# text) fails; stage 2b (hard-cap keyword) must now match FreeUsageLimitError so
+# mark_seat_quota_bench fires and benches the seat via the provider default.
+# A bare transient 429 without any quota keyword must still NOT match.
+free_429='429: {"type":"FreeUsageLimitError","message":"Error from provider (Console): Rate limit exceeded. Please try again later."}'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$free_429" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: FreeUsageLimitError (no window) must match (rc=$rc)"
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_quota: bare transient 429 with no quota keyword must NOT match (rc=$rc)"
+
 # 9b-cursor-heavy: cursor composer stays light-only even with a 200k window;
 # cursor-grok-4.6-high is the only cursor model admitted as heavy-capable
 # (live hot-patch + Nish 2026-08-27 overrule; fleet-ops#381).
@@ -1089,6 +1106,7 @@ ok "quota_bench: writer parses window -> bench_until future -> seat_usable skips
 ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SEAT (no attempt consumed); expired bench_until -> fail-open pick"
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"
 ok "quota_bench: opencode/mimo-v2.5-free FreeUsageLimitError (no window) benches 900s via provider default; pick_seat skips (fleet-ops#650/661)"
+ok "quota_bench: is_quota_cap_error matches FreeUsageLimitError 429-no-window; rejects bare transient 429 (9b-mimo)"
 
 # --- fleet-ops#652 hot-patch: 503 / upstream-overload bench ----------------
 # commandcode/minimax-m3-free returned 35 of 200+ tool calls as 503

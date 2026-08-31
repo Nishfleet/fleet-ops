@@ -3439,7 +3439,9 @@ is_quota_cap_error() {
     fi
     # Hard-cap keyword alone (e.g. "weekly Clinepass limit") with no window
     # text still qualifies: the caller falls back to the provider default.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR' <<<"$combined"; then
+    # FreeUsageLimitError (opencode/mimo free-tier 429, no reset window) is a
+    # provider-side free-quota exhaustion — a hard wall, not a transient retry.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError' <<<"$combined"; then
         return 0
     fi
     return 1
