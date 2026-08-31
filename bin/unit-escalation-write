@@ -110,29 +110,36 @@ if [ "$_restart_mode" = "on-failure" ] || [ "$_restart_mode" = "always" ]; then
     fi
 fi
 
-# scout-futility dedupe (proven loop 2026-08-30): pi-scout@<repo> and
-# pi-scout-repair@<repo> die on EVERY run while the repo is in a structural
-# scout-dry state (drained backlog + no healthy heavy-capable seat — the
-# 0509 class: trips at 08:15:07Z and 10:01:19Z on the same root cause, each
-# summoning a fresh SENIOR AUDITOR). scout-futility-check owns this class and
-# escalates it ONCE per repo (marker `signal: scout-futility/<repo>`, filed as
-# escalate-senior; consecutive_dry pins at >= N once filed). A unit failure on
-# top of an OPEN futility escalation is the same famine re-firing, not a new
-# fault. Skip writing STOP-REASON then; log LOUD so the skip is visible in the
-# unit journal. When the futility issue closes or the state resets, the gate
-# reopens and fresh failures escalate normally again. Fail-open: a gh read
-# error returns no marker issue, so the writer escalates (no silent sick scout).
+# scout-futility dedupe (proven loops 2026-08-30 and 2026-08-31, fleet-ops#2054
+# / #2468): pi-scout@<repo> and pi-scout-repair@<repo> die on EVERY run while the
+# repo is in a structural scout-dry OR provider-wall-crash state — both are
+# bench/seat famine classes that scout-futility-check escalates ONCE per repo
+# (marker `signal: scout-futility/<repo>`, filed as escalate-senior; consecutive
+# counters pin at >= N once filed). Each crash writes a fresh STOP-REASON (fresh
+# timestamp = fresh dispatch hash = fresh 2-dispatch budget), so without this
+# dedupe gate the auditor pipeline summons a fresh SENIOR AUDITOR every scout
+# run on the SAME root cause. A unit failure on top of an OPEN futility
+# escalation is the same famine re-firing, not a new fault. Skip writing
+# STOP-REASON then; log LOUD so the skip is visible in the unit journal. When
+# the futility issue closes or the state resets, the gate reopens and fresh
+# failures escalate normally again. Fail-open: a gh read error returns no
+# marker issue, so the writer escalates (no silent sick scout).
 case "$UNIT" in
   pi-scout@*.service|pi-scout-repair@*.service)
     _repo="${UNIT#pi-scout}"
     _repo="${_repo#@}"; _repo="${_repo#-repair@}"; _repo="${_repo%.service}"
     _dry=$(grep -m1 '^consecutive_dry=' "$FUT_FDIR/$_repo.state" 2>/dev/null | cut -d= -f2-) || true
     _dry=${_dry:-0}
-    if [[ "$_dry" =~ ^[0-9]+$ ]] && [ "$_dry" -ge "$FUT_N" ]; then
+    _wall=$(grep -m1 '^consecutive_wall=' "$FUT_FDIR/$_repo.state" 2>/dev/null | cut -d= -f2-) || true
+    _wall=${_wall:-0}
+    _dry_ok=0; _wall_ok=0
+    [[ "$_dry" =~ ^[0-9]+$ ]] && [ "$_dry" -ge "$FUT_N" ] && _dry_ok=1
+    [[ "$_wall" =~ ^[0-9]+$ ]] && [ "$_wall" -ge "$FUT_N" ] && _wall_ok=1
+    if [ "$_dry_ok" = "1" ] || [ "$_wall_ok" = "1" ]; then
       _open=$("$GH" issue list -R "$FUT_REPO" --state open --limit 200 \
           --json number,body --jq '.[] | select((.body // "") | contains("signal: scout-futility/'"$_repo"'")) | .number' 2>/dev/null | head -n1 || true)
       if [ -n "$_open" ]; then
-        echo "unit-escalation-write: skipping '$UNIT' (scout-futility for '$_repo' already escalated: $FUT_REPO#$_open, consecutive_dry=$_dry — same structural famine, not a new fault)" >&2
+        echo "unit-escalation-write: skipping '$UNIT' (scout-futility for '$_repo' already escalated: $FUT_REPO#$_open, consecutive_dry=$_dry consecutive_wall=$_wall — same structural famine, not a new fault)" >&2
         exit 0
       fi
     fi
