@@ -1,0 +1,85 @@
+## What & why
+
+The escalation-coverage canary and the credential-expiry canary both depend on
+`gh issue list`. When gh is rate-limited or transiently failing, the canaries log
+`WARN: could not list open issues ... (gh rc=N)` and return 0 — the tick stays
+green and that tick's close coverage is silently lost. The 2026-08-31 blind spot:
+24 WARN lines in 12h while the fleet-rule-coverage metric still printed covered/uncovered=0.
+
+This PR is the class prevention (fleet-ops#366): a data-plane detector that
+watches the two coverage canaries' gh-failure WARN streak, auto-files a deduped
+`canary-gh-failure/<canary>` blind-spot ticket at >=3 WARNs/1h, observe-to-closes
+it when the streak clears, and exports `fleet_canary_gh_failure_streak{canary=...}`.
+
+The detector runs from the existing `fleet-heartbeat-tier1` block (no new organ,
+no new scheduler), so it does not need a new absent() rule.
+
+## Prevention mechanism (fleet-ops#366)
+
+1. **Detector + auto-file** — `bin/fleet-canary-gh-failure-detector`: scans
+   `journalctl --user -u fleet-heartbeat.service -u fleet-credential-expiry-canary.service`
+   (and the canaries' marker files as the rotation fallback) for the WARN lines,
+   counts per canary over a 1h window, files a `signal: canary-gh-failure/<canary>`
+   ticket at >=3, observe-to-closes on a clean streak, exports the SLO metric.
+   Includes `--dry-run` (used for live verification).
+2. **Local-fallback marker** — `bin/fleet-escalation-canary` and
+   `bin/fleet-credential-expiry-canary` now append one
+   `"<epoch> <canary>"` line to `agent-state/canary-gh-failures/<canary>.marker`
+   per gh-failure and truncate it on a clean tick, so the detector has a
+   deterministic source even when the journal is rotated.
+3. **Regression drill** — `tests/fleet-canary-gh-failure-detector.test.sh`:
+   12 offline scenarios (WARN=0, under-threshold, 3-in-1h files+deps, two-tick
+   dedupe, observe-to-close, under-threshold keeps open, marker fallback,
+   marker write/clear, tier1+MANIFEST wiring, rule-enforcement matrix,
+   `--dry-run`, and the default-journal `--since` quoting regression).
+   Hosted from `tests/escalation-coverage-canary.test.sh` (already CI-listed) so
+   the worker App does not need `.github/workflows/**` write access.
+4. **Coverage matrix** — `config/rule-enforcement.json` `led-escalation-coverage`
+   row names the detector + drill in mechanism/proof. (`lib/role-quality-gates.py`
+   is not applicable: it audits per-role gates and never reads rule-enforcement.json;
+   the "covered" ledger for rule-enforcement lives in config/rule-enforcement.json.)
+
+## Live bug found + fixed in review
+
+The prior implementation's default journal command lost the quotes around
+`--since "1 hour ago"` inside a `${VAR:-default}` expansion, so `eval` ran
+journalctl with `--since 1 hour ago` as separate broken args (rc=1, empty) and
+the detector silently reported warn_count=0 from a journal that actually held 24
+WARNs/12h. Escaped the quotes and added regression scenario 12.
+
+## Verification
+
+```
+bash tests/fleet-canary-gh-failure-detector.test.sh        # 12 scenarios green, exit 0
+bash tests/escalation-coverage-canary.test.sh              # host regression, exit 0
+bash tests/rule-enforcement.test.sh                        # exit 0 (matrix still valid)
+python3 lib/role-quality-gates.py audit --repo-root . --catalog config/role-quality-gates.json   # findings: [] ok: true
+```
+
+Live run of the deliverable against the real journal (fixed quoting):
+
+```
+$ FLEET_CANARY_GH_FAILURE_PROM=/tmp/f.cgf.prom bash bin/fleet-canary-gh-failure-detector --dry-run
+[2026-08-31T14:47:30Z] [fleet-canary-gh-failure-detector] canary=fleet-escalation-canary warn_count=2 threshold=3 action=WAIT
+[2026-08-31T14:47:30Z] [fleet-canary-gh-failure-detector] canary=fleet-credential-expiry-canary warn_count=0 threshold=3 action=OBSERVE-CLOSE
+[2026-08-31T14:47:30Z] [fleet-canary-gh-failure-detector] result: filed=0 closed=0 window=3600s threshold=3
+$ cat /tmp/f.cgf.prom
+fleet_canary_gh_failure_streak{canary="fleet-escalation-canary"} 2
+fleet_canary_gh_failure_streak{canary="fleet-credential-expiry-canary"} 0
+```
+
+Before the quoting fix the same live command reported `warn_count=0` for both
+canaries (journal rc=1, empty); after the fix it reports the real streak (2 in
+the last hour, under the 3/h threshold, so no ticket — correct). This is the
+Execution-IS-the-review run: the deliverable, run in the environment it will
+live in, against the real journal.
+
+run-proof: seen-journal 2026-08-31T14:47:30Z warn_count=2 (before: warn_count=0, journal rc=1); dry-run exits 0; f.cgf.prom exposes streak=2
+
+research: last30days-scale pass + live search of fleet-ops for `could not list open issues` / `gh rc=1` / `canary gh-failure` and comparison with prior data-plane watchers (bin/fleet-rulebook-redteam, bin/fleet-work-supply-canary, Slo* canaries PR #2441, exec-review-canary PR #2244) — none watch the coverage canaries' own gh data plane, so a dedicated detector was required and adopted.
+
+help-first: ran `journalctl --help` (--since/--user/--no-pager confirm the scan surface), `gh issue list --help`, `gh issue close --help`, and `bin/fleet-issue-file --help`; none of these general tools does not already do canary-streak tracking — they have no notion of a gh-failure WARN streak per coverage canary — so they were composed into the detector rather than reused as a ready-made watch.
+
+organ-heartbeat: bin/fleet-canary-gh-failure-detector not-an-organ: not a standalone timer/exporter/guard — the issue scopes it to run inside the existing fleet-heartbeat-tier1 block (no new scheduler, always exits 0; its own death surfaces in the same heartbeat journal it scans, and the marker-fallback keeps detection alive even then). Not registered in config/fleet-organs.json and no absent() rule added, per fleet-ops#2538 accept §5.
+
+Closes #2538
