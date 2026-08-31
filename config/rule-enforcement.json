@@ -441,8 +441,8 @@
     {
       "id": "led-escalation-coverage",
       "source": "decisions-ledger.md: 2026-08-26 | escalation coverage",
-      "mechanism": "Heartbeat escalation-coverage canary on VPS + GitHub planes every tick",
-      "proof": "bin/fleet-escalation-canary; tests/escalation-coverage-canary.test.sh; bin/fleet-heartbeat-tier1 block 14",
+      "mechanism": "Heartbeat escalation-coverage canary on VPS + GitHub planes every tick; the canary's own data plane (gh issue list) is watched by the canary-gh-failure detector (fleet-ops#2538) — a WARN streak >=3/h auto-files the blind-spot ticket and the cleared streak observe-to-closes it",
+      "proof": "bin/fleet-escalation-canary; tests/escalation-coverage-canary.test.sh; bin/fleet-heartbeat-tier1 block 14; bin/fleet-canary-gh-failure-detector; tests/fleet-canary-gh-failure-detector.test.sh; fleet-heartbeat-tier1 block 44",
       "status": "enforced"
     },
     {

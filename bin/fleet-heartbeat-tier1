@@ -1946,6 +1946,38 @@ else
 fi
 
 # ============================================================================
+# 44. CANARY gh-failure data-plane detector (fleet-ops#2538)
+# ============================================================================
+# The gh-calling coverage canaries (escalation-coverage, credential-expiry)
+# silently lose a tick's close coverage when `gh issue list` fails (rate
+# limit / transient 5xx). This detector watches their data plane: it scans
+# the heartbeat journal + the canaries' local marker files for the WARN
+# lines, files a "canary blind spot" ticket when a canary has >=3 in 1h,
+# and observe-to-closes it when the streak clears. Observe-to-close is
+# OPT-IN per call (fleet-ops#995): the detector defaults to skip so a worker
+# run from a worktree can never phantom-close a real issue; the production
+# heartbeat is the only trusted caller, so we set env=1 AND touch a fresh
+# sentinel here, per call.
+CANARY_GH_FAILURE_BIN="${FLEET_CANARY_GH_FAILURE_BIN:-/home/nish/.local/bin/fleet-canary-gh-failure-detector}"
+if [ -x "$CANARY_GH_FAILURE_BIN" ]; then
+    log "22. canary gh-failure data-plane detector starting"
+    canary_gh_failure_sentinel="${FLEET_CANARY_GH_FAILURE_SENTINEL:-/run/user/$(id -u)/fleet-canary-gh-failure-trusted}"
+    mkdir -p "$(dirname "$canary_gh_failure_sentinel")" 2>/dev/null || true
+    touch "$canary_gh_failure_sentinel" 2>/dev/null || \
+        log "22. WARN: could not refresh $canary_gh_failure_sentinel; observe-to-close will skip"
+    if FLEET_CANARY_GH_FAILURE_OK_TO_CLOSE=1 \
+       FLEET_CANARY_GH_FAILURE_SENTINEL="$canary_gh_failure_sentinel" \
+       "$CANARY_GH_FAILURE_BIN"; then
+        log "22. canary gh-failure data-plane detector complete"
+    else
+        canary_gh_failure_rc=$?
+        log "22. canary gh-failure detector FAILED (rc=$canary_gh_failure_rc)"
+    fi
+else
+    log "22. canary gh-failure detector missing at $CANARY_GH_FAILURE_BIN — skip (not installed)"
+fi
+
+# ============================================================================
 # 22. PI EXTENSIONS PROVEN-ALLOWLIST CANARY (fleet-ops#536, #635)
 # ============================================================================
 # sr-pi-extensions-proven (Nish 2026-08-24): reach for Pi extensions, but

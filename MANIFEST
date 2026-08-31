@@ -333,6 +333,12 @@ bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-
 # red-check coverage) every tick. Installed by the merge-to-live step (#149)
 # so the first install lands it with zero hands.
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
+# fleet-ops#2538: canary gh-failure data-plane detector. Run by tier1 block
+# 44 on the same tick that drives the coverage canaries: watches the
+# escalation + credential-expiry canaries' `could not list open issues`
+# WARN streak, files/observe-to-closes the blind-spot ticket, exports
+# fleet_canary_gh_failure_streak.
+bin/fleet-canary-gh-failure-detector /home/nish/.local/bin/fleet-canary-gh-failure-detector
 # fleet-ops#468: alert-repair COMPLETION canary (Prometheus alert chains).
 # hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
 bin/fleet-completion-canary.py /home/nish/.local/libexec/fleet-completion-canary

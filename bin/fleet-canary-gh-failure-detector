@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# fleet-canary-gh-failure-detector — data-plane failure detector for the
+# gh-calling coverage canaries (fleet-ops#2538).
+#
+# The escalation-coverage canary (rule-enforcement observe-to-close) and the
+# credential-expiry canary (renewal observe-to-close) both depend on
+# `gh issue list` working. When gh is rate-limited or transiently failing,
+# the canaries log
+#   "WARN: could not list open issues ... (gh rc=N)"
+# and return 0 — the tick stays green and the close coverage for that tick
+# is SILENTLY LOST. That dropout is the 2026-08-31 blind spot: 24 WARN lines
+# in 12h with the fleet-rule-coverage metric still printing covered/uncovered=0.
+#
+# This detector is the class prevention (fleet-ops#366): it scans the
+# heartbeat journal (and the canaries' local marker files as the fallback
+# when the journal is rotated) for the WARN lines, counts them per canary
+# over a 1h window, and:
+#   - auto-files a "canary blind spot" ticket (deduped by
+#     `signal: canary-gh-failure/<canary>`) when a canary has >= 3 WARNs
+#     in the window; and
+#   - observe-to-closes that ticket (comment + close, opt-in like
+#     fleet-ops#995) on a clean tick when the WARN streak has cleared;
+#   - exports `fleet_canary_gh_failure_streak{canary=...}` to the
+#     prometheus textfile collector for SLO tracking.
+#
+# The detector runs from fleet-heartbeat-tier1 (no new organ, no new
+# scheduler): the same heartbeat tick that drives the canaries also drives
+# the watch on their data plane. It always exits 0 — the tickets are the
+# prevention; failing the heartbeat would just mask the same gh outage.
+#
+# Data sources:
+#   primary   journalctl of fleet-heartbeat.service +
+#             fleet-credential-expiry-canary.service --since "1 hour ago"
+#   fallback  marker files written by the canaries at WARN time
+#             (agent-state/canary-gh-failures/<canary>.marker). Used when
+#             the journal returns no WARN lines (journal rotation), so the
+#             detector has a deterministic source even without the journal.
+#
+# Environment seams (tests override every of these):
+#   FLEET_CANARY_GH_FAILURE_JOURNAL   shell command that emits the journal
+#                                     (tests stub this)
+#   FLEET_CANARY_GH_FAILURE_MARKER_DIR  default
+#                                     $HOME/workspaces/agent-state/canary-gh-failures
+#   FLEET_CANARY_GH_FAILURE_WINDOW_S  default 3600 (1h streak window)
+#   FLEET_CANARY_GH_FAILURE_THRESHOLD default 3 (WARNs per canary to file)
+#   FLEET_CANARY_GH_FAILURE_CANARIES  comma list of tracked canaries
+#                                     (default) fleet-escalation-canary, fleet-credential-expiry-canary
+#   FLEET_CANARY_GH_FAILURE_PROM      prometheus textfile path
+#   FLEET_CANARY_GH_FAILURE_FILE      1 (default) file issues; 0 skip gh
+#   FLEET_CANARY_GH_FAILURE_OK_TO_CLOSE 0 (default — close OFF) / 1
+#                                     (production heartbeat opts in)
+#   FLEET_CANARY_GH_FAILURE_SENTINEL  freshness sentinel the heartbeat
+#                                     touches each tick (default
+#                                     /run/user/$(id -u)/fleet-canary-gh-failure-trusted);
+#                                     close path requires env=1 AND a fresh
+#                                     sentinel (fleet-ops#995 pattern)
+#   FLEET_CANARY_GH_FAILURE_ISSUE_REPO default Nishfleet/fleet-ops
+#   FLEET_CANARY_GH_FAILURE_CAP       per-tick ticket cap (default 5)
+#   FLEET_HEARTBEAT_TRIAGE            triage file
+#   GH                                gh binary (tests stub this)
+#   FLEET_ISSUE_FILE                  fleet-issue-file binary (tests stub)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+JOURNAL_CMD="${FLEET_CANARY_GH_FAILURE_JOURNAL:-journalctl --user -u fleet-heartbeat.service -u fleet-credential-expiry-canary.service --since "1 hour ago" --no-pager}"
+MARKER_DIR="${FLEET_CANARY_GH_FAILURE_MARKER_DIR:-$HOME/workspaces/agent-state/canary-gh-failures}"
+WINDOW_S="${FLEET_CANARY_GH_FAILURE_WINDOW_S:-3600}"
+THRESHOLD="${FLEET_CANARY_GH_FAILURE_THRESHOLD:-3}"
+CANARIES_RAW="${FLEET_CANARY_GH_FAILURE_CANARIES:-fleet-escalation-canary,fleet-credential-expiry-canary}"
+PROM="${FLEET_CANARY_GH_FAILURE_PROM:-/var/lib/prometheus/node-exporter/fleet-canary-gh-failure-detector.prom}"
+FILE_ISSUES="${FLEET_CANARY_GH_FAILURE_FILE:-1}"
+OK_TO_CLOSE="${FLEET_CANARY_GH_FAILURE_OK_TO_CLOSE:-0}"
+SENTINEL="${FLEET_CANARY_GH_FAILURE_SENTINEL:-/run/user/$(id -u)/fleet-canary-gh-failure-trusted}"
+ISSUE_REPO="${FLEET_CANARY_GH_FAILURE_ISSUE_REPO:-Nishfleet/fleet-ops}"
+CAP="${FLEET_CANARY_GH_FAILURE_CAP:-5}"
+NOW="$(date +%s)"
+
+# shellcheck disable=SC2034
+DRY_RUN=0
+for _a in "$@"; do
+    case "$_a" in
+        --dry-run) DRY_RUN=1 ;;
+        -h|--help)
+            sed -n '2,90p' "$(readlink -f "$0")" | grep -E '^#|flag' | sed 's/^# //'
+            exit 0 ;;
+        *) echo "unknown arg: $_a (use --dry-run)" >&2; exit 2 ;;
+    esac
+done
+
+mapfile -t CANARIES < <(printf '%s\n' "$CANARIES_RAW" | tr ',' '\n' | grep -v '^$' || true)
+
+log() {
+    printf '[%s] [fleet-canary-gh-failure-detector] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $*"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$*"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+canary_from_line() {
+    # WARN lines carry the emitting canary in a bracketed prefix:
+    #   [... snip ...] [fleet-escalation-canary] ... WARN: could not list ...
+    local line="$1" name
+    name=$(printf '%s\n' "$line" | sed -nE 's/.*\[([a-zA-Z0-9_.-]+)\].*could not list open issues.*/\1/p')
+    printf '%s\n' "$name"
+}
+
+now_epoch() {
+    # Markers carry epoch timestamps; tests can freeze NOW for rock-solid
+    # window math via FLEET_CANARY_GH_FAILURE_NOW.
+    printf '%s\n' "${FLEET_CANARY_GH_FAILURE_NOW:-$NOW}"
+}
+
+# ---------------------------------------------------------------------------
+# 1. collect WARN counts per canary
+# ---------------------------------------------------------------------------
+declare -A COUNT=()
+for c in "${CANARIES[@]}"; do
+    COUNT["$c"]=0
+done
+
+# 1a. primary: journal scan.
+journal_out=""
+journal_ok=0
+set +e
+journal_out=$(eval "$JOURNAL_CMD" 2>/dev/null)
+journal_rc=$?
+set -e
+if [[ "$journal_rc" -eq 0 ]]; then
+    while IFS= read -r wline; do
+        [[ -n "$wline" ]] || continue
+        name=$(canary_from_line "$wline")
+        [[ -n "$name" ]] || continue
+        if [[ -n "${COUNT[$name]:-}" ]]; then
+            COUNT["$name"]=$((COUNT["$name"] + 1))
+            journal_ok=1
+        fi
+    done <<< "$journal_out"
+fi
+
+# 1b. fallback: marker files, when the journal yielded no WARN lines (a
+# clean window whose canaries recently WARNed would be journal rotation,
+# not recovery — the markers are the deterministic source).
+# A marker line is "<epoch> <canary>", appended per WARN by the canary;
+# a clean tick truncates the file so recovery is visible here.
+if [[ "$journal_ok" -eq 0 ]]; then
+    for c in "${CANARIES[@]}"; do
+        marker="$MARKER_DIR/$c.marker"
+        [[ -f "$marker" ]] || continue
+        while IFS=' ' read -r ts name __; do
+            [[ -n "$ts" && "$ts" =~ ^[0-9]+$ ]] || continue
+            [[ "$name" == "$c" ]] || continue
+            if (( NOW - ts <= WINDOW_S )); then
+                COUNT["$c"]=$((COUNT["$c"] + 1))
+            fi
+        done < "$marker"
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# 2. decide per canary: must_file / must_close
+# ---------------------------------------------------------------------------
+must_file_canaries=()
+must_close_canaries=()
+for c in "${CANARIES[@]}"; do
+    n=${COUNT[$c]:-0}
+    if (( n >= THRESHOLD )); then
+        must_file_canaries+=("$c")
+    elif (( n == 0 )); then
+        must_close_canaries+=("$c")
+    fi
+    log "canary=$c warn_count=$n threshold=$THRESHOLD action=$(
+        if (( n >= THRESHOLD )); then echo FILE; elif (( n == 0 )); then echo OBSERVE-CLOSE; else echo WAIT; fi
+    )"
+done
+
+# ---------------------------------------------------------------------------
+# 3. export the SLO metric (always — a 0 streak is a live green signal)
+# ---------------------------------------------------------------------------
+{
+    printf '# HELP fleet_canary_gh_failure_streak WARN streak per gh-calling coverage canary (fleet-ops#2538).\n'
+    printf '# TYPE fleet_canary_gh_failure_streak gauge\n'
+    for c in "${CANARIES[@]}"; do
+        printf 'fleet_canary_gh_failure_streak{canary="%s"} %s\n' "$c" "${COUNT[$c]:-0}"
+    done
+} > "$PROM" 2>/dev/null || log "WARN: could not write prom file $PROM"
+
+# ---------------------------------------------------------------------------
+# 4. auto-file (observe-to-open), deduped by signal key
+# ---------------------------------------------------------------------------
+filed=0
+closed=0
+if [[ "${#must_file_canaries[@]}" -gt 0 ]] && [[ "$FILE_ISSUES" == "1" ]]; then
+    open_json="[]"
+    if command -v "$GH" >/dev/null 2>&1; then
+        set +e
+        open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+        list_rc=$?
+        set -e
+        if [[ "$list_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"${open_json:-}"; then
+            log "WARN: could not list open issues for dedupe (gh rc=$list_rc) — markers keep the streak, will retry next tick"
+            open_json="[]"
+        fi
+    fi
+    for c in "${must_file_canaries[@]}"; do
+        if [[ "$filed" -ge "$CAP" ]]; then
+            log "cap reached: deferring $c"
+            continue
+        fi
+        sig="canary-gh-failure/$c"
+        sig_line="signal: $sig"
+        if jq -e --arg s "$sig_line" '[.[] | select((.body // "") | contains($s))] | length > 0' \
+            <<<"$open_json" >/dev/null 2>&1; then
+            log "$c: already has an open blind-spot ticket (deduped)"
+            continue
+        fi
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        title="fix(canary-blind-spot): $c gh issue list is failing (streak=${COUNT[$c]})"
+        body="## Problem
+
+The gh-calling coverage canary \`$c\` failed to list open issues (gh rc!=0)
+${COUNT[$c]} times in the last ${WINDOW_S}s window. Every failed list means
+that tick's close coverage is silently lost: an enforced rule or a renewed
+credential stays OPEN and the coverage metric drifts from reality
+(fleet-ops#2538).
+
+## Finding
+
+- canary: \`$c\`
+- warn count: ${COUNT[$c]} in the last ${WINDOW_S}s
+- observed at: $ts
+
+## Action
+
+Restore \`gh\` for \`$c\` (rate limit, token, network). The detector observes
+the heartbeat journal marker files every tick; when the streak clears
+(no WARN in a full window), this issue observe-to-closes itself.
+
+## Termination
+
+The next tick reports warn_count=0 for \`$c\` — this issue
+observe-to-closes (comment + close).
+
+$sig_line"
+        created=""
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            log "dry-run: would_file=1 signal=$sig"
+            continue
+        fi
+        set +e
+        created=$("$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" 2>/dev/null)
+        create_rc=$?
+        set -e
+        if [[ "$create_rc" -eq 0 ]] && [[ -n "$created" ]]; then
+            filed=$((filed + 1))
+            loud "CANARY-GH-FAILURE-FILED" "$c blind-spot ticket filed (streak=${COUNT[$c]})"
+            log "FILED signal=$sig -> $created"
+        else
+            log "WARN: failed to file $sig (rc=$create_rc)"
+        fi
+    done
+elif [[ "${#must_file_canaries[@]}" -gt 0 ]]; then
+    for c in "${must_file_canaries[@]}"; do
+        log "dry-run: would_file=1 signal=canary-gh-failure/$c"
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# 5. observe-to-close: clean streak (warn_count==0) drains the ticket.
+#    Opt-in (fleet-ops#995): env=1 AND a fresh sentinel from the heartbeat.
+# ---------------------------------------------------------------------------
+if [[ "${#must_close_canaries[@]}" -gt 0 ]] && [[ "$OK_TO_CLOSE" == "1" ]]; then
+    if [[ ! -f "$SENTINEL" ]]; then
+        log "observe-to-close: skipped (sentinel missing: $SENTINEL; the production heartbeat is trusted to close)"
+    else
+        sentinel_age=$(( NOW - $(stat -c %Y "$SENTINEL" 2>/dev/null || echo 0) ))
+        if (( sentinel_age > 300 )); then
+            log "observe-to-close: skipped (sentinel stale: ${sentinel_age}s old)"
+        elif ! command -v "$GH" >/dev/null 2>&1; then
+            log "observe-to-close: gh missing, skip"
+        else
+            open_json=""
+            set +e
+            open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
+            list_rc=$?
+            set -e
+            if [[ "$list_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"${open_json:-}"; then
+                log "observe-to-close: gh issue list failed (rc=$list_rc), skip"
+            else
+                for c in "${must_close_canaries[@]}"; do
+                    [[ "$closed" -lt "$CAP" ]] || break
+                    sig="signal: canary-gh-failure/$c"
+                    num=$(jq -r --arg s "$sig" '.[] | select((.body // "") | contains($s)) | .number' \
+                        <<<"$open_json" 2>/dev/null | head -1 || true)
+                    [[ -n "$num" && "$num" != "null" ]] || continue
+                    if [[ "$DRY_RUN" -eq 1 ]]; then
+                        log "dry-run: would_close=$num signal=$sig"
+                        continue
+                    fi
+                    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    comment="canary-recovered: $sig — \`$c\` reported warn_count=0 on heartbeat tick at $ts. gh issue list is back; the blind spot is closed (fleet-ops#2538 observe-to-close)."
+                    set +e
+                    "$GH" issue close "$num" -R "$ISSUE_REPO" --comment "$comment" >/dev/null 2>&1
+                    close_rc=$?
+                    set -e
+                    if [[ "$close_rc" -eq 0 ]]; then
+                        closed=$((closed + 1))
+                        log "observe-to-close: CLOSED #$num ($sig)"
+                    else
+                        log "observe-to-close: failed to close #$num (rc=$close_rc)"
+                    fi
+                done
+            fi
+        fi
+    fi
+elif [[ "${#must_close_canaries[@]}" -gt 0 ]] && [[ "$DRY_RUN" -eq 1 ]]; then
+    for c in "${must_close_canaries[@]}"; do
+        log "dry-run: would_close signal=canary-gh-failure/$c"
+    done
+fi
+
+log "result: filed=$filed closed=$closed window=${WINDOW_S}s threshold=$THRESHOLD"
+exit 0

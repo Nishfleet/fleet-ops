@@ -191,6 +191,27 @@ loud() {
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
 
+# gh-failure data-plane marker (fleet-ops#2538). Every time `gh issue list`
+# fails (gh rc!=0), the canary appends one marker line so the
+# fleet-canary-gh-failure-detector has a deterministic source even when the
+# journal is rotated (journalctl --since "1 hour ago" drops WARN lines once
+# they age out or the journal is vacuumed). A clean tick (the list
+# succeeded) truncates the marker so the detector sees the recovery and can
+# observe-to-close the blind-spot ticket. Marker format: "<epoch> <canary>"
+# one line per WARN (the detector parses epoch + canary name).
+CANARY_GH_FAILURE_DIR="${FLEET_CANARY_GH_FAILURE_DIR:-$AGENT_STATE/canary-gh-failures}"
+CANARY_GH_FAILURE_NAME="fleet-escalation-canary"
+
+mark_gh_failure() {
+    mkdir -p "$CANARY_GH_FAILURE_DIR" 2>/dev/null || return 0
+    printf '%s %s\n' "$(date +%s)" "$CANARY_GH_FAILURE_NAME" \
+        >>"$CANARY_GH_FAILURE_DIR/$CANARY_GH_FAILURE_NAME.marker" 2>/dev/null || true
+}
+
+clear_gh_failure() {
+    : >"$CANARY_GH_FAILURE_DIR/$CANARY_GH_FAILURE_NAME.marker" 2>/dev/null || true
+}
+
 # Anti-recursion exclusion list for services. These are part of the escalation
 # pipeline itself and must not trigger their own escalation.
 #
@@ -585,7 +606,10 @@ else
                 set -e
                 if [[ "$gh_list_rc" -ne 0 ]] || [[ -z "$open_json" ]]; then
                     open_json="[]"
+                    mark_gh_failure
                     log "9.  WARN: could not list open issues for dedupe (gh rc=$gh_list_rc)"
+                else
+                    clear_gh_failure
                 fi
             else
                 log "9.  WARN: gh missing — cannot auto-file or observe-to-close mechanism issues"
@@ -715,7 +739,10 @@ else
                 set -e
                 if [[ "$close_list_rc" -ne 0 ]] || [[ -z "$close_json" ]]; then
                     close_json="[]"
+                    mark_gh_failure
                     log "9.  WARN: could not list open issues for close (gh rc=$close_list_rc)"
+                else
+                    clear_gh_failure
                 fi
                 printf '%s\n' "$close_json" >"$_ciss"
                 set +e
