@@ -53,7 +53,7 @@ HELP_LT = "# HELP fleet_timer_last_trigger_seconds Epoch (s) of the last trigger
 TYPE_LT = "# TYPE fleet_timer_last_trigger_seconds gauge"
 HELP_ACT = "# HELP fleet_timer_active 1 if the timer is active, else 0."
 TYPE_ACT = "# TYPE fleet_timer_active gauge"
-HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0."
+HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if at least one enrolled seat is healthy in the per-seat ledger, else 0 (fleet-ops#2524)."
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
 HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
@@ -490,13 +490,17 @@ def _timer_active(unit):
     return 1 if r.stdout.strip() == "active" else 0
 
 
-def _read_seat():
-    """Return (healthy 0/1, observed_epoch_or_none)."""
+def _sidecar_observed_epoch():
+    """Epoch (s) of the sidecar's observed_at, or None.
+
+    The sidecar (pi-seat-health.json) is the legacy last-observation
+    projection; its timestamp drives fleet_pi_seat_observed_seconds, a
+    freshness signal with unchanged semantics. Never raises.
+    """
     try:
         data = json.loads(SEAT_HEALTH.read_text())
     except (OSError, json.JSONDecodeError):
-        return 0, None
-    healthy = 1 if data.get("health_class") == "healthy" else 0
+        return None
     obs = data.get("observed_at")
     epoch = None
     if isinstance(obs, str):
@@ -508,7 +512,35 @@ def _read_seat():
             )
         except ValueError:
             epoch = None
-    return healthy, epoch
+    return epoch
+
+
+def _read_seat():
+    """Return (healthy 0/1, observed_epoch_or_none).
+
+    fleet-ops#2524: fleet_pi_seat_healthy is a FLEET-level signal derived
+    from the per-seat health LEDGER (the routing authority), not the legacy
+    single-record sidecar. The sidecar is a last-observation projection
+    rewritten by whichever seat responded most recently; on a multi-seat
+    fleet it flips with the last responder, so one transiently-walled
+    seat's write made the whole fleet look dead (the 2026-08-31 pending
+    FleetPiSeatUnhealthy) while healthy seats sat un-exported — the
+    "single-source freshness contract" failure the seat-health extension
+    documents. Healthy = at least one enrolled provider (cap>0 in
+    seat-caps.json) currently has a healthy — or wall-expired/released,
+    per fleet-ops#2407 — seat in the ledger
+    (_healthy_enrolled_seat_count() > 0); 0 when none do or the ledger is
+    missing/unreadable (fail-safe toward the alert). The observed epoch
+    still comes from the sidecar (last-observation freshness, unchanged).
+    """
+    healthy = 0
+    try:
+        count = _healthy_enrolled_seat_count()
+        if count is not None and count > 0:
+            healthy = 1
+    except OSError:
+        healthy = 0
+    return healthy, _sidecar_observed_epoch()
 
 
 def _read_dead_credentials():

@@ -77,7 +77,7 @@ groups:
           service: fleet
         annotations:
           summary: "Pi seat unhealthy for 30+ minutes"
-          description: "pi-seat-health.json reports a non-healthy seat class."
+          description: "No enrolled seat is healthy in the per-seat health ledger (/home/nish/workspaces/agent-state/lanes/seats) — the fleet has no dispatchable seat for 30+ minutes (fleet-ops#2524). fleet_pi_seat_healthy derives from the ledger authority (at least one enrolled provider with cap>0 has a healthy or wall-expired seat), not the single-record pi-seat-health.json last-observation file. Inspect the seat-health ledger and config/seat-caps.json."
 
       - alert: FleetDeadCredentialSeats
         expr: fleet_pi_seat_dead_credential_total > 0

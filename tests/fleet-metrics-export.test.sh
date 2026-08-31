@@ -878,3 +878,151 @@ assert bad2 == len(enrolled), \
 print("OK: malformed / garbage spawn-bench does not gate the rollup")
 PY
 ok "fleet-ops#2493: held wrapper spawn-bench outranks a later healthy observation (census honest)"
+
+# =========================================================================
+# 16. fleet-ops#2524: fleet_pi_seat_healthy derives from the per-seat ledger
+# =========================================================================
+# The alert gate drove this issue: FleetPiSeatUnhealthy went pending on
+# 2026-08-31T12:50Z while the fleet had several healthy seats, because
+# fleet_pi_seat_healthy read ONLY the legacy single-record sidecar
+# (pi-seat-health.json) — a last-observation projection rewritten by
+# whichever seat responded most recently. On a multi-seat fleet that gauge
+# flips with the last responder, so one transiently-walled seat's write
+# made the whole fleet look dead (the "single-source freshness contract"
+# failure the seat-health extension documents) — and conversely a
+# seat_dead=true seat that is NOT the last responder is invisible to the
+# gauge. The fix (fleet-ops#2524) derives the gauge from the per-seat
+# ledger (the routing authority, seat-lib.sh seat_usable semantics):
+# healthy=1 iff _healthy_enrolled_seat_count()>0 (at least one enrolled
+# provider, cap>0 in seat-caps.json, has a healthy or wall-expired/released
+# seat). Pin both edges of the issue's accept criteria:
+#   A. all-walled ledger -> gauge 0 (alert TRIGGERS)
+#   B. >=1 healthy enrolled seat -> gauge 1 (alert CLEARS)
+#   C. missing ledger -> gauge 0, epoch None (fail-safe toward the alert)
+#   D. sidecar observed_at still feeds fleet_pi_seat_observed_seconds
+#   E. the rule expr fleet_pi_seat_healthy == 0 / for: 30m still present and
+#      proven with promtool: an unhealthy-only series fires, a healthy
+#      series stays silent.
+UN_SEAT_LEDGER="$scratch/2524-seat-ledger"
+UN_SEAT_CAPS="$scratch/2524-seat-caps.json"
+UN_SIDECAR="$scratch/2524-sidecar.json"
+mkdir -p "$UN_SEAT_LEDGER"
+cat >"$UN_SEAT_CAPS" <<'JSON'
+{
+  "providers": {
+    "opencode": {"cap": 1, "models": {"healthy-lane": 1, "walled-lane": 1}}
+  }
+}
+JSON
+cat >"$UN_SIDECAR" <<'JSON'
+{"provider":"opencode","model":"healthy-lane","http_status":200,"health_class":"healthy","seat_dead":false,"observed_at":"2026-08-31T12:00:00Z","source":"after_provider_response"}
+JSON
+
+python3 - "$exporter" "$UN_SEAT_CAPS" "$UN_SEAT_LEDGER" "$UN_SIDECAR" <<'PY' || fail "fleet-ops#2524 _read_seat derivation failed"
+import importlib.util, json, os, sys
+from pathlib import Path
+exporter, seat_caps, seat_ledger, sidecar = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps-fallback.json")
+m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_HEALTH = Path(sidecar)
+
+# Scenario A: all-walled ledger -> healthy 0 (alert TRIGGERS). quota_exhausted
+# is NOT a release-at-expiry class, and the future usable_at holds the wall.
+(Path(seat_ledger) / "opencode__walled-lane.json").write_text(json.dumps({
+    "provider": "opencode", "model": "walled-lane", "health_class": "quota_exhausted",
+    "seat_dead": False, "retryable": True,
+    "failure_mode": "quota_exhausted", "http_status": 402,
+    "observed_at": "2026-08-31T11:00:00Z",
+    "usable_at": "2099-01-01T00:00:00Z",
+}))
+healthy, epoch = m._read_seat()
+assert healthy == 0, f"all-walled ledger must read 0 (alert trip), got {healthy}"
+assert isinstance(epoch, int) and epoch > 0, f"sidecar epoch must still parse, got {epoch}"
+print("OK A: all-walled enrolled ledger -> fleet_pi_seat_healthy 0 (alert triggers)")
+
+# Scenario B: >=1 healthy enrolled seat -> healthy 1 (alert CLEARS).
+(Path(seat_ledger) / "opencode__healthy-lane.json").write_text(json.dumps({
+    "provider": "opencode", "model": "healthy-lane", "health_class": "healthy",
+    "seat_dead": False, "usable_at": None, "observed_at": "2026-08-31T11:30:00Z",
+}))
+healthy, epoch = m._read_seat()
+assert healthy == 1, f"healthy enrolled seat must read 1 (alert clear), got {healthy}"
+print("OK B: >=1 healthy enrolled seat -> fleet_pi_seat_healthy 1 (alert clears)")
+
+# Scenario C: ledger directory missing -> healthy 0 (fail-safe toward the
+# alert); the sidecar freshness signal still parses independently.
+m.SEAT_LEDGER = Path("/nonexistent/2524-ledger")
+healthy, epoch = m._read_seat()
+assert healthy == 0, f"missing ledger must fail safe toward 0, got {healthy}"
+assert isinstance(epoch, int) and epoch > 0, f"sidecar epoch independent of ledger, got {epoch}"
+print("OK C: missing ledger -> 0 (fail-safe toward the alert), sidecar epoch intact")
+
+# Scenario D: sidecar unreadable still leaves the ledger-derived gauge intact.
+m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_HEALTH = Path("/nonexistent/2524-sidecar.json")
+healthy, epoch = m._read_seat()
+assert healthy == 1, f"healthy ledger must drive the gauge even with a missing sidecar, got {healthy}"
+assert epoch is None, f"no sidecar -> epoch None, got {epoch}"
+print("OK D: gauge derives from the ledger; sidecar only feeds the observed_seconds freshness")
+PY
+ok "fleet-ops#2524: fleet_pi_seat_healthy ledger derivation pinned (trip + clear)"
+
+# Scenario E: the alert rule must still key on fleet_pi_seat_healthy == 0 with
+# for: 30m, and promtool must prove an unhealthy-only series reaches FIRING
+# while a healthy series stays silent (the issue's accept criteria verbatim:
+# "a seat with health_class=unhealthy triggers the alert, and a healthy seat
+# clears it").
+grep -q "alert: FleetPiSeatUnhealthy" "$rules" \
+  || fail "fleet_rules.yml missing FleetPiSeatUnhealthy"
+grep -q "fleet_pi_seat_healthy == 0" "$rules" \
+  || fail "FleetPiSeatUnhealthy must key on fleet_pi_seat_healthy == 0 (fleet-ops#2524)"
+grep -A2 "expr: fleet_pi_seat_healthy == 0" "$rules" | grep -q "for: 30m" \
+  || fail "FleetPiSeatUnhealthy must keep for: 30m (fleet-ops#2524)"
+if command -v promtool >/dev/null 2>&1; then
+  un_yml="$scratch/fleet-pi-seat-healthy.test.yml"
+  cat >"$un_yml" <<YOAML
+rule_files:
+  - $rules
+evaluation_interval: 5m
+tests:
+  - interval: 5m
+    input_series:
+      - series: 'fleet_pi_seat_healthy'
+        # 0 for 13 steps (t0..t60m at 5m): alert must reach FIRING past the
+        # 30m for. (Count form: this promtool rejects the duration form.)
+        values: '0+0x13'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: FleetPiSeatUnhealthy
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetPiSeatUnhealthy
+              service: fleet
+              severity: warning
+            exp_annotations:
+              summary: 'Pi seat unhealthy for 30+ minutes'
+              description: 'No enrolled seat is healthy in the per-seat health ledger (/home/nish/workspaces/agent-state/lanes/seats) — the fleet has no dispatchable seat for 30+ minutes (fleet-ops#2524). fleet_pi_seat_healthy derives from the ledger authority (at least one enrolled provider with cap>0 has a healthy or wall-expired seat), not the single-record pi-seat-health.json last-observation file. Inspect the seat-health ledger and config/seat-caps.json.'
+  - interval: 5m
+    input_series:
+      - series: 'fleet_pi_seat_healthy'
+        # Healthy series: the alert must never fire.
+        values: '1+0x13'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: FleetPiSeatUnhealthy
+        exp_alerts: []
+YOAML
+  if ! out="$(promtool test rules "$un_yml" 2>&1)"; then
+    fail "promtool test rules exited non-zero on the FleetPiSeatUnhealthy unit test: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules: FleetPiSeatUnhealthy must fire on an unhealthy-only series and stay silent on a healthy series ($out)"
+  ok "promtool: FleetPiSeatUnhealthy fires on unhealthy series, silent on healthy series (fleet-ops#2524)"
+fi
+
+ok "fleet-ops#2524: prevention pinned — ledger-derived gauge + alert trip/clear"
