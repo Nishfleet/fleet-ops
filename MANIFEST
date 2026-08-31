@@ -862,6 +862,17 @@ bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-releas
 systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
 systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
 
+# fleet-ops#2540: daily GC of the append-only seats-corpse-retired-* audit
+# dirs (created by the fleet-ops#2469 corpse-retirement bin — atomic mv into
+# a dated retirement dir that the bin never deletes). Prunes dirs strictly
+# older than the 30-day post-mortem window with a hard guard that never
+# deletes anything newer than 30d; --max-dirs 10 cap adds a loud log line
+# on bursts but never force-prunes. Heartbeat metric + absent() rule in
+# config/fleet_rules.yml catch a stopped organ.
+bin/fleet-seat-corpse-retire-gc /home/nish/.local/bin/fleet-seat-corpse-retire-gc
+systemd/fleet-seat-corpse-retire-gc.service /home/nish/.config/systemd/user/fleet-seat-corpse-retire-gc.service
+systemd/fleet-seat-corpse-retire-gc.timer /home/nish/.config/systemd/user/fleet-seat-corpse-retire-gc.timer
+
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir
 # (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;

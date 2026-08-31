@@ -77,6 +77,14 @@ NON_ROLE_UNIT_PREFIXES = (
     # tests/fleet-seat-comeback-release.test.sh plus the absent()/stalled
     # rules on its heartbeat metric.
     "fleet-seat-comeback-release",
+    # fleet-ops#2540: fleet-seat-corpse-retire-gc is plumbing (prunes
+    # seats-corpse-retired-* audit dirs past the 30-day post-mortem
+    # window — pure directory GC, no model, no prompt, no work items;
+    # same shape as fleet-seat-comeback-release). Its gate is
+    # tests/fleet-seat-corpse-retire-gc.test.sh plus the
+    # FleetSeatCorpseRetireGcAbsent rule on its heartbeat metric
+    # (config/fleet_rules.yml).
+    "fleet-seat-corpse-retire-gc",
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no

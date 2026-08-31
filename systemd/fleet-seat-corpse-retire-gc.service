@@ -1,0 +1,29 @@
+# fleet-seat-corpse-retire-gc.service — daily GC of the append-only
+# seats-corpse-retired-* audit dirs (fleet-ops#2540).
+#
+# fleet-ops#2469 / PR #2511 retires corpse seat ledgers (atomic mv) into
+# dated seats-corpse-retired-<UTC-ts>/ dirs that are never deleted by the
+# retirement bin — they are the post-mortem audit trail for corpse-seat
+# terminations. This organ GCs those dirs past the 30-day audit window,
+# with a hard guard that never deletes anything newer than 30d regardless
+# of count. A run with nothing stale is a no-op (exit 0); a failed prune
+# exits 1 (global OnFailure escalates). Writes
+# fleet_seat_corpse_retire_gc_last_run_seconds on every run so the
+# absent() rule (FleetSeatCorpseRetireGcAbsent) catches a dead organ.
+
+[Unit]
+Description=Daily GC of seats-corpse-retired-* audit dirs (fleet-ops#2540)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/2540
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-seat-corpse-retire-gc'
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=10min
+# Never restart: the daily timer is the retry. A failed GC escalates via
+# the global service.d/10-escalate.conf drop-in, not via Restart=.
+Restart=no

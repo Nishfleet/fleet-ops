@@ -1,0 +1,26 @@
+# fleet-seat-corpse-retire-gc.timer — daily GC of seats-corpse-retired-*
+# audit dirs (fleet-ops#2540).
+#
+# Runs 04:45 UTC daily, 10 minutes after the fleet-seat-corpse-retire
+# organ's planned 04:30 UTC slot (PR #2511, issue fleet-ops#2469), so the
+# GC sees that day's retirement dirs at the earliest. RandomizedDelaySec
+# keeps the run from clustering with the rest of the fleet's daily
+# timers; the GC is idempotent (a run that misses a day's new dirs simply
+# GCs them the next day — the 30d retention floor absorbs a skipped
+# day). The 30-day audit window is the hard guard: nothing created
+# within 30d is ever deleted, so the post-mortem ledger survives the
+# whole review window even if this timer slips.
+
+[Unit]
+Description=Daily GC of seats-corpse-retired-* audit dirs (fleet-ops#2540)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/2540
+Requires=fleet-seat-corpse-retire-gc.service
+
+[Timer]
+OnCalendar=*-*-* 04:45:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

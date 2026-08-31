@@ -40,6 +40,15 @@ bash "$here/fleet-seat-recovery-units.test.sh"
 # .github/workflows/**). Runs in its own process (scratch ledger + stub pi).
 bash "$here/fleet-seat-comeback-release.test.sh"
 
+# fleet-ops#2540: the GC organ for the append-only seats-corpse-retired-*
+# audit dirs (created by the #2469 corpse-retirement bin; 30-day
+# post-mortem retention with a hard guard that never deletes anything
+# newer than 30d; --max-dirs 10 cap). Sits beside comeback-release as the
+# cleanup half of the same seat lifecycle; hosted here so the P14 closure
+# reaches it without a ci.yml edit (workers cannot touch
+# .github/workflows/**). Runs in its own process (scratch lanes root).
+bash "$here/fleet-seat-corpse-retire-gc.test.sh"
+
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 

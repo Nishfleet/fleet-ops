@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# fleet-seat-corpse-retire-gc — daily GC of the append-only
+# seats-corpse-retired-* audit dirs (fleet-ops#2540).
+#
+# Why this exists
+# ---------------
+# fleet-ops#2469 (PR #2511) retires corpse seat ledgers (seat_dead=true,
+# class corpse, no usable_at comeback clock) out of the live roster by
+# atomic `mv` into a DATED `seats-corpse-retired-<UTC-ts>/` directory under
+# agent-state/lanes. Those dirs are APPEND-ONLY — the retirement bin never
+# deletes them; they are the audit trail for corpse-seat terminations (the
+# c=150/dead=true/class=corpse ledger inside each dir is preserved for
+# forensic review, see PR #2511 blast-radius notes). With no GC organ the
+# dir count grows unbounded at the rate of every retirement (observed
+# 2026-08-31: 9 seats-corpse-retired-* dirs in 5h18m, from test invocations
+# of the not-yet-deployed bin alone; a test loop or hot patch can fan out
+# 1000s of dirs in minutes). This bin is that GC organ.
+#
+# What this bin does
+# ------------------
+# Daily (systemd/fleet-seat-corpse-retire-gc.timer, 04:45 UTC):
+#   1. Enumerates `seats-corpse-retired-*` dirs under <agent-state>/lanes
+#      (maxdepth 1 — sibling quarantine classes in the same parent are
+#      never touched).
+#   2. Prunes dirs STRICTLY older than RETENTION_S (default 30 days — the
+#      post-mortem audit window, same window as the
+#      lanes-deadcred-quarantine-* GC class).
+#   3. Hard guard: a dir newer than the 30d floor is NEVER pruned,
+#      regardless of dir count. The audit window wins. (Equivalent to
+#      `find ... -mtime +30 -exec rm -r {} \;`; implemented as an explicit
+#      per-dir mtime check so the retention decision is deterministic and
+#      honors the FLEET_SEAT_CORPSE_RETIRE_GC_NOW test seam.)
+#   4. --max-dirs 10 cap (stop-gap until PR #2511 lands): when the scanned
+#      count exceeds the cap the run prunes the oldest stale dirs first
+#      (they are already enumerated oldest-first), refuses to prune any
+#      dir newer than 30d even when over-cap, and logs a LOUD line so a
+#      burst is visible in the journal. The cap never force-prunes.
+#   5. Writes the textfile metric
+#      /var/lib/prometheus/node-exporter/fleet-seat-corpse-retire-gc.prom:
+#      fleet_seat_corpse_retire_gc_last_run_seconds (ALWAYS, even on a
+#      no-op sweep — the FleetSeatCorpseRetireGcAbsent rule catches a
+#      missing/stale file) + fleet_seat_corpse_retire_gc_total{dir,
+#      outcome} counting scanned/kept/pruned.
+#
+# Idempotent + safe: a clean sweep (nothing stale) is a no-op, exit 0.
+# Prune failure exits 1 (systemd marks the run failed; the heartbeat stays
+# written so absent() still distinguishes "ran but failed" from "dead").
+#
+# Usage: fleet-seat-corpse-retire-gc [--dry-run] [--max-dirs N] [--help]
+#
+# Environment seams (tests):
+#   FLEET_SEAT_CORPSE_RETIRE_GC_AGENT_STATE  agent-state root (default
+#                                            /home/nish/workspaces/agent-state)
+#   FLEET_SEAT_CORPSE_RETIRE_GC_ROOT         lanes root to scan (default
+#                                            <agent-state>/lanes)
+#   FLEET_SEAT_CORPSE_RETIRE_GC_PROM         textfile .prom (default
+#                                            /var/lib/prometheus/node-exporter/
+#                                            fleet-seat-corpse-retire-gc.prom)
+#   FLEET_SEAT_CORPSE_RETIRE_GC_RETENTION_S  retention seconds (default 2592000
+#                                            = 30 days)
+#   FLEET_SEAT_CORPSE_RETIRE_GC_MAX_DIRS     max-dirs cap (default 10)
+#   FLEET_SEAT_CORPSE_RETIRE_GC_NOW          ISO timestamp override (tests)
+#   FLEET_SEAT_CORPSE_RETIRE_GC_DRY_RUN      1 = report + write prom, delete nothing
+#
+# Exit: 0 clean sweep (zero or more prunes, no errors). 1 internal error
+# (failed prune). 2 invalid arguments.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${FLEET_SEAT_CORPSE_RETIRE_GC_AGENT_STATE:-/home/nish/workspaces/agent-state}"
+LINES_ROOT="${FLEET_SEAT_CORPSE_RETIRE_GC_ROOT:-$AS/lanes}"
+PROM_FILE="${FLEET_SEAT_CORPSE_RETIRE_GC_PROM:-/var/lib/prometheus/node-exporter/fleet-seat-corpse-retire-gc.prom}"
+RETENTION_S="${FLEET_SEAT_CORPSE_RETIRE_GC_RETENTION_S:-2592000}"
+MAX_DIRS="${FLEET_SEAT_CORPSE_RETIRE_GC_MAX_DIRS:-10}"
+NOW_ISO="${FLEET_SEAT_CORPSE_RETIRE_GC_NOW:-}"
+DRY_RUN="${FLEET_SEAT_CORPSE_RETIRE_GC_DRY_RUN:-0}"
+DIR_PATTERN="seats-corpse-retired-*"
+
+[[ "$RETENTION_S" =~ ^[0-9]+$ ]] || RETENTION_S=2592000
+[[ "$MAX_DIRS" =~ ^[0-9]+$ ]] || MAX_DIRS=10
+
+log() {
+    printf '[%s] [fleet-seat-corpse-retire-gc] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+usage() {
+    cat <<'USAGE'
+fleet-seat-corpse-retire-gc — daily GC of seats-corpse-retired-* audit dirs
+(fleet-ops#2540). See the file header for design and env seams.
+
+Usage: fleet-seat-corpse-retire-gc [--dry-run] [--max-dirs N] [--help]
+  --dry-run    report + write the metric; delete nothing
+  --max-dirs N cap for the loud over-cap line (default 10; never force-prunes)
+  --help       show this help
+USAGE
+}
+
+# --- args --------------------------------------------------------------------
+args=("$@")
+i=0
+while (( i < ${#args[@]} )); do
+    case "${args[$i]}" in
+        --dry-run) DRY_RUN=1 ;;
+        --help|-h) usage; exit 0 ;;
+        --max-dirs)
+            i=$((i + 1))
+            if (( i >= ${#args[@]} )) || [[ ! "${args[$i]}" =~ ^[0-9]+$ ]]; then
+                printf '--max-dirs needs a non-negative integer value\n' >&2
+                usage >&2
+                exit 2
+            fi
+            MAX_DIRS="${args[$i]}"
+            ;;
+        --max-dirs=*)
+            v="${args[$i]#--max-dirs=}"
+            [[ "$v" =~ ^[0-9]+$ ]] || { printf '--max-dirs needs a non-negative integer value\n' >&2; usage >&2; exit 2; }
+            MAX_DIRS="$v"
+            ;;
+        *) printf 'unknown arg: %s\n' "${args[$i]}" >&2; usage >&2; exit 2 ;;
+    esac
+    i=$((i + 1))
+done
+
+# --- textfile metric ---------------------------------------------------------
+# Fail-open on an unwritable collector dir (same shape as the sibling
+# fleet-seat-corpse-retire bin): the metric write is observability, never
+# a reason to fail the sweep itself.
+write_prom() {
+    local last_run="$1" scanned="$2" kept="$3" pruned="$4"
+    mkdir -p "$(dirname "$PROM_FILE")" 2>/dev/null || return 0
+    {
+        printf '# HELP fleet_seat_corpse_retire_gc_last_run_seconds Last fleet-seat-corpse-retire-gc run epoch (fleet-ops#2540).\n'
+        printf '# TYPE fleet_seat_corpse_retire_gc_last_run_seconds gauge\n'
+        printf 'fleet_seat_corpse_retire_gc_last_run_seconds %s\n' "$last_run"
+        printf '# HELP fleet_seat_corpse_retire_gc_total seats-corpse-retired dir outcomes of the last fleet-seat-corpse-retire-gc run (fleet-ops#2540).\n'
+        printf '# TYPE fleet_seat_corpse_retire_gc_total gauge\n'
+        printf 'fleet_seat_corpse_retire_gc_total{dir="seats-corpse-retired",outcome="scanned"} %s\n' "$scanned"
+        printf 'fleet_seat_corpse_retire_gc_total{dir="seats-corpse-retired",outcome="kept"} %s\n' "$kept"
+        printf 'fleet_seat_corpse_retire_gc_total{dir="seats-corpse-retired",outcome="pruned"} %s\n' "$pruned"
+    } > "$PROM_FILE.tmp.$$" 2>/dev/null || { rm -f "$PROM_FILE.tmp.$$" 2>/dev/null || true; return 0; }
+    mv "$PROM_FILE.tmp.$$" "$PROM_FILE" 2>/dev/null || { rm -f "$PROM_FILE.tmp.$$" 2>/dev/null || true; return 0; }
+}
+
+is_old_enough() {
+    # Args: epoch mtime, current epoch -> 0 when (mtime + retention) < now,
+    # i.e. the dir is STRICTLY older than the 30d floor and may be pruned.
+    local mtime_s="$1" now_s="$2"
+    (( mtime_s + RETENTION_S < now_s ))
+}
+
+main() {
+    local now scanned=0 kept=0 pruned=0 errors=0
+    now=$(now_epoch)
+
+    if [[ ! -d "$LINES_ROOT" ]]; then
+        log "lanes root missing ($LINES_ROOT) — noop (scanned=0 kept=0 pruned=0)"
+        write_prom "$now" 0 0 0
+        return 0
+    fi
+
+    local -a all_dirs=()
+    local dir
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        all_dirs+=("$dir")
+    done < <(find "$LINES_ROOT" -maxdepth 1 -type d -name "$DIR_PATTERN" | sort)
+    scanned=${#all_dirs[@]}
+
+    local mtime_s
+    for dir in "${all_dirs[@]}"; do
+        mtime_s=$(stat -c %Y "$dir" 2>/dev/null) || { log "ERROR: cannot stat $dir (skipping)"; errors=1; continue; }
+        if is_old_enough "$mtime_s" "$now"; then
+            log "pruning $dir (mtime $(date -u -d "@$mtime_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null), age=$(( now - mtime_s ))s > retention=${RETENTION_S}s)"
+            if (( DRY_RUN )); then
+                log "DRY-RUN: would prune $dir (nothing deleted)"
+            elif rm -r -- "$dir" 2>/dev/null; then
+                log "pruned $dir"
+            else
+                log "ERROR: failed to prune $dir (rm rc=$?)"
+                errors=1
+                continue
+            fi
+            (( pruned += 1 ))
+        else
+            (( kept += 1 ))
+        fi
+    done
+
+    if (( scanned > MAX_DIRS )); then
+        # fleet-ops#2540: stop-gap cap. Over-cap never force-prunes anything
+        # newer than the 30d audit floor — it prunes the oldest stale dirs
+        # (already enumerated + pruned above) and gets LOUD here so a burst
+        # is visible in the journal / via the run log.
+        log "LOUD: scanned=$scanned exceeds max-dirs cap=$MAX_DIRS — pruning the oldest stale dirs past the 30d floor first; dirs newer than 30d are NEVER pruned (audit window wins)"
+    fi
+
+    log "sweep complete: scanned=$scanned kept=$kept pruned=$pruned (root=$LINES_ROOT, retention=${RETENTION_S}s, cap=$MAX_DIRS)"
+    write_prom "$now" "$scanned" "$kept" "$pruned"
+
+    if (( errors )); then
+        log "ERROR: $errors dir(s) could not be processed — GC incomplete (exit 1)"
+        return 1
+    fi
+    return 0
+}
+
+main "$@"

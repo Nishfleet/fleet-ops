@@ -138,6 +138,16 @@ groups:
           summary: "fleet seat come-back release organ absent — no clean sweep in 2h"
           description: "fleet-seat-comeback-release has not written a clean (unstalled) sweep in over 2 hours (fleet-ops#2421). Repair worker: check the timer (fleet-seat-comeback-release.timer) is enabled and journalctl --user -u fleet-seat-comeback-release.service. The organ re-probes walled seats whose wall clock has passed and unwalls provably-usable ones; its death means released_n stays 0 again."
 
+      - alert: FleetSeatCorpseRetireGcAbsent
+        expr: absent(fleet_seat_corpse_retire_gc_last_run_seconds) or (time() - fleet_seat_corpse_retire_gc_last_run_seconds) > 172800
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "seats-corpse-retired dir GC absent — no sweep in 48h"
+          description: "fleet-seat-corpse-retire-gc has not written fleet_seat_corpse_retire_gc_last_run_seconds in over 48 hours (two missed daily cycles; fleet-ops#2540). The GC prunes seats-corpse-retired-* audit dirs older than the 30-day post-mortem window (the retirement bin fleet-ops#2469 appends them and never deletes them); its death means corpse-retirement dirs accumulate unbounded. Check the timer (fleet-seat-corpse-retire-gc.timer) is enabled and journalctl --user -u fleet-seat-corpse-retire-gc.service. Helper: /home/nish/.local/bin/fleet-seat-corpse-retire-gc."
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h

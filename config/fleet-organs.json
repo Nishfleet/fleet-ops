@@ -186,6 +186,17 @@
       ]
     },
     {
+      "name": "seat-corpse-retire-gc",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_seat_corpse_retire_gc_last_run_seconds",
+      "absent_alert": "FleetSeatCorpseRetireGcAbsent",
+      "files": [
+        "bin/fleet-seat-corpse-retire-gc",
+        "systemd/fleet-seat-corpse-retire-gc.service",
+        "systemd/fleet-seat-corpse-retire-gc.timer"
+      ]
+    },
+    {
       "name": "fleet-aeo-probe",
       "kind": "canary",
       "heartbeat_metric": "fleet_aeo_probe_last_run_seconds",
