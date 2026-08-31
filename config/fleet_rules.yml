@@ -814,6 +814,22 @@ groups:
           summary: "weekly AEO probe has not run in 14+ days"
           description: "Repair worker: fleet_aeo_probe_last_run_seconds is absent or older than 14d (two weekly timer cycles). The AEO probe (#1236) is 0509's outermost search-visibility line — it proves 0509 ranks for money-queries against StockX/GOAT and feeds the weekly senior conference; a dead probe goes dark silently, so the repair rail must resurrect fleet-aeo-probe.timer. Check journalctl --user -u fleet-aeo-probe.service and systemctl --user list-timers fleet-aeo-probe.timer. Helper: /home/nish/.local/libexec/fleet-aeo-probe.py. fleet-ops#1236."
 
+  - name: fleet_pr_rebase_supply
+    rules:
+      # fleet-ops#2525: organ heartbeat. fleet_pr_rebase_last_green_seconds is
+      # written by every daily CONFLICTING-PR rebase sweep that runs to
+      # completion; absent() catches a missing file, the >172800 delta catches
+      # a dead organ (2 missed daily cycles).
+      - alert: FleetPrRebaseAbsent
+        expr: absent(fleet_pr_rebase_last_green_seconds) or (time() - fleet_pr_rebase_last_green_seconds) > 172800
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "daily CONFLICTING-PR rebase sweep absent for 2+ days"
+          description: "fleet_pr_rebase_last_green_seconds is absent or older than 2d (two missed daily cycles, fleet-ops#2525). The daily sweep (bin/fleet-pr-rebase, timer fleet-pr-rebase.timer) auto-rebases every open CONFLICTING PR onto main so armed fixes unblock; a dead organ means worker fixes sit stuck behind merge conflicts again (the 2026-08-31 pile: #2087, #1923, #1696, #1582, #2511). Repair: check journalctl --user -u fleet-pr-rebase.service, systemctl --user list-timers fleet-pr-rebase.timer, and that /home/nish/.local/bin/fleet-pr-rebase still mints its App token."
+
   - name: fleet_quality_slo
     rules:
       # fleet-ops#2444: the quality-SLO scoreboard must refresh at least

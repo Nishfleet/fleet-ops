@@ -197,6 +197,17 @@
       ]
     },
     {
+      "name": "pr-rebase",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_pr_rebase_last_green_seconds",
+      "absent_alert": "FleetPrRebaseAbsent",
+      "files": [
+        "bin/fleet-pr-rebase",
+        "systemd/fleet-pr-rebase.service",
+        "systemd/fleet-pr-rebase.timer"
+      ]
+    },
+    {
       "name": "quality-slo-scoreboard",
       "kind": "guard",
       "heartbeat_metric": "fleet_quality_slo_last_computed_seconds",

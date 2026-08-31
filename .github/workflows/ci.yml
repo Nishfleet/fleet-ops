@@ -115,6 +115,7 @@ jobs:
             /home/nish/.local/bin/fleet-blind-audit-panel \
             /home/nish/.local/bin/fleet-deploy-check \
             /home/nish/.local/bin/fleet-seat-recovery \
+            /home/nish/.local/bin/fleet-pr-rebase \
             /home/nish/.local/bin/fleet-unjustified-wait \
             /home/nish/.local/bin/fleet-escalation-completion \
             /home/nish/.local/bin/fleet-asset-census \
@@ -280,3 +281,8 @@ jobs:
         bash tests/fleet-rules-severity-page.test.sh
         bash tests/stop-escalation-writer-class-gate.test.sh
         bash tests/phone-chokepoint.test.sh
+        # fleet-ops#2525: daily CONFLICTING-PR rebase sweep — success/failure
+        # paths, rebase-failed skip, dry-run, dead App identity, metrics,
+        # and the organ contracts (MANIFEST, timer-manifest, organs registry,
+        # absent rule).
+        bash tests/fleet-pr-rebase.test.sh

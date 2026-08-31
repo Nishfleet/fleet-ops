@@ -487,6 +487,12 @@
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
+    },
+    "fleet-pr-rebase.timer": {
+      "reason": "Daily CONFLICTING-PR rebase sweep (fleet-ops#2525): a PR turned CONFLICTING by main moving has no event that re-reconciles it, so a daily sweep is the smallest cadence keeping the merge queue fed (a stuck fix survives at most one day). Fires 06:00 IST (00:30 UTC), past the Sunday maintenance window and before the working day's merges, when claim worktrees are least likely to hold a live worker. Persistent so a missed day (VPS down) still fires on boot.",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "repo"
     }
   }
 }

@@ -1,0 +1,22 @@
+# fleet-pr-rebase.timer — daily CONFLICTING-PR rebase sweep (fleet-ops#2525)
+#
+# Named reason (a schedule needs a NAMED reason): a CONFLICTING PR has no
+# event that re-reconciles it (abandoned update-branch commands, no
+# webhook); GitHub recomputes mergeability only when the base or head moves.
+# A daily sweep is the smallest cadence that keeps the merge queue fed: a
+# stuck PR survives at most one day instead of weeks. Fires 06:00 IST (00:30
+# UTC) — past the Sunday maintenance window (03:15-04:30 IST) and before the
+# working day's merges, when claim worktrees are least likely to hold a live
+# worker whose local copy the server-side rebase would leave behind; each
+# rebase rewrites the PR's own branch only, and auto-merge (if armed)
+# proceeds the moment GitHub recomputes MERGEABLE.
+# Persistent so a missed day (VPS down) still fires on the next boot.
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 Asia/Kolkata
+RandomizedDelaySec=300
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

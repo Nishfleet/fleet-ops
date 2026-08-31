@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# fleet-pr-rebase — daily auto-rebase of CONFLICTING pull requests
+# (fleet-ops#2525).
+#
+# Problem: a worker builds and tests a fix, arms auto-merge, and then main
+# moves; the PR turns CONFLICTING and nothing re-reconciles it. The fix
+# (often with a run-proof in its description) sits stuck for days. Observed
+# 2026-08-31: 14 CONFLICTING open PRs in Nishfleet/fleet-ops, several stuck
+# for weeks (gap-closure rate-limit guard #2087, 0509 surface probe #1923,
+# pi-audit empty verdict #1696, alarm->ticket reconciler #1582, seat corpse
+# retirement #2511).
+#
+# Design — one daily sweep per repo (default Nishfleet/fleet-ops): for every
+# open PR GitHub reports mergeable=CONFLICTING that does NOT already carry
+# the `rebase-failed` label:
+#   - `gh pr update-branch <n> --rebase` (requires gh >= 2.40, present since
+#     2.40). Success -> GitHub recomputes mergeability; a PR armed for
+#     auto-merge proceeds the moment it turns MERGEABLE.
+#   - failure -> a throwaway local clone merges the PR head into current main
+#     to PROVE a real conflict exists (a gh failure for another reason —
+#     permissions, rate limit, branch protection — must not get the
+#     rebase-failed label). Real conflict -> label `rebase-failed` + a
+#     comment naming the conflicted files; the PR author resolves manually.
+#     Everything else -> logged, retried next tick.
+#
+# The sweep skips PRs already labeled `rebase-failed` (a prior attempt
+# already reached a true conflict; relabeling would churn the author).
+#
+# Metrics (textfile, per fleet-ops#2525):
+#   fleet_pr_rebased_total          counter — successful rebases (cumulative)
+#   fleet_pr_conflicting_total      counter — conflicts observed (cumulative)
+#   fleet_pr_rebase_last_green_seconds  gauge — last sweep that ran to
+#       completion (the organ heartbeat; absent()/stale rule:
+#       FleetPrRebaseAbsent in config/fleet_rules.yml)
+#
+# Credentials: runs as the nishfleet-worker App identity. If GH_TOKEN is
+# already set (interactive run, tests) it is used as-is; otherwise the sweep
+# mints a short-lived installation token via worker-token --print. A missing
+# creds file or failed mint is a DEAD APP IDENTITY: the sweep exits 1 and
+# NEVER falls back to a human gh auth (fleet-ops#413/#440 convention).
+#
+# Usage: fleet-pr-rebase [--dry-run]
+#
+# Env (tests):
+#   FLEET_PR_REBASE_REPOS            newline-separated owner/name list
+#                                    (default: Nishfleet/fleet-ops)
+#   FLEET_PR_REBASE_NUMBERS          comma-separated PR numbers — test/drill
+#                                    hook: only those numbers are candidates
+#   FLEET_PR_REBASE_DRY_RUN          if 1, print intent and mutate nothing
+#   FLEET_PR_REBASE_LOCKDIR          flock directory (runtime dir default)
+#   FLEET_PR_REBASE_STATE            cumulative-counters state json
+#   FLEET_PR_REBASE_PROM             textfile .prom
+#   FLEET_PR_REBASE_LABEL            conflict label name (default rebase-failed)
+#   FLEET_PR_REBASE_CONFLICT_PROBE_CMD  command that prints the conflicted
+#                                    files for a repo+head (tests inject a
+#                                    fake; default is a real temp-clone merge)
+#   WORKER_TOKEN_BIN                 worker-token path (tests)
+#   WORKER_APP_CREDS_FILE            nishfleet-worker creds file (tests)
+#   FLEET_PR_REBASE_NOW              epoch override (tests)
+#
+# Exit: 0 clean sweep (any repo listed OK, including no-op). 1 on a fatal
+# (dead App identity, missing dep, every repo failed to list). 2 usage error.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+
+AS_STATE="${FLEET_PR_REBASE_STATE:-$HOME/.local/state/fleet-pr-rebase.json}"
+PROM_FILE="${FLEET_PR_REBASE_PROM:-/var/lib/prometheus/node-exporter/fleet-pr-rebase.prom}"
+LABEL_NAME="${FLEET_PR_REBASE_LABEL:-rebase-failed}"
+LOCKDIR="${FLEET_PR_REBASE_LOCKDIR:-${XDG_RUNTIME_DIR}/fleet-pr-rebase}"
+WORKER_TOKEN_BIN="${WORKER_TOKEN_BIN:-$HOME/.local/bin/worker-token}"
+WORKER_CREDS_FILE="${WORKER_APP_CREDS_FILE:-$HOME/.config/fleet-worker/nishfleet-worker.env}"
+NOW_EPOCH="${FLEET_PR_REBASE_NOW:-}"
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" || "${FLEET_PR_REBASE_DRY_RUN:-0}" == "1" ]]; then
+    DRY_RUN=1
+fi
+[[ "${1:-}" == "--help" ]] && { sed -n '2,70p' "$0" | sed 's/^# //'; exit 0; }
+
+log() {
+    printf '[%s] [fleet-pr-rebase] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_epoch() {
+    if [[ -n "$NOW_EPOCH" ]]; then
+        printf '%s\n' "$NOW_EPOCH"
+    else
+        date -u +%s
+    fi
+}
+
+# --- dependencies -----------------------------------------------------------
+for dep in jq gh git; do
+    command -v "$dep" >/dev/null 2>&1 || { log "FATAL: $dep missing"; exit 2; }
+done
+
+# --- credential: use GH_TOKEN if set, else mint the App token ---------------
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    if [[ -f "$WORKER_CREDS_FILE" && -x "$WORKER_TOKEN_BIN" ]]; then
+        if mint_out="$("$WORKER_TOKEN_BIN" --print 2>/tmp/fleet-pr-rebase-worker-token.err)"; then
+            # shellcheck disable=SC2162
+            eval "$mint_out"
+            log "minted fresh nishfleet-worker App token (${#GH_TOKEN}-char, ttl<=1h)"
+            mint_out=""
+        else
+            mint_rc=$?
+            log "DEAD APP IDENTITY — worker-token mint failed (exit $mint_rc): $(tr '\n' ' ' </tmp/fleet-pr-rebase-worker-token.err 2>/dev/null)"
+            rm -f /tmp/fleet-pr-rebase-worker-token.err
+            exit 1
+        fi
+        rm -f /tmp/fleet-pr-rebase-worker-token.err
+    else
+        log "DEAD APP IDENTITY — no nishfleet-worker creds at $WORKER_CREDS_FILE and no executable worker-token at $WORKER_TOKEN_BIN; refusing human-gh-auth fallback"
+        exit 1
+    fi
+fi
+: "${GH_TOKEN:?}"
+
+# --- lock: one sweep at a time (a dup run is a no-op) -----------------------
+mkdir -p "$LOCKDIR"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+# --- repo list ---------------------------------------------------------------
+repos=""
+if [[ -n "${FLEET_PR_REBASE_REPOS:-}" ]]; then
+    repos="$FLEET_PR_REBASE_REPOS"
+else
+    repos="Nishfleet/fleet-ops"
+fi
+
+INCLUDE_NUMBERS=""
+if [[ -n "${FLEET_PR_REBASE_NUMBERS:-}" ]]; then
+    INCLUDE_NUMBERS=",${FLEET_PR_REBASE_NUMBERS// /},"
+fi
+
+# --- cumulative-counters state ------------------------------------------------
+load_state() {
+    if [[ -f "$AS_STATE" ]]; then
+        jq -c '.' "$AS_STATE" 2>/dev/null || printf '%s\n' '{"rebased_total":0,"conflicting_seen_total":0}'
+    else
+        printf '%s\n' '{"rebased_total":0,"conflicting_seen_total":0}'
+    fi
+}
+
+save_state() {
+    local state="$1"
+    mkdir -p "$(dirname "$AS_STATE")"
+    printf '%s\n' "$state" >"$AS_STATE.tmp"
+    mv "$AS_STATE.tmp" "$AS_STATE"
+}
+
+write_prom() {
+    local last_green="$1" rebased="$2" conflicting="$3"
+    mkdir -p "$(dirname "$PROM_FILE")"
+    {
+        printf '# HELP fleet_pr_rebased_total Successful rebases of CONFLICTING PRs by the daily PR-rebase sweep (fleet-ops#2525).\n'
+        printf '# TYPE fleet_pr_rebased_total counter\n'
+        printf 'fleet_pr_rebased_total %s\n' "$rebased"
+        printf '# HELP fleet_pr_conflicting_total CONFLICTING PRs observed by the daily PR-rebase sweep (fleet-ops#2525).\n'
+        printf '# TYPE fleet_pr_conflicting_total counter\n'
+        printf 'fleet_pr_conflicting_total %s\n' "$conflicting"
+        printf '# HELP fleet_pr_rebase_last_green_seconds Last daily PR-rebase sweep that ran to completion (fleet-ops#2525).\n'
+        printf '# TYPE fleet_pr_rebase_last_green_seconds gauge\n'
+        printf 'fleet_pr_rebase_last_green_seconds %s\n' "$last_green"
+    } >"$PROM_FILE.tmp"
+    mv "$PROM_FILE.tmp" "$PROM_FILE"
+}
+
+# --- resolve the real conflicted files for a head branch ---------------------
+# Default probe: a throwaway shallow clone merges the PR head into current
+# main and prints `git diff --diff-filter=U` paths. Prints nothing and exits
+# 0 when the merge is clean (gh failed for another reason). Tests override
+# with FLEET_PR_REBASE_CONFLICT_PROBE_CMD (contract: $1=repo $2=head).
+conflict_probe() {
+    local repo="$1" head="$2"
+    if [[ -n "${FLEET_PR_REBASE_CONFLICT_PROBE_CMD:-}" ]]; then
+        # Test seam: an executable script invoked as "$CMD <repo> <head>".
+        "$FLEET_PR_REBASE_CONFLICT_PROBE_CMD" "$repo" "$head"
+        return $?
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    git -C "$tmp" init -q
+    git -C "$tmp" config user.name "Nishfleet Agent"
+    git -C "$tmp" config user.email "agent@nishfleet.local"
+    git -C "$tmp" remote add origin "https://github.com/$repo.git"
+    if ! git -C "$tmp" fetch -q --depth 1000 origin \
+        "+refs/heads/main:refs/heads/base" \
+        "+refs/heads/$head:refs/heads/head" 2>/dev/null; then
+        log "  conflict probe: fetch failed for $repo#$head — skip (retry next tick)"
+        return 0
+    fi
+    git -C "$tmp" checkout -q base
+    set +e
+    git -C "$tmp" merge -q --no-commit --no-ff head >/dev/null 2>&1
+    local mrc=$?
+    set -e
+    if [[ $mrc -eq 0 ]]; then
+        # Clean merge — the gh rebase failure was not a genuine conflict.
+        return 0
+    fi
+    git -C "$tmp" diff --name-only --diff-filter=U 2>/dev/null || true
+    return 1
+}
+
+is_rebase_failed() {
+    local labels_json="$1"
+    printf '%s' "$labels_json" | jq -e --arg l "$LABEL_NAME" 'any(.[]; .name == $l)' >/dev/null 2>&1
+}
+
+# Store the per-repo label to avoid spamming label-create on every PR.
+ensure_label_created() {
+    local repo="$1"
+    if [[ ${created_labels[$repo]:-0} -eq 1 ]]; then
+        return 0
+    fi
+    if [[ "$DRY_RUN" == "1" ]]; then
+        return 0
+    fi
+    if gh label create "$LABEL_NAME" --repo "$repo" \
+        --description "PR-rebase sweep: conflicts must be resolved manually; sweep skips labeled PRs" \
+        >/dev/null 2>&1; then
+        log "  created label $LABEL_NAME on $repo"
+    else
+        # Already exists (the common case) — add-label below confirms.
+        log "  label $LABEL_NAME already present on $repo"
+    fi
+    created_labels[$repo]=1
+}
+
+declare -A created_labels
+
+rebased_total=0
+repos_ok=0
+repos_failed=0
+
+log "sweep starting (dry-run=$DRY_RUN)"
+
+process_repo() {
+    local repo="$1"
+    local list_json row num head labels_json files body
+    local prs=0
+
+    log "repo $repo"
+
+    if ! list_json=$(gh pr list -R "$repo" --state open \
+        --json number,mergeable,labels,headRefName --limit 100 2>/dev/null); then
+        log "  $repo: gh pr list FAILED — skip (retry next tick)"
+        return 1
+    fi
+
+    while IFS= read -r row; do
+        [[ -z "$row" ]] && continue
+        num=$(printf '%s' "$row" | jq -r '.number // empty')
+        [[ -z "$num" ]] && continue
+        if [[ "$(printf '%s' "$row" | jq -r '.mergeable // ""')" != "CONFLICTING" ]]; then
+            continue
+        fi
+        if [[ -n "$INCLUDE_NUMBERS" ]] && [[ "$INCLUDE_NUMBERS" != *",$num,"* ]]; then
+            continue
+        fi
+        labels_json=$(printf '%s' "$row" | jq -c '.labels')
+        if is_rebase_failed "$labels_json"; then
+            log "  $repo#$num: skipped (labeled $LABEL_NAME)"
+            continue
+        fi
+        prs=$((prs + 1))
+        head=$(printf '%s' "$row" | jq -r '.headRefName // empty')
+        conflicted_seen_this_run=$((conflicted_seen_this_run + 1))
+
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "  DRY $repo#$num: would gh pr update-branch $num --rebase ($head)"
+            continue
+        fi
+
+        log "  $repo#$num: rebasing onto main ($head)"
+        set +e
+        update_out=$(gh pr update-branch "$num" -R "$repo" --rebase 2>&1)
+        update_rc=$?
+        set -e
+        if [[ $update_rc -eq 0 ]]; then
+            log "  $repo#$num: rebase OK"
+            rebased_total=$((rebased_total + 1))
+            continue
+        fi
+
+        log "  $repo#$num: update-branch failed (rc=$update_rc): $(printf '%s' "$update_out" | head -1 | tr -d '\n')"
+        set +e
+        files=$(conflict_probe "$repo" "$head")
+        probe_rc=$?
+        set -e
+        if [[ $probe_rc -eq 1 ]] && [[ -n "$files" ]]; then
+            log "  $repo#$num: REAL conflict — labeling $LABEL_NAME"
+            ensure_label_created "$repo"
+            # gh has no `pr add-label`; labels are applied via pr edit.
+            gh pr edit "$num" -R "$repo" --add-label "$LABEL_NAME" >/dev/null 2>&1 || \
+                log "  $repo#$num: add-label FAILED (retry next tick)"
+            body="Rebase of this branch onto \`main\` cannot be applied automatically (daily PR-rebase sweep, fleet-ops#2525). Conflicted files:"
+            body+=$(printf '\n\n```\n%s\n```\n' "$files")
+            body+="Resolve locally (\`git fetch origin\`; \`git rebase origin/main\`), then push. The sweep skips PRs carrying the \`$LABEL_NAME\` label until it is removed."
+            gh pr comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || \
+                log "  $repo#$num: conflict comment FAILED (retry next tick)"
+        else
+            # Not a genuine content conflict — gh failed for another reason
+            # (permissions / rate limit / protection). Do not label; next
+            # tick retries.
+            log "  $repo#$num: gh update failed but local merge is clean — not labeling (retry next tick)"
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    log "  $repo: candidates=$prs"
+    return 0
+}
+
+conflicted_seen_this_run=0
+
+while IFS= read -r repo; do
+    [[ -z "$repo" ]] && continue
+    if process_repo "$repo"; then
+        repos_ok=$((repos_ok + 1))
+    else
+        repos_failed=$((repos_failed + 1))
+    fi
+done <<< "$repos"
+
+if [[ "$repos_failed" -gt 0 && "$repos_ok" -eq 0 ]]; then
+    log "sweep FAILED: every repo failed to list (retry next tick)"
+    exit 1
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run done: candidates_seen=$conflicted_seen_this_run"
+    printf 'fleet-pr-rebase dry-run candidates_seen=%s repos_ok=%s repos_failed=%s\n' \
+        "$conflicted_seen_this_run" "$repos_ok" "$repos_failed"
+    exit 0
+fi
+
+state=$(load_state)
+rebased_cum=$(( $(printf '%s' "$state" | jq -r '.rebased_total // 0') + rebased_total ))
+conflicting_cum=$(( $(printf '%s' "$state" | jq -r '.conflicting_seen_total // 0') + conflicted_seen_this_run ))
+save_state "$(jq -n --argjson r "$rebased_cum" --argjson c "$conflicting_cum" \
+    '{rebased_total:$r, conflicting_seen_total:$c}')"
+write_prom "$(now_epoch)" "$rebased_cum" "$conflicting_cum"
+
+log "sweep done: rebased=$rebased_total this-run (cum $rebased_cum), conflicts_seen=$conflicted_seen_this_run (cum $conflicting_cum), repos_ok=$repos_ok repos_failed=$repos_failed"
+printf 'fleet-pr-rebase rebased=%s conflicts_seen=%s repos_ok=%s repos_failed=%s\n' \
+    "$rebased_total" "$conflicted_seen_this_run" "$repos_ok" "$repos_failed"
+exit 0

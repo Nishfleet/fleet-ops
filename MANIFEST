@@ -862,6 +862,17 @@ bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-releas
 systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
 systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
 
+# fleet-ops#2525: daily auto-rebase of CONFLICTING PRs. Runs
+# `gh pr update-branch --rebase` on every open CONFLICTING PR that does not
+# carry the rebase-failed label (a real conflict gets that label + a comment
+# naming the conflicted files). Mints the nishfleet-worker App token itself;
+# exports fleet_pr_rebased_total / fleet_pr_conflicting_total /
+# fleet_pr_rebase_last_green_seconds (textfile). Heartbeat metric +
+# absent() rule + fleet-organs.json entry ship in the same PR.
+bin/fleet-pr-rebase /home/nish/.local/bin/fleet-pr-rebase
+systemd/fleet-pr-rebase.service /home/nish/.config/systemd/user/fleet-pr-rebase.service
+systemd/fleet-pr-rebase.timer /home/nish/.config/systemd/user/fleet-pr-rebase.timer
+
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir
 # (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;

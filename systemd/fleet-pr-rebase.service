@@ -1,0 +1,29 @@
+# fleet-pr-rebase.service — daily auto-rebase of CONFLICTING PRs (fleet-ops#2525)
+#
+# Unblocks worker fixes stuck behind merge conflicts: for every open
+# CONFLICTING PR without the `rebase-failed` label it runs
+# `gh pr update-branch <n> --rebase`; a true conflict gets labeled +
+# a comment naming the conflicted files. Runs daily (see the timer's
+# named reason). The bin mints its own short-lived nishfleet-worker App
+# token when GH_TOKEN is absent, so the unit needs no stored secrets.
+# Loud: a run where every repo fails to list, a dead App identity, or a
+# missing dep exits 1 -> the global unit-escalation drop-in pages the
+# senior auditor; fleet_pr_rebase_last_green_seconds is not written, so
+# the FleetPrRebaseAbsent prom rule also fires.
+
+[Unit]
+Description=Daily auto-rebase of CONFLICTING PRs (fleet-ops#2525)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/2525
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-pr-rebase'
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=20min
+Restart=no
