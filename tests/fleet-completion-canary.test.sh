@@ -1564,4 +1564,118 @@ ok "issue evidence check: flags issues closed without PR/commit evidence (fleet-
 
 rm -rf "$scratch16"
 
-echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane, --collect success, issue evidence"
+# --- 18. decision-pending class park holds across a FRESH dispatch unit ---------
+# (2026-08-31 senior auditor) A structural alert whose chain already escalated
+# to the senior conference (ladder=stop-reason, terminal=escalated) and was
+# closed out while STILL firing is a Nish-reserved decision. The fleet-ops#2397
+# fresh-trip branch used to RESET the stale marker when a new dispatch unit
+# arrived, so every cycle re-spawned a repair worker and re-summoned the senior
+# conference (live: FleetQueueSelfMaintenanceRatioHigh — 6 dispatches & 4
+# escalations in ~48h). The class park (decision_class_until in the future)
+# must re-park the chain instead: no ladder reset, no new STOP-REASON.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/STOP-REASON.json"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "FleetQueueSelfMaintenanceRatioHigh"},
+   "activeAt": "2026-08-31T05:00:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+
+# A FRESH dispatch unit (later instance) arrives while the class is parked.
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-31T06:30:00Z] DISPATCH alertname=FleetQueueSelfMaintenanceRatioHigh seat=a/Model unit=alert-repair-FleetQueueSelfMaintenanceRatioHigh-20260831T063000Z
+PYEND
+printf '%s\n' "success" >"$scratch/sysctl/alert-repair-FleetQueueSelfMaintenanceRatioHigh-20260831T063000Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/alert-repair-FleetQueueSelfMaintenanceRatioHigh-20260831T063000Z.active"
+
+# Seeded parked state: prior escalation closed terminal, dead_until EXPIRED,
+# class park (decision_class_until) still in the future, dispatch_unit OLD.
+cat >"$scratch/state/open/FleetQueueSelfMaintenanceRatioHigh.json" <<'JSON'
+{"age": 6104, "alertname": "FleetQueueSelfMaintenanceRatioHigh", "hop": "verify",
+ "ladder": "stop-reason", "stall_count": 1, "terminal": "escalated",
+ "dead_until": "2026-08-31T06:30:00Z", "verify_deadline_ts": "2026-08-31T06:52:13Z",
+ "decision_class_until": "2026-08-31T23:00:00Z",
+ "dispatch_unit": "alert-repair-FleetQueueSelfMaintenanceRatioHigh-20260831T051029Z"}
+JSON
+
+rc=$(run_bin "2026-08-31T07:00:00Z")
+[[ "$rc" == "0" ]] || fail "class-park tick rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# No new STOP-REASON: the class park must hold the fresh trip.
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "class park must NOT write STOP-REASON on a fresh unit, got: $(cat "$scratch/STOP-REASON.json")"
+
+# State still parked: ladder preserved, decision_class_until unchanged, old unit kept.
+python3 - "$scratch/state/open/FleetQueueSelfMaintenanceRatioHigh.json" <<'PY' || fail "class-park state wrong"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ladder"] == "stop-reason", d
+assert d["terminal"] == "escalated", d
+assert d["decision_class_until"] == "2026-08-31T23:00:00Z", d
+assert d["dispatch_unit"] == "alert-repair-FleetQueueSelfMaintenanceRatioHigh-20260831T051029Z", d
+assert d.get("dead_until"), d  # re-parked
+PY
+
+ok "decision-pending class park holds across a fresh dispatch unit (no re-summon)"
+
+# --- 19. class park expires -> ONE bounded nag re-opens ---------------------------------
+# Same shape, but decision_class_until is in the PAST. The stale marker is
+# reset (fresh trip), the chain re-opens at hop=verify, stalls, and take_ladder
+# escalates ONCE (STOP-REASON alert-repair-stalled) while re-setting the class
+# park for the next window — one senior summon per PARK_CLASS, not per cycle.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/STOP-REASON.json"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "FleetQueueSelfMaintenanceRatioHigh"},
+   "activeAt": "2026-08-31T05:00:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-31T05:10:29Z] DISPATCH alertname=FleetQueueSelfMaintenanceRatioHigh seat=a/Model unit=u-fresh-20260831T051029Z
+PYEND
+printf '%s\n' "success" >"$scratch/sysctl/u-fresh-20260831T051029Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/u-fresh-20260831T051029Z.active"
+
+# Park EXPIRED: decision_class_until in the past, dead_until expired.
+cat >"$scratch/state/open/FleetQueueSelfMaintenanceRatioHigh.json" <<'JSON'
+{"age": 6104, "alertname": "FleetQueueSelfMaintenanceRatioHigh", "hop": "verify",
+ "ladder": "stop-reason", "stall_count": 1, "terminal": "escalated",
+ "dead_until": "2026-08-31T06:30:00Z", "verify_deadline_ts": "2026-08-31T06:52:13Z",
+ "decision_class_until": "2026-08-31T06:30:00Z",
+ "dispatch_unit": "u-old-20260831T051029Z"}
+JSON
+
+rc=$(run_bin "2026-08-31T07:00:00Z")
+[[ "$rc" == "0" ]] || fail "park-expired nag tick rc=$rc stderr=$(cat "$scratch/err.log")"
+
+# STOP-REASON written exactly once (the bounded nag) with this chain.
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "park expired: must write STOP-REASON alert-repair-stalled once"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || fail "nag STOP-REASON wrong"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["reason"] == "alert-repair-stalled", d
+assert d["detail"]["alertname"] == "FleetQueueSelfMaintenanceRatioHigh", d
+assert d["detail"]["hop"] == "verify", d
+PY
+
+# Class park re-set for the next window (bounded 1/day nag).
+python3 - "$scratch/state/open/FleetQueueSelfMaintenanceRatioHigh.json" <<'PY' || fail "nag state wrong"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ladder"] == "stop-reason", d
+assert d.get("decision_class_until"), d
+assert d.get("dispatch_unit") == "u-fresh-20260831T051029Z", d
+PY
+
+ok "class park expiry -> one bounded nag (STOP-REASON once, class re-parked)"
+
+echo "OK: fleet-completion-canary: stall ladder, green cycle, skip-list, ue observe, verify deadline, dispatch plane, --collect success, issue evidence, decision-pending class park"
