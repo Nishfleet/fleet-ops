@@ -860,6 +860,20 @@ bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-releas
 systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
 systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
 
+# fleet-ops#2469: the LIFECYCLE retirement step. fleet-seat-comeback-release
+# (above) is the ACTIVE release path for walled seats with passed wall clocks
+# (#2421); fleet-seat-corpse-retire is the TERMINAL retirement step that
+# moves corpse seat ledgers (seat_dead=true with count >= 25, or
+# quota_exhausted observed_at >= 24h old, fleet-ops#2145/#2415) out of the
+# live roster so the daily-digest "Total seen" / opus-heartbeat seat_table n
+# / seat-avail SLO denominator stop counting them. Atomic mv on the same
+# filesystem; idempotent (no-op sweep on a clean roster). Daily timer; the
+# heartbeat metric + absent() rule in config/fleet_rules.yml catches a
+# stopped organ.
+bin/fleet-seat-corpse-retire /home/nish/.local/bin/fleet-seat-corpse-retire
+systemd/fleet-seat-corpse-retire.service /home/nish/.config/systemd/user/fleet-seat-corpse-retire.service
+systemd/fleet-seat-corpse-retire.timer /home/nish/.config/systemd/user/fleet-seat-corpse-retire.timer
+
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir
 # (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;
