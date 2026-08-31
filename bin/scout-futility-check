@@ -332,7 +332,7 @@ detect_provider_wall() {
     fi
     # Last 10 error-priority lines, cat output (no timestamp/host wrappers to
     # confuse the pattern match).
-    jlines=$("$JOURNALCTL" --user -u "$unit" -p err -n 10 --no-pager -o cat 2>/dev/null || true)
+    jlines=$("$JOURNALCTL" --user -u "$unit" -p debug -n 30 --no-pager -o cat 2>/dev/null || true)
     [[ -n "$jlines" ]] || return 1
     while IFS= read -r line; do
         line="${line#"${line%%[![:space:]]*}"}"  # ltrim
