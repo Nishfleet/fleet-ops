@@ -312,21 +312,37 @@ EOF
 #   - INFERENCE_CAP_ERROR (the literal error name)
 #   - 404 Provider returned error (opencode corpse pattern — the model
 #     itself is gone, the provider returns 404)
-# Matched against the last 10 error-priority journal lines of the failed
-# pi-scout@<repo>.service unit. ALL non-empty error lines must match for the
-# crash to count as wall-class (a stray non-wall error demotes the run to
-# "non-wall crash" and lets the OnFailure repair path handle it normally).
+# Matched against the last 50 journal lines (all priorities) of the failed
+# pi-scout@<repo>.service unit. A crash is wall-class iff at least one line
+# carries provider-wall evidence AND no non-benign line is a non-wall work
+# fault (a stray assertion/OOM demotes the run to "non-wall crash" and lets
+# the OnFailure repair path handle it normally). The pi machinery's own
+# informational lines (extension loads, packet verdicts, seat selection,
+# tracker logs, systemd lifecycle) carry NO fault evidence and are skipped —
+# production journals always surround the fatal 503/429 line with them, and
+# the 503 is glued onto the trailing notify;Pi escape line, so neither the
+# earlier "ALL non-empty journal lines must match" rule nor a benign-first
+# per-line scan could ever succeed: consecutive_wall stayed pinned at 0,
+# keeping the #2351/#2468 dedupe gate closed — every scout 503 -> repair 503
+# crash wrote a fresh STOP-REASON (fresh dispatch hash) and re-summoned the
+# auditor per crash (proven repeatedly 2026-08-31). Wall evidence on a line
+# wins over its benign prefix (the notify+503 combo), so wall is checked
+# first; a line is only demoted when it carries neither wall evidence nor
+# benign machinery text.
 PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|Provider returned error|Upstream model provider is temporarily unavailable'
+# Benign pi-machinery / systemd lifecycle lines that always accompany a scout
+# run in the unit journal. Not fault evidence; must not demote a wall crash.
+BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'
 
-# Return 0 if ALL non-empty error-priority journal lines for pi-scout@<repo>
-# match a provider-wall pattern (i.e. the crash was a wall, not a work
-# fault). Return 1 otherwise, including when the journal is unreadable
-# (the safer default — leave non-wall crashes to OnFailure repair).
+# Return 0 if the crash was a provider wall: at least one line carries wall
+# evidence and none is a non-benign, non-wall work fault. Return 1
+# otherwise, including when the journal is unreadable (the safer default —
+# leave non-wall crashes to OnFailure repair).
 # Usage: detect_provider_wall <repo>
 detect_provider_wall() {
     local repo="$1"
     local jlines unit="pi-scout@${repo}.service"
-    local line matched
+    local line found_wall=0
     if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
         return 1
     fi
@@ -340,13 +356,19 @@ detect_provider_wall() {
         line="${line#"${line%%[![:space:]]*}"}"  # ltrim
         line="${line%"${line##*[![:space:]]}"}"  # rtrim
         [[ -z "$line" ]] && continue
-        matched=0
+        # Wall evidence first: production glues the fatal 503/429 onto the
+        # trailing notify;Pi escape line, so the line is both benign-prefixed
+        # AND wall evidence. A lack of a match here falls through to the
+        # benign skip / work-fault demote below.
         if grep -qE "$PROVIDER_WALL_PATTERNS" <<<"$line"; then
-            matched=1
+            found_wall=1
+            continue
         fi
-        [[ "$matched" == "1" ]] || return 1
+        grep -qE "$BENIGN_JOURNAL_PATTERNS" <<<"$line" && continue
+        # Non-benign, non-wall line = a real work fault. Demote.
+        return 1
     done <<<"$jlines"
-    return 0
+    [[ "$found_wall" == "1" ]]
 }
 
 # File an escalate-senior ticket under the same signal key as the green-and-

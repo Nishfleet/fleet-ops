@@ -747,6 +747,71 @@ grep -q -- '--user -u "\$unit" -n 50' "$bin" \
   || fail "scenario17h: info-priority 503 40 lines back must count as wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
 ok "scenario17h: provider wall at info priority 40 lines back is detected (all priorities, -n 50)"
 
+# Scenario 17i: PRODUCTION-mixed journal (the real 2026-08-31 failed-run
+# layout) is wall-class. The fatal 503/429 line ALWAYS lands next to benign
+# pi-machinery + systemd lifecycle lines (EXTLOAD-OK, PACKET-VERDICT, seat
+# selection, tracker logs, notify;Pi, "Main process exited", "Failed to
+# start", "Consumed ... CPU time"). The all-lines-must-match rule could
+# never succeed against this journal, so consecutive_wall stayed pinned at 0
+# and the #2351 dedupe gate never opened — every crash re-summoned the
+# auditor (the 08-31 loop). Fixture mirrors journald -o cat output for the
+# failed run at 15:07Z on 2026-08-31.
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+{
+    # Faithful to production 2026-08-31: the fatal 503 is printed by pi on
+    # the SAME journal line as the trailing notify;Pi escape sequence
+    # (journald preserves the glue), surrounded by benign machinery lines.
+    printf 'EXTLOAD-OK extension=bash-spawn-hook guard=tool_call depth_max=1 ceiling=2800/3000 wrangler_deploy_guard=0509\n'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'PACKET-VERDICT tools=4 class=worked\n'
+    printf 'pi-scout@fleet-ops.service: Main process exited, code=exited, status=1/FAILURE\n'
+    printf '[2026-08-31T15:07:21Z] [scout-futility-check] end: fleet-ops exit=1 (not green, not provider-wall) — leave consecutive_dry=0, consecutive_wall=0\n'
+    printf '[2026-08-31T15:07:23Z] pi-scout-run: fleet-ops/scout running on commandcode/minimax/minimax-m3-free (weight=heavy)\n'
+    printf "pi-scout@fleet-ops.service: Failed with result 'exit-code'.\n"
+    printf 'Failed to start pi-scout@fleet-ops.service - Pi fleet product scout for Nishfleet/fleet-ops.\n'
+    printf 'pi-scout@fleet-ops.service: Triggering OnFailure= dependencies.\n'
+    printf 'pi-scout@fleet-ops.service: Consumed 4.442s CPU time, 98.5M memory peak, 0B memory swap peak.\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17i: production-mixed journal (benign machinery + 503) must be wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "2" ]] \
+  || fail "scenario17i: second production-mixed wall crash must increment to 2, got '$(state_field consecutive_wall fleet-ops)'"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario17i: must not file below N=3 (gh_log=$(cat "$gh_log"))"
+ok "scenario17i: production-mixed journal is wall-class (benign lines no longer demote)"
+
+# Scenario 17j: production-mixed journal PLUS a non-wall work fault line is
+# NOT wall-class — a real assertion/tool error next to a 503 demotes the run
+# so OnFailure repair handles it. Benign-line filtering must not swallow work
+# faults.
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'PACKET-VERDICT tools=4 class=worked\n'
+    printf 'Error: unexpected token in JSON at position 42\n'
+    printf 'pi-scout@fleet-ops.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "0" ]] \
+  || fail "scenario17j: mixed benign + wall + work-fault journal must reset consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17j: work-fault line still demotes inside a production-mixed journal"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
