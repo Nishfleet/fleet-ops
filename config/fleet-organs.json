@@ -184,6 +184,16 @@
         "systemd/fleet-seat-comeback-release.service",
         "systemd/fleet-seat-comeback-release.timer"
       ]
+    },
+    {
+      "name": "quality-slo-scoreboard",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_quality_slo_last_computed_seconds",
+      "absent_alert": "FleetQualitySloStale",
+      "files": [
+        "bin/fleet-quality-slo",
+        "lib/quality-slo.py"
+      ]
     }
   ]
 }

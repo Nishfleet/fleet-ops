@@ -775,3 +775,24 @@ groups:
         annotations:
           summary: "weekly baseline-delta strangeness pass has not run in 14+ days"
           description: "Repair worker: fleet_baseline_delta_last_run_seconds is absent or older than 14d (two weekly timer cycles). fleet-baseline-delta (#1151) queries Prometheus for every fleet_* and key node_* series, compares this week vs a trailing 4-week median+MAD baseline, and writes the ranked top-20 strangeness report the Weekly Fleet Review reads; a dead job means week-over-week anomalies are invisible to the review. Check journalctl --user -u fleet-baseline-delta.service and systemctl --user list-timers fleet-baseline-delta.timer. Helper: /home/nish/.local/libexec/fleet-baseline-delta.py. fleet-ops#1151."
+
+  - name: fleet_quality_slo
+    rules:
+      # fleet-ops#2444: the quality-SLO scoreboard must refresh at least
+      # daily or the fleet silently serves old quality numbers (a 4-day-old
+      # scoreboard cannot adjudicate a live FleetQueueSelfMaintenanceRatioHigh
+      # alert). fleet-quality-slo writes fleet_quality_slo_last_computed_seconds
+      # to /var/lib/prometheus/node-exporter/fleet-quality-slo.prom on every
+      # successful recompute (each heartbeat tick). absent() fires when the
+      # recompute path is dead; the >86400 delta fires when a live recompute
+      # has stopped refreshing the snapshot for over 24h — both are loud so a
+      # stale scoreboard can never be trusted silently.
+      - alert: FleetQualitySloStale
+        expr: absent(fleet_quality_slo_last_computed_seconds) or (time() - fleet_quality_slo_last_computed_seconds) > 86400
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "quality-SLO scoreboard stale (>24h) or its recompute path is dead"
+          description: "fleet_quality_slo_last_computed_seconds is absent or older than 24h (fleet-ops#2444). The quality scoreboard has been serving stale numbers — a 4-day-old snapshot cannot adjudicate a live FleetQueueSelfMaintenanceRatioHigh alert. Repair: bin/fleet-quality-slo must run (wired as heartbeat-tier1 block 19) and recompute agent-state/quality-slo/snapshot.json, exporting fleet_quality_slo_last_computed_seconds each run. Check journalctl --user -u fleet-heartbeat.service and systemctl --user status fleet-heartbeat.service."
