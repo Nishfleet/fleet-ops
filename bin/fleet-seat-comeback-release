@@ -275,14 +275,25 @@ main() {
             continue  # wall genuinely held — not owed a comeback yet
         fi
 
-        # Wall clock has PASSED -> the seat owes a comeback. Respect the
-        # per-seat min-probe interval: a seat probed within MIN_INTERVAL
-        # (a failed probe the extension has not re-anchored, or an in-flight
-        # dispatch) is not hammered; the stalled check makes it loud.
+        # Wall clock has PASSED -> the seat owes a comeback. Override the
+        # per-seat min-probe interval when the wall is expired: a probe
+        # that the extension could NOT re-anchor (rc=124 timeout with no
+        # HTTP response, or a provider that returned a wall-clock class
+        # the extension does not yet classify) leaves a stale wall clock
+        # in the ledger. When the wall is expired AND a recent probe
+        # failed, skipping creates an indefinite LOUD stall every 15 min
+        # (fleet-ops#2421 follow-up, 2026-08-31 straitly/gpt-5.6-sol).
+        # The wall-in-future check above already keeps future-wall seats
+        # out of this loop; the min-interval only mattered when an
+        # expired-wall seat was being hammered. Probe so the wall can be
+        # refreshed (extension re-anchors from a real response) or the
+        # seat can be unwalled (probe succeeds). The LOUD check below
+        # still fires when EVERY probe attempt keeps failing — the loud
+        # signal is reserved for the genuine stuck case, not the
+        # re-anchor gap.
         local lastp="${last_probe["$base"]:-0}"
         if (( lastp > 0 )) && (( now - lastp < MIN_INTERVAL )); then
-            log "skip $p/$m: probed $(( now - lastp ))s ago — within min interval (${MIN_INTERVAL}s)"
-            continue
+            log "override min-interval for $p/$m: wall expired, last probe $(( now - lastp ))s ago (< ${MIN_INTERVAL}s) — re-probing to refresh stale wall or unwall"
         fi
 
         if probe_seat "$p" "$m"; then

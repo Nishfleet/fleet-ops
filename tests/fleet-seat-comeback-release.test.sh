@@ -19,7 +19,14 @@
 #     last-green written, exit 0.
 #   - loud stall: a failed probe with no re-anchor leaves the seat expired
 #     -> released_this_run=0 -> exit 1 + stalled=1 + no last-green.
-#   - min-interval: a seat probed within MIN_INTERVAL_S is not re-probed.
+#   - override: a wall-expired seat probed within MIN_INTERVAL_S is
+#     re-probed anyway (the stale-wall unstick path, fleet-ops#2421
+#     follow-up 2026-08-31 straitly/gpt-5.6-sol — a timeout leaves the
+#     extension unable to re-anchor, so the wall stays stale and the
+#     min-interval would otherwise block re-probing forever).
+#   - future-wall: a seat whose usable_at is still in the future is
+#     never probed (the wall-in-future check is the only remaining
+#     throttle; it precedes the min-interval check).
 #
 # Sandbox: scratch SEATS_DIR/state/prom + stub pi only. No live ledger,
 # no live pi, no systemd.
@@ -184,26 +191,71 @@ grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
   && fail "stalled sweep must NOT write last-green: $(cat "$PROM")"
 ok "loud stall: expired walls + zero releases -> exit 1, stalled=1, no last-green"
 
-# --- 4. min-interval: a recently-probed seat is not re-probed -------------
+# --- 4. override: wall-expired + recent probe -> probe anyway (unstick) --
+# The fleet-ops#2421 follow-up (2026-08-31 straitly/gpt-5.6-sol): a probe
+# failure (rc=124 timeout) leaves the wall clock stale (extension cannot
+# re-anchor without a real HTTP response). The previous min-interval
+# skip then blocked re-probing forever, firing LOUD every 15 min. With
+# the wall clock already EXPIRED the seat is owed a comeback; the
+# min-interval only throttles hammering of future-wall seats. A
+# recently-probed seat whose wall is still expired MUST be re-probed so
+# the wall can refresh (real response -> extension re-anchors) or the
+# seat can be unwalled (probe succeeds).
 rm -rf "$SEATDIR"
 mkdir -p "$SEATDIR"
 cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
 {"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":5}
 EOF
-STATE="$TMPD/state-interval.json"
-PROM="$TMPD/release-interval.prom"
+STATE="$TMPD/state-override.json"
+PROM="$TMPD/release-override.prom"
+# 60s ago: within MIN_INTERVAL (900s). Wall is EXPIRED. Old code skipped;
+# fixed code overrides and probes anyway.
 jq -nc --argjson lp "{\"commandcode__poolside_laguna-s-2.1-free.json\": $((NOW_EPOCH - 60))}" \
   '{last_probe: $lp, probed_total: 0, released_total: 0}' > "$STATE"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/override.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "override: expected exit 0 (release on success), got $rc ($(cat "$TMPD/override.err"))"
+grep -q "override min-interval for commandcode/poolside/laguna-s-2.1-free" "$TMPD/override.err" \
+  || fail "override: must log the min-interval override line: $(cat "$TMPD/override.err")"
+health=$(jq -r '.health_class' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+[[ "$health" == "healthy" ]] || fail "override: seat must be unwalled (healthy), got $health"
+released_total=$(jq -r '.released_total' "$STATE")
+[[ "$released_total" == "1" ]] || fail "override: released_total must be 1, got $released_total"
+grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
+  || fail "override: prom stalled must be 0: $(cat "$PROM")"
+ok "override: wall-expired + recent probe -> probe anyway (unstick), release succeeds, exit 0"
+
+# --- 5. future-wall seat: skipped via the wall-in-future check, regardless
+#       of any last_probe history. This is the only remaining throttle; the
+#       wall-in-future check precedes the probe and the seat is never owed
+#       a comeback while its wall is still held.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/opencode__nemotron-3-ultra-free.json" << 'EOF'
+{"provider":"opencode","model":"nemotron-3-ultra-free","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T08:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-30T23:00:00.094Z","consecutive_failure_count":3}
+EOF
+STATE="$TMPD/state-future.json"
+PROM="$TMPD/release-future.prom"
+# Even with last_probe = 0 (never probed), a future-wall seat must not be
+# probed at all — the wall-in-future check is silent and absolute.
+jq -nc '{last_probe: {}, probed_total: 0, released_total: 0}' > "$STATE"
 out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
     PI_BIN="$TMPD/pi-ok" \
     bash "$BIN" --dry-run 2>&1)
-grep -q "would probe commandcode/poolside" <<<"$out" \
-  && fail "seat probed within min interval must be skipped: $out"
-grep -q "within min interval" <<<"$out" \
-  || fail "skipped seat must log the min-interval skip: $out"
-ok "min-interval: a seat probed 60s ago is not re-probed"
+grep -qi "nemotron" <<<"$out" \
+  && fail "future-wall seat must never be probed: $out"
+released_total=$(jq -r '.released_total' "$STATE")
+[[ "$released_total" == "0" ]] || fail "future-wall seat must not increment released_total: $released_total"
+ok "future-wall seat: skipped via wall-in-future check, no probe, no release"
 
 echo "ALL OK: active come-back release path (fleet-ops#2421)"
