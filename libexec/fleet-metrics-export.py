@@ -2007,10 +2007,12 @@ def _spawn_bench_active(ledger_path: Path) -> bool:
 
     Returns False on a missing / unreadable / past-due marker; never
     raises. The path argument is the per-seat ledger file; the spawn-
-    bench sibling is `<base>.spawn-bench.json` in the same directory.
+    bench sibling is `<base>.spawn-bench.json` in the same directory. A
+    HELD bench is honoured even when the ledger file itself is absent —
+    seat_usable checks the marker FIRST, before the ledger exists or is
+    read (fleet-ops#1512: "a fresh marker wins regardless of what the
+    ledger says (or whether the ledger file exists at all)").
     """
-    if not ledger_path.is_file():
-        return False
     # Per lib/seat-lib.sh seat_spawn_bench_path, the spawn-bench file lives
     # beside the ledger as `<provider>__<model>.spawn-bench.json` — i.e.
     # the same base name as the ledger with the .json suffix replaced by
@@ -2079,7 +2081,7 @@ def _healthy_enrolled_seat_count():
         provider response), so a healthy-but-idle seat — ollama, bai,
         hetzner, cursor, zenmux on 2026-08-31 — has no ledger and was
         silently counted dead.
-      - seed_dead=true corpse -> UNUSABLE (terminal; FleetDeadCredentialSeats
+      - seat_dead=true corpse -> UNUSABLE (terminal; FleetDeadCredentialSeats
         owns recovery, seat_usable refuses unconditionally).
       - held wrapper spawn-bench (fleet-ops#2493) -> UNUSABLE until it
         expires (seat_usable checks the bench FIRST, before the ledger).
@@ -2107,28 +2109,39 @@ def _healthy_enrolled_seat_count():
             if prov in healthy:
                 continue
             if not models:
-                # Legacy bare-cap provider (no models map): any single
-                # healthy-or-released ledger for it proves availability;
-                # with no ledger at all the router fails open -> healthy.
-                ledgers = [f for f in SEAT_LEDGER.iterdir()
-                           if f.is_file() and f.name.endswith(".json")
-                           and "__" in f.name]
-                proven = False
-                for f in ledgers:
+                # Legacy bare-cap provider (no models map declared): the
+                # router's per-model fail-open still applies (every model in
+                # models.json for this provider is a seat the ladder can
+                # pick), so the provider is healthy unless it has observed
+                # ledgers and NONE of them is router-usable. With no ledger
+                # at all it is routable (fail-open, fleet-ops#2522).
+                saw_ledger = False
+                provider_usable = False
+                for f in SEAT_LEDGER.iterdir():
+                    if not (f.is_file() and "__" in f.name
+                            and f.name.endswith(".json")):
+                        continue
                     try:
                         data = json.loads(f.read_text())
                     except (OSError, json.JSONDecodeError):
                         continue
-                    if not isinstance(data, dict) or data.get("provider") != prov:
+                    if not isinstance(data, dict) \
+                            or data.get("provider") != prov:
                         continue
+                    saw_ledger = True
                     if _ledger_router_usable(f, data):
-                        proven = True
+                        provider_usable = True
                         break
-                if not proven:
+                if not saw_ledger or provider_usable:
                     healthy.add(prov)
                 continue
             for model in models:
                 lp = _seat_ledger_path(prov, model)
+                if _spawn_bench_active(lp):
+                    # Held wrapper bench outranks everything — even a
+                    # missing ledger. seat_usable checks the marker before
+                    # reading the ledger at all (fleet-ops#1512/#2493).
+                    continue
                 if not lp.is_file():
                     # No observation at all — the router fail-opens this
                     # model, so the provider is routable (fleet-ops#2522).
@@ -2137,9 +2150,11 @@ def _healthy_enrolled_seat_count():
                 try:
                     data = json.loads(lp.read_text())
                 except (OSError, json.JSONDecodeError):
-                    data = None
-                if data is not None and isinstance(data, dict) \
-                        and _ledger_router_usable(lp, data):
+                    # Unparseable ledger is machine-written JSON poison;
+                    # fail-safe (unavailable) rather than risk re-admitting
+                    # a genuinely dead seat on a mangled file.
+                    continue
+                if isinstance(data, dict) and _ledger_router_usable(lp, data):
                     healthy.add(prov)
                     break
     except OSError:
