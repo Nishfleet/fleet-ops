@@ -330,9 +330,11 @@ detect_provider_wall() {
     if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
         return 1
     fi
-    # Last 10 error-priority lines, cat output (no timestamp/host wrappers to
-    # confuse the pattern match).
-    jlines=$("$JOURNALCTL" --user -u "$unit" -p err -n 10 --no-pager -o cat 2>/dev/null || true)
+    # Last 50 lines (all priorities) — the provider wall error (503/429) is
+    # printed by the pi script to stdout/stderr at info priority, not err.
+    # The error may be far back if the run was long. Use -o cat to avoid
+    # timestamp/host wrappers confusing the pattern match.
+    jlines=$("$JOURNALCTL" --user -u "$unit" -n 50 --no-pager -o cat 2>/dev/null || true)
     [[ -n "$jlines" ]] || return 1
     while IFS= read -r line; do
         line="${line#"${line%%[![:space:]]*}"}"  # ltrim
