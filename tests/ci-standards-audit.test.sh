@@ -241,6 +241,12 @@ bash "$here/memoryctl-ttl-provenance.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-waste-ledger.test.sh"
 
+# fleet-ops#2528: three WFR-input trend regression alerts live in the
+# dispatcher SKIP_SET + canary SKIP_FIRING (+ stubbed no-spawn /
+# no-STOP-REASON proof). Hosted here so P14 runs it without a
+# workflow-file edit.
+bash "$here/alert-repair-wfr-trend-skip.test.sh"
+
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
 # $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and

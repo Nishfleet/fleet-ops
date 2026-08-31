@@ -186,6 +186,15 @@ SKIP_FIRING = {
     # mechanism-impossible (seat supply is operator-owned); the alert
     # clears only when compliance >= 0.9 + the smoothing window flushes.
     "FleetSloSeatAvailSlowBurn",
+    # WFR-input trend regression (fleet-ops#2440/#2441): no DISPATCH comes,
+    # so a firing trend delta must never ladder to a STOP-REASON.
+    "FleetSelfMaintenanceRegression",
+    # WFR-input trend regression (fleet-ops#2440/#2441): no DISPATCH comes,
+    # so a firing trend delta must never ladder to a STOP-REASON.
+    "FleetQualityChurnRegression",
+    # WFR-input trend regression (fleet-ops#2440/#2441): no DISPATCH comes,
+    # so a firing trend delta must never ladder to a STOP-REASON.
+    "FleetVerifiedMergeRegression",
 }
 SYNTHETIC = {"CanaryDrill"}
 SELF_UNITS = ("fleet-completion-canary",)
