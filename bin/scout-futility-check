@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
-# scout-futility-check — green-and-empty scout detector (fleet-ops#454).
+# scout-futility-check — green-and-empty + provider-wall crash detector
+# (fleet-ops#454, fleet-ops#2468).
 #
 # The supply chain already covers crash, dead timer, and dead heartbeat.
-# The remaining hole is FUTILITY: pi-scout@ exits 0, files nothing, every
-# supervision layer stays green, and low-water skipped_fresh even blocks
-# a retry. A judge/provider/quality stall then loops quietly forever.
+# The remaining holes are FUTILITY:
+#   (a) pi-scout@ exits 0, files nothing, every supervision layer stays green,
+#       and low-water skipped_fresh even blocks a retry. N consecutive green
+#       runs with no net runway increase below the 12h buffer => escalate.
+#   (b) pi-scout@ crashes (exit!=0) on a provider wall (503 overload,
+#       429 quota/FreeUsageLimitError, INFERENCE_CAP_ERROR, out-of-credits,
+#       opencode 404 "Provider returned error") every run on the same repo.
+#       N consecutive wall-crashes are structurally equivalent to green-and-
+#       empty futility — a bench/seat famine, not a work crash. The OnFailure
+#       repair hop dispatches against the SAME walled lane and dies the same
+#       way. Each crash writes a fresh STOP-REASON (fresh hash), so the
+#       auditor pipeline re-summons a fresh SENIOR AUDITOR per crash on the
+#       SAME root cause (proven 2026-08-31, fleet-ops#2468).
 #
 # This helper is the class prevention. It snapshots the agent-ready buffer
 # and measured drain rate around each scout completion (ExecStartPre begin /
-# ExecStopPost end on pi-scout@.service). N consecutive green runs with no net
-# runway increase while the buffer is below the 12-hour work-buffer cap emit a
-# LOUD SCOUT-FUTILITY line and auto-file an escalate-senior ticket. Restarts
-# cannot fix this; senior judgment can.
+# ExecStopPost end on pi-scout@.service). For (a), N consecutive green runs
+# with no net runway increase below the 12h buffer emit LOUD SCOUT-FUTILITY
+# and auto-file an escalate-senior ticket. For (b), N consecutive non-zero
+# exits whose journal lines are ALL provider-wall patterns emit the same
+# LOUD SCOUT-FUTILITY / auto-file under signal: scout-futility/<repo>. The
+# existing dedupe gate in unit-escalation-write then suppresses the repair-
+# hop re-summon loop. Restarts cannot fix either class; senior judgment can.
 #
 # Always exit 0. A broken tracker must not fail the scout (that would
-# trip OnFailure repair and hide the green-and-empty case). The `-`
-# prefix on the unit's ExecStartPre/StopPost is belt-and-suspenders.
+# trip OnFailure repair and hide the case). The `-` prefix on the unit's
+# ExecStartPre/StopPost is belt-and-suspenders.
 #
 # Usage:
 #   scout-futility-check begin <repo>
@@ -25,7 +39,7 @@
 #   GH                         default gh
 #   FLEET_HEARTBEAT_TRIAGE     triage file
 #   SCOUT_FUTILITY_STATE_DIR   per-repo state (default ~/.local/state/scout-futility)
-#   SCOUT_FUTILITY_N           consecutive dry runs before escalate (default 3)
+#   SCOUT_FUTILITY_N           consecutive dry/wall runs before escalate (default 3)
 #   SCOUT_FUTILITY_BUFFER_H    "below the 12h buffer" cap in banked-work hours (default 12)
 #   SCOUT_FUTILITY_BUFFER      deprecated alias for SCOUT_FUTILITY_BUFFER_H
 #   SCOUT_FUTILITY_WINDOW_H    drain-rate measurement window hours (default 6)
@@ -36,6 +50,7 @@
 #   SCOUT_FUTILITY_WS_LIB      path to work-supply.sh (tests/development)
 #   SCOUT_FUTILITY_PROM          textfile path (default
 #                                /var/lib/prometheus/node-exporter/fleet-scout.prom)
+#   JOURNALCTL                 journalctl binary path (default journalctl; tests stub)
 #   EXIT_STATUS / SERVICE_RESULT  systemd ExecStopPost env when argv omits exit_code
 
 set -euo pipefail
@@ -53,6 +68,9 @@ WINDOW_H="${SCOUT_FUTILITY_WINDOW_H:-6}"
 FILE_REPO="${SCOUT_FUTILITY_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${SCOUT_FUTILITY_FILE:-1}"
 PROM="${SCOUT_FUTILITY_PROM:-/var/lib/prometheus/node-exporter/fleet-scout.prom}"
+# Tests stub journalctl via a PATH-prepended shim; production uses the system
+# binary. Empty JOURNALCTL falls back to journalctl on PATH.
+JOURNALCTL="${JOURNALCTL:-journalctl}"
 
 _canon_script=$(readlink -f "$0")
 _canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
@@ -287,6 +305,98 @@ EOF
     rm -f "$body_file"
 }
 
+# --- provider-wall crash detection (fleet-ops#2468) ---
+# Patterns that indicate a bench/provider wall, not a work crash:
+#   - 503 overloaded_error (Anthropic-style provider overload)
+#   - 429 + FreeUsageLimitError / quota_cap / out-of-credits
+#   - INFERENCE_CAP_ERROR (the literal error name)
+#   - 404 Provider returned error (opencode corpse pattern — the model
+#     itself is gone, the provider returns 404)
+# Matched against the last 10 error-priority journal lines of the failed
+# pi-scout@<repo>.service unit. ALL non-empty error lines must match for the
+# crash to count as wall-class (a stray non-wall error demotes the run to
+# "non-wall crash" and lets the OnFailure repair path handle it normally).
+PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|Provider returned error|Upstream model provider is temporarily unavailable'
+
+# Return 0 if ALL non-empty error-priority journal lines for pi-scout@<repo>
+# match a provider-wall pattern (i.e. the crash was a wall, not a work
+# fault). Return 1 otherwise, including when the journal is unreadable
+# (the safer default — leave non-wall crashes to OnFailure repair).
+# Usage: detect_provider_wall <repo>
+detect_provider_wall() {
+    local repo="$1"
+    local jlines unit="pi-scout@${repo}.service"
+    local line matched
+    if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
+        return 1
+    fi
+    # Last 10 error-priority lines, cat output (no timestamp/host wrappers to
+    # confuse the pattern match).
+    jlines=$("$JOURNALCTL" --user -u "$unit" -p err -n 10 --no-pager -o cat 2>/dev/null || true)
+    [[ -n "$jlines" ]] || return 1
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+        line="${line%"${line##*[![:space:]]}"}"  # rtrim
+        [[ -z "$line" ]] && continue
+        matched=0
+        if grep -qE "$PROVIDER_WALL_PATTERNS" <<<"$line"; then
+            matched=1
+        fi
+        [[ "$matched" == "1" ]] || return 1
+    done <<<"$jlines"
+    return 0
+}
+
+# File an escalate-senior ticket under the same signal key as the green-and-
+# empty path (signal: scout-futility/<repo>), so the existing unit-escalation-
+# write dedupe gate matches it (#2351 / #2054). Title + body name the wall-
+# crash class so the auditor can see at a glance that this is a bench/seat
+# famine, not a work fault.
+file_wall_escalation() {
+    local repo="$1" wall_count="$2"
+    local marker title body_file existing
+    marker=$(signal_key "$repo")
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (SCOUT_FUTILITY_FILE=$FILE_ISSUES) $marker (wall)"
+        return 0
+    fi
+    existing=$("$GH" issue list -R "$FILE_REPO" --state open --limit 100 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" \
+            '.[] | select((.body // "") | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $FILE_REPO#$existing already carries $marker (wall)"
+        return 0
+    fi
+    title="[escalate-senior] scout wall-crash loop: Nishfleet/${repo} died ${wall_count}x on provider wall (503/429/quota)"
+    body_file=$(mktemp)
+    cat >"$body_file" <<EOF
+Provider-wall crash loop (fleet-ops#2468 / #2054). \`pi-scout@${repo}\` crashed ${wall_count} consecutive times on provider-wall errors (HTTP 503 overloaded_error, 429 FreeUsageLimitError, INFERENCE_CAP_ERROR, quota_cap, out-of-credits, opencode 404 "Provider returned error"). This is structurally equivalent to green-and-empty futility: a bench/seat famine, not a work crash.
+
+The OnFailure repair hop (\`pi-scout-repair@<repo>\`) dispatches against the SAME walled lane and dies the same way. Each crash writes a fresh STOP-REASON (fresh timestamp = fresh dispatch hash), so without this ticket's signal key the auditor pipeline summons a fresh SENIOR AUDITOR per crash on the SAME root cause. This ticket's marker \`signal: scout-futility/${repo}\` falls through the existing #2351 dedupe gate and suppresses the re-summon loop.
+
+Non-wall crashes (assertions, OOM, real work bugs) fall through to the normal OnFailure repair path, which IS designed for those.
+
+## Evidence
+- repo: Nishfleet/${repo}
+- consecutive_wall: ${wall_count}
+- N: ${N}
+- exit code: non-zero (provider wall death)
+
+${marker}
+EOF
+    if "$ISSUE_FILE" file -R "$FILE_REPO" \
+        --title "$title" \
+        --body-file "$body_file" \
+        --label escalate-senior \
+        --label agent-ready >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker (wall)"
+    fi
+    rm -f "$body_file"
+}
 cmd_begin() {
     local repo="$1" before before_hours file now_s
     valid_repo "$repo" || { log "begin: invalid repo '$repo'"; return 0; }
@@ -307,6 +417,7 @@ cmd_begin() {
         "before_hours=${before_hours}" \
         "begin_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "consecutive_dry=$(read_field "$file" consecutive_dry)" \
+        "consecutive_wall=$(read_field "$file" consecutive_wall)" \
         "last_after=$(read_field "$file" last_after)" \
         "last_after_hours=$(read_field "$file" last_after_hours)" \
         "last_exit=$(read_field "$file" last_exit)" \
@@ -338,7 +449,7 @@ cmd_end() {
     local repo="$1"
     local exit_code
     exit_code=$(resolve_exit "${2:-}")
-    local file before before_hours after after_hours dry next_dry last_run now_s
+    local file before before_hours after after_hours dry next_dry wall_count next_wall last_run now_s
     valid_repo "$repo" || { log "end: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "end: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
     is_uint "$BUFFER_H" || { log "end: SCOUT_FUTILITY_BUFFER_H not a uint: $BUFFER_H"; return 0; }
@@ -360,6 +471,8 @@ cmd_end() {
         is_uint "$after_hours" || after_hours="$after"
         dry=$(read_field "$file" consecutive_dry)
         is_uint "$dry" || dry=0
+        wall_count=$(read_field "$file" consecutive_wall)
+        is_uint "$wall_count" || wall_count=0
         last_run=$(read_field "$file" last_run_epoch)
         is_uint "$last_run" || last_run=0
         if ! is_uint "$after"; then
@@ -371,13 +484,14 @@ cmd_end() {
             "before_hours=" \
             "begin_at=" \
             "consecutive_dry=${dry}" \
+            "consecutive_wall=${wall_count}" \
             "last_after=${after}" \
             "last_after_hours=${after_hours}" \
             "last_exit=${exit_code}" \
             "last_run_epoch=${last_run}" \
             "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         export_last_run
-        log "end: $repo missing begin snapshot — created snapshot (success-run); not counted as dry last_run_epoch=$last_run runway_after=${after_hours}h"
+        log "end: $repo missing begin snapshot — created snapshot (success-run); not counted as dry consecutive_dry=$dry consecutive_wall=$wall_count last_run_epoch=$last_run runway_after=${after_hours}h"
         return 0
     fi
     after=$(ready_count "$repo")
@@ -390,18 +504,40 @@ cmd_end() {
     is_uint "$after_hours" || after_hours="$after"
     dry=$(read_field "$file" consecutive_dry)
     is_uint "$dry" || dry=0
+    wall_count=$(read_field "$file" consecutive_wall)
+    is_uint "$wall_count" || wall_count=0
     next_dry=$dry
+    next_wall=$wall_count
     if ! is_uint "$before_hours"; then
         before_hours=$before
     fi
     if [[ "$exit_code" != "0" ]]; then
-        log "end: $repo exit=$exit_code (not green) — leave consecutive_dry=$dry"
+        # Crash path (fleet-ops#2468): classify the crash by scanning the
+        # scout unit's error-priority journal. ALL non-empty error lines
+        # matching a provider-wall pattern => wall-class. Increment the
+        # consecutive_wall counter and escalate at N (same signal key as the
+        # green-and-empty path so #2351 dedupe gate suppresses the repair-
+        # hop re-summon). Any non-wall error resets consecutive_wall to 0
+        # so a transient assertion / OOM does NOT burn the auditor budget.
+        if detect_provider_wall "$repo"; then
+            next_wall=$((wall_count + 1))
+            log "end: $repo exit=$exit_code wall-crash #${next_wall} — leave consecutive_dry=$dry, consecutive_wall=${next_wall}"
+            if [[ "$next_wall" -ge "$N" ]]; then
+                loud "SCOUT-FUTILITY" "repo=Nishfleet/${repo} consecutive_wall=${next_wall} (N=${N}) provider-wall crash loop (503/429/quota/INFERENCE_CAP_ERROR). same structural famine class as green-and-empty; escalate-senior, do not restart"
+                file_wall_escalation "$repo" "$next_wall"
+            fi
+        else
+            next_wall=0
+            log "end: $repo exit=$exit_code (not green, not provider-wall) — leave consecutive_dry=$dry, consecutive_wall=0"
+        fi
     elif [[ "$after_hours" -ge "$BUFFER_H" ]]; then
         next_dry=0
-        log "end: $repo runway_after=${after_hours}h >= buffer=${BUFFER_H}h — reset consecutive_dry"
+        next_wall=0
+        log "end: $repo runway_after=${after_hours}h >= buffer=${BUFFER_H}h — reset consecutive_dry + consecutive_wall"
     elif [[ "$after_hours" -gt "$before_hours" ]]; then
         next_dry=0
-        log "end: $repo runway ${before_hours} -> ${after_hours}h (net increase) — reset consecutive_dry"
+        next_wall=0
+        log "end: $repo runway ${before_hours} -> ${after_hours}h (net increase) — reset consecutive_dry + consecutive_wall"
     else
         next_dry=$((dry + 1))
         log "end: $repo runway ${before_hours} -> ${after_hours}h (no net increase, below buffer=${BUFFER_H}h) consecutive_dry=$next_dry"
@@ -417,6 +553,7 @@ cmd_end() {
         "before_hours=" \
         "begin_at=" \
         "consecutive_dry=${next_dry}" \
+        "consecutive_wall=${next_wall}" \
         "last_before=${before}" \
         "last_before_hours=${before_hours}" \
         "last_after=${after}" \
