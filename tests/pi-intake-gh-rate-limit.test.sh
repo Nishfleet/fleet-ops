@@ -34,6 +34,14 @@ precedence_band_pending_clear() { true; }
 precedence_band_pending_starvation_clear() { true; }
 precedence_band_is_leverage_issue() { return 1; }
 precedence_band_allow_claim() { return 0; }
+# fleet-ops#2519: product-first precedence gate (sourced from the same
+# PRECEDENCE_BAND_LIB). This test exercises the gh rate-limit hold path,
+# not the product-first hold, so stub the gate to never hold: export is a
+# no-op, the repo is not self-maintenance here, and hold returns 1 (ADMIT).
+product_first_export_product_ratio() { return 0; }
+product_first_is_self_maintenance() { return 1; }
+product_first_ratio() { return 1; }
+product_first_hold() { return 1; }
 SH
 chmod +x "$stubs"
 
