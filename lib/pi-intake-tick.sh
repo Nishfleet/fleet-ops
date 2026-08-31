@@ -476,7 +476,7 @@ for i in "${!numbers[@]}"; do
     _cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"
     if [[ -f "$_cooldown_file" ]]; then
         _cd_ts=$(cat "$_cooldown_file" 2>/dev/null || true)
-        _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null || echo 0)
+        _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null) || _cd_epoch=0
         _now_epoch=$(date -u +%s)
         _cd_age=$(( _now_epoch - _cd_epoch ))
         if (( _cd_epoch > 0 && _cd_age < RECLAIM_COOLDOWN_S )); then
@@ -523,7 +523,7 @@ blocked-on: nish-decision" 2>/dev/null || true
     if [[ -f "$_systemic_file" ]]; then
         _sys_ts=$(cat "$_systemic_file" 2>/dev/null || true)
         if [[ -n "$_sys_ts" ]]; then
-            _sys_epoch=$(date -u -d "$_sys_ts" +%s 2>/dev/null || echo 0)
+            _sys_epoch=$(date -u -d "$_sys_ts" +%s 2>/dev/null) || _sys_epoch=0
             _sys_age=$(( _rc_now_epoch - _sys_epoch ))
             if (( _sys_epoch > 0 && _sys_age < RECLAIM_COOLDOWN_S )); then
                 echo "issue $N ($title): skipped-systemic-failure (seeded $_sys_age ago, all seats failed - waiting for provider recovery)"
