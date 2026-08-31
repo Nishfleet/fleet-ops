@@ -1,77 +1,30 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+## What and why
 
-## Why
+`thorough.quality_shares.computed_at` sat at `2026-08-26T21:50:55Z` for 4+ days while `FleetQueueSelfMaintenanceRatioHigh` fired on it: the quality-SLO scoreboard the ratio alert is adjudicated against was silently serving old numbers. Root cause: the scoreboard generator (`bin/fleet-quality-slo` + `lib/quality-slo.py`, built in reviewed PR #578) was never merged, so `agent-state/quality-slo/snapshot.json` was a stale one-off and nothing recomputed it.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+This PR makes the two things the issue requires:
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+1. **Recompute on the existing event.** The generator now runs as fleet-heartbeat-tier1 block 19 — every heartbeat tick recomputes the snapshot from GitHub + journals (never self-scores). No new timer or unit.
+2. **Staleness >24h fails loud.** The generator louds `QUALITY-SLO-STALE` when the pre-run snapshot exceeds the 24h ceiling, and exports `fleet_quality_slo_last_computed_seconds` to a textfile gauge. A `FleetQualitySloStale` alert (`absent(...) or (time() - ...) > 86400`) fires when the recompute path dies, so a stale scoreboard is never trusted silently.
 
-## Scope
-
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
-
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+Also: MANIFEST entries, fleet-organs.json registry entry (20th organ, `absent_alert: FleetQualitySloStale`), and a CI-hosted offline test proving the stale→fresh recompute loop and the guard.
 
 ## Verification
 
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
+`bash tests/quality-slo-staleness.test.sh` → tests 1-4 ALL OK (stale snapshot → rc=1 loudly / fresh → rc=0; generator on a 4-day-old pre-run snapshot louds QUALITY-SLO-STALE, recomputes fresh, writes the gauge; steady-state recompute silent + gauge written; tier1 block + rule + registry wired).
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+`bash tests/escalation-coverage-canary.test.sh` → nested quality-slo-staleness + other listed tests all pass on this branch.
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+Live exercise (scratch env, FILE_ISSUES=0): pre-run snapshot 353996s old → `LOUD [QUALITY-SLO-STALE] pre-run snapshot 353996s old (ceiling 86400s) — stale numbers were served; recomputing (fleet-ops#2444)` → new `computed_at` at run time → `fleet_quality_slo_last_computed_seconds 1788135051` written to `$PROM_FILE`.
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+Gates: sgscan `--base origin/main` clean; bash -n fleet-heartbeat-tier1 + fleet-quality-slo; python3 -m py_compile lib/quality-slo.py; manifest-entry check + organ-heartbeat verify confirm both `bin/fleet-quality-slo` and `lib/quality-slo.py` are wired.
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+run-proof: none — no new unit/timer/workflow; recompute rides the existing heartbeat tick (prove-one-run-check SKIP).
 
-Closes #1348
+research: last30days-scale pass = repo archaeology (git log --all + gh pr view 578, live github + local checkouts) — the generator already existed as reviewed-but-unmerged PR #578, so it was resurrected as-is (adopted) rather than hand-building a new scoreboard; the alternative of leaving the orphaned snapshot un-computed was rejected because it leaves a stale scoreboard. The >24h staleness guard adopts the fleet's own established absent()/delta organ pattern (same as fleet-baseline-delta, fleet-scout, fleet-asset-census), rejected building a bespoke timer.
+
+help-first: read bin/fleet-quality-slo + lib/quality-slo.py --help/compute subcommand — it already recomputes on invocation, so no new recompute flag was hand-built; read jq/date --help for the epoch export.
+
+organ-heartbeat: config/fleet-organs.json entry ships with its absent() rule in the same PR.
+
+Closes #2444
