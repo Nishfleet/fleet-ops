@@ -622,6 +622,15 @@ bin/fleet-tailscale-localapi-canary /home/nish/.local/bin/fleet-tailscale-locala
 # Heartbeat-tier1 block 43.
 bin/fleet-loose-ends-canary /home/nish/.local/bin/fleet-loose-ends-canary
 lib/loose-ends.py /home/nish/.local/lib/fleet-ops/loose-ends.py
+# fleet-ops#2666: empty-run burst canary. Files a `fix(empty-run-burst):`
+# ticket when waste.empty_runs_last_2h >= 3 with non-empty
+# empty_run_samples (the 2h signal the #902 24h detector masks), classifies
+# cause per sample (provider-no-op, provider-partial, hang-watchdog,
+# mid-session-death, empty-bench) using the matching pi-issue err file, and
+# surfaces a healthy-seat counter-evidence row when the burst landed on a
+# health_class=healthy + http_status=200 seat. Observe-to-close drains
+# auto-filed tickets when the burst clears. Heartbeat-tier1 block 44.
+bin/fleet-empty-run-burst-canary /home/nish/.local/bin/fleet-empty-run-burst-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.

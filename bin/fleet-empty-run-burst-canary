@@ -1,0 +1,524 @@
+#!/usr/bin/env bash
+# fleet-empty-run-burst-canary — 0B-stdout burst on healthy seats (fleet-ops#2666).
+#
+# Incident 2026-09-01 12:48Z-14:11Z: empty_runs_last_2h jumped 0 -> 6 with samples
+# naming minimax/MiniMax-M3 and openrouter/deepseek-v4-flash-0731 (both
+# health_class=healthy / http 200 in pi-seat-health.json). The #902
+# empty-run class is a 24h+ counter that fires on the waste_ratio SLO; the
+# 2h burst on healthy seats is a sharper signal the 24h detector masks.
+# Standing rule 2026-08-26: every failure gets a mechanical fix.
+#
+# This canary is the class prevention:
+#   1. Watch the opus-heartbeat snapshot's waste block.
+#   2. Burst: empty_runs_last_2h >= 3 (or delta upward by 3+) with
+#      non-empty empty_run_samples.
+#   3. For each sample, classify cause by inspecting the matching
+#      pi-issue err file (live or archived):
+#        - provider-no-op        exit 0, stdout=0B, no PACKET-VERDICT
+#        - provider-partial      exit 0, stdout=0B, PACKET-VERDICT tools>0
+#        - hang-watchdog         PI HANG WATCHDOG line in err
+#        - mid-session-death     exit 143/137 in err
+#        - already-benched       "empty-run: marked <seat>" in err
+#   4. Bucket: a burst on a healthy seat (pi-seat-health.json
+#      health_class=healthy AND http_status=200) is a SEAT FAULT, not
+#      a healthy one — the no-op class needs a longer bench, not a
+#      flat 900s. The canary files with the seat health evidence so
+#      the canary-filed ticket names the wrong-class symptom, not
+#      just "empty runs went up".
+#   5. Observe-to-open: a fresh burst (no open canary-filed ticket)
+#      gets a `fix(empty-run-burst):` issue with samples + cause
+#      classification + per-seat health evidence.
+#   6. Observe-to-close: a previously filed ticket whose burst is gone
+#      (empty_runs_last_2h back below threshold for two consecutive
+#      ticks, OR samples empty) gets a `resolved-at:` comment; a
+#      later tick closes the issue. drain pattern follows
+#      fleet-volume-lane-order-canary's #1268 shape.
+#
+# Exit codes:
+#   0  no burst (clean tick) OR burst with observe-to-open/close fired
+#      (still alarms but does not fail the heartbeat, fleet-ops#1116)
+#   1  watcher broken (snapshot missing / unparseable / samples
+#      non-empty but empty_runs counter is 0) — LOUD but tick green
+#   2  helper crash (jq/sed missing, fixture permissions) — heartbeat
+#      fails loud and unit lands in --state=failed
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 block 44.
+#
+# Environment seams (tests):
+#   FLEET_EMPTY_BURST_SNAPSHOT       override snapshot path
+#                                    (default ~/.local/state/opus-heartbeat/snapshot.json)
+#   FLEET_EMPTY_BURST_RECEIPTS       override pi-issues dir
+#                                    (default ~/.local/state/pi-issues)
+#   FLEET_EMPTY_BURST_SEAT_HEALTH    override seat-health json
+#                                    (default ~/.local/state/pi-packet/pi-seat-health.json)
+#   FLEET_EMPTY_BURST_THRESHOLD      override burst threshold (default 3)
+#   FLEET_EMPTY_BURST_REPO           default Nishfleet/fleet-ops
+#   FLEET_EMPTY_BURST_FILE           1 (default) file issues; 0 skip gh
+#   FLEET_HEARTBEAT_TRIAGE           triage file
+#   FLEET_OPS_REPO                   canary source repo (manifest helper)
+#   GH                              gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_OPS_REPO:-$_canon_repo}"
+
+SNAPSHOT="${FLEET_EMPTY_BURST_SNAPSHOT:-$HOME/.local/state/opus-heartbeat/snapshot.json}"
+RECEIPTS="${FLEET_EMPTY_BURST_RECEIPTS:-$HOME/.local/state/pi-issues}"
+SEAT_HEALTH="${FLEET_EMPTY_BURST_SEAT_HEALTH:-$HOME/.local/state/pi-packet/pi-seat-health.json}"
+THRESHOLD="${FLEET_EMPTY_BURST_THRESHOLD:-3}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+REPO="${FLEET_EMPTY_BURST_REPO:-Nishfleet/fleet-ops}"
+FILE_ISSUES="${FLEET_EMPTY_BURST_FILE:-1}"
+
+log() {
+    printf '[%s] [fleet-empty-run-burst-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    cat <<'EOF'
+usage: fleet-empty-run-burst-canary [--help]
+
+Burst detector for waste.empty_runs_last_2h on healthy seats
+(fleet-ops#2666). Reads the opus-heartbeat snapshot, classifies each
+sample's cause by inspecting the matching pi-issue err file, files a
+`fix(empty-run-burst):` ticket on a fresh burst, and observe-to-closes
+when the count drops back below the threshold.
+EOF
+}
+
+# Main entry point: --help / -h, otherwise run the canary.
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+# is_uint value — strict non-negative integer (default 0).
+is_uint() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# seat_health_class np nm — prints health_class for the seat, or
+# "unknown" if pi-seat-health.json is missing / stale / unparseable.
+# A "healthy" + http_status=200 seat is the burst signal: a 0B-stdout
+# run on a healthy seat is a SEAT FAULT (not a transient hiccup), and
+# the canary's issue body cites the seat-health evidence.
+#
+# The opus-heartbeat snapshot uses `id = "<provider>__<model-with-_-not-/>"`,
+# so any `/` in the model is converted to `_` before the id is built.
+seat_health_class() {
+    local np="$1" nm="$2"
+    if [[ ! -f "$SEAT_HEALTH" ]]; then
+        printf 'unknown\n'
+        return 0
+    fi
+    if ! jq -e 'type == "object"' "$SEAT_HEALTH" >/dev/null 2>&1; then
+        printf 'unknown\n'
+        return 0
+    fi
+    local id="${np}__${nm//\//_}"
+    local row
+    row=$(jq -r --arg id "$id" '
+        (.seats // [])
+        | map(select(.id == $id))
+        | .[0] // empty
+    ' "$SEAT_HEALTH" 2>/dev/null) || { printf 'unknown\n'; return 0; }
+    [[ -z "$row" || "$row" == "null" ]] && { printf 'unknown\n'; return 0; }
+    jq -r '(.health_class // "unknown")' <<<"$row"
+}
+
+seat_http_status() {
+    local np="$1" nm="$2"
+    if [[ ! -f "$SEAT_HEALTH" ]]; then
+        printf '0\n'
+        return 0
+    fi
+    if ! jq -e 'type == "object"' "$SEAT_HEALTH" >/dev/null 2>&1; then
+        printf '0\n'
+        return 0
+    fi
+    local id="${np}__${nm//\//_}"
+    local v
+    v=$(jq -r --arg id "$id" '
+        (.seats // [])
+        | map(select(.id == $id))
+        | .[0].http_status // 0
+    ' "$SEAT_HEALTH" 2>/dev/null) || { printf '0\n'; return 0; }
+    printf '%s\n' "$v"
+}
+
+# parse_unit sample — extract the unit (e.g. fleet-ops-2168) from a
+# sample line. Sample shape (opus-heartbeat watch log):
+#   [2026-08-31T09:45:53Z] pi-issue-run: <unit> pi exited 0 but stdout=0B ...
+#   [2026-08-31T09:45:53Z] empty-run: marked <seat> unusable until ... reason=pi-issue:<unit>:provider-no-op:stdout=0B ...
+# The first line is what the watch logs as a sample; the second is the
+# follow-up with the seat. parse_unit returns "" on no match.
+parse_unit() {
+    local sample="$1"
+    local u
+    # Prefer the pi-issue-run: <unit> form.
+    u=$(printf '%s\n' "$sample" \
+        | sed -nE 's/.*pi-issue-run:[[:space:]]+([A-Za-z0-9_-]+).*/\1/p' \
+        | head -n 1)
+    if [[ -n "$u" ]]; then
+        printf '%s\n' "$u"
+        return 0
+    fi
+    # Fall back to the empty-run reason field.
+    u=$(printf '%s\n' "$sample" \
+        | sed -nE 's/.*reason=pi-issue:([A-Za-z0-9_-]+):.*/\1/p' \
+        | head -n 1)
+    if [[ -n "$u" ]]; then
+        printf '%s\n' "$u"
+    fi
+    return 0
+}
+
+# find_err_file unit — print the most recent err file for `unit` from
+# the live receipts dir, prefer the live one. Empty stdout if missing.
+find_err_file() {
+    local unit="$1"
+    local live="$RECEIPTS/${unit}.err"
+    if [[ -f "$live" ]]; then
+        printf '%s\n' "$live"
+        return 0
+    fi
+    local latest
+    latest=$(find "$RECEIPTS" -maxdepth 1 -name "ARCHIVED-${unit}.err-*" -type f 2>/dev/null \
+        | sort -r | head -n 1 || true)
+    [[ -n "$latest" ]] && printf '%s\n' "$latest"
+}
+
+# classify_cause err_file — emit one of:
+#   provider-no-op | provider-partial | hang-watchdog | mid-session-death |
+#   empty-bench | unknown
+# based on the markers present in the err file.
+classify_cause() {
+    local f="$1"
+    [[ -f "$f" ]] || { printf 'unknown\n'; return 0; }
+    if grep -q 'PI HANG WATCHDOG' "$f" 2>/dev/null; then
+        printf 'hang-watchdog\n'; return 0
+    fi
+    if grep -qE 'exited with code (143|137)|exited (143|137)|SIGTERM|terminated by signal' "$f" 2>/dev/null; then
+        printf 'mid-session-death\n'; return 0
+    fi
+    if grep -q 'empty-run: marked' "$f" 2>/dev/null; then
+        printf 'empty-bench\n'; return 0
+    fi
+    if grep -q 'PACKET-VERDICT' "$f" 2>/dev/null; then
+        printf 'provider-partial\n'; return 0
+    fi
+    if grep -qE 'pi exited 0 but stdout=0B' "$f" 2>/dev/null; then
+        printf 'provider-no-op\n'; return 0
+    fi
+    printf 'unknown\n'
+}
+
+# parse_seat_from_err err_file — print the seat as "np/nm" or "" if not
+# derivable. The "empty-run: marked" line is the most reliable source.
+parse_seat_from_err() {
+    local f="$1"
+    [[ -f "$f" ]] || return 0
+    local seat
+    seat=$(grep -m1 -oE 'empty-run: marked [^ ]+ unusable' "$f" 2>/dev/null \
+        | sed -E 's/^empty-run: marked ([^ ]+) unusable$/\1/') || true
+    if [[ -n "$seat" ]]; then
+        printf '%s\n' "$seat"
+        return 0
+    fi
+    seat=$(grep -m1 -oE 'pi-issue-run: [a-zA-Z0-9_-]+ pi exited [0-9]+ on [^ ]+|pi on [^ ]+ did not finalize|pi on [^ ]+ killed' "$f" 2>/dev/null \
+        | sed -E 's/.* on ([^ ]+)$/\1/; s/.*pi on ([^ ]+) did not finalize.*/\1/; s/.*pi on ([^ ]+) killed.*/\1/') || true
+    if [[ -n "$seat" ]]; then
+        printf '%s\n' "$seat"
+    fi
+    return 0
+}
+
+# parse_sample_ts sample — print the leading ISO timestamp if present.
+parse_sample_ts() {
+    local sample="$1"
+    printf '%s\n' "$sample" \
+        | sed -nE 's/^\[([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)\].*/\1/p' \
+        | head -n 1
+}
+
+# file_finding kind title body — file a `fix(empty-run-burst):` issue
+# with the marker; dedup against any open issue already carrying the
+# marker for this kind.
+file_finding() {
+    local kind="$1" title="$2" body="$3"
+    local marker="empty-run-burst-canary: ${kind}"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (FLEET_EMPTY_BURST_FILE=$FILE_ISSUES) marker=$marker"
+        return 0
+    fi
+    local existing
+    if command -v "$GH" >/dev/null 2>&1; then
+        existing=$("$GH" issue list -R "$REPO" --state open --limit 50 \
+            --search "$marker" \
+            --json number,body 2>/dev/null \
+            | jq -r --arg m "$marker" '.[] | select((.body // "") | contains($m)) | .number' \
+            | head -n 1 || true)
+    fi
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $REPO#$existing already carries $marker"
+        return 0
+    fi
+    local full="${body}
+
+${marker}
+"
+    if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$full" >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker"
+    fi
+}
+
+# observe_to_close empty_runs samples_n — close any open issue that
+# carries the empty-run-burst-canary marker when the burst is no
+# longer reported. Threshold check matches the gate; samples_n is the
+# observed count of empty_run_samples.
+observe_to_close() {
+    local empty_runs="$1" samples_n="$2"
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        return 0
+    fi
+    if ! command -v "$GH" >/dev/null 2>&1; then
+        log "observe-to-close: gh missing, skip"
+        return 0
+    fi
+    local active=0
+    if is_uint "$empty_runs" && (( empty_runs >= THRESHOLD )) && (( samples_n > 0 )); then
+        active=1
+    fi
+    if (( active )); then
+        log "observe-to-close: burst still active (empty_runs=$empty_runs samples=$samples_n) — skip close"
+        return 0
+    fi
+    local open_json=""
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 200 \
+        --json number,body 2>/dev/null)
+    local list_rc=$?
+    set -e
+    if [[ "$list_rc" -ne 0 || -z "$open_json" ]]; then
+        log "observe-to-close: gh issue list failed (rc=$list_rc), skip"
+        return 0
+    fi
+    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "observe-to-close: gh issue list returned non-JSON, skip"
+        return 0
+    fi
+    local num body ts comment close_rc
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row" 2>/dev/null) || continue
+        body=$(jq -r '.body // ""' <<<"$row" 2>/dev/null) || continue
+        [[ -n "$num" && -n "$body" ]] || continue
+        if ! grep -q 'empty-run-burst-canary:' <<<"$body"; then
+            continue
+        fi
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        comment="observe-to-close: empty-run-burst-canary no longer reported on heartbeat tick at ${ts}. empty_runs_last_2h=${empty_runs}, samples=${samples_n}, threshold=${THRESHOLD}. The original burst signal has cleared."
+        set +e
+        "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1
+        close_rc=$?
+        set -e
+        if [[ "$close_rc" -eq 0 ]]; then
+            log "observe-to-close: CLOSED issue #$num"
+        else
+            log "observe-to-close: failed to close #$num (rc=$close_rc)"
+        fi
+    done < <(printf '%s' "$open_json" | jq -c '.[]' 2>/dev/null)
+    return 0
+}
+
+# ============================================================================
+# Gate 1: snapshot present + parseable.
+# ============================================================================
+if [[ ! -f "$SNAPSHOT" ]]; then
+    loud "EMPTY-BURST-WATCHER-BROKEN" "snapshot missing: $SNAPSHOT"
+    exit 1
+fi
+if ! jq -e 'type == "object" and (.waste | type == "object")' "$SNAPSHOT" >/dev/null 2>&1; then
+    loud "EMPTY-BURST-WATCHER-BROKEN" "snapshot unparseable: $SNAPSHOT"
+    exit 1
+fi
+
+empty_runs=$(jq -r '.waste.empty_runs_last_2h // 0' "$SNAPSHOT")
+is_uint "$empty_runs" || { loud "EMPTY-BURST-WATCHER-BROKEN" "empty_runs_last_2h not a uint: $empty_runs"; exit 1; }
+samples_n=$(jq -r '.waste.empty_run_samples // [] | length' "$SNAPSHOT")
+is_uint "$samples_n" || { loud "EMPTY-BURST-WATCHER-BROKEN" "empty_run_samples not a list"; exit 1; }
+
+# Watcher-broken: counter says burst but the sample list is empty (the
+# upstream watcher parsed a "0" but reported a non-zero count). Skip
+# the file_finding on a broken upstream so we don't file a phantom
+# ticket; LOUD so the unit lands in alert-repair.
+if (( empty_runs >= THRESHOLD )) && (( samples_n == 0 )); then
+    loud "EMPTY-BURST-WATCHER-BROKEN" \
+        "empty_runs_last_2h=$empty_runs >= $THRESHOLD but empty_run_samples is empty — upstream watch is inconsistent"
+    file_finding "watcher-broken" \
+        "empty-run burst: empty_runs_last_2h=$empty_runs with empty sample list (upstream watch inconsistent)" \
+        "Snapshot $SNAPSHOT shows waste.empty_runs_last_2h=$empty_runs (>= threshold $THRESHOLD) but waste.empty_run_samples is empty. The opus-heartbeat watch log is no longer capturing the seat/unit evidence; the canary cannot classify cause without a sample line. Fix the upstream watch (opus-heartbeat snapshot generator) to keep the sample list in sync with the counter, then this ticket drains via observe-to-close.
+
+Verification: replay the snapshot generator and assert waste.empty_run_samples.length >= waste.empty_runs_last_2h when the counter is non-zero."
+    exit 1
+fi
+
+# ============================================================================
+# Burst gate: empty_runs_last_2h >= threshold AND samples_n > 0.
+# ============================================================================
+if (( empty_runs < THRESHOLD )) || (( samples_n == 0 )); then
+    log "no burst: empty_runs=$empty_runs samples=$samples_n threshold=$THRESHOLD"
+    observe_to_close "$empty_runs" "$samples_n"
+    log "OK: empty-run burst clear (counter=$empty_runs, samples=$samples_n)"
+    exit 0
+fi
+
+# ============================================================================
+# Burst active: classify each sample by cause + seat health, then file
+# (or refresh) a `fix(empty-run-burst):` ticket with the evidence.
+# ============================================================================
+scratch=$(mktemp -d -t empty-burst-canary.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+samples_json=$(jq -c '.waste.empty_run_samples // []' "$SNAPSHOT")
+echo "$samples_json" >"$scratch/samples.json"
+
+declare -A cause_buckets
+declare -A seat_buckets
+declare -A healthy_seat_buckets
+# Track bucket sizes in plain integers (set -u + an empty assoc array
+# throws "unbound variable" on `${#arr[@]}` — the plain counter side-
+# steps that while keeping the bucket keys in the assoc arrays).
+cause_bucket_n=0
+seat_bucket_n=0
+healthy_seat_bucket_n=0
+
+# Walk each sample line, classify, accumulate.
+while IFS= read -r sample; do
+    [[ -n "$sample" ]] || continue
+    unit=$(parse_unit "$sample")
+    [[ -z "$unit" ]] && unit="unknown"
+    ts=$(parse_sample_ts "$sample")
+    err_file=$(find_err_file "$unit")
+    if [[ -n "$err_file" ]]; then
+        cause=$(classify_cause "$err_file")
+        seat=$(parse_seat_from_err "$err_file")
+    else
+        cause="unknown"
+        seat=""
+    fi
+    if [[ -z "$seat" ]]; then
+        seat="unknown"
+    fi
+    cause_buckets[$cause]=$(( ${cause_buckets[$cause]:-0} + 1 ))
+    seat_buckets[$seat]=$(( ${seat_buckets[$seat]:-0} + 1 ))
+    cause_bucket_n=$((cause_bucket_n + 1))
+    seat_bucket_n=$((seat_bucket_n + 1))
+    # Bucket the seat by health_class for the body.
+    if [[ "$seat" != "unknown" ]]; then
+        np="${seat%%/*}"
+        nm="${seat#*/}"
+        cls=$(seat_health_class "$np" "$nm")
+        http=$(seat_http_status "$np" "$nm")
+        if [[ "$cls" == "healthy" && "$http" == "200" ]]; then
+            if [[ -z "${healthy_seat_buckets[$seat]:-}" ]]; then
+                healthy_seat_bucket_n=$((healthy_seat_bucket_n + 1))
+            fi
+            healthy_seat_buckets[$seat]=$(( ${healthy_seat_buckets[$seat]:-0} + 1 ))
+        fi
+    fi
+    # Per-sample row for the body.
+    {
+        printf '| %s | %s | %s | %s | %s |\n' \
+            "${ts:-?}" "$unit" "$seat" "$cause" "${err_file##*/}"
+    } >>"$scratch/table.md"
+done < <(jq -r '.[]' <<<"$samples_json")
+
+# Build the issue body.
+{
+    printf 'Empty-run burst: waste.empty_runs_last_2h=%s (>= threshold %s) on snapshot %s.\n\n' \
+        "$empty_runs" "$THRESHOLD" "$SNAPSHOT"
+    printf '## Samples (newest first)\n\n'
+    printf '| ISO ts | unit | seat | cause | err file |\n'
+    printf '|--------|------|------|-------|----------|\n'
+    cat "$scratch/table.md" 2>/dev/null || true
+    printf '\n## Cause breakdown\n\n'
+    for cause in "${!cause_buckets[@]}"; do
+        printf -- '- **%s**: %s sample(s)\n' "$cause" "${cause_buckets[$cause]}"
+    done
+    printf '\n## Seat health evidence\n\n'
+    if (( healthy_seat_bucket_n > 0 )); then
+        printf 'These seats are health_class=healthy AND http_status=200 in pi-seat-health.json at the burst — a 0B-stdout run on a healthy seat is a SEAT FAULT, not a transient hiccup, and the flat 900s cooldown (#1298) re-seats the same offender within the window:\n\n'
+        for seat in "${!healthy_seat_buckets[@]}"; do
+            np="${seat%%/*}"
+            nm="${seat#*/}"
+            cls=$(seat_health_class "$np" "$nm")
+            http=$(seat_http_status "$np" "$nm")
+            printf -- '- `%s` (class=%s, http=%s) appeared in %s sample(s)\n' \
+                "$seat" "$cls" "$http" "${healthy_seat_buckets[$seat]}"
+        done
+    elif [[ ! -f "$SEAT_HEALTH" ]]; then
+        printf 'pi-seat-health.json is missing at $SEAT_HEALTH — cannot classify seat health. Burst is `unknown` until the seat-health file is restored.\n'
+    else
+        printf 'No samples landed on a health_class=healthy + http_status=200 seat — burst is from already-faulted lanes (per the upstream health probe). The unknown bucket (seat-health file missing or seat id not in the ledger) covers any other samples.\n'
+    fi
+    printf '\n## Cause classes (fleet-ops#2666)\n\n'
+    printf -- '- **provider-no-op**: pi exited 0, stdout=0B, no PACKET-VERDICT in err. The provider returned nothing.\n'
+    printf -- '- **provider-partial**: pi exited 0, stdout=0B, but err shows PACKET-VERDICT tools>0. The provider did tool work but never wrote final text to stdout.\n'
+    printf -- '- **hang-watchdog**: err contains `PI HANG WATCHDOG` — pi ran past PI_HANG_TIMEOUT_S and was killed.\n'
+    printf -- '- **mid-session-death**: err shows `exited with code 143/137` or signal-termination — provider process was killed mid-session.\n'
+    printf -- '- **empty-bench**: err contains `empty-run: marked <seat>` — the seat was already benched for a prior no-op; the 900s flat cooldown is not enough when the seat keeps producing 0B.\n\n'
+    printf '## What to do\n\n'
+    printf '1. For each `healthy_seat` row: the no-op class is a SEAT FAULT, not a transient. Either raise the bench past 900s for repeat offenders (#2343 stayed flat for a reason — revisit the ladder for healthy-seat no-ops), or pull the seat from the allowlist while the upstream is unstable.\n'
+    printf '2. For `provider-partial` / `hang-watchdog`: route to the upstream provider health probe — these are not pi-issue-run faults.\n'
+    printf '3. For `mid-session-death`: the bench is already in place via `mark_seat_spawn_fail`; the burst is the watchdog signal, not a no-op class.\n\n'
+    printf '## Verification\n\n'
+    printf 'After the class is fixed, observe-to-close in fleet-empty-run-burst-canary drains this ticket on the next heartbeat tick when waste.empty_runs_last_2h drops below %s and waste.empty_run_samples is empty (snapshot %s).\n\n' \
+        "$THRESHOLD" "$SNAPSHOT"
+    printf 'run-proof: snapshot read at %s; threshold=%s; samples=%s; empty_runs=%s.\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$THRESHOLD" "$samples_n" "$empty_runs"
+} >"$scratch/body.md"
+
+# Healthy-seat bucket count is the loudest signal; use it as the
+# issue kind so distinct bursts (different healthy seat) file
+# separately.
+if (( healthy_seat_bucket_n > 0 )); then
+    kind="healthy-seat-burst"
+    first_seat=$(printf '%s\n' "${!healthy_seat_buckets[@]}" | head -n 1)
+    title="Empty-run burst on healthy seat: ${first_seat} (empty_runs_last_2h=${empty_runs}, ${healthy_seat_bucket_n} healthy-seat sample(s))"
+else
+    kind="provider-burst"
+    first_cause=$(printf '%s\n' "${!cause_buckets[@]}" | head -n 1)
+    title="Empty-run burst: ${empty_runs} no-ops in 2h (top cause: ${first_cause})"
+fi
+
+loud "EMPTY-BURST-DETECTED" \
+    "empty_runs_last_2h=$empty_runs samples=$samples_n threshold=$THRESHOLD kind=$kind"
+file_finding "$kind" "$title" "$(cat "$scratch/body.md")"
+observe_to_close "$empty_runs" "$samples_n"
+log "OK: empty-run burst handled (kind=$kind, empty_runs=$empty_runs, samples=$samples_n)"
+exit 0
