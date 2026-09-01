@@ -67,7 +67,7 @@ echo 'Use worker to <task>' | pi --print --provider devin --model glm-5-2
 
 Check the seat before routing: `agent-state/lanes/pi-seat-health.json` {{SEAT_CHECK_PHRASE}}
 
-**Before writing ANY orchestration** — dispatch, queue, scheduling, spec gates, handoff, reporting — read Pi's 74 shipped example extensions in `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/` and `docs/`. The fleet hand-built ~20,000 lines of control plane that Pi already ships. A hand-built fork of a stock extension is the known failure mode.
+**Before writing ANY orchestration** — dispatch, queue, scheduling, spec gates, handoff, reporting — read Pi's 79 shipped example extensions (verified 2026-09-01: `ls ~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/ | wc -l`) in `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/` and `docs/`. The fleet hand-built ~20,000 lines of control plane that Pi already ships. A hand-built fork of a stock extension is the known failure mode.
 
 **Compute rule:** prefer event-driven over scheduled every time. The old fleet burned money polling; a schedule now needs a named reason.{{OLD_LAUNCHER_BLOCK}}
 {{SOL_IDENTITY_BLOCK}}
