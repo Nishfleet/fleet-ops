@@ -622,6 +622,51 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario19: production seat-caps keep deepseek-v4-flash-free benched at cap=0 with dated reason and no billing sibling"
 
+# --- 19b. production lock: commandcode minimax/minimax-m3-free retired (fleet-ops#2700) --
+# The provider retired the free MiniMax M3 line (403 FORBIDDEN "The free
+# MiniMax M3 and M2.7 models have been retired"), so the seat is a
+# credentials_bad corpse (seat_dead=true, no comeback clock). The cap=0 +
+# intentional_cap_zero=corpse row is the production lock: it keeps the
+# free-roster-canary from re-filing "free-slug-available" on every tick,
+# and the seat-lib cap-0 classifier treats corpse as INTENTIONAL (never
+# re-audition, fleet-ops#2435) instead of stale. A later PR that removes
+# the row or re-raises the cap without a passing re-audition fails here.
+m3f_cap=$(jq -r '(.providers.commandcode.models["minimax/minimax-m3-free"] // "missing") | if type == "object" then .cap else . end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$m3f_cap" == "missing" ]]; then
+  fail "scenario19b: production seat-caps must keep a commandcode minimax/minimax-m3-free row (retired corpse, fleet-ops#2700)"
+fi
+if [[ "$m3f_cap" != "0" ]]; then
+  fail "scenario19b: production commandcode minimax/minimax-m3-free must be capped 0 (provider retired the model, got $m3f_cap, fleet-ops#2700)"
+fi
+m3f_intent=$(jq -r '(.providers.commandcode.models["minimax/minimax-m3-free"] // "missing") | if type == "object" then (.intentional_cap_zero // "") else "" end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$m3f_intent" != "corpse" ]]; then
+  fail "scenario19b: commandcode minimax/minimax-m3-free must be intentional_cap_zero=corpse (got '$m3f_intent')"
+fi
+# Dated reason required: the retire reason must cite fleet-ops#2700 and a date.
+reason=$(jq -r '.providers.commandcode._comment_minimax_m3_free // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario19b: production seat-caps must carry _comment_minimax_m3_free dated reason (fleet-ops#2700)"
+fi
+if ! grep -qE 'fleet-ops#2700' <<<"$reason"; then
+  fail "scenario19b: _comment_minimax_m3_free must cite fleet-ops#2700 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario19b: _comment_minimax_m3_free must start with an ISO date (got: $reason)"
+fi
+# No billing sibling (minimax/minimax-m3, without the -free suffix) on the
+# commandcode allowlist: the free-form slug is the only path; a billing row
+# would be a money lane on a free-class provider.
+while IFS= read -r k; do
+  case "$k" in
+    minimax/minimax-m3-free) : ;;  # the retired free-form slug itself
+    minimax/*) fail "scenario19b: production commandcode allowlists a non-free minimax slug: $k" ;;
+  esac
+done < <(jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario19b: production seat-caps keep commandcode minimax/minimax-m3-free retired at cap=0 corpse with dated reason and no billing sibling"
+
 # ===========================================================================
 # observe-to-close (fleet-ops#995): stale auto-filed tickets close when the
 # signal that filed them clears. The close path is OPT-IN: env=1 AND a fresh

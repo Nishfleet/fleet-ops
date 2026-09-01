@@ -608,6 +608,38 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict,
     synthetic = name in SYNTHETIC
     stall_count = int(state.get("stall_count") or 0)
     prev_ladder = state.get("ladder") or ""
+
+    # Class-park gate (fleet-ops#2651 semantics extended to every hop,
+    # fleet-ops#2700): if the class is parked (decision_class_until in the
+    # future), the park IS the escalation verdict. The dispatcher SKIPs a
+    # park-skipped alertname and returns rc=0 WITHOUT spawning a unit — so a
+    # redispatch here cannot re-seat the chain: it only fakes a
+    # "re-dispatched rc=0" receipt in the actions log, leaves the chain
+    # stalled at hop=run, and the NEXT tick then re-writes STOP-REASON and
+    # re-summons the senior conference for a chain the conference already
+    # parked (live 2026-09-01: FleetSloMainGreenSlowBurn class parked until
+    # 2026-09-03, run-hop redispatch was park-SKIPped rc=0, next tick
+    # re-wrote STOP-REASON 18:37:09Z, and the FleetChainStalled rail stayed
+    # red 18:08→18:52Z even though the alert was already owned). A parked
+    # chain therefore drains: ladder=stop-reason → the #2367 close in main
+    # terminates terminal=escalated same-tick (run/dispatch) or the verify
+    # deadline drains it as detector-red — no redispatch, no re-summon.
+    class_until = state.get("decision_class_until")
+    parked = False
+    if class_until:
+        class_dt = parse_iso(str(class_until))
+        if class_dt is not None and now < class_dt:
+            parked = True
+    if parked:
+        state["ladder"] = "stop-reason"
+        if hop == "verify":
+            # Zero-grace deadline so the #1610 block drains it next tick.
+            state["verify_deadline_ts"] = iso(now_dt())
+        log(f"chain {name} class-parked until {class_until} at hop={hop} — "
+            f"no redispatch, no STOP-REASON (park is the escalation "
+            f"verdict; chain drains)")
+        return "already"
+
     if stall_count >= 1 or prev_ladder:
         # fleet-ops#2247: a prior redispatch at dispatch/run returned rc=0,
         # but rc=0 only proves the dispatcher SPAWNED an async unit — it is

@@ -1190,6 +1190,86 @@ grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fle
 
 ok "worker hand-parked redispatch chain stays drained, park survives cooldown (fleet-ops#2651)"
 
+# --- 9l. class-parked chain on the RUN hop drains, no re-summon (fleet-ops#2700) --
+# Live incident 2026-09-01: FleetSloMainGreenSlowBurn class-parked until
+# 2026-09-03 (repair worker 17:15:58Z verdict). The chain's 17:08Z unit died
+# and the run hop stalled; the canary redispatch was park-SKIPped by the
+# dispatcher (rc=0, NO unit spawned — the canary logged "re-dispatched
+# rc=0" and the next tick re-wrote STOP-REASON + re-summoned the senior
+# conference for an already-parked chain; FleetChainStalled stayed red
+# 18:08->18:52Z). The #2651 park check only covered hop=verify; hop=run had
+# no park gate, so an already-owned chain kept churning. Fix: the class-park
+# gate now runs on EVERY hop — a parked chain does not redispatch (the
+# dispatcher would SKIP it anyway), does not write a second STOP-REASON
+# (the park IS the escalation verdict), marks ladder=stop-reason and drains
+# terminal=escalated via the #2367 close the same tick.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "SloGreenParkedRun"},
+   "activeAt": "2026-08-31T05:30:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-31T06:00:00Z] DISPATCH alertname=SloGreenParkedRun seat=minimax/MiniMax-M3 unit=u-SGPR-20260831T060000Z packet=/x rc=0
+PYEND
+# Unit dead (no state files -> not-found -> not running, not success).
+# Hand-parked redispatch chain on the RUN hop (the exact 19:22:19Z live
+# shape: prior redispatch rc=0 that the dispatcher park-SKIPped).
+echo '{"alertname":"SloGreenParkedRun","stall_count":1,"ladder":"redispatch","hop":"run","dispatch_unit":"u-SGPR-20260831T060000Z","decision_class_until":"2026-09-01T00:00:00Z"}' \
+  >"$scratch/state/open/SloGreenParkedRun.json"
+
+# Tick 1 (07:45Z, age 6300s > 3600 CLOCK_RUN): parked run hop must NOT
+# re-summon, must NOT redispatch, must drain terminal=escalated same-tick.
+rc=$(run_bin "2026-08-31T07:45:00Z")
+[[ "$rc" == "0" ]] || fail "9l tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "9l tick-1: parked run chain must NOT write STOP-REASON (park IS the verdict), got: $(cat "$scratch/STOP-REASON.json")"
+if grep -q 'REDISPATCH alertname=SloGreenParkedRun' "$scratch/actions.log"; then
+  fail "9l tick-1: parked run chain must NOT re-ladder/re-dispatch; log=$(cat "$scratch/actions.log")"
+fi
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9l tick-1: parked run chain must not invoke the dispatcher; log=$(cat "$scratch/dispatch.log")"
+fi
+# Chain must terminate escalated same-tick + cooldown marker + park preserved.
+grep -q '"terminal": "escalated"' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9l tick-1: ledger must carry terminal=escalated; got: $(cat "$scratch/state/chains.terminated.jsonl")"
+python3 - "$scratch/state/open/SloGreenParkedRun.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("ladder") == "stop-reason", d
+assert d.get("terminal") == "escalated", d
+assert d.get("dead_until"), d
+assert d.get("decision_class_until") == "2026-09-01T00:00:00Z", d
+PY
+# The rail must NOT export the chain as stalled this tick (same-tick close).
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9l tick-1: run stalled must be 0 (drained), got: $(grep run "$scratch/fleet-chains.prom")"
+
+# Tick 2 (09:00Z, cooldown expired): re-open of the SAME unit re-parks via
+# #2397 — no re-summon, no redispatch, park preserved, rail stays drained.
+rc=$(run_bin "2026-08-31T09:00:00Z")
+[[ "$rc" == "0" ]] || fail "9l tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "9l tick-2: re-park must not write STOP-REASON"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9l tick-2: run stalled must stay 0 (re-parked), got: $(grep run "$scratch/fleet-chains.prom")"
+python3 - "$scratch/state/open/SloGreenParkedRun.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("dead_until"), d  # slid forward (re-parked)
+assert d.get("terminal") == "escalated", d
+assert d.get("decision_class_until") == "2026-09-01T00:00:00Z", d
+PY
+
+ok "class-parked run-hop chain drains same-tick, no re-summon/redispatch, rail stays drained (fleet-ops#2700)"
+
 
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
