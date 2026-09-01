@@ -80,7 +80,7 @@ HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair ac
 TYPE_RDISP = "# TYPE fleet_repair_dispatch_24h gauge"
 HELP_RSKIP = "# HELP fleet_repair_skip_24h SKIP lines in alert-repair actions.log within 24h."
 TYPE_RSKIP = "# TYPE fleet_repair_skip_24h gauge"
-HELP_AD = "# HELP fleet_alert_outcome_24h Per-alertname repair outcomes in the trailing 24h (fleet-ops#1291 alert-quality). kind=dispatch|resolved|failed|skipped. Feeds the WFR alert-quality lens."
+HELP_AD = "# HELP fleet_alert_outcome_24h Per-alertname repair outcomes in the trailing 24h (fleet-ops#1291 alert-quality). kind=dispatch|resolved|failed|skipped|phantom_resolved. phantom_resolved = RESOLVED entries whose root_cause starts with PHANTOM_ALERT (drill fixtures, not real repair work) — the WFR alert-quality lens reads phantom_resolved>5/24h as phantom-drift regression (fleet-ops#2694). Feeds the WFR alert-quality lens."
 TYPE_AD = "# TYPE fleet_alert_outcome_24h gauge"
 HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cached org snapshot."
 TYPE_OPEN = "# TYPE fleet_open_prs gauge"
@@ -1154,11 +1154,18 @@ def _repair_log_counts_24h():
 # dispatcher's FAILED/RESOLVED lines use the bare form).
 _BARE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
 _ALERTNAME_RE = re.compile(r"alertname=(\S+)")
+# fleet-ops#2694: phantom resolutions carry root_cause=PHANTOM_ALERT...
+# (the value is underscore-joined; the first whitespace-delimited token is
+# the signal). Real resolutions have transient_npm_.../no root_cause token.
+_ROOT_CAUSE_RE = re.compile(r"root_cause=(\S+)")
 
 
 def _repair_log_per_alertname_24h():
-    """Return dict[alertname] = {dispatch, resolved, failed, skipped} for the
-    trailing 24h, or {} when actions.log is missing."""
+    """Return dict[alertname] = {dispatch, resolved, failed, skipped,
+    phantom_resolved} for the trailing 24h, or {} when actions.log is
+    missing. RESOLVED entries whose root_cause starts with PHANTOM_ALERT
+    count as phantom_resolved, not resolved — drill fixtures are not
+    repair work (fleet-ops#2694)."""
     if not ACTIONS_LOG.exists():
         return {}
     cutoff = time.time() - 86400
@@ -1182,7 +1189,14 @@ def _repair_log_per_alertname_24h():
                 if rest.startswith("DISPATCH "):
                     kind = "dispatch"
                 elif rest.startswith("RESOLVED "):
-                    kind = "resolved"
+                    # fleet-ops#2694: PHANTOM_ALERT root_cause = drill
+                    # fixture, not a real fix; keep it out of "resolved"
+                    # so the WFR lens can flag phantom drift.
+                    rc = _ROOT_CAUSE_RE.search(rest)
+                    if rc and rc.group(1).startswith("PHANTOM_ALERT"):
+                        kind = "phantom_resolved"
+                    else:
+                        kind = "resolved"
                 elif rest.startswith("FAILED "):
                     kind = "failed"
                 elif rest.startswith("SKIPPED-CLAIMED "):
@@ -1194,7 +1208,8 @@ def _repair_log_per_alertname_24h():
                     continue
                 name = am.group(1)
                 d = out.setdefault(name, {"dispatch": 0, "resolved": 0,
-                                          "failed": 0, "skipped": 0})
+                                          "failed": 0, "skipped": 0,
+                                          "phantom_resolved": 0})
                 d[kind] += 1
     except OSError as exc:
         print(f"actions.log per-alertname read: {exc}", file=sys.stderr)
@@ -2491,6 +2506,10 @@ def main():
     # --- Per-alertname repair outcomes (fleet-ops#1291 alert-quality) ---
     # Feeds the WFR alert-quality lens: dispatch vs skipped = action rate,
     # resolved vs failed = success rate, repeated failed = noisy/unactionable.
+    # fleet-ops#2694: phantom_resolved counts RESOLVED entries whose
+    # root_cause starts with PHANTOM_ALERT (drill fixtures, no real defect)
+    # so the lens can flag phantom drift without conflating it with real
+    # fixes.
     per_alert = _repair_log_per_alertname_24h()
     if per_alert:
         lines.append("")
@@ -2499,7 +2518,8 @@ def main():
         for name in sorted(per_alert):
             counts = per_alert[name]
             lbl = _prom_label(name)
-            for kind in ("dispatch", "resolved", "failed", "skipped"):
+            for kind in ("dispatch", "resolved", "failed", "skipped",
+                         "phantom_resolved"):
                 lines.append(
                     f'fleet_alert_outcome_24h{{alertname="{lbl}",kind="{kind}"}} '
                     f'{counts[kind]}'
