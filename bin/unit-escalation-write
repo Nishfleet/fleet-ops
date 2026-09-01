@@ -198,6 +198,54 @@ if [ "$oom_signal" = "no" ]; then
   fi
 fi
 
+# fleet-ops#2614 same-unit re-fire dedupe (writer-side). fleet-heartbeat.service
+# (and other persistent-red units: pi-scout@<repo>.service when a repo is in
+# structural dry/wall famine, siterep-live-canary.service when the live site is
+# red, etc.) fire OnFailure= on EVERY scheduler tick while the underlying fault
+# is unfixed. Without this dedupe each fire writes a fresh STOP-REASON.json
+# with a fresh sha256 hash, which:
+#   1. orphans the previous chain state file under
+#      $AS/fleet-escalation-completion/<old-hash>.json (it stays "in_flight"
+#      forever because fleet-escalation-completion only updates the hash of
+#      the CURRENT STOP-REASON);
+#   2. keeps fleet_chain_open{plane=unit-escalation, hop=trip} at 1
+#      indefinitely (the metric reads only the current STOP-REASON, and a
+#      fresh write of reason=unit-failure is non-terminal);
+#   3. forces the senior-auditor dispatcher to summon a fresh auditor every
+#      tick on the SAME root cause (each fresh hash bypasses the dispatcher's
+#      2-dispatch-per-hash cap).
+# Suppress when the existing STOP-REASON.json is for the SAME unit, has
+# reason=unit-failure (not a resolved/cooldown/boundary terminal), and is
+# recent (<SAME_UNIT_REFIRE_WINDOW_S, default 600s = 10min). After the
+# window the dedupe expires and the next fire writes fresh — a same-unit
+# re-fire an hour later IS a new trip (the prior one either resolved or
+# aged out). Different units always write fresh (no overlap; they each get
+# their own chain). STALE_OOM (OOM-kill) units always write fresh — a
+# recurrent OOM is a new evidence event even on the same unit.
+SAME_UNIT_REFIRE_WINDOW_S=${UNIT_ESCALATION_SAME_UNIT_WINDOW:-600}
+case "$SAME_UNIT_REFIRE_WINDOW_S" in ''|*[!0-9]*) SAME_UNIT_REFIRE_WINDOW_S=600 ;; esac
+_rf_skipped=0
+if [ -f "$SR" ] && [ "$oom_signal" != "yes" ]; then
+    _rf_reason=$(jq -r '.reason // ""' "$SR" 2>/dev/null || echo "")
+    _rf_unit=$(jq -r '.detail.unit // ""' "$SR" 2>/dev/null || echo "")
+    _rf_ts=$(jq -r '.timestamp // ""' "$SR" 2>/dev/null || echo "")
+    if [ "$_rf_reason" = "unit-failure" ] && [ "$_rf_unit" = "$UNIT" ] && [ -n "$_rf_ts" ]; then
+        _rf_now=$(date -u +%s)
+        _rf_then=$(date -u -d "$_rf_ts" +%s 2>/dev/null || echo 0)
+        if [[ "$_rf_then" =~ ^[0-9]+$ ]] && [ "$_rf_then" -gt 0 ] \
+            && [ $((_rf_now - _rf_then)) -lt "$SAME_UNIT_REFIRE_WINDOW_S" ]; then
+            _rf_age=$((_rf_now - _rf_then))
+            _rf_hash=$(sha256sum "$SR" 2>/dev/null | awk '{print $1}')
+            _rf_hash=${_rf_hash:-unknown}
+            echo "unit-escalation-write: skipping same-unit re-fire of '$UNIT' (age=${_rf_age}s < window=${SAME_UNIT_REFIRE_WINDOW_S}s, existing_hash=${_rf_hash:0:12} reason=$_rf_reason — already tracking this fault; do not orphan existing chain)" >&2
+            _rf_skipped=1
+        fi
+    fi
+fi
+if [ "$_rf_skipped" = "1" ]; then
+    exit 0
+fi
+
 # Atomic write under flock so concurrent failures serialize (each overwrites
 # with its own entry; the path unit fires per change; the auditor's catch-all
 # sweep then collects any other failed units via systemctl --state=failed).
