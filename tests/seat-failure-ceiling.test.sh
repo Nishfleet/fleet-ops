@@ -64,6 +64,12 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Use a small ceiling so the test does not need 60 iterations to cross it.
 export SEAT_FAILURE_CEILING=60
 export SEAT_PARK_WALL_S=86400
+# Disable the corpse reclassification threshold (fleet-ops#2594) so this test
+# proves the parking behaviour in isolation. The quota_bench case seeds
+# count=59 -> 60 which would otherwise trip the corpse branch (default 25)
+# and clear bench_until, breaking the wall assertion. The corpse path is
+# covered by tests/seat-quota-corpse.test.sh.
+export SEAT_DEAD_CONSECUTIVE_THRESHOLD=999999
 mkdir -p "$XDG_RUNTIME_DIR"
 
 cat >"$PI_MODELS_JSON" <<'JSON'
@@ -305,4 +311,4 @@ if ! seat_usable "$p" "$m"; then
 fi
 ok "6f: healthy ledger is usable regardless of count (recovered seat re-eligible)"
 
-ok "seat failure ceiling: parks past 60 consecutive failures, emits one metric, fail-opens on recovery"
+ok "seat failure ceiling: parks past SEAT_FAILURE_CEILING consecutive failures (default 20 since fleet-ops#2594, this test pins 60 for isolation), emits one metric, fail-opens on recovery"
