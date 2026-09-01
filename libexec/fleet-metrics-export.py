@@ -67,6 +67,17 @@ HELP_CB = "# HELP fleet_seat_comeback_overdue_total Number of seats still classe
 TYPE_CB = "# TYPE fleet_seat_comeback_overdue_total gauge"
 HELP_CBP = "# HELP fleet_seat_comeback_overdue 1 for each seat whose wall clock has passed but is still classed non-healthy (fleet-ops#2407)."
 TYPE_CBP = "# TYPE fleet_seat_comeback_overdue gauge"
+# fleet-ops#2638: never-probed comeback visibility. Counts seats the prober
+# has been failing on (consecutive_failure_count >= 10) without yet reaching
+# the corpse threshold (default 25). Sustained > 0 here is the loud signal
+# that the release path is firing but the seat still cannot recover — the
+# next sweep should corpse it. Combined with fleet_seat_comeback_overdue_total
+# it tells the repair worker which overdue seats are approaching the corpse
+# boundary before the bin has actually written the corpse.
+HELP_NRT = "# HELP fleet_seat_comeback_never_released_total Number of seats the comeback-release prober has been failing on (consecutive_failure_count in [10, SEAT_DEAD_CONSECUTIVE_THRESHOLD)) that are not yet corpse — the never-probed comeback visibility (fleet-ops#2638)."
+TYPE_NRT = "# TYPE fleet_seat_comeback_never_released_total gauge"
+HELP_NRP = "# HELP fleet_seat_comeback_never_released 1 for each seat whose consecutive_failure_count is in the never-released window (fleet-ops#2638)."
+TYPE_NRP = "# TYPE fleet_seat_comeback_never_released gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -1929,6 +1940,95 @@ def _read_comeback_overdue():
     return len(seats), seats
 
 
+# fleet-ops#2638: SEAT_DEAD_CONSECUTIVE_THRESHOLD mirror — the bash writer
+# (lib/seat-lib.sh) corpses quota_cap at this count; the prober
+# (bin/fleet-seat-comeback-release) corpses the same way on the overload/
+# transient/rate classes. Used by _read_never_released to define the
+# "stuck" window: a seat that has failed >= half-threshold times under
+# the prober and is NOT yet corpse is a never-probed comeback — the bin
+# has fired on it and the seat still won't recover. Exporting this as
+# a per-tick gauge makes the stuck state visible before it crosses into
+# the corpse path.
+NEVER_RELEASED_MIN_COUNT = 10  # floor for "stuck" so a healthy probe cycle
+                                # doesn't render every wall as stuck
+
+
+def _read_never_released():
+    """Seats that the prober has been failing on for a while without corpse.
+
+    fleet-ops#2638: the lived poolside/laguna (23x 503s) and opencode/mimo
+    (42x 429s) cases both sat at health_class != healthy with the prober
+    re-benching every 15 min, count climbing, the seat never recovering.
+    These are NEVER-PROBED COMEBACKS — the bin fires on them but the seat
+    never releases. The prober's corpse path (at SEAT_DEAD_CONSECUTIVE_THRESHOLD,
+    default 25) converts them to terminal corpses, but the stuck state
+    between "high count" and "corpse" was invisible. This gauge makes
+    that window visible: seats with consecutive_failure_count in
+    [NEVER_RELEASED_MIN_COUNT, SEAT_DEAD_CONSECUTIVE_THRESHOLD) that are
+    NOT corpses. Sustained > 0 here is the loud signal that the release
+    path is operating but the seat still cannot recover — the next
+    corpse write should fire. Combined with fleet_seat_comeback_overdue_total
+    it tells the repair worker which overdue seats are approaching the
+    corpse boundary.
+
+    The threshold env var defaults to 25 (matching SEAT_DEAD_CONSECUTIVE_THRESHOLD
+    in lib/seat-lib.sh, fleet-ops#2594) so the corpus threshold and the
+    stuck-window upper bound stay in lock-step.
+
+    Returns (count, [ {provider, model, health_class, count} ]).
+    Never raises on a missing/unreadable ledger.
+    """
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    try:
+        threshold = int(os.environ.get("SEAT_DEAD_CONSECUTIVE_THRESHOLD", "25"))
+    except (TypeError, ValueError):
+        threshold = 25
+    if threshold < 1:
+        threshold = 25
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue  # corpses are counted elsewhere (FleetDeadCredentialSeats)
+            if data.get("health_class") == "healthy":
+                continue  # recovered
+            try:
+                count = int(data.get("consecutive_failure_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            # "Stuck" = close to but below the corpse threshold. The lower
+            # bound (NEVER_RELEASED_MIN_COUNT, default 10) prevents the gauge
+            # from spiking on a single fresh failure; the upper bound is the
+            # corpse boundary (seat at threshold will be corpse on the next
+            # sweep and disappear from this gauge).
+            if count < NEVER_RELEASED_MIN_COUNT or count >= threshold:
+                continue
+            seats.append(
+                {
+                    "provider": data.get("provider", ""),
+                    "model": data.get("model", ""),
+                    "health_class": data.get("health_class", ""),
+                    "count": count,
+                }
+            )
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
 def _spawn_bench_active(ledger_path: Path) -> bool:
     """True if the per-seat spawn-bench marker is fresh and in the future.
 
@@ -2254,6 +2354,30 @@ def main():
         _hc = _prom_label(str(_s.get("health_class") or ""))
         lines.append(
             f'fleet_seat_comeback_overdue{{seat="{_seat_label}",health_class="{_hc}"}} 1'
+        )
+    # fleet-ops#2638: never-probed comeback visibility. A seat in this gauge
+    # means the comeback-release prober has fired on it >=10 times, the seat
+    # has not recovered, and the next sweep will corpse it. Sustained > 0 here
+    # is the loud signal that the release path is operating on a chronically
+    # failing seat — the repair worker should expect a fleet_seat_comeback_release_corpse_total
+    # increment on the next sweep and may want to inspect the provider before
+    # the next bench window. Per-seat series names each stuck seat.
+    _nr_n, _nr = _read_never_released()
+    lines.append("")
+    lines.append(HELP_NRT)
+    lines.append(TYPE_NRT)
+    lines.append(f"fleet_seat_comeback_never_released_total {_nr_n}")
+    lines.append("")
+    lines.append(HELP_NRP)
+    lines.append(TYPE_NRP)
+    for _s in _nr:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _hc = _prom_label(str(_s.get("health_class") or ""))
+        _count = int(_s.get("count") or 0)
+        lines.append(
+            f'fleet_seat_comeback_never_released{{seat="{_seat_label}",health_class="{_hc}",count="{_count}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)
