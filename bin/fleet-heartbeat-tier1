@@ -131,6 +131,12 @@
 #      and a meter-check evidence file within minutes of the first active draw.
 #      Fail loud on allowlist/routing violations; observe-to-open on the
 #      first-draw meter check.
+#  36.5 Product-ratio cache freshness (fleet-ops#2595). fleet-queue-
+#      product-ratio.prom mtime must be <30 min; a stale or missing file
+#      means the queue-composition-cache is dead and the product-first
+#      precedence (fleet-ops#2519) is silently failing open every tick.
+#      Loud + tier-1 fail when stale, so the silent-fail-open regression
+#      can never burn 48h of alert cycles again.
 #  37. AIMD leftover-meter canary (fleet-ops#424). Every tick, prove the
 #      AIMD reader still lives in seat-lib.sh. If the code vanishes and
 #      learned-caps-audit.log remains, go LOUD and auto-file so a leftover
@@ -2336,6 +2342,60 @@ else
 fi
 
 # ============================================================================
+# 36.5 PRODUCT-RATIO CACHE FRESHNESS (fleet-ops#2595)
+# ============================================================================
+# fleet-ops#2519 + #2539 ship a product-first precedence band that HOLDs
+# the self-maintenance repo when the queue self-maintenance ratio > 0.5.
+# The hold is observable (a fleet_queue_product_ratio gauge is exported
+# best-effort by the intake tick), but the implementation fails OPEN when
+# the queue-composition-cache is unavailable — which is the correct
+# posture for a dead metrics exporter (the fleet must never freeze). The
+# same fail-open posture is also the failure mode that makes a stuck
+# exporter invisible: if the cache stops refreshing, the hold silently
+# admits every tick and the self-maintenance ratio stays pinned at ~0.78
+# without the precedence ever engaging. The shipped PR has no live-cache
+# verification step.
+#
+# This block closes that hole: every tick, the heartbeat stat()s the
+# merged product-ratio prom. If the file is missing OR its mtime is older
+# than PRODUCT_RATIO_CACHE_FRESHNESS_S (default 1800s = 30 min, 1x the
+# heartbeat cadence with a 50% safety margin), the cache is presumed
+# dead and the heartbeat fails LOUD. Without this guard, the
+# FleetQueueSelfMaintenanceRatioHigh alert fires for 48h+ with the
+# precedence silently failing open the whole time (NISH-ESCALATIONS.md
+# 2026-08-30T13:30Z through 2026-08-31T18:30Z, 6 entries in 30h).
+#
+# Fail-loud = the unit lands in --state=failed, unit-escalation picks it
+# up, the heartbeat tier-2 surface sees the regression. The prom is
+# best-effort and may be absent on a fresh boot; a hard `requires install`
+# would be brittle (the file lands in MANIFEST only after #2539 ships),
+# so a missing prom is also a fail (the precedence is observable, and
+# a missing observable is itself drift). The threshold is overridable via
+# PRODUCT_RATIO_CACHE_FRESHNESS_S so a test or a longer heartbeat cadence
+# can pin it.
+product_ratio_prom="${PRODUCT_RATIO_PROM_PATH:-/var/lib/prometheus/node-exporter/fleet-queue-product-ratio.prom}"
+product_ratio_freshness_s="${PRODUCT_RATIO_CACHE_FRESHNESS_S:-1800}"
+product_ratio_cache_rc=0
+if [ -f "$product_ratio_prom" ]; then
+    product_ratio_mtime=$(stat -c %Y "$product_ratio_prom" 2>/dev/null || echo 0)
+    product_ratio_now=$(date -u +%s)
+    product_ratio_age=$((product_ratio_now - product_ratio_mtime))
+    if [ "$product_ratio_age" -gt "$product_ratio_freshness_s" ]; then
+        loud "PRECEDENCE-BAND-CACHE-STALE" \
+            "fleet-queue-product-ratio.prom age=${product_ratio_age}s exceeds threshold ${product_ratio_freshness_s}s (path=$product_ratio_prom) — queue-composition-cache is dead, product-first precedence is silently failing open; the self-maintenance ratio hold is not engaging"
+        log "36.5. product-ratio cache STALE age=${product_ratio_age}s threshold=${product_ratio_freshness_s}s"
+        product_ratio_cache_rc=1
+    else
+        log "36.5. product-ratio cache fresh (age=${product_ratio_age}s threshold=${product_ratio_freshness_s}s)"
+    fi
+else
+    loud "PRECEDENCE-BAND-CACHE-MISSING" \
+        "fleet-queue-product-ratio.prom missing at $product_ratio_prom — queue-composition-cache is absent, product-first precedence is silently failing open"
+    log "36.5. product-ratio cache MISSING path=$product_ratio_prom"
+    product_ratio_cache_rc=1
+fi
+
+# ============================================================================
 # 37. AIMD LEFTOVER-METER CANARY (fleet-ops#424)
 # ============================================================================
 # Every tick, prove the AIMD reader still lives in seat-lib.sh. If the code
@@ -2541,7 +2601,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -2666,6 +2726,14 @@ if [ "${quality_ratchet_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${precedence_band_canary_rc:-0}" -ne 0 ]; then
     exit "$precedence_band_canary_rc"
+fi
+# product-ratio cache freshness (fleet-ops#2595): a stale or missing
+# fleet-queue-product-ratio.prom means the queue-composition-cache is dead
+# and the product-first precedence is silently failing open every tick. Fail
+# loud so the unit lands in --state=failed and unit-escalation surfaces the
+# regression — a dead exporter must not sit silent for 48h again.
+if [ "${product_ratio_cache_rc:-0}" -ne 0 ]; then
+    exit "$product_ratio_cache_rc"
 fi
 if [ "${aimd_canary_rc:-0}" -ne 0 ]; then
     exit "$aimd_canary_rc"
