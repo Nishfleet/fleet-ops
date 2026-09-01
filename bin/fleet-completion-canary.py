@@ -584,7 +584,8 @@ def append_redispatch_log(name: str, hop: str, seat: str, reason: str) -> None:
         log(f"WARN: actions.log append failed: {exc}")
 
 
-def take_ladder(chain: dict, hop: str, age: int, state: dict) -> str:
+def take_ladder(chain: dict, hop: str, age: int, state: dict,
+                now: datetime) -> str:
     name = chain["alertname"]
     synthetic = name in SYNTHETIC
     stall_count = int(state.get("stall_count") or 0)
@@ -599,16 +600,51 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict) -> str:
         # the senior conference — instead of parking the chain at "already"
         # forever, which left FleetMainRed stuck through endless rc=0
         # redispatches that never turned main green.
-        if prev_ladder == "redispatch" and hop in {"dispatch", "run"}:
-            write_stop_reason(chain, hop, age)
-            loud("UNREPAIRED-FAIL",
-                 f"alertname={name} hop={hop} age={age}s — redispatch no-op: "
-                 f"alert still firing after rc=0 redispatch; STOP-REASON "
-                 f"alert-repair-stalled (senior conference)")
-            state["ladder"] = "stop-reason"
-            state["hop"] = hop
-            state["age"] = age
-            return "stop-reason"
+        # fleet-ops#2651: the no-op-redispatch test must apply at hop=verify
+        # too. A unit that exits per the packet EXIT CONTRACT (alert still
+        # firing) and is then --collect unloaded reads as SUCCESS from a
+        # Started-only journal (fleet-ops#2100), so the chain hops run ->
+        # verify after the redispatch. The old hop restriction parked such a
+        # chain at "already" with no STOP-REASON, no verify deadline and no
+        # terminal — a permanent verify stall that kept FleetChainStalled
+        # red through endless re-derivations of the same verdict (live:
+        # FleetQueueSelfMaintenanceRatioHigh after the 12:22Z redispatch,
+        # 2026-09-01). Escalate instead; the verify_deadline_ts marker then
+        # drains it as detector-red via the #1610 path.
+        if prev_ladder == "redispatch" and hop in {"dispatch", "run", "verify"}:
+            # fleet-ops#2651: if the class is parked (decision_class_until in
+            # the future), the park IS the escalation verdict — re-summoning
+            # the senior conference per redispatch would re-open the churn
+            # loop this field exists to break. For hop=verify the chain still
+            # drains quietly: the zero-grace verify_deadline_ts (set below by
+            # the #1610 block) terminates it as detector-red + cooldown, and
+            # the re-park guard (fleet-ops#2397) holds it drained until the
+            # park expiry re-opens the bounded nag. For dispatch/run (no
+            # deadline rail) the stop-reason stays — park or not.
+            parked = hop == "verify"
+            if parked:
+                class_until = state.get("decision_class_until")
+                if class_until:
+                    class_dt = parse_iso(str(class_until))
+                    if class_dt is None or not (now < class_dt):
+                        parked = False
+                else:
+                    parked = False
+            if not parked:
+                write_stop_reason(chain, hop, age)
+                loud("UNREPAIRED-FAIL",
+                     f"alertname={name} hop={hop} age={age}s — redispatch no-op: "
+                     f"alert still firing after rc=0 redispatch; STOP-REASON "
+                     f"alert-repair-stalled (senior conference)")
+                state["ladder"] = "stop-reason"
+                state["hop"] = hop
+                state["age"] = age
+                if hop == "verify":
+                    state["verify_deadline_ts"] = iso(now_dt())
+                return "stop-reason"
+            log(f"chain {name} redispatch no-op at verify, class parked "
+                f"until {state.get('decision_class_until')} — no re-summon; "
+                f"verify deadline drains")
         log(f"chain {name} already laddered ({prev_ladder}); metrics only")
         return "already"
 
@@ -1575,7 +1611,7 @@ def main() -> int:
                     # before the deadline feature existed). Drain at next tick by
                     # setting a deadline of now (zero-grace).
                     state["verify_deadline_ts"] = iso(now)
-            action = take_ladder(decision, hop, decision["age"], state)
+            action = take_ladder(decision, hop, decision["age"], state, now)
             if action != "already":
                 state["stall_count"] = int(state.get("stall_count") or 0) + 1
                 state["ladder"] = action
