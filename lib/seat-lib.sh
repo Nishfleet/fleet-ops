@@ -470,6 +470,63 @@ provider_quota_bench_default() {
     echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
 }
 
+# --- wall ceiling: the provider's real reset horizon (fleet-ops#2563) -------
+# A vendor can advertise a reset window far longer than its own quota cycle.
+# Live: cline/cline-pass/minimax-m3 came back HTTP 402 with
+# retry_after=1530000 (17.7 days), so the ledger was written
+# usable_at=2026-09-19 from a provider whose seat-caps.json row declares
+# quota_window="weekly". A 19-day wall on a weekly-resetting seat is not a
+# quota window; it is a seat frozen for three reset cycles, and nothing else
+# bounds it (consecutive_failure_count was 6, nowhere near
+# SEAT_FAILURE_CEILING=20, so the failure-ceiling park never engages).
+#
+# The bound already exists in config as `quota_window` — it was loaded into
+# SEAT_PROVIDER_QUOTA_WINDOW and read by exactly one consumer (_prepaid_paced,
+# weekly-pace only). This turns it into the wall ceiling too, so no new config
+# key is needed: a provider that declares its reset cycle gets its walls capped
+# at one cycle and is re-probed at that cadence instead of frozen for the whole
+# vendor-claimed countdown. A provider with no quota_window keeps the legacy
+# behaviour (0 = no ceiling).
+#
+# The ceiling is a RE-PROBE CADENCE, not a claim the quota reset: seat_usable
+# fail-opens after the wall, the probe either works or re-benches for one more
+# cycle. Cost of being wrong is one failed probe per cycle; cost of honouring
+# the vendor number is a dead seat for weeks.
+provider_wall_ceiling_s() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    case "${SEAT_PROVIDER_QUOTA_WINDOW[$p]:-}" in
+        hourly)  echo 3600 ;;
+        daily)   echo 86400 ;;
+        weekly)  echo 604800 ;;
+        monthly) echo 2678400 ;;   # 31d — the longest real monthly cycle
+        *)       echo 0 ;;
+    esac
+}
+
+# Echo the effective wall ISO timestamp for a provider, capped at the
+# provider's reset horizon measured from <anchor> (the marker's observed_at,
+# or now when that is empty/unparseable). Echoes <wall> unchanged when the
+# provider declares no quota_window, when either timestamp will not parse, or
+# when the wall is already inside the horizon. Never widens a wall.
+_wall_capped_at_horizon() {
+    local p="$1" anchor="$2" wall="$3"
+    local ceil wall_s anchor_s max_s
+    ceil=$(provider_wall_ceiling_s "$p")
+    if [[ ! "$ceil" =~ ^[0-9]+$ ]] || (( ceil <= 0 )); then printf '%s' "$wall"; return 0; fi
+    wall_s=$(date -u -d "$wall" +%s 2>/dev/null || echo 0)
+    [[ "$wall_s" =~ ^[0-9]+$ ]] && (( wall_s > 0 )) || { printf '%s' "$wall"; return 0; }
+    anchor_s=0
+    [[ -n "$anchor" ]] && anchor_s=$(date -u -d "$anchor" +%s 2>/dev/null || echo 0)
+    [[ "$anchor_s" =~ ^[0-9]+$ ]] && (( anchor_s > 0 )) || anchor_s=$(date -u +%s)
+    max_s=$(( anchor_s + ceil ))
+    if (( wall_s > max_s )); then
+        date -u -d "@$max_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$wall"
+        return 0
+    fi
+    printf '%s' "$wall"
+}
+
 # Default bench window (seconds) for a provider's 503/upstream-overload storm
 # when the error text carries no Retry-After / reset window (fleet-ops #652
 # 2026-08-27 hot-patch). Mirrors provider_quota_bench_default: 0 = no default
@@ -1307,6 +1364,20 @@ seat_usable() {
     # quota_bench BEFORE stale-observed_at: bench_until is the source of truth
     # for the advertised reset window, which can outlive STALE_SECS.
     if [[ "$hc" == "quota_bench" ]]; then
+        # fleet-ops#2563: the read side caps too. quota_bench markers are also
+        # written by the OUT-OF-REPO seat-health extension straight from the
+        # vendor's Retry-After (live: 1530000s = 17.7d on a weekly-resetting
+        # provider), so the write-side cap above cannot reach them. Same fence
+        # shape as the #2288 transient_fault park: hold the seat only to the
+        # provider's reset horizon, then fail open and re-probe.
+        if [[ -n "$bench_until" ]]; then
+            local capped_bench
+            capped_bench=$(_wall_capped_at_horizon "$p" "$observed" "$bench_until")
+            if [[ "$capped_bench" != "$bench_until" ]]; then
+                seat_log "seat $p/$m: quota_bench wall $bench_until CAPPED to $capped_bench (provider reset horizon from quota_window — re-probe cadence, fleet-ops#2563)"
+                bench_until="$capped_bench"
+            fi
+        fi
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
             (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
             return 1
@@ -3656,6 +3727,18 @@ mark_seat_quota_bench() {
     local window_s=0 parsed
     parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
     [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    # fleet-ops#2563: a parsed vendor window longer than the provider's own
+    # reset cycle is capped at one cycle (see provider_wall_ceiling_s). Done
+    # before the provider-default fallback so a capped-to-zero case cannot
+    # happen: the ceiling is always > 0 when it applies.
+    if (( window_s > 0 )); then
+        local ceil_s
+        ceil_s=$(provider_wall_ceiling_s "$p")
+        if [[ "$ceil_s" =~ ^[0-9]+$ ]] && (( ceil_s > 0 )) && (( window_s > ceil_s )); then
+            seat_log "quota-bench: $p/$m window ${window_s}s CAPPED to ${ceil_s}s (provider reset horizon from quota_window — re-probe cadence, fleet-ops#2563)"
+            window_s="$ceil_s"
+        fi
+    fi
     if (( window_s <= 0 )); then
         local def
         def=$(provider_quota_bench_default "$p")
