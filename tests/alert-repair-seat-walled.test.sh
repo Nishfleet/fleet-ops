@@ -18,6 +18,13 @@
 #      per-seat ledger rather than parking on a walled seat.
 #   4. When every seat is walled or excluded, --print-seat exits 2 (the
 #      caller escalates instead of dispatching into a wall).
+#   5. A held wrapper spawn-bench sibling (empty-run/spawn-fail marker,
+#      fleet-ops#1512) walls a seat whose LEDGER says healthy — the verify
+#      hop must refuse to re-seat onto a seat inside an empty-run cooldown
+#      (fleet-ops#2672: openrouter/deepseek/deepseek-v4-flash-0731 picked as
+#      "healthy" at 15:22:13Z while benched for a 0B-stdout no-op run).
+#   6. An expired spawn-bench marker does NOT wall the seat (fail-open,
+#      mirroring seat_usable's release at usable_at).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -94,6 +101,44 @@ set -e
 grep -q 'WALLED' "$scratch/err" \
     || fail "expected WALLED on stderr, got: $(cat "$scratch/err")"
 ok "all seats walled/excluded -> exit 2 (escalate, don't dispatch into a wall)"
+
+# --- 5. held spawn-bench sibling walls a ledger-healthy seat ----------------
+# fleet-ops#2672: the wrapper's spawn-bench marker is clobber-proof; the
+# seat-health extension re-writes the LEDGER to healthy on a 200 OK, so only
+# the sibling carries the empty-run bench. The dispatcher must refuse seats
+# inside an empty-run cooldown the same way seat_usable does — the 15:22:13Z
+# verify-hop REDISPATCH picked openrouter/deepseek/deepseek-v4-flash-0731
+# "reason=healthy" while its spawn-bench was held (0B stdout, provider no-op
+# at 14:11:19Z).
+rm -rf "$scratch/seats" && mkdir -p "$scratch/seats"
+cat >"$scratch/pi-seat-health.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","health_class":"healthy","observed_at":"$NOW"}
+EOF
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","health_class":"healthy","observed_at":"$NOW","usable_at":null}
+EOF
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.spawn-bench.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","usable_at":"$FUTURE","reason":"empty_run","written_at":"$NOW"}
+EOF
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat)
+[[ "$out" == "devin	glm-5-2	fallback" ]] \
+    || fail "ledger-healthy seat with held spawn-bench must be skipped for fallback, got: $out"
+ok "held spawn-bench sibling walls a ledger-healthy seat (empty-run cooldown respected)"
+
+# --- 6. expired spawn-bench marker does NOT wall the seat -------------------
+# Fail-open once the bench window passes: seat_usable releases the seat at
+# usable_at, and the dispatcher must match (an expired marker means the
+# seat-health extension observed a healthy recovery after the bench).
+PAST=$(date -u -d "-1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.spawn-bench.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","usable_at":"$PAST","reason":"empty_run","written_at":"$PAST"}
+EOF
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat)
+[[ "$out" == "openrouter	deepseek/deepseek-v4-flash-0731	healthy" ]] \
+    || fail "expired spawn-bench marker must release the seat (fail-open), got: $out"
+ok "expired spawn-bench marker releases the seat (fail-open)"
 # --- 5. provider-overload wedge (fleet-ops#2661) ------------------------------
 export ALERT_REPAIR_NO_SPAWN=1
 # A provider with >=2 seats in overload_bench within the trailing 30 min is
