@@ -137,8 +137,8 @@ _sanitise() {
 
 read_seat_field() {
     local np="$1" nm="$2" field="$3"
-    local f="$SEAT_HEALTH_DIR/$(_sanitise "$np")__$(_sanitise "$nm").json"
-    local v
+    local f v
+    f="$SEAT_HEALTH_DIR/$(_sanitise "$np")__$(_sanitise "$nm").json"
     if [[ -f "$f" ]] && v=$(jq -er --arg fld "$field" '.[$fld] // empty' "$f" 2>/dev/null); then
         printf '%s\n' "$v"
         return 0

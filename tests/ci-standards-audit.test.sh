@@ -361,6 +361,16 @@ bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 # .github/workflows/**).
 bash "$here/fleet-ops-2462-claim-cap.test.sh"
 
+# fleet-ops#2666: 0B-stdout empty-run burst on healthy seats — the 2h
+# burst signal the #902 24h waste-ratio gauge masks (2026-09-01 12:48Z-
+# 14:11Z: empty_runs_last_2h 0 -> 6 on minimax/MiniMax-M3 + openrouter/
+# deepseek-v4-flash-0731, both healthy seats). The 16-scenario offline
+# suite proves the burst gate, cause classification, healthy-seat
+# bucketing, dedup, and observe-to-close. Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/fleet-empty-run-burst-canary.test.sh"
+
 # fleet-ops#2627: empty-run count must accumulate across healthy ledger
 # clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
 # wrapper's mark_seat_empty_run must carry the count in the clobber-proof
