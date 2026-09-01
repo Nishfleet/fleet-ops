@@ -170,6 +170,8 @@ declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_MODEL_CLASS=()
 declare -A SEAT_PROVIDER_CLASS=()
 declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
+# fleet-ops#2563: upper bound on the quota_bench window per provider. Absent
+declare -A SEAT_PROVIDER_BENCH_MAX=()
 # fleet-ops 2026-08-27 #652 hot-patch: 503-overload bench defaults per provider.
 # Distinct from SEAT_PROVIDER_BENCH_DEFAULT (quota/cap wall): overload is a
 # transient "upstream provider is temporarily unavailable" that the existing
@@ -288,16 +290,17 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
+    local p m cap class bench_def bench_max max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def bench_max max_probe hard reason icz; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
         [[ "$class" == "subscription" ]] && class="prepaid-quota"
         SEAT_PROVIDER_CLASS["$p"]="$class"
         [[ "$bench_def" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_BENCH_DEFAULT["$p"]="$bench_def"
+        [[ "$bench_max" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_BENCH_MAX["$p"]="$bench_max"
         # AIMD bounds (fleet-ops#217/#424). max_probe_ceiling absent -> ""
         # -> max_probe_ceiling() returns the declared cap (no upward probe).
         [[ "$max_probe" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_MAX_PROBE["$p"]="$max_probe"
@@ -321,9 +324,12 @@ load_seat_caps() {
     # back to the (inflated) RAM governor. Normalise by type first.
     # quota_bench_default_s (fleet-ops#90) is optional; absent -> empty ->
     # provider_quota_bench_default returns 0 (no default, writer fails open).
+    # quota_bench_max_s (fleet-ops#2563) is an optional upper bound on the
+    # quota_bench window (absent -> "" -> provider_quota_bench_max returns 0
+    # -> no cap).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.quota_bench_max_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\t' read -r p m cap class; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -468,6 +474,19 @@ provider_quota_bench_default() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
+}
+
+# Upper bound (seconds) on the quota_bench window for a provider
+# (fleet-ops#2563). Optional; 0 = no cap (writer trusts the parsed
+# vendor window / provider default as-is). Lets the operator cap a
+# vendor-claimed multi-week countdown ("resets in 19d 2h" from a
+# ClinePass monthly-limit 429) at the provider's real reset horizon
+# so the seat re-probes at at most that cadence instead of freezing for the
+# whole (possibly stale/erratic) vendor window.
+provider_quota_bench_max() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    echo "${SEAT_PROVIDER_BENCH_MAX[$p]:-0}"
 }
 
 # Default bench window (seconds) for a provider's 503/upstream-overload storm
@@ -3511,6 +3530,20 @@ mark_seat_quota_bench() {
         local def
         def=$(provider_quota_bench_default "$p")
         [[ "$def" =~ ^[0-9]+$ ]] && window_s="$def"
+    fi
+
+    # fleet-ops#2563: cap the window at the provider's real reset horizon.
+    # A vendor-claimed multi-week countdown ("resets in 19d 2h" from
+    # ClinePass's monthly-limit 429) must not bench a seat for weeks past
+    # the fleet's model of the provider's quota window — the count (6) is
+    # nowhere near the failure ceiling, so no other bound applies. A
+    # provider with quota_bench_max_s set re-probes at at most that cadence;
+    # absent -> no cap (legacy behaviour preserved).
+    local mx
+    mx=$(provider_quota_bench_max "$p")
+    if [[ "$mx" =~ ^[0-9]+$ ]] && (( mx > 0 )) && (( window_s > mx )); then
+        seat_log "quota-bench: $p/$m window ${window_s}s CAPPED to ${mx}s (quota_bench_max_s — real reset horizon; re-probe cadence)"
+        window_s="$mx"
     fi
 
     if (( window_s <= 0 )); then

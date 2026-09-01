@@ -53,6 +53,7 @@
       "class": "prepaid-quota",
       "quota_window": "weekly",
       "quota_bench_default_s": 604800,
+      "quota_bench_max_s": 604800,
       "models": {
         "cline-pass/minimax-m3": 2,
         "cline-pass/deepseek-v4-flash": 2,
