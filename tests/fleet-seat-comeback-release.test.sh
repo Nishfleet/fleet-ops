@@ -555,4 +555,191 @@ jq -e '.providers.straitly == null' "$LEARNED" >/dev/null \
 grep -q "OVERLOAD WALL commandcode" "$TMPD/wall.err.4" \
   || fail "overload-wall:the 4th sweep must log OVERLOAD WALL: $(cat "$TMPD/wall.err.4")"
 ok "4 overload strikes within  2h -> exponential provider-wide wall via learned-caps.bench_until"
-echo "ALL OK: active come-back release path (fleet-ops#2421)"
+
+# --- 9. fleet-ops#2638: force probe on overdue usable_at (unstick) -------
+# The lived 2026-09-01T09:45Z heartbeat case: a seat had usable_at past but
+# bench_until was held by a recent re-bench (the prober's own re-bench
+# write). The prober was skipping it because wall_end_of prefers bench_until;
+# the re-bench loop held the seat indefinitely. The fix: track usable_at
+# SEPARATELY from bench_until; an overdue usable_at forces a real probe
+# even when bench_until is held. Same cadence as a normal re-bench cycle
+# (a probe every bench window) — but the probe ACTUALLY FIRES instead of
+# being silently skipped. A successful probe unwalls; a failed probe
+# re-benches again.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"comeback_release_rebench","failure_mode":"overload_503","bench_until":"2026-08-30T13:00:00Z","usable_at":"2026-08-30T10:00:00Z","bench_window_s":900,"consecutive_failure_count":15}
+EOF
+STATE="$TMPD/state-force-util.json"
+PROM="$TMPD/release-force-util.prom"
+out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" --dry-run 2>&1)
+grep -q "force probe commandcode/poolside/laguna-s-2.1-free" <<<"$out" \
+  || fail "force-util: must log the force-probe line: $out"
+grep -q "usable_at 2026-08-30T10:00:00Z past, bench_until 2026-08-30T13:00:00Z held by re-bench" <<<"$out" \
+  || fail "force-util: must name both clocks and the held bench_until: $out"
+grep -q "would probe commandcode/poolside/laguna-s-2.1-free" <<<"$out" \
+  || fail "force-util: must actually probe (dry-run): $out"
+ok "force probe: usable_at past + bench_until held -> prober fires anyway (fleet-ops#2638)"
+
+# --- 9b. force probe succeeds: overdue usable_at seat unwalled ----------
+# Live run with the same fixture: the prober should fire and unwall.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"comeback_release_rebench","failure_mode":"overload_503","bench_until":"2026-08-30T13:00:00Z","usable_at":"2026-08-30T10:00:00Z","bench_window_s":900,"consecutive_failure_count":15}
+EOF
+STATE="$TMPD/state-force-ok.json"
+PROM="$TMPD/release-force-ok.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/force-ok.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "force-util-ok: expected exit 0 (released), got $rc ($(cat "$TMPD/force-ok.err"))"
+grep -q "force probe commandcode/poolside/laguna-s-2.1-free" "$TMPD/force-ok.err" \
+  || fail "force-util-ok: must log the force-probe line: $(cat "$TMPD/force-ok.err")"
+health=$(jq -r '.health_class' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+[[ "$health" == "healthy" ]] || fail "force-util-ok: seat must be unwalled (healthy), got $health"
+released_total=$(jq -r '.released_total' "$STATE")
+[[ "$released_total" == "1" ]] || fail "force-util-ok: released_total must be 1, got $released_total"
+ok "force probe succeeds: overdue usable_at seat unwalled, released_total=1 (fleet-ops#2638)"
+
+# --- 10. fleet-ops#2638: corpse at SEAT_DEAD_CONSECUTIVE_THRESHOLD -------
+# The lived mimo-42x-429s and poolside-23x-503s case: probes fail,
+# consecutive_failure_count climbs past the threshold, but the prober
+# never wrote seat_dead=true — the seat kept re-benching forever. The
+# fix: after re-bench, if the count has crossed the threshold, write
+# seat_dead=true with cleared wall clocks (fleet-ops#2415 convention).
+# seat_usable already holds seat_dead=true terminally (fleet-ops#2327),
+# so the next sweep skips the seat entirely. Test pins the boundary: a
+# seat at count=24 + a failed probe -> count becomes 25 -> corpse.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":24}
+EOF
+STATE="$TMPD/state-corpse.json"
+PROM="$TMPD/release-corpse.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/corpse.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "corpse: expected exit 0 (corpsed, not loud), got $rc ($(cat "$TMPD/corpse.err"))"
+grep -q "REBENCHED commandcode/poolside/laguna-s-2.1-free" "$TMPD/corpse.err" \
+  || fail "corpse: must log REBENCHED first (the failed probe re-benches): $(cat "$TMPD/corpse.err")"
+grep -q "CORPSED commandcode/poolside/laguna-s-2.1-free" "$TMPD/corpse.err" \
+  || fail "corpse: must log CORPSED after the re-bench crosses threshold: $(cat "$TMPD/corpse.err")"
+# Ledger: seat_dead=true, health_class=corpse, wall clocks cleared,
+# source=comeback_release_corpse, count=25 (one above the start of 24).
+jq -e '.seat_dead == true and .health_class == "corpse" and .bench_until == null and .usable_at == null and .source == "comeback_release_corpse" and .failure_mode == "comeback_never_released" and .consecutive_failure_count == 25' \
+  "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
+  || fail "corpse: ledger must be seat_dead=true, wall cleared, count=25: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
+# Corpse is terminal: a follow-up sweep must skip it (no re-probe, no
+# re-corpsed log, no corpse_total advance).
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/corpse-followup.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "corpse follow-up: expected exit 0 (skipped), got $rc"
+grep -q "CORPSED" "$TMPD/corpse-followup.err" && fail "corpse follow-up: must NOT re-corpsed (terminal): $(cat "$TMPD/corpse-followup.err")"
+grep -qi "poolside" "$TMPD/corpse-followup.err" && fail "corpse follow-up: must not mention poolside at all (terminal skip): $(cat "$TMPD/corpse-followup.err")"
+# corpse_total + never-released metric cleared (the corpse is no longer
+# stuck — it's terminal).
+corpse_total=$(jq -r '.corpse_total // 0' "$STATE")
+[[ "$corpse_total" == "1" ]] || fail "corpse: corpse_total must be 1, got $corpse_total"
+grep -q "^fleet_seat_comeback_release_corpse_total 1$" "$PROM" \
+  || fail "corpse: prom corpse_total must be 1: $(cat "$PROM")"
+ok "corpse at threshold: c=24 + failed probe -> c=25 corpse write, terminal skip on next sweep (fleet-ops#2638)"
+
+# --- 11. fleet-ops#2638: corpse does NOT fire below threshold ------------
+# Pin the boundary: a seat at count=23 + failed probe -> count becomes 24
+# (< 25) -> re-bench only, NO corpse. Mirrors fleet-ops#2594's corpse-
+# boundary contract: only at or above threshold does seat_dead=true land.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":23}
+EOF
+STATE="$TMPD/state-no-corpse.json"
+PROM="$TMPD/release-no-corpse.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/no-corpse.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "no-corpse: expected exit 0 (re-benched, not loud), got $rc ($(cat "$TMPD/no-corpse.err"))"
+grep -q "REBENCHED" "$TMPD/no-corpse.err" \
+  || fail "no-corpse: must log REBENCHED: $(cat "$TMPD/no-corpse.err")"
+grep -q "CORPSED" "$TMPD/no-corpse.err" \
+  && fail "no-corpse: must NOT log CORPSED (below threshold): $(cat "$TMPD/no-corpse.err")"
+health=$(jq -r '.health_class' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+[[ "$health" == "overload_bench" ]] || fail "no-corpse: seat must STAY overload_bench (not corpse), got $health"
+dead=$(jq -r '.seat_dead' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+[[ "$dead" == "false" ]] || fail "no-corpse: seat_dead must stay false (below threshold), got $dead"
+count=$(jq -r '.consecutive_failure_count' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+[[ "$count" == "24" ]] || fail "no-corpse: count must be 24 (one above 23), got $count"
+ok "no corpse below threshold: c=23 + failed probe -> c=24 re-bench only, NO corpse (fleet-ops#2638)"
+
+# --- 12. fleet-ops#2638: never-released metric over a scratch ledger ----
+# The metric-exporter's _read_never_released identifies seats the prober
+# has been failing on (consecutive_failure_count in [10, 25)) that are
+# NOT corpses yet. Pin the shape against the real exporter function on
+# the SAME scratch ledger the bin operates on — same pattern as test 6
+# (fleet-ops#2520) which pins the comeback-overdue count clear path.
+# A scratch ledger with three seats verifies the boundaries:
+#   - count=5  (below 10): NOT never-released (fresh single failure).
+#   - count=15 (in [10,25)): IS never-released (the lived poolside case).
+#   - count=24 (in [10,25)): IS never-released (the lived mimo case).
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","consecutive_failure_count":15}
+EOF
+cat > "$SEATDIR/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v-2.5-free","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:00:00Z","source":"provider_fetch","failure_mode":"rate_limit","usable_at":"2026-08-30T09:30:21.000Z","consecutive_failure_count":24}
+EOF
+cat > "$SEATDIR/cline__z-ai_glm-5.3-flash.json" << 'EOF'
+{"provider":"cline","model":"z-ai/glm-5.3-flash","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"none","consecutive_failure_count":0}
+EOF
+# never_released_n() over $SEATDIR (mirrors tests 6's overdue_n()).
+never_released_n() {
+    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$SEATDIR" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.SEAT_LEDGER = Path(sys.argv[2])
+nr_n, _ = m._read_never_released()
+print(nr_n)
+PY
+}
+nr=$(never_released_n)
+[[ "$nr" == "2" ]] \
+  || fail "never-released: must count 2 stuck seats (poolside c=15, mimo c=24; healthy glm excluded), got $nr"
+ok "never-released metric: 2 stuck seats counted (poolside+mimo), healthy seat excluded (fleet-ops#2638)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638)"

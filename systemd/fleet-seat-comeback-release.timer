@@ -3,15 +3,25 @@
 #
 # Runs every 15 minutes, aligned with seat-caps.json
 # walled_comeback.min_probe_interval_s=900. A walled seat whose wall clock
-# (bench_until ?? usable_at) has passed is re-probed with a 1-token
-# "Reply with exactly: OK" dispatch; a provably-usable seat is UNWALLED
-# (healthy observation written to the ledger); a failed probe stays walled
-# and the seat-health extension re-anchors the wall. A sweep that finds
-# expired walls and releases nothing exits 1 (the stalled loud check).
-# A run with nothing to do exits 0 (not a failure).
+# (bench_until ?? usable_at) has passed is re-probed with a TOOL-USING
+# bash-compute probe (pi --print "Run `echo $((6*7))` via the bash tool and
+# reply with the integer it prints") so a partial 503 storm that answers
+# inline but 503s on tool loading stays walled (fleet-ops#2661). A
+# provably-usable seat is UNWALLED (healthy observation written to the
+# ledger); a failed probe re-benches the wall (fleet-ops#2493) and
+# increments the seat's consecutive_failure_count. fleet-ops#2638: when
+# usable_at has passed but bench_until is held by a recent re-bench the
+# prober forces a real probe so the re-bench loop cannot hold a chronically-
+# failing seat indefinitely; once consecutive_failure_count crosses
+# SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25) the seat is CORPSED (seat_dead=true,
+# wall clocks cleared) — the fleet-ops#2415/#2422 terminal convention
+# seat_usable already holds. The never-probed-comeback visibility
+# (fleet_seat_comeback_never_released_total, fleet-ops#2638) is exported
+# per-tick. A sweep that finds expired walls and releases nothing exits 1
+# (the stalled loud check). A run with nothing to do exits 0 (not a failure).
 
 [Unit]
-Description=Active come-back release for walled seats (fleet-ops#2421)
+Description=Active come-back release for walled seats (fleet-ops#2421 + #2638 corpse-on-threshold)
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/2421
 Requires=fleet-seat-comeback-release.service
 
