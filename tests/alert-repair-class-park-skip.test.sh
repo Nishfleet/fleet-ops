@@ -14,6 +14,18 @@
 # auditor via OnFailure.
 #
 # What we prove (hermetic, no live 9090/systemd):
+#
+# HERMETICITY (repair worker 2026-09-01T13:0xZ): this file used to claim it was
+# hermetic while actually spawning REAL pi-systemd-run units for the fixture
+# alertnames below. Redirecting PACKET_DIR/CLASS_PARK_DIR/SEAT_*/CLAIM_BIN was
+# not enough — the dispatcher had no spawn guard, so scenarios 1, 3 and 4 each
+# started a live worker that was handed a packet for an alert with no Prometheus
+# rule. Those workers could not resolve it, exited non-zero, and re-summoned the
+# senior auditor via OnFailure — who ran this test again. 100+ phantom packets
+# and 4 concurrent phantom workers accumulated on 2026-08-31..09-01. Note that
+# a PATH stub cannot fix this: the dispatcher prepends $HOME/.local/bin, so the
+# real pi-systemd-run always wins. ALERT_REPAIR_NO_SPAWN is exported below and
+# MUST stay exported for every invocation in this file.
 #   1. CLASS_PARK_DIR absent + no state file -> dispatch proceeds (must
 #      NOT block every dispatch on a missing dir; fail-open posture).
 #   2. State file with decision_class_until in the future -> SKIP
@@ -38,6 +50,12 @@ python3 -m py_compile "$dispatch_bin" || fail "py_compile failed"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/packets" "$scratch/park"
+
+# Make this test genuinely hermetic: render packets and log decisions, but never
+# start a systemd unit. Exported once so every $dispatch_bin invocation below
+# (and any scenario added later) inherits it. Removing this line resurrects the
+# phantom-worker amplification loop described in the header.
+export ALERT_REPAIR_NO_SPAWN=1
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 FUTURE=$(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
