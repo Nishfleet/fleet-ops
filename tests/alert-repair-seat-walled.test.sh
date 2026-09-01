@@ -94,3 +94,72 @@ set -e
 grep -q 'WALLED' "$scratch/err" \
     || fail "expected WALLED on stderr, got: $(cat "$scratch/err")"
 ok "all seats walled/excluded -> exit 2 (escalate, don't dispatch into a wall)"
+# --- 5. provider-overload wedge (fleet-ops#2661) ------------------------------
+export ALERT_REPAIR_NO_SPAWN=1
+# A provider with >=2 seats in overload_bench within the trailing 30 min is
+# WEDGED (mid 503 storm) — the escalation lanes must NEVER land on it.
+# The recorded healthy seat on a wedged provider is skipped; fallback + re-select
+# also skip wedged providers. When every lane is wedged, --print-seat exits 2
+# (escalate, don't dispatch into a storm)andthe real dispatch path refuses (SKIP).
+rm -rf "$scratch/seats"; mkdir -p "$scratch/seats" "$scratch/packets5" "$scratch/park5"
+cat >"$scratch/pi-seat-health.json" <<EOF
+{"provider":"bai","model":"deepseek-v4-flash","health_class":"healthy","observed_at":"$NOW"}
+EOF
+# bai: two seats in overload_bench, wall end recent (NOW-0s / FUTURE) -> wedged.
+cat >"$scratch/seats/bai__deepseek-v4-flash.json" <<EOF
+{"provider":"bai","model":"deepseek-v4-flash","health_class":"overload_bench","observed_at":"$NOW","bench_until":"$FUTURE"}
+EOF
+cat >"$scratch/seats/bai__bai-2.json" <<EOF
+{"provider":"bai","model":"bai-2","health_class":"overload_bench","observed_at":"$NOW","bench_until":"$NOW"}
+EOF
+cat >"$scratch/seats/devin__glm-5-2.json" <<EOF
+{"provider":"devin","model":"glm-5-2","health_class":"rate_limited","observed_at":"$NOW","usable_at":"$FUTURE","consecutive_failure_count":20}
+EOF
+# Recorded seat (bai) is wedged -> must fall through to the healthy fallback.
+set +e
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == 0 ]] || fail "wedged recorded seat: --print-seat must exit  0, got rc=$rc"
+[[ "$out" == "minimax	MiniMax-M3	fallback" ]] \
+    || fail "wedged recorded seat must be skipped for healthy fallback, got: $out"
+ok "wedged recorded seat skipped; healthy fallback picked"
+# All providers wedged -> --print-seat exit  2.
+cat >"$scratch/seats/minimax__MiniMax-M3.json" <<EOF
+{"provider":"minimax","model":"MiniMax-M3","health_class":"overload_bench","observed_at":"$NOW","bench_until":"$NOW"}
+EOF
+cat >"$scratch/seats/minimax__mmx-2.json" <<EOF
+{"provider":"minimax","model":"mmx-2","health_class":"overload_bench","observed_at":"$NOW","bench_until":"$NOW"}
+EOF
+set +e
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat 2>"$scratch/err5")
+rc=$?
+set -e
+[[ "$rc" == 2 ]] || fail "all-wedged: --print-seat must exit  2, got rc=$rc"
+grep -q 'WALLED' "$scratch/err5" || fail "all-wedged: expected WALLED on stderr, got: $(cat "$scratch/err5")"
+ok "all lanes wedged -> --print-seat exit  2 (escalate, don't dispatch into a storm)"
+# Real dispatch path:None -> SKIP reason=all-seats-wedged (no spawn).
+# Uses the AMX env + ALERT_REPAIR_NO_SPAWN so no live unit fires.
+
+ALERT_REPAIR_PACKET_DIR="$scratch/packets5" \
+CLASS_PARK_DIR="$scratch/park5" \
+SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+SEAT_LEDGER_DIR="$scratch/seats" \
+ALERT_REPAIR_CLAIM_BIN=/nonexistent \
+AMX_STATUS=firing \
+AMX_RECEIVER=repair-dispatch \
+AMX_LABEL_service=fleet \
+AMX_ALERT_1_LABEL_alertname=WedgedStormAlert \
+AMX_ALERT_1_STATUS=firing \
+AMX_ALERT_1_START="$NOW" \
+AMX_ALERT_1_END=0 \
+"$dispatch_bin" >"$scratch/out5b" 2>"$scratch/err5b" || true
+if [ -f "$scratch/packets5/actions.log" ]; then
+    grep -q 'SKIP alertname=WedgedStormAlert.*all-seats-wedged' "$scratch/packets5/actions.log" \
+        || fail "all-wedged: real dispatch must SKIP (reason=all-seats-wedged): $(cat "$scratch/packets5/actions.log")"
+else
+    fail "all-wedged: expected actions.log at $scratch/packets5/actions.log"
+fi
+ok "all-wedged: real dispatch path refuses(SKIP all-seats-wedged, no spawn)"

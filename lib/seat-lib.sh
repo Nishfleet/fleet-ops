@@ -481,6 +481,56 @@ provider_overload_bench_default() {
     echo "${SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT[$p]:-0}"
 }
 
+# --- Provider-overload wedge (fleet-ops#2661) -------------------------------
+# A partial 503 storm (PONG probes pass but tool-loading 503s) benches 2+
+# seats on the SAME provider inside a short window, and each of those walls expiry
+# shortly after— so per-seat bench expiry alone would re-release them straight back
+# into the storm. The escalation lanes (stop-escalation-dispatch,
+# alert-repair-dispatch) must NEVER land on a provider mid-storm: they are the
+# lanes that diagnose/repair the storm's damage, and a dispatch into the storm just
+# dies the same way the workers died. This helper counts this provider's seats
+# currently or recently in overload_bench: a seat whose overload wall end
+# (bench_until ?? usable_at) is still in the future OR expired within the trailing
+# PROVIDER_OVERLOAD_WEDGE_WINDOW_S. When the count reaches
+# PROVIDER_OVERLOAD_WEDGE_MIN (2) the provider is WEDGED — pick_seat's
+# gated skip and alert-repair-dispatch's Python mirror exclude it from the
+# escalation ladder entirely. Workers do NOT set the gate env: their per-seat
+# seat_usable() benches are the right granularity for them; the wedge is the
+# escalation-only isolation the issue asks for.
+PROVIDER_OVERLOAD_WEDGE_WINDOW_S="${PROVIDER_OVERLOAD_WEDGE_WINDOW_S:-1800}"
+PROVIDER_OVERLOAD_WEDGE_MIN="${PROVIDER_OVERLOAD_WEDGE_MIN:-2}"
+
+# Returns 0 (wedged) when this provider has >= PROVIDER_OVERLOAD_WEDGE_MIN
+# seats in overload_bench whose wall end is in the future or expired within
+# the trailing window; 1 (not wedged) otherwise. Never raises: a missing/
+# unreadable ledger dir or a bad timestamp counts nothing (fail-open: a flaky
+# read must not brick the whole pick).
+provider_overload_wedged() {
+    local p="$1" f hc p2 wall_end we now_e window_s min_n count=0
+    now_e=$(_seat_now_epoch)
+    window_s="${PROVIDER_OVERLOAD_WEDGE_WINDOW_S:-1800}"
+    min_n="${PROVIDER_OVERLOAD_WEDGE_MIN:-2}"
+    for f in "$LEDGER_DIR"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(basename "$f")" != *".spawn-bench.json" ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" == "overload_bench" ]] || continue
+        p2=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ "$p2" == "$p" ]] || continue
+        wall_end=$(jq -r '(.bench_until // .usable_at // "")' "$f" 2>/dev/null || true)
+        [[ -n "$wall_end" ]] || continue
+        we=$(date -u -d "${wall_end%Z}" +%s 2>/dev/null || echo 0)
+        [[ "$we" =~ ^[0-9]+$ ]] || continue
+        # Wall end in the future OR expired within the trailing window — i.e.
+        # this seat was in overload_bench within that window. A seat whose wall
+        # expired longer ago is not recent storm evidence and must not wedge.
+        (( we >= now_e - window_s )) || continue
+        count=$((count + 1))
+        (( count >= min_n )) && return 0
+    done
+    return 1
+}
+
 # --- AIMD learned caps (fleet-ops#217, re-land #424) ------------------------
 # Declared cap in seat-caps.json is the FLOOR. pick_seat may admit cap+1
 # (additive probe) when zero provider errors + RAM headroom + room below
@@ -2531,6 +2581,17 @@ pick_seat() {
         if (( need_capable )) && [[ -n "${QUALITY_HEAVY_BAN[$p/$m]:-}" ]]; then
             # fleet-ops#1297: same fold for the quality-routing ban line.
             _qban_n=$((_qban_n + 1))
+            continue
+        fi
+        # fleet-ops#2661: escalation-lane provider-wedge check (gated). The
+        # 503-storm lane isolation: only stop-escalation-dispatch (and the
+        # Python mirror inside alert-repair-dispatch) set
+        # FLEET_ESCALATION_WEDGE_CHECK=1, so only the escalation lanes refuse
+        # a provider with >=2 seats recently in overload_bench (mid-storm).
+        # Workers keep per-seat seat_usable() routing only — their benches are the
+        # right granularity for them;the wedge is the escalation-only isolation.
+        if [[ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" == "1" ]] && provider_overload_wedged "$p"; then
+            seat_log "seat $p/$m skipped (provider $p overload-wedged — ${PROVIDER_OVERLOAD_WEDGE_MIN:-2}+ overload_bench seats within ${PROVIDER_OVERLOAD_WEDGE_WINDOW_S:-1800}s; escalation lanes only)"
             continue
         fi
         if ! seat_usable "$p" "$m"; then

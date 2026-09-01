@@ -233,6 +233,47 @@ def _fresh(ts):
         return False
 
 
+def _provider_overload_wedged(provider):
+    """True if this provider is mid a partial 503 storm (fleet-ops#2661).
+    Mirrors lib/seat-lib.sh provider_overload_wedged(): a provider with >=2 of
+    its seats in overload_bench whose wall end (bench_until ?? usable_at) is in
+    the future or expired within the trailing 1800s is WEDGED — the escalation
+    lanes must NEVER land on it (a dispatch into the storm just dies the same way
+    the workers died)."""
+    WINDOW_S = 1800
+    MIN_SEATS = 2
+    n = 0
+    now = time.time()
+    try:
+        for f in sorted(Path(SEAT_LEDGER_DIR).iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                d = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if d.get("provider") != provider:
+                continue
+            if d.get("health_class") != "overload_bench":
+                continue
+            end = d.get("bench_until") or d.get("usable_at") or ""
+            if not end:
+                continue
+            try:
+                we = calendar.timegm(time.strptime(end[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if we >= now - WINDOW_S:
+                n += 1
+                if n >= MIN_SEATS:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _seat_walled(provider, model):
     """Return True if the per-seat ledger marks this seat walled (unusable).
 
@@ -286,13 +327,21 @@ def _enumerate_ledger_seats():
 
 
 def _select_seat(exclude):
-    """Return (provider, model, reason) or None.
+    """Return (seat_or_None, wedged_skipped). A seat is (provider, model, reason)
+    or None when no candidate is usable. wedged_skipped is True when a candidate
+    was excluded for the overload provider-wedge (fleet-ops#2661), so the caller can
+    distinguish "every lane wedged (transient 503 storm" — refuse the dispatch)
+    from "every lane genuinely walled (billing/quota" — legacy park-on-first).
 
     Excludes seats that are walled (per-seat ledger) or on a walled /
     excluded provider. Re-selects from the per-seat ledger rather than
-    parking on a walled seat (fleet-ops#1556).
+    parking on a walled seat (fleet-ops#1556). A provider with >=2 seats in
+    overload_bench within the trailing 30 min is skipped entirely (fleet-ops#2661).
     """
-    # 1. Recorded seat (pi-seat-health.json) wins if healthy, fresh, usable.
+    wedged_skipped = False
+    # 1. Recorded seat (pi-seat-health.json) wins if healthy, fresh, usable
+    #    AND not overload-wedged (fleet-ops#2661: a stormed provider must never
+    #    host an escalation repair dispatch, regardless of its recorded health).
     try:
         d = json.loads(Path(SEAT_HEALTH_FILE).read_text())
         obs = d.get("observed_at")
@@ -304,30 +353,50 @@ def _select_seat(exclude):
             except ValueError:
                 fresh = False
         p, m = d.get("provider"), d.get("model")
-        if (d.get("health_class") == "healthy" and fresh and p and m
-                and p not in WALLED_PROVIDERS and p not in exclude
-                and not _seat_walled(p, m)):
-            return p, m, "healthy"
+        if p and m:
+            if _provider_overload_wedged(p):
+                wedged_skipped = True
+            elif (d.get("health_class") == "healthy" and fresh and p and m
+                    and p not in WALLED_PROVIDERS and p not in exclude
+                    and not _seat_walled(p, m)):
+                return (p, m, "healthy"), False
     except (OSError, json.JSONDecodeError):
         pass
-    # 2. Fallback ladder, skipping walled seats and excluded providers.
+    # 2. Fallback ladder, skipping walled seats, excluded providers and
+    #    overload-wedged providers (fleet-ops#2661).
     for p, m in FALLBACK_LADDER:
+
+        if _provider_overload_wedged(p):
+            wedged_skipped = True
+            continue
         if (p not in WALLED_PROVIDERS and p not in exclude
                 and not _seat_walled(p, m)):
-            return p, m, "fallback"
+            return (p, m, "fallback"), False
     # 3. Re-select from the per-seat ledger rather than park on a walled seat.
+
     for p, m in _enumerate_ledger_seats():
+        if _provider_overload_wedged(p):
+            wedged_skipped = True
+            continue
         if (p not in WALLED_PROVIDERS and p not in exclude
                 and not _seat_walled(p, m)):
-            return p, m, "re-selected"
-    return None
+            return (p, m, "re-selected"), False
+    return None, wedged_skipped
 
 
 def _pick_seat():
-    """Return (provider, model, reason). No probing, no retries."""
-    seat = _select_seat(set())
+    """Return (provider, model, reason) or None. No probing, no retries.
+
+    fleet-ops#2661: when every candidate lane is overload-wedged (transient
+    503 storm), return None so the caller refuses the dispatch and spawns
+    NOTHING. A genuinely-walled ladder (billing/quota/corpse — a money wall
+    the worker must escalate to senior) keeps the legacy park-on
+    FALLBACK_LADDER[0] so the money wall still reaches the senior pipeline."""
+    seat, wedged = _select_seat(set())
     if seat:
         return seat
+    if wedged:
+        return None
     return FALLBACK_LADDER[0][0], FALLBACK_LADDER[0][1], "fallback"
 
 
@@ -354,7 +423,7 @@ def main():
                 excl = {p for p in sys.argv[i + 1].split(",") if p}
         except ValueError:
             pass
-        seat = _select_seat(excl)
+        seat, _ = _select_seat(excl)
         if seat:
             print(f"{seat[0]}\t{seat[1]}\t{seat[2]}")
             return 0
@@ -528,8 +597,21 @@ def main():
               f"receiver={receiver}", file=sys.stderr)
         return 0
 
-    # Dispatch — pick a healthy lane (no hardcoded seat).
-    provider, model, seat_reason = _pick_seat()
+    # Dispatch — pick a healthy lane (no hardcoded seat). fleet-ops#2661:
+    # when every candidate lane is overload-wedged (transient 503 storm, partial),
+    # _pick_seat returns None — NEVER park a repair/spawn on a storming provider;
+    # log `skipped-wedged` and spawn NOTHING (the alert re-fires on the next
+    # AMX repeat_interval(6h); a stormed lane is worse than no lane).
+    picked = _pick_seat()
+    if not picked:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIP alertname={joined} receiver={receiver} "
+                f"reason=all-seats-wedged\n"
+            )
+        print(f"[{utcnow()}] SKIP alertname={joined} reason=all-seats-wedged (storm lane isolation; refusing dispatch)", file=sys.stderr)
+        return 0
+    provider, model, seat_reason = picked
 
     # fleet-ops#2495 follow-up (repair worker 2026-09-01T13:0xZ): honour a
     # no-spawn request BEFORE touching pi-systemd-run.
