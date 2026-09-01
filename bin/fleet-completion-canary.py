@@ -470,6 +470,24 @@ def save_chain_state(name: str, d: dict) -> None:
     atomic_write(p, json.dumps(d, sort_keys=True) + "\n")
 
 
+def _prune_park_fields(state: dict) -> dict:
+    """Return the class-park fields present in state (for cooldown markers).
+
+    A cooldown close must NOT silently deletethe class park (decision_class_until /
+    reason / set_by, fleet-ops#2651) — dropping it would letthe dispatcher re-
+    dispatch the class each repeat_interval cycle, burning a fresh repair worker to
+    re-derive the same verdict forever. Retaining it lets the #2397 re-park guard
+    hold the chain drained until the park expiry re-opens ONE bounded nag per window.
+
+    Returns an empty dict when nothing is parked (old states unchanged).
+    """
+    out = {}
+    for k in ("decision_class_until", "decision_class_reason", "decision_class_set_by"):
+        if state.get(k):
+            out[k] = state[k]
+    return out
+
+
 def drop_chain_state(name: str) -> None:
     p = STATE / "open" / f"{name}.json"
     try:
@@ -584,7 +602,8 @@ def append_redispatch_log(name: str, hop: str, seat: str, reason: str) -> None:
         log(f"WARN: actions.log append failed: {exc}")
 
 
-def take_ladder(chain: dict, hop: str, age: int, state: dict) -> str:
+def take_ladder(chain: dict, hop: str, age: int, state: dict,
+                now: datetime) -> str:
     name = chain["alertname"]
     synthetic = name in SYNTHETIC
     stall_count = int(state.get("stall_count") or 0)
@@ -599,16 +618,57 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict) -> str:
         # the senior conference — instead of parking the chain at "already"
         # forever, which left FleetMainRed stuck through endless rc=0
         # redispatches that never turned main green.
-        if prev_ladder == "redispatch" and hop in {"dispatch", "run"}:
-            write_stop_reason(chain, hop, age)
-            loud("UNREPAIRED-FAIL",
-                 f"alertname={name} hop={hop} age={age}s — redispatch no-op: "
-                 f"alert still firing after rc=0 redispatch; STOP-REASON "
-                 f"alert-repair-stalled (senior conference)")
+        # fleet-ops#2651: the no-op-redispatch test must apply at hop=verify
+        # too. A unit that exits per the packet EXIT CONTRACT (alert still
+        # firing) and is then --collect unloaded reads as SUCCESS from a
+        # Started-only journal (fleet-ops#2100), so the chain hops run ->
+        # verify after the redispatch. The old hop restriction parked such a
+        # chain at "already" with no STOP-REASON, no verify deadline and no
+        # terminal — a permanent verify stall that kept FleetChainStalled
+        # red through endless re-derivations of the same verdict (live:
+        # FleetQueueSelfMaintenanceRatioHigh after the 12:22Z redispatch,
+        # 2026-09-01). Escalate instead; the verify_deadline_ts marker then
+        # drains it as detector-red via the #1610 path.
+        if prev_ladder == "redispatch" and hop in {"dispatch", "run", "verify"}:
+            # fleet-ops#2651: if the class is parked (decision_class_until in
+            # the future), the park IS the escalation verdict — re-summoning
+            # the senior conference per redispatch would re-open the churn
+            # loop this field exists to break. For hop=verify the chain still
+            # drains quietly: the zero-grace verify_deadline_ts (set below by
+            # the #1610 block) terminates it as detector-red + cooldown, and
+            # the re-park guard (fleet-ops#2397) holds it drained until the
+            # park expiry re-opens the bounded nag. For dispatch/run (no
+            # deadline rail) the stop-reason stays — park or not.
+            parked = hop == "verify"
+            if parked:
+                class_until = state.get("decision_class_until")
+                if class_until:
+                    class_dt = parse_iso(str(class_until))
+                    if class_dt is None or not (now < class_dt):
+                        parked = False
+                else:
+                    parked = False
+            if not parked:
+                write_stop_reason(chain, hop, age)
+                loud("UNREPAIRED-FAIL",
+                     f"alertname={name} hop={hop} age={age}s — redispatch no-op: "
+                     f"alert still firing after rc=0 redispatch; STOP-REASON "
+                     f"alert-repair-stalled (senior conference)")
+                state["ladder"] = "stop-reason"
+                state["hop"] = hop
+                state["age"] = age
+                if hop == "verify":
+                    state["verify_deadline_ts"] = iso(now_dt())
+                return "stop-reason"
+            # fleet-ops#2651: mark the chain escalated (ladder=stop-reason) so
+            # the #2397 re-park guard holds it drained after its cooldown close; a
+            # bare "already" would re-open each cycle forever. No new STOP-REASON,
+            # no redispatch — the park is the escalation verdict.
+
             state["ladder"] = "stop-reason"
-            state["hop"] = hop
-            state["age"] = age
-            return "stop-reason"
+            log(f"chain {name} redispatch no-op at verify, class parked "
+                f"until {state.get('decision_class_until')} — no re-summon; "
+                f"ladder=stop-reason; verify deadline drains")
         log(f"chain {name} already laddered ({prev_ladder}); metrics only")
         return "already"
 
@@ -1551,6 +1611,9 @@ def main() -> int:
                         # immediately re-create (fleet-ops#1610). The alert
                         # is still firing but this chain is closed.
                         cooldown_deadline = now + timedelta(seconds=VERIFY_DEADLINE)
+                        # fleet-ops#2651: preserve the class park across the cooldown
+                        # close so the dispatcher keeps skipping this class each
+                        # repeat_interval (the park is the escalation verdict).
                         save_chain_state(name, {
                             "alertname": name,
                             "hop": "verify",
@@ -1562,6 +1625,7 @@ def main() -> int:
                             "ladder": state.get("ladder") or "stop-reason",
                             "stall_count": int(state.get("stall_count") or 0),
                             "dispatch_unit": decision.get("dispatch_unit") or "",
+                            **_prune_park_fields(state),
                         })
                         # The chain terminated this tick — do not count it as
                         # still-open/stalled (fleet-ops#1610). Without this the
@@ -1575,7 +1639,7 @@ def main() -> int:
                     # before the deadline feature existed). Drain at next tick by
                     # setting a deadline of now (zero-grace).
                     state["verify_deadline_ts"] = iso(now)
-            action = take_ladder(decision, hop, decision["age"], state)
+            action = take_ladder(decision, hop, decision["age"], state, now)
             if action != "already":
                 state["stall_count"] = int(state.get("stall_count") or 0) + 1
                 state["ladder"] = action
@@ -1628,6 +1692,8 @@ def main() -> int:
                             f"cycle_seconds={cycle} "
                             "(stop-reason hand-off; STOP-REASON owns the escalation)")
                     cooldown_deadline = now + timedelta(seconds=VERIFY_DEADLINE)
+                    # fleet-ops#2651: preserve the class park across the cooldown
+                    # close too (same shape as the detector-red write above).
                     save_chain_state(name, {
                         "alertname": name,
                         "hop": hop,
@@ -1639,6 +1705,7 @@ def main() -> int:
                         "ladder": "stop-reason",
                         "stall_count": int(state.get("stall_count") or 0),
                         "dispatch_unit": decision.get("dispatch_unit") or "",
+                        **_prune_park_fields(state),
                     })
                     # The chain terminated this tick — do not count it as
                     # still-open/stalled (same exclusion as the verify close).
