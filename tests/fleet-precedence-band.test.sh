@@ -82,6 +82,13 @@ JSON
 DEFAULT_NOW="2026-08-28T01:00:00Z"
 
 run_canary() {
+  # Honor an externally-set FLEET_PRECEDENCE_BAND_CANARY_STATE so a
+  # scenario can drive a private state file. Otherwise default to a
+  # scratch path so this test never reads/writes the live
+  # ~/.local/state/pi-packet/precedence-band-canary.state.json.
+  if [ -z "${FLEET_PRECEDENCE_BAND_CANARY_STATE:-}" ]; then
+    export FLEET_PRECEDENCE_BAND_CANARY_STATE="$scratch/canary-default.state.json"
+  fi
   FLEET_PRECEDENCE_BAND_POLICY="${1:-$scratch/policy.json}" \
   FLEET_PRECEDENCE_UNITS_FILE="${2:-$scratch/units.txt}" \
   FLEET_PRECEDENCE_BAND_PRIOR="${3:-$scratch/missing.prior.json}" \
@@ -156,13 +163,37 @@ cat >"$scratch/units.txt" <<'UNITS'
 pi-issue@0509-1299.service
 pi-issue@fleet-ops-1234.service
 UNITS
+# 7a: first drift inside the hysteresis window debounces to WARN (exit 0).
+# fleet-ops#2595: a transient mixed state (one non-leverage fleet-ops
+# claim in flight while a product repo is between intake ticks) is the
+# 2026-08-31 08:11-08:12Z class that used to summon an auditor every
+# tick. The first tick is now a WARN; the second consecutive fails loud.
+surge_state_a="$scratch/surge-7a.state.json"
+: >"$surge_state_a"
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$surge_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario7: surge non-leverage must exit 1, got $rc ($out)"
-grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7: must name surge-phase non-leverage ($out)"
-ok "scenario7: surge refuses a non-leverage fleet-ops claim"
+[[ "$rc" == "0" ]] || fail "scenario7a: first surge non-leverage drift must debounce to exit 0 (WARN), got rc=$rc ($out)"
+grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7a: must name surge-phase non-leverage ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-WARN' <<<"$out" || fail "scenario7a: must emit HYSTERESIS-WARN line ($out)"
+jq -e '.consecutive_rejects == 1' "$surge_state_a" >/dev/null \
+    || fail "scenario7a: state file must record consecutive_rejects=1 after first drift"
+ok "scenario7a: first surge non-leverage drift debounces to WARN (fleet-ops#2595 hysteresis)"
+# 7b: a SECOND consecutive drift inside the hysteresis window escalates
+# to LOUD PRECEDENCE-BAND-HYSTERESIS-FAIL and exit 1. NOW is 5 min
+# after the first drift (within the 45-min hysteresis window).
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$surge_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:05:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario7b: second consecutive surge non-leverage drift must fail loud (rc=1), got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario7b: must emit HYSTERESIS-FAIL line ($out)"
+jq -e '.consecutive_rejects == 2' "$surge_state_a" >/dev/null \
+    || fail "scenario7b: state file must record consecutive_rejects=2 after second drift"
+ok "scenario7b: second consecutive surge non-leverage drift fails loud (hysteresis armed)"
 
 # --- 8. surge phase, leverage fleet-ops claim only --------------------------
 cat >"$scratch/units.txt" <<'UNITS'
@@ -177,7 +208,7 @@ set -e
 grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario8: must log OK ($out)"
 ok "scenario8: surge accepts leverage-only fleet-ops claims"
 
-# --- 9. band phase, machinery share over cap --------------------------------
+# --- 9. band phase, machinery share over cap (hysteresis-armed, fleet-ops#2595) ---
 cat >"$scratch/units.txt" <<'UNITS'
 pi-issue@0509-1299.service
 pi-issue@0509-1302.service
@@ -187,13 +218,31 @@ pi-issue@fleet-ops-101.service
 pi-issue@fleet-ops-102.service
 pi-issue@fleet-ops-103.service
 UNITS
+# 9a: first drift inside the hysteresis window debounces to WARN (exit 0).
+band_state_a="$scratch/band-9a.state.json"
+: >"$band_state_a"
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario9: band over-cap must exit 1, got $rc ($out)"
-grep -q 'over the cap' <<<"$out" || fail "scenario9: must name over the cap ($out)"
-ok "scenario9: band rejects live machinery share > cap"
+[[ "$rc" == "0" ]] || fail "scenario9a: first band over-cap drift must debounce to exit 0 (WARN), got rc=$rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario9a: must name over the cap ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-WARN' <<<"$out" || fail "scenario9a: must emit HYSTERESIS-WARN line ($out)"
+jq -e '.consecutive_rejects == 1' "$band_state_a" >/dev/null \
+    || fail "scenario9a: state file must record consecutive_rejects=1 after first drift"
+ok "scenario9a: first band over-cap drift debounces to WARN (fleet-ops#2595 hysteresis)"
+# 9b: a SECOND consecutive drift inside the window fails loud (exit 1).
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:35:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario9b: second consecutive band over-cap drift must fail loud (rc=1), got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario9b: must emit HYSTERESIS-FAIL line ($out)"
+jq -e '.consecutive_rejects == 2' "$band_state_a" >/dev/null \
+    || fail "scenario9b: state file must record consecutive_rejects=2 after second drift"
+ok "scenario9b: second consecutive band over-cap drift fails loud (hysteresis armed)"
 
 # --- 10. band phase, machinery share at cap ---------------------------------
 cat >"$scratch/units.txt" <<'UNITS'
@@ -252,13 +301,27 @@ pi-issue@0509-1299.service
 pi-issue@fleet-ops-1452.service
 pi-issue@fleet-ops-101.service
 UNITS
+# 10d: same hysteresis contract — first drift debounces, second consecutive
+# fails loud. The state file is fresh per scenario so consecutive_rejects
+# starts at 0 and the first invocation is WARN-only.
+band_state_d="$scratch/band-10d.state.json"
+: >"$band_state_d"
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_d" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario10d: 2 machinery + 1 product must exit 1, got $rc ($out)"
-grep -q 'over the cap' <<<"$out" || fail "scenario10d: must name over the cap ($out)"
-ok "scenario10d: canary still rejects a second repair lane at low-n"
+[[ "$rc" == "0" ]] || fail "scenario10d (first): 2 machinery + 1 product first drift must debounce, got rc=$rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario10d (first): must name over the cap ($out)"
+ok "scenario10d (first): 2 machinery + 1 product first drift debounces to WARN"
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_d" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:35:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario10d (second): 2 machinery + 1 product second drift must fail loud, got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario10d (second): must emit HYSTERESIS-FAIL ($out)"
+ok "scenario10d (second): 2 machinery + 1 product second drift fails loud"
 
 # --- 10e. band phase, all-machinery with ZERO live product is NOT drift ------
 # fleet-ops#1421: the rent-paying band is a RATIO among live units. When zero
@@ -308,13 +371,26 @@ pi-issue@fleet-ops-104.service
 pi-issue@fleet-ops-105.service
 UNITS
 # 9 machinery / 10 total = 90% > 30% cap, product_count == 1 -> real drift.
+# Hysteresis contract (fleet-ops#2595): first drift debounces, second
+# consecutive fails loud. State file is fresh per scenario.
+band_state_f="$scratch/band-10f.state.json"
+: >"$band_state_f"
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_f" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario10f: 9 machinery + 1 live product must exit 1, got $rc ($out)"
-grep -q 'over the cap' <<<"$out" || fail "scenario10f: must name over the cap ($out)"
-ok "scenario10f: canary still rejects machinery crowding out LIVE product (10e does not weaken ratio enforcement)"
+[[ "$rc" == "0" ]] || fail "scenario10f (first): 9 machinery + 1 product first drift must debounce, got rc=$rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario10f (first): must name over the cap ($out)"
+ok "scenario10f (first): 9 machinery + 1 product first drift debounces to WARN"
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_f" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:35:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario10f (second): 9 machinery + 1 product second drift must fail loud, got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario10f (second): must emit HYSTERESIS-FAIL ($out)"
+ok "scenario10f (second): 9 machinery + 1 product second drift fails loud (no weakening of ratio enforcement)"
 
 # --- 11. ratchet: loosening without wfr_waiver_on ---------------------------
 base_policy_json | jq '.machinery_max_pct = 30' | clean_policy
@@ -1083,6 +1159,96 @@ prom_dir="$scratch/prom"
 grep -q 'fleet_queue_product_ratio{queue="agent-ready"} 0.300000' "$prom_dir/fleet-queue-product-ratio.prom" \
     || fail "scenario20g: fleet_queue_product_ratio not exported correctly"
 ok "scenario20g: fleet_queue_product_ratio exported by the intake tick path (1 - self-maintenance ratio)"
+
+# --- 22. Product-ratio cache freshness check (fleet-ops#2595) ------------
+# PR #2539 ships a product-first precedence band that HOLDs the
+# self-maintenance repo when the queue self-maintenance ratio > 0.5.
+# The hold is observable via fleet_queue_product_ratio prom, but the
+# implementation fails OPEN when the queue-composition-cache is
+# unavailable — which is the correct posture for a dead metrics
+# exporter. The same fail-open posture is also the failure mode that
+# makes a stuck exporter invisible: the hold silently admits every
+# tick and the ratio stays pinned at ~0.78 without the precedence
+# ever engaging. Block 36.5 in fleet-heartbeat-tier1 closes that hole
+# by stat()ing the prom every tick and failing LOUD when the mtime
+# exceeds 30 min.
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+grep -qE '^# 36\.5 PRODUCT-RATIO CACHE FRESHNESS' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must wire block 36.5 (product-ratio cache freshness)"
+grep -qE 'PRODUCT_RATIO_PROM_PATH|product-ratio\.prom' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must reference the product-ratio prom path"
+grep -qE 'PRECEDENCE-BAND-CACHE-STALE' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must emit PRECEDENCE-BAND-CACHE-STALE on staleness"
+grep -qE 'PRECEDENCE-BAND-CACHE-MISSING' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must emit PRECEDENCE-BAND-CACHE-MISSING on absence"
+grep -qE 'PRODUCT_RATIO_CACHE_FRESHNESS_S' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must read the freshness threshold from PRODUCT_RATIO_CACHE_FRESHNESS_S"
+grep -qE 'product_ratio_cache_rc' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must exit-loud on product_ratio_cache_rc (fail-loud contract)"
+ok "scenario22: heartbeat-tier1 wires the product-ratio cache freshness block 36.5"
+
+# 22a: prove the freshness math under controlled mtime via a sourced
+# helper. Block 36.5 is bash + stat, but the test runs without invoking
+# the full 2700-line heartbeat. Extract the same lines into a subshell
+# and drive it with a scratch prom + an env-overridable threshold.
+freshness_drive() {
+    local prom="$1" threshold="$2"
+    if [ -f "$prom" ]; then
+        local mtime now age
+        mtime=$(stat -c %Y "$prom" 2>/dev/null || echo 0)
+        now=$(date -u +%s)
+        age=$((now - mtime))
+        if [ "$age" -gt "$threshold" ]; then
+            echo "STALE age=${age}s threshold=${threshold}s"
+            return 1
+        fi
+        echo "FRESH age=${age}s threshold=${threshold}s"
+        return 0
+    fi
+    echo "MISSING path=$prom"
+    return 1
+}
+
+prom_fresh="$scratch/fresh.prom"
+prom_stale="$scratch/stale.prom"
+prom_old_threshold="$scratch/fresh-300.prom"
+printf '# HELP fleet_queue_product_ratio product ratio\n' >"$prom_fresh"
+printf 'fleet_queue_product_ratio{queue="agent-ready"} 0.500000\n' >>"$prom_fresh"
+cp "$prom_fresh" "$prom_stale"
+cp "$prom_fresh" "$prom_old_threshold"
+# 1 hour ago — well past the 30 min default.
+touch -d '1 hour ago' "$prom_stale" 2>/dev/null || touch -t "$(date -u -d '1 hour ago' +%Y%m%d%H%M.%S 2>/dev/null || echo 202401010000)" "$prom_stale" 2>/dev/null || true
+
+set +e
+out=$(freshness_drive "$prom_fresh" 1800); rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario22a: fresh prom must report OK (rc=0), got rc=$rc out=$out"
+[[ "$out" == "FRESH"* ]] || fail "scenario22a: fresh prom must print FRESH line, got $out"
+ok "scenario22a: fresh prom (mtime=now) reports FRESH and exits 0"
+
+set +e
+out=$(freshness_drive "$prom_stale" 1800); rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario22b: stale prom (1h old) must fail loud (rc=1), got rc=$rc out=$out"
+[[ "$out" == "STALE"* ]] || fail "scenario22b: stale prom must print STALE line, got $out"
+ok "scenario22b: stale prom (1h old, threshold 1800s) fails loud"
+
+set +e
+out=$(freshness_drive "$prom_fresh" 600); rc=$?
+set -e
+# Threshold 600s = 10 min. A fresh file (mtime=now, age ~0s) should pass.
+# This proves the threshold is overridable so a longer heartbeat cadence
+# can pin it without a code change.
+[[ "$rc" == "0" ]] || fail "scenario22c: PROD_RATIO_CACHE_FRESHNESS_S must be overridable, got rc=$rc out=$out"
+[[ "$out" == "FRESH"* ]] || fail "scenario22c: tighter threshold still passes a fresh prom, got $out"
+ok "scenario22c: PRODUCT_RATIO_CACHE_FRESHNESS_S threshold is overridable (600s vs 1800s default)"
+
+set +e
+out=$(freshness_drive "$scratch/does-not-exist.prom" 1800); rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario22d: missing prom must fail loud (rc=1), got rc=$rc out=$out"
+[[ "$out" == "MISSING"* ]] || fail "scenario22d: missing prom must print MISSING line, got $out"
+ok "scenario22d: missing prom fails loud (path missing)"
 
 ok "precedence-band: product-first precedence (fleet-ops#2519) — 70%% fleet-ops holds, product admits, metric exported"
 

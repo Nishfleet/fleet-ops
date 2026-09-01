@@ -33,7 +33,23 @@ Usage:
   precedence-band-canary.py [--policy PATH] [--units-file PATH] [--prior PATH]
   precedence-band-canary.py canary (default subcommand)
 
-Exit 0: gates clean. Exit 1: drift. Exit 2: helper missing (caller prints).
+Exit 0: gates clean (or first-consecutive-tick drift; see hysteresis below).
+Exit 1: drift confirmed by 2-consecutive-tick hysteresis, OR a hard
+        configuration/parse/ratchet drift.
+Exit 2: helper missing (caller prints).
+
+Hysteresis (fleet-ops#2595): the canary fires every heartbeat tick (~30 min
+cadence), and a transient mixed state (e.g. 4 machinery claims in flight
+while a product repo is between intake ticks; the 2026-08-31 08:11-08:12Z
+incident that auto-summoned an auditor on every tick) is the kind of drift
+that fixes itself in one tick. A first-tick reject logs WARN to the triage
+file and exits 0; a SECOND consecutive reject inside the hysteresis window
+(default 45 min = 1.5x heartbeat cadence) escalates to LOUD PRECEDENCE-
+BAND-HYSTERESIS-FAIL and exits 1. A clean tick resets the counter. The
+state file is $FLEET_PRECEDENCE_BAND_CANARY_STATE (default
+~/.local/state/pi-packet/precedence-band-canary.state.json), a small JSON
+record {last_status, last_seen, consecutive_rejects}; tests inject a
+scratch path via --state-file / FLEET_PRECEDENCE_BAND_CANARY_STATE.
 """
 from __future__ import annotations
 
@@ -49,6 +65,13 @@ from typing import Any
 
 MACHINERY_MAX_PCT_CEILING = 30
 PRODUCT_MIN_PCT_FLOOR = 70
+# Hysteresis (fleet-ops#2595): 2 consecutive rejects inside this window
+# escalate to LOUD; otherwise the first tick's drift is treated as a
+# transient mixed state and exits 0 with a WARN. 45 min = 1.5x the
+# heartbeat cadence; longer than the worst intake-tick burst, shorter than
+# a real regression.
+HYSTERESIS_WINDOW_S = 45 * 60
+HYSTERESIS_THRESHOLD = 2
 PRODUCT_RE = re.compile(r"^([\w.-]+)#(\d+)$")
 MACHINERY_REPO_DEFAULT = "fleet-ops"
 SKIP_NAME_RE = re.compile(r"precedence-band", re.I)
@@ -315,6 +338,139 @@ def check_ratchet(
     return errors
 
 
+# === Hysteresis state (fleet-ops#2595) =====================================
+# The canary fires every heartbeat tick (~30 min cadence). A transient
+# mixed state (e.g. 4 machinery claims in flight while a product repo is
+# between intake ticks; the 2026-08-31 08:11-08:12Z incident that
+# auto-summoned an auditor every tick) is the kind of drift that fixes
+# itself in one tick. The state file records the last verdict + a
+# consecutive-reject counter; run_check() escalates a reject to LOUD only
+# when the prior tick (within HYSTERESIS_WINDOW_S) was also a reject. A
+# clean tick resets the counter to 0. The state file is a small JSON
+# record {last_status, last_seen, consecutive_rejects}; tests inject a
+# scratch path via --state-file / FLEET_PRECEDENCE_BAND_CANARY_STATE.
+def default_state_path() -> Path:
+    env = os.environ.get("FLEET_PRECEDENCE_BAND_CANARY_STATE")
+    if env:
+        return Path(env)
+    return Path.home() / ".local/state/pi-packet/precedence-band-canary.state.json"
+
+
+def read_state(path: Path) -> dict[str, Any]:
+    """Read the hysteresis state file; never raises. Returns
+    {last_status: 'ok', last_seen: '', consecutive_rejects: 0} on missing/
+    corrupt so the first drift does not crash the canary.
+    """
+    out: dict[str, Any] = {
+        "last_status": "ok",
+        "last_seen": "",
+        "consecutive_rejects": 0,
+    }
+    if not path.is_file():
+        return out
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log(f"WARN: hysteresis state unreadable: {path} — treating as ok")
+        return out
+    if not isinstance(raw, dict):
+        return out
+    status = raw.get("last_status")
+    if isinstance(status, str) and status in {"ok", "reject"}:
+        out["last_status"] = status
+    seen = raw.get("last_seen")
+    if isinstance(seen, str):
+        out["last_seen"] = seen
+    try:
+        out["consecutive_rejects"] = max(0, int(raw.get("consecutive_rejects", 0)))
+    except (TypeError, ValueError):
+        out["consecutive_rejects"] = 0
+    return out
+
+
+def write_state(path: Path, state: dict[str, Any]) -> None:
+    """Atomic write of the hysteresis state file. Tolerates a missing
+    parent dir (creates it) and a read-only filesystem (warns, does not
+    raise — the canary must not be flipped into "no state" because the
+    state file is missing).
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log(f"WARN: hysteresis state not writable: {path}: {exc}")
+
+
+def state_age_seconds(state: dict[str, Any], now: dt.datetime) -> float | None:
+    """Return how old the recorded state is, or None if the timestamp is
+    missing / unparseable. A missing/blank last_seen is treated as "never"
+    so the first-ever drift is a fresh counter (NOT a continuation of a
+    long-silent prior reject).
+    """
+    seen = state.get("last_seen") or ""
+    if not isinstance(seen, str) or not seen:
+        return None
+    parsed = _parse_iso(seen)
+    if parsed is None:
+        return None
+    return max(0.0, (now - parsed).total_seconds())
+
+
+def apply_hysteresis(
+    drift_now: bool,
+    state: dict[str, Any],
+    now: dt.datetime,
+    triage: str | None,
+) -> tuple[bool, dict[str, Any], str]:
+    """Decide whether a drift should fail loud or be debounced to WARN.
+
+    Returns (fail_loud, new_state, decision_reason). On a clean tick the
+    counter is reset to 0 and last_status is set to 'ok'. On a drift:
+      - if the prior tick was also a reject AND it is within
+        HYSTERESIS_WINDOW_S of `now`: fail_loud=True, counter += 1.
+      - else: fail_loud=False (warn-only), counter = 1, last_status='reject'.
+
+    The hysteresis window is generous on purpose: longer than a heartbeat
+    cadence so a clock-skewed pair still escalates, but shorter than a
+    real regression so a quiet overnight stretch resets the counter when
+    drift resumes.
+    """
+    new_state = dict(state)
+    new_state["last_seen"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not drift_now:
+        new_state["last_status"] = "ok"
+        new_state["consecutive_rejects"] = 0
+        return False, new_state, "clean-tick-resets-counter"
+    age = state_age_seconds(state, now)
+    prior_rejects = int(state.get("consecutive_rejects", 0) or 0)
+    prior_within_window = (
+        state.get("last_status") == "reject"
+        and age is not None
+        and age <= HYSTERESIS_WINDOW_S
+    )
+    if prior_within_window:
+        new_state["last_status"] = "reject"
+        new_state["consecutive_rejects"] = prior_rejects + 1
+        reason = (
+            f"second-consecutive-reject within {HYSTERESIS_WINDOW_S}s "
+            f"(prior_age={age:.0f}s, counter={new_state['consecutive_rejects']})"
+        )
+        return True, new_state, reason
+    new_state["last_status"] = "reject"
+    new_state["consecutive_rejects"] = 1
+    if state.get("last_status") == "reject" and (age is None or age > HYSTERESIS_WINDOW_S):
+        reason = (
+            f"first-tick-after-quiet-stretch resets counter "
+            f"(prior_age={'unknown' if age is None else f'{age:.0f}s'} "
+            f"> {HYSTERESIS_WINDOW_S}s window)"
+        )
+    else:
+        reason = "first-consecutive-reject (warn-only, hysteresis armed)"
+    return False, new_state, reason
+
+
 def read_units(path: Path) -> list[tuple[str, int]]:
     """Return [(repo, issue_number)] from a unit-name file. Test-friendly."""
     if not path.is_file():
@@ -418,23 +574,37 @@ def run_check(
     prior_path: Path,
     triage: str | None,
     now_iso: str | None,
+    state_file: Path | None = None,
 ) -> int:
+    """Run the canary check with hysteresis (fleet-ops#2595).
+
+    Drift is split into two classes:
+      - HARD (policy shape / ratchet / parse / prior unreadable): the
+        canary fails loud immediately. These are not transient — a
+        cap above 30 does not fix itself in one tick.
+      - LIVE (over-cap machinery share / surge non-leverage): debounced
+        to a WARN line + exit 0 unless the SAME live drift was also
+        detected on the prior tick inside HYSTERESIS_WINDOW_S. A second
+        consecutive reject escalates to LOUD PRECEDENCE-BAND-HYSTERESIS-
+        FAIL and exits 1. A clean tick resets the counter.
+    """
     errors: list[str] = []
+    hard_errors: list[str] = []
     try:
         data = load_policy(policy_path)
     except ValueError as exc:
-        errors.append(str(exc))
+        hard_errors.append(str(exc))
         data = {}
     else:
-        errors.extend(check_policy_shape(data))
+        hard_errors.extend(check_policy_shape(data))
     if not data:
-        for err in errors:
+        for err in hard_errors:
             loud("PRECEDENCE-BAND-REJECT", err, triage)
         return 1
     now_dt = _parse_iso(now_iso) if now_iso else dt.datetime.now(dt.timezone.utc)
     if now_dt is None:
-        errors.append(f"now must be ISO-8601 UTC, got {now_iso!r}")
-        for err in errors:
+        hard_errors.append(f"now must be ISO-8601 UTC, got {now_iso!r}")
+        for err in hard_errors:
             loud("PRECEDENCE-BAND-REJECT", err, triage)
         return 1
     prior_data: dict[str, Any] | None = None
@@ -442,39 +612,93 @@ def run_check(
         try:
             prior_data = json.loads(prior_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            errors.append(f"prior policy unreadable: {prior_path}: {exc}")
+            hard_errors.append(f"prior policy unreadable: {prior_path}: {exc}")
     if isinstance(prior_data, dict):
-        errors.extend(check_ratchet(data, prior_data, now_dt))
+        hard_errors.extend(check_ratchet(data, prior_data, now_dt))
     phase = phase_of(data, now_dt)
     if units_path is None:
         units = read_live_units()
     else:
         units = read_units(units_path)
     machinery_repo = str(data.get("machinery_repo") or MACHINERY_REPO_DEFAULT)
+    live_errors: list[str] = []
     if phase == "band":
-        errors.extend(check_band_phase(data, units, machinery_repo))
+        live_errors.extend(check_band_phase(data, units, machinery_repo))
     elif phase == "surge":
-        errors.extend(
+        live_errors.extend(
             check_surge_phase(data, units, machinery_repo, now_dt)
         )
-    if errors:
-        for err in errors:
+    if hard_errors:
+        for err in hard_errors:
             loud("PRECEDENCE-BAND-REJECT", err, triage)
         return 1
-    machinery_count = sum(1 for repo, _ in units if repo == machinery_repo)
-    product_count = len(units) - machinery_count
-    total = len(units)
-    share_pct = (machinery_count * 100) // total if total else 0
+    if not live_errors:
+        # Clean tick — reset the hysteresis counter so a future drift
+        # starts fresh.
+        if state_file is not None:
+            prior_state = read_state(state_file)
+            new_state, _reason = apply_hysteresis_clean(prior_state, now_dt)
+            write_state(state_file, new_state)
+        machinery_count = sum(1 for repo, _ in units if repo == machinery_repo)
+        product_count = len(units) - machinery_count
+        total = len(units)
+        share_pct = (machinery_count * 100) // total if total else 0
+        loud(
+            "PRECEDENCE-BAND-OK",
+            f"phase={phase} machinery_max_pct={data.get('machinery_max_pct')} "
+            f"product_min_pct={data.get('product_min_pct')} "
+            f"cutoff_utc={data.get('cutoff_utc')} "
+            f"machinery={machinery_count} product={product_count} "
+            f"total={total} share={share_pct}%",
+            triage,
+        )
+        return 0
+    # Live drift detected. Loud each finding so the first-tick WARN line
+    # carries the full reason set, then apply hysteresis to decide
+    # fail-vs-warn. The state file is REQUIRED for live drift to even be
+    # debounced — backwards-compatible callers (no state file) still
+    # fail loud on the first live drift so the pre-#2595 contract holds
+    # the same line for the same regression.
+    for err in live_errors:
+        loud("PRECEDENCE-BAND-REJECT", err, triage)
+    if state_file is None:
+        return 1
+    prior_state = read_state(state_file)
+    fail_loud, new_state, reason = apply_hysteresis(
+        drift_now=True,
+        state=prior_state,
+        now=now_dt,
+        triage=triage,
+    )
+    write_state(state_file, new_state)
+    if fail_loud:
+        loud(
+            "PRECEDENCE-BAND-HYSTERESIS-FAIL",
+            f"{reason}; errors={live_errors}",
+            triage,
+        )
+        return 1
     loud(
-        "PRECEDENCE-BAND-OK",
-        f"phase={phase} machinery_max_pct={data.get('machinery_max_pct')} "
-        f"product_min_pct={data.get('product_min_pct')} "
-        f"cutoff_utc={data.get('cutoff_utc')} "
-        f"machinery={machinery_count} product={product_count} "
-        f"total={total} share={share_pct}%",
+        "PRECEDENCE-BAND-HYSTERESIS-WARN",
+        f"{reason}; debounced to WARN (next consecutive reject fails loud)",
         triage,
     )
     return 0
+
+
+def apply_hysteresis_clean(
+    state: dict[str, Any],
+    now: dt.datetime,
+) -> tuple[dict[str, Any], str]:
+    """Reset the hysteresis counter for a clean tick. Splits from the
+    apply_hysteresis() general path so the OK line stays free of the
+    "first reject" branch.
+    """
+    new_state = dict(state)
+    new_state["last_seen"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    new_state["last_status"] = "ok"
+    new_state["consecutive_rejects"] = 0
+    return new_state, "clean-tick-resets-counter"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -490,11 +714,16 @@ def main(argv: list[str] | None = None) -> int:
     canary.add_argument("--prior")
     canary.add_argument("--now")
     canary.add_argument("--triage")
+    canary.add_argument(
+        "--state-file",
+        help="hysteresis state path (default: ~/.local/state/pi-packet/precedence-band-canary.state.json)",
+    )
     parser.add_argument("--policy")
     parser.add_argument("--units-file")
     parser.add_argument("--prior")
     parser.add_argument("--now")
     parser.add_argument("--triage")
+    parser.add_argument("--state-file")
     args = parser.parse_args(argv)
     if args.cmd and args.cmd != "canary":
         print(f"unknown subcommand: {args.cmd}", file=sys.stderr)
@@ -508,7 +737,8 @@ def main(argv: list[str] | None = None) -> int:
         prior = Path(args.prior)
     triage = args.triage or os.environ.get("FLEET_HEARTBEAT_TRIAGE")
     now = args.now or os.environ.get("PRECEDENCE_BAND_NOW")
-    return run_check(policy, units, prior, triage, now)
+    state_file = Path(args.state_file) if args.state_file else default_state_path()
+    return run_check(policy, units, prior, triage, now, state_file)
 
 
 if __name__ == "__main__":
