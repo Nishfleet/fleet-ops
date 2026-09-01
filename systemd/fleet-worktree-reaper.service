@@ -1,10 +1,14 @@
 [Unit]
-Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227)
+Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227 + #2637)
 # Named reason for this schedule (vault: "a schedule needs a named reason"):
 # worktree accumulation is a monotonic growth invariant with no event signal.
 # A merged claim leaves its ~440MB worktree behind silently; only a periodic
-# sweep closes the gap. The reaper is fail-safe (merged + terminal + clean
-# gates, dry-run capable) and cheap, so a daily cadence is proportionate.
+# sweep closes the gap. The reaper is fail-safe (Mode A: merged + terminal +
+# clean; Mode B: ledger-terminal + HEAD-on-origin + clean — both also gate on
+# no live worker), dry-run capable, and cheap, so a daily cadence is
+# proportionate. Mode B (fleet-ops#2637) is the recorded-cycle-state
+# extension that catches worktrees whose worker moved on after its cycle
+# ended (branch changed away from claim/issue-N to main, fix/*, etc.).
 #
 # OnFailure is wired by the global service.d/10-escalate.conf drop-in
 # (unit-escalation@fleet-worktree-reaper.service), so a failed reaper
@@ -17,8 +21,9 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-worktree-reaper'
-# A full sweep over ~1200 worktrees + one gh pr list per repo is bounded
-# well under five minutes.
+# A full sweep over ~1200 worktrees + one gh pr list per repo + one
+# git ls-remote per Mode B candidate is bounded well under five minutes
+# in practice (the 2026-09-01 dry-run completed in ~25s wall).
 TimeoutStartSec=10min
 # Never restart: the timer is the retry. A failed reaper escalates via the
 # global drop-in, not via Restart=.

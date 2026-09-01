@@ -1,20 +1,40 @@
 #!/usr/bin/env bash
 # tests/fleet-worktree-reaper.test.sh
 #
-# Proves the orphan worktree reaper (fleet-ops#2227) deletes ONLY worktrees
-# whose claim branch is merged AND whose worker cycle is terminal AND whose
-# tree is clean. Hermetic: fake gh (file-backed merged-PR answers), fake
-# systemctl (live-unit marker files), local bare repos + worktrees, no network.
+# Proves the orphan worktree reaper (fleet-ops#2227, fleet-ops#2637)
+# deletes ONLY worktrees whose cycle state is recorded as terminal AND
+# whose work is preserved on origin AND whose tree is clean. Two modes:
+#
+#   Mode A (claim/issue-<N> + MERGED PR) — fleet-ops#2227 original.
+#   Mode B (issue-<short>-<N> path + dispatch-ledger terminal) — fleet-ops#2637.
+#
+# Hermetic: fake gh (file-backed merged-PR answers), fake systemctl
+# (live-unit marker files), local bare repos + worktrees, no network.
+# The dispatch ledger is mocked via FLEET_DISPATCH_LEDGER pointing at a
+# scratch JSONL.
 #
 # Cases:
-#   1. merged + terminal + clean        -> REAPED
-#   2. merged + terminal + dirty        -> SKIPPED (left in place)
-#   3. merged + LIVE worker             -> SKIPPED (never touch a live cycle)
-#   4. NOT merged + terminal + clean    -> SKIPPED (no merged PR)
-#   5. gh merged query fails for a repo -> SKIPPED (fail safe, never blind)
-#   6. worktree on a non-claim branch   -> untouched (other mechanism owns it)
-#   7. --dry-run                        -> reports, deletes nothing
-#   8. MANIFEST + unit files present    -> install rail intact
+#   Mode A (existing):
+#     1. merged + terminal + clean        -> REAPED-A
+#     2. merged + terminal + dirty        -> SKIPPED (left in place)
+#     3. merged + LIVE worker             -> SKIPPED (never touch a live cycle)
+#     4. NOT merged + terminal + clean    -> SKIPPED (no merged PR)
+#     5. gh merged query fails for a repo -> SKIPPED (fail safe, never blind)
+#     6. worktree on a non-claim branch   -> untouched (other mechanism owns it)
+#     7. --dry-run                        -> reports, deletes nothing
+#
+#   Mode B (new — fleet-ops#2637):
+#     9.  pi-issue path + ledger-terminal + pushed + clean -> REAPED-B
+#    10.  pi-issue path + ledger-OPEN                       -> SKIP-B not-terminal
+#    11.  pi-issue path + ledger-terminal + HEAD not on origin -> SKIP-B head-not-on-origin
+#    12.  pi-issue path + ledger-terminal + LIVE worker     -> SKIP live
+#    13.  pi-issue path + ledger-terminal + pushed + dirty  -> SKIP dirty
+#    14.  ledger file missing                              -> SKIP-B not-terminal
+#                                                            (fail closed, never blind)
+#    15.  pi-issue path + multiple ledger entries (open -> salvaged) -> REAPED-B
+#                                                            (most-recent wins)
+#
+#   16. MANIFEST + unit files present    -> install rail intact
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -219,7 +239,148 @@ ok "dry-run reports without deleting"
 # Now actually reap it to leave a clean state.
 "$bin" --root "$wroot" >/dev/null 2>&1 || true
 
-# --- 8. install rail intact -----------------------------------------------
+# =====================================================================
+# Mode B (fleet-ops#2637): pi-issue PATH + ledger-terminal + on origin
+# =====================================================================
+# The dispatch ledger is mocked as JSONL at $scratch/ledger.jsonl.
+# FLEET_DISPATCH_LEDGER env override (see reaper source) wires the
+# script to the scratch file. Each case adds a worktree on a NON-claim
+# branch (main, fix/*, etc.) so Mode A's branch filter alone cannot
+# touch it — only Mode B's path+ledger+pushed gates can.
+
+# Helper: create a worktree on a non-claim branch, push it to origin,
+# and return the path. push=0 leaves HEAD local (off origin) so the
+# reaper's head_on_origin gate refuses.
+add_path_worktree() {
+    local parent="$1" wroot="$2" n="$3" branch="$4" push="${5:-1}" dirty="${6:-0}"
+    local parent_base; parent_base=$(basename "$parent")
+    local wt="$wroot/issue-${parent_base}-${n}"
+    # Make a UNIQUE commit on the parent so the new branch points at a
+    # SHA that is NOT on origin (the parent's HEAD == origin/main's SHA
+    # at clone time, so without a new commit HEAD would be on origin and
+    # the push=0 case would not exercise head_not_on_origin).
+    printf 'wip-%s-%s\n' "$branch" "$n" >>"$parent/unpushed.txt"
+    git_ident "$parent"
+    git -C "$parent" add unpushed.txt
+    git -C "$parent" commit -q -m "add wip-${branch}-${n}"
+    git -C "$parent" branch -f "$branch" HEAD >/dev/null 2>&1
+    git -C "$parent" worktree add -q -B "$branch" "$wt" 2>/dev/null
+    if [ "$dirty" = 1 ]; then
+        printf 'uncommitted\n' >"$wt/dirty.txt"
+    fi
+    if [ "$push" = 1 ]; then
+        git -C "$wt" push -q origin "$branch" 2>/dev/null
+    fi
+    printf '%s' "$wt"
+}
+
+# Helper: append a ledger entry. Each arg is "<unit>|<status>|<ts>".
+ledger_add() {
+    for entry in "$@"; do
+        local u="${entry%%|*}" rest="${entry#*|}"
+        local s="${rest%%|*}" ts="${rest##*|}"
+        jq -nc --arg u "$u" --arg s "$s" --arg ts "$ts" \
+            '{unit:$u,status:$s,ts:$ts}' >>"$scratch/ledger.jsonl"
+    done
+}
+
+# Make the test scratch + scratch ledger.
+mkdir -p "$scratch"
+: >"$scratch/ledger.jsonl"
+
+# Re-point the reaper at the scratch ledger via FLEET_DISPATCH_LEDGER.
+export FLEET_DISPATCH_LEDGER="$scratch/ledger.jsonl"
+
+# --- 9. pi-issue path + ledger-terminal + pushed + clean -> REAPED-B ----
+# Use a non-main branch (the parent has main checked out, so a worktree
+# on main would refuse with "branch already checked out"). Mode B only
+# cares about the PATH shape; the branch can be anything.
+add_path_worktree "$parent_a" "$wroot" 300 "feature/mode-b-300" 1 0
+ledger_add "pi-issue-fleet-ops-300|salvaged|2026-08-27T10:00:00Z"
+out_b1=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/issue-fleet-ops-300" ] \
+    || fail "case9: path+terminal+pushed+clean should be REAPED-B; output: $out_b1"
+ok "case9: pi-issue path + ledger-terminal + pushed + clean REAPED-B"
+
+# --- 10. pi-issue path + ledger-OPEN -> SKIP-B not-terminal -------------
+add_path_worktree "$parent_a" "$wroot" 301 "feature/mode-b-301" 1 0
+ledger_add "pi-issue-fleet-ops-301|salvaged|2026-08-27T10:00:00Z" \
+           "pi-issue-fleet-ops-301|open|2026-09-01T10:00:00Z"
+out_b2=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-301" ] \
+    || fail "case10: open-ledger worktree must NOT be reaped; output: $out_b2"
+echo "$out_b2" | grep -q "issue-fleet-ops-301: SKIP-B not-ledger-terminal" \
+    || fail "case10: expected SKIP-B not-ledger-terminal; output: $out_b2"
+ok "case10: pi-issue path + ledger-OPEN SKIP-B not-terminal"
+
+# --- 11. pi-issue path + ledger-terminal + HEAD not on origin -> SKIP-B ---
+# push=0 leaves HEAD off origin; ledger-terminal otherwise satisfied.
+add_path_worktree "$parent_a" "$wroot" 302 "feature/mode-b-302" 0 0
+ledger_add "pi-issue-fleet-ops-302|salvaged|2026-08-27T10:00:00Z"
+out_b3=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-302" ] \
+    || fail "case11: HEAD-not-on-origin worktree must NOT be reaped; output: $out_b3"
+echo "$out_b3" | grep -q "issue-fleet-ops-302: SKIP-B head-not-on-origin" \
+    || fail "case11: expected SKIP-B head-not-on-origin; output: $out_b3"
+ok "case11: pi-issue path + HEAD-not-on-origin SKIP-B"
+
+# --- 12. pi-issue path + ledger-terminal + LIVE worker -> SKIP live -----
+add_path_worktree "$parent_a" "$wroot" 303 "feature/mode-b-303" 1 0
+printf 'running\n' >"$scratch/live/pi-issue@fleet-ops-303.service"
+ledger_add "pi-issue-fleet-ops-303|salvaged|2026-08-27T10:00:00Z"
+out_b4=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-303" ] \
+    || fail "case12: live-worker worktree must NOT be reaped; output: $out_b4"
+echo "$out_b4" | grep -q "issue-fleet-ops-303: SKIP live worker" \
+    || fail "case12: expected SKIP live worker; output: $out_b4"
+ok "case12: pi-issue path + LIVE worker SKIP live"
+rm -f "$scratch/live/pi-issue@fleet-ops-303.service"
+
+# --- 13. pi-issue path + ledger-terminal + pushed + dirty -> SKIP dirty --
+add_path_worktree "$parent_a" "$wroot" 304 "feature/mode-b-304" 1 1
+ledger_add "pi-issue-fleet-ops-304|salvaged|2026-08-27T10:00:00Z"
+out_b5=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-304" ] \
+    || fail "case13: dirty worktree must NOT be reaped; output: $out_b5"
+echo "$out_b5" | grep -q "issue-fleet-ops-304: SKIP dirty" \
+    || fail "case13: expected SKIP dirty; output: $out_b5"
+ok "case13: pi-issue path + dirty SKIP dirty"
+
+# --- 14. ledger file missing -> SKIP-B not-terminal (fail closed) -------
+add_path_worktree "$parent_a" "$wroot" 305 "feature/mode-b-305" 1 0
+rm -f "$scratch/ledger.jsonl"
+out_b6=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-305" ] \
+    || fail "case14: missing-ledger worktree must NOT be reaped; output: $out_b6"
+echo "$out_b6" | grep -q "issue-fleet-ops-305: SKIP-B not-ledger-terminal" \
+    || fail "case14: expected SKIP-B not-ledger-terminal when ledger absent; output: $out_b6"
+ok "case14: missing ledger SKIP-B not-terminal (fail closed)"
+# Recreate ledger for the next case.
+: >"$scratch/ledger.jsonl"
+
+# --- 15. multiple ledger entries (open -> salvaged): most-recent wins ---
+add_path_worktree "$parent_a" "$wroot" 306 "feature/mode-b-306" 1 0
+ledger_add "pi-issue-fleet-ops-306|open|2026-08-25T10:00:00Z" \
+           "pi-issue-fleet-ops-306|salvaged|2026-09-01T10:00:00Z"
+out_b7=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/issue-fleet-ops-306" ] \
+    || fail "case15: open->salvaged sequence must REAP (most recent wins); output: $out_b7"
+ok "case15: most-recent ledger status wins (open -> salvaged -> REAPED-B)"
+
+# --- Mode A/B interaction: a worktree on claim/issue-N AND a path-shape ---
+# Mode A wins when the branch matches AND the PR is merged (existing
+# behavior, regression). The path-shape check would also match, but
+# Mode A's merged-PR gate is the stricter / earlier check. Verify the
+# worktree is reaped via Mode A and counted in reaped_a (not reaped_b).
+add_claim_worktree "$parent_a" "$wroot" 307
+out_b8=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/issue-fleet-ops-307" ] \
+    || fail "case-interaction: claim-branch+merged should still be REAPED-A; output: $out_b8"
+echo "$out_b8" | grep -q "issue-fleet-ops-307: REAPED-A" \
+    || fail "case-interaction: expected REAPED-A tag; output: $out_b8"
+ok "Mode A wins over Mode B when branch matches AND PR is merged"
+
+# --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
          systemd/fleet-worktree-reaper.service \
          systemd/fleet-worktree-reaper.timer; do

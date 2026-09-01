@@ -1,5 +1,5 @@
 [Unit]
-Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227)
+Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227 + #2637)
 
 [Timer]
 # Named reason (vault: "a schedule needs a named reason"): worktree
