@@ -329,6 +329,17 @@ bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
 # without a workflow-file edit.
 bash "$here/unit-escalation-write-journal-evidence.test.sh"
 
+# fleet-ops#2614 (PR #2655): same-unit re-fire dedupe + orphan-chain sweep.
+# PR #2655 landed unit-escalation-write-same-unit-rerun-dedupe.test.sh and
+# fleet-escalation-completion-orphan-sweep.test.sh WITHOUT a ci.yml listing
+# or host, leaving p14-test-listing-gate red on main -> FleetMainRed (same
+# failure class as fleet-ops#2399 journal-evidence, below). Hosted here
+# alongside their sibling unit-escalation-write-*/escalation-completion
+# tests so P14 runs them without a workflow-file edit (the worker App cannot
+# push .github/workflows/**).
+bash "$here/unit-escalation-write-same-unit-rerun-dedupe.test.sh"
+bash "$here/fleet-escalation-completion-orphan-sweep.test.sh"
+
 # fleet-ops#2133 / #2475 (PR #2193): pi-issue@*.service exclusion from
 # unit-escalation-write. The worker has its own OnFailure=pi-issue-failed@%i
 # reaper + Restart=on-failure with StartLimitBurst=3, so the SENIOR AUDITOR
