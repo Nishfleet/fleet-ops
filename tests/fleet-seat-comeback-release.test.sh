@@ -43,6 +43,17 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 BIN="$repo_root/bin/fleet-seat-comeback-release"
+# fleet-ops#2661: bin/fleet-seat-comeback-release sources seat-lib.sh
+# (seat_ledger_path + _record_learned_cap) for the overload-strike +
+# provider-wide wall. The bin's `[[ -f "$SEAT_LIB" ]]` guard makes the
+# source OPTIONAL — on hosted CI $HOME/.local/lib/pi-packet/seat-lib.sh
+# is absent, seat-lib never loads, seat_is_overload_bench returns 1,
+# register_overload_strike is never called, and the pong-ok test sees
+# `got 0` strikes (PR #2685/#2687 P14 red). Point the bin at the in-repo
+# seat-lib explicitly so the contract is "tests provide seat-lib", matching
+# every other fleet-ops seat-lib test (pi-scout-seat-rotation,
+# keystone-routing, pi-issue-run-*).
+export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
