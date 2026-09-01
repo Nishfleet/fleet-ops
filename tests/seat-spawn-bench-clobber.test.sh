@@ -176,4 +176,83 @@ if seat_usable "$p" "$m"; then
 fi
 ok "fresh marker blocks even when ledger file is absent (wrapper bench is independent)"
 
+# --- fleet-ops#2627: the empty_run COUNT must ALSO survive the clobber -------------
+# seat-health.ts's healthy write zeros the ledger's consecutive_failure_count on a
+# later 200 observation ( the clobber that #1512's marker survives for USABILITY).
+# The 2026-09-01 live drain: openrouter/deepseek-v4-flash-0731 no-op'ed
+# 5+ times in 2h with EVERY ledger write showing count=1 ( the clobber
+# reset it to0 between wrapper writes ) - so the #1362 failure-ceiling park
+# never fired and the seat re-entered rotation flat every 15 min forever (
+# 18 empty runs/2h on healthy-reporting seats ). THE FIX: the wrapper-side
+# spawn-bench marker ALSO carries the consecutive_failure_count ( written by
+# mark_seat_empty_run ), merged from the same-class marker FIRST ) - so the
+# count survives the clobber ) and the park engages for a CHRONIC no-op. A
+# RECOVERED seat ( a healthy observation after the bench expired ) is NOT punished:
+# the marker then ages past EMPTY_RUN_MARKER_FRESH_S ), the merge falls back to the
+# clobbered ledger( count=0 ),and the seat starts fresh.
+
+# This scenario proves:
+#   (a) three empty-run benches on the same seat with a healthy clobber between
+#        each accumulate the marker count:1 ->0 ->0 ( the ledger( clobbered（ stays0.
+#   (b( at EMPTY_RUN_FAILURE_CEILING the #1362 park wall engages ( the marker's
+#        usable_at jumps to ~now+SEAT_PARK_WALL_S, seat_usable holds it,and the
+#        count that fed the park came from the CLOBBER-RESILIENT marker,not the ledger.
+
+
+
+
+export EMPTY_RUN_FAILURE_CEILING=3
+export SEAT_PARK_WALL_S=86400
+# Disable corpse reclassification so the park test stays isolated.
+export SEAT_DEAD_CONSECUTIVE_THRESHOLD=999999
+
+
+
+count_of() { jq -r '.consecutive_failure_count //0' "$mf" 2>/dev/null || echo 0; }
+usable_of() { jq -r '.usable_at // ""' "$mf" 2>/dev/null || true; }
+wall_s_of_marker() {
+    local u now_s u_s
+    u=$(usable_of)
+    [[ -n "$u" ]] || { echo 0; return; }
+    now_s=$(date -u +%s)
+    u_s=$(date -u -d "$u" +%s 2>/dev/null || echo 0)
+    echo $((u_s - now_s))
+}
+
+# (a( sequence of empty-run benches WITH a healthy clobber between each.
+p="devin"; m="glm-5-2"  # same seat as the scenarios above
+lf=$(ledger_file "$p" "$m")
+mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
+
+mark_seat_empty_run "$p" "$m" "t2627:noop:1" >/dev/null 2>&1 || fail "empty-run #1 failed"
+clobber_with_healthy "$p" "$m" "$lf"
+[[ "$(count_of)" == "1" ]] || fail "marker count after 1st empty-run (+clobber) = $(count_of), want 1 —the count must NOT be zeroed by the healthy clobber"
+ok "marker count survives healthy clobber: count=$(count_of) after 1st no-op"
+
+mark_seat_empty_run "$p" "$m" "t2627:noop:2" >/dev/null 2>&1 || fail "empty-run #2 failed"
+clobber_with_healthy "$p" "$m" "$lf"
+[[ "$(count_of)" == "2" ]] || fail "marker count after 2nd empty-run (+clobber) = $(count_of), want 2 — count must ACCUMULATE across clobbers ( fleet-ops#2627"
+ok "marker count ACCUMULATES across healthy clobbers: count=$(count_of) after 2 no-ops ( busts the live 18-in-2h 'count=1 every time' reset pattern"
+
+mark_seat_empty_run "$p" "$m" "t2627:noop:3" >/dev/null 2>&1 || fail "empty-run #3 failed"
+clobber_with_healthy "$p" "$m" "$lf"
+[[ "$(count_of)" == "3" ]] || fail "marker count after 3rd empty-run = $(count_of), want0"
+# the ledger must stay clobbered healthy/0 throughout( so the marker carry is the ONLY
+# thing that kept the count(.
+ledger_clobbered=$(jq -r '.consecutive_failure_count //0' "$lf" 2>/dev/null || echo 0)
+[[ "$ledger_clobbered" == "0" ]] || fail "ledger count = $ledger_clobbered, want0 — the clobber must have zeroed it for the test to prove the marker carry"
+ok "marker count=3 while clobbered ledger says0— THE MARKER IS THE DURABLE COUNT"
+
+#(b( at the empty-run failure ceiling the park wall engages( from the accumulated count。
+w=$(wall_s_of_marker)
+(( w >= SEAT_PARK_WALL_S -120 && w <= SEAT_PARK_WALL_S +120 )) \
+  || fail "empty-run park wall = ${w}s, want ~${SEAT_PARK_WALL_S}s ( park must fire from the ACCUMULATED marker count at EMPTY_RUN_FAILURE_CEILING=3 )"
+ok "empty-run park wall = ${w}s (~24h) — the #1362 park fires from the accumulated marker count across clobbers"
+if seat_usable "$p" "$m"; then
+    fail "seat_usable returned usable on the parked empty-run seat ( park wall must hold"
+fi
+ok "parked empty-run seat held UNUSABLE for the long wall"
+
+ok "fleet-ops#2627: empty_run count accumulates across healthy clobbers( in the marker,andthe failure-ceiling park engages for a CHRONIC no-op drain"
 ok "seat spawn-bench clobber: wrapper bench survives healthy ledger clobber (#1512)"

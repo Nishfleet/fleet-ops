@@ -1106,22 +1106,32 @@ seat_spawn_bench_path() {
     printf '%s/%s__%s.spawn-bench.json\n' "$LEDGER_DIR" "$ps" "$ms"
 }
 
-# Write the spawn-fail/empty-run bench marker. Best-effort: a write failure
+# Write the spawn-fail/empty-run bench marker. Best-effort:a write failure
 # must not block the ledger write or the exit-0 quiet contract. The marker
-# carries only usable_at (the field seat_usable checks) + provenance; the
-# ledger remains the authority for everything else.
-# Args: provider model usable_at reason backoff_s
+# carries usable_at (the field seat_usable checks) + provenance + the
+# wrapper-side consecutive_failure_countand failure_mode. The COUNT makes the
+# marker the DURABLE count authority for the bench class: seat-health.ts
+# clobbers the ledger back to health_class=healthy/count=0 on a later
+# 200 observation (fleet-ops#2627), so a wrapper bench's escalating
+# backoff must NOT depend on the clobberable ledger. Merging count INTOthe
+# marker on every writer call lets the count survive the clobber and the #1362
+# failure-ceiling park actually engage for a CHRONIC no-op'ing seat (the live
+# 18 empty runs in 2h on healthy-reporting seats).
+# Args: provider model usable_at reason backoff_s count failure_mode
 _seat_write_spawn_bench() {
-    local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
+    local p="$1" m="$2" usable="$3" reason="$4" backoff="$5" count="${6:-0}" mode="${7:-unknown}"
     local path now_utc tmp
     path=$(seat_spawn_bench_path "$p" "$m")
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     tmp="$path.$$.$RANDOM.tmp"
     if jq -nc \
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
         --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
+        --arg mode "$mode" --argjson count "$count" \
         '{provider:$provider, model:$model, usable_at:$usable,
-          reason:$reason, written_at:$written, backoff_s:$backoff}' \
+          reason:$reason, written_at:$written, backoff_s:$backoff,
+          failure_mode:$mode, consecutive_failure_count:$count}' \
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
@@ -3009,11 +3019,12 @@ _seat_dead_by_threshold() {
 # forced to SEAT_PARK_WALL_S (the park); otherwise the base is echoed unchanged.
 # Defensive: non-numeric inputs fall back to the base / count=0.
 _failure_ceiling_wall() {
-    local count="${1:-0}" base="${2:-300}"
+    local count="${1:-0}" base="${2:-300}" ceil_override="${3:-}"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     [[ "$base" =~ ^[0-9]+$ ]] || base=300
     local ceil="${SEAT_FAILURE_CEILING:-20}"
     local park="${SEAT_PARK_WALL_S:-86400}"
+    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
     [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
     [[ "$park" =~ ^[0-9]+$ ]] || park=86400
     if (( count >= ceil )); then
@@ -3025,9 +3036,10 @@ _failure_ceiling_wall() {
 
 # True (return 0) if count has crossed the failure ceiling.
 _seat_parked_by_ceiling() {
-    local count="${1:-0}"
+    local count="${1:-0}" ceil_override="${2:-}"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     local ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
     [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
     (( count >= ceil ))
 }
@@ -3159,7 +3171,7 @@ mark_seat_spawn_fail() {
         # seat_usable honours this bench even if seat-health.ts later writes a
         # healthy observation to the ledger. Best-effort: a marker write
         # failure does not undo the ledger write above.
-        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" 2>/dev/null || true
+        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "spawn_fail" 2>/dev/null || true
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
@@ -3186,6 +3198,24 @@ mark_seat_spawn_fail() {
 # SeatLedgerEntry (seat-health.ts); seat_usable skips via the generic
 # usable_at check and fail-opens after.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
+# fleet-ops#2627: HOW RECENT a same-class spawn-bench marker's count may be
+# merged for the wrapper-side escalation. A fresh marker)( written within this
+# window) carries the DURABLE accumulated count that seat-health.ts's healthy
+# clobber would otherwise zero in the ledger. A STALE marker)( a seat that
+# produced a healthy observation after the bench expired) is the recovery signal:
+# its count was reset to  urns by seat-health.ts, so the merge falls back to the
+# ledger)( count=0)and the seat starts a fresh count. Default
+# 2× EMPTY_RUN_BACKOFF_S)( 30 min).
+EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min
+# fleet-ops#2627: failure-ceiling for the EMPTY_RUN class. A seat that no-ops
+# that many times consecutively)( across clobber-resilient marker counts)is
+# CHRONIC and parks behind the #1362 long wall)( SEAT_PARK_WALL_S instead of
+# re-offering every flat 900s forever. Defaults to the generic SEAT_FAILURE_
+# CEILING)( 20);lowering it)( e.g. 10) parks a chronic no-op'ing free
+# lane sooner, so the empty_runs_last_2h drain drops within a 2h window.
+
+# (fleet-ops#2627. The production default 10 parks a chronic no-op'ing free lane after 10 consecutive empty runs.
+EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-10}"  # fleet-ops#2627: park chronic no-op seats after 10 consecutive empty runs (24h wall; default lower than SEAT_FAILURE_CEILING=20 so the 2h drain drops over a following 2h window; operators may raise it
 # fleet-ops#2343: an empty run is a provider NO-OP, not a quota wall, and
 # must NOT escalate by count. The fleet-ops#1408 ladder (900 -> 1800 -> 3600
 # -> 7200s) churned HEALTHY seats: openrouter/deepseek/deepseek-v4-flash-0731
@@ -3208,23 +3238,65 @@ mark_seat_empty_run() {
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # Merge consecutive_failure_count from any existing entry (same policy
-    # as mark_seat_spawn_fail: a real session-time 429 resetting later does
-    # not briefly flip us back to 0).
-    local prev_count=0
+    # Merge consecutive_failure_count from the wrapper's DURABLE spawn-bench
+    # marker FIRST ( same empty_run class and written recently);then the
+    # ( clobberable) ledger. seat-health.ts writes a healthy observation
+    # (200, count=0) to the ledger on a later response/run, so a wrapper
+    # bench's count must NOT depend on the clobbered ledger — fleet-ops#2627
+    # live: openrouter/deepseek-v4-flash-0731 no-op'ed 5+ times in 2h
+    # with every ledger write showing count=1 ( the clobber reset it to 0
+    # between wrapper writes)and the #1362 failure-ceiling park never fired,
+    # 18 empty runs/2h. The marker survives the clobber, so counting there
+    # lets the escalating backoff)and the park) actually engage for a CHRONIC
+    # no-op'ing seat. Only merge from a same-class ( empty_run) marker that
+    # was written RECENTLY;a stale marker)( a seat that recovered and produced
+    # healthy output after the bench expired) is the recovery signal — its
+    # count was reset to 0 by seat-health.ts, so merge falls back to the
+    # ledger)( count=0)and the seat starts a fresh count.
+
+    local prev_count=0 sb_mode sb_mcount sb_written now_s written_s
+    local sb_marker_path
+    sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_marker_path" ]]; then
+        sb_mode=$(jq -r '.failure_mode // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ "$sb_mode" == "empty_run" ]]; then
+            sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
+            [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+            sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+            if [[ -n "$sb_written" ]]; then
+                now_s=$(date -u +%s)
+                written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+                if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )); then
+                    if (( now_s - written_s <= EMPTY_RUN_MARKER_FRESH_S )); then
+                        prev_count="$sb_mcount"
+                    fi
+                fi
+            fi
+        fi
+    fi
     if [[ -f "$path" ]]; then
-        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
-        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+        local ledger_count
+        ledger_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$ledger_count" =~ ^[0-9]+$ ]] || ledger_count=0
+        [[ "$ledger_count" -gt "$prev_count" ]] && prev_count="$ledger_count"
     fi
     local merged_count=$((prev_count + 1))
-    # fleet-ops#2343: FLAT no-op cooldown — no count ladder (the #1408
+    # fleet-ops#2343: FLAT no-op cooldown — no count ladder ( the #1408
     # escalation churned healthy seats; a provider no-op is not a wall).
     local backoff
     backoff="$EMPTY_RUN_BACKOFF_S"
-    # fleet-ops#1362: park past the failure ceiling (long wall, not seat_dead).
-    # The park is the extreme dead-seat guard (60 consecutive no-ops); the
-    # ordinary no-op case stays at the flat 900s cooldown.
-    backoff=$(_failure_ceiling_wall "$merged_count" "$backoff")
+    # fleet-ops#2627 EMPTY_RUN failure ceiling: park past the long wall when the count
+    # crosses EMPTY_RUN_FAILURE_CEILING ( default SEAT_FAILURE_CEILING=20 ). A seat
+    # that no-ops that many times consecutively ( across clobber-resilient marker
+    # counts ) is CHRONIC: the live 18 empty runs in 2h on opencode /
+    # nemotron-3-ultra-free and openrouter/deepseek-v4-flash-0731（。 The flat
+    # 900s cooldown holds forever below that, preserving fleet-ops#2343 for an
+    # occasional no-op. Past that, the seat parks behind SEAT_PARK_WALL_S ( 24h（
+    # instead of re-offering every flat cycle — cutting the empty_runs_last_2h drain
+    # within a following 2h window. Fail-open still holds: after the park wall
+    # expires the seat is re-eligible. Operators may lower the ceiling ( e.g. 10（
+    # via EMPTY_RUN_FAILURE_CEILING for a free-lane leniency tradeoff.
+    backoff=$(_failure_ceiling_wall "$merged_count" "$backoff" "${EMPTY_RUN_FAILURE_CEILING:-$SEAT_FAILURE_CEILING}")
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -3255,13 +3327,13 @@ mark_seat_empty_run() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "empty-run: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
-        if _seat_parked_by_ceiling "$merged_count"; then
+        if _seat_parked_by_ceiling "$merged_count" "${EMPTY_RUN_FAILURE_CEILING:-$SEAT_FAILURE_CEILING}"; then
             _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
-            seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+            seat_log "empty-run: $p/$m PARKED past failure ceiling( count=$merged_count >= ${EMPTY_RUN_FAILURE_CEILING:-$SEAT_FAILURE_CEILING}, wall=${backoff}s)"
         fi
         # fleet-ops#1512: clobber-proof spawn-bench marker (same rationale as
         # mark_seat_spawn_fail). Best-effort.
-        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" 2>/dev/null || true
+        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "empty_run" 2>/dev/null || true
         return 0
     fi
     seat_log "empty-run: rename FAILED for $p/$m at $path (reason=$reason)"
