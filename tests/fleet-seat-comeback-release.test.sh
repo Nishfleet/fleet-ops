@@ -3,7 +3,7 @@
 #
 # fleet-ops#2421: the ACTIVE release path for walled seats. A seat whose
 # wall clock (bench_until ?? usable_at) has passed is re-probed through the
-# real router (pi --print "Reply with exactly: OK"); on a successful probe
+# real router with a TOOL-USING probe (pi --print): a bash-compute packet whose computed token must appear in the output; an inline-only PONG-ok answer does NOT release (tool-503 stays benched)— on a successful probe
 # the seat is UNWALLED (healthy observation written to the ledger); on a
 # failed probe it stays walled and the extension re-anchors. Loud check:
 # after the sweep, walled seats still holding EXPIRED wall clocks with
@@ -79,10 +79,17 @@ cleanup() { rm -rf "$TMPD"; }
 trap cleanup EXIT INT TERM
 
 # --- stub pi: SUCCESS stub exits 0 with "OK", FAILURE stub exits 1 -------
-cat > "$TMPD/pi-ok" <<'EOF'
+cat > "$TMPD/pi-tool-ok" <<'EOF'
 #!/usr/bin/env bash
-printf 'OK\n'
+# A healthy tool-using probe: prints the computed token of `echo $((6*7))`.
+printf '42\n'
 exit 0
+EOF
+cat > "$TMPD/pi-pong-ok" <<'EOF'
+#!/usr/bin/env bash
+# A partial-storm seat: answers inline "OK" but no tool result (no token).
+printf 'OK\n'
+exit  0
 EOF
 cat > "$TMPD/pi-fail" <<'EOF'
 #!/usr/bin/env bash
@@ -92,7 +99,7 @@ cat > "$TMPD/pi-timeout" <<'EOF'
 #!/usr/bin/env bash
 exit 124
 EOF
-chmod +x "$TMPD/pi-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout"
+chmod +x "$TMPD/pi-tool-ok" "$TMPD/pi-pong-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout"
 
 # --- synthetic fixtures ---------------------------------------------------
 # 1. Walled, wall clock EXPIRED, release-at-expiry class (overload_bench,
@@ -142,7 +149,7 @@ out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
-    PI_BIN="$TMPD/pi-ok" \
+    PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" --dry-run 2>&1)
 grep -q "would probe commandcode/poolside/laguna-s-2.1-free" <<<"$out" \
   || fail "dry-run: expired overload_bench seat must be selected for probe: $out"
@@ -166,7 +173,7 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
-    PI_BIN="$TMPD/pi-ok" \
+    PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" >/dev/null 2>"$TMPD/live-ok.err"
 rc=$?
 set -e
@@ -231,9 +238,9 @@ grep -q "REBENCHED straitly/gpt-5.6-sol" "$TMPD/live-fail.err" \
 new_usable=$(jq -r '.usable_at' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
 new_usable_epoch=$(date -u -d "$new_usable" +%s 2>/dev/null || echo 0)
 (( new_usable_epoch > NOW_EPOCH )) || fail "re-bench: usable_at must be in the future, got $new_usable (epoch=$new_usable_epoch, now=$NOW_EPOCH)"
-jq -e '.source == "comeback_release_rebench" and .failure_mode == "comeback_rebench" and .health_class == "transient_fault" and .consecutive_failure_count == 6' \
+jq -e '.source == "comeback_release_rebench" and .failure_mode == "overload_503" and .health_class == "overload_bench" and .consecutive_failure_count == 6' \
   "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
-  || fail "re-bench: ledger must carry source=comeback_release_rebench, count incremented: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
+  || fail "re-bench: overload seat must PRESERVE overload_bench/overload_503 across re-bench (fleet-ops#2661), count incremented: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
 jq -e '.source == "comeback_release_rebench" and .consecutive_failure_count == 24' \
   "$SEATDIR/straitly__gpt-5.6-sol.json" >/dev/null \
   || fail "re-bench: quota seat count must increment: $(cat "$SEATDIR/straitly__gpt-5.6-sol.json")"
@@ -265,7 +272,7 @@ out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
-    PI_BIN="$TMPD/pi-ok" \
+    PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" --dry-run 2>&1)
 grep -qi "poolside" <<<"$out" \
   && fail "re-bench follow-up: future-wall seat must NOT be re-probed: $out"
@@ -338,7 +345,7 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
-    PI_BIN="$TMPD/pi-ok" \
+    PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" >/dev/null 2>"$TMPD/override.err"
 rc=$?
 set -e
@@ -371,7 +378,7 @@ out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
-    PI_BIN="$TMPD/pi-ok" \
+    PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" --dry-run 2>&1)
 grep -qi "nemotron" <<<"$out" \
   && fail "future-wall seat must never be probed: $out"
@@ -404,7 +411,7 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
     FLEET_SEAT_COMEBACK_PROM="$PROM" \
     FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
-    PI_BIN="$TMPD/pi-ok" \
+    PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" >/dev/null 2>"$TMPD/overdue-ok.err"
 rc=$?
 set -e
@@ -446,4 +453,95 @@ after=$(overdue_n)
 [[ "$after" == "0" ]] || fail "overdue-rebench: _read_comeback_overdue must be 0 AFTER the sweep (wall advanced), got $after"
 ok "overdue metric clears: probe failure re-benches the wall into the future -> comeback-overdue count 0 (fleet-ops#2520 regression pin)"
 
+# --- 7. PONG-ok inline answer -> NOT released (fleet-ops#2661) ----------
+# A partial 503 storm is PONG-compatible: a 1-token inline "OK" probe
+# passes but tool-loading 503s. The tool-using probe must keep such a seat
+# benched: an inline-only "OK" answer (no tool result, no computed token) does
+# NOT release. This is the regression fixture the issue names: PONG-ok but
+# tool-503 -> does NOT release. The probe fails -> re-bench (overload class
+# preserved) + a 1st overload strike registered on that provider.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":5}
+EOF
+STATE="$TMPD/state-pong.json"
+PROM="$TMPD/release-pong.prom"
+LEARNED="$TMPD/learned-caps-pong.json"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-pong-ok" \
+    LEARNED_CAPS_JSON="$LEARNED" \
+    bash "$BIN" >/dev/null 2>"$TMPD/pong.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "pong-ok: expected exit 0 (re-benched, not loud), got $rc ($(cat "$TMPD/pong.err"))"
+health=$(jq -r '.health_class' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+[[ "$health" == "overload_bench" ]] || fail "pong-ok: seat must STAY benched (overload_bench), got $health"
+grep -q "REBENCHED commandcode/poolside/laguna-s-2.1-free" "$TMPD/pong.err" \
+  || fail "pong-ok: must log REBENCHED (re-bench on inline-only probe failure): $(cat "$TMPD/pong.err")"
+released_total=$(jq -r '.released_total' "$STATE")
+[[ "$released_total" == "0" ]] || fail "pong-ok: inline-only probe must NOT release (released_total must be 0, got $released_total)"
+# The first overload strike is registered on that provider (the re-bench preserved the
+# overload class;the strike counter is the escalation-to-provider-wall premiso).
+strikes=$(jq -r '.overload_strikes.commandcode.count // 0' "$STATE")
+[[ "$strikes" == "1" ]] || fail "pong-ok: inline-only probe failure must register 1 overload strike (got $strikes)"
+grep -q "OVERLOAD WALL" "$TMPD/pong.err" && fail "pong-ok: 1 strike must NOT arm the wall yet: $(cat "$TMPD/pong.err")"
+ok "PONG-ok inline answer -> seat stays benched (1 overload strike, no release)"
+
+# --- 8. >=4 overload strikes within  2h -> exponential provider-wide wall (fleet-ops#2661) --
+# A partial storm re-benches seats every bench window; 4 consecutive overload_503
+# strikes within the  2h window arm an exponential provider-wide wall via the learned-caps
+# mechanism (learned-caps.json providers.<p>.bench_until, the SAME primitive the
+# rate_limit/quota classes use) — so the release path cannot keep unwalling walls
+# straight back into the storm. A quota_exhausted seat's failures are NOT overload
+# strikes (they must not arm the wall).
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":5}
+EOF
+cat > "$SEATDIR/straitly__gpt-5.6-sol.json" << 'EOF'
+{"provider":"straitly","model":"gpt-5.6-sol","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:00:00.000Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T09:30:21.000Z","consecutive_failure_count":23}
+EOF
+STATE="$TMPD/state-wall.json"
+PROM="$TMPD/release-wall.prom"
+LEARNED="$TMPD/learned-caps-wall.json"
+printf '%s\n' '{"providers":{}}' > "$LEARNED"
+# 4 sweeps, each 70s apart, a short rebench window (60s, so the wall
+# expires between sweeps and every probe re-fails. At the 4th sweep the strike
+# count hits 4 within the  2h window -> the exponential provider-wide wall arms.
+ 
+for run in  1 2 3 4; do
+  RUN_NOW=$(date -u -d "2026-08-30T12:00:00Z + $((run * 70)) seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$NOW_ISO")
+  set +e
+  PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+      FLEET_SEAT_COMEBACK_STATE="$STATE" \
+      FLEET_SEAT_COMEBACK_PROM="$PROM" \
+      FLEET_SEAT_COMEBACK_NOW="$RUN_NOW" \
+      FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S=60 \
+      PI_BIN="$TMPD/pi-fail" \
+      LEARNED_CAPS_JSON="$LEARNED" \
+      bash "$BIN" >/dev/null 2>"$TMPD/wall.err.$run"
+  rc=$?
+  set -e
+  [[ "$rc" == "0" ]] || fail "overload-wall run $run: expected exit 0 (re-benched, not loud), got $rc"
+done
+# 4 strikes on commandcode within the window (first_at=+70s, last=+280s:
+#210s apart <7200s) ->the wall armed. straitly's quota failures are not overload
+# strikes -> no wall for it.
+strikes=$(jq -r '.overload_strikes.commandcode.count //  0' "$STATE")
+[[ "$strikes" == "4" ]] || fail "overload-wall: commandcode must rack 4 overload strikes, got $strikes"
+walls_total=$(jq -r '.walls_total // 0' "$STATE")
+[[ "$walls_total" == "1" ]] || fail "overload-wall: walls_total must be 1, got $walls_total"
+jq -e '.providers.commandcode.bench_until != null and .providers.commandcode.learned_cap == 1' "$LEARNED" >/dev/null \
+  || fail "overload-wall: provider-wide wall must land in learned-caps.json for commandcode: $(cat "$LEARNED")"
+jq -e '.providers.straitly == null' "$LEARNED" >/dev/null \
+  || fail "overload-wall: quota failures must NOT arm a provider wall (straitly should not appear): $(cat "$LEARNED")"
+grep -q "OVERLOAD WALL commandcode" "$TMPD/wall.err.4" \
+  || fail "overload-wall:the 4th sweep must log OVERLOAD WALL: $(cat "$TMPD/wall.err.4")"
+ok "4 overload strikes within  2h -> exponential provider-wide wall via learned-caps.bench_until"
 echo "ALL OK: active come-back release path (fleet-ops#2421)"

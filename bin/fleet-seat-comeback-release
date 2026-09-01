@@ -14,10 +14,14 @@
 # flag in the gather, _seat_is_released in fleet-metrics-export.py)
 # only reclassifies the CENSUS; it releases nothing.
 #
-# This bin IS the release path. On a wall clock passing it sends a 1-token
-# "Reply with exactly: OK" probe through the REAL router (pi --print
-# --provider P --model M, the same probe seat-health.ts classifies):
-#   - probe success (exit 0 + non-empty output containing OK) -> the seat
+# This bin IS the release path. On a wall clock passing it sends a TOOL-USING
+# probe through the REAL router (pi --print --provider P --model M,the
+# same probe seat-health.ts classifies): the packet forces a bash roundtrip
+# (run `echo $((6*7))` via the bash tool,and reply with the integer), so a
+# seat that only answers inline but 503s on tool loading stays walled (the
+# partial-storm class, fleet-ops#2661): the computed token must appear in
+# the output before the seat is released.
+
 #     is provably usable: this bin writes the healthy observation ITSELF
 #     (unwall: health_class=healthy, seat_dead=false, count 0, wall clock
 #     cleared), so the release does not depend on the extension's response
@@ -97,6 +101,31 @@ PROBE_TIMEOUT="${FLEET_SEAT_COMEBACK_TIMEOUT_S:-45}"
 # slot every 15 min and the loud-stall check fires forever.
 REBENCH_BACKOFF_S="${FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S:-900}"
 NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
+# fleet-ops#2661: the provider-wide overload wall reuses the learned-caps
+# mechanism a lib/seat-lib.sh provides (_record_learned_cap,_seat_now_epoch);
+# source it so the wall write lives in ONE canonical place, not a third copy.
+
+# Fleet adaptation:this bin keeps its OWN state file and log(); seat-lib's
+# seat_log / state dirs are untouched by the sweep-operated code below.
+
+# fleet-ops#2661: seat-lib's freshness helpers must see the SAME frozen clock
+# as the sweep's own now_iso/now_epoch in tests. Export the override so a
+# sourced seat-lib reads the test clock, not the host wall clock.
+[[ -n "$NOW_ISO" ]] && export FLEET_SEAT_RECOVERY_NOW="$NOW_ISO"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+if [[ -f "$SEAT_LIB" ]]; then source "$SEAT_LIB" || true; fi
+
+# fleet-ops#2661: consecutive-overload escalation. A probe failure on an
+# overload_bench seat is an overload_503 strike on that provider; >=MIN strikes
+# within the 2h window arm an EXPONENTIAL provider-wide wall (learned-caps.json
+# providers.<p>.bench_until), so a partial 503 storm cannot keep releasing walls
+# straight back into the storm every bench window. cap=1 is the floor the
+# learned-caps mechanism can express (same as its rate-limit backoff floor).
+OVERLOAD_STRIKE_WINDOW_S="${FLEET_SEAT_COMEBACK_OVERLOAD_STRIKE_WINDOW_S:-7200}"
+OVERLOAD_WALL_MIN_STRIKES="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MIN_STRIKES:-4}"
+OVERLOAD_WALL_BASE_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_BASE_S:-1800}"
+OVERLOAD_WALL_MAX_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MAX_S:-21600}"
+PROBE_TOKEN="${FLEET_SEAT_COMEBACK_PROBE_TOKEN:-42}"
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
@@ -138,9 +167,9 @@ wall_end_of() {
 # --- state (per-seat last probe time + cumulative counters) ---------------
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
-        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0}'
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"overload_strikes":{}}'
     else
-        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0}'
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"overload_strikes":{}}'
     fi
 }
 
@@ -178,35 +207,42 @@ write_prom() {
 }
 
 # --- probe -------------------------------------------------------------------
-# One 1-token "Reply with exactly: OK" dispatch through the real router.
-# Returns 0 on success, 1 on failure/timeout. A live probe ALSO records the
-# real response via the seat-health extension; this bin writes the unwall
-# itself on success so the release does not wait on the extension.
+# fleet-ops#2661:the probe is TOOL-USING now — NOT a 1-token "Reply with
+# exactly: OK" inline answer. A partial 503 storm is PONG-compatible: short
+# inline replies pass but TOOL-LOADING 503s, so an inline-only "OK" probe
+# would unwall the seat straight back into the storm (the minimax/poolside
+# 3x-rebench evidence the issue names). The probe forces a bash-tool roundtrip:the
+# model MUST run `echo $((6*7))` via the bash tool and reply with the integer that
+# it prints; a seat that only answers inline (no tool result in the transcript) fails the
+# probe and stays benched. The success check requires the computed token
+# (PROBE_TOKEN, default 42) in the output. Returns 0 on success,  1 on
+# failure/timeout/inline-only. A live probe ALSO records the real response via
+# the seat-health extension; this bin writes the unwall itself on success so the
+# release does not wait on the extension.
 probe_seat() {
     local p="$1" m="$2" out rc
     if (( DRY_RUN )); then
-        log "DRY-RUN: would probe $p/$m with 'Reply with exactly: OK'"
+        log "DRY-RUN: would probe $p/$m with 'echo \$((6*7))' via bash tool (tool-using probe)"
         return 0
     fi
-    log "probing $p/$m (wall passed — 1-token reply-OK probe)"
+    log "probing $p/$m (wall passed — tool-using bash-compute probe)"
     # Capture rc BEFORE any || true so a failing probe cannot masquerade as
     # a success under set -e (the substitution must not abort the sweep).
     set +e
     out=$(timeout "$PROBE_TIMEOUT" "$PI_BIN" --print --provider "$p" --model "$m" \
-        "Reply with exactly: OK" 2>/dev/null)
+        "Tool-using liveness probe. Run the command \`echo \$((6*7))\` via the bash tool and reply with exactly the integer it prints. Do not answer without running the tool first. A seat that answers inline without a tool result FAILS this probe." 2>/dev/null)
     rc=$?
     set -e
-    # The extension classifies: exit 0 + empty output = transient_fault
-    # (empty run), exit 0 + body = healthy. Mirror that: require non-empty
-    # output containing "OK" to call the probe successful.
-    if (( rc == 0 )) && [[ -n "$out" ]] && grep -qi "OK" <<<"$out"; then
-        log "probe $p/$m SUCCEEDED — releasing"
+    # Success requires a tool roundtrip: exit 0 + non-empty output containing
+    # the computed token. An inline "OK" (PONG-ok, no tool result) does NOT
+    # contain the token — the seat stays benched (fleet-ops#2661 regression pin).
+    if (( rc == 0 )) && [[ -n "$out" ]] && grep -qw "$PROBE_TOKEN" <<<"$out"; then
+        log "probe $p/$m SUCCEEDED (tool-using — released)"
         return 0
     fi
-    log "probe $p/$m failed (rc=$rc, out=${out:0:120}…) — seat stays walled; the extension re-anchors on the real response"
+    log "probe $p/$m failed (rc=$rc, out=${out:0:120}…, no computed tool token) — seat stays walled; the extension re-anchors on the real response"
     return 1
 }
-
 # Write the healthy observation that UNWALLS a seat. Mirrors the
 # seat-health extension's writeSeatLedgerEntry healthy branch (failure_mode
 # "none" -> count 0, seat_dead false, usable_at null). Guarded: only writes
@@ -280,23 +316,43 @@ rebench_seat() {
     fi
     bench_until=$(date -u -d "@$((now_e + REBENCH_BACKOFF_S))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
     usable_at="$bench_until"
-    local prev_count=0
+    local prev_count=0 prev_hc=""
     if [[ -f "$f" ]]; then
         prev_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+        prev_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || echo "")
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#2661: PRESERVE the overload class across the rebench. The old
+    # code rewrote every rebench to transient_fault (failure_mode
+    # comeback_rebench,, which RESET the overload_503 class on every bench window
+    # (the "currently resetting per bench window" gap the issue names): the
+    # per-seat ledger stopped counting as overload for the provider-wedge check
+    # (needs overload_bench seats within the last 30 min), the 3x
+    # re-bench storm looked like "transient_fault vanished" instead of the
+    # overload_503 run the auditor must see, and no provider-wide wall could
+    # arm. A seat benched for overload stays overload_bench across re-benches:
+    # (1) seat_usable / wedge count / the auditor rollup keep seeing it;
+    # (2) each re-bench is a fresh consecutive overload_503 strike on that
+    # provider (register_overload_strike in the sweep loop below), so 4
+    # strikes within  2h arm the exponential provider-wide wall.
+
+    local hc="transient_fault" fm="comeback_rebench"
+    if [[ "$prev_hc" == "overload_bench" ]]; then
+        hc="overload_bench"
+        fm="overload_503"
+    fi
     local tmp="$f.$$.tmp"
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg now "$now_utc" \
         --arg bench "$bench_until" --arg usable "$usable_at" \
+        --arg hc "$hc" --arg fm "$fm" \
         --argjson backoff "$REBENCH_BACKOFF_S" --argjson merged "$merged_count" \
         '{provider:$provider, model:$model, http_status:null, retry_after:null,
-          health_class:"transient_fault", retryable:true, seat_dead:false,
+          health_class:$hc, retryable:true, seat_dead:false,
           poison_ladder:false, observed_at:$now, source:"comeback_release_rebench",
-          failure_mode:"comeback_rebench", usable_at:$usable, bench_until:$bench,
-          bench_window_s:$backoff, consecutive_failure_count:$merged}' \
-        > "$tmp" 2>/dev/null; then
+          failure_mode:$fm, usable_at:$usable, bench_until:$bench,
+          bench_window_s:$backoff, consecutive_failure_count:$merged}'         > "$tmp" 2>/dev/null; then
         log "rebench $p/$m: jq compose FAILED — bench NOT written"
         rm -f "$tmp" 2>/dev/null || true
         return 1
@@ -307,8 +363,76 @@ rebench_seat() {
         rm -f "$tmp" 2>/dev/null || true
         return 1
     fi
-    log "REBENCHED $p/$m (fresh bench until $bench_until, backoff=${REBENCH_BACKOFF_S}s, count=$merged_count)"
+    log "REBENCHED $p/$m (fresh bench until $bench_until, backoff=${REBENCH_BACKOFF_S}s, class=$hc, failure_mode=$fm, count=$merged_count)"
     return 0
+}
+# --- fleet-ops#2661: consecutive overload_503 strike bookkeeping ---------
+# A failed probe of an overload_bench seat is an overload_503 strike on that
+# provider (the rebench preserved the overload class, so the ledger still says
+# overload_bench after the rebench). A provider-wide wall arms once >= MIN
+# consecutive strikes land within the 2h window — reusing the learned-caps
+# bench_until mechanism already used for the rate_limit/quota classes (the
+# effective cap backs off to the floor while bench_until is in the future).
+seat_is_overload_bench() {
+    local p="$1" m="$2" f hc
+    f=$(seat_ledger_path "$p" "$m" 2>/dev/null || true)
+    [[ -f "$f" ]] || return 1
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "overload_bench" ]]
+}
+reset_overload_strikes() {
+    local p="$1"
+    unset 'STRIKE_COUNT[$p]' 'STRIKE_FIRST[$p]' 'STRIKE_LAST[$p]'
+}
+register_overload_strike() {
+    local p="$1" c first now_e now_iso fe
+    c="${STRIKE_COUNT[$p]:-0}"
+    first="${STRIKE_FIRST[$p]:-}"
+    now_e=$(now_epoch)
+    now_iso=$(now_iso)
+    if (( c == 0 )) || [[ -z "$first" ]]; then
+        c=1
+        first="$now_iso"
+    else
+        fe=$(ts_epoch "$first")
+        if [[ -n "$fe" ]] && (( now_e - fe > OVERLOAD_STRIKE_WINDOW_S )); then
+            c=1
+            first="$now_iso"
+        else
+            c=$((c + 1))
+        fi
+    fi
+    STRIKE_COUNT["$p"]="$c"
+    STRIKE_FIRST["$p"]="$first"
+    STRIKE_LAST["$p"]="$now_iso"
+    log "overload strike $p #$c (first $first, window ${OVERLOAD_STRIKE_WINDOW_S}s)"
+}
+maybe_overload_wall() {
+    local p="$1" c first fe now_e now_utc bench_until wall_s exp
+    c="${STRIKE_COUNT[$p]:-0}"
+    (( c >= OVERLOAD_WALL_MIN_STRIKES )) || return 0
+    first="${STRIKE_FIRST[$p]:-}"
+    fe=$(ts_epoch "$first")
+    [[ -n "$fe" ]] || return 0
+    now_e=$(now_epoch)
+    (( now_e - fe <= OVERLOAD_STRIKE_WINDOW_S )) || return 0
+    exp=$(( c - OVERLOAD_WALL_MIN_STRIKES ))
+    wall_s=$OVERLOAD_WALL_BASE_S
+    if (( exp > 0 )); then
+        wall_s=$(( OVERLOAD_WALL_BASE_S * (2 ** exp) ))
+    fi
+    (( wall_s > OVERLOAD_WALL_MAX_S )) && wall_s=$OVERLOAD_WALL_MAX_S
+    now_utc=$(now_iso)
+    bench_until=$(date -u -d "@$((now_e + wall_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    # Reuse the existing learned-caps provider-wide wall (_record_learned_cap):
+    # the rate_limit/quota classes use the same primitive). cap=1 is the
+    # floor (same as the rate-limit backoff floor) — a storming provider keeps
+    # at most 1 concurrent seat until the exponential wall decays.
+
+    if _record_learned_cap "$p" 1 "overload_wall" "$bench_until"; then
+        WALLS_TOTAL=$((WALLS_TOTAL + 1))
+        log "OVERLOAD WALL $p: $c overload strikes within ${OVERLOAD_STRIKE_WINDOW_S}s — provider-wide bench until $bench_until (wall=${wall_s}s, exponential cap ${OVERLOAD_WALL_MAX_S}s)"
+    fi
 }
 
 # --- sweep -------------------------------------------------------------------
@@ -331,6 +455,19 @@ main() {
         [[ -n "$k" ]] || continue
         last_probe["$k"]="$v"
     done < <(jq -r '(.last_probe // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
+
+    # fleet-ops#2661: consecutive overload_503 strike state (per-provider).
+    declare -A STRIKE_COUNT=() STRIKE_FIRST=() STRIKE_LAST=()
+    local pk pc pf pl
+    while IFS=$'\t' read -r pk pc pf pl; do
+        [[ -n "$pk" ]] || continue
+        STRIKE_COUNT["$pk"]="$pc"
+        [[ -n "$pf" ]] && STRIKE_FIRST["$pk"]="$pf"
+        [[ -n "$pl" ]] && STRIKE_LAST["$pk"]="$pl"
+    done < <(jq -r '(.overload_strikes // {}) | to_entries[] | [.key, (.value.count // 0 |tostring), (.value.first_at // ""), (.value.last_at // "")] | @tsv' <<<"$state" 2>/dev/null || true)
+    WALLS_TOTAL=$(jq -r '(.walls_total // 0)' <<<"$state")
+    [[ "$WALLS_TOTAL" =~ ^[0-9]+$ ]] || WALLS_TOTAL=0
+
 
     local f base wall_end we
     for f in "$LEDGER"/*__*.json; do
@@ -384,6 +521,10 @@ main() {
 
         if probe_seat "$p" "$m"; then
             ((probed++)) || true
+            # fleet-ops#2661: a successful tool-using probe proves the provider
+            # executes real work — any overload storm (if one was building) is over
+            # for this provider. Reset its consecutive strike counter.
+            reset_overload_strikes "$p"
             if unwall_seat "$p" "$m" "$f"; then
                 ((released_this_run++)) || true
             fi
@@ -411,6 +552,16 @@ main() {
             # check below still fires when EVERY probe attempt keeps
             # failing across re-bench windows (the genuine stuck case).
             rebench_seat "$p" "$m" "$f" || true
+            # fleet-ops#2661: a probe failure on an overload_bench seat is an
+            # overload_503 strike on that provider. the rebench preserved the overload
+            # class (in rebench_seat above), so the ledger still classes it
+            # overload_bench — count the strike and arm the exponential provider-wide
+            # wall once >=MIN strikes land within the 2h window (a bench window
+            # per strike — the "currently resetting per bench window" gap the issue names).
+            if seat_is_overload_bench "$p" "$m"; then
+                register_overload_strike "$p"
+                maybe_overload_wall "$p"
+            fi
         fi
         last_probe["$base"]="$(now_epoch)"
     done
@@ -450,9 +601,19 @@ main() {
         last_probe_json+="$(jq -nc --arg k "$kk" --argjson v "${last_probe[$kk]}" '{key:$k,value:$v}'),"
     done
     last_probe_json="${last_probe_json%,}"
+    local strikes_json="" sp
+    for sp in "${!STRIKE_COUNT[@]}"; do
+        strikes_json+="$(jq -nc --arg p "$sp" --argjson c "${STRIKE_COUNT[$sp]}" \
+            --arg f "${STRIKE_FIRST[$sp]:-}" --arg l "${STRIKE_LAST[$sp]:-}" \
+            '{provider:$p,count:$c,first_at:$f,last_at:$l}'),"
+    done
+    strikes_json="${strikes_json%,}"
     save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
         --argjson pt "$probed_total" --argjson rt "$released_total" \
-        '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt}')"
+        --argjson wt "$WALLS_TOTAL" --argjson os "[$strikes_json]" \
+        '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt,
+          walls_total: $wt,
+          overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries)}')"
 
     # The fleet-ops#2421 loud check: walled seats still hold expired wall
     # clocks AND nothing was released this run -> the release path did not

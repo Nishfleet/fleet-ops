@@ -78,6 +78,12 @@ pick_seat() {
     # tried seats (the dispatcher records each pick in the tried file)
     if [ -n "$tried_file" ] && [ -f "$tried_file" ] \
        && grep -qxF "$p/$m" "$tried_file" 2>/dev/null; then continue; fi
+    # fleet-ops#2661: escalate-lane provider-wedge skip (mirror of the
+    # real seat-lib pick_seat when FLEET_ESCALATION_WEDGE_CHECK=1):a
+    # provider listed in $STOP_ESCALATION_TEST_WEDGE_FILE is overload-wedged
+    # and ALL its seats are excluded from this pick.
+    if [ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" = "1" ] && [ -n "${STOP_ESCALATION_TEST_WEDGE_FILE:-}" ] && [ -f "$STOP_ESCALATION_TEST_WEDGE_FILE" ] \
+       && grep -qxF "$p" "$STOP_ESCALATION_TEST_WEDGE_FILE" 2>/dev/null; then continue; fi
     printf '%s%s%s\n' "$p" "$TAB" "$m"
     return 0
   done
@@ -625,5 +631,50 @@ grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
 grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "quota: devin must be benched"
 ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
+
+# ---------------------------------------------------------------------------
+# Invariant 14 (fleet-ops#2661): escalate-lane provider-wedge check. A
+# provider with >=2 seats in overload_bench within the last 30 min is WEDGED:
+# the AUDITOR must NEVER be dispatched into that storm (it just killed the
+# workers). The dispatcher exports FLEET_ESCALATION_WEDGE_CHECK=1; the real
+# pick_seat (and this stub mirror of it) skip wedged providers entirely.
+# Prove: wedge=cursor -> rotation skips cursor and dispatches devin; wedge=both
+# -> no seat -> LADDER-WALLED (quiet auditor-log, exit 0,, NOT a dispatch.
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-2661-wedge.service"}}
+JSON
+hashw=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=rotate
+export STOP_ESCALATION_TEST_PI_MODE=block
+export STOP_ESCALATION_TEST_WEDGE_FILE="$scratch/wedged.txt"
+printf '%s\n' cursor >"$STOP_ESCALATION_TEST_WEDGE_FILE"
+export FLEET_ESCALATION_WEDGE_CHECK=1
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "wedge cursor: expected exit 0, got $rc"
+grep -qE "DISPATCH hash=$hashw count=[0-9]+ provider=devin model=glm-5-2" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge cursor: must dispatch devin (cursor wedged), got: $(cat "$STOP_ESCALATION_AUDITOR_LOG")"
+! grep -q "cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge cursor: must NEVER dispatch cursor (wedged provider)"
+# All candidates wedged -> no seat -> LADDER-WALLED (quiet, exit 0,, no budget.
+printf '%s\n' devin cursor >"$STOP_ESCALATION_TEST_WEDGE_FILE"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "wedge all: expected exit 0 (quiet walled ladder), got $rc"
+grep -q "LADDER-WALLED hash=$hashw" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge all: wedged ladder must land in auditor LOG: $(cat "$STOP_ESCALATION_AUDITOR_LOG")"
+! grep -q "DISPATCH hash=$hashw" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge all: must NOT dispatch into a wedged ladder"
+unset FLEET_ESCALATION_WEDGE_CHECK
+ok "fleet-ops#2661: escalate lanes refuse overload-wedged providers (rotation skips; all-wedged ladder walls quietly"
 
 ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block quiet, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"
