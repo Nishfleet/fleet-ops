@@ -530,6 +530,37 @@ def main():
 
     # Dispatch — pick a healthy lane (no hardcoded seat).
     provider, model, seat_reason = _pick_seat()
+
+    # fleet-ops#2495 follow-up (repair worker 2026-09-01T13:0xZ): honour a
+    # no-spawn request BEFORE touching pi-systemd-run.
+    #
+    # tests/alert-repair-class-park-skip.test.sh calls this script directly and
+    # advertises itself as "hermetic, no live 9090/systemd". It redirected
+    # PACKET_DIR, CLASS_PARK_DIR, SEAT_* and CLAIM_BIN — but there was no way to
+    # suppress the spawn, so every run fired REAL pi-systemd-run units for its
+    # fixture alertnames (NoClassParkAlert / ClassExpiredAlert / NoParkKeyAlert).
+    # Each became a real worker asked to repair an alert that has no Prometheus
+    # rule, could not resolve it, exited non-zero, and re-summoned the senior
+    # auditor via OnFailure — who ran the test again. That is precisely the
+    # amplification loop this test was written to prevent, with the test as the
+    # cause: 100+ phantom packets and 4 concurrent phantom workers on
+    # 2026-08-31..09-01.
+    #
+    # Unset (production) behaviour is byte-for-byte unchanged: the guard is
+    # opt-in only. Placed after _pick_seat() so tests still exercise seat
+    # selection, packet rendering and the claim path.
+    if os.environ.get("ALERT_REPAIR_NO_SPAWN"):
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] NO-SPAWN alertname={joined} unit={unit} "
+                f"seat={provider}/{model} reason={seat_reason} "
+                f"packet={packet} suppressed_by=ALERT_REPAIR_NO_SPAWN\n"
+            )
+        print(f"[{utcnow()}] NO-SPAWN alertname={joined} unit={unit} "
+              f"seat={provider}/{model} reason={seat_reason} "
+              f"suppressed_by=ALERT_REPAIR_NO_SPAWN", file=sys.stderr)
+        return 0
+
     env = os.environ.copy()
     env["PATH"] = f"{os.environ.get('HOME', '/home/nish')}/.local/bin:" + env.get("PATH", "")
     env["XDG_RUNTIME_DIR"] = "/run/user/1000"
