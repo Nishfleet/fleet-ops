@@ -1,36 +1,73 @@
 #!/usr/bin/env bash
-# fleet-worktree-reaper — GC orphan agent worktrees whose claim branch is
-# merged and whose worker cycle is terminal (fleet-ops#2227).
+# fleet-worktree-reaper — GC orphan agent worktrees whose cycle state is
+# recorded as terminal (fleet-ops#2227, fleet-ops#2637).
 #
 # Heartbeat reports hygiene_counts.worktree_dirs growing monotonically
-# (1238 dirs on 2026-08-30, 2247 three weeks later). Each pi-issue worker
-# worktree is ~440MB and there was no reaper. This is the reaper, on
-# existing rails: a systemd user timer (no new organ — it exports no
+# (1238 dirs on 2026-08-30, 595 on 2026-09-01, ~619 git-worktree dirs
+# today). Each pi-issue worker worktree is ~440MB and there was no
+# mechanism for the OTHER branch shapes (main, fix/*, gate/*, etc.) a
+# worker leaves behind after its claim branch moves on. This reaper is
+# on existing rails: a systemd user timer (no new organ — it exports no
 # heartbeat metric) runs this script once daily.
 #
-# GATE — a worktree is deleted only when ALL of the following hold:
-#   1. SHAPE: it lives under the agent-worktrees root, is a registered git
-#      worktree, and its current branch is claim/issue-<N> (the pi-issue
-#      worker claim shape). Worktrees on other branches (wip/*, lane
-#      branches, main, detached) belong to other mechanisms
-#      (pi-salvage-worktree --gc, lane runners, the deploy clone) and are
-#      left alone.
+# TWO REAPING MODES — a worktree is deleted only when ALL gates for its
+# mode hold. The two modes are independent; either may match.
+#
+# MODE A — claim branch MERGED (fleet-ops#2227, the original reaper):
+#   1. SHAPE:  branch is claim/issue-<N> (the pi-issue claim shape).
 #   2. MERGED: a MERGED PR with head claim/issue-<N> exists on the
-#      worktree's repo. Squash-merge safe: it uses PR merge state, not SHA
-#      ancestry (the fleet merges with --squash, so the branch tip is not
-#      an ancestor of main). If gh cannot answer for a repo, every
-#      worktree on that repo is skipped — fail safe, never delete blind.
-#   3. TERMINAL: pi-issue@<short>-<N>.service is not active or activating
-#      (mirrors claim-reconcile is_live_worker). A live worker's worktree
-#      is never touched.
-#   4. CLEAN: `git status --porcelain` is empty. Dirty worktrees are
-#      reported and skipped, never force-removed.
+#              worktree's repo. Squash-merge safe: uses PR state, not
+#              SHA ancestry. gh failure for a repo => skip EVERY
+#              worktree on it (fail safe, never delete blind).
+#   3. TERMINAL: pi-issue@<short>-<N>.service is not active/activating.
+#   4. CLEAN:  git status --porcelain empty. Dirty skipped, never
+#              force-removed.
 #
-# Standing rule honored: never delete a live worktree belonging to another
-# agent cycle (gate 3).
+# MODE B — pi-issue worker PATH with terminal cycle in dispatch-ledger
+# (fleet-ops#2637):
+#   1. SHAPE:  path matches issue-<short>-<N> (the pi-issue worker
+#              worktree naming convention). Branch may be anything
+#              (main, claim/issue-N, wip/*, fix/*, auditor/*, …) — the
+#              worker may have moved on after its cycle ended.
+#   2. LEDGER-TERMINAL: the dispatch-ledger.jsonl entry for unit
+#              pi-issue-<short>-<N> has its MOST RECENT status in
+#              {completed, salvaged, closed} (per ledger convention).
+#              This is the recorded cycle state — the unit was
+#              dispatched, ran, and exited. No ledger entry OR most
+#              recent entry is open / redispatched => skip (we cannot
+#              prove the cycle is terminal).
+#   3. TERMINAL: pi-issue@<short>-<N>.service is not active/activating
+#              (defense in depth — the ledger could be stale; the live
+#              unit check is authoritative).
+#   4. PUSHED:  HEAD is on origin (the fleet-wipe-lessons worktree-
+#              remove contract). The branch ref is preserved on origin,
+#              so the work survives the worktree removal. This is the
+#              safety check the prompt's "never delete a live worktree
+#              per repo protocol" requires: push before delete. We use
+#              `git ls-remote origin HEAD` for this — one extra gh-free
+#              git call per candidate, cheap.
+#   5. CLEAN:   git status --porcelain empty. Dirty skipped.
 #
-# Removal uses `git worktree remove` (no --force), which itself refuses a
-# dirty or locked worktree — defense in depth on top of gate 4.
+# Mode A is the safety-tested original; Mode B is the new extension
+# that lets the reaper catch worktrees whose claim branch moved on
+# (worker died, then someone else moved the worktree to main or a
+# different branch). Mode B is gated by the dispatch ledger AND HEAD-
+# on-origin, which together make deletion safe even when no PR was
+# ever merged — the work is preserved on origin's branch ref either
+# way.
+#
+# Worktrees on OTHER paths (lane1/*, scout/*, gate/*, etc.) are out of
+# scope. Their lifecycles are owned by other mechanisms (lane runners,
+# scout runners, gate runners, the deploy-clone). Touching them here
+# would cross a boundary and risk deleting live state without recorded
+# cycle proof.
+#
+# Standing rule honored: never delete a live worktree belonging to
+# another agent cycle (gates A.3 / B.3 — systemd is authoritative).
+#
+# Removal uses `git worktree remove` (no --force), which itself refuses
+# a dirty or locked worktree — defense in depth on top of gates A.4
+# and B.5.
 #
 # Usage:
 #   fleet-worktree-reaper [--dry-run] [--root DIR] [--help]
@@ -40,14 +77,16 @@
 #   --root DIR  Worktree root (default /home/nish/workspaces/agent-worktrees).
 #
 # Environment seams (tests):
-#   SYSTEMCTL   systemctl binary
-#   GH          gh binary
+#   SYSTEMCTL          systemctl binary
+#   GH                 gh binary
+#   FLEET_DISPATCH_LEDGER  dispatch-ledger path (default
+#                          $AGENT_STATE/dispatch-ledger.jsonl)
 #   FLEET_WORKTREE_REAPER_MERGED_LIMIT  gh pr list --limit (default 5000)
 #
 # Exit codes:
 #   0  best-effort GC complete (per-worktree failures are logged + counted,
 #      never fatal — a timer that aborts on one bad worktree stops all GC)
-#   2  missing prereq (git, gh, systemctl, jq) or usage
+#   2  missing prereq (git, gh, jq, systemctl) or usage
 set -euo pipefail
 
 ROOT="${FLEET_WORKTREE_REAPER_ROOT:-/home/nish/workspaces/agent-worktrees}"
@@ -55,9 +94,11 @@ DRY_RUN=0
 MERGED_LIMIT="${FLEET_WORKTREE_REAPER_MERGED_LIMIT:-5000}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
+AGENT_STATE="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
+LEDGER="${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}"
 
 usage() {
-    sed -n '2,44p' "$0" | sed 's/^# \?//' >&2
+    sed -n '2,79p' "$0" | sed 's/^# \?//' >&2
     exit 2
 }
 
@@ -101,11 +142,16 @@ log "root=$ROOT dry_run=$DRY_RUN parents=${#parents[@]}"
 # --- per-parent: list worktrees, resolve repo, batch merged-PR query ------
 total_scanned=0
 total_claim=0
+total_pi_path=0
+reaped_a=0
+reaped_b=0
 reaped=0
 skipped_live=0
 skipped_unmerged=0
 skipped_dirty=0
 skipped_nogit=0
+skipped_notpushed=0
+skipped_notterminal=0
 failed=0
 
 # is_live_worker <short> <issue_n>  — mirrors claim-reconcile.
@@ -131,6 +177,75 @@ merged_claim_refs() {
         | jq -r '.[].headRefName | select(startswith("claim/issue-"))' 2>/dev/null
 }
 
+# parse_pi_issue_path <path> -> sets globals PI_SHORT, PI_N if path matches
+# issue-<short>-<N>[-<suffix>]. Returns 0 on match, 1 otherwise. <short>
+# may itself contain hyphens (e.g. fleet-ops, tinystudio-io), so the
+# split is greedy on the trailing -<N>[-<suffix>]. The -<suffix>
+# variant (e.g. issue-fleet-ops-1179-auditor) is intentional — same
+# unit, different worker flavour — and we ignore it for reaping
+# purposes: the unit name is pi-issue-<short>-<N> regardless.
+parse_pi_issue_path() {
+    local path="$1" base="${1##*/}"
+    PI_SHORT=""; PI_N=""
+    if [[ "$base" =~ ^issue-([A-Za-z0-9._-]+)-([0-9]+)(-.+)?$ ]]; then
+        PI_SHORT="${BASH_REMATCH[1]}"
+        PI_N="${BASH_REMATCH[2]}"
+        # Require <short> to contain no slashes (already enforced by the
+        # bracket) and N to be a positive integer (regex does that).
+        return 0
+    fi
+    return 1
+}
+
+# unit_terminal_in_ledger <unit> -> 0 if the most recent ledger entry
+# for <unit> has status in {completed, salvaged, closed}, 1 otherwise
+# (including when the ledger file is absent — fail closed, never
+# delete blind). The ledger is read line-by-line because the file is
+# large and only the most recent entry per unit matters; a sorted-by-ts
+# scan stops at the latest one for each unit.
+unit_terminal_in_ledger() {
+    local unit="$1"
+    [ -r "$LEDGER" ] || return 1
+    local latest_status="" latest_ts=""
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        # Cheap unit/ts/status slice via jq — avoids parsing JSON in
+        # bash. jq is required (preflight above).
+        local u s ts
+        u=$(printf '%s' "$line" | jq -r '.unit // ""' 2>/dev/null) || continue
+        [ "$u" = "$unit" ] || continue
+        s=$(printf '%s' "$line" | jq -r '.status // ""' 2>/dev/null) || continue
+        ts=$(printf '%s' "$line" | jq -r '.ts // ""' 2>/dev/null) || continue
+        if [ -z "$latest_ts" ] || [[ "$ts" > "$latest_ts" ]]; then
+            latest_ts="$ts"; latest_status="$s"
+        fi
+    done < "$LEDGER"
+    case "$latest_status" in
+        completed|salvaged|closed) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# head_on_origin <worktree> -> 0 if HEAD is on a tip of some origin
+# ref, 1 otherwise. Uses git ls-remote to avoid the round-trip of a
+# fetch. This is the same gate fleet-wipe-lessons-check worktree-remove
+# uses (fleet-ops#533).
+head_on_origin() {
+    local wt="$1"
+    local head_sha ls_out
+    head_sha=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
+    [ -n "$head_sha" ] || return 1
+    # git ls-remote prints "<sha>\t<ref>" lines; match the sha. Refuse
+    # if the network/remote is unreachable (fail closed — never delete
+    # blind).
+    ls_out=$(git -C "$wt" ls-remote origin 2>/dev/null) || return 1
+    [ -n "$ls_out" ] || return 1
+    if printf '%s\n' "$ls_out" | awk '{print $1}' | grep -qx "$head_sha"; then
+        return 0
+    fi
+    return 1
+}
+
 for parent in "${parents[@]}"; do
     [ -d "$parent" ] || continue
     # Resolve canonical owner/repo from the parent's origin remote.
@@ -138,18 +253,19 @@ for parent in "${parents[@]}"; do
     [ -n "$url" ] || { log "parent $parent: no origin remote — skip"; continue; }
     # Strip trailing .git, take last path segment as repo; owner is the
     # segment before it. Handles https://github.com/OWNER/REPO(.git).
-    repo_path=${url%.git}
-    repo_path=${repo_path%/*}   # noop if no slash; real URLs always have one
     owner_repo=${url%.git}
     owner_repo=${owner_repo#*://*/}
     short=${owner_repo##*/}
     [ -n "$short" ] || { log "parent $parent: cannot parse repo from $url — skip"; continue; }
 
-    # Enumerate this parent's worktrees under $ROOT with their branches.
-    # `git worktree list --porcelain` prints blocks: `worktree <path>` then
-    # `branch <name>` or `detached`. Only keep paths under $ROOT on
-    # claim/issue-<N>.
-    declare -a wt_paths=() wt_branches=()
+    # Enumerate this parent's worktrees under $ROOT with their branches
+    # and a "mode" tag. A worktree is collected if EITHER:
+    #   - its branch is claim/issue-<N>  (Mode A target), OR
+    #   - its path matches issue-<short>-<N>  (Mode B target, regardless
+    #     of branch — the worker may have moved on after its cycle ended)
+    # Other branches (lane/*, scout/*, gate/*, main, …) belong to other
+    # mechanisms and are not enumerated.
+    declare -a wt_paths=() wt_branches=() wt_modes=() wt_shorts=() wt_ns=()
     cur_path=""
     while IFS= read -r line; do
         case "$line" in
@@ -157,8 +273,38 @@ for parent in "${parents[@]}"; do
             "branch "*)
                 branch=${line#branch }
                 branch=${branch#refs/heads/}
-                if [ -n "$cur_path" ] && [[ "$cur_path" == "$ROOT"/* ]] && [[ "$branch" == claim/issue-* ]]; then
-                    wt_paths+=("$cur_path"); wt_branches+=("$branch")
+                mode="" pshort="" pn=""
+                if [ -n "$cur_path" ] && [[ "$cur_path" == "$ROOT"/* ]]; then
+                    if [[ "$branch" == claim/issue-* ]]; then
+                        n=${branch#claim/issue-}
+                        if [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+                            mode="A"
+                            pshort="$short"
+                            pn="$n"
+                        fi
+                    fi
+                    # Mode B: only set if Mode A didn't claim the same
+                    # worktree (avoid double-counting). The path-shape
+                    # check is independent of branch.
+                    if [ -z "$mode" ] && parse_pi_issue_path "$cur_path"; then
+                        # Only count paths whose <short> matches this
+                        # parent's resolved short — a worktree named
+                        # issue-fleet-ops-1211 in the fleet-ops parent
+                        # is ours; a stray issue-context-hub-961 is
+                        # not (it belongs to a different parent).
+                        if [ "$PI_SHORT" = "$short" ]; then
+                            mode="B"
+                            pshort="$PI_SHORT"
+                            pn="$PI_N"
+                        fi
+                    fi
+                fi
+                if [ -n "$mode" ]; then
+                    wt_paths+=("$cur_path")
+                    wt_branches+=("$branch")
+                    wt_modes+=("$mode")
+                    wt_shorts+=("$pshort")
+                    wt_ns+=("$pn")
                 fi
                 cur_path=""
                 ;;
@@ -167,43 +313,33 @@ for parent in "${parents[@]}"; do
     done < <(git -C "$parent" worktree list --porcelain 2>/dev/null)
     [ "${#wt_paths[@]}" -gt 0 ] || continue
 
-    # Batch the merged-PR query once per repo.
+    # Batch the merged-PR query once per repo (Mode A only).
     merged_set=$("$(command -v mktemp)" 2>/dev/null) || merged_set=""
     gh_ok=1
     if ! merged_claim_refs "$owner_repo" >"$merged_set" 2>/dev/null; then
         gh_ok=0
-        log "repo $owner_repo: gh merged query FAILED — skip all ${#wt_paths[@]} worktrees (fail safe)"
+        log "repo $owner_repo: gh merged query FAILED — Mode A skip all claim-shaped worktrees (fail safe)"
     fi
 
     for i in "${!wt_paths[@]}"; do
         path="${wt_paths[$i]}"
         branch="${wt_branches[$i]}"
-        n=${branch#claim/issue-}
+        mode="${wt_modes[$i]}"
+        pshort="${wt_shorts[$i]}"
+        pn="${wt_ns[$i]}"
         total_scanned=$((total_scanned + 1))
-        if ! [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
-            continue   # non-numeric claim branch — leave to claim-reconcile
+        if [ "$mode" = "A" ]; then
+            total_claim=$((total_claim + 1))
+        else
+            total_pi_path=$((total_pi_path + 1))
         fi
-        total_claim=$((total_claim + 1))
 
-        # Gate 2: merged. gh failure => fail safe: skip every worktree on
-        # this repo (never delete blind).
-        if [ "$gh_ok" = 0 ]; then
-            skipped_unmerged=$((skipped_unmerged + 1))
-            log "  $path: SKIP gh-fail repo ($branch)"
-            continue
-        fi
-        if ! grep -qx "$branch" "$merged_set"; then
-            skipped_unmerged=$((skipped_unmerged + 1))
-            log "  $path: SKIP not-merged ($branch)"
-            continue
-        fi
-        # Gate 3: terminal.
-        if is_live_worker "$short" "$n"; then
+        # Common gates: live worker + clean tree (both modes).
+        if is_live_worker "$pshort" "$pn"; then
             skipped_live=$((skipped_live + 1))
-            log "  $path: SKIP live worker ($branch)"
+            log "  $path: SKIP live worker ($branch, mode=$mode, unit=pi-issue-$pshort-$pn)"
             continue
         fi
-        # Gate 4: clean.
         if ! git -C "$path" diff --quiet --ignore-submodules HEAD 2>/dev/null \
            || [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
             skipped_dirty=$((skipped_dirty + 1))
@@ -211,25 +347,74 @@ for parent in "${parents[@]}"; do
             continue
         fi
 
-        if [ "$DRY_RUN" = 1 ]; then
-            reaped=$((reaped + 1))
-            log "  $path: DRY-REAP ($branch, merged, terminal, clean)"
-            continue
-        fi
-        if git -C "$parent" worktree remove "$path" 2>/dev/null; then
-            reaped=$((reaped + 1))
-            log "  $path: REAPED ($branch)"
+        if [ "$mode" = "A" ]; then
+            # Gate A.2: merged. gh failure => fail safe: skip every Mode A
+            # worktree on this repo (never delete blind).
+            if [ "$gh_ok" = 0 ]; then
+                skipped_unmerged=$((skipped_unmerged + 1))
+                log "  $path: SKIP gh-fail repo ($branch)"
+                continue
+            fi
+            if ! grep -qx "$branch" "$merged_set"; then
+                skipped_unmerged=$((skipped_unmerged + 1))
+                log "  $path: SKIP not-merged ($branch)"
+                continue
+            fi
+            if [ "$DRY_RUN" = 1 ]; then
+                reaped_a=$((reaped_a + 1))
+                reaped=$((reaped + 1))
+                log "  $path: DRY-REAP-A ($branch, merged, terminal, clean)"
+                continue
+            fi
+            if git -C "$parent" worktree remove "$path" 2>/dev/null; then
+                reaped_a=$((reaped_a + 1))
+                reaped=$((reaped + 1))
+                log "  $path: REAPED-A ($branch)"
+            else
+                failed=$((failed + 1))
+                log "  $path: REMOVE-A FAILED ($branch) — left in place"
+            fi
         else
-            failed=$((failed + 1))
-            log "  $path: REMOVE FAILED ($branch) — left in place"
+            # Mode B: ledger-terminal + HEAD on origin. The ledger is
+            # the recorded cycle state; the live-worker check above is
+            # defense in depth.
+            unit="pi-issue-${pshort}-${pn}"
+            if ! unit_terminal_in_ledger "$unit"; then
+                skipped_notterminal=$((skipped_notterminal + 1))
+                log "  $path: SKIP-B not-ledger-terminal ($branch, unit=$unit)"
+                continue
+            fi
+            if ! head_on_origin "$path"; then
+                skipped_notpushed=$((skipped_notpushed + 1))
+                log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                continue
+            fi
+            if [ "$DRY_RUN" = 1 ]; then
+                reaped_b=$((reaped_b + 1))
+                reaped=$((reaped + 1))
+                log "  $path: DRY-REAP-B ($branch, mode=B ledger-terminal=$unit, clean, pushed)"
+                continue
+            fi
+            if git -C "$parent" worktree remove "$path" 2>/dev/null; then
+                reaped_b=$((reaped_b + 1))
+                reaped=$((reaped + 1))
+                log "  $path: REAPED-B ($branch, mode=B)"
+            else
+                failed=$((failed + 1))
+                log "  $path: REMOVE-B FAILED ($branch) — left in place"
+            fi
         fi
     done
     [ -n "$merged_set" ] && rm -f "$merged_set"
 done
 
-log "done: scanned=$total_scanned claim=$total_claim reaped=$reaped \
+log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path \
+reaped=$reaped (A=$reaped_a B=$reaped_b) \
 skipped_live=$skipped_live skipped_unmerged=$skipped_unmerged \
-skipped_dirty=$skipped_dirty skipped_nogit=$skipped_nogit failed=$failed"
-printf 'fleet-worktree-reaper scanned=%s claim=%s reaped=%s live=%s unmerged=%s dirty=%s nogit=%s failed=%s\n' \
-    "$total_scanned" "$total_claim" "$reaped" "$skipped_live" \
-    "$skipped_unmerged" "$skipped_dirty" "$skipped_nogit" "$failed"
+skipped_dirty=$skipped_dirty skipped_notpushed=$skipped_notpushed \
+skipped_notterminal=$skipped_notterminal nogit=$skipped_nogit failed=$failed"
+printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s reaped=%s (A=%s B=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s nogit=%s failed=%s\n' \
+    "$total_scanned" "$total_claim" "$total_pi_path" \
+    "$reaped" "$reaped_a" "$reaped_b" \
+    "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
+    "$skipped_notpushed" "$skipped_notterminal" "$skipped_nogit" "$failed"

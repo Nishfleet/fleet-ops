@@ -453,7 +453,7 @@
       "source": "repo"
     },
     "fleet-worktree-reaper.timer": {
-      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227) — merged+terminal claims leave worktrees behind silently; daily catches a day's worker churn within one waking window without noising triage every tick. Fail-safe (4 gates, dry-run capable) and cheap (git + one gh pr list per repo).",
+      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227 + #2637) — Mode A: claim/issue-<N> + merged PR. Mode B: issue-<short>-<N> PATH + dispatch-ledger terminal entry + HEAD on origin. Either mode's full gate chain must pass (no live worker, clean tree, work preserved on origin). Catches worker churn within one waking window; fail-safe (dry-run capable, gh failure skips repo, missing ledger fails closed), cheap (git + one gh pr list per repo + one git ls-remote per Mode B candidate).",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"

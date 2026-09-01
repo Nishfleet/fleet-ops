@@ -443,11 +443,17 @@ bin/fleet-restore-drill /home/nish/.local/bin/fleet-restore-drill
 systemd/fleet-restore-drill.service /home/nish/.config/systemd/user/fleet-restore-drill.service
 systemd/fleet-restore-drill.timer /home/nish/.config/systemd/user/fleet-restore-drill.timer
 systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/fleet-restore-drill.service.d/10-keystone-hc.conf
-# fleet-ops#2227: orphan agent-worktree reaper. Daily GC of worktrees whose
-# claim/issue-<N> branch is merged AND whose pi-issue@<repo>-<N> worker is
-# terminal AND whose tree is clean. Fail-safe: 4 gates, dry-run capable.
-# NOT a fleet organ (no heartbeat metric exported) — a plain maintenance
-# timer, so no absent() rule or fleet-organs.json entry.
+# fleet-ops#2227 + fleet-ops#2637: orphan agent-worktree reaper. Daily
+# GC of worktrees whose cycle state is recorded as terminal AND whose
+# work is preserved on origin AND whose tree is clean. Two modes:
+# Mode A (fleet-ops#2227): claim/issue-<N> branch + merged PR + no live
+# worker + clean. Mode B (fleet-ops#2637): issue-<short>-<N> PATH +
+# dispatch-ledger terminal entry + HEAD on origin + no live worker +
+# clean. Mode B catches worktrees whose worker moved on after the cycle
+# ended (branch changed away from claim/issue-N). Fail-safe: 4-5 gates,
+# dry-run capable, never deletes blind. NOT a fleet organ (no heartbeat
+# metric exported) — a plain maintenance timer, so no absent() rule or
+# fleet-organs.json entry.
 bin/fleet-worktree-reaper /home/nish/.local/bin/fleet-worktree-reaper
 systemd/fleet-worktree-reaper.service /home/nish/.config/systemd/user/fleet-worktree-reaper.service
 systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktree-reaper.timer
