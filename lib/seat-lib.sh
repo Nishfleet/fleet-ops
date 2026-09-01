@@ -1320,7 +1320,7 @@ seat_usable() {
         park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S))
         park_end_iso=$(date -u -d "@$park_end_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$observed")
         if _seat_in_future "$park_end_iso"; then
-            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (transient_fault count=$fail_count >= ${SEAT_FAILURE_CEILING:-60}, parked until $park_end_iso — long wall, not flat re-offer)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (transient_fault count=$fail_count >= ${SEAT_FAILURE_CEILING:-20}, parked until $park_end_iso — long wall, not flat re-offer)"
             return 1
         fi
     fi
@@ -2959,8 +2959,50 @@ _escalated_backoff() {
 # branches short-circuit before the seat_dead check) or break fail-open for
 # transient_fault markers (seat_dead holds past usable_at). The long wall keeps
 # the fail-open contract intact while still parking the seat.
-SEAT_FAILURE_CEILING="${SEAT_FAILURE_CEILING:-60}"
+#
+# fleet-ops#2594: lower the ceiling default from 60 to 20. At 60 the
+# read-side transient_fault fence (line ~1318) never engaged on the live
+# poolside/laguna-s-2.1-free (c=21, transient_fault, 30s flat re-offer loop
+# per the gap-audit snapshot), and the bash quota/overload/hang benches
+# re-walled every provider-default interval for every seat below the ceiling.
+# At 20 the long wall engages three times sooner — a chronically failing
+# seat is probed once per park wall instead of hammering the flat cadence
+# for ~20 wasted cycles first. The number is operator-tunable via env and
+# the existing test overrides (`export SEAT_FAILURE_CEILING=N`) preserve
+# their assertions byte-identically.
+SEAT_FAILURE_CEILING="${SEAT_FAILURE_CEILING:-20}"
 SEAT_PARK_WALL_S="${SEAT_PARK_WALL_S:-86400}"  # 24 h — probe once per day, not per 15min
+
+# --- corpse reclassification (fleet-ops#2594) ------------------------------
+# The bash quota_bench writer (mark_seat_quota_bench) was excluded from the
+# seat-health.ts corpse logic (#2145): that path covers transient_http /
+# rate_limit / cli_timeout / transient_other / empty_run by count, and
+# quota_exhausted by age, but quota_cap (the bash writer's failure_mode) was
+# not in either branch. Consequence: opencode/mimo-v2.5-free at 42
+# consecutive 429s sat at health_class=quota_bench forever — the bench
+# expired after the 24h park wall, the prober retried, the seat failed
+# again, the cycle repeated, and count kept climbing on a seat that was
+# clearly dead (live snapshot in the #2594 audit). This threshold applies
+# the corpse reclassification in the bash writer: at merged_count >=
+# SEAT_DEAD_CONSECUTIVE_THRESHOLD the quota_bench ledger is written with
+# seat_dead=true, and seat_usable holds the seat TERMINALLY (no auto
+# fail-open — only a healthy observation, fleet-ops#2327, clears the
+# corpse). Default matches seat-health.ts's seat_dead_consecutive_threshold
+# (25) so the two writers agree on the corpse boundary. Lower than the
+# 25-consecutive quarantine_threshold the extension uses is intentional:
+# park first (the bench window), corpse later (terminal exclusion).
+SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
+
+# True (return 0) if a consecutive_failure_count crosses the corpse threshold
+# — i.e. the seat should be written with seat_dead=true. Same defensive
+# pattern as _seat_parked_by_ceiling: non-numeric inputs fall back to 0/false.
+_seat_dead_by_threshold() {
+    local count="${1:-0}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local thr="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
+    [[ "$thr" =~ ^[0-9]+$ ]] || thr=25
+    (( count >= thr ))
+}
 
 # Echo the effective park wall seconds for a consecutive_failure_count and a
 # computed base backoff/window. When count >= SEAT_FAILURE_CEILING the wall is
@@ -2970,9 +3012,9 @@ _failure_ceiling_wall() {
     local count="${1:-0}" base="${2:-300}"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     [[ "$base" =~ ^[0-9]+$ ]] || base=300
-    local ceil="${SEAT_FAILURE_CEILING:-60}"
+    local ceil="${SEAT_FAILURE_CEILING:-20}"
     local park="${SEAT_PARK_WALL_S:-86400}"
-    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=60
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
     [[ "$park" =~ ^[0-9]+$ ]] || park=86400
     if (( count >= ceil )); then
         printf '%s' "$park"
@@ -2985,8 +3027,8 @@ _failure_ceiling_wall() {
 _seat_parked_by_ceiling() {
     local count="${1:-0}"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
-    local ceil="${SEAT_FAILURE_CEILING:-60}"
-    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=60
+    local ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
     (( count >= ceil ))
 }
 
@@ -3496,13 +3538,35 @@ mark_seat_quota_bench() {
     window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
+    # fleet-ops#2594: corpse reclassification for quota_cap. seat-health.ts
+    # (#2145) covers transient_http/rate_limit/cli_timeout/transient_other/
+    # empty_run by count and quota_exhausted by age — but the bash writer's
+    # failure_mode=quota_cap was excluded from both branches, so a seat like
+    # opencode/mimo-v2.5-free at 42 consecutive 429s stayed quota_bench
+    # forever, re-offered after each park wall and never terminal. At
+    # merged_count >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching
+    # seat-health.ts) the ledger is written with seat_dead=true AND its
+    # bench_until / usable_at are cleared (the fleet-ops#2415/#2422
+    # "no-comeback-clock" convention used by the extension). The quota_bench
+    # branch in seat_usable returns 1 ("no bench_until — defensive block")
+    # for a cleared clock, so the corpse is terminally excluded until a
+    # healthy observation clears seat_dead=false.
+    local seat_dead=false
+    local corpse_bench_until="$bench_until"
+    local corpse_usable_at="$bench_until"
+    if _seat_dead_by_threshold "$merged_count"; then
+        seat_dead=true
+        corpse_bench_until=""
+        corpse_usable_at=""
+    fi
+
     local tmp="$path.bench.$$.$RANDOM.tmp"
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" \
-        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --arg observed "$now_utc" --arg bench "$corpse_bench_until" --arg usable "$corpse_usable_at" \
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 429 --argjson retry_after null \
-        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -3522,10 +3586,14 @@ mark_seat_quota_bench() {
     fi
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
-        seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
-        if _seat_parked_by_ceiling "$merged_count"; then
-            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
-            seat_log "quota-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+        if [[ "$seat_dead" == "true" ]]; then
+            seat_log "quota-bench: $p/$m CORPSE reclassified (count=$merged_count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}); bench_until/usable_at cleared (fleet-ops#2415); terminal until a healthy observation clears seat_dead=false (fleet-ops#2594)"
+        else
+            seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+            if _seat_parked_by_ceiling "$merged_count"; then
+                _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+                seat_log "quota-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+            fi
         fi
         return 0
     fi

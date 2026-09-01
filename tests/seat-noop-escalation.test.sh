@@ -16,8 +16,9 @@
 # healthy seat, and the #1408 empty-run ladder (900 -> 1800 -> 3600 -> 7200s)
 # churned healthy seats (deepseek-v4-flash-0731 benched for hours after 3
 # no-ops in 2h, fleet-ops-1384). The empty-run cooldown is FLAT
-# (EMPTY_RUN_BACKOFF_S, 900s); only the #1362 failure-ceiling park (60
-# consecutive = 24h wall) ever lengthens it. The count is still tracked and
+# (EMPTY_RUN_BACKOFF_S, 900s); only the #1362 failure-ceiling park
+# (SEAT_FAILURE_CEILING consecutive = 24h wall; default lowered from 60 to
+# 20 in fleet-ops#2594) ever lengthens it. The count is still tracked and
 # reset to 0 by seat-health.ts on a healthy in-session observation, and
 # seat_usable fail-opens after usable_at regardless of count, so no seat is
 # walled permanently.
@@ -148,7 +149,7 @@ ok "spawn-fail backoff capped at ~${dc}s (cap=${cap}s)"
 # on openrouter/deepseek/deepseek-v4-flash-0731, fleet-ops-1384, benched
 # 900s and re-seated in-process each time, ladder pushing a working seat out
 # for hours). The no-op cooldown is FLAT: every empty run benches
-# EMPTY_RUN_BACKOFF_S; only the #1362 failure-ceiling park (60 consecutive,
+# EMPTY_RUN_BACKOFF_S; only the #1362 failure-ceiling park (default 20 consecutive since fleet-ops#2594,
 # 24h wall) ever lengthens it.
 rm -f "$lf"
 ebase=900
