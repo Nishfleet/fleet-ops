@@ -94,6 +94,11 @@ live_skip[opus-heartbeat-seat-comeback.test.sh]=1
 # and the judge prompt at /home/nish/.local/share/opus-heartbeat/
 # judge-prompt.md). Live/VPS-only — cannot run in hosted CI.
 live_skip[opus-heartbeat-fabricated-transcript-gate.test.sh]=1
+# fleet-ops#2711: opus-heartbeat-frozen-claims-gate drives the launcher
+# --check-allowlist subcommand against fixture snapshots and pins the
+# live launcher + judge prompt for the claims-aware gate shape. Live/
+# VPS-only — cannot run in hosted CI (launcher binary absent).
+live_skip[opus-heartbeat-frozen-claims-gate.test.sh]=1
 # fleet-ops#1498: memory-index-autocompact-migrated runs `systemd-analyze verify`
 # on a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
 # (VPS-only), absent on hosted runners. Live/VPS-only — cannot run in hosted CI.
