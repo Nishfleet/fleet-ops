@@ -93,11 +93,18 @@ fi
 ok "test 4: judge prompt ties the louder fault to direct dispatch and boundary"
 
 # --- 5. gate condition stated explicitly -----------------------------------
+# fleet-ops#1453 + #2711: the gate requires BOTH pipelines silent before
+# the lever fires. The earlier gate only checked dispatches+ready; #2711
+# added claims_last_2h as a third conjunct so a zero-dispatch/nonzero-claim
+# window (alert-repair idle, pi-issue alive) is classified HEALTHY rather
+# than triggering the lever. The prompt must state all three conjuncts.
 grep -qE 'dispatches_last_2h[[:space:]]*<=?[[:space:]]*1' "$PROMPT_FILE" \
   || fail "judge prompt does not state dispatches_last_2h <= 1"
+grep -qE 'claims_last_2h[[:space:]]*<=?[[:space:]]*1' "$PROMPT_FILE" \
+  || fail "judge prompt does not state claims_last_2h <= 1 (fleet-ops#2711)"
 grep -qE 'ready_work[[:space:]]*>[[:space:]]*50' "$PROMPT_FILE" \
   || fail "judge prompt does not state ready_work > 50"
-ok "test 5: judge prompt states the gate condition (dispatches<=1 AND ready>50)"
+ok "test 5: judge prompt states the gate condition (dispatches<=1 AND claims<=1 AND ready>50)"
 
 # --- 6. narrow lever shape documented as 'repair-*' not '<name>' ----------
 # The current prompt-upstream says "pi-systemd-run --unit <name> ...".
