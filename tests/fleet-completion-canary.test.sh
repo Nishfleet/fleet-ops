@@ -1009,6 +1009,188 @@ grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fle
 
 ok "unit-less legacy terminal marker re-parks, no re-ladder (fleet-ops#2397)"
 
+# --- 9j. redispatch no-op at hop=verify escalates + self-parks (fleet-ops#2651) --
+# Live incident: FleetQueueSelfMaintenanceRatioHigh's 12:22Z redispatch unit
+# terminated as NOT_A_LIVE_DEFECT (EXIT CONTRACT exit non-zero), --collect
+# unloaded it, unit_status read it as SUCCESS → hop=verify. The chain was
+# already laddered "redispatch" (stall_count=1) and NOT class-parked, so the
+# old code returned "already" forever — no STOP-REASON, no class park — and
+# the dispatcher kept spawning a fresh repair worker each 6h repeat_interval to
+# re-derive the same verdict (the dispatch loop). Fix: the no-op-redispatch
+# escalation applies at hop=verify too; the chain escalates ONCE (STOP-REASON
+# + decision_class_until park), then drains via the detector-red cooldown and
+# the #2397 re-park guard.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "VerifyRedispatch"},
+   "activeAt": "2026-08-31T05:30:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-31T06:00:00Z] DISPATCH alertname=VerifyRedispatch seat=a/Model unit=u-VR-20260831T060000Z
+PYEND
+printf '%s\n' "success" >"$scratch/sysctl/u-VR-20260831T060000Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/u-VR-20260831T060000Z.active"
+# Prior redispatch chain, NOT class-parked (the exact 12:55Z live shape).
+echo '{"alertname":"VerifyRedispatch","stall_count":1,"ladder":"redispatch","hop":"verify"}' \
+  >"$scratch/state/open/VerifyRedispatch.json"
+
+# Tick 1 (07:45Z): escalate ONCE — STOP-REASON + canary writes the class park.
+rc=$(run_bin "2026-08-31T07:45:00Z")
+[[ "$rc" == "0" ]] || fail "9j tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "9j tick-1: verify redispatch no-op must write STOP-REASON (escalate, not park at already)"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("reason") == "alert-repair-stalled", f"reason={d.get('reason')!r}"
+assert d.get("detail", {}).get("alertname") == "VerifyRedispatch", d
+assert d.get("detail", {}).get("hop") == "verify", d
+PY
+# The canary must have set the class park itself (decision_class_until future).
+python3 - "$scratch/state/open/VerifyRedispatch.json" <<'PY' || exit 1
+import json, sys, datetime
+d = json.load(open(sys.argv[1]))
+assert d.get("ladder") == "stop-reason", d
+until = d.get("decision_class_until")
+assert until, d
+assert datetime.datetime.fromisoformat(until.replace("Z", "+00:00")) > \
+       datetime.datetime(2026, 8, 31, 12, 0, tzinfo=datetime.timezone.utc), until
+PY
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9j tick-1: escalate must not spawn another worker; log=$(cat "$scratch/dispatch.log")"
+fi
+
+# Tick 2 (09:00Z, past the verify deadline set at tick-1): detector-red close.
+rc=$(run_bin "2026-08-31T09:00:00Z")
+[[ "$rc" == "0" ]] || fail "9j tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q 'VerifyRedispatch.*"terminal": "detector-red"' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9j tick-2: ledger must carry terminal=detector-red; got: $(cat "$scratch/state/chains.terminated.jsonl")"
+# Cooldown marker must RETAIN the class park (the dispatcher keeps skipping).
+python3 - "$scratch/state/open/VerifyRedispatch.json" <<'PY' || exit 1
+import json, sys, datetime
+d = json.load(open(sys.argv[1]))
+assert d.get("terminal") == "detector-red", d
+assert d.get("dead_until"), d
+assert d.get("ladder") == "stop-reason", d
+until = d.get("decision_class_until")
+assert until, "class park must survive the cooldown close"
+assert datetime.datetime.fromisoformat(until.replace("Z", "+00:00")) > \
+       datetime.datetime(2026, 8, 31, 12, 0, tzinfo=datetime.timezone.utc), until
+PY
+
+# Tick 3 (09:30Z, within cooldown): drained.
+rc=$(run_bin "2026-08-31T09:30:00Z")
+[[ "$rc" == "0" ]] || fail "9j tick-3 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9j tick-3: verify stalled must be 0 during cooldown, got: $(grep verify "$scratch/fleet-chains.prom")"
+
+# Tick 4 (10:05Z, cooldown expired): re-park via #2397 — no re-summon, no new
+# STOP-REASON, no redispatch; chain stays drained until park expiry.
+rc=$(run_bin "2026-08-31T10:05:00Z")
+[[ "$rc" == "0" ]] || fail "9j tick-4 rc=$rc stderr=$(cat "$scratch/err.log")"
+if grep -q 'REDISPATCH alertname=VerifyRedispatch' "$scratch/actions.log"; then
+  fail "9j tick-4: re-open must NOT re-ladder/spawn; log=$(cat "$scratch/actions.log")"
+fi
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9j tick-4: re-open must not re-dispatch; log=$(cat "$scratch/dispatch.log")"
+fi
+python3 - "$scratch/state/open/VerifyRedispatch.json" <<'PY' || exit 1
+import json, sys, datetime
+d = json.load(open(sys.argv[1]))
+assert d.get("dead_until"), d  # slid forward (re-parked)
+assert d.get("terminal") == "detector-red", d
+until = d.get("decision_class_until")
+assert until, "class park must survive re-park"
+PY
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9j tick-4: verify stalled must be 0 (re-parked), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+ok "redispatch no-op at hop=verify escalates + self-parks, then drains (fleet-ops#2651)"
+
+# --- 9k. worker hand-parked redispatch chain stays drained (fleet-ops#2651) ----
+# The 12:55Z repair worker hand-wrote decision_class_until into the redispatch
+# chain state. The old cooldown close DELETED that field (so the dispatcher
+# re-dispatched the class each repeat_interval); with the preserve fix the park
+# survives, and the parked+redispatch chain must NOT re-summon the senior
+# conference — it marks ladder=stop-reason and drains via #2397.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "VerifyParkedRedispatch"},
+   "activeAt": "2026-08-31T05:30:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-31T06:00:00Z] DISPATCH alertname=VerifyParkedRedispatch seat=a/Model unit=u-VPR-20260831T060000Z
+PYEND
+printf '%s\n' "success" >"$scratch/sysctl/u-VPR-20260831T060000Z.result"
+printf '%s\n' "inactive" >"$scratch/sysctl/u-VPR-20260831T060000Z.active"
+# Hand-parked redispatch chain (the exact 12:55Z repair-worker shape).
+echo '{"alertname":"VerifyParkedRedispatch","stall_count":1,"ladder":"redispatch","hop":"verify","dispatch_unit":"u-VPR-20260831T060000Z","decision_class_until":"2026-09-01T00:00:00Z"}' \
+  >"$scratch/state/open/VerifyParkedRedispatch.json"
+
+# Tick 1 (07:45Z): parked + verify redispatch no-op must NOT re-summon.
+rc=$(run_bin "2026-08-31T07:45:00Z")
+[[ "$rc" == "0" ]] || fail "9k tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "9k tick-1: parked chain must NOT write STOP-REASON (park IS the verdict), got: $(cat "$scratch/STOP-REASON.json")"
+if grep -q 'REDISPATCH alertname=VerifyParkedRedispatch' "$scratch/actions.log"; then
+  fail "9k tick-1: parked chain must NOT re-ladder/spawn; log=$(cat "$scratch/actions.log")"
+fi
+# Ladder marked stop-reason (so #2397 holds it drained) + park preserved.
+python3 - "$scratch/state/open/VerifyParkedRedispatch.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("ladder") == "stop-reason", d
+assert d.get("decision_class_until") == "2026-09-01T00:00:00Z", d
+PY
+
+# Tick 2 (08:00Z, past the zero-grace deadline): detector-red close, park kept.
+rc=$(run_bin "2026-08-31T08:00:00Z")
+[[ "$rc" == "0" ]] || fail "9k tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+python3 - "$scratch/state/open/VerifyParkedRedispatch.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("terminal") == "detector-red", d
+assert d.get("dead_until"), d
+assert d.get("decision_class_until") == "2026-09-01T00:00:00Z", \
+  "hand-park must survive the cooldown close (fleet-ops#2651)"
+PY
+
+# Tick 3 (09:05Z, cooldown expired): re-park via #2397, still no re-summon.
+rc=$(run_bin "2026-08-31T09:05:00Z")
+[[ "$rc" == "0" ]] || fail "9k tick-3 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "9k tick-3: re-park must not write STOP-REASON"
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9k tick-3: re-park must not dispatch; log=$(cat "$scratch/dispatch.log")"
+fi
+python3 - "$scratch/state/open/VerifyParkedRedispatch.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("dead_until"), d  # slid forward
+assert d.get("decision_class_until") == "2026-09-01T00:00:00Z", d
+PY
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9k tick-3: verify stalled must be 0 (drained), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+ok "worker hand-parked redispatch chain stays drained, park survives cooldown (fleet-ops#2651)"
+
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================
