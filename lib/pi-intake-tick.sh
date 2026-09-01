@@ -411,12 +411,24 @@ fi
 # Only the self-maintenance repo is held: the gate checks
 # config/self-maintenance-repos.json (default ["fleet-ops"]), not a
 # hardcoded name, so a repo graduating to product is not gated.
+#
+# fleet-ops#2626: the hold must NOT hard-exit the tick. If it did, a
+# self-maintenance ratio inflated by duplicate/churn agent-ready issues
+# while product repos are simultaneously blocked (an all-up hard stall)
+# would leave the whole fleet at 0 dispatches — the FleetUndersaturated
+# failure this issue fixes. So we mark the repo held (_pfirst_held=1) and
+# let the precedence-band FLOOR lanes below (machinery #1452, starvation
+# #1448, band bootstrap, surge floor, leverage, multiplier) admit EXACTLY
+# ONE claim per tick. That keeps the only-available-supply repo from
+# starving the fleet to idle while still sending capacity to product repos
+# when product work exists.
 product_first_export_product_ratio
+_pfirst_held=0
 if product_first_is_self_maintenance "$REPO"; then
     _pfirst_ratio="$(product_first_ratio 2>/dev/null || echo unavail)"
     if product_first_hold; then
-        echo "held-in-buffer: ($REPO is self-maintenance, self-maintenance ratio $_pfirst_ratio > $PRODUCT_FIRST_SELF_RATIO_MAX) — product-first precedence, product repos only"
-        exit 0
+        echo "held-in-buffer: ($REPO is self-maintenance, self-maintenance ratio $_pfirst_ratio > $PRODUCT_FIRST_SELF_RATIO_MAX) — product-first precedence, product repos only; floor lanes still dispatch one claim"
+        _pfirst_held=1
     fi
 fi
 
@@ -656,6 +668,25 @@ blocked-on: nish-decision" 2>/dev/null || true
         echo "issue $N ($title): skipped-precedence-band ($band_reason)"
         continue
     }
+
+    # Product-first held repo (fleet-ops#2626): when the self-maintenance
+    # ratio holds this repo, only the precedence-band FLOOR lanes may claim
+    # (one lane per tick, latched by precedence_band_allow_claim) so the
+    # queue can never hard-stall at 0 dispatches. Every other fleet-ops
+    # claim stays held so capacity still goes to product repos when product
+    # work exists. Without this, a ratio inflated by duplicate/churn issues
+    # while product repos are blocked would idle every worker.
+    if [[ "$_pfirst_held" == "1" ]]; then
+        case "$band_reason" in
+            allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier)
+                echo "issue $N ($title): held-in-buffer floor lane ($band_reason) — one claim, queue not hard-stalled"
+                ;;
+            *)
+                echo "issue $N ($title): skipped-product-first-held ($band_reason)"
+                continue
+                ;;
+        esac
+    fi
 
     # Atomic create-only claim push (claim branch IS the work branch)
     status=0

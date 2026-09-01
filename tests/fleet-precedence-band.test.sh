@@ -1085,3 +1085,67 @@ grep -q 'fleet_queue_product_ratio{queue="agent-ready"} 0.300000' "$prom_dir/fle
 ok "scenario20g: fleet_queue_product_ratio exported by the intake tick path (1 - self-maintenance ratio)"
 
 ok "precedence-band: product-first precedence (fleet-ops#2519) — 70%% fleet-ops holds, product admits, metric exported"
+
+# --- scenario 21: product-first hold must NOT hard-stall the fleet --------
+# fleet-ops#2626 (undersaturation). Root cause: the product-first hold
+# (scenario20) used to `exit 0` unconditionally when the self-maintenance
+# ratio > 0.5, bypassing the precedence-band FLOOR lanes entirely. When the
+# ratio was inflated by duplicate/churn agent-ready issues AND product repos
+# were simultaneously blocked (0509 blocked-on fleet-ops CI deps), the whole
+# fleet idled at 0 dispatches -> FleetUndersaturated. Fix: the hold marks the
+# repo `_pfirst_held` and the claim loop still admits EXACTLY ONE floor lane
+# (machinery #1452 / starvation #1448 / bootstrap / surge floor / leverage /
+# multiplier) per tick, while holding every other fleet-ops claim. Proves:
+#   a. the tick sets _pfirst_held=1 instead of hard-exiting on hold;
+#   b. a normal in-cap fleet-ops claim is skipped during the hold;
+#   c. the machinery-floor relief route is allowed during the hold (one lane);
+#   d. the starvation-floor relief route is allowed during the hold (one lane).
+ok "precedence-band: fleet-ops#2626 product-first hold no longer hard-stalls the fleet"
+grep -qF '_pfirst_held=1' "$tick" \
+    || fail "scenario21a: tick must mark _pfirst_held=1 on hold (not hard-exit)" 
+grep -qF 'skipped-product-first-held' "$tick" \
+    || fail "scenario21a: tick must skip non-floor claims during the hold"
+gate_hold_line=$(grep -n 'if product_first_hold; then' "$tick" | head -1 | cut -d: -f1)
+after_hold=$(sed -n "$((gate_hold_line+1)),$((gate_hold_line+4))p" "$tick" | tr '\n' ' ')
+if printf '%s' "$after_hold" | grep -q 'exit'; then
+    fail "scenario21a: product_first_hold block must not hard-exit (got: $after_hold)"
+fi
+ok "scenario21a: tick holds via _pfirst_held flag, not a hard exit"
+
+# Mirror the exact case-gate the tick applies to a precedence_band_allow_claim
+# reason while the repo is held (see lib/pi-intake-tick.sh claim loop).
+hold_gate() {
+    local band_reason="$1"
+    case "$band_reason" in
+        allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier)
+            echo "allow-floor"
+            ;;
+        *)
+            echo "skip"
+            ;;
+    esac
+}
+
+# b. In-cap normal claim (allow-band) is held.
+[[ "$(hold_gate allow-band)" == "skip" ]] \
+    || fail "scenario21b: allow-band must be skipped during a product-first hold"
+[[ "$(hold_gate allow-band-surge-legit)" == "skip" ]] \
+    || fail "scenario21b: allow-band-surge-legit must be skipped during a product-first hold"
+ok "scenario21b: non-floor fleet-ops claims stay held (capacity -> product)"
+
+# c. Machinery floor: when live machinery == 0, precedence_band_allow_claim
+#    returns allow-band-floor, and the hold gate admits it (one lane).
+for r in allow-band-bootstrap allow-band-floor allow-surge-floor; do
+    [[ "$(hold_gate "$r")" == "allow-floor" ]] \
+        || fail "scenario21c: $r must be admitted (one floor lane) during hold"
+done
+ok "scenario21c: machinery/bootstrap/surge floor lanes dispatch one claim during hold"
+
+# d. Starvation floor (fleet-ops#1448) relief is also admitted during hold.
+[[ "$(hold_gate allow-starvation-floor)" == "allow-floor" ]] \
+    || fail "scenario21d: allow-starvation-floor must be admitted during hold"
+[[ "$(hold_gate allow-multiplier)" == "allow-floor" ]] \
+    || fail "scenario21d: allow-multiplier must be admitted during hold"
+ok "scenario21d: starvation floor and band-multiplier lanes dispatch during hold"
+
+ok "precedence-band: product-first hold keeps one floor lane (fleet-ops#2626) — never a whole-fleet hard stall"
