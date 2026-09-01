@@ -186,6 +186,14 @@ SKIP_FIRING = {
     # mechanism-impossible (seat supply is operator-owned); the alert
     # clears only when compliance >= 0.9 + the smoothing window flushes.
     "FleetSloSeatAvailSlowBurn",
+    # WFR-input slow-burn SLO (fleet-ops#1291/2429): same class as
+    # FleetSloSeatAvailSlowBurn — the dispatcher skip-list means no DISPATCH
+    # is ever expected, so a firing-without-dispatch chain must not ladder.
+    # The main_green burn-rate alert is a lagging integrator that clears
+    # only when ~6h of all-green samples flush the burn windows; repair is
+    # mechanism-impossible (fleet-ops#2672: it held a verify chain stalled at
+    # 2026-09-01T15:23Z, re-seating onto an empty-run benched seat).
+    "FleetSloMainGreenSlowBurn",
     # WFR-input trend regression (fleet-ops#2440/#2441): no DISPATCH comes,
     # so a firing trend delta must never ladder to a STOP-REASON.
     "FleetSelfMaintenanceRegression",

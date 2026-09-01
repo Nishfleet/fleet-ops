@@ -793,31 +793,37 @@ rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.
 
 # Alert still firing; a DISPATCH was made hours back; the unit FAILED and
 # --collect unloaded it (journal shows the real failure).
+# NOTE (fleet-ops#2672): the fixture alertname is FleetQueueSelfMaintenance
+# RatioHigh — a still-firing STRUCTURAL alert whose chain can ladder. The
+# former fixture FleetSloMainGreenSlowBurn is now WFR-input skip-listed in
+# SKIP_FIRING (the slow-burn rail), so the canary must not ladder it at all;
+# 9g's drain shape needs a ladderable name (tests/alert-repair-slo-slowburn-
+# skip.test.sh locks the skip instead).
 python3 - "$scratch/alerts.json" <<'PY'
 import json, sys
 json.dump({"status": "success", "data": {"alerts": [
-  {"state": "firing", "labels": {"alertname": "FleetSloMainGreenSlowBurn"},
+  {"state": "firing", "labels": {"alertname": "FleetQueueSelfMaintenanceRatioHigh"},
    "activeAt": "2026-08-30T05:27:33Z"}
 ]}}, open(sys.argv[1], "w"))
 PY
 cat >"$scratch/actions.log" <<'PYEND'
-[2026-08-30T07:00:11Z] DISPATCH alertname=FleetSloMainGreenSlowBurn seat=commandcode/poolside/laguna-s-2.1-free unit=u-SLO-20260830T070011Z reason=healthy packet=/x rc=0
+[2026-08-30T07:00:11Z] DISPATCH alertname=FleetQueueSelfMaintenanceRatioHigh seat=commandcode/poolside/laguna-s-2.1-free unit=u-SLO-20260830T070011Z reason=healthy packet=/x rc=0
 PYEND
 printf 'Main process exited, code=exited, status=1/FAILURE\nu-SLO-20260830T070011Z.service: Failed with result exit-code.\n' \
   >"$scratch/sysctl/u-SLO-20260830T070011Z.journal"
 
 # Seed the parked chain exactly as the live incident left it.
 mkdir -p "$scratch/state/open"
-echo '{"age": 15000, "alertname": "FleetSloMainGreenSlowBurn", "hop": "run", "ladder": "stop-reason", "stall_count": 2}' \
-  >"$scratch/state/open/FleetSloMainGreenSlowBurn.json"
+echo '{"age": 15000, "alertname": "FleetQueueSelfMaintenanceRatioHigh", "hop": "run", "ladder": "stop-reason", "stall_count": 2}' \
+  >"$scratch/state/open/FleetQueueSelfMaintenanceRatioHigh.json"
 
 # Tick 1 (well past CLOCK_RUN): the parked chain must TERMINATE.
 rc=$(run_bin "2026-08-30T11:22:19Z")
 [[ "$rc" == "0" ]] || fail "9g tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
 
 # Ledger must carry terminal=escalated.
-grep -q 'FleetSloMainGreenSlowBurn.*"terminal": "escalated"' "$scratch/state/chains.terminated.jsonl" \
-  || fail "9g tick-1: ledger must contain terminal=escalated for FleetSloMainGreenSlowBurn; got: $(cat "$scratch/state/chains.terminated.jsonl")"
+grep -q 'FleetQueueSelfMaintenanceRatioHigh.*"terminal": "escalated"' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9g tick-1: ledger must contain terminal=escalated; got: $(cat "$scratch/state/chains.terminated.jsonl")"
 
 # State on disk must be the cooldown marker, not the parked chain.
 (
