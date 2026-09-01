@@ -360,3 +360,14 @@ bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 # P14 covers it without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/fleet-ops-2462-claim-cap.test.sh"
+
+# fleet-ops#2627: empty-run count must accumulate across healthy ledger
+# clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
+# wrapper's mark_seat_empty_run must carry the count in the clobber-proof
+# spawn-bench marker — fleet-ops#1512 — and engage the failure-ceiling
+# park from the marker-carried count at EMPTY_RUN_FAILURE_CEILING). The
+# live 18 empty runs in 2h on healthy-reporting seats (opencode/nemotron
+# and openrouter/deepseek-v4-flash-0731) was the wrapper-side marker
+# staying at count=1 every cycle. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/seat-empty-run-clobber-park.test.sh"
