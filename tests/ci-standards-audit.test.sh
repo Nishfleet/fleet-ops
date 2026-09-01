@@ -247,6 +247,14 @@ bash "$here/fleet-waste-ledger.test.sh"
 # workflow-file edit.
 bash "$here/alert-repair-wfr-trend-skip.test.sh"
 
+# fleet-ops#2672: the WFR-input main_green slow-burn SLO lives in the
+# dispatcher SKIP_SET + canary SKIP_FIRING so the 6h AMX repeat can no
+# longer spawn a repair worker into a mechanism-impossible lagging
+# integrator (the verify chain it created stalled at hop=verify and
+# re-seated onto an empty-run benched seat). Hosted here so P14 runs it
+# without a workflow-file edit.
+bash "$here/alert-repair-slo-slowburn-skip.test.sh"
+
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
 # $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
