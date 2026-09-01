@@ -237,5 +237,38 @@ set -e
 [[ "$rc" -ne 0 ]] || fail "expected orphan-marker error, got 0"
 echo "OK 8: orphan BEGIN marker -> hard error (exit nonzero)"
 
+# --- Assertion 9: Pi example-extension count is pinned to reality (fleet-ops#2577).
+# The rulebook-redteam audit found the count contradicting itself across rule
+# bodies (74 vs 79,: a bare number with no source-of-truth anchor drifted
+# between sections. The fix: every rule body that names the count must carry
+# the SAME number pinned with the dated, runnable `ls ... | wc -l` check
+# command, so a future edit has to re-verify the count by construction.
+# This asserts the canonical carries that pin,and --- when the Pi install is
+# present --- thatthe pinned number equals the live count. (In CI, wherethe
+# install does not exist, the structural pin check still runs; the reality
+# equality only runs on a box where the install exists.)
+pi_lines="$(grep -F "shipped example extensions" "$canonical" || true)"
+[[ -n "$pi_lines" ]] || fail "canonical missing the Pi example-extension count line"
+while IFS= read -r pi_line; do
+  [[ -n "${pi_line:-}" ]] || continue
+  grep -Fq "shipped example extensions (verified" <<<"$pi_line" \
+    || fail "Pi count line must carry the dated check command (fleet-ops#2577): $pi_line"
+  grep -Fq "| wc -l" <<<"$pi_line" \
+    || fail "Pi count line must pin the count to \`ls ... | wc -l\` (fleet-ops#2577): $pi_line"
+done <<<"$pi_lines"
+echo "OK 9a: canonical pins the Pi example-extension count with the dated \`ls | wc -l\` check"
+
+EXT_DIR="${FLEET_PI_EXAMPLES_EXT_DIR:-$HOME/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions}"
+if [[ -d "$EXT_DIR" ]]; then
+  live="$(ls "$EXT_DIR" | wc -l | tr -d ' ')"
+  pinned="$(sed -nE 's/.*[^0-9]([0-9]+) shipped example extensions.*/\1/p' "$canonical" | head -n1)"
+  [[ -n "$pinned" ]] || fail "could not extract the pinned count from canonical"
+  [[ "$pinned" == "$live" ]] || fail \
+    "canonical pins $pinned Pi example extensions but the live count is $live (run \`ls ... | wc -l\` and update the pinned number)"
+  echo "OK 9b: pinned count $pinned equals the live Pi example-extension count (reality-checked)"
+else
+  echo "OK 9b: no Pi install present (skipping reality equality; structural pin only, CI)"
+fi
+
 echo ""
-echo "ALL OK: 8/8 assertions passed (drift, render, templating, markers, orphans)"
+echo "ALL OK: 9/9 assertions passed (drift, render, templating, markers, orphans, pi-count pin)"
