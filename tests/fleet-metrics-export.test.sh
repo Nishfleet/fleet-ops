@@ -316,24 +316,34 @@ cat >"$DETAIL_STUB" <<'JSON'
 ]
 JSON
 
-# fleet-ops#1445: seed a per-seat health ledger with one dead-credential seat
-# (seat_dead=true + credentials_bad, needs re-auth) and one healthy seat. The
-# real _read_dead_credentials() scans it and main() must emit the distinct
-# dead-credential signal (total gauge + per-seat series) for exactly the dead
-# seat.
+# fleet-ops#1445: seed a per-seat health ledger with the enrolled dead-credential
+# seat (xai-oauth/grok-4.5 — xai-oauth cap=1 in seat-caps.json), a NON-enrolled
+# cap-0 dead-credential seat (grok/grok-4.5 — grok cap=0 dead_decoy, superseded
+# by xai-oauth), and one healthy seat. The real _read_dead_credentials() must
+# emit the dead-credential signal ONLY for the enrolled dead seat.
 SEAT_LEDGER_OVERRIDE="$scratch/seed-dead"
 mkdir -p "$SEAT_LEDGER_OVERRIDE"
 cat >"$SEAT_LEDGER_OVERRIDE/xai-oauth__grok-4.5.json" <<'JSON'
 {"provider":"xai-oauth","model":"grok-4.5","http_status":401,"health_class":"credentials_bad","seat_dead":true,"observed_at":"2026-08-29T06:30:53Z","source":"cli_spawn","failure_mode":"credentials_bad","usable_at":null,"retryable":false,"seat_dead":true}
 JSON
+cat >"$SEAT_LEDGER_OVERRIDE/grok__grok-4.5.json" <<'JSON'
+{"provider":"grok","model":"grok-4.5","http_status":401,"health_class":"credentials_bad","seat_dead":true,"observed_at":"2026-08-29T06:30:53Z","source":"cli_spawn","failure_mode":"credentials_bad","usable_at":null,"retryable":false,"seat_dead":true}
+JSON
 cat >"$SEAT_LEDGER_OVERRIDE/devin__glm-5-2.json" <<'JSON'
 {"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"observed_at":"2026-08-29T06:30:53Z"}
 JSON
 
-python3 - "$exporter" "$OUT_OVERRIDE" "$DETAIL_STUB" "$SM_CONFIG_OVERRIDE" "$SEAT_LEDGER_OVERRIDE" <<'PY' || fail "main() emission failed"
+# Hermetic seat-caps.json so _enrolled_seats() resolves deterministically:
+# xai-oauth is enrolled (cap=1, model grok-4.5 cap=1); grok is cap=0 dead_decoy.
+SEAT_CAPS_OVERRIDE="$scratch/seat-caps.json"
+cat >"$SEAT_CAPS_OVERRIDE" <<'JSON'
+{"providers":{"xai-oauth":{"cap":1,"models":{"grok-4.5":1,"grok-4.6":1}},"grok":{"cap":0}}}
+JSON
+
+python3 - "$exporter" "$OUT_OVERRIDE" "$DETAIL_STUB" "$SM_CONFIG_OVERRIDE" "$SEAT_LEDGER_OVERRIDE" "$SEAT_CAPS_OVERRIDE" <<'PY' || fail "main() emission failed"
 import importlib.util, json, os, sys, types
 from pathlib import Path
-exporter, out_path, detail_stub, sm_cfg, seat_ledger = sys.argv[1:6]
+exporter, out_path, detail_stub, sm_cfg, seat_ledger, seat_caps = sys.argv[1:7]
 spec = importlib.util.spec_from_file_location("fme", exporter)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -343,6 +353,7 @@ m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
 m.SEAT_HEALTH = Path("/nonexistent/seat.json")
 m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_CAPS_JSON = Path(seat_caps)
 m.HC_URL_FILE = Path("/nonexistent/hc.url")
 m.ACTIONS_LOG = Path("/nonexistent/actions.log")
 m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
@@ -395,13 +406,16 @@ assert "fleet_verified_merge_ratio 0.666667" in body, body
 assert "# HELP fleet_verified_merges_24h" in body, body
 assert "# TYPE fleet_verified_merge_ratio gauge" in body, body
 # fleet-ops#1445: dead-credential signal — total gauge + per-seat series for
-# exactly the one seed dead seat; the healthy seat is not counted.
+# exactly the ENROLLED seed dead seat (xai-oauth/grok-4.5, cap=1). The cap-0
+# dead seat (grok/grok-4.5, dead_decoy) is NOT counted, and the healthy seat
+# is not counted either.
 assert "fleet_pi_seat_dead_credential_total 1" in body, body
 assert '# HELP fleet_pi_seat_dead_credential_total' in body, body
 assert '# TYPE fleet_pi_seat_dead_credential_total gauge' in body, body
 assert '# HELP fleet_pi_seat_dead_credential ' in body, body
 assert 'fleet_pi_seat_dead_credential{seat="xai-oauth__grok-4.5",http_status="401"} 1' in body, body
 assert "devin__glm-5-2" not in body, "healthy seat must not appear in dead-credential series: " + body
+assert "grok__grok-4.5" not in body, "cap-0 dead_decoy seat must not appear in dead-credential series: " + body
 print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
 
