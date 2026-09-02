@@ -255,6 +255,18 @@ bash "$here/alert-repair-wfr-trend-skip.test.sh"
 # without a workflow-file edit.
 bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 
+# fleet-ops#2694 (PR #2796 follow-up): the fleet_alert_outcome_24h
+# phantom-vs-real split test landed on main without a ci.yml listing or a
+# host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted by
+# a listed test, live/destructive, nor a known orphan:
+# alert-repair-outcome-metric.test.sh" for every push since 08:05Z (the
+# named pin in tests/p14-test-listing-gate.test.sh is the class-prevention
+# so a future drop of this host line fails by name). Hermetic test
+# (no gh/prometheus/systemd) — runs fine in hosted CI. Hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/alert-repair-outcome-metric.test.sh"
+
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
 # $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
