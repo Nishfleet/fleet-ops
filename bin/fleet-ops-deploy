@@ -87,6 +87,17 @@ if [ -e "$dropin" ] || [ -L "$dropin" ]; then
         || log "WARN: daemon-reload after drop-in removal failed"
 fi
 
+# fleet-ops#2924: stale scout prom-mode bandage (superseded by #1395).
+# install.sh also removes it on a successful install; remove here too so a
+# dirty/non-ff deploy still clears the leftover ExecStartPre/StopPost rewrite.
+dropin="${HOME}/.config/systemd/user/pi-scout@.service.d/20-prom-mode.conf"
+if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+    rm -f "$dropin"
+    log "removed stale scout prom-mode drop-in: $dropin (fleet-ops#2924)"
+    systemctl --user daemon-reload >/dev/null 2>&1 \
+        || log "WARN: daemon-reload after scout prom-mode drop-in removal failed"
+fi
+
 # The same drop-in pointed FLEET_OPS_DRIFT_BIN at a GC-able worktree. Env
 # for this tick is already set; refusing the path stops the self-compare.
 canary_resolved=$(readlink -f "$CANARY" 2>/dev/null || printf '%s' "$CANARY")

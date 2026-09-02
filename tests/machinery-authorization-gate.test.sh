@@ -136,6 +136,25 @@ jq -e '[.findings[].unit] | index("fleet-heartbeat") == null' <<<"$out" >/dev/nu
   || fail "hunt must NOT flag allowlisted/symlink fleet-heartbeat: $out"
 ok "hunt hits hand-placed units not on the allowlist"
 
+# --- hunt fixture hits real-file drop-ins even when parent is allowlisted
+# (fleet-ops#2924). Symlink drop-ins and ephemeral memory.conf stay silent.
+out=$("$gate" hunt --input "$fixtures/hunt-dropin-hit.json")
+jq -e '[.findings[] | select(.kind=="drop-in")] | length == 3' <<<"$out" >/dev/null \
+  || fail "hunt-dropin-hit must yield exactly 3 drop-in findings: $out"
+jq -e '[.findings[].dropin] | index("pi-scout@.service.d/20-prom-mode.conf") != null' <<<"$out" >/dev/null \
+  || fail "hunt must flag 20-prom-mode.conf: $out"
+jq -e '[.findings[].dropin] | index("pi-intake@.service.d/10-use-tick.conf") != null' <<<"$out" >/dev/null \
+  || fail "hunt must flag 10-use-tick.conf: $out"
+jq -e '[.findings[].dropin] | index("fleet-metrics-export.service.d/canary-effectiveness.conf") != null' <<<"$out" >/dev/null \
+  || fail "hunt must flag canary-effectiveness.conf: $out"
+jq -e '[.findings[].dropin] | index("pi-scout@.service.d/10-keystone-hc.conf") == null' <<<"$out" >/dev/null \
+  || fail "hunt must NOT flag symlink 10-keystone-hc.conf: $out"
+jq -e '[.findings[].dropin] | index("pi-issue@fleet-ops-2924.service.d/memory.conf") == null' <<<"$out" >/dev/null \
+  || fail "hunt must NOT flag ephemeral memory.conf: $out"
+jq -e '[.findings[] | select(.kind=="unit")] | length == 1' <<<"$out" >/dev/null \
+  || fail "hunt-dropin-hit must still flag the one unallowlisted unit: $out"
+ok "hunt hits real-file drop-ins under allowlisted parents (fleet-ops#2924)"
+
 # --- (c) live hunt against the box (reproduces audit hand-placed list) ---
 # Uses the real allowlist + real ~/.config/systemd/user. Must surface at
 # least one of the audit's class-(c) hand-placed units still present.
@@ -166,6 +185,32 @@ else
   else
     ok "live hunt ran (findings=$total; no user unit dir on this host — schema OK)"
   fi
+fi
+# fleet-ops#2924: live hunt must see real-file drop-ins (kind=drop-in). Soft
+# on the named three so a box that already absorbed/deleted them does not
+# flake — but REQUIRE that when any of those three still exists as a real
+# file, hunt flags it. Empty drop-in findings after prune is OK.
+dropin_re='20-prom-mode\.conf|10-use-tick\.conf|canary-effectiveness\.conf'
+live_drop_n=$(jq -r --arg re "$dropin_re" \
+  '[.findings[] | select(.kind=="drop-in") | .dropin // empty | select(test($re))] | length' <<<"$live")
+if [[ "$live_drop_n" -ge 1 ]]; then
+  ok "live hunt flags real-file drop-ins (fleet-ops#2924; $live_drop_n named hit(s))"
+else
+  # Prove the scanner walked *.d/: if any of the three still exists as a
+  # real file on disk, the hunt MUST have flagged it — that is the bug.
+  missing=0
+  for p in \
+    "$HOME/.config/systemd/user/pi-scout@.service.d/20-prom-mode.conf" \
+    "$HOME/.config/systemd/user/pi-intake@.service.d/10-use-tick.conf" \
+    "$HOME/.config/systemd/user/fleet-metrics-export.service.d/canary-effectiveness.conf"
+  do
+    if [[ -e "$p" && ! -L "$p" ]]; then
+      echo "FAIL: live real-file drop-in $p not flagged by hunt: $live" >&2
+      missing=1
+    fi
+  done
+  [[ "$missing" -eq 0 ]] || fail "live hunt missed a real-file drop-in still on disk"
+  ok "live hunt drop-in scan clean (named three already absorbed/deleted)"
 fi
 # Issue #2072: the escaped worker slice is now repo-sourced and allowlisted,
 # so the live hunt must not flag it even while it is still a hand-placed file.

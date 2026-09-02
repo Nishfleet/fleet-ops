@@ -317,6 +317,22 @@ remove_papered_heartbeat_dropin() {
     fi
 }
 
+# fleet-ops#2924: live bandage for FleetScoutStale (chmod 0644 + drop 0-valued
+# series) written 2026-08-28 "until PR #1395 deploys". #1395 merged
+# 2026-08-27T20:05:29Z (write fleet-scout.prom mode 0644). The drop-in is
+# leftover and still rewrites the prom file on every scout. Only touch it
+# when this MANIFEST installs into the live user unit dir.
+remove_stale_scout_prom_mode_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin="${user_systemd}/pi-scout@.service.d/20-prom-mode.conf"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        echo "removed stale scout prom-mode drop-in: $dropin (fleet-ops#2924)"
+        user_unit_changed=1
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -500,6 +516,7 @@ fi
 
 if [ "$do_user_install" = 1 ]; then
   remove_papered_heartbeat_dropin
+  remove_stale_scout_prom_mode_dropin
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
