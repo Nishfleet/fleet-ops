@@ -48,7 +48,7 @@ grep -q 'merged:>={CUTOFF}' "$exp" \
 if grep -E 'merged:>=\\\$cutoff' "$exp" >/dev/null 2>&1; then
   fail "query must NOT pass cutoff as a GraphQL dollar-variable inside search(query:)"
 fi
-ok "GraphQL exporter query: merged:>={CUTOFF} sort:merged-desc (template, not $-variable)"
+ok 'GraphQL exporter query: merged:>={CUTOFF} sort:merged-desc (template, not $dollar-variable)'
 
 # Runtime substitution replaces {CUTOFF} with a real ISO timestamp
 python3 - "$exp" "$scratch" <<'PY' || fail "query substitution test failed"
@@ -67,7 +67,7 @@ assert "{CUTOFF}" in tpl, "template must keep a {CUTOFF} placeholder"
 assert "merged:>={CUTOFF}" in tpl, "merged:>={CUTOFF} qualifier missing"
 assert "sort:merged-desc" in tpl, "sort:merged-desc missing"
 # 1.3 No GraphQL $-variable form of cutoff inside the search string
-assert "merged:>=$cutoff" not in tpl, "$-variable form would not expand inside search()"
+assert "merged:>=$cutoff" not in tpl, "dollar-variable form would not expand inside search()"
 
 # 1.4 Substituting {CUTOFF} with an ISO timestamp yields a query with a
 # real merged:>={iso} filter and no leftover placeholder.
