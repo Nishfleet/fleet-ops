@@ -919,3 +919,59 @@ groups:
         annotations:
           summary: "quality-SLO scoreboard stale (>24h) or its recompute path is dead"
           description: "fleet_quality_slo_last_computed_seconds is absent or older than 24h (fleet-ops#2444). The quality scoreboard has been serving stale numbers — a 4-day-old snapshot cannot adjudicate a live FleetQueueSelfMaintenanceRatioHigh alert. Repair: bin/fleet-quality-slo must run (wired as heartbeat-tier1 block 19) and recompute agent-state/quality-slo/snapshot.json, exporting fleet_quality_slo_last_computed_seconds each run. Check journalctl --user -u fleet-heartbeat.service and systemctl --user status fleet-heartbeat.service."
+
+  - name: fleet_deploy_quality
+    rules:
+      # fleet-ops#2758: deployment quality SLOs. Computed by
+      # lib/fleet-deploy-quality.py (loaded by libexec/fleet-metrics-export.py
+      # on the 5-min tick). Latency/time-to-detect are p95 gauges; rollback/
+      # success are 30d ratios; blocked_duration is the LIVE age of the
+      # current DEPLOY-BLOCKED episode (0 when green). NaN policy: a data
+      # outage emits NaN gauges + fleet_deployment_quality_up 0, so these
+      # threshold rules stay silent (NaN comparisons are false) and
+      # DeploymentQualityStale below carries the loud signal.
+      - alert: DeploymentLatencyHigh
+        expr: fleet_deployment_latency_seconds{repo="fleet-ops"} > 1800
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet-ops merge-to-live p95 latency above 30 min"
+          description: "p95 fleet-ops deployment latency (merge -> first green fleet-deploy-check deploy) exceeded 30 minutes for 5+ minutes. The 2-min deploy gate is saturated or blocked; inspect journalctl --user -u fleet-deploy-check.service and bin/fleet-ops-deploy. fleet-ops#2758."
+      - alert: DeploymentRollbackRateHigh
+        expr: fleet_deployment_rollback_rate{repo="fleet-ops"} > 0.1
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet-ops auto-revert rate above 10% of deployments (30d)"
+          description: "More than 10% of fleet-ops deployments in the trailing 30 days were rolled back by the auto-revert machinery (revert: auto-restore green main PRs / merged deployments). The fleet is shipping breakage to main faster than the red-on-main pipeline catches it. fleet-ops#2758."
+      - alert: DeploymentTimeToDetectHigh
+        expr: fleet_deployment_time_to_detect_seconds{repo="fleet-ops"} > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet-ops p95 time-to-detect above 10 min"
+          description: "p95 time from a fleet-ops deployment to the first critical alert dispatch exceeded 10 minutes for 5+ minutes. Bad deploys are not being caught by the alert plane within budget; inspect the alert-repair actions.log coverage and the critical alert rules. fleet-ops#2758."
+      - alert: DeployBlockedStuck
+        expr: fleet_deploy_blocked_duration_seconds{repo="fleet-ops"} > 900
+        for: 3m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
+          description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+      - alert: DeploymentQualityStale
+        expr: absent(fleet_deployment_quality_up{repo="fleet-ops"}) or fleet_deployment_quality_up{repo="fleet-ops"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "deployment-quality metrics computation failed or vanished"
+          description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."

@@ -155,6 +155,11 @@ bin/fleet-role-gate-audit /home/nish/.local/bin/fleet-role-gate-audit
 # review.md) has the L7 SMOOTH lens + L8 alert-quality lens + SLO ratchet.
 config/slo-definitions.json /home/nish/.local/state/pi-packet/slo-definitions.json
 lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
+# fleet-ops#2758: deployment quality SLOs. lib/fleet-deploy-quality.py runs
+# INSIDE libexec/fleet-metrics-export.py (lazy-loaded, no service change —
+# the issue's rollback contract); the gauges land in fleet.prom on the
+# existing 5-min tick. Same install dir as the other lib modules.
+lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice

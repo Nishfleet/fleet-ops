@@ -2568,6 +2568,74 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
         lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 1')
 
 
+# --- Deployment quality SLOs (fleet-ops#2758) -----------------------------
+# lib/fleet-deploy-quality.py computes the deployment-quality SLO family
+# (latency, rollback rate, time-to-detect, success rate, blocked-duration)
+# from gh merged/revert lists, the fleet-deploy-check journal, and the
+# alert-repair actions.log. Loaded lazily (same pattern as slo_budget) so
+# this exporter stays a standalone script; the module never raises out of
+# here — a hard failure emits NaN gauges + fleet_deployment_quality_up 0 so
+# the DeploymentQualityStale rule stays loud instead of serving a frozen or
+# zero value (a 0 blocked-duration during a real 40-min block is exactly
+# the silent drift the rule family exists to kill).
+
+_DEPLOY_QUALITY_MOD = None
+
+
+def _deploy_quality_mod():
+    """Lazily load lib/fleet-deploy-quality.py from ../lib/."""
+    global _DEPLOY_QUALITY_MOD
+    if _DEPLOY_QUALITY_MOD is not None:
+        return _DEPLOY_QUALITY_MOD
+    import importlib.util
+    lib_path = Path(__file__).resolve().parent.parent / "lib" / "fleet-deploy-quality.py"
+    spec = importlib.util.spec_from_file_location("fleet_deploy_quality", lib_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["fleet_deploy_quality"] = mod
+    spec.loader.exec_module(mod)
+    _DEPLOY_QUALITY_MOD = mod
+    return mod
+
+
+_DQ_GAUGES = (
+    "fleet_deployment_latency_seconds",
+    "fleet_deployment_rollback_rate",
+    "fleet_deployment_time_to_detect_seconds",
+    "fleet_deployment_success_rate",
+    "fleet_deploy_blocked_duration_seconds",
+)
+
+
+def _emit_deploy_quality(lines):
+    """Append the fleet_deployment_* family from lib/fleet-deploy-quality.py.
+
+    Never fails the exporter: on any module failure the issue's five named
+    gauges are emitted as NaN with fleet_deployment_quality_up 0 (the
+    DeploymentQualityStale rule makes that loud) and the fault is logged to
+    stderr. NaN keeps the threshold rules (latency>1800, blocked>900, ...)
+    silent on a data outage — a comparison against NaN is false — while the
+    up=0 says the family is unhealthy, not healthy.
+    """
+    try:
+        out = _deploy_quality_mod().prom_lines()
+        if not out or not any(l.startswith("fleet_deployment_")
+                              for l in out if not l.startswith("#")):
+            raise ValueError("empty deploy-quality family")
+        lines.append("")
+        lines.extend(out)
+    except Exception as exc:  # noqa: BLE001 - the exporter must stay green
+        print(f"deploy-quality: {exc}", file=sys.stderr)
+        label = 'repo="fleet-ops"'
+        lines.append("")
+        for gauge in _DQ_GAUGES:
+            lines.append(f"# HELP {gauge} deploy-quality SLO (fleet-ops#2758); NaN when the computation failed this scrape.")
+            lines.append(f"# TYPE {gauge} gauge")
+            lines.append(f"{gauge}{{{label}}} NaN")
+        lines.append("# HELP fleet_deployment_quality_up 1 when the deploy-quality computation succeeded, 0 when it failed (values are NaN).")
+        lines.append("# TYPE fleet_deployment_quality_up gauge")
+        lines.append(f"fleet_deployment_quality_up{{{label}}} 0")
+
+
 # --- Main ------------------------------------------------------------------
 
 def main():
@@ -3071,6 +3139,13 @@ def main():
         lines.append(TYPE_SEAT_TOTAL)
         lines.append(f"fleet_pi_seat_total {_seat_total}")
     _emit_slo_metrics(lines, main_ci, healthy, rl)
+
+    # --- Deployment quality SLOs (fleet-ops#2758) ---
+    # Emitted after the SLO family so every data source this module reads
+    # (gh, journal, actions log) is complete for the tick; a module fault
+    # degrades to NaN + up 0 (see _emit_deploy_quality) and never fails
+    # the exporter oneshot.
+    _emit_deploy_quality(lines)
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)
