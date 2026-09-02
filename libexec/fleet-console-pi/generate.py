@@ -153,23 +153,51 @@ def _prom_or_stale(source, explain):
     return mtime, None
 
 
+def _product_slo_mtime():
+    """Epoch of the product-slo textfile (or its heartbeat), or None.
+
+    fleet-ops#2755 / #2690: shipped_24h reads fleet_product_merged_24h from
+    fleet-product-slo.prom (not the org-wide fleet_merged_prs_24h in
+    fleet.prom). Freshness therefore keys on that textfile / heartbeat.
+    """
+    rows = _prom_query(
+        'node_textfile_mtime_seconds{file=~".*fleet-product-slo.prom"}'
+    )
+    if rows:
+        return max(r["value"] for r in rows)
+    hb = _prom_query("fleet_product_slo_last_run_seconds")
+    if hb:
+        return max(r["value"] for r in hb)
+    return None
+
+
 def collect_shipped():
-    src = "prometheus:fleet_merged_prs_24h"
-    explain = ("Prometheus fleet_merged_prs_24h, trailing 24h, skipped/"
-               "cancelled runs excluded. Cached org-wide gh search ≤30 min; "
-               "cache older than 2h omits the family (never a frozen value).")
-    mtime, err = _prom_or_stale(src, explain)
-    if err:
-        return err
+    src = "prometheus:fleet_product_merged_24h"
+    explain = ("Prometheus fleet_product_merged_24h, trailing 24h non-revert "
+               "merges for product repos (intake-repos minus self-maintenance). "
+               "Single source of truth for product delivery "
+               "(fleet-ops#2755 / #2690). Written by lib/fleet-product-slo.py "
+               "on the metrics-export tick.")
     try:
-        fresh = _cache_fresh("merged_prs")
-        rows = _prom_query("fleet_merged_prs_24h")
+        mtime = _product_slo_mtime()
+    except PromError as e:
+        return _unknown(src, PROM_STALE_S,
+                        f"Prometheus unreachable: {e}", explain=explain)
+    if mtime is None:
+        return _unknown(src, PROM_STALE_S,
+                        "product-slo metrics absent from Prometheus",
+                        explain=explain)
+    age = time.time() - mtime
+    if age > PROM_STALE_S:
+        return _unknown(
+            src, PROM_STALE_S,
+            f"product-slo.prom stale ({int(age)}s old; exporter likely frozen)",
+            explain=explain,
+        )
+    try:
+        rows = _prom_query("fleet_product_merged_24h")
     except PromError as e:
         return _unknown(src, PROM_STALE_S, f"query failed: {e}", explain=explain)
-    if not fresh:
-        return _unknown(src, PROM_STALE_S,
-                        "metric family absent (exporter omitted stale cache)",
-                        explain=explain)
     items = []
     total = 0
     for r in rows:
@@ -177,7 +205,9 @@ def collect_shipped():
         n = int(r["value"])
         total += n
         if repo:
-            items.append({"repo": repo, "count": n})
+            # Short name from the product-slo exporter; expand for spot checks.
+            full = repo if "/" in repo else f"{ORG}/{repo}"
+            items.append({"repo": full, "count": n})
     items.sort(key=lambda x: (-x["count"], x["repo"]))
     return _tile(src, PROM_STALE_S, True, mtime, count=total, items=items,
                  explain=explain)

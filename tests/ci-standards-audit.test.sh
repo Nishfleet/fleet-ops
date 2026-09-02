@@ -463,3 +463,9 @@ bash "$here/intake-prioritization-effectiveness.test.sh"
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
 bash "$here/scout-effectiveness.test.sh"
+
+# fleet-ops#2755: product delivery SLO family (throughput / lead time /
+# revert rate / merged_24h). Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+# Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
+bash "$here/fleet-product-slo.test.sh"

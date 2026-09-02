@@ -301,7 +301,7 @@ function render(d){
   const cellCls = (base, tile) => (base + (tile && tile.disputed ? " disputed" : "")).trim();
   band.innerHTML = `
     <button class="${cellCls("cell cool", o)}" aria-expanded="false"><div class="k">OPEN PRS</div>${prVal}${prSub ? `<div class="s">${esc(prSub)}</div>` : ""}${explainToggleHTML(o, "Prometheus fleet_open_prs, current open-PR count per repo.")}</button>
-    <button class="${cellCls("cell hot", s)}" aria-expanded="false"><div class="k">SHIPPED 24H</div>${shVal}${shSub ? `<div class="s">${esc(shSub)}</div>` : ""}${explainToggleHTML(s, "Prometheus fleet_merged_prs_24h, trailing 24h, skipped/cancelled runs excluded.")}</button>
+    <button class="${cellCls("cell hot", s)}" aria-expanded="false"><div class="k">SHIPPED 24H</div>${shVal}${shSub ? `<div class="s">${esc(shSub)}</div>` : ""}${explainToggleHTML(s, "Prometheus fleet_product_merged_24h, trailing 24h non-revert merges for product repos (fleet-ops#2755).")}</button>
     <button class="${cellCls("cell", c)}" aria-expanded="false"><div class="k">MAIN RED</div>${ciVal}${ciSub ? `<div class="s">${esc(ciSub)}</div>` : ""}${explainToggleHTML(c, "Prometheus fleet_main_ci_green: count of repos whose default-branch CI is red.")}</button>
     <button class="${cellCls("cell", p)}" aria-expanded="false"><div class="k">PI WORK</div>${piVal}${piSub ? `<div class="s">${esc(piSub)}</div>` : ""}${explainToggleHTML(p, "Running user units whose ExecStart contains pi --print (never a unit-name pattern).")}</button>
     <button class="${cellCls("cell", al)}" aria-expanded="false"><div class="k">ALERTS</div>${alVal}${alSub ? `<div class="s">${esc(alSub)}</div>` : ""}${explainToggleHTML(al, "Prometheus /api/v1/alerts, currently firing, Watchdog excluded.")}</button>

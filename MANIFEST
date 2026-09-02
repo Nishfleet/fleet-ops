@@ -200,6 +200,14 @@ systemd/fleet-metrics-export.service.d/intake-effectiveness.conf /home/nish/.con
 # fault cannot fail Prometheus export.
 lib/scout-effectiveness.py /home/nish/.local/lib/pi-packet/scout-effectiveness.py
 systemd/fleet-metrics-export.service.d/scout-effectiveness.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/scout-effectiveness.conf
+# fleet-ops#2755: product delivery SLO family (throughput / lead time /
+# revert rate / merged_24h). Piggybacks the existing 5-min
+# fleet-metrics-export tick (no new timer); writes
+# fleet-product-slo.prom. Leading '-' so a product-slo fault cannot
+# fail Prometheus export. Accept §5's dedicated hourly timer is rejected
+# as a new organ — the exporter already runs every 5 min.
+lib/fleet-product-slo.py /home/nish/.local/lib/pi-packet/fleet-product-slo.py
+systemd/fleet-metrics-export.service.d/product-slo.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/product-slo.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;

@@ -195,7 +195,7 @@ t1 = time.time() - 60
 doc = {"tiles": {
     "open_prs": {"source": "x", "stale_after_s": 900, "ok": True,
                   "observed_at": t1, "count": 0, "items": []},
-    "shipped_24h": {"source": "prometheus:fleet_merged_prs_24h",
+    "shipped_24h": {"source": "prometheus:fleet_product_merged_24h",
                      "stale_after_s": 900, "ok": True,
                      "observed_at": t1, "count": 41,
                      "items": [{"repo": "Nishfleet/fleet-ops", "count": 31},
@@ -230,7 +230,7 @@ m.RUNNERS["running_pi_execstart"] = lambda t: 0
 
 results = m.run(data_path=data, inject=None)
 assert results["shipped_24h"] == 0, \
-    f"race must NOT dispute (tile=41, prom=42, race gate should skip), got {results['shipped_24h']}"
+    f"race must NOT dispute (tile=41, prom=42, race gate should skip), got {results['shipped_24h']}"  # product-slo source
 out = json.loads(data.read_text())
 tile = out["tiles"]["shipped_24h"]
 assert tile["disputed"] is False, tile
