@@ -12,7 +12,10 @@
 #   6b. Observe-to-close: a clean tick closes the filed issue.
 #   6c. Observe-to-close leaves a still-active slug open.
 #   6d. Incident #724 snippet ("say the word" + deck kicker) is clean (non-filing).
-#   7. Missing helper fails loud.
+#   7. Missing helper fails loud with the CRASH rc (2) — the heartbeat's
+#      rc>=2 guard (fleet-ops#1116) must see broken helpers as crashes, not
+#      as alarm rc=1. (Previously exit 1; the alarm-vs-crash separation
+#      requires hard faults at rc >= 2 so the unit still trips on them.)
 #   8. Contracts: heartbeat wiring, MANIFEST, nested CI host.
 
 set -euo pipefail
@@ -357,7 +360,8 @@ rm -f "$sessions/deck-kicker.jsonl"
 # pin wins over the installed copy) regardless of whether the real machine
 # already has ~/.local/lib/pi-packet/findings-queued.py. Without the guard
 # the bin would fall back to the fake helper, scan clean, and exit 0 — the
-# drill would fail. With the guard the pin wins, LIB stays missing, exit 1.
+# drill would fail. With the guard the pin wins, LIB stays missing, exit 2
+# (crash class — the heartbeat's rc>=2 guard propagates it to the unit).
 fake_home="$scratch/home"
 mkdir -p "$fake_home/.local/lib/pi-packet"
 cat >"$fake_home/.local/lib/pi-packet/findings-queued.py" <<'FAKE_HELPER'
@@ -388,9 +392,9 @@ FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
   "$bin" >/dev/null 2>"$scratch/err4.log"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "missing helper should exit 1 (got $rc) — guard did not win over installed fallback"
+[[ "$rc" == "2" ]] || fail "missing helper should exit 2 (crash class) (got $rc) — guard did not win over installed fallback"
 grep -q "FINDINGS-QUEUED-BROKEN" "$scratch/err4.log" || fail "missing helper must be LOUD"
-ok "missing helper fails loud (guard wins over installed fallback)"
+ok "missing helper fails loud with crash rc=2 (guard wins over installed fallback)"
 
 # --- 7b. citation lock for #609 / #631 (missing-helper guard) ----------------
 # The guard above (env-var pin wins over installed fallback) is the fix for

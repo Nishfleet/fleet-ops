@@ -11,7 +11,11 @@
 # No new scheduler. Run by fleet-heartbeat-tier1 every tick.
 # Exit 0: no unqueued offers in the window. Exit 1: at least one
 # (LOUD + auto-filed, deduped by signal: findings-queued/<slug>).
-# Exit 1 also if the helper itself is broken (missing python/lib).
+# Exit 2: the helper itself is broken (missing python/lib/scan crash).
+# Exit-code contract (fleet-ops#1116): the heartbeat only propagates
+# rc >= 2 to the unit — rc=1 is the alarm channel (already loud +
+# auto-filed + observe-to-close), rc>=2 is a real crash that must
+# surface. Keep hard-fault exits at 2, never 1.
 # Observe-to-close (fleet-ops#725): auto-filed issues whose slug is no
 # longer a finding are closed with evidence on the same tick — the
 # session either aged out of the 24h window or was resolved. Without
@@ -100,11 +104,11 @@ loud() {
 
 if ! command -v python3 >/dev/null 2>&1; then
     loud "FINDINGS-QUEUED-BROKEN" "python3 missing — cannot lint sessions"
-    exit 1
+    exit 2
 fi
 if [[ ! -f "$LIB" ]]; then
     loud "FINDINGS-QUEUED-BROKEN" "helper missing at $LIB"
-    exit 1
+    exit 2
 fi
 
 scan_args=(scan --window-hours "$WINDOW_HOURS" --grace-minutes "$GRACE_MINUTES")
@@ -138,7 +142,7 @@ set -e
 
 if [[ "$scan_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$report"; then
     loud "FINDINGS-QUEUED-BROKEN" "helper produced no JSON (rc=$scan_rc) $(tr '\n' ' ' </tmp/findings-queued.err 2>/dev/null)"
-    exit 1
+    exit 2
 fi
 
 finding_count=$(jq '.findings | length' <<<"$report")
