@@ -42,8 +42,14 @@
 #       falls back to the (clobbered) ledger and starts a fresh count —
 #       the recovery signal: a healthy observation after the bench expired
 #       does NOT punish a recovered seat.
-#   (d) a DIFFERENT-CLASS marker (spawn_fail) does NOT merge into the
-#       empty-run count — the two classes track independently.
+#   (d) a DIFFERENT-CLASS marker (spawn_fail) DOES merge into the
+#       empty-run count (fleet-ops#2786): the spawn-bench marker is a
+#       SINGLE file per seat shared by both writers, so cross-class
+#       accumulation is the only way the failure-ceiling park ever fires
+#       for a seat that alternates between empty_run and spawn_fail. The
+#       live nemotron-3-ultra-free seat produced 10 empty runs over 3 days
+#       with every marker showing count=1 because a spawn_fail marker sat
+#       between empty runs and the same-class check skipped it.
 #
 # Runs entirely offline: scratch ledger, scratch state, no network, no
 # systemd. Mirrors the harness shape of tests/seat-spawn-bench-clobber.test.sh
@@ -226,13 +232,19 @@ fresh_count=$(count_of "$mf")
     || fail "(c) after a stale marker, merged count = $fresh_count, want 1 — the stale marker must NOT carry the high count forward; the recovered seat starts fresh"
 ok "(c) stale same-class marker falls back to ledger (count=0); merged count = $fresh_count — recovered seat is NOT punished"
 
-# --- (d) a DIFFERENT-CLASS marker does NOT merge into empty-run count ----
-# A spawn_fail marker carries failure_mode=spawn_fail, NOT empty_run. Empty-
-# run counting must not absorb the spawn_fail count — the two classes are
-# tracked independently. The next empty-run after a spawn_fail marker must
-# merge from the ledger only (no same-class carry).
+# --- (d) a DIFFERENT-CLASS marker DOES merge into empty-run count --------
+# fleet-ops#2786: the spawn-bench marker is a SINGLE file per seat shared
+# by mark_seat_empty_run and mark_seat_spawn_fail. A spawn_fail marker
+# carries failure_mode=spawn_fail, count=N. The next empty-run MUST merge
+# the spawn_fail count (the marker is the durable count authority regardless
+# of failure_mode) so a seat that alternates between empty_run and
+# spawn_fail reaches the failure-ceiling park. The live nemotron-3-ultra-free
+# seat produced 10 empty runs over 3 days with every marker count=1 because
+# a spawn_fail marker sat between empty runs and the same-class check
+# skipped it — the park never fired, the flat 900s cooldown re-seated the
+# same offender every cycle.
 rm -f "$lf" "$mf"
-mark_seat_spawn_fail "$p" "$m" "t2627:spawn:1" >/dev/null 2>&1 \
+mark_seat_spawn_fail "$p" "$m" "t2786:spawn:1" >/dev/null 2>&1 \
     || fail "mark_seat_spawn_fail failed"
 # Marker now has failure_mode=spawn_fail, count=1.
 spawn_mf_count=$(count_of "$mf")
@@ -241,18 +253,20 @@ spawn_mf_mode=$(jq -r '.failure_mode // ""' "$mf")
     || fail "(d) spawn-bench marker failure_mode = '$spawn_mf_mode', want spawn_fail"
 [[ "$spawn_mf_count" == "1" ]] \
     || fail "(d) spawn-bench marker count = $spawn_mf_count, want 1"
-# Now an empty-run: the marker is a DIFFERENT class, so it does not merge;
-# the ledger is also absent (rm above). prev_count must be 0; merged=1.
+# Now an empty-run: the marker is a DIFFERENT class, but it MUST merge the
+# spawn_fail count (the marker is the durable count authority). The ledger
+# is also absent (rm above). prev_count must be 1 (from the marker);
+# merged=2.
 clobber_with_healthy "$p" "$m" "$lf"
-mark_seat_empty_run "$p" "$m" "t2627:after-spawn:1" >/dev/null 2>&1 \
+mark_seat_empty_run "$p" "$m" "t2786:after-spawn:1" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run after spawn-fail failed"
 new_count=$(count_of "$mf")
 new_mode=$(jq -r '.failure_mode // ""' "$mf")
 [[ "$new_mode" == "empty_run" ]] \
     || fail "(d) marker failure_mode after empty-run = '$new_mode', want empty_run (the spawn_fail marker was OVERWRITTEN by the empty_run writer)"
-[[ "$new_count" == "1" ]] \
-    || fail "(d) marker count after empty-run (with prior spawn_fail marker) = $new_count, want 1 — different-class markers do not merge"
-ok "(d) spawn_fail marker (count=1) is NOT absorbed into empty-run count; empty-run starts fresh at count=1, marker carries empty_run mode forward"
+[[ "$new_count" == "2" ]] \
+    || fail "(d) marker count after empty-run (with prior spawn_fail marker) = $new_count, want 2 — cross-class markers MUST merge (fleet-ops#2786: the marker is a single file per seat, the count must accumulate across failure_mode classes)"
+ok "(d) spawn_fail marker (count=1) IS absorbed into empty-run count; empty-run continues at count=2, marker carries empty_run mode forward (fleet-ops#2786 cross-class accumulation)"
 
 # --- (e) flat cooldown still holds below the ceiling -----------------------
 # fleet-ops#2343 invariant: the no-op cooldown is FLAT below the ceiling
@@ -270,4 +284,68 @@ for i in 1 2; do
     ok "(e${i}) empty-run #${i} backoff = ${backoff}s (FLAT below ceiling — count accumulates but backoff does not escalate until EMPTY_RUN_FAILURE_CEILING=3)"
 done
 
-ok "fleet-ops#2627: empty_run count accumulates across healthy clobbers (marker is durable count authority), the failure-ceiling park engages for a chronic no-op'er from the marker-carried count, stale markers fall back to the ledger (recovery signal), and cross-class markers do not merge"
+ok "fleet-ops#2627/#2786: empty_run count accumulates across healthy clobbers (marker is durable count authority), the failure-ceiling park engages for a chronic no-op'er from the marker-carried count, stale markers fall back to the ledger (recovery signal), and cross-class markers (spawn_fail) DO merge so a seat that alternates classes still reaches the park"
+
+# --- (f) reverse direction: empty_run marker merges into spawn_fail count
+# fleet-ops#2786 symmetric case: mark_seat_spawn_fail must ALSO read the
+# count from the spawn-bench marker (any failure_mode, written recently),
+# not only the clobberable ledger. A spawn_fail after an empty_run must
+# continue the count from the empty_run marker so the spawn_fail escalation
+# ladder and the failure-ceiling park fire from the accumulated count. The
+# live nemotron-3-ultra-free seat alternated empty_run and spawn_fail
+# markers; without this symmetric fix the spawn_fail writer read only the
+# clobberable ledger (count=0 after a healthy observation) and restarted
+# the count at 1 every cycle.
+rm -f "$lf" "$mf"
+mark_seat_empty_run "$p" "$m" "t2786:empty:1" >/dev/null 2>&1 \
+    || fail "mark_seat_empty_run (reverse seed) failed"
+empty_mf_count=$(count_of "$mf")
+empty_mf_mode=$(jq -r '.failure_mode // ""' "$mf")
+[[ "$empty_mf_mode" == "empty_run" ]] \
+    || fail "(f) marker failure_mode after empty-run = '$empty_mf_mode', want empty_run"
+[[ "$empty_mf_count" == "1" ]] \
+    || fail "(f) marker count after empty-run = $empty_mf_count, want 1"
+# Clobber the ledger to healthy/count=0 (seat-health.ts healthy observation).
+clobber_with_healthy "$p" "$m" "$lf"
+# Now a spawn_fail: the marker is empty_run (count=1), the ledger is
+# healthy/count=0. The spawn_fail writer MUST merge the marker count
+# (prev_count=1) and write merged=2.
+mark_seat_spawn_fail "$p" "$m" "t2786:spawn:after-empty" >/dev/null 2>&1 \
+    || fail "mark_seat_spawn_fail after empty-run failed"
+sf_count=$(count_of "$mf")
+sf_mode=$(jq -r '.failure_mode // ""' "$mf")
+[[ "$sf_mode" == "spawn_fail" ]] \
+    || fail "(f) marker failure_mode after spawn-fail = '$sf_mode', want spawn_fail (the empty_run marker was OVERWRITTEN by the spawn_fail writer)"
+[[ "$sf_count" == "2" ]] \
+    || fail "(f) marker count after spawn-fail (with prior empty_run marker) = $sf_count, want 2 — mark_seat_spawn_fail must merge the marker count across failure_mode classes (fleet-ops#2786)"
+ok "(f) empty_run marker (count=1) IS absorbed into spawn_fail count; spawn_fail continues at count=2 (fleet-ops#2786 symmetric cross-class accumulation)"
+
+# --- (g) full alternation reaches the failure-ceiling park -----------------
+# fleet-ops#2786 end-to-end: a seat that alternates empty_run and spawn_fail
+# (the live nemotron-3-ultra-free pattern) must reach the failure-ceiling
+# park from the accumulated cross-class count, not stall at count=1 every
+# cycle. EMPTY_RUN_FAILURE_CEILING=3 here for test isolation. Three
+# alternations (empty -> spawn -> empty) must park the seat on the 3rd.
+rm -f "$lf" "$mf"
+mark_seat_empty_run "$p" "$m" "t2786:alt:1" >/dev/null 2>&1 \
+    || fail "alternation #1 (empty) failed"
+clobber_with_healthy "$p" "$m" "$lf"
+mark_seat_spawn_fail "$p" "$m" "t2786:alt:2" >/dev/null 2>&1 \
+    || fail "alternation #2 (spawn) failed"
+clobber_with_healthy "$p" "$m" "$lf"
+mark_seat_empty_run "$p" "$m" "t2786:alt:3" >/dev/null 2>&1 \
+    || fail "alternation #3 (empty) failed"
+alt_count=$(count_of "$mf")
+alt_mode=$(jq -r '.failure_mode // ""' "$mf")
+[[ "$alt_count" == "3" ]] \
+    || fail "(g) alternated marker count = $alt_count, want 3 — cross-class accumulation must reach the ceiling across empty_run/spawn_fail alternation"
+[[ "$alt_mode" == "empty_run" ]] \
+    || fail "(g) alternated marker failure_mode = '$alt_mode', want empty_run (last writer wins)"
+# The 3rd no-op (count=3) must park the seat at ~SEAT_PARK_WALL_S.
+alt_wall=$(wall_s_of_marker "$mf")
+(( alt_wall >= SEAT_PARK_WALL_S - 120 && alt_wall <= SEAT_PARK_WALL_S + 120 )) \
+    || fail "(g) alternated park wall = ${alt_wall}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the accumulated cross-class count at EMPTY_RUN_FAILURE_CEILING=3"
+if seat_usable "$p" "$m"; then
+    fail "(g) seat_usable returned usable on the alternated parked seat — park wall must hold across the marker"
+fi
+ok "(g) empty_run -> spawn_fail -> empty_run alternation reaches count=3 and parks the seat (~${alt_wall}s wall) — fleet-ops#2786: a seat that alternates classes no longer stalls at count=1 every cycle"

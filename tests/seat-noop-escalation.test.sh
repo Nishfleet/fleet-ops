@@ -88,6 +88,12 @@ ledger_file() {
         "${p//[^A-Za-z0-9._-]/_}" "${m//[^A-Za-z0-9._-]/_}"
 }
 
+marker_file() {
+    local p="$1" m="$2"
+    printf '%s/%s__%s.spawn-bench.json' "$LEDGER" \
+        "${p//[^A-Za-z0-9._-]/_}" "${m//[^A-Za-z0-9._-]/_}"
+}
+
 usable_at_epoch() {
     local f="$1"
     local u
@@ -99,6 +105,7 @@ usable_at_epoch() {
 # --- (1) spawn-fail escalation: 300 -> 600 -> 1200s ------------------------
 p="devin"; m="glm-5-2"
 lf=$(ledger_file "$p" "$m")
+mf=$(marker_file "$p" "$m")
 base=300
 prev_epoch=$(date -u +%s)
 mark_seat_spawn_fail "$p" "$m" "test:noop:1" >/dev/null 2>&1 || fail "mark_seat_spawn_fail #1 failed"
@@ -151,7 +158,7 @@ ok "spawn-fail backoff capped at ~${dc}s (cap=${cap}s)"
 # for hours). The no-op cooldown is FLAT: every empty run benches
 # EMPTY_RUN_BACKOFF_S; only the #1362 failure-ceiling park (default 20 consecutive since fleet-ops#2594,
 # 24h wall) ever lengthens it.
-rm -f "$lf"
+rm -f "$lf" "$mf"
 ebase=900
 for i in 1 2 3; do
     mark_seat_empty_run "$p" "$m" "test:empty:${i}" >/dev/null 2>&1 || fail "mark_seat_empty_run #${i} failed"
@@ -184,7 +191,7 @@ ok "empty-run backoff after 8 no-ops still ~${edc}s (flat cooldown, no ladder)"
 # is usable again (fail-open). This is the work-complete vs seat-fault split:
 # a no-op seat is benched (seat-fault), a real completion is not (the bench
 # only ever fires on a failure). Verify seat_usable fail-opens post-bench.
-rm -f "$lf"
+rm -f "$lf" "$mf"
 mark_seat_spawn_fail "$p" "$m" "test:failopen" >/dev/null 2>&1 || true
 if seat_usable "$p" "$m"; then
     fail "seat_usable returned usable immediately after a fresh spawn-fail bench"
