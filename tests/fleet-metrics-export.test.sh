@@ -783,6 +783,16 @@ fixtures = {
         "provider": "xai-oauth", "model": "grok-4.5", "usable_at": PAST,
         "reason": "no_block:rc=0", "backoff_s": 300,
     },
+    # 8. fleet-ops#2806: a wall passed only 300s ago (inside the one-probe-
+    #    interval grace, COMEBACK_OVERDUE_GRACE_S=900) is MID-CYCLE — the
+    #    releaser re-probes it on the next 15-min tick (re-anchor or
+    #    unwall), so it must NOT count as comeback-overdue. Only a wall
+    #    past by more than one probe interval is overdue.
+    "opencode__nemotron-3-ultra-free.json": {
+        "provider": "opencode", "model": "nemotron-3-ultra-free",
+        "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
+        "usable_at": iso(-300), "bench_until": None,
+    },
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
@@ -807,14 +817,19 @@ print("OK: _seat_is_released mirrors seat_usable fail-open (fleet-ops#2407)")
 m.SEAT_LEDGER = Path(seat_dir)
 cb_n, cb = m._read_comeback_overdue()
 ids = {f"{s['provider']}__{s['model']}" for s in cb}
-# Past-wall non-dead non-excluded seats: commandcode minimax (overload past),
-# minimax MiniMax-M3 (quota past), opencode mimo (rate_limited past) = 3.
-assert cb_n == 3, f"comeback_overdue_n must be 3, got {cb_n}"
+# Past-wall non-dead non-excluded seats: commandcode minimax (overload past
+# 1h), minimax MiniMax-M3 (quota past 1h), opencode mimo (rate_limited past
+# 1h) = 3. opencode nemotron (past only 300s) is inside the one-interval
+# grace (fleet-ops#2806) and must NOT count as overdue.
+assert cb_n == 3, f"comeback_overdue_n must be 3, got {cb_n} (ids={ids})"
 assert {"commandcode__minimax/minimax-m3-free", "minimax__MiniMax-M3", "opencode__mimo-v2.5-free"} <= ids, ids
+assert not any(i.startswith("opencode__nemotron") for i in ids), (
+    f"mid-cycle seat (past by 300s < grace 900s) must NOT be overdue: {ids}"
+)
 assert not any("grok-4.5" in i for i in ids), "spawn-bench leaked into comeback"
 assert not any(i.startswith("test__") for i in ids), "test__ leaked into comeback"
 assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
-print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse")
+print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse + mid-cycle (<1 interval)")
 
 # --- availability rollup: released seats count healthy ---
 # Seed every enrolled provider (cap>0) with a healthy fixture ledger, then

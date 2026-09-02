@@ -206,9 +206,9 @@ wall_end_of() {
 # --- state (per-seat last probe time + cumulative counters) ---------------
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
-        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{}}'
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
     else
-        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{}}'
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
     fi
 }
 
@@ -221,7 +221,7 @@ save_state() {
 
 # --- textfile metrics ------------------------------------------------------
 write_prom() {
-    local last_green="$1" stalled="$2" probed="$3" released="$4" expired="$5" corpse_total="$6" retired="$7"
+    local last_green="$1" stalled="$2" probed="$3" released="$4" expired="$5" corpse_total="$6" retired="$7" breached="$8" breached_lines="$9"
     mkdir -p "$(dirname "$PROM_FILE")"
     {
         printf '# HELP fleet_seat_comeback_release_last_green_seconds Last sweep that completed cleanly — no stuck release path (fleet-ops#2421).\n'
@@ -262,6 +262,21 @@ write_prom() {
         printf '# HELP fleet_seat_comeback_release_retired_total Corpse ledgers physically retired out of the live roster after the corpse grace window (fleet-ops#2716).\n'
         printf '# TYPE fleet_seat_comeback_release_retired_total counter\n'
         printf 'fleet_seat_comeback_release_retired_total %s\n' "$retired"
+        # fleet-ops#2806: interval-breach visibility. A walled seat whose
+        # usable_at has been in the past for MORE than one probe interval
+        # (MIN_INTERVAL, default 900s) after a completed sweep means the
+        # releaser had a full probe cycle to act (re-probe -> re-anchor or
+        # unwall) and did not: the sweep is not reaching the seat, the
+        # timer is dead, or the sweep crashed mid-loop. That state is the
+        # exact "overdue by more than one probe interval" this gauge fails
+        # loud on: the sweep exits 1 (OnFailure escalates, last-green stays
+        # stale) and the per-seat series names the seat.
+        printf '# HELP fleet_seat_comeback_release_interval_breached_total Walled seats whose usable_at is past by more than one probe interval after a completed sweep (fleet-ops#2806).\n'
+        printf '# TYPE fleet_seat_comeback_release_interval_breached_total gauge\n'
+        printf 'fleet_seat_comeback_release_interval_breached_total %s\n' "$breached"
+        printf '# HELP fleet_seat_comeback_release_interval_breached 1 for each seat past usable_at by more than one probe interval after a completed sweep (fleet-ops#2806).\n'
+        printf '# TYPE fleet_seat_comeback_release_interval_breached gauge\n'
+        [[ -z "$breached_lines" ]] || printf '%s\n' "$breached_lines"
     } > "$PROM_FILE.tmp"
     mv "$PROM_FILE.tmp" "$PROM_FILE"
 }
@@ -517,9 +532,15 @@ maybe_overload_wall() {
 # (a concurrent healthy observation that reset the count must win). Mirrors
 # the unwall/rebench guard pattern above.
 corpse_seat() {
-    local p="$1" m="$2" f="$3" count
+    local p="$1" m="$2" f="$3" count="${4:-}"
     [[ -f "$f" ]] || return 1
-    count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+    # fleet-ops#2806: the caller may pass the MERGED failure streak (max of
+    # the ledger's own consecutive_failure_count and this organ's per-seat
+    # own-failure streak). When empty, fall back to the ledger count (the
+    # pre-#2806 semantic the corpse tests pin).
+    if [[ -z "$count" ]]; then
+        count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+    fi
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     if (( count < SEAT_DEAD_CONSECUTIVE_THRESHOLD )); then
         return 1
@@ -635,6 +656,24 @@ main() {
     [[ "$CORPSE_TOTAL" =~ ^[0-9]+$ ]] || CORPSE_TOTAL=0
     RETIRED_TOTAL=$(jq -r '(.retired_total // 0)' <<<"$state")
     [[ "$RETIRED_TOTAL" =~ ^[0-9]+$ ]] || RETIRED_TOTAL=0
+    # fleet-ops#2806: this organ's own per-seat consecutive FAILED probe
+    # streak, independent of the seat-health extension's counter. The
+    # extension only increments on real HTTP responses and only at its
+    # own cadence (the lived nemotron/mimo case: count 15->17 across 8h of
+    # 15-min release probes, because most probes fail without a response
+    # the extension writes). Seeded from the ledger count at first sighting
+    # so the two counters start equal, then advanced on EVERY release-probe
+    # failure (even when the extension re-anchored the wall first). This
+    # makes the corpse-out cadence deterministic (~25 failed probes at the
+    # 15-min tick) instead of hostage to the extension's write rate — a
+    # chronically-failing seat corpses and is then retired out of the
+    # roster, so seats_dead stops padding the seat-availability SLO.
+    declare -A OWN_FAIL=()
+    local ofk ofv
+    while IFS=$'\t' read -r ofk ofv; do
+        [[ -n "$ofk" ]] || continue
+        OWN_FAIL["$ofk"]="$ofv"
+    done < <(jq -r '(.own_failures // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
     # fleet-ops#2716: one dated retirement dir per sweep, next to the live
     # ledger dir (dirname of the ledger), so a sweep that retires several
     # corpses lands them all in one audit dir.
@@ -642,7 +681,7 @@ main() {
 
     if [[ ! -d "$LEDGER" ]]; then
         log "ledger dir missing: $LEDGER"
-        write_prom "" 0 "$probed_total" "$released_total" 0 "$CORPSE_TOTAL" "$RETIRED_TOTAL"
+        write_prom "" 0 "$probed_total" "$released_total" 0 "$CORPSE_TOTAL" "$RETIRED_TOTAL" 0 ""
         return 1
     fi
 
@@ -677,6 +716,17 @@ main() {
         m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
         [[ -n "$m" ]] || continue
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        # A healthy seat resets this organ's own-failure streak for that
+        # seat (recovery happened — via a real worker or a successful
+        # probe). The streak must NOT persist across a healthy interlude:
+        # it is a streak of CONSECUTIVE release-organ probe failures, and
+        # a healthy observation breaks it even when the organ was not the
+        # one that probed. Without this, a seat that recovered and then
+        # re-walled would carry its old streak forward and corpse too fast.
+        if [[ "$hc" == "healthy" ]]; then
+            OWN_FAIL["$base"]="0"
+            continue
+        fi
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
         # A corpse is terminal (fleet-ops#2327/#2415): no usable_at comeback
@@ -689,6 +739,17 @@ main() {
         if [[ "$dead" == "true" ]]; then
             retire_corpse "$p" "$m" "$f" || true
             continue
+        fi
+
+        # fleet-ops#2806: seed this organ's own-failure streak from the
+        # ledger's consecutive_failure_count the first time the seat is
+        # seen, so the two counters start equal (a mid-flight seat carries
+        # its extension-counted history into the organ's streak).
+        if [[ -z "${OWN_FAIL["$base"]:-}" ]]; then
+            local _seed_count
+            _seed_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+            [[ "$_seed_count" =~ ^[0-9]+$ ]] || _seed_count=0
+            OWN_FAIL["$base"]="$_seed_count"
         fi
 
         wall_end=$(wall_end_of "$f")
@@ -757,11 +818,23 @@ main() {
             # executes real work — any overload storm (if one was building) is over
             # for this provider. Reset its consecutive strike counter.
             reset_overload_strikes "$p"
+            # fleet-ops#2806: a successful probe resets THIS organ's own
+            # failure streak for the seat (the streak is consecutive
+            # failures; one success breaks it).
+            OWN_FAIL["$base"]="0"
             if unwall_seat "$p" "$m" "$f"; then
                 ((released_this_run++)) || true
             fi
         else
             ((probed++)) || true
+            # fleet-ops#2806: advance this organ's own consecutive-failure
+            # streak on EVERY probe failure, regardless of whether the
+            # extension re-anchored the wall first (the #2493 skip path).
+            # The merged streak (max of own and ledger counts, both have
+            # moved on a real failure) is the corpse trigger below — see
+            # the own_failures declaration comment for the cadence rationale.
+            local _own_now=$(( ${OWN_FAIL["$base"]:-0} + 1 ))
+            OWN_FAIL["$base"]="$_own_now"
             # fleet-ops#2493: re-bench HERE on probe failure. The comment
             # above used to say "the extension re-anchors usable_at from
             # the real response; if it does NOT (broken extension /
@@ -795,7 +868,18 @@ main() {
             # comeback-overdue slot. The live fleet_seat_comeback_corpse_total
             # counter and per-seat never-released series make the stuck
             # case visible before threshold.
-            corpse_seat "$p" "$m" "$f" || true
+            # fleet-ops#2806: corpse on the MERGED streak — max of the
+            # ledger's count (which the extension or the re-bench above
+            # advanced on a real failure) and this organ's own streak
+            # (which advances even when the extension re-anchored first
+            # and the re-bench skipped). Either counter crossing the
+            # threshold is the terminal signal.
+            local _ledger_count _merged
+            _ledger_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+            [[ "$_ledger_count" =~ ^[0-9]+$ ]] || _ledger_count=0
+            _merged=$_ledger_count
+            (( ${OWN_FAIL["$base"]:-0} > _merged )) && _merged=${OWN_FAIL["$base"]:-0}
+            corpse_seat "$p" "$m" "$f" "$_merged" || true
             # fleet-ops#2661: a probe failure on an overload_bench seat is an
             # overload_503 strike on that provider. the rebench preserved the overload
             # class (in rebench_seat above), so the ledger still classes it
@@ -831,6 +915,47 @@ main() {
         fi
     done
 
+    # fleet-ops#2806 second loud check: INTERVAL BREACH. Where the stalled
+    # check above keys on wall_end_of (bench_until ?? usable_at) — a clock
+    # the extension or a re-bench advances INTO THE FUTURE on every failed
+    # probe, so it is ~never past at sweep end (the lived nemotron 8h
+    # chronic-failure rendered zero loud signals) — this check keys on the
+    # RAW usable_at (the same field the thorough snapshot's
+    # usable_at_overdue reads). A seat that ends the sweep with usable_at
+    # still in the past by MORE than one probe interval (MIN_INTERVAL,
+    # default 900s) was never acted on this run: the sweep missed it, the
+    # timer died, or the sweep crashed mid-loop. That is "overdue by more
+    # than one probe interval" made loud: the releaser had a full cycle to
+    # re-probe (re-anchor or unwall) and did not.
+    local breached=0 breached_lines=""
+    for f in "$LEDGER"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ "$base" != *".spawn-bench.json" ]] || continue
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ "$p" != "test" ]] || continue
+        [[ -n "$p" ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" != "healthy" ]] || continue
+        dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+        [[ "$dead" != "true" ]] || continue
+        local seat_usable us_e
+        seat_usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+        us_e=$(ts_epoch "$seat_usable")
+        # No usable_at: fall back to the wall clock for the breach read
+        # (a bench-only seat whose bench sat past for >1 interval is just
+        # as stuck — the wall clock IS the comeback clock for that class).
+        if [[ -z "$us_e" ]]; then
+            us_e=$(ts_epoch "$(wall_end_of "$f")")
+        fi
+        [[ -n "$us_e" ]] || continue
+        if (( now - us_e > MIN_INTERVAL )); then
+            breached=$((breached + 1))
+            breached_lines+="fleet_seat_comeback_release_interval_breached{seat=\"$base\"} 1"$'\n'
+            log "INTERVAL BREACH $base: usable_at ${seat_usable:-$(wall_end_of "$f")} past by $(( now - us_e ))s (> ${MIN_INTERVAL}s) after sweep — releaser had a full probe cycle and did not act"
+        fi
+    done
+
     probed_total=$((probed_total + probed))
     released_total=$((released_total + released_this_run))
 
@@ -852,27 +977,48 @@ main() {
             '{provider:$p,count:$c,first_at:$f,last_at:$l}'),"
     done
     strikes_json="${strikes_json%,}"
+    local own_json="" of
+    for of in "${!OWN_FAIL[@]}"; do
+        own_json+="$(jq -nc --arg k "$of" --argjson v "${OWN_FAIL[$of]}" '{key:$k,value:$v}'),"
+    done
+    own_json="${own_json%,}"
     save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
         --argjson pt "$probed_total" --argjson rt "$released_total" \
         --argjson wt "$WALLS_TOTAL" --argjson ct "$CORPSE_TOTAL" \
         --argjson rr "$RETIRED_TOTAL" \
         --argjson os "[$strikes_json]" \
+        --argjson own "[$own_json]" \
         '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt,
           walls_total: $wt, corpse_total: $ct, retired_total: $rr,
-          overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries)}')"
+          overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries),
+          own_failures: ($own | from_entries)}')"
 
     # The fleet-ops#2421 loud check: walled seats still hold expired wall
     # clocks AND nothing was released this run -> the release path did not
     # operate (no release, no re-anchor). Fail loudly; keep last-green
-    # stale so the absent/stale rule also fires.
+    # stale so the absent/stale rule also fires. fleet-ops#2806: the
+    # interval-breach loud check is its own channel — even when something
+    # WAS released, a seat that stayed past usable_at by >1 probe interval
+    # after the sweep is a releaser miss and must fail loud. In the
+    # read-only-ledger shape BOTH fire; each renders its own LOUD line and
+    # the unit exits 1 once (OnFailure escalates, last-green stays stale).
+    local loud_rc=0 stalled_flag=0
     if (( expired > 0 )) && (( released_this_run == 0 )); then
         log "LOUD [COMEBACK-RELEASE-STALLED] released_this_run=0 while $expired walled seat(s) still hold expired wall clocks — release path not operating"
-        write_prom "" 1 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL"
+        stalled_flag=1
+        loud_rc=1
+    fi
+    if (( breached > 0 )); then
+        log "LOUD [COMEBACK-RELEASE-INTERVAL-BREACH] $breached walled seat(s) past usable_at by > ${MIN_INTERVAL}s after sweep — releaser missed a full probe cycle"
+        loud_rc=1
+    fi
+    if (( loud_rc )); then
+        write_prom "" "$stalled_flag" "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL" "$breached" "$breached_lines"
         return 1
     fi
 
     log "sweep complete: probed=$probed released=$released_this_run expired_after=$expired (cumulative released_total=$released_total corpse_total=$CORPSE_TOTAL retired_total=$RETIRED_TOTAL)"
-    write_prom "$(now_epoch)" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL"
+    write_prom "$(now_epoch)" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL" "$breached" "$breached_lines"
     return 0
 }
 
