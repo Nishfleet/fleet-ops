@@ -61,7 +61,11 @@
 #   FLEET_ESCALATION_DRAIN_MAX_LINES      default 50
 #   FLEET_ESCALATION_DRAIN_TERMINATED     ledger path (default $PACKET_DIR/chains.terminated.jsonl)
 #   FLEET_ESCALATION_DRAIN_STUCK_AGE_S     webhook packet age past which a no-terminal
-#                                          packet is flagged LOUD (default 172800 = 48h)
+#                                          packet is flagged LOUD (default 21600 = 6h,
+#                                          fleet-ops#2677: a packet older than ~6h
+#                                          must be either consumed (terminal record)
+#                                          or escalated loud so a never-terminating
+#                                          chain cannot hide for a day)
 #   FLEET_ESCALATION_DRAIN_CLASSES        regex (must match nish-boundary-notify)
 #   FLEET_ESCALATION_DRAIN_DRY_RUN        1 = never modify files, only report
 #
@@ -79,7 +83,7 @@ SEEN_FILE="${FLEET_ESCALATION_DRAIN_SEEN:-$AGENT_STATE/lanes/nish-boundary-notif
 PACKET_DIR="${FLEET_ESCALATION_DRAIN_PACKET_DIR:-$AGENT_STATE/alert-repair}"
 TERMINATED="${FLEET_ESCALATION_DRAIN_TERMINATED:-$PACKET_DIR/chains.terminated.jsonl}"
 MAX_LINES="${FLEET_ESCALATION_DRAIN_MAX_LINES:-50}"
-STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-172800}"
+STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-21600}"
 CLASSES="${FLEET_ESCALATION_DRAIN_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
 DRY_RUN="${FLEET_ESCALATION_DRAIN_DRY_RUN:-0}"
 
@@ -402,12 +406,12 @@ drain_nish() {
 # lexicographically.) A packet created after the latest terminal (a fresh
 # re-fire, chain still in flight) or for an alertname with NO terminal
 # record is left in place (never silently deleted). But a WEBHOOK packet
-# older than FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 48h) with no
-# terminal record is a genuinely STUCK chain — the drain flags it LOUD on
-# stderr so the hourly journal (inherited by the escalation ladder) makes
-# the failure visible; the completion canary's stall budget is the
-# mechanism that eventually escalates it. A loud flag, never a silent
-# delete.
+# older than FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 6h, fleet-ops#2677)
+# with no terminal record is a genuinely STUCK chain — the drain flags it
+# LOUD on stderr so the hourly journal (inherited by the escalation
+# ladder) makes the failure visible; the completion canary's stall budget
+# (24h) is the slower follow-up that eventually escalates a stuck chain
+# into STOP-REASON. A loud flag at 6h, never a silent delete.
 #
 # Skip-list: packet files without a `<alert>-<ts>.md` timestamp suffix are
 # canary / guard scaffolding packets with no webhook dispatch (e.g.
