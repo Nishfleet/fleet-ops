@@ -255,6 +255,14 @@ bash "$here/alert-repair-wfr-trend-skip.test.sh"
 # without a workflow-file edit.
 bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 
+# fleet-ops#2694 (PR #2796): fleet_alert_outcome_24h buckets PHANTOM_ALERT
+# resolutions as phantom_resolved, not resolved. PR #2796 merged this
+# test without a host, leaving the P14 listing gate red on main (the
+# unhosted test was flagged by every subsequent worker PR); hosted here
+# so P14 runs it without a workflow-file edit — the same boundary the
+# sibling alert-repair suites use.
+bash "$here/alert-repair-outcome-metric.test.sh"
+
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
 # $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
