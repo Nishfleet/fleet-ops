@@ -18,7 +18,10 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStart=/home/nish/.local/bin/fleet-escalation-drain
+# ExecStart via `bash -c exec` mirrors escalation-daily-sweep.service — the
+# CI unit-verify job stubs VPS binaries and a bare ExecStart=/home/nish/.local/bin/...
+# would fail hosted verification before install.sh deploys the bin.
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-escalation-drain'
 TimeoutStartSec=2min
 # Fail loud: no Restart=, no SuccessExitStatus fudging. A non-zero exit must
 # leave this unit in `systemctl --user list-units --state=failed` so the

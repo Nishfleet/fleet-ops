@@ -17,10 +17,14 @@
 #      before this fix (370-line pre-class-gate history + delivered
 #      boundary entries) drains to MAX_LINES entries, archives the rest,
 #      preserves ACTIVE- boundary entries (entries NOT in the seen set).
-#   3. alert-repair packet drain: packet-*.md files with a complete
-#      chain in actions.log (DISPATCH AND RESOLVED|FAILED) AND older
-#      than PACKET_MIN_AGE_S are deleted. Skip-list (canary/guard
-#      scaffolding without `<alert>-<ts>.md` suffix) is preserved.
+#   3. alert-repair packet drain: packet-*.md files whose dispatch cycle
+#      TERMINATED in chains.terminated.jsonl (a terminal record for the
+#      alertname with end_ts >= the packet's dispatch instant) are deleted.
+#      Intermediate dispatches absorbed by a later terminal are deleted;
+#      packets dispatched AFTER the latest terminal (in-flight re-fire) and
+#      packets for alertnames with NO terminal record (stuck chain) are
+#      preserved. Skip-list (canary/guard scaffolding without
+#      `<alert>-<ts>.md` suffix) is preserved as well.
 
 set -euo pipefail
 
@@ -74,9 +78,7 @@ run_drain() {
     FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
     FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
     FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
-    FLEET_ESCALATION_DRAIN_ACTIONS_LOG="$AS/alert-repair/actions.log" \
     FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
-    FLEET_ESCALATION_DRAIN_PACKET_MIN_AGE_S=60 \
         bash "$bin" 2>"$scratch/run.stderr"
 }
 
@@ -190,58 +192,73 @@ grep -q "nothing to archive" "$scratch/run.stderr" \
 ok "scenario 2: re-run on bounded file is a no-op (idempotency)"
 
 # ---------------------------------------------------------------------------
-# Scenario 3: alert-repair packet drain — packets with complete chain
-# (DISPATCH AND RESOLVED|FAILED) AND older than PACKET_MIN_AGE_S are
-# deleted; canary/guard scaffolding (no timestamp suffix) is preserved.
+# Scenario 3: alert-repair packet drain — packets whose dispatch cycle
+# TERMINATED in chains.terminated.jsonl are deleted; intermediate
+# dispatches absorbed by a later terminal are deleted; packets dispatched
+# AFTER the latest terminal (in-flight re-fire) and packets for alertnames
+# with NO terminal record (stuck chain) are preserved; canary/guard
+# scaffolding (no timestamp suffix) is preserved.
 # ---------------------------------------------------------------------------
 rm -rf "$AS/alert-repair"
 mkdir -p "$AS/alert-repair"
 
-now_epoch="$(date -u +%s)"
-old_ts=$(date -u -d "@$((now_epoch - 7200))" +%Y%m%dT%H%M%SZ)  # 2h old (past 1h min age)
-fresh_ts=$(date -u -d "@$((now_epoch - 30))" +%Y%m%dT%H%M%SZ)    # 30s old (under 1h min age)
-old_dispatch_ts=$(date -u -d "@$((now_epoch - 7000))" +%Y-%m-%dT%H:%M:%SZ)
-old_resolved_ts=$(date -u -d "@$((now_epoch - 6800))" +%Y-%m-%dT%H:%M:%SZ)
-fresh_dispatch_ts=$(date -u -d "@$((now_epoch - 20))" +%Y-%m-%dT%H:%M:%SZ)
+# Ledger fixture (chains.terminated.jsonl — the fleet-completion-canary
+# termination ledger mirrored under alert-repair/):
+#   FleetA  terminated green  end=09-01T18:00Z  -> packet at 06:00Z consumed
+#   FleetB  terminated esc     end=09-01T12:00Z  -> packet at 10:00Z consumed
+#                                                -> packet at 13:00Z NOT (re-fire)
+#   FleetC  NO terminal record                   -> packets NOT consumed
+#   NonSense record with an EMPTY end_ts        -> ignored by the parser
+{
+    cat <<'JSON'
+{"alertname": "FleetA", "end_ts": "2026-09-01T18:00:00Z", "start_ts": "2026-09-01T06:00:00Z", "terminal": "green", "unit": "alert-repair-FleetA-20260901T060000Z"}
+{"alertname": "FleetB", "end_ts": "2026-09-01T12:00:00Z", "start_ts": "2026-09-01T08:00:00Z", "terminal": "escalated", "unit": "alert-repair-FleetB-20260901T100000Z"}
+{"alertname": "NonSense", "end_ts": "", "start_ts": "2026-09-01T07:00:00Z", "terminal": "green", "unit": ""}
+JSON
+} > "$AS/alert-repair/chains.terminated.jsonl"
 
 # Webhook packet files:
-touch "$AS/alert-repair/packet-FleetA-$old_ts.md"          # consumed, old -> DELETE
-touch "$AS/alert-repair/packet-FleetB-$old_ts.md"          # dispatched, NOT resolved -> KEEP (in-flight)
-touch "$AS/alert-repair/packet-FleetC-$fresh_ts.md"        # consumed, fresh -> KEEP (under min age)
-touch "$AS/alert-repair/packet-FleetD-$old_ts.md"          # not in actions.log -> KEEP (no chain)
+touch "$AS/alert-repair/packet-FleetA-20260901T060000Z.md"   # consumed, terminated after -> DELETE
+# Intermediate dispatch absorbed by FleetB's 12:00Z terminal:
+touch "$AS/alert-repair/packet-FleetB-20260901T100000Z.md"   # consumed, end_ts >= ts -> DELETE
+touch "$AS/alert-repair/packet-FleetB-20260901T130000Z.md"   # re-fired AFTER terminal -> KEEP (in-flight)
+touch "$AS/alert-repair/packet-FleetC-20260901T050000Z.md"   # no ledger record -> KEEP (stuck chain)
+touch "$AS/alert-repair/packet-FleetStuck-20260820T000000Z.md" # old, no ledger -> KEEP + LOUD STUCK-PACKET
 # Canary/guard scaffolding — no `<alert>-<ts>.md` suffix:
 touch "$AS/alert-repair/packet-11-completion-canary.md"
 touch "$AS/alert-repair/packet-13-undersaturation-guard.md"
 touch "$AS/alert-repair/packet-red-main-2.md"
 
-{
-    printf '[%s] DISPATCH alertname=FleetA seat=devin/glm-5-2 unit=alert-repair-FleetA-%s rc=0\n' "$old_dispatch_ts" "$old_ts"
-    printf '[%s] RESOLVED alertname=FleetA root_cause=test\n' "$old_resolved_ts"
-    printf '[%s] DISPATCH alertname=FleetB seat=devin/glm-5-2 unit=alert-repair-FleetB-%s rc=0\n' "$old_dispatch_ts" "$old_ts"
-    # NO RESOLVED for FleetB -> chain incomplete -> packet kept.
-    printf '[%s] DISPATCH alertname=FleetC seat=devin/glm-5-2 unit=alert-repair-FleetC-%s rc=0\n' "$fresh_dispatch_ts" "$fresh_ts"
-    printf '[%s] RESOLVED alertname=FleetC root_cause=test\n' "$fresh_dispatch_ts"
-    # FleetD: no DISPATCH at all -> packet kept (no chain proof).
-} > "$AS/alert-repair/actions.log"
-
 run_drain
 
 # Assertions:
-[[ ! -f "$AS/alert-repair/packet-FleetA-$old_ts.md" ]] \
-    || fail "scenario 3: FleetA (complete chain, old) must be DELETED"
-[[ -f "$AS/alert-repair/packet-FleetB-$old_ts.md" ]] \
-    || fail "scenario 3: FleetB (no RESOLVED) must be KEPT (in-flight chain)"
-[[ -f "$AS/alert-repair/packet-FleetC-$fresh_ts.md" ]] \
-    || fail "scenario 3: FleetC (under PACKET_MIN_AGE_S) must be KEPT"
-[[ -f "$AS/alert-repair/packet-FleetD-$old_ts.md" ]] \
-    || fail "scenario 3: FleetD (no actions.log chain) must be KEPT"
+[[ ! -f "$AS/alert-repair/packet-FleetA-20260901T060000Z.md" ]] \
+    || fail "scenario 3: FleetA (terminated after dispatch) must be DELETED"
+[[ ! -f "$AS/alert-repair/packet-FleetB-20260901T100000Z.md" ]] \
+    || fail "scenario 3: FleetB 10:00Z (intermediate dispatch under 12:00Z terminal) must be DELETED"
+[[ -f "$AS/alert-repair/packet-FleetB-20260901T130000Z.md" ]] \
+    || fail "scenario 3: FleetB 13:00Z (dispatched AFTER terminal) must be KEPT (in-flight)"
+[[ -f "$AS/alert-repair/packet-FleetC-20260901T050000Z.md" ]] \
+    || fail "scenario 3: FleetC (no ledger terminal) must be KEPT (stuck chain)"
+[[ -f "$AS/alert-repair/packet-FleetStuck-20260820T000000Z.md" ]] \
+    || fail "scenario 3: FleetStuck (old, no terminal) must be KEPT (never silently deleted)"
+grep -q "STUCK-PACKET.*packet-FleetStuck-20260820T000000Z.md" "$scratch/run.stderr" \
+    || fail "scenario 3: drain must flag old no-terminal packets LOUD; stderr: $(cat "$scratch/run.stderr")"
 [[ -f "$AS/alert-repair/packet-11-completion-canary.md" ]] \
     || fail "scenario 3: canary scaffolding (packet-11-) must be KEPT (no ts suffix)"
 [[ -f "$AS/alert-repair/packet-13-undersaturation-guard.md" ]] \
     || fail "scenario 3: guard scaffolding (packet-13-) must be KEPT (no ts suffix)"
 [[ -f "$AS/alert-repair/packet-red-main-2.md" ]] \
     || fail "scenario 3: legacy scaffolding (packet-red-main-2) must be KEPT (no ts suffix)"
-ok "scenario 3: consumed+old packet deleted; in-flight/fresh/no-chain/scaffolding preserved"
+grep -q "deleted packet-FleetA-20260901T060000Z.md" "$scratch/run.stderr" \
+    || fail "scenario 3: drain log must name the FleetA deletion; stderr: $(cat "$scratch/run.stderr")"
+ok "scenario 3: terminated packets deleted; in-flight / no-terminal / scaffolding preserved"
+# Idempotency: re-running is a no-op for the packet drain too.
+rm -f "$scratch/run.stderr"
+run_drain
+grep -q "packet_deleted=0" "$scratch/run.stderr" \
+    || fail "scenario 3: re-run must delete nothing (idempotent); stderr: $(cat "$scratch/run.stderr")"
+ok "scenario 3: re-run on drained packet dir is a no-op (idempotency)"
 
 # ---------------------------------------------------------------------------
 # Scenario 4: bounded file under MAX_LINES — drain does NOT promote

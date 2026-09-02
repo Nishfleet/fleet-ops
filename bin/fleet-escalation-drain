@@ -24,14 +24,23 @@
 #      entries (NOT in the seen set) stay so a not-yet-delivered page is
 #      never lost.
 #
-#   2. alert-repair packets: delete packet-*.md files that have a complete
-#      chain in actions.log — DISPATCH line present AND a RESOLVED or
-#      FAILED line after the DISPATCH AND the packet is older than
-#      FLEET_ESCALATION_DRAIN_PACKET_MIN_AGE_S (default 3600s = 1h, so an
-#      in-flight redispatch loop never loses its packet mid-cycle). A
-#      packet without a DISPATCH line (skip-list, claim-already-held, or
-#      dispatcher dead) is left in place — that is a stuck-dispatcher
-#      signal, not a drain target.
+#   2. alert-repair packets: delete packet-*.md files whose dispatch cycle
+#      TERMINATED. The termination proof is chains.terminated.jsonl — the
+#      ledger fleet-completion-canary appends to (with the mirror under
+#      agent-state/alert-repair/) when a chain reaches a legal terminal
+#      (green / detector-red / escalated). Each record carries the
+#      alertname and end_ts; a packet with webhook name
+#      packet-<alert>-<ts>.md is CONSUMED when a terminal record exists for
+#      that alertname whose end_ts is >= the packet's dispatch instant
+#      (the canary closes one cycle per alertname and absorbs every
+#      intermediate re-dispatch of that episode under the last terminal).
+#      A packet created AFTER the latest terminal (a fresh re-fire) or for
+#      an alertname with NO terminal record is left in place — that is an
+#      in-flight or genuinely-stuck chain, which belongs to the completion
+#      canary's stall budget and escalation ladder, NOT to a silent drain.
+#      actions.log is deliberately NOT used as a proof source: it is
+#      bounded (rotated) so old packets' chains are unprovable there; the
+#      ledger is append-only and complete.
 #
 #   3. Skip-list: never delete packet files without a `<alert>-<ts>.md`
 #      timestamp suffix. The canary / guard scaffolding packets
@@ -50,7 +59,9 @@
 # Environment seams (tests):
 #   FLEET_ESCALATION_DRAIN_AGENT_STATE    default /home/nish/workspaces/agent-state
 #   FLEET_ESCALATION_DRAIN_MAX_LINES      default 50
-#   FLEET_ESCALATION_DRAIN_PACKET_MIN_AGE_S  default 3600 (1h)
+#   FLEET_ESCALATION_DRAIN_TERMINATED     ledger path (default $PACKET_DIR/chains.terminated.jsonl)
+#   FLEET_ESCALATION_DRAIN_STUCK_AGE_S     webhook packet age past which a no-terminal
+#                                          packet is flagged LOUD (default 172800 = 48h)
 #   FLEET_ESCALATION_DRAIN_CLASSES        regex (must match nish-boundary-notify)
 #   FLEET_ESCALATION_DRAIN_DRY_RUN        1 = never modify files, only report
 #
@@ -66,9 +77,9 @@ NISH="${FLEET_ESCALATION_DRAIN_NISH:-$AGENT_STATE/NISH-ESCALATIONS.md}"
 ARCHIVE_DIR="${FLEET_ESCALATION_DRAIN_ARCHIVE_DIR:-$AGENT_STATE/nish-escalations-archive}"
 SEEN_FILE="${FLEET_ESCALATION_DRAIN_SEEN:-$AGENT_STATE/lanes/nish-boundary-notify.seen}"
 PACKET_DIR="${FLEET_ESCALATION_DRAIN_PACKET_DIR:-$AGENT_STATE/alert-repair}"
-ACTIONS_LOG="${FLEET_ESCALATION_DRAIN_ACTIONS_LOG:-$PACKET_DIR/actions.log}"
+TERMINATED="${FLEET_ESCALATION_DRAIN_TERMINATED:-$PACKET_DIR/chains.terminated.jsonl}"
 MAX_LINES="${FLEET_ESCALATION_DRAIN_MAX_LINES:-50}"
-PACKET_MIN_AGE_S="${FLEET_ESCALATION_DRAIN_PACKET_MIN_AGE_S:-3600}"
+STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-172800}"
 CLASSES="${FLEET_ESCALATION_DRAIN_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
 DRY_RUN="${FLEET_ESCALATION_DRAIN_DRY_RUN:-0}"
 
@@ -100,7 +111,6 @@ if [ ! -d "$AGENT_STATE" ]; then
     exit 1
 fi
 
-now_epoch=$(date -u +%s)
 nish_archived=0
 nish_bounded=0
 packet_deleted=0
@@ -322,6 +332,7 @@ drain_nish() {
         fi
         kept_lines=("${new_kept[@]}")
         log "live file still $kept_count lines (> MAX_LINES=$MAX_LINES); promoted $nish_bounded delivered boundary entries to archive"
+        kept_count=${#kept_lines[@]}
     fi
 
     if [ "$nish_archived" -eq 0 ] && [ "$nish_bounded" -eq 0 ]; then
@@ -331,7 +342,7 @@ drain_nish() {
     fi
 
     if [ "$DRY_RUN" = "1" ]; then
-        log "DRY: would archive $nish_archived unconditional + $nish_bounded delivered-boundary lines; rewrite $kept_count-line live file (was $(wc -l < "$NISH"))"
+        log "DRY: would archive $nish_archived unconditional + $nish_bounded delivered-boundary entries; rewrite $kept_count-line live file (was $(wc -l < "$NISH"))"
         rm -f "$tmp_nish" "$tmp_archive"
         return 0
     fi
@@ -378,62 +389,54 @@ drain_nish() {
 # 2. alert-repair packet drain
 # ---------------------------------------------------------------------------
 #
-# A packet is fully consumed when actions.log shows:
-#   * a DISPATCH line for the same alert name with timestamp >= packet ts
-#   * a RESOLVED or FAILED line for the same alert name with timestamp >=
-#     the DISPATCH (within the same chain — we keep the latest dispatch
-#     and the latest resolved/failed, not first-of-each, because the
-#     completion canary treats re-dispatches as a new chain).
+# A packet is consumed when its dispatch cycle TERMINATED in
+# chains.terminated.jsonl — the append-only ledger fleet-completion-canary
+# writes (STATE copies into agent-state/alert-repair/ as the reviewer
+# mirror) when a chain reaches green / detector-red / escalated. Each
+# record carries alertname + end_ts; the canary closes one cycle per
+# alertname and records the LAST dispatch unit of the episode, absorbing
+# every intermediate re-dispatch under that final terminal.
 #
-# We also require packet age >= PACKET_MIN_AGE_S so a redispatch loop in
-# flight never loses its packet mid-cycle. The 1h floor matches
-# fleet-ops#2672's empty-run verify stall window.
+# Rule: packet packet-<alert>-<ts>.md is CONSUMED iff a terminal record
+# exists for <alert> with end_ts >= <ts>. (ISO strings compare
+# lexicographically.) A packet created after the latest terminal (a fresh
+# re-fire, chain still in flight) or for an alertname with NO terminal
+# record is left in place (never silently deleted). But a WEBHOOK packet
+# older than FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 48h) with no
+# terminal record is a genuinely STUCK chain — the drain flags it LOUD on
+# stderr so the hourly journal (inherited by the escalation ladder) makes
+# the failure visible; the completion canary's stall budget is the
+# mechanism that eventually escalates it. A loud flag, never a silent
+# delete.
 #
-# Skip-list: packet files without `<alert>-<ts>.md` timestamp suffix are
-# canary / guard scaffolding packets with no actions.log chain — their
-# lifecycles are owned by other mechanisms.
+# Skip-list: packet files without a `<alert>-<ts>.md` timestamp suffix are
+# canary / guard scaffolding packets with no webhook dispatch (e.g.
+# packet-11-completion-canary.md, packet-13-undersaturation-guard.md,
+# packet-red-main-2.md) — their lifecycles are owned by other mechanisms.
 drain_packets() {
     if [ ! -d "$PACKET_DIR" ]; then
         log "packet dir missing at $PACKET_DIR — nothing to drain"
         return 0
     fi
-    if [ ! -f "$ACTIONS_LOG" ]; then
-        log "actions.log missing at $ACTIONS_LOG — skipping packet drain (cannot prove consumption)"
+    if [ ! -f "$TERMINATED" ]; then
+        log "chains.terminated.jsonl missing at $TERMINATED — skipping packet drain (cannot prove consumption)"
         return 0
     fi
 
-    # Build a one-pass map: alertname -> "DISPATCH_TS|RESOLVED_OR_FAILED_TS".
-    # actions.log is bounded; one scan is fine.
-    declare -A consumed=()
-    local alog_line ts kind alert
-    while IFS= read -r alog_line; do
-        # Format: "[2026-09-01T19:24:42Z] DISPATCH alertname=Foo ..."
-        # Some entries use the unbracketed form (older writes) — accept both.
-        if [[ "$alog_line" =~ ^\[?([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z)\]?[[:space:]]+(DISPATCH|RESOLVED|FAILED|SKIP|REDISPATCH|VERIFY|SKIPPED-CLAIMED)[[:space:]]+ ]]; then
-            ts="${BASH_REMATCH[1]}"
-            kind="${BASH_REMATCH[2]}"
-            if [[ "$alog_line" =~ alertname=([^[:space:]]+) ]]; then
-                alert="${BASH_REMATCH[1]}"
-            else
-                continue
-            fi
-            case "$kind" in
-                DISPATCH)
-                    # Newest dispatch wins (a redispatch overwrites the prior).
-                    consumed["$alert"]="${ts}|"
-                    ;;
-                RESOLVED|FAILED)
-                    if [ -n "${consumed[$alert]:-}" ]; then
-                        consumed["$alert"]="${consumed[$alert]}${ts}"
-                    else
-                        consumed["$alert"]="|${ts}"
-                    fi
-                    ;;
-            esac
+    # Map alertname -> latest terminal end_ts. One jq pass over the ledger.
+    declare -A terminated_end=()
+    local talert tend
+    while IFS=$'\t' read -r talert tend; do
+        [ -n "$talert" ] || continue
+        if [[ -z "${terminated_end[$talert]:-}" || "$tend" > "${terminated_end[$talert]}" ]]; then
+            terminated_end["$talert"]="$tend"
         fi
-    done < "$ACTIONS_LOG"
+    done < <(jq -rc 'select((.alertname // "") != "" and (.end_ts // "") != "") | [.alertname, .end_ts] | @tsv' "$TERMINATED" 2>/dev/null || true)
 
     local pkt
+    local -a stuck=()
+    local stuck_cutoff
+    stuck_cutoff=$(date -u -d "$STUCK_AGE_S seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
     for pkt in "$PACKET_DIR"/packet-*.md; do
         [ -e "$pkt" ] || continue
         local name
@@ -447,41 +450,46 @@ drain_packets() {
             continue
         fi
         local alert="${BASH_REMATCH[1]}"
-        local pkt_ts="${BASH_REMATCH[2]}"
+        local ts="${BASH_REMATCH[2]}"
 
-        # Packet age check (skip if too young — leave in flight).
-        local pkt_epoch
-        pkt_epoch=$(date -u -d "${pkt_ts:0:4}-${pkt_ts:4:2}-${pkt_ts:6:2}T${pkt_ts:9:2}:${pkt_ts:11:2}:${pkt_ts:13:2}" +%s 2>/dev/null || echo 0)
-        if [ "$pkt_epoch" -le 0 ] || [ $((now_epoch - pkt_epoch)) -lt "$PACKET_MIN_AGE_S" ]; then
-            packet_skipped=$((packet_skipped + 1))
+        # Packet dispatch instant as ISO (lexical compare vs ledger end_ts).
+        local iso="${ts:0:4}-${ts:4:2}-${ts:6:2}T${ts:9:2}:${ts:11:2}:${ts:13:2}Z"
+        local latest="${terminated_end[$alert]:-}"
+        local consumed=0
+        if [ -n "$latest" ] && { [[ "$iso" < "$latest" ]] || [[ "$iso" == "$latest" ]]; }; then
+            consumed=1
+        fi
+        if [ "$consumed" = "1" ]; then
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY: would delete $name (alert=$alert packet=$iso ledger_end=$latest)"
+                packet_deleted=$((packet_deleted + 1))
+                continue
+            fi
+            if rm -f "$pkt"; then
+                packet_deleted=$((packet_deleted + 1))
+                log "deleted $name (alert=$alert packet=$iso ledger_end=$latest)"
+            else
+                log "WARN: failed to delete $name (continuing)"
+            fi
             continue
         fi
-
-        # Chain completion: dispatch AND (resolved|failed).
-        local chain="${consumed[$alert]:-}"
-        if [ -z "$chain" ]; then
-            packet_skipped=$((packet_skipped + 1))
-            continue
-        fi
-        local dispatch_ts="${chain%|*}"
-        local resolved_ts="${chain#*|}"
-        if [ -z "$dispatch_ts" ] || [ -z "$resolved_ts" ]; then
-            packet_skipped=$((packet_skipped + 1))
-            continue
-        fi
-
-        if [ "$DRY_RUN" = "1" ]; then
-            log "DRY: would delete $name (alert=$alert dispatch=$dispatch_ts resolved=$resolved_ts)"
-            packet_deleted=$((packet_deleted + 1))
-            continue
-        fi
-        if rm -f "$pkt"; then
-            packet_deleted=$((packet_deleted + 1))
-            log "deleted $name (alert=$alert dispatch=$dispatch_ts resolved=$resolved_ts)"
-        else
-            log "WARN: failed to delete $name (continuing)"
+        packet_skipped=$((packet_skipped + 1))
+        # Not consumed: in-flight re-fire (created after the latest terminal)
+        # or never-terminated. Age-gate the LOUD flag so a fresh re-fire is
+        # not noise.
+        if [ -n "$stuck_cutoff" ] && [[ "$iso" < "$stuck_cutoff" ]]; then
+            stuck+=("$name (packet=$iso)")
         fi
     done
+    if [ "${#stuck[@]}" -gt 0 ]; then
+        local n_stuck=${#stuck[@]}
+        local s
+        local head_line=""
+        for s in "${stuck[@]:0:10}"; do
+            head_line="$head_line $s"
+        done
+        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — drain leaves them (never silently delete); completion-canary stall ladder must escalate:$head_line"
+    fi
 }
 
 drain_nish
