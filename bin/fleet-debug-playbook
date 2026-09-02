@@ -25,7 +25,9 @@
 #   FLEET_DEBUG_PLAYBOOK_FILE_ISSUES    1 (default) / 0
 #   FLEET_DEBUG_PLAYBOOK_ISSUE_REPO     default Nishfleet/fleet-ops
 #   FLEET_DEBUG_PLAYBOOK_CAP            default 5 (per tick)
-#   FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP default 20 (open issue total)
+#   FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP default 20 (floor; the effective cap
+#                                       grows to cover every in-window finding,
+#                                       fleet-ops#2726)
 #   FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE    0 (default) / 1 (production heartbeat)
 #   FLEET_HEARTBEAT_TRIAGE
 #   GH
@@ -183,6 +185,17 @@ open_debug_count=$(printf '%s' "$open_json" | jq -r --arg prefix "signal: debug-
 open_debug_count="${open_debug_count:-0}"
 
 filed=0
+deferred=0
+# fleet-ops#2726 (gap-audit): the cumulative cap is now AGE-BASED. The old
+# hard ceiling (CUMULATIVE_CAP open issues total) silently dropped every
+# finding past it — LOUD'd once, never filed, and lost when the session
+# aged out of the scan window. The visible queue understated the debt and
+# the loud-fail line could not size it. Effective cap = max(CUMULATIVE_CAP,
+# findings still inside the scan window): every in-window finding is filed
+# (paced by the per-tick CAP below), so the queue surfaces the debt and
+# observe-to-close drains it as sessions age out. CUMULATIVE_CAP stays as
+# the floor when the window is quiet.
+eff_cap=$(( CUMULATIVE_CAP > finding_count ? CUMULATIVE_CAP : finding_count ))
 while IFS= read -r row; do
     [[ -n "$row" ]] || continue
     slug=$(jq -r '.slug' <<<"$row")
@@ -192,11 +205,15 @@ while IFS= read -r row; do
     loud "DEBUG-PLAYBOOK-MISSING" "session=$slug attempts=$attempts path=$path snippet=$snippet"
 
     [[ "$FILE_ISSUES" == "1" ]] || continue
-    [[ "$filed" -lt "$CAP" ]] || continue
-    # Cumulative cap across ticks: prevent unbounded issue flood.
-    remaining=$((CUMULATIVE_CAP - open_debug_count - filed))
+    if [[ "$filed" -ge "$CAP" ]]; then
+        deferred=$((deferred + 1))
+        continue
+    fi
+    # Cumulative cap across ticks: the effective cap grows to cover every
+    # in-window finding (fleet-ops#2726), so this only binds at the floor.
+    remaining=$((eff_cap - open_debug_count - filed))
     if [[ "$remaining" -le 0 ]]; then
-        log "auto-file: cumulative cap reached (open=$open_debug_count cap=$CUMULATIVE_CAP); not filing $slug"
+        log "auto-file: cumulative cap reached (open=$open_debug_count dynamic-cap=$eff_cap); not filing $slug"
         continue
     fi
     command -v "$GH" >/dev/null 2>&1 || continue
@@ -232,5 +249,7 @@ $signal"
     fi
 done < <(jq -c '.findings[]' <<<"$report")
 
-loud "DEBUG-PLAYBOOK-FAIL" "missing playbooks=$finding_count — a multi-attempt debug never filed the vault note; LOUD + auto-filed, observe-to-close, cumulative-cap=$CUMULATIVE_CAP"
+unfiled=$(( finding_count - open_debug_count - filed ))
+[[ "$unfiled" -lt 0 ]] && unfiled=0
+loud "DEBUG-PLAYBOOK-FAIL" "missing playbooks=$finding_count (filed=$filed deferred=$deferred debt=$unfiled dynamic-cap=$eff_cap) — a multi-attempt debug never filed the vault note; LOUD + auto-filed, observe-to-close, the queue carries the debt (fleet-ops#2726)"
 exit 1
