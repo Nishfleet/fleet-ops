@@ -113,4 +113,13 @@ else
 fi
 
 echo
+# fleet-ops#2772 (PR #2857 follow-up): the claim-loop gate test landed on
+# main in the fix PR without a ci.yml listing or a host, leaving P14 red on
+# main ("1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: fleet-ops-2772-claim-loop-gate.test.sh").
+# Hosted here from pi-intake-tick-reclaim-cooldown.test.sh (already listed
+# in ci.yml — the worker App cannot push .github/workflows/**) and pinned by
+# name in tests/p14-test-listing-gate.test.sh. Same intake dispatch family.
+bash "$here/fleet-ops-2772-claim-loop-gate.test.sh" || fail "fleet-ops-2772 claim-loop-gate tests failed"
+
 echo "ALL OK: intake-tick reclaim cooldown + stale-claim release (fleet-ops#2133)"

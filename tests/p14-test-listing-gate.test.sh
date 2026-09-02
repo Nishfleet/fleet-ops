@@ -406,6 +406,27 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-outcome-metric\.tes
   || fail "alert-repair-outcome-metric.test.sh must not be a known orphan (fleet-ops#2694)"
 ok "alert-repair-outcome-metric.test.sh is pinned in the P14 reachable set (fleet-ops#2694)"
 
+# fleet-ops#2772 (PR #2857 follow-up): hard-pin the host line for
+# fleet-ops-2772-claim-loop-gate. The test landed on main in PR #2857 (the
+# #2772 fix PR) without a ci.yml listing or a host, leaving this gate red
+# ("1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: fleet-ops-2772-claim-loop-gate.test.sh")
+# on main from 17:09Z on. It is hosted from
+# tests/pi-intake-tick-reclaim-cooldown.test.sh (already listed in ci.yml) —
+# the worker App cannot push .github/workflows/** so the host was the only
+# path. This named pin is class-prevention so a future drop of the host
+# line cannot park the test on known_orphans to silence the generic $bad[]
+# message — it fails by name here first, same shape as every other hosted
+# test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2772-claim-loop-gate\.test\.sh"?' \
+  "$here/pi-intake-tick-reclaim-cooldown.test.sh" \
+  || fail "pi-intake-tick-reclaim-cooldown.test.sh must bash-invoke fleet-ops-2772-claim-loop-gate.test.sh (fleet-ops#2772)"
+[[ -n "${reachable[fleet-ops-2772-claim-loop-gate.test.sh]:-}" ]] \
+  || fail "fleet-ops-2772-claim-loop-gate.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2772)"
+[[ -z "${known_orphan_set[fleet-ops-2772-claim-loop-gate.test.sh]:-}" ]] \
+  || fail "fleet-ops-2772-claim-loop-gate.test.sh must not be a known orphan (fleet-ops#2772)"
+ok "fleet-ops-2772-claim-loop-gate.test.sh is pinned in the P14 reachable set (fleet-ops#2772)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
