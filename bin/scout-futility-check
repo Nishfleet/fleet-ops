@@ -497,8 +497,13 @@ cmd_end() {
         is_uint "$dry" || dry=0
         wall_count=$(read_field "$file" consecutive_wall)
         is_uint "$wall_count" || wall_count=0
-        last_run=$(read_field "$file" last_run_epoch)
-        is_uint "$last_run" || last_run=0
+        # fleet-ops#1277: ExecStopPost still runs when ExecCondition skipped
+        # the scout (the rest-skip path), so begin never wrote this tick's
+        # epoch. The missing-snapshot branch is reached exactly when no begin
+        # ran for this tick, so refresh last_run_epoch to now_s: a
+        # deliberately-resting supply line (|hours_of_work| >= BUFFER_H) stays
+        # liveness-observable instead of tripping FleetScoutStale every 8h.
+        last_run="$now_s"
         if ! is_uint "$after"; then
             after=""
             after_hours=""
@@ -515,7 +520,7 @@ cmd_end() {
             "last_run_epoch=${last_run}" \
             "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         export_last_run
-        log "end: $repo missing begin snapshot — created snapshot (success-run); not counted as dry consecutive_dry=$dry consecutive_wall=$wall_count last_run_epoch=$last_run runway_after=${after_hours}h"
+        log "end: $repo missing begin snapshot — created snapshot (success-run); refreshed last_run_epoch=$last_run not counted as dry consecutive_dry=$dry consecutive_wall=$wall_count runway_after=${after_hours}h"
         return 0
     fi
     after=$(ready_count "$repo")
