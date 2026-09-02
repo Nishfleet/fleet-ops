@@ -676,9 +676,13 @@ blocked-on: nish-decision" 2>/dev/null || true
     # claim stays held so capacity still goes to product repos when product
     # work exists. Without this, a ratio inflated by duplicate/churn issues
     # while product repos are blocked would idle every worker.
+    # allow-band-surge-legit (fleet-ops#1516) is admitted too: it only fires
+    # when BAND_PRODUCT==0 (precedence-band.sh:363), i.e. no product work is
+    # competing, so holding it would idle every worker for nothing — the
+    # exact FleetUndersaturated stall fleet-ops#2841 diagnosed.
     if [[ "$_pfirst_held" == "1" ]]; then
         case "$band_reason" in
-            allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier)
+            allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit)
                 echo "issue $N ($title): held-in-buffer floor lane ($band_reason) — one claim, queue not hard-stalled"
                 ;;
             *)
