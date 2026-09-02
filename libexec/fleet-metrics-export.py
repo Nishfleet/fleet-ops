@@ -34,9 +34,11 @@ SEAT_HEALTH = Path(
 )
 # Per-seat health ledger written by the pi seat-health extension. Each file is
 # <sanitised-provider>__<sanitised-model>.json. We scan it to surface
-# dead-credential seats (seat_dead=true, health_class=credentials_bad) as a
-# distinct heartbeat signal (fleet-ops#1445) instead of them being buried in
+# dead-credential seats (seat_dead=true, credentials_bad) as a distinct
+# heartbeat signal (fleet-ops#1445) instead of them being buried in
 # pick_seat's per-pick cap/dead fold or silently re-logged every cycle.
+# fleet-ops#2667: the credentials_bad signal lives in health_class OR in
+# failure_mode — see _read_dead_credentials for why both must be read.
 SEAT_LEDGER = Path(
     "/home/nish/workspaces/agent-state/lanes/seats"
 )
@@ -59,9 +61,9 @@ HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
 HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
 TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
-HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true and health_class=credentials_bad (HTTP 401/403) that need re-auth and will not recover until re-authenticated (fleet-ops#1445)."
+HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
-HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat needing re-auth (fleet-ops#1445)."
+HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat; health_class=credentials_bad means re-auth may help, health_class=corpse means the seat is terminal and must be retired from config/seat-caps.json (fleet-ops#1445, fleet-ops#2667)."
 TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
 HELP_CB = "# HELP fleet_seat_comeback_overdue_total Number of seats still classed non-healthy whose wall clock (usable_at/bench_until) has passed — released by the router but not re-observed since (fleet-ops#2407)."
 TYPE_CB = "# TYPE fleet_seat_comeback_overdue_total gauge"
@@ -525,15 +527,30 @@ def _read_seat():
 def _read_dead_credentials():
     """Scan the per-seat health ledger for dead-credential seats.
 
-    A dead-credential seat is seat_dead=true with health_class=credentials_bad
-    (HTTP 401/403): it will never recover until the provider credential is
-    re-authenticated (fleet-ops#1445). These are surfaced once per 5-min export
-    tick as a distinct metric + alert, rather than being buried in pick_seat's
-    per-pick "excluded ... dead: D" fold or re-logged every cycle by the seat
-    loop.
+    A dead-credential seat is seat_dead=true carrying a credentials_bad signal
+    (HTTP 401/403): it will never recover on its own (fleet-ops#1445). These are
+    surfaced once per 5-min export tick as a distinct metric + alert, rather than
+    being buried in pick_seat's per-pick "excluded ... dead: D" fold or re-logged
+    every cycle by the seat loop.
 
-    Returns (count, [ {provider, model, http_status}, ... ]). Always a
-    (count, list) pair — never raises on a missing/unreadable ledger.
+    fleet-ops#2667: the credentials_bad signal lives in TWO fields, and matching
+    only health_class made this metric blind exactly when it mattered most.
+    seat-health.ts classifyHttpStatus maps 401/403 -> health_class
+    "credentials_bad", but the fleet-ops#2327 corpse escalation then REWRITES
+    health_class to the terminal "corpse" class while leaving
+    failure_mode="credentials_bad" in place. A seat that has fully earned the
+    alert — terminally dead on a 401/403 — therefore dropped out of a
+    health_class-only match. Live proof 2026-09-02: the ledger held
+    commandcode/minimax-m3-free (403) and opencode/hy3-free (401), both
+    seat_dead=true + failure_mode=credentials_bad + health_class=corpse, while
+    fleet_pi_seat_dead_credential_total read 0 and PiSeatDeadCredential could
+    not fire. Four such seats accumulated unseen until a human noticed. Match
+    EITHER field so the terminal class is visible, and carry health_class /
+    failure_mode through to the caller for the per-seat series.
+
+    Returns (count, [ {provider, model, http_status, health_class,
+    failure_mode}, ... ]). Always a (count, list) pair — never raises on a
+    missing/unreadable ledger.
     """
     seats = []
     if not SEAT_LEDGER.is_dir():
@@ -548,12 +565,21 @@ def _read_dead_credentials():
                 continue
             if not isinstance(data, dict):
                 continue
-            if data.get("seat_dead") is True and data.get("health_class") == "credentials_bad":
-                seats.append({
-                    "provider": data.get("provider", ""),
-                    "model": data.get("model", ""),
-                    "http_status": data.get("http_status"),
-                })
+            if data.get("seat_dead") is not True:
+                continue
+            # fleet-ops#2667: EITHER field carries the credentials_bad signal.
+            if "credentials_bad" not in (
+                data.get("health_class"),
+                data.get("failure_mode"),
+            ):
+                continue
+            seats.append({
+                "provider": data.get("provider", ""),
+                "model": data.get("model", ""),
+                "http_status": data.get("http_status"),
+                "health_class": data.get("health_class") or "",
+                "failure_mode": data.get("failure_mode") or "",
+            })
     except OSError:
         return 0, []
     return len(seats), seats
@@ -2313,9 +2339,11 @@ def main():
             f"fleet_pi_seat_observed_seconds {observed_epoch}"
         )
     # fleet-ops#1445: surface dead-credential seats once per tick as a distinct
-    # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403)
-    # and need human re-auth; the total gauge drives the alert rule and the
-    # per-seat series names each seat needing re-auth.
+    # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403);
+    # the total gauge drives the alert rule and the per-seat series names each
+    # seat. fleet-ops#2667: the per-seat series carries health_class so the
+    # reader can tell a re-authable seat (credentials_bad) from a terminal
+    # corpse that must be retired from the seat map instead.
     _dc_n, _dc = _read_dead_credentials()
     lines.append("")
     lines.append(HELP_DCT)
@@ -2329,8 +2357,9 @@ def main():
             "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
         )
         _st = _prom_label(str(_s.get("http_status") or ""))
+        _hcl = _prom_label(str(_s.get("health_class") or ""))
         lines.append(
-            f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}"}} 1'
+            f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}",health_class="{_hcl}"}} 1'
         )
     # fleet-ops#2407: surface comeback-overdue seats (still classed non-healthy
     # past their usable_at/bench_until — released by the router's fail-open but
