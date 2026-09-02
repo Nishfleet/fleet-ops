@@ -399,6 +399,67 @@ print("sustained cycle", hit[0]["cycle_seconds"])
 PY
 ok "VERIFY resolved terminates SustainedLoadHigh green"
 
+# --- 6b. RESOLVED while STILL firing does NOT close green (fleet-ops#2833) ---
+# A repair worker writes a RESOLVED receipt claiming it fixed the alert, but
+# the alert is verifiably still firing in 9090 (activeAt unchanged). Before
+# the fix: classify saw resolved_ts >= firing[name] (trivially true for a
+# continuously firing alert whose activeAt never moves) and closed the chain
+# terminal=green; drop_chain_state wiped the class-park file the dispatcher
+# reads; the next AMX repeat re-dispatched a fresh worker into the same
+# still-firing alert (FleetQueueSelfMaintenanceRatioHigh fired continuously
+# 2026-08-29..09-02; 3 green closes, ratio unchanged). After the fix: the
+# green terminal is reserved for the detector seeing the alert LEAVE 9090;
+# a RESOLVED receipt while still firing is a stale resolve and the chain
+# stays open, so the class-park survives and the dispatcher keeps honoring it.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state" "$scratch/sysctl"
+: >"$scratch/dispatch.log"
+printf '%s\n' \
+  '[2026-08-29T04:10:00Z] DISPATCH alertname=FleetQueueSelfMaintenanceRatioHigh unit=alert-repair-FQSMRH-20260829T041000Z seat=devin/glm-5-2 reason=healthy packet=/x rc=0' \
+  '[2026-08-29T05:22:00Z] RESOLVED alertname=FleetQueueSelfMaintenanceRatioHigh root_cause=claim_fixed_but_alert_still_firing' \
+  >"$scratch/actions.log"
+# Unit succeeded and --collect unloaded it (no state files = not-found).
+printf 'Started alert-repair-FQSMRH-20260829T041000Z.service\n' >"$scratch/sysctl/alert-repair-FQSMRH-20260829T041000Z.journal"
+# Alert STILL firing — activeAt is the original fire start (never moves while firing).
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-08-29T04:00:44Z",
+   "labels":{"alertname":"FleetQueueSelfMaintenanceRatioHigh"}}
+]}}, open(sys.argv[1],"w"))
+PY
+rc=$(run_bin "2026-08-29T06:00:00Z")
+[[ "$rc" == "0" ]] || fail "6b rc=$rc stderr=$(cat "$scratch/err.log")"
+# The chain must NOT have terminated green while the alert is still firing.
+if [ -f "$scratch/state/chains.terminated.jsonl" ]; then
+  if grep -q 'FleetQueueSelfMaintenanceRatioHigh.*"terminal": "green"' "$scratch/state/chains.terminated.jsonl"; then
+    fail "6b: chain closed green while alert still firing (fleet-ops#2833 regression); ledger=$(cat "$scratch/state/chains.terminated.jsonl")"
+  fi
+fi
+# The chain must be open (hop=verify or hop=run), not closed.
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 1' "$scratch/fleet-chains.prom" \
+  || grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 1' "$scratch/fleet-chains.prom" \
+  || fail "6b: chain must stay open while alert still firing; prom=$(grep fleet_chain_open "$scratch/fleet-chains.prom")"
+ok "RESOLVED while still firing does NOT close green (fleet-ops#2833)"
+
+# --- 6c. RESOLVED after alert genuinely left 9090 closes green (fleet-ops#2833) ---
+# The detector (9090 firing set) is the source of truth. Once the alert is
+# no longer firing, a prior RESOLVED receipt closes the chain green normally.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state" "$scratch/sysctl"
+: >"$scratch/dispatch.log"
+printf '%s\n' \
+  '[2026-08-29T04:10:00Z] DISPATCH alertname=FleetQueueSelfMaintenanceRatioHigh unit=alert-repair-FQSMRH2-20260829T041000Z seat=devin/glm-5-2 reason=healthy packet=/x rc=0' \
+  '[2026-08-29T05:22:00Z] RESOLVED alertname=FleetQueueSelfMaintenanceRatioHigh root_cause=genuinely_fixed' \
+  >"$scratch/actions.log"
+printf 'Started alert-repair-FQSMRH2-20260829T041000Z.service\n' >"$scratch/sysctl/alert-repair-FQSMRH2-20260829T041000Z.journal"
+# Alert GONE from 9090 — detector confirms the fix.
+write_alerts <<<'[]'
+rc=$(run_bin "2026-08-29T06:00:00Z")
+[[ "$rc" == "0" ]] || fail "6c rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ -f "$scratch/state/chains.terminated.jsonl" ]] || fail "6c: ledger missing"
+grep -q 'FleetQueueSelfMaintenanceRatioHigh.*"terminal": "green"' "$scratch/state/chains.terminated.jsonl" \
+  || fail "6c: chain must close green once alert left 9090; ledger=$(cat "$scratch/state/chains.terminated.jsonl")"
+ok "RESOLVED after alert left 9090 closes green (fleet-ops#2833)"
+
 # --- 7. unit-escalation observation, no overwrite ----------------------------
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 : >"$scratch/actions.log"
