@@ -81,6 +81,15 @@ HELP_NRT = "# HELP fleet_seat_comeback_never_released_total Number of seats the 
 TYPE_NRT = "# TYPE fleet_seat_comeback_never_released_total gauge"
 HELP_NRP = "# HELP fleet_seat_comeback_never_released 1 for each seat whose consecutive_failure_count is in the never-released window (fleet-ops#2638)."
 TYPE_NRP = "# TYPE fleet_seat_comeback_never_released gauge"
+# fleet-ops#2712: provider-level (account-level) quota exhaustion. A
+# provider counts when >=2 of its seats report HTTP 402/health_class=
+# quota_exhausted within a 1h window — one billing wall, many seats.
+# Sustained > 0 here means the seat_availability SLO burn is account-
+# level, not 3 independent seat faults.
+HELP_PQE = "# HELP fleet_provider_quota_exhausted_total Number of providers with >=2 quota_exhausted seats observed in the last 1h — account-level quota exhaustion (fleet-ops#2712)."
+TYPE_PQE = "# TYPE fleet_provider_quota_exhausted_total gauge"
+HELP_PQEP = "# HELP fleet_provider_quota_exhausted 1 for each provider whose seats are account-level quota exhausted (fleet-ops#2712)."
+TYPE_PQEP = "# TYPE fleet_provider_quota_exhausted gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -2025,6 +2034,92 @@ def _read_comeback_overdue():
     return len(seats), seats
 
 
+# fleet-ops#2712: provider-level (account-level) quota exhaustion. Three
+# seats from the same provider all returning HTTP 402 inside a 1h window
+# points at the provider's account being out of quota, not at three
+# independent seat faults — the per-seat health_class=quota_exhausted
+# signal alone collapses three failures into one root cause. Surface
+# that pattern here so the operator (and the alert below) can tell
+# "account billing wall" from "lone seat quota hold". A provider only
+# counts when it has at least MIN_PROVIDER_QUOTA_SEATS (default 2) seats
+# observed as quota_exhausted within PROVIDER_QUOTA_WINDOW_S (default
+# 3600s); one seat alone is an isolated hold, not account exhaustion.
+MIN_PROVIDER_QUOTA_SEATS = 2
+PROVIDER_QUOTA_WINDOW_S = 3600
+
+
+def _read_provider_quota_exhausted():
+    """Group quota_exhausted seats by provider within the last 1h.
+
+    fleet-ops#2712: a single 402 may be one seat's per-model quota (cheap,
+    isolated). Multiple 402s from one provider in a tight window is the
+    account-level signal — one billing wall, many seats. Scan the ledger
+    for quota_exhausted seats whose observed_at is within
+    PROVIDER_QUOTA_WINDOW_S (default 3600s), group by provider, and return
+    the providers whose seat count is >= MIN_PROVIDER_QUOTA_SEATS
+    (default 2). Seat_dead corpses are skipped (terminal, owned by
+    FleetDeadCredentialSeats). test__ fixtures are skipped (synthetic).
+    The .spawn-bench sibling files are skipped (not seat observations).
+
+    Returns (count, [ {provider, seats, models} ]). Never raises on a
+    missing/unreadable ledger.
+    """
+    if not SEAT_LEDGER.is_dir():
+        return 0, []
+    now = time.time()
+    # provider -> { "seats": int, "models": [ (model, observed_at), ... ] }
+    grouped = {}
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            # The HTTP-402 + health_class=quota_exhausted combination is
+            # the seat-health extension's classifier output. A seat that
+            # is in some other failure mode (transient_http, rate_limit)
+            # is NOT an account-quota signal even if the model is hosted
+            # by the same provider.
+            if data.get("http_status") != 402:
+                continue
+            if data.get("health_class") != "quota_exhausted":
+                continue
+            observed = data.get("observed_at")
+            if not isinstance(observed, str) or not observed:
+                continue
+            ts = observed.strip().rstrip("Z")
+            try:
+                epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if (now - epoch) > PROVIDER_QUOTA_WINDOW_S:
+                continue
+            prov = data.get("provider")
+            if not isinstance(prov, str) or not prov:
+                continue
+            entry = grouped.setdefault(prov, {"seats": 0, "models": []})
+            entry["seats"] += 1
+            entry["models"].append((data.get("model", ""), observed))
+    except OSError:
+        return 0, []
+    providers = [
+        {"provider": p, "seats": v["seats"], "models": v["models"]}
+        for p, v in sorted(grouped.items())
+        if v["seats"] >= MIN_PROVIDER_QUOTA_SEATS
+    ]
+    return len(providers), providers
+
+
 # fleet-ops#2638: SEAT_DEAD_CONSECUTIVE_THRESHOLD mirror — the bash writer
 # (lib/seat-lib.sh) corpses quota_cap at this count; the prober
 # (bin/fleet-seat-comeback-release) corpses the same way on the overload/
@@ -2466,6 +2561,27 @@ def main():
         _count = int(_s.get("count") or 0)
         lines.append(
             f'fleet_seat_comeback_never_released{{seat="{_seat_label}",health_class="{_hc}",count="{_count}"}} 1'
+        )
+    # fleet-ops#2712: provider-level (account-level) quota exhaustion.
+    # Group quota_exhausted seats by provider; emit a 1-row per affected
+    # provider with the seat count so the repair worker can see the burst
+    # size, and a total gauge for the alert rule. The alert rule
+    # (FleetProviderQuotaExhausted, config/fleet_rules.yml) catches the
+    # "one billing wall, many seats" pattern that the per-seat
+    # health_class=quota_exhausted signal alone cannot.
+    _pqe_n, _pqe = _read_provider_quota_exhausted()
+    lines.append("")
+    lines.append(HELP_PQE)
+    lines.append(TYPE_PQE)
+    lines.append(f"fleet_provider_quota_exhausted_total {_pqe_n}")
+    lines.append("")
+    lines.append(HELP_PQEP)
+    lines.append(TYPE_PQEP)
+    for _s in _pqe:
+        _prov = _prom_label(str(_s.get("provider") or ""))
+        _seats = int(_s.get("seats") or 0)
+        lines.append(
+            f'fleet_provider_quota_exhausted{{provider="{_prov}",seats="{_seats}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)
