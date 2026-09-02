@@ -409,6 +409,14 @@ bash "$here/unit-escalation-write-journal-evidence.test.sh"
 bash "$here/unit-escalation-write-same-unit-rerun-dedupe.test.sh"
 bash "$here/fleet-escalation-completion-orphan-sweep.test.sh"
 
+# fleet-ops#2912: closeout-skipped recurrence suppression in unit-escalation-write —
+# a recurring same-class unit trip (fleet-heartbeat's structural reds, 35 trips
+# in ~2 days) must stop re-summoning a senior auditor once the same class has
+# been closeout-skipped RECURRENCE_SUPPRESS_N times. Hosted here alongside its
+# unit-escalation-write-* siblings so P14 runs it without a workflow-file edit
+# (the worker App cannot push .github/workflows/**).
+bash "$here/unit-escalation-write-recurrence-suppress.test.sh"
+
 # fleet-ops#2133 / #2475 (PR #2193): pi-issue@*.service exclusion from
 # unit-escalation-write. The worker has its own OnFailure=pi-issue-failed@%i
 # reaper + Restart=on-failure with StartLimitBurst=3, so the SENIOR AUDITOR
