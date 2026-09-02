@@ -19,13 +19,16 @@ measures the deployment pipeline from the sources that actually record it:
       auto-revert.sh exits 0 on the "AUTO-REVERT SKIP: only non-required
       checks failed" halt path too (read .github/scripts/auto-revert.sh
       2026-09-02), so success-counting over-counts reverts ~5x.
-  (c) time-to-detect = deployment timestamp -> first critical alert
-      DISPATCH recorded in the alert-repair actions.log (alert -> repair
-      dispatch is seconds). Critical names are curated to deployment-caused
-      / deployment-degradation alerts (FleetMainRed, SLO burns, chain,
-      heartbeat/export staleness); host-health (disk, memory, load) and
-      synthetic (FleetTestAlert) alerts are excluded so a coincidental
-      host fault cannot blame a deploy. Published as p95.
+  (c) time-to-detect = nearest prior merge -> first NEW critical alert
+      episode (1:1). An episode starts on the first DISPATCH of an
+      alertname after RESOLVED (or the first ever); redispatches of an
+      already-open alert do not count. Critical names are curated to
+      alerts whose Prometheus for: duration is UNDER the 10-min TTD
+      budget (heartbeat/export staleness, fast burns) — FleetMainRed
+      (for:30m), FleetChainStalled (for:15m), and 3h absence rules are
+      excluded because they cannot meet the budget by construction.
+      Host-health and synthetic alerts stay excluded. Published as p95
+      over episode samples (NaN when fewer than TTD_MIN_SAMPLES).
   (d) deployment success rate = deployments with ZERO critical dispatch in
       the 1h after merge / total deployments (the issue's literal spec).
   (e) fleet_deploy_blocked_duration_seconds = age of the CURRENT blocked
@@ -106,29 +109,36 @@ APP_TS_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
 MOVED_RE = re.compile(r"origin/main moved \S+ -> \S+")
 BLOCKED_RE = re.compile(r"DEPLOY-BLOCKED|DEPLOY-CHECK-FAILED")
 DISPATCH_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]\s+DISPATCH alertname=([A-Za-z0-9_]+)")
+RESOLVED_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\].*?\bRESOLVED\b.*?\balertname=([A-Za-z0-9_]+)"
+)
+# Fallback when RESOLVED lines omit alertname= but name the alert inline.
+RESOLVED_INLINE_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\].*?\bRESOLVED\b"
+)
 REVERT_TITLE_Q = '"auto-restore green main" in:title'
 
-# Critical alerts the deploy-quality SLO blames on a deployment. Synced
-# from config/fleet_rules.yml severity=critical (2026-09-02). Curated:
-# deployment-caused or deployment-degradation alerts only. Excluded on
-# purpose: host-health (DiskAlmostFull, InodesAlmostFull, MemoryPressureHigh,
-# LoadStorm, SystemUnitFailed), synthetic (FleetTestAlert), and absence/
-# self-maintenance alerts (FleetSelfMaintenanceAbsent, TruthStalenessAbsent,
-# ConsoleTileVerifyAbsent, FleetAeoProbeAbsent, FleetGhWebhook*, fleet-SLO
-# absence rules) — a coincidental host fault or scheduled test alert firing
-# within an hour of a deploy must not mark a deployment as bad.
+# Critical alerts the deploy-quality TTD/success SLOs blame on a deployment.
+# Curated to alerts that CAN meet the 10-min TTD budget: Prometheus for:
+# duration must be < 600s. Verified live against /api/v1/rules 2026-09-02:
+#   FleetHeartbeatStale/MetricsExportStale/FastBurns for=120
+#   FleetMetricsExportMissing for=300
+# Excluded on purpose (cannot meet budget by construction):
+#   FleetMainRed for=1800, FleetChainStalled for=900,
+#   FleetCompletionCanaryAbsent/FleetUndersatGuardAbsent for=10800,
+#   FleetSloSeatAvailSlowBurn for=1800 AND severity=warning (not critical).
+# Also excluded: host-health, synthetic, absence/self-maintenance alerts —
+# a coincidental host fault must not mark a deployment as bad.
 CRITICAL_DEPLOY_ALERTS = frozenset({
-    "FleetMainRed",              # CI red on main — the deploy shipped breakage
-    "FleetSloSeatAvailFastBurn", # seat availability SLO burning fast
-    "FleetSloSeatAvailSlowBurn", # seat availability SLO burning slow (issue-named)
-    "FleetSloMainGreenFastBurn", # main-green SLO burning fast
-    "FleetChainStalled",         # repair chain stalled
-    "FleetCompletionCanaryAbsent",
+    "FleetSloSeatAvailFastBurn",
+    "FleetSloMainGreenFastBurn",
     "FleetHeartbeatStale",
     "FleetMetricsExportStale",
     "FleetMetricsExportMissing",
-    "FleetUndersatGuardAbsent",
 })
+# p95 over fewer than this many episode samples is not a p95 — emit NaN
+# so DeploymentTimeToDetectHigh stays silent until the ledger has depth.
+TTD_MIN_SAMPLES = 5
 
 METRIC_DEFS = (
     # (name, help)
@@ -386,35 +396,50 @@ def _parse_journal_lines(text):
     return events
 
 
-def _read_alert_events(env):
-    """Return sorted list of (ts, alertname) DISPATCHes, or None when the
-    actions.log ledger is unavailable (degraded — a missing ledger must not
-    read as "zero alerts")."""
+def _read_actions_text(env):
+    """Return the raw actions.log text, or None when unavailable."""
     seam = (env or os.environ).get("FLEET_DQ_ACTIONS_LOG")
-    cache_path = _cache_paths(env)[3]
     if seam:
         try:
-            return _parse_dispatches(Path(seam).read_text())
+            return Path(seam).read_text()
         except OSError:
             return None
-    # Live source: AGENT_STATE/alert-repair/actions.log, cached 60s.
-    data, age = _read_cache(cache_path)
-    if age is not None and age <= JOURNAL_CACHE_TTL and data is not None:
-        return [(e[0], e[1]) for e in data]
     base = os.environ.get("AGENT_STATE", f"{HOME}/workspaces/agent-state")
     if env:
         base = env.get("AGENT_STATE", base)
     try:
-        text = (Path(base) / "alert-repair" / "actions.log").read_text()
+        return (Path(base) / "alert-repair" / "actions.log").read_text()
     except OSError:
         return None
+
+
+def _read_alert_events(env):
+    """Return sorted list of (ts, alertname) DISPATCHes, or None when the
+    actions.log ledger is unavailable (degraded — a missing ledger must not
+    read as "zero alerts")."""
+    cache_path = _cache_paths(env)[3]
+    # Live source: AGENT_STATE/alert-repair/actions.log, cached 60s.
+    # Seam path always re-reads (tests mutate fixtures between calls).
+    if not (env or os.environ).get("FLEET_DQ_ACTIONS_LOG"):
+        data, age = _read_cache(cache_path)
+        if age is not None and age <= JOURNAL_CACHE_TTL and data is not None:
+            return [(e[0], e[1]) for e in data]
+    text = _read_actions_text(env)
+    if text is None:
+        return None
     parsed = _parse_dispatches(text)
-    _write_cache(cache_path, parsed)
+    if not (env or os.environ).get("FLEET_DQ_ACTIONS_LOG"):
+        _write_cache(cache_path, parsed)
     return parsed
 
 
 def _parse_dispatches(text):
-    """Return sorted list of (ts, alertname) DISPATCH lines."""
+    """Return sorted list of (ts, alertname) DISPATCH lines.
+
+    Kept for the actions-log cache shape and for success-rate fan-in
+    (any in-window DISPATCH of a curated name still marks a deploy as
+    non-success). TTD uses _episode_starts on top of this.
+    """
     events = []
     for m in DISPATCH_RE.finditer(text):
         ts = _parse_iso_utc(m.group(1))
@@ -422,6 +447,44 @@ def _parse_dispatches(text):
             events.append((ts, m.group(2)))
     events.sort(key=lambda e: e[0])
     return events
+
+
+def _episode_starts(text, crit):
+    """Return sorted (ts, alertname) of NEW critical alert episodes.
+
+    An episode starts on the first DISPATCH of an alertname while that
+    name is not open; RESOLVED closes it. Redispatches of an already-open
+    alert (Alertmanager repeat / completion-canary hop) do not start a
+    new episode and must not blame later merges.
+    """
+    open_eps = set()
+    starts = []
+    # Walk the ledger in file order so DISPATCH/RESOLVED interleave correctly.
+    for line in text.splitlines():
+        m = DISPATCH_RE.search(line)
+        if m:
+            name = m.group(2)
+            if name in crit and name not in open_eps:
+                ts = _parse_iso_utc(m.group(1))
+                if ts is not None:
+                    open_eps.add(name)
+                    starts.append((ts, name))
+            continue
+        if "RESOLVED" not in line:
+            continue
+        # Prefer alertname= token; fall back to inline name match against
+        # currently-open critical episodes (RESOLVED lines vary in shape).
+        rm = RESOLVED_RE.search(line)
+        if rm:
+            name = rm.group(2)
+            if name in open_eps:
+                open_eps.discard(name)
+            continue
+        for name in list(open_eps):
+            if name in line:
+                open_eps.discard(name)
+    starts.sort(key=lambda e: e[0])
+    return starts
 
 
 def _green_finishes(events):
@@ -513,7 +576,21 @@ def compute(env=None):
     alerts = _read_alert_events(env)
     crit = set((env or os.environ).get("FLEET_DQ_CRITICAL_ALERTS", "").split(",")) if (
         (env or os.environ).get("FLEET_DQ_CRITICAL_ALERTS")) else CRITICAL_DEPLOY_ALERTS
+    # Drop empty tokens from a trailing/leading comma in the seam.
+    crit = {c for c in crit if c}
     crit_alerts = [(ts, name) for ts, name in (alerts or []) if name in crit]
+
+    # Episode starts (1:1 TTD). Prefer a fresh parse of the actions text so
+    # RESOLVED lines close episodes; the DISPATCH-only cache is insufficient.
+    actions_text = _read_actions_text(env)
+    if actions_text is not None:
+        episode_starts = _episode_starts(actions_text, crit)
+    elif alerts is not None:
+        # Degraded: no raw text (should not happen when alerts parsed) —
+        # treat every DISPATCH as an episode start (old behaviour).
+        episode_starts = list(crit_alerts)
+    else:
+        episode_starts = None
 
     window_start = now - WINDOW_DAYS * 86400
     merged = [m for m in merged if m >= window_start and m <= now]
@@ -542,12 +619,30 @@ def compute(env=None):
                 break
     latency_p95 = _p95(latency) if events is not None else None
 
-    # (c) time-to-detect per deployment, (d) success rate over
-    # [mergedAt, mergedAt+DEPLOY_ALERT_WINDOW_S]. A deploy is attributable
-    # only when its 1h alert window at least overlaps the recorded ledger
-    # (window start >= first record minus the full window); older deploys
-    # would read as success purely because the ledger had not started.
+    # (c) time-to-detect: 1:1 nearest-prior-merge -> episode start.
+    # Fan-out (every merge in the 1h before a redispatch) was the 2026-09-02
+    # false-fire: p95 pinned near 3600s because redispatches of FleetMainRed
+    # (for:30m) blamed ~8 prior merges each. One sample per new episode.
     ttd = []
+    if episode_starts is not None:
+        for ts, _name in episode_starts:
+            prior = [m for m in merged if m <= ts]
+            if not prior:
+                continue
+            delta = ts - prior[-1]
+            if delta <= DEPLOY_ALERT_WINDOW_S:
+                ttd.append(delta)
+    min_samples = TTD_MIN_SAMPLES
+    raw_min = (env or os.environ).get("FLEET_DQ_TTD_MIN_SAMPLES")
+    if raw_min:
+        try:
+            min_samples = max(1, int(raw_min))
+        except ValueError:
+            pass
+    ttd_p95 = _p95(ttd) if len(ttd) >= min_samples else None
+
+    # (d) success rate: still fan-in over merges (a deploy with ANY curated
+    # critical DISPATCH in its 1h window is a non-success). Unchanged shape.
     success_n = 0
     ttd_denom = 0
     if alerts is not None:
@@ -560,10 +655,9 @@ def compute(env=None):
                 if m <= ts <= m + DEPLOY_ALERT_WINDOW_S
             ]
             if window_alerts:
-                ttd.append(min(window_alerts) - m)
+                pass  # non-success; TTD already counted via episode starts
             else:
                 success_n += 1
-    ttd_p95 = _p95(ttd)
     success_rate = (success_n / ttd_denom) if ttd_denom else None
 
     rollback_rate = (reverts / total) if total else None
