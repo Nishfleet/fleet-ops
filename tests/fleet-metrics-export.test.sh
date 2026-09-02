@@ -984,7 +984,36 @@ m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm-fallback.json")
 m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
 m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
 m.SEAT_LEDGER = Path(seat_dir)
+m.PR_CACHE_DIR = Path(out).parent
+m.DETAIL_CACHE = Path(out).parent / "detail.cache.json"
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 # Stub network/gh/systemctl-dependent paths so main() runs offline.
+# fleet-ops#2797: _queue_composition MUST be assigned. main() fail-louds
+# (rc=1, no file) when gh cannot determine ready_work. GitHub Actions has
+# no GH_TOKEN, so an unstubbed call never writes hc0-out.prom
+# (run 33662529423: FileNotFoundError). Swallowing SystemExit hid the rc=1.
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 5, "self": 1},
+    "agent-ready": {"total": 6, "self": 2},
+}
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._healthy_enrolled_seat_count = lambda: 0
@@ -992,10 +1021,10 @@ m._enrolled_seat_total = lambda: 0
 m._read_comeback_overdue = lambda: (0, [])
 m._read_never_released = lambda: (0, [])
 m._read_provider_quota_exhausted = lambda: (0, [])
-try:
-    m.main()
-except SystemExit:
-    pass
+m._ping_healthcheck = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
 body = Path(out).read_text()
 assert "# HELP fleet_seat_healthy_cap0_total " in body, body
 assert "# TYPE fleet_seat_healthy_cap0_total gauge" in body, body
@@ -1009,6 +1038,61 @@ assert body.count("# TYPE fleet_seat_healthy_cap0_total gauge") == 1, body
 assert body.count("# HELP fleet_seat_healthy_cap0 ") == 1, body
 print("OK: main() emits healthy-cap0 family (total 1 + per-seat devin__glm-5-2, HELP/TYPE once)")
 PY
+
+# =========================================================================
+# 16c. fleet-ops#2797: every python heredoc that calls exporter main() must
+#      assign _queue_composition. main() refuse-writes fleet.prom when
+#      ready_work is null (fleet-ops#1772). GitHub Actions has no GH_TOKEN,
+#      so an unstubbed call is FileNotFoundError on the output path — live
+#      red on main since 16b landed in #2870 (run 33662529423). Scan the
+#      tests tree so a sibling cannot regress the class. Needles are split
+#      so this heredoc is not itself a match.
+# =========================================================================
+python3 - "$here" <<'PY' || fail "main() _queue_composition stub scan failed"
+import pathlib, sys
+
+main_call = "m" + ".main("
+stub = "_queue" + "_composition"
+root = pathlib.Path(sys.argv[1])
+
+
+def python_heredocs(path):
+    lines = path.read_text().splitlines()
+    blocks = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if "<<'PY'" in lines[i] or '<<"PY"' in lines[i]:
+            body = []
+            i += 1
+            while i < n and lines[i] != "PY":
+                body.append(lines[i])
+                i += 1
+            blocks.append((path, i, "\n".join(body)))
+        i += 1
+    return blocks
+
+fail = 0
+seen = 0
+for path in sorted(root.glob("*.sh")):
+    for _path, end_line, block in python_heredocs(path):
+        if main_call not in block:
+            continue
+        seen += 1
+        if stub not in block:
+            print(
+                f"FAIL: {path.name} python-heredoc ending L{end_line} calls "
+                f"exporter main() without assigning _queue_composition "
+                f"(fleet-ops#2797 / run 33662529423)",
+                file=sys.stderr,
+            )
+            fail = 1
+        else:
+            print(f"OK: {path.name} python-heredoc ending L{end_line} stubs _queue_composition")
+assert seen >= 1, "scanner must see at least one exporter main() heredoc"
+sys.exit(fail)
+PY
+ok "every exporter main() python-heredoc stubs _queue_composition (fleet-ops#2797)"
 
 
 # fleet-ops#1350: GitHub API rate-limit metrics + pi-intake sidecar.
