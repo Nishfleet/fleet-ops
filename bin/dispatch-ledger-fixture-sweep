@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# dispatch-ledger-fixture-sweep — one-shot sweep of latent fixture rows in the
+# dispatch ledger (fleet-ops#2768).
+#
+# Problem: the alert-repair class-park regression drill (scenarios 1/3/4 of
+# tests/alert-repair-class-park-skip.test.sh) spawned REAL repair workers for
+# the fixture alertnames NoClassParkAlert / ClassExpiredAlert / NoParkKeyAlert
+# (no Prometheus rules). PR #2660 (ALERT_REPAIR_NO_SPAWN guard) stopped the
+# spawn; the ledger rows it left behind stayed `status:"open"` — latent rows
+# that re-trigger the phantom-alert amplification loop if the ledger is ever
+# re-scanned raw (receipts age out, a new scanner, a dedup that drops the
+# closing pair line).
+#
+# This script is the considered sweep the blind audit asked for (2026-09-01):
+# it marks EVERY row whose unit/packet_path carries one of the fixture
+# alertnames as terminal, so no consumer or scanner can mistake it for live
+# work again:
+#
+#   terminal=true
+#   terminal_reason="fixture_alertname_no_prometheus_rule"
+#   terminal_ts=<iso now>
+#
+# The alertname lives in the `unit`/`packet_path` fields (e.g.
+# alert-repair-NoClassParkAlert-20260831T111728Z); the ledger has no separate
+# `alertname` key. All fixture rows are marked (open AND closed ones) so the
+# raw-line count of `terminal != true` for these alertnames drops to zero.
+#
+# Safety:
+#   - PRE-SWEEP BACKUP: the ledger is copied to
+#     $LEDGER.sweep-backup-<ts> before any mutation (rollback = restore the
+#     copy, per the issue's rollback section).
+#   - IN-PLACE REWRITE, no appended lines: the completion-canary's
+#     load_dispatch_latest keeps the LAST line per id; appending a terminal
+#     line per row would make the terminal (status:"open") line the latest
+#     record and could itself trigger re-dispatch. Each row is rewritten in
+#     place with the terminal fields appended, all other fields byte-order
+#     preserved.
+#   - IDEMPOTENT: a re-run marks nothing new and exits 0.
+#   - Malformed/blank lines are left untouched and counted.
+#
+# Env:
+#   FLEET_DISPATCH_LEDGER      ledger path (default $AGENT_STATE/dispatch-ledger.jsonl)
+#   FLEET_DISPATCH_SWEEP_BACKUP  backup path prefix (default $LEDGER.sweep-backup)
+set -euo pipefail
+
+AS="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
+LEDGER="${FLEET_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
+BACKUP_PREFIX="${FLEET_DISPATCH_SWEEP_BACKUP:-$LEDGER.sweep-backup}"
+FIXTURE_RE='alert-repair-(NoClassParkAlert|ClassExpiredAlert|NoParkKeyAlert)-'
+TERMINAL_REASON='fixture_alertname_no_prometheus_rule'
+
+[ -r "$LEDGER" ] || { echo "FAIL: ledger not readable: $LEDGER" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
+
+backup="$BACKUP_PREFIX-$(date -u +%Y%m%dT%H%M%SZ)"
+if ! cp -p "$LEDGER" "$backup"; then
+    echo "FAIL: could not create pre-sweep backup: $backup" >&2
+    exit 1
+fi
+echo "backup: $backup"
+
+python3 - "$LEDGER" "$FIXTURE_RE" "$TERMINAL_REASON" <<'PY'
+import datetime
+import json
+import re
+import sys
+
+ledger, fixture_re, reason = sys.argv[1], sys.argv[2], sys.argv[3]
+rx = re.compile(fixture_re)
+
+with open(ledger, "r", encoding="utf-8") as f:
+    lines = f.read().splitlines(keepends=True)
+
+new_lines = []
+matched = 0
+marked = 0
+already = 0
+skipped = 0
+
+
+def is_fixture(rec: dict) -> bool:
+    for key in ("unit", "packet_path"):
+        val = rec.get(key)
+        if isinstance(val, str) and rx.search(val):
+            return True
+    return False
+
+
+for line in lines:
+    text = line.rstrip("\n")
+    if not text.strip():
+        new_lines.append(line)
+        continue
+    try:
+        rec = json.loads(text)
+    except json.JSONDecodeError:
+        skipped += 1
+        new_lines.append(line)
+        continue
+    if not isinstance(rec, dict) or not is_fixture(rec):
+        new_lines.append(line)
+        continue
+    matched += 1
+    if rec.get("terminal") is True and rec.get("terminal_reason") == reason:
+        already += 1
+        new_lines.append(line)
+        continue
+    rec["terminal"] = True
+    rec["terminal_reason"] = reason
+    rec["terminal_ts"] = rec.get("terminal_ts") or datetime.datetime.now(
+        datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    marked += 1
+    new_lines.append(json.dumps(rec, separators=(",", ":")) + "\n")
+
+if marked > 0:
+    with open(ledger, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+print(f"fixture_rows={matched} marked={marked} already_terminal={already} malformed_skipped={skipped}")
+PY
