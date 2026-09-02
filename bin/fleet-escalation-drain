@@ -1,0 +1,499 @@
+#!/usr/bin/env bash
+# fleet-escalation-drain — bounded-file maintainer for the escalation channel
+# (fleet-ops#2677 + #2773).
+#
+# The escalation layer (NISH-ESCALATIONS.md + alert-repair packets) is
+# append-only and accumulation is structural: stop-escalation-dispatch writes
+# one NISH line per CAP-REACHED, KILL-ESCALATION, or LADDER-WALLED trip; the
+# Alertmanager webhook writes one packet per firing alert. Without a drain
+# the files grow monotonically and the boundary channel becomes unreadable
+# (Nish can't scan 369 lines to find the one entry that needs a money call).
+#
+# Three drain operations, each idempotent and audit-friendly:
+#
+#   1. NISH-ESCALATIONS.md: archive RESOLVED / REVOKED-BY-PROBE lines to
+#      nish-escalations-archive/<UTC-day>.md. nish-boundary-notify already
+#      writes those markers when a page is delivered or probed-suppressed.
+#      Non-class lines (legacy noise from pre-#1534 writes: LADDER-WALLED,
+#      SEAT-UNHEALTHY, PI-DISPATCH-FAILED, ad-hoc heartbeat:/BOUNDARY:/
+#      straitly/etc.) are also archived — the class-gate refuses new writes
+#      of these classes, so anything left over is pre-gate history. After
+#      the unconditional archive, if the live file is still over
+#      FLEET_ESCALATION_DRAIN_MAX_LINES (default 50), archive delivered
+#      boundary entries (entries whose hash is in the seen set). Active
+#      entries (NOT in the seen set) stay so a not-yet-delivered page is
+#      never lost.
+#
+#   2. alert-repair packets: delete packet-*.md files whose dispatch cycle
+#      TERMINATED. The termination proof is chains.terminated.jsonl — the
+#      ledger fleet-completion-canary appends to (with the mirror under
+#      agent-state/alert-repair/) when a chain reaches a legal terminal
+#      (green / detector-red / escalated). Each record carries the
+#      alertname and end_ts; a packet with webhook name
+#      packet-<alert>-<ts>.md is CONSUMED when a terminal record exists for
+#      that alertname whose end_ts is >= the packet's dispatch instant
+#      (the canary closes one cycle per alertname and absorbs every
+#      intermediate re-dispatch of that episode under the last terminal).
+#      A packet created AFTER the latest terminal (a fresh re-fire) or for
+#      an alertname with NO terminal record is left in place — that is an
+#      in-flight or genuinely-stuck chain, which belongs to the completion
+#      canary's stall budget and escalation ladder, NOT to a silent drain.
+#      actions.log is deliberately NOT used as a proof source: it is
+#      bounded (rotated) so old packets' chains are unprovable there; the
+#      ledger is append-only and complete.
+#
+#   3. Skip-list: never delete packet files without a `<alert>-<ts>.md`
+#      timestamp suffix. The canary / guard scaffolding packets
+#      (packet-11-completion-canary.md, packet-13-undersaturation-guard.md,
+#      packet-17-organ-absence-rules.md, packet-red-main-2.md) have NO
+#      webhook timestamp — they are owned by fleet-ops internals; draining
+#      them would break the chain the canary is proving.
+#
+# Anti-recursion: this drain is a maintenance script, NOT an organ (no
+# heartbeat metric). It does not create units, does not appear in
+# config/fleet-organs.json, and does not need an absent() rule. The
+# systemd timer that runs it inherits service.d/10-escalate.conf; a
+# genuine fail-loud exit (a hard pre-condition failed) climbs the ladder
+# to the senior auditor. A clean run with nothing to do is rc=0 silent.
+#
+# Environment seams (tests):
+#   FLEET_ESCALATION_DRAIN_AGENT_STATE    default /home/nish/workspaces/agent-state
+#   FLEET_ESCALATION_DRAIN_MAX_LINES      default 50
+#   FLEET_ESCALATION_DRAIN_TERMINATED     ledger path (default $PACKET_DIR/chains.terminated.jsonl)
+#   FLEET_ESCALATION_DRAIN_STUCK_AGE_S     webhook packet age past which a no-terminal
+#                                          packet is flagged LOUD (default 172800 = 48h)
+#   FLEET_ESCALATION_DRAIN_CLASSES        regex (must match nish-boundary-notify)
+#   FLEET_ESCALATION_DRAIN_DRY_RUN        1 = never modify files, only report
+#
+# Exit:
+#   0  drain complete (idempotent: re-runs do nothing once the file is bounded)
+#   1  hard pre-condition failed (jq missing, etc.) — climbs the ladder
+#   2  usage error
+
+set -euo pipefail
+
+AGENT_STATE="${FLEET_ESCALATION_DRAIN_AGENT_STATE:-/home/nish/workspaces/agent-state}"
+NISH="${FLEET_ESCALATION_DRAIN_NISH:-$AGENT_STATE/NISH-ESCALATIONS.md}"
+ARCHIVE_DIR="${FLEET_ESCALATION_DRAIN_ARCHIVE_DIR:-$AGENT_STATE/nish-escalations-archive}"
+SEEN_FILE="${FLEET_ESCALATION_DRAIN_SEEN:-$AGENT_STATE/lanes/nish-boundary-notify.seen}"
+PACKET_DIR="${FLEET_ESCALATION_DRAIN_PACKET_DIR:-$AGENT_STATE/alert-repair}"
+TERMINATED="${FLEET_ESCALATION_DRAIN_TERMINATED:-$PACKET_DIR/chains.terminated.jsonl}"
+MAX_LINES="${FLEET_ESCALATION_DRAIN_MAX_LINES:-50}"
+STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-172800}"
+CLASSES="${FLEET_ESCALATION_DRAIN_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
+DRY_RUN="${FLEET_ESCALATION_DRAIN_DRY_RUN:-0}"
+
+log() {
+    printf '[%s] [fleet-escalation-drain] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+usage() {
+    cat <<'EOF' >&2
+usage: fleet-escalation-drain [--dry-run]
+
+  --dry-run   report what would be archived/deleted; touch nothing
+EOF
+    exit 2
+}
+
+case "${1:-}" in
+    "") ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help) usage ;;
+    *) echo "fleet-escalation-drain: unknown arg: $1" >&2; usage ;;
+esac
+
+command -v jq >/dev/null 2>&1 || { echo "fleet-escalation-drain: jq required" >&2; exit 1; }
+
+if [ ! -d "$AGENT_STATE" ]; then
+    echo "fleet-escalation-drain: agent-state missing: $AGENT_STATE" >&2
+    exit 1
+fi
+
+nish_archived=0
+nish_bounded=0
+packet_deleted=0
+packet_skipped=0
+
+# ---------------------------------------------------------------------------
+# 1. NISH-ESCALATIONS.md drain
+# ---------------------------------------------------------------------------
+#
+# Strategy:
+#   a. Read the file as lines.
+#   b. Classify each line:
+#        - header (lines 1..6) — keep verbatim
+#        - entry line (starts with <UTC ISO8601>) — RESOLVED / REVOKED-by-probe
+#          -> archive unconditionally
+#        - class-gated boundary line: archive ONLY when file still over
+#          MAX_LINES AFTER the unconditional archive AND the line's hash is
+#          in the seen set (i.e. nish-boundary-notify already delivered it).
+#          Lines NOT in the seen set stay (a not-yet-delivered page is never
+#          lost).
+#        - non-class line (legacy noise: LADDER-WALLED, SEAT-UNHEALTHY,
+#          PI-DISPATCH-FAILED, ad-hoc heartbeat:, BOUNDARY:, straitly, etc.)
+#          -> archive unconditionally (the class-gate post-#1534 refuses new
+#          writes, so leftover is pre-gate history).
+#        - continuation line (indented body) — follow the immediately-preceding
+#          header's classification.
+#   c. Append archived entries to <ARCHIVE_DIR>/YYYY-MM-DD.md (one file per
+#      UTC day, append-only, never rotated; reviewer finds every archived
+#      escalation on the day it was archived).
+#   d. Atomic rewrite of the live file with only kept lines.
+#
+# Active-delivery detection (fleet-ops#1458): the seen file is the post-delivery
+# ledger — its key is sha256 of the original entry line. A class boundary
+# line whose key is NOT in the seen set is either "still pending" or
+# "delivered before the seen file existed"; the conservative rule keeps the
+# line either way (matches fleet-escalation-completion wall-marker semantics:
+# a hash in NISH means the chain is on Nish's board and must stay).
+
+drain_nish() {
+    if [ ! -f "$NISH" ]; then
+        log "NISH-ESCALATIONS.md missing at $NISH — nothing to drain"
+        return 0
+    fi
+
+    mkdir -p "$ARCHIVE_DIR"
+
+    # Load seen keys (one per line). Empty/missing = no deliveries on record.
+    declare -A seen_keys=()
+    if [ -f "$SEEN_FILE" ]; then
+        while IFS= read -r k; do
+            [ -n "$k" ] && seen_keys["$k"]=1
+        done < "$SEEN_FILE"
+    fi
+
+    local stamp_day
+    stamp_day=$(date -u +%Y-%m-%d)
+    local archive_path="$ARCHIVE_DIR/$stamp_day.md"
+    local tmp_nish tmp_archive
+    tmp_nish=$(mktemp -p "$AGENT_STATE" .nish-drain.XXXXXX)
+    tmp_archive=$(mktemp -p "$AGENT_STATE" .nish-archive.XXXXXX)
+
+    # Parse into entries: each entry is a list of lines starting with a
+    # UTC ISO8601 timestamp header, followed by indented continuation lines
+    # until the next timestamp header or EOF. The first 6 lines are the
+    # file-format header (kept verbatim regardless of class).
+    #
+    # Strategy:
+    #   1. First pass: read line-by-line, group into entries, classify the
+    #      header:
+    #        - RESOLVED / REVOKED-BY-PROBE -> archive_lines (with continuations)
+    #        - non-class line (LADDER-WALLED, SEAT-UNHEALTHY, ad-hoc heartbeat:/
+    #          BOUNDARY:/straitly/etc.) -> archive_lines (with continuations)
+    #        - class-gated boundary -> tentatively kept_lines; the second pass
+    #          below may promote to bounded_archive if the live file is still
+    #          over MAX_LINES AFTER the unconditional archive.
+    #   2. Second pass: if kept_lines still > MAX_LINES, walk and move
+    #      delivered boundary entries (header AND continuations) into
+    #      bounded_archive. Active entries (header hash NOT in seen set)
+    #      stay.
+    local -a kept_lines=()
+    local -a archive_lines=()
+    local -a bounded_archive=()
+    local -a current_entry=()
+    local line_ind=0
+
+    flush_entry() {
+        # Append current_entry to the destination chosen by header_class.
+        local fe_ln
+        case "$header_class" in
+            archive)
+                for fe_ln in "${current_entry[@]}"; do
+                    archive_lines+=("$fe_ln")
+                done
+                nish_archived=$((nish_archived + 1))
+                ;;
+            keep)
+                for fe_ln in "${current_entry[@]}"; do
+                    kept_lines+=("$fe_ln")
+                done
+                ;;
+            bounded)
+                for fe_ln in "${current_entry[@]}"; do
+                    bounded_archive+=("$fe_ln")
+                done
+                nish_bounded=$((nish_bounded + 1))
+                ;;
+        esac
+        current_entry=()
+        header_class=""
+    }
+
+    header_class=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        line_ind=$((line_ind + 1))
+
+        # File-format header section: keep verbatim (first 6 lines).
+        if [ "$line_ind" -le 6 ]; then
+            kept_lines+=("$line")
+            continue
+        fi
+
+        # Entry header: starts with a UTC ISO8601 timestamp. Real entries
+        # carry either `2026-MM-DDTHH:MM:SSZ` (formal) or `2026-MM-DDTHH:MMZ`
+        # (compact — heartbeat-style boundary entries) followed by a space.
+        if [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2}){1,2}Z[[:space:]] ]]; then
+            # Flush any in-progress entry first.
+            if [ "${#current_entry[@]}" -gt 0 ]; then
+                flush_entry
+            fi
+            current_entry=("$line")
+            local class
+            class=$(printf '%s' "$line" | awk '{print $2}')
+            case "$class" in
+                RESOLVED|REVOKED-BY-PROBE)
+                    header_class="archive"
+                    continue
+                    ;;
+            esac
+            if printf '%s\n' "$CLASSES" | tr '|' '\n' | grep -qxF "$class"; then
+                header_class="keep"  # tentative — second pass may promote to bounded
+                continue
+            fi
+            header_class="archive"
+            continue
+        fi
+
+        # Continuation / blank / other. Belongs to current entry.
+        if [ "${#current_entry[@]}" -gt 0 ]; then
+            current_entry+=("$line")
+        else
+            # Stray continuation before any entry — keep verbatim (rare).
+            kept_lines+=("$line")
+        fi
+    done < "$NISH"
+    # Flush the last entry.
+    if [ "${#current_entry[@]}" -gt 0 ]; then
+        flush_entry
+    fi
+
+    # Second pass: if the live file is still over MAX_LINES, fold the
+    # delivered boundary entries into the archive. Active (undelivered)
+    # boundary entries stay because their hash is not in the seen set.
+    # We re-parse kept_lines into entries and promote headers whose hash
+    # is in the seen set (with their continuations) into bounded_archive.
+    local kept_count=${#kept_lines[@]}
+    if [ "$kept_count" -gt "$MAX_LINES" ]; then
+        local -a new_kept=()
+        local -a pending_entry=()
+        local pending_class=""
+        flush_pending() {
+            case "$pending_class" in
+                bounded)
+                    local fe_ln
+                    for fe_ln in "${pending_entry[@]}"; do
+                        bounded_archive+=("$fe_ln")
+                    done
+                    nish_bounded=$((nish_bounded + 1))
+                    ;;
+                *)
+                    local fe_ln
+                    for fe_ln in "${pending_entry[@]}"; do
+                        new_kept+=("$fe_ln")
+                    done
+                    ;;
+            esac
+            pending_entry=()
+            pending_class=""
+        }
+        local ln_ind=0
+        for ln in "${kept_lines[@]}"; do
+            ln_ind=$((ln_ind + 1))
+            # Preserve the file-format header (first 6 lines of kept_lines).
+            if [ "$ln_ind" -le 6 ]; then
+                new_kept+=("$ln")
+                continue
+            fi
+            if [[ "$ln" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2}){1,2}Z[[:space:]] ]]; then
+                if [ "${#pending_entry[@]}" -gt 0 ]; then
+                    flush_pending
+                fi
+                pending_entry=("$ln")
+                local key
+                key=$(printf '%s' "$ln" | sha256sum | cut -c1-32)
+                if [ "${seen_keys[$key]:-0}" = "1" ]; then
+                    pending_class="bounded"
+                else
+                    pending_class="keep"
+                fi
+                continue
+            fi
+            if [ "${#pending_entry[@]}" -gt 0 ]; then
+                pending_entry+=("$ln")
+            else
+                new_kept+=("$ln")
+            fi
+        done
+        if [ "${#pending_entry[@]}" -gt 0 ]; then
+            flush_pending
+        fi
+        kept_lines=("${new_kept[@]}")
+        log "live file still $kept_count lines (> MAX_LINES=$MAX_LINES); promoted $nish_bounded delivered boundary entries to archive"
+        kept_count=${#kept_lines[@]}
+    fi
+
+    if [ "$nish_archived" -eq 0 ] && [ "$nish_bounded" -eq 0 ]; then
+        rm -f "$tmp_nish" "$tmp_archive"
+        log "NISH-ESCALATIONS.md: nothing to archive (file=$kept_count lines, max=$MAX_LINES)"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY: would archive $nish_archived unconditional + $nish_bounded delivered-boundary entries; rewrite $kept_count-line live file (was $(wc -l < "$NISH"))"
+        rm -f "$tmp_nish" "$tmp_archive"
+        return 0
+    fi
+
+    local old_lines
+    old_lines=$(wc -l < "$NISH")
+
+    # Live file rewrite (kept only).
+    {
+        for ln in "${kept_lines[@]}"; do
+            printf '%s\n' "$ln"
+        done
+    } > "$tmp_nish"
+    # Atomic rename (same dir as live file).
+    mv "$tmp_nish" "$NISH"
+
+    # Archive append: header if first-of-day, then this batch's lines.
+    {
+        if [ ! -s "$archive_path" ]; then
+            printf '# NISH-ESCALATIONS archive — %s (UTC)\n' "$stamp_day"
+            printf '# Archived by fleet-escalation-drain (fleet-ops#2677).\n'
+            printf '# Entries moved here are RESOLVED, REVOKED-BY-PROBE, non-class\n'
+            printf '# legacy noise, or delivered boundary entries past the live-file\n'
+            printf '# line cap. NEVER rotated; one file per UTC day.\n'
+            printf '\n'
+        fi
+        for ln in "${archive_lines[@]}"; do
+            printf '%s\n' "$ln"
+        done
+        for ln in "${bounded_archive[@]}"; do
+            printf '%s\n' "$ln"
+        done
+    } > "$tmp_archive"
+    cat "$tmp_archive" >> "$archive_path"
+    rm -f "$tmp_archive"
+
+    local new_lines
+    new_lines=$(wc -l < "$NISH")
+    log "NISH-ESCALATIONS.md: archived=$nish_archived bounded=$nish_bounded live_lines=$new_lines (was $old_lines) archive=$archive_path"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# 2. alert-repair packet drain
+# ---------------------------------------------------------------------------
+#
+# A packet is consumed when its dispatch cycle TERMINATED in
+# chains.terminated.jsonl — the append-only ledger fleet-completion-canary
+# writes (STATE copies into agent-state/alert-repair/ as the reviewer
+# mirror) when a chain reaches green / detector-red / escalated. Each
+# record carries alertname + end_ts; the canary closes one cycle per
+# alertname and records the LAST dispatch unit of the episode, absorbing
+# every intermediate re-dispatch under that final terminal.
+#
+# Rule: packet packet-<alert>-<ts>.md is CONSUMED iff a terminal record
+# exists for <alert> with end_ts >= <ts>. (ISO strings compare
+# lexicographically.) A packet created after the latest terminal (a fresh
+# re-fire, chain still in flight) or for an alertname with NO terminal
+# record is left in place (never silently deleted). But a WEBHOOK packet
+# older than FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 48h) with no
+# terminal record is a genuinely STUCK chain — the drain flags it LOUD on
+# stderr so the hourly journal (inherited by the escalation ladder) makes
+# the failure visible; the completion canary's stall budget is the
+# mechanism that eventually escalates it. A loud flag, never a silent
+# delete.
+#
+# Skip-list: packet files without a `<alert>-<ts>.md` timestamp suffix are
+# canary / guard scaffolding packets with no webhook dispatch (e.g.
+# packet-11-completion-canary.md, packet-13-undersaturation-guard.md,
+# packet-red-main-2.md) — their lifecycles are owned by other mechanisms.
+drain_packets() {
+    if [ ! -d "$PACKET_DIR" ]; then
+        log "packet dir missing at $PACKET_DIR — nothing to drain"
+        return 0
+    fi
+    if [ ! -f "$TERMINATED" ]; then
+        log "chains.terminated.jsonl missing at $TERMINATED — skipping packet drain (cannot prove consumption)"
+        return 0
+    fi
+
+    # Map alertname -> latest terminal end_ts. One jq pass over the ledger.
+    declare -A terminated_end=()
+    local talert tend
+    while IFS=$'\t' read -r talert tend; do
+        [ -n "$talert" ] || continue
+        if [[ -z "${terminated_end[$talert]:-}" || "$tend" > "${terminated_end[$talert]}" ]]; then
+            terminated_end["$talert"]="$tend"
+        fi
+    done < <(jq -rc 'select((.alertname // "") != "" and (.end_ts // "") != "") | [.alertname, .end_ts] | @tsv' "$TERMINATED" 2>/dev/null || true)
+
+    local pkt
+    local -a stuck=()
+    local stuck_cutoff
+    stuck_cutoff=$(date -u -d "$STUCK_AGE_S seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    for pkt in "$PACKET_DIR"/packet-*.md; do
+        [ -e "$pkt" ] || continue
+        local name
+        name=$(basename "$pkt")
+
+        # Skip non-webhook scaffolding (packet-11-completion-canary.md,
+        # packet-13-undersaturation-guard.md, packet-red-main-2.md, etc.).
+        # Webhook packets carry `-<8-digit-date>T<6-digit-time>Z.md`.
+        if ! [[ "$name" =~ ^packet-([A-Za-z0-9_]+)-([0-9]{8}T[0-9]{6}Z)\.md$ ]]; then
+            packet_skipped=$((packet_skipped + 1))
+            continue
+        fi
+        local alert="${BASH_REMATCH[1]}"
+        local ts="${BASH_REMATCH[2]}"
+
+        # Packet dispatch instant as ISO (lexical compare vs ledger end_ts).
+        local iso="${ts:0:4}-${ts:4:2}-${ts:6:2}T${ts:9:2}:${ts:11:2}:${ts:13:2}Z"
+        local latest="${terminated_end[$alert]:-}"
+        local consumed=0
+        if [ -n "$latest" ] && { [[ "$iso" < "$latest" ]] || [[ "$iso" == "$latest" ]]; }; then
+            consumed=1
+        fi
+        if [ "$consumed" = "1" ]; then
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY: would delete $name (alert=$alert packet=$iso ledger_end=$latest)"
+                packet_deleted=$((packet_deleted + 1))
+                continue
+            fi
+            if rm -f "$pkt"; then
+                packet_deleted=$((packet_deleted + 1))
+                log "deleted $name (alert=$alert packet=$iso ledger_end=$latest)"
+            else
+                log "WARN: failed to delete $name (continuing)"
+            fi
+            continue
+        fi
+        packet_skipped=$((packet_skipped + 1))
+        # Not consumed: in-flight re-fire (created after the latest terminal)
+        # or never-terminated. Age-gate the LOUD flag so a fresh re-fire is
+        # not noise.
+        if [ -n "$stuck_cutoff" ] && [[ "$iso" < "$stuck_cutoff" ]]; then
+            stuck+=("$name (packet=$iso)")
+        fi
+    done
+    if [ "${#stuck[@]}" -gt 0 ]; then
+        local n_stuck=${#stuck[@]}
+        local s
+        local head_line=""
+        for s in "${stuck[@]:0:10}"; do
+            head_line="$head_line $s"
+        done
+        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — drain leaves them (never silently delete); completion-canary stall ladder must escalate:$head_line"
+    fi
+}
+
+drain_nish
+drain_packets
+
+log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
+exit 0

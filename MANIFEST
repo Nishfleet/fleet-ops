@@ -515,6 +515,14 @@ systemd/timer.d/10-escalate.conf /home/nish/.config/systemd/user/timer.d/10-esca
 systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/10-no-direct-notify.conf
 systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
 systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
+# fleet-ops#2677 + #2773: bounded-file maintainer for the escalation
+# channel. Drains NISH-ESCALATIONS.md (archives RESOLVED / REVOKED /
+# non-class noise + delivered boundary entries past MAX_LINES) and
+# deletes alert-repair packets with a complete chain in actions.log.
+# Idempotent, no-op when the file is already bounded. Hourly cadence.
+bin/fleet-escalation-drain /home/nish/.local/bin/fleet-escalation-drain
+systemd/escalation-drain.service /home/nish/.config/systemd/user/escalation-drain.service
+systemd/escalation-drain.timer /home/nish/.config/systemd/user/escalation-drain.timer
 prompts/heartbeat.md /home/nish/.pi/agent/prompts/heartbeat.md
 # P14: nishfleet-worker GitHub App identity for workers
 bin/worker-token /home/nish/.local/bin/worker-token

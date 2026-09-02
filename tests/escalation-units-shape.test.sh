@@ -201,3 +201,10 @@ else
 fi
 
 ok "escalation-units-shape: all units, drop-ins, and helpers are present, MANIFESTed, shaped, and verified"
+
+# fleet-ops#2677 + #2773: host the escalation-drain behavior test here.
+# Hosting from an already-listed test keeps it in the CI reachable set
+# without a .github/workflows edit (the worker App token cannot push
+# workflows). The drain is the bounded-file maintainer for the escalation
+# layer this file shape-locks.
+bash "$here/fleet-escalation-drain.test.sh"
