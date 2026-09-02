@@ -477,3 +477,14 @@ bash "$here/scout-effectiveness.test.sh"
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
 bash "$here/fleet-product-slo.test.sh"
+
+# fleet-ops#2920 (PR #2937 follow-up): the drift-canary metrics drop-in
+# test landed on main without a ci.yml listing or a host, so P14 ran red
+# on "1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: fleet-ops-drift-metrics-dropin.test.sh"
+# for every push since 20:53Z. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+# The named pin in tests/p14-test-listing-gate.test.sh is the
+# class-prevention so a future drop of this host line fails by name.
+# Hermetic (stub gh + systemctl, overlay workspaces root).
+bash "$here/fleet-ops-drift-metrics-dropin.test.sh"
