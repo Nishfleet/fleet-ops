@@ -155,6 +155,37 @@ jq -e '[.candidates[].seam] | index("hand-started fleet-blind-audit.service")' "
   || fail "untriggered systemctl start dropped"
 ok "collect drops worker claims, gap-audit filings, and timer-parent starts"
 
+# fleet-ops#2706: senior-auditor report bullets written into AUDITOR-LOG.md
+# must not become seams even when they contain embedded ISO timestamps. The
+# auditor's own output is the mechanism, not a manual hand operation.
+mkdir -p "$scratch/auditor"
+cat >"$scratch/auditor/auditor.log" <<'LOG'
+2026-09-01T15:00:00Z hand-repaired a /tmp symlink
+2026-09-01T15:01:00Z **Confer-with-peers evidence:** all session dirs in `/home/nish/.pi/agent/sessions/` scoped to pi-issue-fleet-ops-2xxx chains (newest pi-issue-fleet-ops-2694 at 12:56 IST → 13:32 IST just finished pushing PR #2796, filed 2026-09-01T12:56:00Z)
+2026-09-01T15:02:00Z 5. `gh search issues "AUTO-REVERT HALT" --owner Nishfleet --state open`: 2 results. #2203 (filed 2026-08-30T11:00:00Z, valid).
+2026-09-01T15:03:00Z 4. **Live hot-patch applied to `/home/nish/workspaces/tooling/fleet-ops-deploy-clone/libexec/alert-repair-dispatch`** (preserving the peer's dirty hot-patch, written 2026-09-01T07:05:00Z).
+2026-09-01T15:04:00Z **The wrong-assumption trap (worked-example pattern applied):** the prior auditor 2026-09-01T07:00:51Z correctly identified this class.
+2026-09-01T15:05:00Z 1. **STOP-REASON.json** → `reason=auditor-resolved` closeout-skip with `summoning_trip` block preserving trip detail (dispatch_hash=30f1d71240ec..., 2026-09-01T07:58:57Z).
+2026-09-01T15:06:00Z **(A) WRITER-SIDE dedupe — PR #2655 MERGED** (commit on origin/main; live `bin/unit-escalation-write` at 2026-09-01T12:49:08Z).
+2026-09-01T15:07:00Z **Precedence-band canary NEW wrinkle — root-cause already partially fixed:** PR #2664 (commit 27b862ee MERGED 2026-09-01T14:28:39Z).
+2026-09-01T15:08:00Z 5. CAATCH-ALL sweep: (1) user failed: 1 → reset→0 (fleet-heartbeat, fixed); (2) system failed: 0 — quiet; tick 2026-09-01T18:12:38Z.
+2026-09-01T15:09:00Z **NEW GAP caught this round (wrong-assumption class — stale registry):** the previous blind-audit run 2026-09-01T20:56:31Z uncovered that fleet-ops-deploy-clone.
+2026-09-01T15:10:00Z This is EXACTLY the stale-state class AGENTS.md warns about: "the 2026-08-23 'fleet is PA' STATE' text went stale after the 2026-08-25/26 restoration at 2026-09-01T20:56:31Z".
+LOG
+
+python3 "$lens" collect \
+  --since "2026-09-01T14:00:00Z" \
+  --now "2026-09-01T16:00:00Z" \
+  --actions-log "$scratch/auditor/auditor.log" >"$scratch/auditor/collected.json"
+
+jq -e '.candidates | length == 1' "$scratch/auditor/collected.json" >/dev/null \
+  || fail "auditor bullets must be filtered, only the hand seam stays; got $(jq '.candidates | length' "$scratch/auditor/collected.json"): $(cat "$scratch/auditor/collected.json")"
+jq -e '[.candidates[].seam] | index("hand-repaired a /tmp symlink")' "$scratch/auditor/collected.json" >/dev/null \
+  || fail "hand seam dropped while filtering auditor bullets"
+jq -e '[.candidates[].seam | select(test("Confer-with-peers|AUTO-REVERT HALT|Live hot-patch|wrong-assumption|WRITER-SIDE dedupe|Precedence-band canary|CAATCH-ALL|NEW GAP caught|stale-state class"))] | length == 0' "$scratch/auditor/collected.json" >/dev/null \
+  || fail "auditor bullet slipped through: $(jq -r '[.candidates[].seam] | join("|")' "$scratch/auditor/collected.json")"
+ok "auditor report bullets filtered from actions-log (fleet-ops#2706)"
+
 # --- 4+5. Harness writes the table when the reviewer omits it --------------
 mkdir -p "$scratch/fakebin" "$scratch/state"
 cat >"$scratch/deliberate-states.md" <<'EOF'

@@ -27,20 +27,54 @@ MECHANICAL_BODY_RE = re.compile(
 MECHANICAL_TITLE_RE = re.compile(
     r"(?i)^\[gap-audit\]|^AUTO-REVERT"
 )
-# Automated escalation log patterns (fleet-ops#2115): these are written by
-# stop-escalation-dispatch, the SENIOR AUDITOR, and the seat-management
+# Automated escalation log patterns (fleet-ops#2115, fleet-ops#2706): these are
+# written by stop-escalation-dispatch, the SENIOR AUDITOR, and the seat-management
 # machinery as part of the automated escalation/seat system, not manual
 # human operations. Filter them out so the manual-seam lens doesn't flag
 # the automation's own logs as seams.
 # Note: this matches against `rest` (the line after the ISO timestamp is stripped).
+# Anchor `^` matches at start-of-string (`.search()` is used, not `.match()`, but
+# the surrounding code only invokes this against a single stripped line, so
+# start-of-string == start-of-line).
 ESCALATION_LOG_RE = re.compile(
     r"^(?:"
     r"DISPATCH(?:-NO-BLOCK|-OUTPUT)?|TIMEOUT-KILL(?:-OUTPUT)?|KILL-RETRY(?:-OUTPUT)?|STOP-ESCALATION(?:-FAULT)?"
     r"|LADDER-WALLED"
-    r"|\*\*Summoning trip:\*\*|\*\*Root cause"
     r"|dispatched auditor|EXTLOAD-|PACKET-)"
+    # Senior-auditor report bullets (fleet-ops#2706): the auditor writes these
+    # bullets inside AUDITOR-LOG.md as part of its standard closeout template.
+    # The lines can contain embedded ISO timestamps because the auditor cites
+    # prior events. Without these alternatives the lens would mis-classify
+    # the auditor's own report as a "manual seam".
+    r"|\*\*Summoning trip:\*\*"
+    r"|\*\*Root cause(?:\s*\(same class|\s*\(worked-example)?"
+    r"|\*\*For you \(Nish\):\*\*"
+    r"|\*\*NEW development this trip"
+    r"|\*\*Re-queue(?:\s*\(halted item\))?:\*\*"
+    r"|\*\*Re-queue:\*\*"
+    r"|\*\*Catch-all summary:\*\*"
+    r"|\*\*Class-park preserved(?:\s*\(not modified\))?:"
+    r"|\*\*Confer-with-peers(?:\s+evidence)?:\*\*"
+    r"|\*\*The wrong-assumption trap"
+    r"|\*\*Live hot-patch applied to"
+    r"|\*\*\(A\) WRITER-SIDE dedupe"
+    r"|\*\*\(B\) READER-SIDE dedupe"
+    r"|\*\*Precedence-band canary"
+    r"|\*\*NEW GAP caught this round"
+    r"|This is EXACTLY the stale-state class"
+    r"|\d+\. \`gh search issues \"AUTO-REVERT HALT\""
+    r"|\d+\. CAATCH-ALL sweep:"
+    # STOP-REASON.json + auditor-resolved: auditor closeout-skip report (fleet-ops#433).
+    # Variants: `STOP-REASON.json`, STOP-REASON.json, **STOP-REASON.json**, optionally numbered.
+    # The arrow + reason=auditor-resolved pair is the distinguishing mark.
+    r"|STOP-REASON\.json.{0,40}\u2192.{0,40}reason=auditor-resolved"
     r"|STOP-REASON\.json re-read"
+    r"|STOP-REASON re-read"
     r"|`STOP-REASON\.json` re-read"
+    r"|`STOP-REASON` re-read"
+    # Canary tick + STOP-REASON written: automated canary output (escalation
+    # chain writes STOP-REASON.json via fleet-escalation-canary).
+    r"|canary tick: STOP-REASON written"
     r"|Read the alert, identified"
     r"|escalated via OnFailure="
     r"|cline/cline-pass/"
@@ -52,7 +86,7 @@ ESCALATION_LOG_RE = re.compile(
     r"|Verified drill "
     r"|The actual root cause:"
     r"|Armed auto-merge "
-    r"|Re-armed auto-merge "
+    r"|Re-armed auto-merge"
     r"|FleetSlo"
     r"|Closest peer session:"
     r"|## .* — SENIOR AUDITOR"
