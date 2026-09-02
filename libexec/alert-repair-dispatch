@@ -76,6 +76,20 @@ CLASS_PARK_DIR = Path(os.environ.get(
 # severity, so the name must live in SKIP_SET or a firing trend pages.
 SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
            "WasteRatioRising", "FleetSloSeatAvailSlowBurn",
+           # WFR-input slow-burn SLO (fleet-ops#1291/2429): the main_green
+           # burn-rate rule is a lagging integrator — it clears only when
+           # ~30min of all-green samples flush the 30m window and ~6h flush
+           # the 6h window, regardless of any repair worker. Repair is
+           # mechanism-impossible (an alert-repair worker cannot rewind the
+           # burn windows; the underlying CI red is owned by FleetMainRed).
+           # Without the skip, Alertmanager's 6h repeat dispatched a worker
+           # every cycle: 6+ dispatches in 3 days (2026-08-30..09-01), every
+           # one Failed/RESOLVED with the same verdict, and each new chain
+           # stalled at hop=verify until its deadline — the exact verify
+           # stall fleet-ops#2672 was filed for (chain_stalled=1 at
+           # 2026-09-01T15:23Z). Workers' own class-park (decision_class_until)
+           # is the stopgap; this skip is the durable rail.
+           "FleetSloMainGreenSlowBurn",
            # WFR-input trend regression (fleet-ops#1136): the WFR ratchets.
            # Trend alert (delta, not level) — repair mechanism-impossible; an
            # alert-repair worker cannot reverse a 24h delta in turn.
@@ -274,15 +288,47 @@ def _provider_overload_wedged(provider):
     return False
 
 
+def _spawn_bench_held(provider, model):
+    """Return True if the wrapper's spawn-bench sibling benched this seat.
+
+    Reads <ledger>/<provider>__<model>.spawn-bench.json — the clobber-proof
+    empty-run/spawn-fail marker written ONLY by the wrapper
+    (mark_seat_empty_run / mark_seat_spawn_fail, fleet-ops#1512) and never by
+    seat-health.ts, whose next 200-OK observation re-writes the LEDGER to
+    health_class=healthy + null usable_at. A ledger showing healthy while the
+    sibling bench is held is exactly the "healthy on paper, benched in
+    reality" split that re-seated the verify hop onto
+    openrouter/deepseek/deepseek-v4-flash-0731 (empty-run bench, 0B stdout,
+    provider no-op) at 15:22:13Z on 2026-09-01 (fleet-ops#2672): the seat
+    returned nothing, and the chain stayed stuck at hop=verify. Mirrors
+    lib/seat-lib.sh seat_usable() (checks the marker FIRST, before the
+    ledger) and libexec/fleet-metrics-export.py _spawn_bench_active(). An
+    expired marker falls through to the ledger (fail-open), matching the
+    router's release at usable_at.
+    """
+    f = (Path(SEAT_LEDGER_DIR)
+         / f"{_sanitise(provider)}__{_sanitise(model)}.spawn-bench.json")
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return _in_future(d.get("usable_at") or "")
+
+
 def _seat_walled(provider, model):
     """Return True if the per-seat ledger marks this seat walled (unusable).
 
-    Mirrors lib/seat-lib.sh seat_usable(): seat_dead, hard-fail health
-    classes, bench classes while bench_until is in the future, a fresh
-    rate_limited marker with usable_at in the future, and any usable_at in
-    the future. No ledger file / unparseable -> assume usable (fail-open),
-    so a missing ledger never bricks the ladder.
+    Mirrors lib/seat-lib.sh seat_usable(): the wrapper's spawn-bench sibling
+    (empty-run/spawn-fail marker, fleet-ops#1512) is checked FIRST — a held
+    bench outranks a later healthy ledger observation, because the bench
+    survives the seat-health clobber while the ledger does not; then
+    seat_dead, hard-fail health classes, bench classes while bench_until is
+    in the future, a fresh rate_limited marker with usable_at in the future,
+    and any usable_at in the future. No ledger file / unparseable -> assume
+    usable (fail-open), so a missing ledger never bricks the ladder.
     """
+    if _spawn_bench_held(provider, model):
+        return True
     f = Path(SEAT_LEDGER_DIR) / f"{_sanitise(provider)}__{_sanitise(model)}.json"
     try:
         d = json.loads(f.read_text())
