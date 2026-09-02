@@ -1283,7 +1283,7 @@ ok "scenario21a: tick holds via _pfirst_held flag, not a hard exit"
 hold_gate() {
     local band_reason="$1"
     case "$band_reason" in
-        allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier)
+        allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit)
             echo "allow-floor"
             ;;
         *)
@@ -1295,8 +1295,6 @@ hold_gate() {
 # b. In-cap normal claim (allow-band) is held.
 [[ "$(hold_gate allow-band)" == "skip" ]] \
     || fail "scenario21b: allow-band must be skipped during a product-first hold"
-[[ "$(hold_gate allow-band-surge-legit)" == "skip" ]] \
-    || fail "scenario21b: allow-band-surge-legit must be skipped during a product-first hold"
 ok "scenario21b: non-floor fleet-ops claims stay held (capacity -> product)"
 
 # c. Machinery floor: when live machinery == 0, precedence_band_allow_claim
@@ -1312,6 +1310,14 @@ ok "scenario21c: machinery/bootstrap/surge floor lanes dispatch one claim during
     || fail "scenario21d: allow-starvation-floor must be admitted during hold"
 [[ "$(hold_gate allow-multiplier)" == "allow-floor" ]] \
     || fail "scenario21d: allow-multiplier must be admitted during hold"
-ok "scenario21d: starvation floor and band-multiplier lanes dispatch during hold"
+
+# e. allow-band-surge-legit (fleet-ops#1516) is admitted during a product-first
+#    hold. It only fires when BAND_PRODUCT==0 (precedence-band.sh:363), i.e. no
+#    product work is competing, so holding it idles every worker for nothing —
+#    the FleetUndersaturated stall fleet-ops#2841 diagnosed. The prior
+#    scenario21b assertion that it must be skipped codified the bug.
+[[ "$(hold_gate allow-band-surge-legit)" == "allow-floor" ]] \
+    || fail "scenario21e: allow-band-surge-legit must be admitted during hold (BAND_PRODUCT==0 guard makes it safe)"
+ok "scenario21e: allow-band-surge-legit admitted during hold (fleet-ops#2841)"
 
 ok "precedence-band: product-first hold keeps one floor lane (fleet-ops#2626) — never a whole-fleet hard stall"
