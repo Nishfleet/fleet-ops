@@ -928,10 +928,30 @@ def classify(name: str, rec: dict, firing: dict[str, datetime], now: datetime) -
         if resolved_ts >= (disp_ts or resolved_ts) and (
             not is_firing or resolved_ts >= firing[name]
         ):
-            out["start_ts"] = disp_ts or start
-            out["terminal"] = "green"
-            out["end_ts"] = resolved_ts
-            return out
+            # fleet-ops#2833: a worker-written RESOLVED receipt is a CLAIM
+            # that the alert cleared, not PROOF. The detector of truth is
+            # the live 9090 firing set (load_firing_alerts). A continuously
+            # firing alert's activeAt never moves while it stays firing, so
+            # `resolved_ts >= firing[name]` is trivially true for any
+            # receipt written after the fire started — every repair worker
+            # that exits "I fixed it" closed the chain green, drop_chain_state
+            # wiped the class-park file the dispatcher reads, and the next
+            # AMX repeat re-dispatched a fresh worker into the same
+            # still-firing alert (FleetQueueSelfMaintenanceRatioHigh fired
+            # continuously 2026-08-29..09-02; 3 green closes, ratio unchanged).
+            # The green terminal is reserved for the detector seeing the
+            # alert leave 9090 (the not-firing branch below). A RESOLVED
+            # receipt while the alert is STILL firing is treated as a
+            # stale resolve and falls through to the open-chain path, so
+            # the chain stays open, the class-park survives, and the
+            # dispatcher keeps honoring it instead of re-arming.
+            if is_firing:
+                pass  # fall through to stale-resolve handling below
+            else:
+                out["start_ts"] = disp_ts or start
+                out["terminal"] = "green"
+                out["end_ts"] = resolved_ts
+                return out
         # Stale resolve; fall through as an open chain on the new trip.
         # Only clear disp_ts if it belongs to the old trip (before resolved_ts)
         # or never existed. A later DISPATCH (disp_ts >= resolved_ts) is part
