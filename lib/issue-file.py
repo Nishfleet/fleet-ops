@@ -81,6 +81,25 @@ INSTANCE_RE = re.compile(
     r"|siterep-deploy|siterep-uptime)@[A-Za-z0-9_.-]+\b"
 )
 
+# --- signal keys -----------------------------------------------------------
+# Structured signals survive wording differences.  Explicit `signal:` markers
+# are the most reliable; derived signals capture alert names, failure/health
+# classes, and the seat-corpse/walled root-cause cluster from fleet-ops#2899.
+
+SIGNAL_BONUS = 0.15
+SIGNAL_BONUS_MAX = 0.30
+PRIMARY_SIGNAL_FLOOR = 0.70
+
+SIGNAL_RE = re.compile(r"^signal:\s*(\S+)", re.MULTILINE | re.IGNORECASE)
+ALERT_RE = re.compile(r"\b(Fleet[A-Z][A-Za-z]+)\b")
+FAILURE_MODE_RE = re.compile(r"\bfailure_mode\s*[:=]\s*([A-Za-z0-9_-]+)\b")
+HEALTH_CLASS_RE = re.compile(r"\bhealth_class\s*[:=]\s*([A-Za-z0-9_-]+)\b")
+SEAT_DEAD_RE = re.compile(r"\bseat_dead\s*[:=]\s*true\b")
+
+COMMON_SIGNALS = frozenset()
+PRIMARY_SIGNAL_PREFIXES = ("signal/", "fleet/seat-crisis")
+
+
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 DEFAULT_INTAKE = REPO_ROOT / "config" / "intake-repos.json"
@@ -120,27 +139,104 @@ def key_paths(text: str) -> set[str]:
     return {p.lower() for p in found}
 
 
+def _has_seat_crisis(text: str) -> bool:
+    """Detect the fleet-ops#2899 seat-corpse/walled/credentials root cause cluster.
+
+    Requires both a seat context and a failure state/cause.  This is intentionally
+    specific: a generic "seat cap" or "healthy seats" mention must not trigger.
+    """
+    low = (text or "").lower()
+    seat = bool(
+        re.search(r"\bseats?\b", text)
+        or re.search(r"\bfleet(?:slo|dead|seat)", text, re.IGNORECASE)
+        or "health_class=corpse" in low
+        or "manual_repair_corpse" in low
+        or "seat_dead" in low
+    )
+    cause = bool(
+        "corpse" in low
+        or "dead" in low
+        or "walled" in low
+        or "comeback" in low
+        or "credentials_bad" in low
+        or "credentials bad" in low
+        or "manual_repair_corpse" in low
+        or "health_class=corpse" in low
+        or "seat_dead" in low
+    )
+    return seat and cause
+
+
+def signal_keys(text: str) -> set[str]:
+    """Return canonical structured signal keys extracted from text."""
+    out: set[str] = set()
+
+    # Explicit `signal:` markers (e.g. `signal: scout-futility/foo`) are the most
+    # reliable primary signals.  Any two issues carrying the same marker group.
+    for m in SIGNAL_RE.finditer(text or ""):
+        marker = m.group(1).strip().rstrip(".").lower()
+        if marker:
+            out.add(f"signal/{marker}")
+
+    # Alert, failure-mode, and health-class fields are noisy but useful as
+    # secondary signals; they boost the score without forcing a duplicate.
+    for m in ALERT_RE.finditer(text or ""):
+        out.add(f"alert/{m.group(1).lower()}")
+    for m in FAILURE_MODE_RE.finditer(text or ""):
+        out.add(f"failure/{m.group(1).lower()}")
+    for m in HEALTH_CLASS_RE.finditer(text or ""):
+        out.add(f"health/{m.group(1).lower()}")
+    for m in SEAT_DEAD_RE.finditer(text or ""):
+        out.add("health/corpse")
+        out.add("state/seat-dead")
+
+    # Derived primary signal for the seat-corpse/walled/credentials cluster
+    # described in fleet-ops#2899.  Two issues with this signal are treated as
+    # duplicates of the same root cause, regardless of wording differences.
+    if _has_seat_crisis(text):
+        out.add("fleet/seat-crisis")
+
+    return out
+
+
+def _is_primary_signal(signal: str) -> bool:
+    return signal.startswith(PRIMARY_SIGNAL_PREFIXES)
+
+
 def score_pair(
     title_a: str,
     body_a: str,
     title_b: str,
     body_b: str,
 ) -> dict:
-    """Return {score, title_overlap, body_overlap, shared_keys}."""
+    """Return scoring details including token overlap, key paths, and signals."""
     t = overlap(title_a, title_b)
     combined_a = f"{title_a}\n{body_a}"
     combined_b = f"{title_b}\n{body_b}"
     b = overlap(combined_a, combined_b)
     shared = key_paths(combined_a) & key_paths(combined_b)
     specific_shared = {k for k in shared if k not in COMMON_KEY_PATHS}
-    bonus = KEY_BONUS if specific_shared else 0.0
-    score = min(1.0, max(t, b) + bonus)
+    key_bonus = KEY_BONUS if specific_shared else 0.0
+
+    signals_a = signal_keys(combined_a)
+    signals_b = signal_keys(combined_b)
+    shared_signals = signals_a & signals_b
+    primary_shared = {s for s in shared_signals if _is_primary_signal(s)}
+    secondary_shared = shared_signals - primary_shared - COMMON_SIGNALS
+    secondary_bonus = min(SIGNAL_BONUS * len(secondary_shared), SIGNAL_BONUS_MAX)
+
+    score = min(1.0, max(t, b) + key_bonus + secondary_bonus)
+    if primary_shared:
+        score = max(score, PRIMARY_SIGNAL_FLOOR)
+
     return {
         "score": round(score, 4),
         "title_overlap": round(t, 4),
         "body_overlap": round(b, 4),
         "shared_keys": sorted(shared),
         "specific_shared_keys": sorted(specific_shared),
+        "shared_signals": sorted(shared_signals),
+        "primary_shared_signals": sorted(primary_shared),
     }
 
 
