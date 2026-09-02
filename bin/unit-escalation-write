@@ -30,6 +30,22 @@
 # auditor must be able to see that immediately.  This writer captures
 # Result, ExecMainStatus, and MemoryPeak from systemctl, and a best-effort
 # OOM flag, in the STOP-REASON detail.
+#
+# fleet-ops#2912 closeout-skipped recurrence suppression: a unit that keeps
+# failing on every scheduler tick with the SAME fault class (fleet-heartbeat's
+# persistent structural reds, siterep-live-canary while the live site is red,
+# etc.) writes one fresh STOP-REASON per tick; each fresh sha256 hash bypasses
+# the dispatcher's 2-dispatch-per-hash cap and summons a fresh SENIOR AUDITOR
+# who closeout-skips the same in-class trip (35 trips in ~2 days, #2912). Once
+# the same class has been closeout-skipped RECURRENCE_SUPPRESS_N consecutive
+# times, this writer stops generating fresh STOP-REASON entries for it (no new
+# hash -> stop-escalation.path does not fire -> no auditor dispatch). The unit
+# still lands in --state=failed (the tier-1 rc is unchanged) and the skip is
+# LOUD in the unit-escalation journal; only the redundant auditor summoning
+# stops. A materially different class (different exit status / result / LOUD
+# tag set), an OOM-kill, or a prior STOP-REASON that is not an auditor-resolved
+# closeout all reset the counter and write fresh (fail-open: the auditor is
+# never silently skipped when the evidence is inconclusive).
 set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -224,6 +240,17 @@ fi
 # recurrent OOM is a new evidence event even on the same unit.
 SAME_UNIT_REFIRE_WINDOW_S=${UNIT_ESCALATION_SAME_UNIT_WINDOW:-600}
 case "$SAME_UNIT_REFIRE_WINDOW_S" in ''|*[!0-9]*) SAME_UNIT_REFIRE_WINDOW_S=600 ;; esac
+# fleet-ops#2912 recurrence-suppression seams. RECURRENCE_STATE records, per
+# unit, how many CONSECUTIVE same-class trips ended in an auditor-resolved
+# closeout-skip; once the count reaches RECURRENCE_SUPPRESS_N (default 3) the
+# writer stops producing fresh STOP-REASON entries for that class. The count
+# expires after RECURRENCE_TTL (default 48h) so a class that went quiet and
+# later returns is treated as new. Tests override all three via env.
+RECURRENCE_STATE=${UNIT_ESCALATION_RECURRENCE_STATE:-$AS/unit-escalation-recurrence.json}
+RECURRENCE_SUPPRESS_N=${UNIT_ESCALATION_RECURRENCE_SUPPRESS_N:-3}
+case "$RECURRENCE_SUPPRESS_N" in ''|*[!0-9]*) RECURRENCE_SUPPRESS_N=3 ;; esac
+RECURRENCE_TTL=${UNIT_ESCALATION_RECURRENCE_TTL:-172800}
+case "$RECURRENCE_TTL" in ''|*[!0-9]*) RECURRENCE_TTL=172800 ;; esac
 _rf_skipped=0
 if [ -f "$SR" ] && [ "$oom_signal" != "yes" ]; then
     _rf_reason=$(jq -r '.reason // ""' "$SR" 2>/dev/null || echo "")
@@ -244,6 +271,118 @@ if [ -f "$SR" ] && [ "$oom_signal" != "yes" ]; then
 fi
 if [ "$_rf_skipped" = "1" ]; then
     exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# fleet-ops#2912 closeout-skipped recurrence gate (trip-layer suppression).
+# Decides whether this failure generates a fresh STOP-REASON (and therefore
+# a fresh senior-auditor dispatch) or is the Nth repeat of a class the
+# auditor already closeout-skipped. Evaluated here, BEFORE the atomic write:
+# the existing STOP-REASON still holds the previous trip's outcome, so this
+# is the only layer that can see "the last trip of this unit was
+# auditor-resolved by a senior auditor" (the closeout-skip marker). A skip
+# means no SR change -> stop-escalation.path does not fire -> no dispatch.
+# Journal window for class fingerprinting (LOUD [TAG] tokens): the writer
+# already scans this unit's journal for OOM evidence; reuse a slightly wider
+# window so recurring detector LOUD tags (e.g. FAILED-COMMAND-SWALLOWED,
+# DEBUG-PLAYBOOK-MISSING) land in the fingerprint. Stubbed empty in tests.
+mapfile -t _rec_taglines < <(journalctl --user -u "$UNIT" -n 40 --no-pager -q 2>/dev/null || true)
+
+_recur_out=""
+if _recur_out=$(python3 - "$UNIT" "$SR" "$result" "$exit_status" "$oom_signal" \
+        "$RECURRENCE_STATE" "$RECURRENCE_SUPPRESS_N" "$RECURRENCE_TTL" \
+        "${_rec_taglines[@]+"${_rec_taglines[@]}"}" <<'PY'
+import sys, json, os, time, re, fcntl, tempfile
+unit, sr_path, result, exit_status, oom_signal = sys.argv[1:6]
+state_path, suppress_n, ttl = sys.argv[6], int(sys.argv[7]), int(sys.argv[8])
+taglines = sys.argv[9:]
+
+# Class fingerprint: result + exit status + sorted unique LOUD [TAG] tokens
+# from the failed unit's recent journal. Identical fingerprint on consecutive
+# ticks = the same structural failure class recurring (fleet-heartbeat's 5
+# persistent reds produce the same LOUD set and the same exit 1 every tick).
+tags = sorted(set(re.findall(r'LOUD\s*\[([A-Z0-9_-]+)\]', "\n".join(taglines))))
+fp = "%s|%s|%s" % (result, exit_status, ",".join(tags))
+
+# Closeout-skip detection: the current STOP-REASON must be an
+# auditor-resolved closeout of THIS unit (live shape nests the summoning
+# trip under detail.summoning_trip; older writes put the unit directly on
+# detail.unit). Both shapes are honoured. An OOM-kill is never a closeout
+# class (existing #2614 carve-out: fresh evidence every time).
+closeout = False
+try:
+    with open(sr_path) as f:
+        sr = json.load(f)
+    detail = sr.get("detail") or {}
+    inner = (detail.get("summoning_trip") or {}).get("detail") or {}
+    prev_unit = inner.get("unit") or detail.get("unit") or ""
+    closeout = (sr.get("reason") == "auditor-resolved"
+                and prev_unit == unit and oom_signal != "yes")
+except Exception:
+    closeout = False
+
+state = {}
+try:
+    with open(state_path) as f:
+        state = json.load(f)
+except Exception:
+    state = {}
+
+now = int(time.time())
+ent = state.get(unit) or {}
+try:
+    n = int(ent.get("n") or 0)
+except Exception:
+    n = 0
+last_fp = str(ent.get("fingerprint") or "")
+try:
+    last = int(ent.get("last") or 0)
+except Exception:
+    last = 0
+
+if closeout:
+    if last > 0 and (now - last) > ttl:
+        # Class went quiet past the TTL; a return is a new cycle.
+        n, last_fp = 1, fp
+    elif fp == last_fp:
+        # Same class closeout-skipped again: the recurrence count climbs.
+        n += 1
+    else:
+        # Materially different class: restart the count, dispatch confirm.
+        n, last_fp = 1, fp
+else:
+    # No closeout-skip on the prior trip (trip in flight, different unit, or
+    # no SR): counter resets; the current audit will re-establish it.
+    n, last_fp = 0, ""
+
+state[unit] = {"n": n, "fingerprint": last_fp, "last": now}
+try:
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    with open(state_path + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_path), prefix=".rec-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, state_path)
+except Exception as e:
+    # State-write failure must never silently skip an auditor: fail open.
+    print("RECURRENCE verdict=WRITE n=%d error=%s" % (n, e))
+    raise SystemExit(0)
+
+verdict = "SUPPRESS" if (closeout and n >= suppress_n) else "WRITE"
+print("RECURRENCE verdict=%s unit=%s n=%d suppress_n=%d closeout=%s class=%s"
+      % (verdict, unit, n, suppress_n, closeout, fp[:120]))
+raise SystemExit(0)
+PY
+); then
+    if [[ "$_recur_out" == *"verdict=SUPPRESS"* ]]; then
+        echo "unit-escalation-write: suppressing recurring closeout-skipped class for '$UNIT' ($_recur_out) — no fresh STOP-REASON, no senior-auditor dispatch (fleet-ops#2912)" >&2
+        exit 0
+    fi
+    echo "unit-escalation-write: recurrence gate $_recur_out" >&2
+else
+    echo "unit-escalation-write: WARN recurrence gate failed (rc=$?) — fail-open, writing fresh STOP-REASON" >&2
 fi
 
 # Atomic write under flock so concurrent failures serialize (each overwrites
