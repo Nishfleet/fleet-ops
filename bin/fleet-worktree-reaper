@@ -52,7 +52,7 @@
 #              git call per candidate, cheap.
 #   5. CLEAN:   git status --porcelain empty. Dirty skipped.
 #
-# Mode A is the safety-tested original; Mode B is the new extension
+# Mode A is the safety-tested original; Mode B is the extension
 # that lets the reaper catch worktrees whose claim branch moved on
 # (worker died, then someone else moved the worktree to main or a
 # different branch). Mode B is gated by the dispatch ledger AND HEAD-
@@ -60,25 +60,49 @@
 # ever merged — the work is preserved on origin's branch ref either
 # way.
 #
-# Worktrees on OTHER paths (lane1/*, scout/*, gate/*, etc.) are out of
-# scope. Their lifecycles are owned by other mechanisms (lane runners,
-# scout runners, gate runners, the deploy-clone). Touching them here
-# would cross a boundary and risk deleting live state without recorded
-# cycle proof.
+# MODE C — ANY worktree under $ROOT with HEAD on origin (fleet-ops#2774):
+#   1. SHAPE:  any worktree under $ROOT NOT already matched by Mode A
+#              or Mode B. Catches the orphan tail on other branch shapes
+#              (fix/*, lane1/*, feat/*, docs/*, detached HEAD, …) left
+#              behind by lane runners, scout runs, and manual work.
+#   2. PUSHED: HEAD is on origin — the vault's actual safe-cleanup check
+#              ("Push before deleting a worktree; 'merged' is the wrong
+#              question … is this branch PUSHED", global-standing-rules).
+#              Uses the per-parent origin SHA cache (one ls-remote per
+#              parent repo, not per worktree). Fail-closed: if the cache
+#              could not be built, skip every Mode C worktree on that
+#              parent.
+#   3. CLEAN:  git status --porcelain empty. Dirty skipped, never
+#              force-removed.
+#   4. TERMINAL: worktree directory mtime older than --min-age-hours
+#              (default 24). A worktree a runner just created is
+#              protected even if it is momentarily clean + on origin;
+#              an orphan that has sat untouched for a day is fair game.
+#              When the path matches issue-<short>-<N>, the live-pi-issue
+#              unit check (gate B.3) is ALSO applied — defense in depth.
+#
+# Mode C does NOT consult the dispatch ledger (non-pi-issue worktrees
+# have no ledger entries) and does NOT require a merged PR (the vault
+# says merged is the wrong question; HEAD-on-origin is the safety
+# check). The age gate is the freshness proof that replaces the
+# ledger's cycle-terminal proof.
 #
 # Standing rule honored: never delete a live worktree belonging to
-# another agent cycle (gates A.3 / B.3 — systemd is authoritative).
+# another agent cycle (gates A.3 / B.3 — systemd is authoritative;
+# gate C.4 — age + systemd for pi-issue paths).
 #
 # Removal uses `git worktree remove` (no --force), which itself refuses
-# a dirty or locked worktree — defense in depth on top of gates A.4
-# and B.5.
+# a dirty or locked worktree — defense in depth on top of gates A.4,
+# B.5, and C.3.
 #
 # Usage:
-#   fleet-worktree-reaper [--dry-run] [--root DIR] [--help]
+#   fleet-worktree-reaper [--dry-run] [--root DIR] [--min-age-hours N] [--help]
 #
 # Options:
-#   --dry-run   Report what would be removed; delete nothing.
-#   --root DIR  Worktree root (default /home/nish/workspaces/agent-worktrees).
+#   --dry-run        Report what would be removed; delete nothing.
+#   --root DIR       Worktree root (default /home/nish/workspaces/agent-worktrees).
+#   --min-age-hours N  Mode C freshness gate: only reap worktrees whose
+#                    directory mtime is older than N hours (default 24).
 #
 # Environment seams (tests):
 #   SYSTEMCTL          systemctl binary
@@ -86,6 +110,8 @@
 #   FLEET_DISPATCH_LEDGER  dispatch-ledger path (default
 #                          $AGENT_STATE/dispatch-ledger.jsonl)
 #   FLEET_WORKTREE_REAPER_MERGED_LIMIT  gh pr list --limit (default 5000)
+#   FLEET_WORKTREE_REAPER_MIN_AGE_HOURS  Mode C age gate (default 24)
+#   FLEET_WORKTREE_REAPER_NOW_EPOCH      override epoch for age tests
 #
 # Exit codes:
 #   0  best-effort GC complete (per-worktree failures are logged + counted,
@@ -96,13 +122,15 @@ set -euo pipefail
 ROOT="${FLEET_WORKTREE_REAPER_ROOT:-/home/nish/workspaces/agent-worktrees}"
 DRY_RUN=0
 MERGED_LIMIT="${FLEET_WORKTREE_REAPER_MERGED_LIMIT:-5000}"
+MIN_AGE_HOURS="${FLEET_WORKTREE_REAPER_MIN_AGE_HOURS:-24}"
+NOW_EPOCH="${FLEET_WORKTREE_REAPER_NOW_EPOCH:-}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
 AGENT_STATE="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
 LEDGER="${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}"
 
 usage() {
-    sed -n '2,79p' "$0" | sed 's/^# \?//' >&2
+    sed -n '2,105p' "$0" | sed 's/^# \?//' >&2
     exit 2
 }
 
@@ -110,10 +138,12 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
         --root) ROOT="${2:?--root needs a DIR}"; shift 2 ;;
+        --min-age-hours) MIN_AGE_HOURS="${2:?--min-age-hours needs an N}"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "fleet-worktree-reaper: unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+[[ "$MIN_AGE_HOURS" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --min-age-hours must be a non-negative integer" >&2; exit 2; }
 
 command -v git >/dev/null 2>&1 || { echo "fleet-worktree-reaper: git missing" >&2; exit 2; }
 command -v jq >/dev/null 2>&1  || { echo "fleet-worktree-reaper: jq missing" >&2; exit 2; }
@@ -147,8 +177,10 @@ log "root=$ROOT dry_run=$DRY_RUN parents=${#parents[@]}"
 total_scanned=0
 total_claim=0
 total_pi_path=0
+total_other=0
 reaped_a=0
 reaped_b=0
+reaped_c=0
 reaped=0
 skipped_live=0
 skipped_unmerged=0
@@ -156,6 +188,7 @@ skipped_dirty=0
 skipped_nogit=0
 skipped_notpushed=0
 skipped_notterminal=0
+skipped_young=0
 failed=0
 
 # is_live_worker <short> <issue_n>  — mirrors claim-reconcile.
@@ -250,6 +283,38 @@ head_on_origin() {
     return 1
 }
 
+# Per-parent origin SHA cache: one `git ls-remote origin` per parent
+# repo, then every worktree under that parent checks HEAD against the
+# cached SHA set. Without this, Mode C would fire one ls-remote per
+# worktree (hundreds of network calls). The cache is a newline-separated
+# SHA file scoped to the parent loop iteration.
+#
+# head_on_origin_cached <worktree> <sha_cache_file> -> 0 if HEAD is in
+# the cache file, 1 otherwise. Fail-closed: missing/empty cache => skip.
+head_on_origin_cached() {
+    local wt="$1" cache="$2"
+    local head_sha
+    head_sha=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
+    [ -n "$head_sha" ] || return 1
+    [ -r "$cache" ] || return 1
+    grep -qx "$head_sha" "$cache" 2>/dev/null
+}
+
+# worktree_age_seconds <path> -> echoes the directory mtime epoch.
+worktree_age_seconds() {
+    local wt="$1"
+    stat -c %Y "$wt" 2>/dev/null || echo 0
+}
+
+# now_epoch -> echoes the current epoch (overridable for tests).
+now_epoch() {
+    if [ -n "$NOW_EPOCH" ]; then
+        printf '%s' "$NOW_EPOCH"
+    else
+        date +%s
+    fi
+}
+
 for parent in "${parents[@]}"; do
     [ -d "$parent" ] || continue
     # Resolve canonical owner/repo from the parent's origin remote.
@@ -263,12 +328,13 @@ for parent in "${parents[@]}"; do
     [ -n "$short" ] || { log "parent $parent: cannot parse repo from $url — skip"; continue; }
 
     # Enumerate this parent's worktrees under $ROOT with their branches
-    # and a "mode" tag. A worktree is collected if EITHER:
-    #   - its branch is claim/issue-<N>  (Mode A target), OR
-    #   - its path matches issue-<short>-<N>  (Mode B target, regardless
-    #     of branch — the worker may have moved on after its cycle ended)
-    # Other branches (lane/*, scout/*, gate/*, main, …) belong to other
-    # mechanisms and are not enumerated.
+    # and a "mode" tag:
+    #   Mode A: branch is claim/issue-<N>  (merged-PR gate).
+    #   Mode B: path matches issue-<short>-<N>  (ledger + HEAD-on-origin).
+    #   Mode C: everything else under $ROOT  (HEAD-on-origin + age gate).
+    # All three modes are collected; the per-worktree loop applies the
+    # mode-specific gates. Mode C is the catch-all that reaps orphan
+    # worktrees on other branch shapes (fix/*, lane1/*, detached, …).
     declare -a wt_paths=() wt_branches=() wt_modes=() wt_shorts=() wt_ns=()
     cur_path=""
     while IFS= read -r line; do
@@ -302,6 +368,17 @@ for parent in "${parents[@]}"; do
                             pn="$PI_N"
                         fi
                     fi
+                    # Mode C: catch-all for any worktree under $ROOT not
+                    # already tagged A or B. pshort/pn stay empty unless
+                    # the path happens to match the pi-issue shape (in
+                    # which case the live-worker check still applies).
+                    if [ -z "$mode" ]; then
+                        mode="C"
+                        if parse_pi_issue_path "$cur_path" && [ "$PI_SHORT" = "$short" ]; then
+                            pshort="$PI_SHORT"
+                            pn="$PI_N"
+                        fi
+                    fi
                 fi
                 if [ -n "$mode" ]; then
                     wt_paths+=("$cur_path")
@@ -312,7 +389,23 @@ for parent in "${parents[@]}"; do
                 fi
                 cur_path=""
                 ;;
-            "detached"*) cur_path="";;
+            "detached"*)
+                # Detached HEAD worktree: no branch line, but still a
+                # Mode C candidate if under $ROOT.
+                if [ -n "$cur_path" ] && [[ "$cur_path" == "$ROOT"/* ]]; then
+                    pshort="" pn=""
+                    if parse_pi_issue_path "$cur_path" && [ "$PI_SHORT" = "$short" ]; then
+                        pshort="$PI_SHORT"
+                        pn="$PI_N"
+                    fi
+                    wt_paths+=("$cur_path")
+                    wt_branches+=("(detached)")
+                    wt_modes+=("C")
+                    wt_shorts+=("$pshort")
+                    wt_ns+=("$pn")
+                fi
+                cur_path=""
+                ;;
         esac
     done < <(git -C "$parent" worktree list --porcelain 2>/dev/null)
     [ "${#wt_paths[@]}" -gt 0 ] || continue
@@ -325,6 +418,21 @@ for parent in "${parents[@]}"; do
         log "repo $owner_repo: gh merged query FAILED — Mode A skip all claim-shaped worktrees (fail safe)"
     fi
 
+    # Build the per-parent origin SHA cache once (Mode B + C share it).
+    # One `git ls-remote origin` per parent; every worktree under this
+    # parent checks HEAD against the cached set. Fail-closed: if the
+    # cache cannot be built, Mode B falls back to per-worktree ls-remote
+    # (head_on_origin) and Mode C skips every worktree (never delete
+    # blind).
+    origin_cache=$("$(command -v mktemp)" 2>/dev/null) || origin_cache=""
+    origin_cache_ok=0
+    if [ -n "$origin_cache" ]; then
+        if git -C "$parent" ls-remote origin 2>/dev/null | awk '{print $1}' >"$origin_cache" 2>/dev/null; then
+            [ -s "$origin_cache" ] && origin_cache_ok=1
+        fi
+    fi
+    [ "$origin_cache_ok" = 1 ] || log "parent $parent: origin SHA cache FAILED — Mode C skip all (fail safe)"
+
     for i in "${!wt_paths[@]}"; do
         path="${wt_paths[$i]}"
         branch="${wt_branches[$i]}"
@@ -332,14 +440,15 @@ for parent in "${parents[@]}"; do
         pshort="${wt_shorts[$i]}"
         pn="${wt_ns[$i]}"
         total_scanned=$((total_scanned + 1))
-        if [ "$mode" = "A" ]; then
-            total_claim=$((total_claim + 1))
-        else
-            total_pi_path=$((total_pi_path + 1))
-        fi
+        case "$mode" in
+            A) total_claim=$((total_claim + 1)) ;;
+            B) total_pi_path=$((total_pi_path + 1)) ;;
+            C) total_other=$((total_other + 1)) ;;
+        esac
 
-        # Common gates: live worker + clean tree (both modes).
-        if is_live_worker "$pshort" "$pn"; then
+        # Common gates: live worker (only when path matches pi-issue
+        # shape) + clean tree (all modes).
+        if [ -n "$pshort" ] && [ -n "$pn" ] && is_live_worker "$pshort" "$pn"; then
             skipped_live=$((skipped_live + 1))
             log "  $path: SKIP live worker ($branch, mode=$mode, unit=pi-issue-$pshort-$pn)"
             continue
@@ -347,7 +456,7 @@ for parent in "${parents[@]}"; do
         if ! git -C "$path" diff --quiet --ignore-submodules HEAD 2>/dev/null \
            || [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
             skipped_dirty=$((skipped_dirty + 1))
-            log "  $path: SKIP dirty ($branch)"
+            log "  $path: SKIP dirty ($branch, mode=$mode)"
             continue
         fi
 
@@ -378,7 +487,7 @@ for parent in "${parents[@]}"; do
                 failed=$((failed + 1))
                 log "  $path: REMOVE-A FAILED ($branch) — left in place"
             fi
-        else
+        elif [ "$mode" = "B" ]; then
             # Mode B: ledger-terminal + HEAD on origin. The ledger is
             # the recorded cycle state; the live-worker check above is
             # defense in depth.
@@ -388,10 +497,20 @@ for parent in "${parents[@]}"; do
                 log "  $path: SKIP-B not-ledger-terminal ($branch, unit=$unit)"
                 continue
             fi
-            if ! head_on_origin "$path"; then
-                skipped_notpushed=$((skipped_notpushed + 1))
-                log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
-                continue
+            # Use the per-parent cache if available; fall back to the
+            # per-worktree ls-remote (preserves the original contract).
+            if [ "$origin_cache_ok" = 1 ]; then
+                if ! head_on_origin_cached "$path" "$origin_cache"; then
+                    skipped_notpushed=$((skipped_notpushed + 1))
+                    log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                    continue
+                fi
+            else
+                if ! head_on_origin "$path"; then
+                    skipped_notpushed=$((skipped_notpushed + 1))
+                    log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                    continue
+                fi
             fi
             if [ "$DRY_RUN" = 1 ]; then
                 reaped_b=$((reaped_b + 1))
@@ -407,18 +526,60 @@ for parent in "${parents[@]}"; do
                 failed=$((failed + 1))
                 log "  $path: REMOVE-B FAILED ($branch) — left in place"
             fi
+        else
+            # Mode C: HEAD on origin (vault safe-cleanup order) + age
+            # gate. No ledger, no merged-PR requirement — the vault says
+            # "merged is the wrong question; is this branch PUSHED."
+            # Fail-closed on the origin cache: never delete blind.
+            if [ "$origin_cache_ok" = 0 ]; then
+                skipped_notpushed=$((skipped_notpushed + 1))
+                log "  $path: SKIP-C origin-cache-fail ($branch) — fail safe"
+                continue
+            fi
+            if ! head_on_origin_cached "$path" "$origin_cache"; then
+                skipped_notpushed=$((skipped_notpushed + 1))
+                log "  $path: SKIP-C head-not-on-origin ($branch) — work is local; refuse"
+                continue
+            fi
+            # Age gate: worktree directory mtime must be older than
+            # --min-age-hours. Protects a worktree a runner just created
+            # that is momentarily clean + on origin.
+            wt_mtime=$(worktree_age_seconds "$path")
+            now_s=$(now_epoch)
+            age_s=$(( now_s - wt_mtime ))
+            min_age_s=$(( MIN_AGE_HOURS * 3600 ))
+            if [ "$age_s" -lt "$min_age_s" ]; then
+                skipped_young=$((skipped_young + 1))
+                log "  $path: SKIP-C too-young ($branch, age=${age_s}s < ${min_age_s}s)"
+                continue
+            fi
+            if [ "$DRY_RUN" = 1 ]; then
+                reaped_c=$((reaped_c + 1))
+                reaped=$((reaped + 1))
+                log "  $path: DRY-REAP-C ($branch, mode=C on-origin, clean, age=${age_s}s)"
+                continue
+            fi
+            if git -C "$parent" worktree remove "$path" 2>/dev/null; then
+                reaped_c=$((reaped_c + 1))
+                reaped=$((reaped + 1))
+                log "  $path: REAPED-C ($branch, mode=C)"
+            else
+                failed=$((failed + 1))
+                log "  $path: REMOVE-C FAILED ($branch) — left in place"
+            fi
         fi
     done
     [ -n "$merged_set" ] && rm -f "$merged_set"
+    [ -n "$origin_cache" ] && rm -f "$origin_cache"
 done
 
-log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path \
-reaped=$reaped (A=$reaped_a B=$reaped_b) \
+log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path other=$total_other \
+reaped=$reaped (A=$reaped_a B=$reaped_b C=$reaped_c) \
 skipped_live=$skipped_live skipped_unmerged=$skipped_unmerged \
 skipped_dirty=$skipped_dirty skipped_notpushed=$skipped_notpushed \
-skipped_notterminal=$skipped_notterminal nogit=$skipped_nogit failed=$failed"
-printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s reaped=%s (A=%s B=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s nogit=%s failed=%s\n' \
-    "$total_scanned" "$total_claim" "$total_pi_path" \
-    "$reaped" "$reaped_a" "$reaped_b" \
+skipped_notterminal=$skipped_notterminal skipped_young=$skipped_young nogit=$skipped_nogit failed=$failed"
+printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s B=%s C=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s nogit=%s failed=%s\n' \
+    "$total_scanned" "$total_claim" "$total_pi_path" "$total_other" \
+    "$reaped" "$reaped_a" "$reaped_b" "$reaped_c" \
     "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
-    "$skipped_notpushed" "$skipped_notterminal" "$skipped_nogit" "$failed"
+    "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed"

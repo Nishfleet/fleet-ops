@@ -222,7 +222,7 @@ export function greenRunForWorkflow(runs, workflow, branch = DEFAULT_BRANCH) {
     if (r.conclusion === "success") {
       lastGreen = r;
       redAfterLastGreen = false;
-    } else if (r.conclusion === "failure" && lastGreen) {
+    } else if ((r.conclusion === "failure" || r.conclusion === "cancelled") && lastGreen) {
       redAfterLastGreen = true;
     }
   }
@@ -311,7 +311,13 @@ export function classifyHalt(runs, opts = {}) {
         continue;
       }
       const bucket = byWorkflow.get(run.name) ?? { red: false, green: false, last: run };
-      if (run.conclusion === "failure") bucket.red = true;
+      // A cancelled CI run on main means the pipeline status is UNKNOWN —
+      // trunk-based CD says trunk stays green, so unknown is fail-closed
+      // red. Without this, a sequence of cancelled runs (each superseded by
+      // a newer push) masks a sustained red: the detector never sees two
+      // consecutive FAILURE verdicts and the merge queue never freezes,
+      // so PRs keep landing on a red pipeline (fleet-ops#2911).
+      if (run.conclusion === "failure" || run.conclusion === "cancelled") bucket.red = true;
       if (run.conclusion === "success") bucket.green = true;
       if (run.created_at > bucket.last.created_at) bucket.last = run;
       byWorkflow.set(run.name, bucket);

@@ -828,11 +828,68 @@ ff_out=$(PATH="$scratch:$PATH" "$canon371/install.sh" 2>&1)
 ff_rc=$?
 set -e
 [[ "$ff_rc" -eq 0 ]] || fail "scenario12d: origin/main blob should be allowed to land, got rc=$ff_rc out=$ff_out"
-[[ "$(readlink -f "$caps_dest_ff")" = "$(readlink -f "$canon371/config/seat-caps.json")" ]] \
-    || fail "scenario12d: dest was not retargeted at origin/main seat-caps"
+# fleet-ops#2910: seat-caps.json is now a regular file COPY, not a symlink.
+# A symlink into the deploy-clone working tree meant every `git reset --hard`
+# silently rewrote the live config. The copy decouples them.
+[[ -f "$caps_dest_ff" && ! -L "$caps_dest_ff" ]] \
+    || fail "scenario12d: dest must be a regular file copy, not a symlink (fleet-ops#2910)"
 [[ "$(jq -r '.providers.devin.cap' "$caps_dest_ff")" = "3" ]] \
     || fail "scenario12d: dest did not pick up the merged cap"
-ok "scenario12d: origin/main seat-caps blob is allowed to land a merged cap drop"
+ok "scenario12d: origin/main seat-caps blob lands as a regular file copy (merged cap drop)"
+
+# --- scenario 12f: git reset --hard must NOT wipe the live seat-caps copy ----
+# fleet-ops#2910: the live seat-caps.json used to be a symlink into the
+# deploy-clone working tree, so `git reset --hard origin/main` silently
+# reverted live caps. Now it is a regular file copy — a reset only rewrites
+# the working tree, not the live copy. Prove it: install cap=3, then simulate
+# a reset by rewriting the repo file to cap=0, and assert the live copy
+# still holds cap=3 (the reset cannot touch it). A subsequent install.sh
+# must also REFUSE the cap drop (the existing #371 guard).
+reset_repo="$scratch/reset-seat-caps"
+mkdir -p "$reset_repo/config"
+cp "$repo_root/install.sh" "$reset_repo/install.sh"
+chmod +x "$reset_repo/install.sh"
+cat >"$reset_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":3,"models":{"glm-5-2":3}}}}
+JSON
+caps_dest_reset="$scratch/caps-dest-reset"
+cat >"$reset_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_reset
+MANIFEST
+git -C "$reset_repo" init -q -b main
+git -C "$reset_repo" config user.email "test@example.com"
+git -C "$reset_repo" config user.name "Test"
+git -C "$reset_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$reset_repo" commit -q -m "initial cap=3"
+git -C "$reset_repo" update-ref refs/remotes/origin/main HEAD
+# First install: creates a regular file copy with cap=3.
+set +e
+r1_out=$(PATH="$scratch:$PATH" "$reset_repo/install.sh" 2>&1)
+r1_rc=$?
+set -e
+[[ "$r1_rc" -eq 0 ]] || fail "scenario12f: first install should succeed, got rc=$r1_rc out=$r1_out"
+[[ -f "$caps_dest_reset" && ! -L "$caps_dest_reset" ]] \
+    || fail "scenario12f: live dest must be a regular file copy after install"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_reset")" = "3" ]] \
+    || fail "scenario12f: live copy must hold cap=3 after first install"
+# Simulate `git reset --hard origin/main` that reverts the repo file to cap=0.
+# The live copy must NOT change — it is a separate inode now.
+cat >"$reset_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":0,"models":{"glm-5-2":0}}}}
+JSON
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_reset")" = "3" ]] \
+    || fail "scenario12f: live copy was wiped by the repo file change (reset simulation) — the copy must be decoupled (fleet-ops#2910)"
+# A subsequent install.sh must REFUSE the cap drop (the #371 guard still fires).
+set +e
+r2_out=$(PATH="$scratch:$PATH" "$reset_repo/install.sh" 2>&1)
+r2_rc=$?
+set -e
+[[ "$r2_rc" -eq 1 ]] || fail "scenario12f: install.sh must refuse the cap drop after reset, got rc=$r2_rc out=$r2_out"
+[[ "$r2_out" == *"fleet-ops#371"* ]] \
+    || fail "scenario12f: REFUSE must cite fleet-ops#371, got: $r2_out"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_reset")" = "3" ]] \
+    || fail "scenario12f: live copy must still hold cap=3 after refused install"
+ok "scenario12f: git reset does not wipe the live seat-caps copy; install.sh refuses the cap drop"
 
 # --- scenario 12e: missing intake-reconcile units must not fail install -----
 # fleet-ops#559: a minimal checkout (no unit files, MANIFEST has only

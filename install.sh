@@ -484,7 +484,19 @@ process_entry() {
         to_enable+=("$(basename "$src")")
     fi
     mkdir -p "$(dirname "$dest")"
-    ln -sfn "$repo" "$dest"
+    # fleet-ops#2910: seat-caps.json is a regular file COPY, not a symlink.
+    # A symlink into the deploy-clone working tree means every
+    # `git reset --hard origin/main` silently rewrites the live config (the
+    # auditor re-applied the hot-patch 34+ times). A copy decouples the live
+    # config from the git working tree so only this install step — with its
+    # cap-downgrade guard above — can update it. rm -f first so a prior
+    # symlink dest is replaced by the copy, not written through.
+    if [[ "$src" == config/seat-caps.json ]]; then
+        rm -f "$dest"
+        install -D -m 0644 "$repo" "$dest"
+    else
+        ln -sfn "$repo" "$dest"
+    fi
   fi
 }
 

@@ -1,0 +1,51 @@
+{
+  "repository": "Nishfleet/fleet-ops",
+  "branch": "main",
+  "existing_issue_number": null,
+  "runs": [
+    {
+      "id": 6001,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "failure",
+      "head_branch": "main",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "created_at": "2026-09-02T20:56:01Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/6001"
+    },
+    {
+      "id": 6002,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "cancelled",
+      "head_branch": "main",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "created_at": "2026-09-02T21:04:39Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/6002"
+    },
+    {
+      "id": 6003,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "cancelled",
+      "head_branch": "main",
+      "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "created_at": "2026-09-02T21:06:51Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/6003"
+    },
+    {
+      "id": 6004,
+      "name": "CI",
+      "workflow_id": 1,
+      "event": "push",
+      "conclusion": "cancelled",
+      "head_branch": "main",
+      "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "created_at": "2026-09-02T21:13:57Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/6004"
+    }
+  ]
+}
