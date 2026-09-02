@@ -406,3 +406,14 @@ bash "$here/fleet-empty-run-burst-canary.test.sh"
 # staying at count=1 every cycle. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-empty-run-clobber-park.test.sh"
+
+# fleet-ops#2849 (PR #2885 follow-up): deployment quality SLOs landed
+# tests/fleet-deploy-quality.test.sh without a ci.yml listing or a host,
+# so P14 went red on "1 test file(s) are neither in ci.yml, hosted by a
+# listed test, live/destructive, nor a known orphan:
+# fleet-deploy-quality.test.sh" (run 33668591598 on tip 86adfa0b) and
+# re-armed FleetMainRed after the #2882 healthy-cap0 fix had cleared it.
+# Hermetic offline fixture (no gh/systemd/prometheus) — runs fine in
+# hosted CI. Hosted here so P14 runs it without a workflow-file edit
+# (the worker App cannot push .github/workflows/**).
+bash "$here/fleet-deploy-quality.test.sh"
