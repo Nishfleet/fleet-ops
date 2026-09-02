@@ -6,7 +6,6 @@ expiry date.  An expired entry is itself a loud `gap-audit` finding.
 
 | state | reason | expiry | owner |
 |---|---|---|---|
-| fleet-paused | 92 fleet timers deliberately stopped pending migration onto Pi. 10 remain up for box protection and console visibility. | 2026-09-02 | Nish |
 
 ## Rules for adding an entry
 
