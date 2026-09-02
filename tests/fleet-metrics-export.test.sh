@@ -250,6 +250,12 @@ grep -q "alert: FleetSeatComebackOverdue" "$rules" \
   || fail "fleet_rules.yml missing FleetSeatComebackOverdue (fleet-ops#2407)"
 grep -q "fleet_seat_comeback_overdue_total > 0" "$rules" \
   || fail "comeback-overdue rule must trip on fleet_seat_comeback_overdue_total > 0"
+# fleet-ops#2712: provider-level quota exhaustion alert — one billing wall,
+# many seats. Pin that the rule name + expr are present in fleet_rules.yml.
+grep -q "alert: FleetProviderQuotaExhausted" "$rules" \
+  || fail "fleet_rules.yml missing FleetProviderQuotaExhausted (fleet-ops#2712)"
+grep -q "fleet_provider_quota_exhausted_total > 0" "$rules" \
+  || fail "provider-quota-exhausted rule must trip on fleet_provider_quota_exhausted_total > 0"
 if command -v promtool >/dev/null 2>&1; then
   unit_yml="$scratch/fleet-queue-ratio.test.yml"
   cat >"$unit_yml" <<YOAML
@@ -285,8 +291,52 @@ YOAML
   grep -q "SUCCESS" <<<"$out" \
     || fail "promtool test rules: queue tripwire must transition pending->firing within for: 6h on the smoothed 7d window ($out)"
   ok "promtool test rules: queue tripwire fires despite momentary dips (fleet-ops#2171)"
+
+  # fleet-ops#2712: provider-level quota exhaustion alert. Pin that
+  # (a) total=1 fires the alert within its for: 30m window, and
+  # (b) total=0 stays silent (the natural state — no provider is account-
+  # level quota exhausted). Two cases, one shape, mirror the queue-tripwire
+  # test above.
+  pqe_yml="$scratch/fleet-provider-quota-exhausted.test.yml"
+  cat >"$pqe_yml" <<YOAML
+rule_files:
+  - $rules
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: provider-quota-exhausted fires when total>=1 (>=2 seats per provider)
+    input_series:
+      - series: 'fleet_provider_quota_exhausted_total'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 32m
+        alertname: FleetProviderQuotaExhausted
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetProviderQuotaExhausted
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: "provider-level quota exhaustion — one billing wall, multiple seats 402"
+              description: "fleet-ops#2712: a provider has >=2 seats reporting HTTP 402/health_class=quota_exhausted within the last 1h. The per-provider fleet_provider_quota_exhausted{provider=\"...\"} series names the affected provider and its seat count; the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats lists each seat. This is ONE account-level billing wall, not N independent seat faults — triage the provider's quota/billing, not each seat separately. Until the billing wall clears the seat_availability SLO burn is expected (quota_exhausted seats are held unconditionally; see _SEAT_RELEASE_AT_EXPIRY_CLASSES in libexec/fleet-metrics-export.py)."
+  - interval: 1m
+    name: provider-quota-exhausted stays silent when total=0
+    input_series:
+      - series: 'fleet_provider_quota_exhausted_total'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 32m
+        alertname: FleetProviderQuotaExhausted
+        exp_alerts: []
+YOAML
+  if ! out="$(promtool test rules "$pqe_yml" 2>&1)"; then
+    fail "promtool test rules exited non-zero on the provider-quota-exhausted test: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules: provider-quota-exhausted must fire on total>=1 and stay silent on total=0 ($out)"
+  ok "promtool test rules: provider-quota-exhausted fires on real burn (fleet-ops#2712)"
 fi
-ok "fleet_rules.yml: absent heartbeat + 3 regression-trend rules + queue tripwire"
+ok "fleet_rules.yml: absent heartbeat + 3 regression-trend rules + queue tripwire + provider quota"
 
 # =========================================================================
 # 9. MANIFEST declares the exporter, units, config, and rules
@@ -921,3 +971,162 @@ assert bad2 == len(enrolled), \
 print("OK: malformed / garbage spawn-bench does not gate the rollup")
 PY
 ok "fleet-ops#2493: held wrapper spawn-bench outranks a later healthy observation (census honest)"
+
+# =========================================================================
+# 16. fleet-ops#2712: provider-level (account-level) quota exhaustion.
+# A provider with >=2 quota_exhausted seats (HTTP 402 + health_class=
+# quota_exhausted) observed within the last 1h is one billing wall, not
+# N independent seat faults. The per-seat health_class=quota_exhausted
+# signal alone collapsed three failures into one root cause (e.g. the
+# straitly/deepseek-v4-pro + gpt-5.6-sol + qwen3.8-max 2026-09-02 burn)
+# and depressed the seat_availability SLO without distinguishing them.
+# Pin the helper: counting, time-window, threshold, exclusions.
+# =========================================================================
+PQE_SEATS="$scratch/pqe-seats"
+mkdir -p "$PQE_SEATS"
+python3 - "$exporter" "$PQE_SEATS" <<'PY' || fail "provider-quota-exhausted test failed"
+import importlib.util, json, sys, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+exporter, seat_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+now = time.time()
+def iso(offset_s):
+    return datetime.fromtimestamp(now + offset_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# Wall-clock-relative fixtures; the helper's time window is 3600s.
+RECENT = iso(-300)    # 5 min ago
+PAST   = iso(-7200)   # 2 h ago (outside the 1h window)
+
+# Scenario A: the live burn shape — three straitly seats all 402 inside
+# 1h. The per-seat health_class=quota_exhausted signal alone produced
+# three independent seat faults; the new helper collapses them into ONE
+# provider-level signal (straitly, seats=3).
+fixtures = {
+    # straitly x3 quota_exhausted inside 1h (the live burn shape).
+    "straitly__deepseek_deepseek-v4-pro.json": {
+        "provider": "straitly", "model": "deepseek/deepseek-v4-pro",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": RECENT, "consecutive_failure_count": 34,
+    },
+    "straitly__gpt-5.6-sol.json": {
+        "provider": "straitly", "model": "gpt-5.6-sol",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": RECENT, "consecutive_failure_count": 25,
+    },
+    "straitly__qwen_qwen3.8-max.json": {
+        "provider": "straitly", "model": "qwen/qwen3.8-max",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": RECENT, "consecutive_failure_count": 23,
+    },
+    # cline/cline-pass/minimax-m3 — one quota_exhausted seat on cline.
+    # Below the >=2 threshold -> must NOT appear (isolated hold, not
+    # account-level).
+    "cline__cline-pass_minimax-m3.json": {
+        "provider": "cline", "model": "cline-pass/minimax-m3",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": RECENT, "consecutive_failure_count": 14,
+    },
+    # straitly x1 quota_exhausted BUT observed 2h ago (outside window).
+    # A stale 402 must NOT count — the window is "now-3600s", not
+    # "any observed_at ever".
+    "straitly__stale-402.json": {
+        "provider": "straitly", "model": "stale-402",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": PAST, "consecutive_failure_count": 5,
+    },
+    # 402 status but health_class is healthy (impossible in practice, but
+    # the helper must key on BOTH fields, not just http_status). Must be
+    # excluded.
+    "openrouter__deepseek_deepseek-v4-flash.json": {
+        "provider": "openrouter", "model": "deepseek/deepseek-v4-flash",
+        "http_status": 402, "health_class": "healthy",
+        "failure_mode": "none", "seat_dead": False,
+        "observed_at": RECENT, "consecutive_failure_count": 0,
+    },
+    # A quota_exhausted seat on a CORPSE (seat_dead=true) — terminal,
+    # owned by FleetDeadCredentialSeats. Must NOT count (corpses are
+    # not "currently quota-walled", they are retired).
+    "commandcode__minimax_minimax-m3-free.json": {
+        "provider": "commandcode", "model": "minimax/minimax-m3-free",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": True,
+        "observed_at": RECENT, "consecutive_failure_count": 200,
+    },
+    # test__ fixture — synthetic. Excluded.
+    "test__quota.json": {
+        "provider": "test", "model": "quota",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": RECENT, "consecutive_failure_count": 1,
+    },
+    # .spawn-bench sibling — not a seat observation. Excluded.
+    "straitly__deepseek_deepseek-v4-pro.spawn-bench.json": {
+        "provider": "straitly", "model": "deepseek/deepseek-v4-pro",
+        "usable_at": iso(3600), "reason": "no_block:rc=0", "backoff_s": 300,
+    },
+    # Garbage observed_at — must be skipped, not crash the helper.
+    "straitly__garbage-time.json": {
+        "provider": "straitly", "model": "garbage-time",
+        "http_status": 402, "health_class": "quota_exhausted",
+        "failure_mode": "quota_exhausted", "seat_dead": False,
+        "observed_at": "garbage", "consecutive_failure_count": 1,
+    },
+}
+for name, body in fixtures.items():
+    (Path(seat_dir) / name).write_text(json.dumps(body))
+
+m.SEAT_LEDGER = Path(seat_dir)
+n, providers = m._read_provider_quota_exhausted()
+# Only straitly qualifies: 3 recent in-window quota_exhausted seats.
+# cline has 1 (below threshold). straitly stale-402 is out of window.
+# The healthy/402 and corpse/402 are excluded by their other field.
+# test__ and .spawn-bench are excluded by class.
+assert n == 1, f"expected 1 provider-level quota-exhausted, got {n}: {providers}"
+prov = providers[0]
+assert prov["provider"] == "straitly", prov
+assert prov["seats"] == 3, prov
+assert len(prov["models"]) == 3, prov
+assert "deepseek/deepseek-v4-pro" in [mm[0] for mm in prov["models"]], prov
+assert "gpt-5.6-sol" in [mm[0] for mm in prov["models"]], prov
+assert "qwen/qwen3.8-max" in [mm[0] for mm in prov["models"]], prov
+print("OK: straitly collapsed from 3 per-seat faults to 1 provider-level signal (seats=3)")
+
+# Scenario B: add ONE MORE 402 to cline inside the window. Now cline
+# also qualifies (seats=2 -> >=2 threshold met).
+(Path(seat_dir) / "cline__z-ai_glm-5.3-flash.json").write_text(json.dumps({
+    "provider": "cline", "model": "z-ai/glm-5.3-flash",
+    "http_status": 402, "health_class": "quota_exhausted",
+    "failure_mode": "quota_exhausted", "seat_dead": False,
+    "observed_at": RECENT, "consecutive_failure_count": 4,
+}))
+n2, providers2 = m._read_provider_quota_exhausted()
+prov_names = {p["provider"] for p in providers2}
+assert prov_names == {"straitly", "cline"}, prov_names
+cline = next(p for p in providers2 if p["provider"] == "cline")
+assert cline["seats"] == 2, cline
+print("OK: cline joined the provider-level signal at 2 quota_exhausted seats")
+
+# Scenario C: drop cline's second seat — cline falls below the threshold
+# and disappears; straitly stays. Pin that the threshold is the gate.
+(Path(seat_dir) / "cline__z-ai_glm-5.3-flash.json").unlink()
+n3, providers3 = m._read_provider_quota_exhausted()
+assert {p["provider"] for p in providers3} == {"straitly"}, providers3
+print("OK: 402-quota exhaustion is threshold-gated at >=2 seats per provider")
+
+# Scenario D: missing ledger dir returns (0, []) — never raises.
+(Path(seat_dir)).rename(Path(seat_dir).parent / "pqe-seats-renamed")
+n4, providers4 = m._read_provider_quota_exhausted()
+assert n4 == 0 and providers4 == [], (n4, providers4)
+print("OK: missing ledger dir returns empty signal (no crash)")
+PY
+ok "fleet-ops#2712: provider-level quota exhaustion collapses N per-seat 402s into 1 account signal"

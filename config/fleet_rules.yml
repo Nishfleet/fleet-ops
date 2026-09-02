@@ -158,6 +158,26 @@ groups:
           summary: "seat never released — comeback-release prober keeps failing on the same seat"
           description: "One or more seats have been probed >=10 times by the comeback-release organ without recovery (fleet-ops#2638). The bin's corpse path (SEAT_DEAD_CONSECUTIVE_THRESHOLD, default 25) should terminate these on the next sweep; sustained > 0 here for 1h+ means the corpse write is not landing. The per-seat fleet_seat_comeback_never_released series names the stuck seat. Repair worker: inspect /home/nish/workspaces/agent-state/lanes/seats/<seat>.json (consecutive_failure_count must be climbing), journalctl --user -u fleet-seat-comeback-release.service, and the provider's reachability."
 
+      # fleet-ops#2712: provider-level (account-level) quota exhaustion.
+      # A provider with >=2 quota_exhausted seats observed within 1h
+      # (HTTP 402 + health_class=quota_exhausted) is a billing-wall pattern,
+      # not three independent seat faults. The per-seat
+      # health_class=quota_exhausted signal alone collapsed three failures
+      # into one root cause (e.g. straitly/deepseek-v4-pro + gpt-5.6-sol +
+      # qwen3.8-max all 402 at once) and depressed the seat_availability
+      # SLO without distinguishing them. Pages so the operator can triage
+      # ONE billing wall, not three seat threads. 30m-for matches the
+      # FleetSeatComebackOverdue cadence.
+      - alert: FleetProviderQuotaExhausted
+        expr: fleet_provider_quota_exhausted_total > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "provider-level quota exhaustion — one billing wall, multiple seats 402"
+          description: "fleet-ops#2712: a provider has >=2 seats reporting HTTP 402/health_class=quota_exhausted within the last 1h. The per-provider fleet_provider_quota_exhausted{provider=\"...\"} series names the affected provider and its seat count; the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats lists each seat. This is ONE account-level billing wall, not N independent seat faults — triage the provider's quota/billing, not each seat separately. Until the billing wall clears the seat_availability SLO burn is expected (quota_exhausted seats are held unconditionally; see _SEAT_RELEASE_AT_EXPIRY_CLASSES in libexec/fleet-metrics-export.py)."
+
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)
         for: 3h
