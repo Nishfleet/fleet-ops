@@ -46,7 +46,17 @@
 # seat-walled-probe, fleet-ops#2394): .spawn-bench bench-marker pseudo-seats
 # and test__ fixtures (provider == "test") are never probed. Corpse seats
 # (seat_dead=true) are never probed either: they carry no comeback clock
-# (fleet-ops#2415) and FleetDeadCredentialSeats owns them.
+# (fleet-ops#2415) and FleetDeadCredentialSeats owns the still-live
+# credentials_bad class. fleet-ops#2716: a corpse that has aged past the
+# corpse grace window (CORPSE_GRACE_S, default 6h) is PHYSICALLY retired
+# out of the live roster here — seat-caps.json retiring the slug (cap 0 +
+# intentional_cap_zero=corpse, #2708) stops the rotation but leaves the
+# corpse ledger in lanes/seats/, where the daily-digest 'Total seen', the
+# opus-heartbeat-gather seat_table n and any capacity denominator keep
+# counting it as live roster membership. The terminal lifecycle step is a
+# dated move into lanes/seats-corpse-retired-<UTC-ts>/ (the live
+# commandcode/minimax/minimax-m3-free corpse that survived #2708 is the
+# issue evidence).
 #
 # Design (no new machinery):
 #   - min-probe interval per seat (state file), default 900s — matches
@@ -68,6 +78,8 @@
 #                               /var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom)
 #   FLEET_SEAT_COMEBACK_MIN_INTERVAL_S  per-seat min probe interval (default 900)
 #   FLEET_SEAT_COMEBACK_TIMEOUT_S       probe timeout (default 45)
+#   FLEET_SEAT_COMEBACK_CORPSE_GRACE_S  corpse-ledger retirement grace
+#                                       (default 21600 = 6h, fleet-ops#2716)
 #   FLEET_SEAT_COMEBACK_NOW              ISO timestamp override (tests)
 #
 # Exit: 0 clean sweep. 1 when the release path is stuck (walled seats hold
@@ -110,6 +122,17 @@ REBENCH_BACKOFF_S="${FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S:-900}"
 # probe slot every re-bench window. Corpse at the same threshold so every
 # class converges on the same corpse boundary.
 SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
+# fleet-ops#2716: corpse-ledger retirement grace. A corpse (seat_dead=true,
+# health_class=corpse) is the TERMINAL seat state (#2327/#2415): it carries
+# no comeback clock and seat_usable holds it off the ladder, but its LEDGER
+# FILE still sits in lanes/seats/, where the census counts it as live roster
+# membership. This bin already owns the rest of the seat lifecycle
+# (corpse-on-threshold, #2638), so it also owns the terminal step: a corpse
+# ledger whose observed_at has aged past CORPSE_GRACE_S is physically moved
+# into lanes/seats-corpse-retired-<UTC-ts>/. The grace window lets a fresh
+# corpse reclassification recover via a healthy observation (seat-lib
+# clears a corpse on a successful probe) before the ledger is retired.
+CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
 NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
 # fleet-ops#2661: the provider-wide overload wall reuses the learned-caps
 # mechanism a lib/seat-lib.sh provides (_record_learned_cap,_seat_now_epoch);
@@ -161,8 +184,14 @@ now_iso() {
 }
 
 # Pure epoch (UTC) of an ISO timestamp, or empty. Accepts trailing Z.
+# An EMPTY input is empty (never parsed as "now" — GNU `date -d ""`
+# silently means now, so a clockless ledger entry would otherwise look
+# like a wall clock held at the current time and defeat every
+# wall-clock check; fleet-ops#2716 pinned this in the corpse-retirement
+# path with a frozen clock).
 ts_epoch() {
     local t="$1" e
+    [[ -n "$t" ]] || return 1
     t="${t%Z}"
     e=$(date -u -d "$t" +%s 2>/dev/null || true)
     [[ "$e" =~ ^[0-9]+$ ]] && printf '%s\n' "$e" || true
@@ -177,9 +206,9 @@ wall_end_of() {
 # --- state (per-seat last probe time + cumulative counters) ---------------
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
-        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"overload_strikes":{}}'
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{}}'
     else
-        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"overload_strikes":{}}'
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{}}'
     fi
 }
 
@@ -192,7 +221,7 @@ save_state() {
 
 # --- textfile metrics ------------------------------------------------------
 write_prom() {
-    local last_green="$1" stalled="$2" probed="$3" released="$4" expired="$5" corpse_total="$6"
+    local last_green="$1" stalled="$2" probed="$3" released="$4" expired="$5" corpse_total="$6" retired="$7"
     mkdir -p "$(dirname "$PROM_FILE")"
     {
         printf '# HELP fleet_seat_comeback_release_last_green_seconds Last sweep that completed cleanly — no stuck release path (fleet-ops#2421).\n'
@@ -223,6 +252,16 @@ write_prom() {
         printf '# HELP fleet_seat_comeback_release_corpse_total Seats terminally corpsed by the come-back release organ after the consecutive-failure threshold (fleet-ops#2638).\n'
         printf '# TYPE fleet_seat_comeback_release_corpse_total counter\n'
         printf 'fleet_seat_comeback_release_corpse_total %s\n' "$corpse_total"
+        # fleet-ops#2716: cumulative counter of corpse ledgers physically
+        # retired out of the live roster past the corpse grace window. A
+        # sustained climb here is the organ doing its terminal lifecycle
+        # step (retiring corpses the seat-health extension or the prober
+        # has TERM-ED); the count includes the credentials_bad→corpse
+        # reclassification class that seat-caps.json has already retired
+        # from rotation (commandcode/minimax/minimax-m3-free, #2708).
+        printf '# HELP fleet_seat_comeback_release_retired_total Corpse ledgers physically retired out of the live roster after the corpse grace window (fleet-ops#2716).\n'
+        printf '# TYPE fleet_seat_comeback_release_retired_total counter\n'
+        printf 'fleet_seat_comeback_release_retired_total %s\n' "$retired"
     } > "$PROM_FILE.tmp"
     mv "$PROM_FILE.tmp" "$PROM_FILE"
 }
@@ -516,6 +555,75 @@ corpse_seat() {
     return 0
 }
 
+# --- corpse-ledger retirement (fleet-ops#2716) ------------------------------
+# Physically retire a terminal corpse ledger OUT of the live roster. A
+# corpse (seat_dead=true, health_class=corpse) is the TERMINAL seat state
+# (fleet-ops#2327/#2415): it carries no comeback clock, seat_usable holds
+# it off the ladder, and the census (daily-digest 'Total seen',
+# opus-heartbeat-gather seat_table n, any seat capacity denominator)
+# counts the LEDGER FILE as live roster membership. Retiring the slug in
+# config/seat-caps.json (cap 0 + intentional_cap_zero=corpse,
+# fleet-ops#2708) stops the ROTATION but leaves the corpse ledger in
+# lanes/seats/ — the lived commandcode/minimax/minimax-m3-free case that
+# issue 2716 names (still present as health_class=corpse at the snapshot
+# hours after #2708 merged). The terminal lifecycle step is a physical
+# move into a dated audit dir (seats-corpse-retired-<UTC-ts>/, same
+# pattern the deadcred quarantine and the fleet-ops#2469/#2540 drafts
+# use).
+#
+# Grace: a corpse ledger is only retired once its observed_at has aged
+# past CORPSE_GRACE_S (default 6h). A fresh corpse reclassification
+# (e.g. a credentials_bad probe escalated to corpse by #2327) can still
+# recover via a healthy observation (seat-lib clears a corpse on a
+# successful probe) — the grace window is that recovery chance.
+#
+# Defensive holds: a corpse ledger that still carries a FUTURE wall clock
+# is never retired (a clock means a comeback is still owed — the
+# fleet-ops#2394 predecessor-killer shape); a corpse without observed_at
+# is never retired (cannot be aged).
+#
+# Returns 0 when retired (or would be, in dry-run), 1 when held or not a
+# corpse (not an error; callers use `|| true` so a hold/failure cannot
+# abort the sweep). Holds are SILENT (the expected steady state — a
+# corpse inside its grace window sits for CORPSE_GRACE_S by design, so
+# logging it every 15-min tick is noise); only the retirement itself
+# (RETIRED) and the dry-run preview (DRY-RUN: would retire) are logged.
+retire_corpse() {
+    local p="$1" m="$2" f="$3" hc obs obs_e now_e age we wall_end
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "corpse" ]] || return 1
+    now_e=$(now_epoch)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    # Defensive: a corpse that still carries a future wall clock is held —
+    # the clock means a comeback is still owed (fleet-ops#2394 shape).
+    [[ -z "$we" || "$we" -le "$now_e" ]] || return 1
+    obs=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    obs_e=$(ts_epoch "$obs")
+    # A corpse without observed_at cannot be aged — held.
+    [[ -n "$obs_e" ]] || return 1
+    age=$(( now_e - obs_e ))
+    # A corpse inside the grace window is still in its recovery window
+    # (a healthy observation clears the corpse, seat-lib) — held.
+    (( age >= CORPSE_GRACE_S )) || return 1
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would retire $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s)"
+        return 0
+    fi
+    local retired_dir="${CORPSE_RETIRE_DIR:-}"
+    [[ -d "$retired_dir" ]] || mkdir -p "$retired_dir" 2>/dev/null || {
+        log "retire $p/$m: cannot create $retired_dir — ledger NOT retired"
+        return 1
+    }
+    if ! mv "$f" "$retired_dir/" 2>/dev/null; then
+        log "retire $p/$m: mv FAILED at $f — ledger NOT retired"
+        return 1
+    fi
+    RETIRED_TOTAL=$((RETIRED_TOTAL + 1))
+    log "RETIRED $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s, moved to $retired_dir)"
+    return 0
+}
+
 # --- sweep -------------------------------------------------------------------
 main() {
     local now state probed_total released_total probed=0 released_this_run=0
@@ -525,10 +633,16 @@ main() {
     released_total=$(jq -r '(.released_total // 0)' <<<"$state")
     CORPSE_TOTAL=$(jq -r '(.corpse_total // 0)' <<<"$state")
     [[ "$CORPSE_TOTAL" =~ ^[0-9]+$ ]] || CORPSE_TOTAL=0
+    RETIRED_TOTAL=$(jq -r '(.retired_total // 0)' <<<"$state")
+    [[ "$RETIRED_TOTAL" =~ ^[0-9]+$ ]] || RETIRED_TOTAL=0
+    # fleet-ops#2716: one dated retirement dir per sweep, next to the live
+    # ledger dir (dirname of the ledger), so a sweep that retires several
+    # corpses lands them all in one audit dir.
+    CORPSE_RETIRE_DIR="$(dirname "$LEDGER")/seats-corpse-retired-$(now_iso)"
 
     if [[ ! -d "$LEDGER" ]]; then
         log "ledger dir missing: $LEDGER"
-        write_prom "" 0 "$probed_total" "$released_total" 0 "$CORPSE_TOTAL"
+        write_prom "" 0 "$probed_total" "$released_total" 0 "$CORPSE_TOTAL" "$RETIRED_TOTAL"
         return 1
     fi
 
@@ -566,8 +680,16 @@ main() {
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
         # A corpse is terminal (fleet-ops#2327/#2415): no usable_at comeback
-        # clock, FleetDeadCredentialSeats owns it. Never probed here.
-        [[ "$dead" != "true" ]] || continue
+        # clock, FleetDeadCredentialSeats owns the still-live credentials_bad
+        # class. Never probed here. fleet-ops#2716: it is also RETIRED here —
+        # a corpse ledger must not stay in the live roster forever (the
+        # commandcode/minimax/m3-free case: seat-caps.json retired the slug
+        # in #2708 but the ledger survived). retire_corpse physically moves
+        # it once its observed_at has aged past the corpse grace window.
+        if [[ "$dead" == "true" ]]; then
+            retire_corpse "$p" "$m" "$f" || true
+            continue
+        fi
 
         wall_end=$(wall_end_of "$f")
         we=$(ts_epoch "$wall_end")
@@ -733,9 +855,10 @@ main() {
     save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
         --argjson pt "$probed_total" --argjson rt "$released_total" \
         --argjson wt "$WALLS_TOTAL" --argjson ct "$CORPSE_TOTAL" \
+        --argjson rr "$RETIRED_TOTAL" \
         --argjson os "[$strikes_json]" \
         '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt,
-          walls_total: $wt, corpse_total: $ct,
+          walls_total: $wt, corpse_total: $ct, retired_total: $rr,
           overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries)}')"
 
     # The fleet-ops#2421 loud check: walled seats still hold expired wall
@@ -744,12 +867,12 @@ main() {
     # stale so the absent/stale rule also fires.
     if (( expired > 0 )) && (( released_this_run == 0 )); then
         log "LOUD [COMEBACK-RELEASE-STALLED] released_this_run=0 while $expired walled seat(s) still hold expired wall clocks — release path not operating"
-        write_prom "" 1 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL"
+        write_prom "" 1 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL"
         return 1
     fi
 
-    log "sweep complete: probed=$probed released=$released_this_run expired_after=$expired (cumulative released_total=$released_total corpse_total=$CORPSE_TOTAL)"
-    write_prom "$(now_epoch)" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL"
+    log "sweep complete: probed=$probed released=$released_this_run expired_after=$expired (cumulative released_total=$released_total corpse_total=$CORPSE_TOTAL retired_total=$RETIRED_TOTAL)"
+    write_prom "$(now_epoch)" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL"
     return 0
 }
 
