@@ -77,8 +77,23 @@ if [[ "${GH_FAIL:-0}" == "1" ]]; then
 fi
 case "$*" in
   *"issue list"*"-l scout-candidate"*)
+    # fleet-ops#2766: auditor now asks for number,labels. Lines may be
+    # bare "N" (no discarded) or "N\tdiscarded" (dual-label leftover).
     if [[ -f "${CANDIDATES:-/dev/nonexistent}" ]]; then
-      jq -R -s -c 'split("\n") | map(select(length>0)) | map({number: tonumber})' "${CANDIDATES:-/dev/null}"
+      jq -R -s -c '
+        split("\n")
+        | map(select(length>0))
+        | map(
+            split("\t") as $p
+            | {
+                number: ($p[0] | tonumber),
+                labels: (if ($p|length) > 1 and $p[1] == "discarded"
+                         then [{name:"scout-candidate"},{name:"discarded"}]
+                         else [{name:"scout-candidate"}]
+                         end)
+              }
+          )
+      ' "${CANDIDATES:-/dev/null}"
     else
       printf '[]\n'
     fi
@@ -505,6 +520,36 @@ grep -qx 'start pi-audit@demo--201--devin.service' "$calls" \
 grep -qx 'start pi-audit@demo--201--free-glm-5-3.service' "$calls" \
     || fail "scenario12: 201 free-glm-5-3 should be reset-failed + start (no cap hit)"
 ok "scenario12: failed-unit recovery bypasses the per-tick cap (no wedge starvation)"
+
+# ============================================================================
+# Scenario 13: discarded+scout-candidate dual-label is healed, not audited
+# (fleet-ops#2766). The pre-fix requeue loop left 29 dual-labeled leftovers
+# on 0509; without this skip the auditor spent TICK_MAX_START slots
+# re-tallying terminal rejects forever.
+# ============================================================================
+reset_state
+# One dual-labeled leftover + one live candidate. Format: "N\tdiscarded"
+# for the leftover; bare "N" for a live scout-candidate.
+printf '1140\tdiscarded\n42\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario13: must exit 0, got $env_rc ($env_out)"
+grep -q 'remove-label scout-candidate' "$GH_CALLS" \
+    || fail "scenario13: must drop scout-candidate on dual-label leftover (calls=$(cat "$GH_CALLS"))"
+grep -q '1140' "$GH_CALLS" \
+    || fail "scenario13: heal must target the dual-labeled issue 1140"
+# Must NOT start any audit unit for the discarded leftover.
+if grep -E 'start pi-audit@demo--1140--' "$calls"; then
+    fail "scenario13: must not start audit units for discarded leftover (calls=$(cat "$calls"))"
+fi
+# Live candidate 42 still gets its three units started.
+for role in devin free-glm-5-3 straitly; do
+  grep -qx "start pi-audit@demo--42--$role.service" "$calls" \
+      || fail "scenario13: live candidate 42 missing start for $role ($(cat "$calls"))"
+done
+ok "scenario13: discarded+scout-candidate dual-label healed; live candidate still audited (fleet-ops#2766)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \
