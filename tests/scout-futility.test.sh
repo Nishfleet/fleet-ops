@@ -320,8 +320,14 @@ siterep_dry=$(grep -E '^consecutive_dry=' "$state/siterep-public.state" | cut -d
 siterep_before=$(grep -E '^before=' "$state/siterep-public.state" | cut -d= -f2-)
 [[ -z "$siterep_before" ]] \
   || fail "scenario8: seeded snapshot must leave before empty so a later skip-end cannot false-count dry, got '$siterep_before'"
+siterep_run=$(grep -E '^last_run_epoch=' "$state/siterep-public.state" | cut -d= -f2-)
+is_uint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+is_uint "$siterep_run" && [[ "$siterep_run" -gt 0 ]] \
+  || fail "scenario8: missing-begin end must refresh last_run_epoch to a live tick, got '$siterep_run'"
+grep -q "fleet_scout_last_run_seconds{repo=\"siterep-public\"} ${siterep_run}" "$scratch/fleet-scout.prom" \
+  || fail "scenario8: prom must export the refreshed live tick for siterep-public"
 ! grep -q 'issue create' "$gh_log" || fail "scenario8: must not file"
-ok "scenario8: end without begin creates snapshot, success-run, not a dry count"
+ok "scenario8: end without begin creates snapshot, success-run, refreshes live epoch"
 
 # --- 9. tracker always exits 0 ----------------------------------------------
 set +e
@@ -373,15 +379,21 @@ grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-
 "$bin" end 0509 0 >/dev/null
 [[ "$(state_field consecutive_dry)" == "1" ]] \
   || fail "scenario12: first completed end should dry=1"
+epoch_after_real_end=$(state_field last_run_epoch)
+[[ "$epoch_after_real_end" == "$epoch1" ]] \
+  || fail "scenario12: real end must preserve begin epoch ($epoch1), got '$epoch_after_real_end'"
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
+  || fail "scenario12: real end must not disturb begin epoch in prom"
 "$bin" end 0509 0 >/dev/null
-[[ "$(state_field last_run_epoch)" == "$epoch1" ]] \
-  || fail "scenario12: missing-begin end must preserve last_run_epoch ($epoch1), got '$(state_field last_run_epoch)'"
+epoch_after_missing=$(state_field last_run_epoch)
+[[ "$epoch_after_missing" -ge "$epoch1" ]] \
+  || fail "scenario12: missing-begin end must refresh last_run_epoch (>= $epoch1), got '$epoch_after_missing'"
 [[ "$(state_field consecutive_dry)" == "1" ]] \
   || fail "scenario12: missing-begin end must not increment dry, got '$(state_field consecutive_dry)'"
-grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
-  || fail "scenario12: skip-end must not bump exported last_run"
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch_after_missing}" "$scratch/fleet-scout.prom" \
+  || fail "scenario12: skip-end must export the refreshed live epoch in prom"
 ! grep -q 'issue create' "$gh_log" || fail "scenario12: must not file"
-ok "scenario12: last_run is begin-only; missing-begin end preserves it"
+ok "scenario12: begin epoch preserved across real ends; missing-begin ends refresh"
 
 # --- 12b. unreadable snapshot is the same success-run path ------------------
 printf 'this is garbage\nnot a state file\n' >"$state/0509.state"
