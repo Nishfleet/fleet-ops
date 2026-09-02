@@ -272,6 +272,17 @@ bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 # .github/workflows/**).
 bash "$here/alert-repair-outcome-metric.test.sh"
 
+# fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
+# landed the test without a ci.yml listing or a host, so P14 ran red on
+# "1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: dispatch-ledger-fixture-sweep.test.sh"
+# (run 33662643290). Hosted here so P14 runs it without a workflow-file
+# edit (the worker App cannot push .github/workflows/**). The named pin
+# in tests/p14-test-listing-gate.test.sh is the class-prevention so a
+# future drop of this host line fails by name.
+# Hermetic (scratch ledger, no gh/prometheus/systemd).
+bash "$here/dispatch-ledger-fixture-sweep.test.sh"
+
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
 # $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and

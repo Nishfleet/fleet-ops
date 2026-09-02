@@ -43,6 +43,26 @@
 #   FLEET_DISPATCH_SWEEP_BACKUP  backup path prefix (default $LEDGER.sweep-backup)
 set -euo pipefail
 
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+Usage: dispatch-ledger-fixture-sweep
+
+One-shot: mark dispatch-ledger rows whose unit/packet_path carries a
+fixture alertname (NoClassParkAlert|ClassExpiredAlert|NoParkKeyAlert)
+as terminal=true with terminal_reason=fixture_alertname_no_prometheus_rule.
+
+Does not rewrite status. Creates $LEDGER.sweep-backup-<ts> first.
+Idempotent. Malformed lines are left untouched.
+
+Env:
+  FLEET_DISPATCH_LEDGER         ledger path
+  FLEET_DISPATCH_SWEEP_BACKUP   backup path prefix
+EOF
+    exit 0
+    ;;
+esac
+
 AS="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
 LEDGER="${FLEET_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
 BACKUP_PREFIX="${FLEET_DISPATCH_SWEEP_BACKUP:-$LEDGER.sweep-backup}"
@@ -50,7 +70,6 @@ FIXTURE_RE='alert-repair-(NoClassParkAlert|ClassExpiredAlert|NoParkKeyAlert)-'
 TERMINAL_REASON='fixture_alertname_no_prometheus_rule'
 
 [ -r "$LEDGER" ] || { echo "FAIL: ledger not readable: $LEDGER" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 
 backup="$BACKUP_PREFIX-$(date -u +%Y%m%dT%H%M%SZ)"
 if ! cp -p "$LEDGER" "$backup"; then
@@ -62,8 +81,10 @@ echo "backup: $backup"
 python3 - "$LEDGER" "$FIXTURE_RE" "$TERMINAL_REASON" <<'PY'
 import datetime
 import json
+import os
 import re
 import sys
+import tempfile
 
 ledger, fixture_re, reason = sys.argv[1], sys.argv[2], sys.argv[3]
 rx = re.compile(fixture_re)
@@ -114,8 +135,20 @@ for line in lines:
     new_lines.append(json.dumps(rec, separators=(",", ":")) + "\n")
 
 if marked > 0:
-    with open(ledger, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
+    dirname = os.path.dirname(os.path.abspath(ledger)) or "."
+    fd, tmp = tempfile.mkstemp(dir=dirname, prefix=".dispatch-ledger-sweep-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, ledger)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 print(f"fixture_rows={matched} marked={marked} already_terminal={already} malformed_skipped={skipped}")
 PY
