@@ -1,77 +1,55 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+Sweep of the latent dispatch-ledger fixture rows left by the alert-repair class-park drill (blind audit 2026-09-01 finding #6, FINDINGS-QUEUE.md "Still open — three follow-ups" #2). PR #2660 stopped the class-park test spawning real repair workers; the ledger rows it left behind stayed `status:"open"` — a recurrence vector for the phantom-alert amplification loop if the ledger is ever re-scanned raw.
 
-## Why
+## What changed
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+- `bin/dispatch-ledger-fixture-sweep` (one-shot): marks EVERY dispatch-ledger row carrying a fixture alertname (`NoClassParkAlert|ClassExpiredAlert|NoParkKeyAlert` — the fixture names live in the `unit`/`packet_path` fields, e.g. `alert-repair-NoClassParkAlert-<ts>`; the ledger has no separate `alertname` key) as `terminal=true` with `terminal_reason="fixture_alertname_no_prometheus_rule"` (+ `terminal_ts`). Open AND already-closed rows are marked, so the raw-line count of `terminal != true` for these alertnames drops to zero.
+  - Pre-sweep `cp` backup (rollback = restore the copy, per the issue's rollback section).
+  - In-place rewrite, no appended lines — the completion-canary's `load_dispatch_latest` keeps the last line per id, so appending terminal lines would make the (still `status:"open"`) terminal record the latest and could itself trigger re-dispatch.
+  - `status` is untouched (terminal marks done; pairing/intent unchanged).
+  - Idempotent: a re-run marks nothing new and exits 0. Malformed lines survive untouched.
+- `tests/dispatch-ledger-fixture-sweep.test.sh` (hermetic, fully offline): before sweep 3+ open fixture rows exist; after sweep zero open fixture rows for those alertnames; every fixture row carries terminal + reason + ts; non-fixture rows byte-identical; `status` untouched; pre-sweep backup present; idempotent re-run marks nothing; a malformed line survives and the ledger is not truncated.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
-
-## Scope
-
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
-
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+mechanism: regression drill `tests/dispatch-ledger-fixture-sweep.test.sh` proves the guard fires (before ≥3 open fixture rows → after 0), and the one-shot sweep is re-runnable whenever the leak class reappears. Discovered adjacent gap (filed, not fixed here — out of this issue's scope): the completion-canary dispatch plane filters open rows on `status == "open"` only and ignores `terminal`, so an unpaired future fixture row would still be re-dispatched — Nishfleet/fleet-ops#2872.
 
 ## Verification
 
+Hermetic test:
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+bash tests/dispatch-ledger-fixture-sweep.test.sh
+ALL PASS
+```
+(expect: before open-fixture=5 status-open=4; after open-fixture(terminal!=true)=0; idempotent re-run marked=0; malformed line survives.)
+
+Adjacent suites (unchanged code, proving no blast radius on the ledger readers):
+```
+bash tests/fleet-completion-canary.test.sh        # OK
+bash tests/pi-systemd-run.test.sh                 # OK
+bash tests/fleet-worktree-reaper.test.sh          # OK
+bash tests/pi-salvage-worktree.test.sh            # OK
+bash tests/alert-repair-class-park-skip.test.sh   # 4/4 OK
 ```
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+Live sweep (real ledger, pre-sweep cp backup at `dispatch-ledger.jsonl.sweep-backup-20260902T173849Z`):
+```
+$ bash bin/dispatch-ledger-fixture-sweep
+backup: /home/nish/workspaces/agent-state/dispatch-ledger.jsonl.sweep-backup-20260902T173849Z
+fixture_rows=220 marked=220 already_terminal=0 malformed_skipped=0
+```
+issue metric before/after (adapted to the real schema — the issue's literal jq used a non-existent `.alertname` key; the fixture names live in `unit`/`packet_path`):
+```
+before: jq -c 'select((.unit // .packet_path // "") | test("alert-repair-(NoClassParkAlert|ClassExpiredAlert|NoParkKeyAlert)-")) | select(.terminal != true)' dispatch-ledger.jsonl | wc -l   # 220
+after:  # 0
+```
+Ledger intact: 745 lines before and after. Canary-visible open rows unchanged (1 real `alert-repair-FleetDeadCredentialSeats-*` dispatch; zero fixture rows). Idempotent re-run: `marked=0 already_terminal=220`.
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+run-proof: transcript above — live one-shot sweep on `/home/nish/workspaces/agent-state/dispatch-ledger.jsonl` (220 fixture rows marked, 745 lines preserved), hermetic test ALL PASS, adjacent suites green.
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+research: last30days — last-30-days git log + `gh issue search` sweep of this repo for prior dispatch-ledger sweep/terminal tooling (PR #2660, #2694/#2796, the class-park drill lineage) plus a live read of the ledger shape, the completion-canary's `load_dispatch_latest`/`classify_dispatch`/`close_dispatch_entry` and actions.log receipts — compared (a) in-place row rewrite via jq (would mangle key order / duplicate-terminal tracking across 745 lines; the ledger's own writers use compact python json), (b) an appended terminal line per row (rejected: would change the canary's last-per-id resolution and could itself trigger re-dispatch), (c) the existing `fleet-completion-canary` dispatch-plane close path (rejects: it classifies/redispatch-closes live rows, not marks fixture rows terminal; and the canary ignores terminal entirely, filed as #2872). Adopted (a)-style in-place rewrite implemented in python3 matching the ledger's own compact `json.dumps(separators=(",", ":"))` format; no new machinery — one-shot cleanup script + regression test.
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+help-first: read `jq --help` (v1.7) and the completion-canary's `load_dispatch_latest`/`close_dispatch_entry`/`classify_dispatch` — jq can filter but has no in-place JSONL row rewrite primitive, and no existing bin/ marks terminal on dispatch-ledger rows; hand-built the 50-line bash+python3 wrapper because nothing existing does this specific in-place terminal marking.
 
-Closes #1348
+organ-heartbeat: bin/dispatch-ledger-fixture-sweep not-an-organ: one-shot cleanup script (no timer, no metric export, no guard loop — run explicitly or from the termination cue; no heartbeat to export). No organ registry/rules changes.
+
+Note: the new test is standalone; it is not added to the CI verify-command list because `.github/workflows/**` is a gate-owned path this worker token cannot touch (separate concern; the test is run here and by any future sweep).
+
+Closes #2768
