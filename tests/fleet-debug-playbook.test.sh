@@ -269,7 +269,14 @@ grep -rl "signal: debug-playbook/" "$scratch/gh-issues" | wc -l | grep -q "^1$" 
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/swallowed.jsonl"
 
-# --- 8b. cumulative cap bounds total open issues -----------------------------
+# --- 8b. age-based dynamic cap: in-window findings are never truncated ---
+# fleet-ops#2726: the old cumulative cap silently dropped findings past
+# CUMULATIVE_CAP open issues (the gap-audit found 46 of 66 debug-playbook
+# findings sitting in the canary ledger as invisible debt). The effective
+# cap now grows to cover every finding still inside the scan window
+# (eff_cap = max(CUMULATIVE_CAP, findings)), so 5 in-window findings with
+# CUMULATIVE_CAP=3 must FILE ALL 5 (paced by the per-tick CAP), and the
+# FAIL line must size the remaining debt.
 rm -rf "$gh_store"/*
 mkdir -p "$gh_store"
 for i in one two three four five; do
@@ -291,12 +298,67 @@ FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
   "$bin" >/dev/null 2>"$scratch/err-cap.log"
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "cumulative-cap run should exit 1 (got $rc)"
+[[ "$rc" == "1" ]] || fail "age-cap run should exit 1 (got $rc)"
 n_filed=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
-[[ "$n_filed" -eq 3 ]] || fail "cumulative cap should file exactly 3 issues, got $n_filed"
-grep -q "cumulative cap reached" "$scratch/err-cap.log" || fail "cumulative cap log line missing"
-ok "cumulative cap bounds total filed issues at 3"
+[[ "$n_filed" -eq 5 ]] || fail "dynamic cap must file all 5 in-window findings (got $n_filed) — in-window findings are never truncated (fleet-ops#2726)"
+grep -qE "debt=[0-9]+" "$scratch/err-cap.log" || fail "FAIL line must size the debt (fleet-ops#2726)"
+ok "dynamic cap files all in-window findings and sizes the debt on the FAIL line"
 for i in one two three four five; do rm -f "$sessions/cap-$i.jsonl"; done
+
+# --- 8b-prime. per-tick CAP paces filings; deferred findings remain findings -----
+# Paced findings are NOT dropped: they stay in the window and the next tick
+# files them (observe-to-close drains once the session ages out). With a
+# per-tick CAP of 2 and 5 findings, the first tick files 2 and defers 3; the
+# FAIL line reports filed=2 deferred=3.
+rm -rf "$gh_store"/*
+mkdir -p "$gh_store"
+for i in one two three four five; do
+  write_session "pace-$i" "$FAIL_TWO
+{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"
+done
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_CAP=2 \
+FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP=3 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-pace.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "pace run should exit 1 (got $rc)"
+n_filed=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_filed" -eq 2 ]] || fail "per-tick CAP should file 2 in the first tick (got $n_filed)"
+grep -q "filed=2 deferred=3" "$scratch/err-pace.log" || fail "FAIL line must report filed=2 deferred=3 $(cat "$scratch/err-pace.log")"
+# Second tick: the remaining 3 findings are still in the window (not dropped),
+# so the same scan files them once the first 2 are deduped against the open
+# list. Default per-tick CAP (5) lets the backlog drain.
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP=3 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-pace2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "second pace run should exit 1 (got $rc)"
+n_filed=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_filed" -eq 5 ]] || fail "second tick must file the remaining 3 (got $n_filed) — deferred findings are not dropped (fleet-ops#2726)"
+ok "deferred findings survive the next tick and still get filed"
+for i in one two three four five; do rm -f "$sessions/pace-$i.jsonl"; done
 
 # --- 8c. observe-to-close closes stale issues -------------------------------
 rm -rf "$gh_store"/*
