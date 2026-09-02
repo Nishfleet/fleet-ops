@@ -101,6 +101,15 @@ cat > "$SEATDIR/opencode__muse-spark-1.2-contributor-free.json" << 'EOF'
 {"provider":"opencode","model":"muse-spark-1.2-contributor-free","http_status":500,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T08:03:59.641Z","source":"seat_health_extension","failure_mode":"transient_http","usable_at":null,"consecutive_failure_count":150}
 EOF
 
+# 8. fleet-ops#2806: a wall passed only 300s ago (inside the one-probe-
+#    interval grace, COMEBACK_GRACE_S=900) is MID-CYCLE — the releaser
+#    re-probes it on the next 15-min tick, so usable_at_overdue must be
+#    False even though the wall is in the past. Written against the real
+#    wall clock so it is always inside the grace regardless of when tested.
+cat > "$SEATDIR/opencode__grace-midcycle.json" << EOF
+{"provider":"opencode","model":"grace-midcycle","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","consecutive_failure_count":2}
+EOF
+
 # --- Run gather in THOROUGH mode with scratch SEATS_DIR ------------------
 # PROM_URL to dead port so promql degrades gracefully (defensive gather).
 # OPUS_HB_THOROUGH=1 so the thorough battery (incl. seat_probes_walled_comebacks)
@@ -117,10 +126,11 @@ snap = json.load(open(sys.argv[1]))
 # --- seat_table assertions ---
 seats = snap.get("seats") or {}
 assert seats.get("present") is True, "seats table must be present"
-# 7 fixture files total, 2 excluded (1 spawn-bench + 1 test__), 1 healthy,
-# 1 corpse -> n = 5 real seats, healthy_n = 1, walled_n = 1, released_n = 2,
-# dead_n = 1, excluded_n = 2
-assert seats.get("n") == 5, f"seat n must be 5 (7 fixtures - 2 excluded), got {seats.get('n')}"
+# 8 fixture files total, 2 excluded (1 spawn-bench + 1 test__), 1 healthy,
+# 1 corpse -> n = 6 real seats, healthy_n = 1, walled_n = 1, released_n = 3,
+# dead_n = 1, excluded_n = 2 (the medium-cycle fixture is an expired
+# rate_limited wall -> RELEASED, fleet-ops#2407).
+assert seats.get("n") == 6, f"seat n must be 6 (8 fixtures - 2 excluded), got {seats.get('n')}"
 assert seats.get("healthy_n") == 1, f"healthy_n must be 1, got {seats.get('healthy_n')}"
 assert seats.get("excluded_n") == 2, f"excluded_n must be 2, got {seats.get('excluded_n')}"
 ids = [r["id"] for r in seats.get("seats", [])]
@@ -147,7 +157,7 @@ assert seats.get("walled_n") == 1, (
     f"walled_n must be 1 after release-at-usable_at + corpse-dead "
     f"(only the future-wall quota seat), got {seats.get('walled_n')}"
 )
-assert seats.get("released_n") == 2, f"released_n must be 2, got {seats.get('released_n')}"
+assert seats.get("released_n") == 3, f"released_n must be 3, got {seats.get('released_n')}"
 assert seats.get("dead_n") == 1, f"dead_n must be 1, got {seats.get('dead_n')}"
 row_by_id = {r["id"]: r for r in seats.get("seats", [])}
 cmd = row_by_id.get("commandcode__minimax_minimax-m3-free")
@@ -157,6 +167,12 @@ assert cmd.get("walled") is False, f"released seat must not be walled: {cmd}"
 op = row_by_id.get("opencode__mimo-v2.5-free")
 assert op is not None and op.get("released") is True, \
     f"opencode rate_limited with passed usable_at must be released: {op}"
+# 8. fleet-ops#2806: the mid-cycle grace fixture (rate_limited, usable_at
+#    ~5 min in the past < grace 900s) — RELEASED for the census but NOT
+#    usabla_at_overdue in the per-walled-seat probe.
+grace = row_by_id.get("opencode__grace-midcycle")
+assert grace is not None and grace.get("released") is True, \
+    f"mid-cycle rate_limited wall must be released for the census: {grace}"
 cl = row_by_id.get("cline__cline-pass_deepseek-v4-flash")
 assert cl is not None and cl.get("released") is False, \
     f"quota_exhausted with future usable_at must NOT be released: {cl}"
@@ -180,12 +196,14 @@ thorough = snap.get("thorough")
 assert thorough is not None, "thorough snapshot missing (run with OPUS_HB_THOROUGH=1)"
 cb = thorough.get("slots", {}).get("seat_probes_walled_comebacks", {})
 assert cb.get("present") is True, "walled_comebacks slot must be present"
-assert cb.get("walled_n") == 3, f"walled_comebacks walled_n must be 3, got {cb.get('walled_n')}"
+assert cb.get("walled_n") == 4, f"walled_comebacks walled_n must be 4, got {cb.get('walled_n')}"
 assert cb.get("excluded_n") == 2, f"excluded_n must be 2, got {cb.get('excluded_n')}"
 
 # comeback_overdue: only seat #2 (usable_at in past) and seat #6 (retry_after
 # deadline in past) should be overdue. Seat #1 (retry_after=1857600, deadline
-# Sept 19) must NOT be overdue.
+# Sept 19) must NOT be overdue. Seat #8 (grace-midcycle, usable_at ~5 min in
+# the past, inside the one-probe-interval grace) must NOT be overdue either
+# (fleet-ops#2806).
 assert cb.get("comeback_overdue_n") == 2, (
     f"comeback_overdue_n must be 2 (only genuinely stuck seats), "
     f"got {cb.get('comeback_overdue_n')}"
@@ -239,6 +257,18 @@ assert opencode.get("retry_after_overdue") is True, (
     f"opencode retry_after_overdue must be True (deadline in past)"
 )
 print("OK: retry_after deadline in past flagged overdue")
+
+# fleet-ops#2806: the mid-cycle grace fixture (usable_at ~5 min in the past,
+# inside COMEBACK_GRACE_S=900) must NOT be usable_at_overdue — the releaser
+# re-probes it within one probe interval, so it is mid-cycle, not overdue.
+grace = [r for r in walled if r.get("id") == "opencode__grace-midcycle"]
+assert len(grace) == 1, f"mid-cycle grace fixture missing from walled probe: {[r.get('id') for r in walled]}"
+grace = grace[0]
+assert grace.get("usable_at_epoch") is not None, f"grace fixture must parse usable_at: {grace}"
+assert grace.get("usable_at_overdue") is False, (
+    f"mid-cycle seat (past by <900s grace) must NOT be usability_overdue: {grace}"
+)
+print("OK: mid-cycle seat inside one-probe-interval grace not flagged overdue (fleet-ops#2806)")
 
 print("ALL OK: seat comeback arithmetic fixed (fleet-ops#2152)")
 PY

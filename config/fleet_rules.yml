@@ -104,7 +104,7 @@ groups:
           service: fleet
         annotations:
           summary: "seat comeback overdue — wall past usable_at, still unobserved"
-          description: "One or more seats are still classed non-healthy with their usable_at/bench_until in the past (fleet-ops#2407): the router has fail-opened them but nothing re-observed them since, so they linger as an unproven walled state. The per-seat fleet_seat_comeback_overdue series names each seat. Repair worker: probe each named seat (a 1-token reply-OK probe or a real dispatch); a success writes a healthy observation and clears it, a fresh failure re-anchors usable_at and clears it. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats."
+          description: "One or more seats are still classed non-healthy with their usable_at/bench_until in the past by MORE than one probe interval (900s, fleet-ops#2806): the releaser had a full 15-min cycle to re-probe (re-anchor on a fresh failure, unwall on a success) and did not, so they linger as an unproven walled state past the releaser's cadence. The per-seat fleet_seat_comeback_overdue series names each seat; the releaser's fleet_seat_comeback_release_interval_breached gauge fires on the same boundary from inside the sweep. Repair worker: probe each named seat (a 1-token reply-OK probe or a real dispatch); a success writes a healthy observation and clears it, a fresh failure re-anchors usable_at and clears it. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats and journalctl --user -u fleet-seat-comeback-release.service."
 
       # fleet-ops#2421: the ACTIVE release path (fleet-seat-comeback-release)
       # re-probes a seat whose wall clock has passed and unwalls a
@@ -123,6 +123,28 @@ groups:
         annotations:
           summary: "seat come-back release stalled — expired walls remain and nothing was released"
           description: "fleet-seat-comeback-release swept but walled seats still hold EXPIRED wall clocks and released_this_run was 0 (fleet-ops#2421): neither a release (healthy probe) nor a re-anchor (extension write) happened, so the release path is broken for those seats. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, journalctl --user -u fleet-seat-comeback-release.service, and the pi/seat-health extension state. A seat named by the organ's LOUD line is either unroutable via pi (provider config) or failing without a ledger write (seat-health extension)."
+
+      # fleet-ops#2806: interval-breach — a walled seat whose usable_at has
+      # been past for MORE than one probe interval (900s, the same boundary
+      # the comeback-overdue metric now graces) after a completed sweep. The
+      # stalled rule above keys on wall_end_of (bench_until ?? usable_at),
+      # which the extension re-anchors into the future on every failed
+      # probe, so a chronically-failing seat (the lived 2026-09-02 nemotron
+      # 8h case) never trips it. This gauge reads the RAW usable_at: past by
+      # >1 interval at sweep end means the releaser had a full probe cycle
+      # to re-probe (re-anchor or unwall) and did not — a falsed sweep, a
+      # dead timer, or a mid-loop crash. The organ exits 1 (OnFailure
+      # escalates, last-green goes stale) the moment it fires; this rule
+      # keeps the sustained case visible at the alert plane.
+      - alert: FleetSeatComebackReleaseIntervalBreached
+        expr: fleet_seat_comeback_release_interval_breached_total > 0
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "seat comeback releaser missed a full probe cycle — seat(s) past usable_at by >1 interval"
+          description: "fleet-seat-comeback-release ended a sweep with fleet_seat_comeback_release_interval_breached_total>0 (fleet-ops#2806): at least one walled seat's usable_at is in the past by more than one probe interval (900s) after the sweep, so the releaser had a full cycle to re-probe it (re-anchor on failure, unwall on success) and did not. Inspect journalctl --user -u fleet-seat-comeback-release.service for the LOUD [COMEBACK-RELEASE-INTERVAL-BREACH] line naming each seat, and verify the fleet-seat-comeback-release.timer is firing every 15 min."
 
       # fleet-ops#2421: organ heartbeat. fleet_seat_comeback_release_last_green_seconds
       # is written only by a clean sweep (no stuck release path), so absent()

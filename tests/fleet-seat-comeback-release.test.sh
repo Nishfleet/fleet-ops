@@ -351,6 +351,16 @@ grep -q "LOUD \[COMEBACK-RELEASE-STALLED\]" "$TMPD/live-stall.err" \
   || fail "re-bench-fails: must render the LOUD line: $(cat "$TMPD/live-stall.err")"
 grep -q "^fleet_seat_comeback_release_stalled 1$" "$PROM" \
   || fail "re-bench-fails: prom stalled must be 1: $(cat "$PROM")"
+# fleet-ops#2806: the same read-only shape leaves usable_at in the past by
+# ~2h (> one probe interval) after the sweep — the interval-breach loud
+# channel must fire its own LOUD line and gauge (the releaser had a full
+# probe cycle and could not move the wall).
+grep -q "LOUD \[COMEBACK-RELEASE-INTERVAL-BREACH\]" "$TMPD/live-stall.err" \
+  || fail "re-bench-fails: must render the INTERVAL-BREACH LOUD line: $(cat "$TMPD/live-stall.err")"
+grep -q "^fleet_seat_comeback_release_interval_breached_total 1$" "$PROM" \
+  || fail "re-bench-fails: prom interval_breached_total must be 1: $(cat "$PROM")"
+grep -q "fleet_seat_comeback_release_interval_breached{seat=\"commandcode__poolside_laguna-s-2.1-free.json\"} 1" "$PROM" \
+  || fail "re-bench-fails: prom interval_breached per-seat series must name the seat: $(cat "$PROM")"
 # The overdue metric must STAY 1 here — this is the one honest stuck case
 # (wall cannot be advanced), and it is what keeps the alert loud instead
 # of the sweep clearing the overdue count while the seat is unreachable.
@@ -898,4 +908,133 @@ grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom13d.prom" \
   || fail "13d: prom retired_total must be 0 on a clean roster: $(cat "$TMPD/prom13d.prom")"
 ok "13d: clean roster (healthy + rate_limited) retires nothing, creates no dir (fleet-ops#2716)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638)"
+# --- 14. fleet-ops#2806: corpse on the merged own-failure streak -------
+# The lived nemotron/mimo shape: the seat-health extension re-anchors the
+# wall into the future on each release-probe failure (skip re-bench), and
+# its own consecutive_failure_count only increments on real responses at
+# its own cadence (15->17 across 8h of 15-min probes) — so the pre-#2806
+# corpse path, gated on the LEDGER count after a probe, never fired in a
+# useful window. The organ now keeps its own per-seat failure streak in
+# the state file (own_failures), seeded from the ledger count at first
+# sighting and advanced on EVERY probe failure, and corpses on the MERGED
+# streak (max of ledger count and own streak). Here the ledger count is a
+# low 5 (the extension never counted most failures) while the own streak
+# sits at 24 — one more failed probe crosses the threshold -> corpse.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"2026-08-30T10:02:47Z","usable_at":"2026-08-30T10:02:47Z","bench_window_s":600,"consecutive_failure_count":5}
+EOF
+STATE="$TMPD/state-own-streak.json"
+PROM="$TMPD/release-own-streak.prom"
+# Own streak pre-seeded at 24 (extension count sat at 5 — the gap the
+# merged-streak fix closes). One failed probe -> 25 -> corpse.
+jq -nc '{"last_probe":{}, "probed_total": 0, "released_total": 0, "own_failures": {"commandcode__poolside_laguna-s-2.1-free.json": 24}}' > "$STATE"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/own-streak.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "own-streak corpse: expected exit 0 (corpsed, not loud), got $rc ($(cat "$TMPD/own-streak.err"))"
+grep -q "REBENCHED commandcode/poolside/laguna-s-2.1-free" "$TMPD/own-streak.err" \
+  || fail "own-streak corpse: must log REBENCHED (failed probe re-benches): $(cat "$TMPD/own-streak.err")"
+grep -q "CORPSED commandcode/poolside/laguna-s-2.1-free" "$TMPD/own-streak.err" \
+  || fail "own-streak corpse: must log CORPSED on the merged streak: $(cat "$TMPD/own-streak.err")"
+# Corpse write carries the MERGED streak count (25 = own 24 + this failure):
+# seat_dead=true, class corpse, wall clocks cleared, source comeback_release_corpse.
+jq -e '.seat_dead == true and .health_class == "corpse" and .bench_until == null and .usable_at == null and .source == "comeback_release_corpse" and .consecutive_failure_count == 25' \
+  "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
+  || fail "own-streak corpse: ledger must be seat_dead=true, wall cleared, count=25: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
+# Terminal skip: a follow-up sweep must not re-probe or re-corpsed the seat.
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/own-streak-followup.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "own-streak corpse follow-up: expected exit 0 (skipped), got $rc"
+grep -qi "poolside" "$TMPD/own-streak-followup.err" \
+  && fail "own-streak corpse follow-up: corpse must be skipped terminally: $(cat "$TMPD/own-streak-followup.err")"
+corpse_total=$(jq -r '.corpse_total // 0' "$STATE")
+[[ "$corpse_total" == "1" ]] || fail "own-streak corpse: corpse_total must be 1, got $corpse_total"
+ok "corpse on merged own-failure streak: own=24 + failed probe -> 25 corpse, terminal skip (fleet-ops#2806)"
+
+# --- 15. fleet-ops#2806: no interval-breach false positive in-cadence ----
+# A seat whose usable_at passed less than one probe interval ago (500s <
+# 900s) is mid-cycle: the sweep probes it (the wall is past), the probe
+# fails, and the re-bench advances the wall into the future. The breach
+# gauge must stay 0 (the releaser IS operating — a past-by-<interval wall
+# at sweep start is its normal job), exit 0, no LOUD line.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << EOF
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":503,"retry_after":null,"health_class":"overload_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:52:47Z","source":"overload_bench","failure_mode":"overload_503","bench_until":"$(date -u -d '2026-08-30T12:00:00Z - 500 seconds' +%Y-%m-%dT%H:%M:%SZ)","usable_at":"$(date -u -d '2026-08-30T12:00:00Z - 500 seconds' +%Y-%m-%dT%H:%M:%SZ)","bench_window_s":600,"consecutive_failure_count":5}
+EOF
+STATE="$TMPD/state-in-cadence.json"
+PROM="$TMPD/release-in-cadence.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/in-cadence.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "in-cadence: expected exit 0 (re-benched, not loud), got $rc ($(cat "$TMPD/in-cadence.err"))"
+grep -q "REBENCHED commandcode/poolside/laguna-s-2.1-free" "$TMPD/in-cadence.err" \
+  || fail "in-cadence: must log REBENCHED (failed probe re-benches the mid-cycle wall): $(cat "$TMPD/in-cadence.err")"
+grep -q "INTERVAL-BREACH" "$TMPD/in-cadence.err" \
+  && fail "in-cadence: past-by-<interval wall must NOT breach: $(cat "$TMPD/in-cadence.err")"
+grep -q "^fleet_seat_comeback_release_interval_breached_total 0$" "$PROM" \
+  || fail "in-cadence: prom interval_breached_total must be 0: $(cat "$PROM")"
+grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
+  || fail "in-cadence: prom stalled must be 0 (re-benched): $(cat "$PROM")"
+new_usable=$(jq -r '.usable_at' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")
+new_usable_epoch=$(date -u -d "$new_usable" +%s 2>/dev/null || echo 0)
+(( new_usable_epoch > NOW_EPOCH )) || fail "in-cadence: wall must be advanced into the future, got $new_usable"
+ok "in-cadence: past-by-<interval wall probed + re-benched, breach gauge 0, exit 0 (fleet-ops#2806)"
+
+# --- 16. fleet-ops#2806: own-failure streak resets on a healthy interlude --
+# The streak must NOT persist across a recovery: a seat that is observed
+# healthy (real worker passed it, or the extension re-wrote it healthy)
+# breaks the consecutive-failure streak even though the release organ did
+# not probe it this sweep. Without the reset, a seat that recovered and
+# then re-walled would carry its old streak forward and corpse too fast.
+# State holds own_failures=24; the ledger is HEALTHY -> sweep clears the
+# streak (state own_failures=0) and takes no other action, exit 0.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" << 'EOF'
+{"provider":"commandcode","model":"poolside/laguna-s-2.1-free","http_status":200,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:55:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+STATE="$TMPD/state-streak-reset.json"
+PROM="$TMPD/release-streak-reset.prom"
+jq -nc '{"last_probe":{}, "probed_total": 0, "released_total": 0, "own_failures": {"commandcode__poolside_laguna-s-2.1-free.json": 24}}' > "$STATE"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/streak-reset.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "streak-reset: expected exit 0, got $rc ($(cat "$TMPD/streak-reset.err"))"
+grep -qi "poolside" "$TMPD/streak-reset.err" \
+  && fail "streak-reset: healthy seat must not be probed or mentioned: $(cat "$TMPD/streak-reset.err")"
+own_failures=$(jq -r '.own_failures["commandcode__poolside_laguna-s-2.1-free.json"] // 0' "$STATE")
+[[ "$own_failures" == "0" ]] \
+  || fail "streak-reset: own_failures must reset to 0 on a healthy observation, got $own_failures: $(cat "$STATE")"
+grep -q "^fleet_seat_comeback_release_interval_breached_total 0$" "$PROM" \
+  || fail "streak-reset: prom interval_breached_total must be 0: $(cat "$PROM")"
+ok "own-failure streak resets on a healthy interlude; no probe, no breach (fleet-ops#2806)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806)"

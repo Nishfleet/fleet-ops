@@ -1947,6 +1947,17 @@ _SEAT_RELEASE_AT_EXPIRY_CLASSES = frozenset(
     }
 )
 
+# fleet-ops#2806: one probe interval. The releaser
+# (bin/fleet-seat-comeback-release) re-probes a walled seat within this
+# window of its wall clock passing (seat-caps.json
+# walled_comeback.min_probe_interval_s=900). A seat whose wall passed more
+# than this many seconds ago while still walled means the releaser had a
+# full probe cycle and did not act — overdue by more than one probe
+# interval. The comeback-overdue metric and the thorough gather's
+# usable_at_overdue grace on this boundary so a mid-cycle seat (a few
+# minutes past, releaser about to re-probe) is not flagged.
+COMEBACK_OVERDUE_GRACE_S = 900
+
 
 def _seat_wall_end_epoch(data):
     """Epoch (s) of a ledger's wall clock, or None when not held by a clock.
@@ -2001,6 +2012,23 @@ def _read_comeback_overdue():
     counts only once its own wall clock has passed (a hard billing wall whose
     reset window elapsed is exactly an overdue comeback).
 
+    fleet-ops#2806: the RELEASER (bin/fleet-seat-comeback-release) re-probes a
+    walled seat within one probe interval (walled_comeback.
+    min_probe_interval_s, ~900s) of its wall clock passing — the seat returns
+    to the healthy pool at usable_at (the router fail-opens it and this
+    rollup already releases it, fleet-ops#2407). A seat whose wall passed only
+    seconds ago is therefore mid-cycle, NOT overdue; the metric must not
+    flag the releaser for a state it is about to act on (the lived
+    2026-09-02T09:45Z case: two seats 6-14min past usable_at, releaser firing
+    in the same tick, FleetSeatComebackOverdue pending at value=2). The
+    overdue flag is graced by one probe interval: only a seat whose wall
+    clock is past by MORE than COMEBACK_OVERDUE_GRACE_S (default 900) counts
+    — the releaser had a full probe cycle to re-probe (re-anchor or unwall)
+    and did not. This is the "overdue by more than one probe interval"
+    boundary; the release organ's own interval-breach loud check
+    (fleet_seat_comeback_release_interval_breached, fleet-ops#2806) fires on
+    the same boundary from inside the sweep.
+
     Returns (count, [ {provider, model, health_class, usable_at, bench_until} ]).
     Never raises on a missing/unreadable ledger.
     """
@@ -2030,7 +2058,13 @@ def _read_comeback_overdue():
             # No wall clock: nothing to come back from — not an overdue
             # comeback (the class is a defensive hold or legacy garbage; the
             # census still counts it walled). Only expired clocks alarm.
-            if end is None or end >= now:
+            if end is None:
+                continue
+            # fleet-ops#2806: grace of one probe interval. A seat whose wall
+            # passed within the grace window is mid-cycle — the releaser
+            # re-probes it on the next 15-min tick (re-anchor or unwall).
+            # Only a wall past by more than one probe interval is OVERDUE.
+            if now - end <= COMEBACK_OVERDUE_GRACE_S:
                 continue
             seats.append(
                 {
