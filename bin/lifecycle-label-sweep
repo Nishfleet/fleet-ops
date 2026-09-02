@@ -94,6 +94,29 @@ export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 
+# --- help ---------------------------------------------------------------
+# fleet-ops#2889: --help/-h must print usage and exit 0 without taking the
+# flock, listing issues, or mutating labels.
+case "${1:-}" in
+    --help|-h)
+        cat <<'HELP'
+lifecycle-label-sweep — every open issue in an enrolled repo gets a
+lifecycle label within one heartbeat tick (fleet-ops#376).
+
+Usage: lifecycle-label-sweep [--help|-h]
+
+Modes:
+  --classify TITLE   print the lifecycle label for TITLE (no network)
+  --drill            set LIFECYCLE_SWEEP_DRILL=1 then sweep
+  (default)          sweep enrolled repos
+
+Exit 0 on a clean sweep, overlapping no-op, or a passing drill.
+Non-zero on unexpected failure or a failing drill.
+HELP
+        exit 0
+        ;;
+esac
+
 classify() {
     local title="$1"
     local repo="${2:-}"
