@@ -16,9 +16,15 @@
 # filed with only gap-audit are invisible to intake until this sweep
 # adds agent-ready (fleet-ops#402 leftovers; the auditor now dual-labels
 # at create time, this is the observe-to-close path). scout-candidate is
-# the admission-queue lifecycle label (fleet-ops#457).
+# the admission-queue lifecycle label (fleet-ops#457). discarded is the
+# terminal admission-reject label (fleet-ops#146 / #2766): without it in
+# this set, pi-audit-tally's remove-scout-candidate + add-discarded left
+# the issue "unlabeled" from the sweep's POV, so the next tick re-added
+# scout-candidate and the panel re-discarded forever (0509#1140: 4
+# discard↔requeue cycles in 90 min; 6142 discards/7d).
 #   agent-ready / agent-in-progress / agent-blocked
 #   scout-candidate
+#   discarded
 #   nish-reserved
 #   noise-class
 #   observe-to-close
@@ -178,6 +184,7 @@ label_color() {
         drill:lifecycle) printf '%s' "EDEDED" ;;
         agent-ready)     printf '%s' "0E8A16" ;;
         scout-candidate) printf '%s' "FBCA04" ;;
+        discarded)       printf '%s' "B60205" ;;
         *)               printf '%s' "EDEDED" ;;
     esac
 }
@@ -190,6 +197,7 @@ label_desc() {
         drill:lifecycle) printf '%s' "Lifecycle-label drill fixture (fleet-ops#376)" ;;
         agent-ready)     printf '%s' "Auto: ready for a worker to claim" ;;
         scout-candidate) printf '%s' "Queued for senior admission; not yet agent-ready" ;;
+        discarded)       printf '%s' "Senior admission rejected (2-of-3 FAIL); terminal, do not re-queue (fleet-ops#146/#2766)" ;;
         *)               printf '%s' "Lifecycle label (fleet-ops#376)" ;;
     esac
 }
@@ -197,7 +205,7 @@ label_desc() {
 is_lifecycle_label() {
     local name="$1"
     case "$name" in
-        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate|observe-to-close) return 0 ;;
+        agent-ready|agent-in-progress|agent-blocked|nish-reserved|noise-class|scout-candidate|discarded|observe-to-close) return 0 ;;
         drill:*) return 0 ;;
     esac
     return 1
@@ -271,6 +279,7 @@ relabeled=0
 skipped=0
 failed=0
 reclassified=0
+healed=0
 drill_repo=""
 drill_num=""
 
@@ -437,6 +446,41 @@ while IFS= read -r repo; do
         fi
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 
+    # fleet-ops#2766: heal dual-labeled discarded+scout-candidate leftovers.
+    # Before discarded was a lifecycle label, the sweep re-added
+    # scout-candidate on every discarded issue; 29 dual-labeled leftovers
+    # on 0509 alone were still burning admission capacity (auditor lists
+    # -l scout-candidate). Drop scout-candidate so discarded alone is the
+    # terminal state. Idempotent: once healed, discarded alone is skipped
+    # by issue_has_lifecycle above and never reaches this pass again.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        has_discarded=0
+        has_scout=0
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            case "$name" in
+                discarded) has_discarded=1 ;;
+                scout-candidate) has_scout=1 ;;
+            esac
+        done < <(printf '%s' "$labels_json" | jq -r '.[].name // empty')
+        if (( has_discarded == 1 && has_scout == 1 )); then
+            log "  $repo#$num: discarded+scout-candidate dual-label → drop scout-candidate ($title)"
+            if [ "$DRY" = "1" ]; then
+                log "DRY $repo#$num: remove-label scout-candidate (heal discarded)"
+                healed=$((healed + 1))
+            elif gh issue edit "$num" -R "$repo" --remove-label scout-candidate >/dev/null 2>&1; then
+                healed=$((healed + 1))
+            else
+                log "  $repo#$num: remove-label scout-candidate FAILED — retry next tick"
+                failed=$((failed + 1))
+            fi
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+
     # fleet-ops#1083: class-lock reclassification pass. A class-lock issue
     # (fix(failed-command): / fix(decisions-ledger):) whose class-lock PR
     # has merged is parked under observe-to-close so intake stops
@@ -471,9 +515,9 @@ while IFS= read -r repo; do
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
-log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified"
-printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s\n' \
-    "$relabeled" "$skipped" "$failed" "$reclassified"
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s\n' \
+    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed"
 
 if [ "$DRILL" = "1" ]; then
     if [ "$DRY" = "1" ]; then

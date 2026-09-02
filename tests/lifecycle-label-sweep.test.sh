@@ -455,4 +455,47 @@ grep -q 'reclassified=0' <<<"$out" || fail "observe-to-close reclassified: $out"
 ok "class-lock issue already under observe-to-close is left alone (idempotent)"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
+# Case 14: discarded alone is a lifecycle label — sweep must NOT re-add
+# scout-candidate (fleet-ops#2766). Live #1140 loop: discard drops
+# scout-candidate, sweep treated the issue as unlabeled, re-added
+# scout-candidate, panel re-discarded — 4 cycles in 90 min.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1140,"title":"feat(gate): require implementer and attestor to be different identities","labels":[{"name":"discarded"}]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err14.txt")
+grep -q 'relabeled=0' <<<"$out" || fail "discarded-alone relabeled: $out"
+[[ -s "$scratch/edits.log" ]] && fail "discarded-alone must not edit: $(cat "$scratch/edits.log")"
+ok "discarded alone is a lifecycle label — sweep leaves it alone (fleet-ops#2766)"
+
+# Case 14b: discarded+scout-candidate dual-label leftover is healed by
+# dropping scout-candidate (fleet-ops#2766). Pre-fix leftovers still
+# carry both labels; the heal pass makes discarded alone the terminal
+# state so the auditor stops listing them.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1558,"title":"Remove or document dormant Slack/WhatsApp delivery channels","labels":[{"name":"scout-candidate"},{"name":"discarded"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err14b.txt")
+grep -q 'healed=1' <<<"$out" || fail "dual-label heal: $out"
+grep -q -- '--remove-label scout-candidate' "$scratch/edits.log" \
+  || fail "dual-label must drop scout-candidate: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label' "$scratch/edits.log"; then
+  fail "dual-label must not add any label: $(cat "$scratch/edits.log")"
+fi
+ok "discarded+scout-candidate dual-label → drop scout-candidate (fleet-ops#2766)"
+
+# Case 14c: an unlabeled product issue still becomes scout-candidate
+# (admission path unchanged by the discarded lifecycle addition).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":9999,"title":"fix(search): empty state lacks cross-link","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err14c.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "unlabeled product still relabeled: $out"
+grep -q -- '--add-label scout-candidate' "$scratch/edits.log" \
+  || fail "unlabeled product must still get scout-candidate: $(cat "$scratch/edits.log")"
+ok "unlabeled product issue still → scout-candidate after discarded lifecycle addition"
+
 echo "all lifecycle-label-sweep cases passed"
