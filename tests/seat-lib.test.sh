@@ -1243,6 +1243,56 @@ grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
 grep -q "stale >" "$PI_PACKET_STATE/watch.log" \
   && fail "stale-obs-bench: must NOT take the stale-observed_at fail-open path while bench_until is future"
 
+# 9g2: quota_exhausted with a future usable_at outlives STALE_SECS the same
+# way quota_bench's bench_until does. Live 2026-09-02 FleetProviderQuotaExhausted:
+# two cline-pass 402s (retry_after ~1.4e6s / usable_at 16d out) were re-offered
+# after observed_at aged past 6h, 402'd again, and the 1h provider-quota window
+# never emptied. Honour usable_at; do NOT take the stale fail-open.
+stale_obs_qe=$(date -u -d '7 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+future_qe=$(date -u -d "@$((now + 1425600))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$stale_obs_qe" --arg use "$future_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use,consecutive_failure_count:9}' \
+  > "$ledger/cline__cline-pass_deepseek-v4-flash.json"
+jq -n --arg obs "$stale_obs_qe" --arg use "$future_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use,consecutive_failure_count:18}' \
+  > "$ledger/cline__cline-pass_minimax-m3.json"
+export PI_PACKET_STATE="$scratch/state-qe-stale-obs"
+# Direct seat_usable: must refuse, must log the until-usable_at line, must
+# NOT log the 6h stale fail-open.
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/deepseek-v4-flash" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "stale-obs-qe: seat_usable must refuse stale quota_exhausted with future usable_at (got rc=0)"
+grep -q "UNUSABLE (quota_exhausted until $future_qe)" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-qe: must log UNUSABLE (quota_exhausted until <usable_at>)"
+grep -q "stale >" "$PI_PACKET_STATE/watch.log" \
+  && fail "stale-obs-qe: must NOT take the stale-observed_at fail-open path while usable_at is future"
+# pick_seat must also skip both (rc=1, no stdout) rather than re-offer.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/tried-bench.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "stale-obs-qe: pick_seat expected rc=1 (still walled despite stale observed_at), got rc=$rc out=$out"
+[[ -z "$out" ]] || fail "stale-obs-qe: pick_seat must print nothing, got: $out"
+# Expired usable_at on a stale observation fail-opens once (the advertised
+# reset has passed; one probe, not a 6h re-offer loop).
+past_qe=$(date -u -d "@$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$stale_obs_qe" --arg use "$past_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use}' \
+  > "$ledger/cline__cline-pass_deepseek-v4-flash.json"
+jq -n --arg obs "$stale_obs_qe" --arg use "$past_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use}' \
+  > "$ledger/cline__cline-pass_minimax-m3.json"
+export PI_PACKET_STATE="$scratch/state-qe-expired"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/deepseek-v4-flash" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "stale-obs-qe-expired: expired usable_at must fail-open (got rc=$rc)"
+grep -q "quota_exhausted wall expired" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-qe-expired: must log wall-expired fail-open"
+
 # Restore the canonical scratch cap map so any later re-source is unaffected.
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export PI_MODELS_JSON="$scratch/models.json"
@@ -1260,6 +1310,7 @@ ok "enumerate_seats: cursor composer excluded from heavy; cursor-grok-4.6-high r
 ok "quota_bench: writer parses window -> bench_until future -> seat_usable skips with 'benched until' log"
 ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SEAT (no attempt consumed); expired bench_until -> fail-open pick"
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"
+ok "quota_exhausted: stale observed_at (>6h) with future usable_at still skipped (weekly 402 outlives STALE_SECS)"
 ok "quota_bench: opencode/mimo-v2.5-free FreeUsageLimitError (no window) benches 900s via provider default; pick_seat skips (fleet-ops#650/661)"
 ok "quota_bench: is_quota_cap_error matches FreeUsageLimitError 429-no-window; rejects bare transient 429 (9b-mimo)"
 
