@@ -298,14 +298,90 @@ grep -qF "MONEY-BOUNDARY hash=m1 delivered=true" "$AS/NISH-ESCALATIONS.md" \
 ok "scenario 4: small file does NOT promote delivered boundary entries (size check)"
 
 # ---------------------------------------------------------------------------
-# Scenario 5: bad arg path (usage error).
+# Scenario 5: STUCK_AGE_S threshold (fleet-ops#2677 follow-up). A
+# webhook packet older than the threshold with no terminal record is
+# flagged LOUD. The default threshold is 6h (21600s); a 7h-old packet
+# must trip the LOUD line, a 1h-old packet must not. Threshold is
+# configurable via FLEET_ESCALATION_DRAIN_STUCK_AGE_S so a tighter SRE
+# can raise it without editing the drain.
+# ---------------------------------------------------------------------------
+rm -rf "$AS/alert-repair"
+mkdir -p "$AS/alert-repair"
+# Empty ledger (no terminal records — every packet is "no terminal").
+: > "$AS/alert-repair/chains.terminated.jsonl"
+
+# Compute packet filenames whose embedded webhook timestamps bracket the
+# 6h threshold from now. The drain ages a packet by its filename ISO,
+# NOT by mtime (the file may have been re-touched by hand without
+# changing the dispatch instant). The packet name IS the contract.
+ts_7h_ago="$(date -u -d '7 hours ago' +%Y%m%dT%H%M%SZ)"
+ts_1h_ago="$(date -u -d '1 hour ago' +%Y%m%dT%H%M%SZ)"
+
+# 7h-old packet (filename ts = now-7h): MUST be flagged LOUD.
+touch "$AS/alert-repair/packet-FleetStaleA-${ts_7h_ago}.md"
+# 1h-old packet (filename ts = now-1h): must NOT be flagged LOUD.
+touch "$AS/alert-repair/packet-FleetStaleB-${ts_1h_ago}.md"
+# Canary scaffolding (no ts suffix): must be preserved and never LOUD.
+touch "$AS/alert-repair/packet-11-completion-canary.md"
+
+run_drain
+
+# Both packets must be preserved (never silently deleted).
+[[ -f "$AS/alert-repair/packet-FleetStaleA-${ts_7h_ago}.md" ]] \
+    || fail "scenario 5: 7h-old packet (no terminal) must be KEPT, never silently deleted"
+[[ -f "$AS/alert-repair/packet-FleetStaleB-${ts_1h_ago}.md" ]] \
+    || fail "scenario 5: 1h-old packet (no terminal) must be KEPT, never silently deleted"
+[[ -f "$AS/alert-repair/packet-11-completion-canary.md" ]] \
+    || fail "scenario 5: canary scaffolding must be KEPT (no ts suffix)"
+
+# 7h-old packet must be flagged LOUD.
+grep -q "STUCK-PACKET.*packet-FleetStaleA-${ts_7h_ago}.md" "$scratch/run.stderr" \
+    || fail "scenario 5: 7h-old no-terminal packet MUST trip LOUD STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
+# 1h-old packet must NOT be in the LOUD line (the LOUD line only names
+# packets older than the threshold).
+if grep -q "STUCK-PACKET.*packet-FleetStaleB-${ts_1h_ago}.md" "$scratch/run.stderr"; then
+    fail "scenario 5: 1h-old packet must NOT trip LOUD STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
+fi
+# Canary scaffolding must never appear in the LOUD line.
+if grep -q "STUCK-PACKET.*packet-11-completion-canary.md" "$scratch/run.stderr"; then
+    fail "scenario 5: canary scaffolding must NEVER appear in LOUD line; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 5: 6h threshold — 7h packet LOUD, 1h packet silent, scaffolding ignored"
+
+# Override the threshold: with STUCK_AGE_S=2h (7200s), a 3h-old packet
+# must now LOUD (it was silent under the 6h default), and the line must
+# echo the override value. The 1h-old packet stays silent either way.
+ts_3h_ago="$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)"
+rm -f "$scratch/run.stderr"
+touch "$AS/alert-repair/packet-FleetStaleC-${ts_3h_ago}.md"
+FLEET_ESCALATION_DRAIN_STUCK_AGE_S=7200 \
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" 2>"$scratch/run.stderr"
+grep -q "STUCK-PACKET.*packet-FleetStaleC-${ts_3h_ago}.md" "$scratch/run.stderr" \
+    || fail "scenario 5: override STUCK_AGE_S=2h must flag 3h-old packet LOUD; stderr: $(cat "$scratch/run.stderr")"
+# The override should be reflected in the LOUD line.
+grep -q "older than 7200s" "$scratch/run.stderr" \
+    || fail "scenario 5: override STUCK_AGE_S must echo the new threshold in the LOUD line; stderr: $(cat "$scratch/run.stderr")"
+# The 1h-old packet must STILL be silent under the tighter override
+# (1h < 2h threshold) — proves the threshold is the only signal.
+if grep -q "STUCK-PACKET.*packet-FleetStaleB-${ts_1h_ago}.md" "$scratch/run.stderr"; then
+    fail "scenario 5: 1h-old packet must STAY silent under STUCK_AGE_S=2h; stderr: $(cat "$scratch/run.stderr")"
+fi
+ok "scenario 5: FLEET_ESCALATION_DRAIN_STUCK_AGE_S override is honored"
+
+# ---------------------------------------------------------------------------
+# Scenario 6: bad arg path (usage error).
 # ---------------------------------------------------------------------------
 set +e
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" bash "$bin" --bogus-arg 2>"$scratch/bad.err" >/dev/null
 rc=$?
 set -e
-[[ "$rc" -eq 2 ]] || fail "scenario 5: usage error must exit 2, got rc=$rc"
-ok "scenario 5: --bogus-arg exits 2 with usage message"
+[[ "$rc" -eq 2 ]] || fail "scenario 6: usage error must exit 2, got rc=$rc"
+ok "scenario 6: --bogus-arg exits 2 with usage message"
 
 echo
 echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773)"
