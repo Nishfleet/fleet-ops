@@ -134,8 +134,11 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 [[ -n "$ORIGIN_MANIFEST" ]] && ok "origin/main manifest fetched for stale-checkout guard"
 
-# System timers we exclude (OS-managed, not fleet)
+# Non-fleet timers we exclude (OS- or runner-image-managed, not fleet).
 SYSTEM_TIMERS=(
+    # GitHub ubuntu-latest runner image ships podman's user timer as a unit
+    # file; it is image noise, not a fleet schedule (red-on-main 2026-09-02).
+    "podman-auto-update.timer"
     "launchpadlib-cache-clean.timer"
     "systemd-tmpfiles-clean.timer"
     "apt-daily-upgrade.timer"
