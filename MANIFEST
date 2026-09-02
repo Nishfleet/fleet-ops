@@ -512,6 +512,10 @@ systemd/resilience-drill-stub-restart.service /home/nish/.config/systemd/user/re
 lib/precedence-band.sh /home/nish/.local/lib/pi-packet/precedence-band.sh
 lib/vault-conflict-resolver.py /home/nish/.local/bin/vault-conflict-resolver
 systemd/pi-intake@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-keystone-hc.conf
+# fleet-ops#1377 / #2924: deterministic tick overrides model-path ExecStart.
+# Live host ran this as a hand-placed real file for 7+ days; absorb so a
+# redeploy cannot silently reintroduce pi-intake-run.
+systemd/pi-intake@.service.d/10-use-tick.conf /home/nish/.config/systemd/user/pi-intake@.service.d/10-use-tick.conf
 systemd/pi-scout@.service.d/10-keystone-hc.conf /home/nish/.config/systemd/user/pi-scout@.service.d/10-keystone-hc.conf
 systemd/intake-reconcile.service.d/20-keystone-hc.conf /home/nish/.config/systemd/user/intake-reconcile.service.d/20-keystone-hc.conf
 systemd/system/tailscaled.service.d/50-restart-always.conf /etc/systemd/system/tailscaled.service.d/50-restart-always.conf

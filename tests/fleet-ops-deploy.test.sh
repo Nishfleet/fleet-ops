@@ -99,6 +99,16 @@ grep -q 'fleet-ops#371' "$repo_root/install.sh" \
     || fail "install.sh cap-drop refuse must name fleet-ops#371"
 grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the paper-over heartbeat drop-in"
+grep -q 'remove_stale_scout_prom_mode_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
+grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
+grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
+    || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
+[[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
+    || fail "repo must ship systemd/pi-intake@.service.d/10-use-tick.conf"
+grep -q 'pi-intake-tick.sh' "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" \
+    || fail "10-use-tick.conf must ExecStart the deterministic tick"
 grep -q 'refuse_noncanonical_install' "$repo_root/install.sh" \
     || fail "install.sh must refuse to install from a non-canonical workspaces checkout"
 grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \

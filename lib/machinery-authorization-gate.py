@@ -52,7 +52,17 @@ UNIT_SUFFIXES = (
     ".slice",
     ".socket",
     ".target",
+    ".scope",
 )
+
+# Drop-in directories systemd merges onto a unit. hunt must scan these too
+# (fleet-ops#2924): an ExecStart override in a real-file .service.d/*.conf
+# is invisible when hunt only looks at top-level unit names.
+DROPIN_DIR_SUFFIXES = tuple(f"{suf}.d" for suf in UNIT_SUFFIXES)
+
+# Runtime per-instance caps written by pi-intake-tick / seat plumbing.
+# Real files by design; not hand-placed machinery.
+EPHEMERAL_DROPIN_NAMES = frozenset({"memory.conf", "environment.conf"})
 
 # Transient / runtime units systemd itself writes; not hand-placed machinery.
 TRANSIENT_DIR_MARKERS = (
@@ -353,13 +363,84 @@ def _unit_stem_from_unit_file(name: str) -> str | None:
     return None
 
 
+def _is_dropin_dir_name(name: str) -> bool:
+    return any(name.endswith(suf) for suf in DROPIN_DIR_SUFFIXES)
+
+
+def _dropin_parent_unit(dropin_dir_name: str) -> str:
+    """pi-scout@.service.d → pi-scout@; fleet-metrics-export.service.d → fleet-metrics-export."""
+    for suf in DROPIN_DIR_SUFFIXES:
+        if dropin_dir_name.endswith(suf):
+            return dropin_dir_name[: -len(suf)]
+    return dropin_dir_name
+
+
+def _is_dropin_path(path: str) -> bool:
+    """True when path looks like <unit>.<type>.d/<name>.conf."""
+    if not path or not path.endswith(".conf"):
+        return False
+    parts = Path(path).parts
+    if len(parts) < 2:
+        return False
+    return _is_dropin_dir_name(parts[-2])
+
+
+def _scan_live_unit_dir(unit_dir: Path) -> list[dict[str, Any]]:
+    """Collect top-level unit files and real-file drop-in confs under unit_dir."""
+    rows: list[dict[str, Any]] = []
+    if not unit_dir.is_dir():
+        return rows
+    for entry in sorted(unit_dir.iterdir()):
+        try:
+            if entry.is_symlink() or entry.is_file():
+                if not entry.name.endswith(UNIT_SUFFIXES):
+                    continue
+                stem = _unit_stem_from_unit_file(entry.name)
+                if not stem:
+                    continue
+                rows.append(
+                    {
+                        "kind": "unit",
+                        "unit": stem,
+                        "path": str(entry),
+                        "symlink": entry.is_symlink(),
+                    }
+                )
+                continue
+            if not entry.is_dir() or not _is_dropin_dir_name(entry.name):
+                continue
+            parent = _dropin_parent_unit(entry.name)
+            for conf in sorted(entry.glob("*.conf")):
+                if conf.name in EPHEMERAL_DROPIN_NAMES:
+                    continue
+                try:
+                    is_link = conf.is_symlink()
+                except OSError:
+                    continue
+                rows.append(
+                    {
+                        "kind": "drop-in",
+                        "unit": parent,
+                        "dropin": f"{entry.name}/{conf.name}",
+                        "path": str(conf),
+                        "symlink": is_link,
+                    }
+                )
+        except OSError:
+            continue
+    return rows
+
+
 def hunt(payload: dict[str, Any]) -> dict[str, Any]:
-    """Flag hand-placed (non-symlink) user units not on the allowlist.
+    """Flag hand-placed (non-symlink) user units and drop-ins not on the allowlist.
 
     Payload keys:
       allowlist / allowlist_path
       unit_files — optional fixture list of
-        {unit, path, symlink?}  (symlink true skips; path real-file required)
+        {unit, path, symlink?, kind?, dropin?}  (symlink true skips;
+         path real-file required). kind=drop-in (or a path under *.d/)
+         flags real-file drop-ins even when the parent unit is allowlisted
+         (fleet-ops#2924).
       unit_dir   — live scan root (default ~/.config/systemd/user)
     """
     allowlist_data = payload.get("allowlist")
@@ -385,32 +466,25 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
                 or Path.home() / ".config/systemd/user"
             )
         ).expanduser()
-        unit_files = []
-        if unit_dir.is_dir():
-            for entry in sorted(unit_dir.iterdir()):
-                if not entry.name.endswith(UNIT_SUFFIXES):
-                    continue
-                stem = _unit_stem_from_unit_file(entry.name)
-                if not stem:
-                    continue
-                try:
-                    is_link = entry.is_symlink()
-                except OSError:
-                    continue
-                unit_files.append(
-                    {
-                        "unit": stem,
-                        "path": str(entry),
-                        "symlink": is_link,
-                    }
-                )
+        unit_files = _scan_live_unit_dir(unit_dir)
 
     for row in unit_files:
         if not isinstance(row, dict):
             continue
         unit = str(row.get("unit") or "").strip()
         path = str(row.get("path") or "").strip()
-        if not unit:
+        kind = str(row.get("kind") or "").strip().lower()
+        if not kind:
+            kind = "drop-in" if _is_dropin_path(path) else "unit"
+        dropin = str(row.get("dropin") or "").strip()
+        if kind == "drop-in" and not dropin and path:
+            # Derive "pi-scout@.service.d/20-prom-mode.conf" from the path.
+            parts = Path(path).parts
+            if len(parts) >= 2:
+                dropin = f"{parts[-2]}/{parts[-1]}"
+        if not unit and kind != "drop-in":
+            continue
+        if kind == "drop-in" and not dropin:
             continue
         if row.get("symlink") is True:
             continue
@@ -427,6 +501,45 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
         elif row.get("symlink") is not False:
             continue
 
+        if kind == "drop-in":
+            # Parent allowlist does NOT silence a real-file drop-in: that is
+            # the #2924 gap (ExecStart override hiding under an allowlisted
+            # unit). Ephemeral memory/environment.conf are filtered at scan.
+            if Path(dropin).name in EPHEMERAL_DROPIN_NAMES:
+                continue
+            seen_key = f"drop-in:{dropin}"
+            if seen_key in seen:
+                continue
+            seen.add(seen_key)
+            findings.append(
+                {
+                    "rank": rank,
+                    "title": (
+                        "hand-placed drop-in not repo-sourced: "
+                        f"{dropin}"
+                    ),
+                    "body": (
+                        "A non-symlink .conf under ~/.config/systemd/user/"
+                        "*.d/ is a real file (not a symlink into the repo "
+                        "systemd/ tree). Hand-placed ExecStart / ExecStartPre "
+                        "overrides hide from a unit-name-only hunt "
+                        "(fleet-ops#2924 / #1548). Absorb into the repo + "
+                        "MANIFEST, or delete if superseded. Route to senior "
+                        "conference when the override is new machinery."
+                    ),
+                    "severity": "high",
+                    "evidence": f"dropin={dropin} path={path} unit={unit}",
+                    "unit": unit,
+                    "dropin": dropin,
+                    "kind": "drop-in",
+                    "path": path,
+                }
+            )
+            rank += 1
+            continue
+
+        if not unit:
+            continue
         if allowlisted(unit, allowed):
             continue
         if unit in seen:
@@ -446,6 +559,7 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
                 "severity": "high",
                 "evidence": f"unit={unit} path={path}",
                 "unit": unit,
+                "kind": "unit",
                 "path": path,
             }
         )
