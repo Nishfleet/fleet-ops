@@ -597,9 +597,16 @@ def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> N
     if is_under(checkout_r, ws_r) and checkout_r != canon_r:
         findings.append(f"checkout {checkout_r} is not the canonical checkout {canon_r}")
 
-    for dest in expected_dests:
+    for dest, src in expected_dests.items():
         dest_path = Path(dest)
         if dest.startswith("/etc/"):
+            continue
+        # fleet-ops#2910: seat-caps.json is intentionally a regular file copy
+        # (not a symlink) so `git reset --hard` on the deploy-clone cannot
+        # silently rewrite the live config. Exempt it from the must-be-a-
+        # symlink check; check_live_matches_origin_main still compares its
+        # bytes to origin/main, and install.sh still guards cap downgrades.
+        if src.name == "seat-caps.json":
             continue
         if dest_path.is_symlink():
             try:
