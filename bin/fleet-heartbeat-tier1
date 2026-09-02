@@ -658,6 +658,48 @@ while IFS= read -r repo; do
             fi
         fi
 
+        # fleet-ops#2675: verify cue gate. A merged PR must carry a
+        # Verification: or run-proof: line so the fleet_verified_merge_ratio
+        # (fleet-ops#1136) stays honest. Auto-revert PRs (revert/*) are
+        # exempt — they restore green main automatically and have no worker
+        # to produce a verify cue.
+        is_revert=0
+        case "$pr_head" in
+            revert/*) is_revert=1 ;;
+        esac
+        if [ "$is_revert" -eq 0 ]; then
+            pr_body=$(gh pr view "$pr_num" -R "$repo" --json body --jq '.body // ""' 2>/dev/null) || pr_body=""
+            has_verify=0
+            # Check for Verification: (with run-cue on same or following lines)
+            # or run-proof: line. Mirrors _has_delivery_evidence in fleet-metrics-export.py.
+            if printf '%s\n' "$pr_body" | grep -qiE '^run-proof:'; then
+                has_verify=1
+            else
+                # Verification: block — look for Verification: followed by a run cue
+                in_v=0
+                while IFS= read -r line; do
+                    if printf '%s' "$line" | grep -qiE '^verification:'; then
+                        in_v=1
+                        continue
+                    fi
+                    if [ "$in_v" -eq 1 ]; then
+                        # Run cue patterns: journalctl, systemctl, http(s)://, exit code, fenced block, ALL PHASES PASSED
+                        if printf '%s' "$line" | grep -qiE '(journalctl|systemctl|https?://|exit.?code|rc=|```|ALL PHASES PASSED|prompt|ok=[0-9]+)'; then
+                            has_verify=1
+                            break
+                        fi
+                    fi
+                done <<< "$pr_body"
+            fi
+            if [ "$has_verify" -eq 0 ]; then
+                log "2.  - $repo#$pr_num ($pr_head): NO VERIFY CUE — skip arm (fleet-ops#2675)"
+                skipped=$((skipped+1))
+                continue
+            fi
+        else
+            log "2.  - $repo#$pr_num ($pr_head): REVERT PR — verify cue exempt (fleet-ops#2675)"
+        fi
+
         # Green: enable auto-merge (squash is the fleet default; matches
         # 0509's ruleset config and every other repo's branch protection).
         # --auto is idempotent: if already set, gh exits 0 with a notice.
