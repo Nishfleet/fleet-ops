@@ -75,6 +75,16 @@
       ]
     },
     {
+      "name": "scout-effectiveness",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_scout_effectiveness_last_run_seconds",
+      "absent_alert": "FleetScoutEffectivenessAbsent",
+      "files": [
+        "lib/scout-effectiveness.py",
+        "systemd/fleet-metrics-export.service.d/scout-effectiveness.conf"
+      ]
+    },
+    {
       "name": "console-tile-verify",
       "kind": "guard",
       "heartbeat_metric": "fleet_console_tile_verify_timestamp_seconds",

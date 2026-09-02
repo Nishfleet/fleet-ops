@@ -424,3 +424,9 @@ bash "$here/seat-empty-run-clobber-park.test.sh"
 # .github/workflows/**). Hermetic test (no gh/prometheus/systemd) — runs
 # fine in hosted CI.
 bash "$here/intake-prioritization-effectiveness.test.sh"
+
+# fleet-ops#2756: scout effectiveness metric (filed -> survive intake ->
+# agent-ready -> merged_14d). Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+# Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
+bash "$here/scout-effectiveness.test.sh"
