@@ -38,6 +38,12 @@
       "cadence": "daily",
       "source": "repo"
     },
+    "escalation-drain.timer": {
+      "reason": "Hourly bounded-file maintainer for NISH-ESCALATIONS.md and alert-repair packet dir (fleet-ops#2677 + #2773) — accumulation is structural (every CAP-REACHED + every Alertmanager webhook appends), so hourly bounds the live file to roughly one cycle's worth of growth; daily-sweep is the dead-man floor if the drain dies",
+      "classification": "scheduled",
+      "cadence": "hourly",
+      "source": "repo"
+    },
     "fleet-aeo-probe.timer": {
       "reason": "Weekly AEO visibility probe — measurement window is weekly; must land before Weekly Fleet Review (Sun 04:30 IST)",
       "classification": "scheduled",

@@ -1,0 +1,27 @@
+[Unit]
+Description=Bounded-file maintainer for the escalation channel
+Documentation=file:/home/nish/.local/bin/fleet-escalation-drain
+
+# fleet-ops#2677 + #2773: NISH-ESCALATIONS.md and alert-repair packets
+# accumulate indefinitely. This drain keeps the live files bounded by
+# archiving RESOLVED / REVOKED / non-class noise out of NISH and deleting
+# consumed alert-repair packets. The drain is idempotent and
+# best-effort — a failed run is loud (rc=1 climbs the escalation ladder
+# via service.d/10-escalate.conf) but never re-fires.
+#
+# Anti-recursion: this unit inherits service.d/10-escalate.conf. A genuine
+# fail-loud exit (jq missing, etc.) climbs the SENIOR-AUDITOR rail. A
+# clean run with nothing to do is rc=0 silent.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/home/nish/.local/bin/fleet-escalation-drain
+TimeoutStartSec=2min
+# Fail loud: no Restart=, no SuccessExitStatus fudging. A non-zero exit must
+# leave this unit in `systemctl --user list-units --state=failed` so the
+# escalation ladder (service.d/10-escalate.conf -> unit-escalation@) climbs
+# to the senior auditor.
+Restart=no
