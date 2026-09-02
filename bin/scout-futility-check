@@ -334,6 +334,22 @@ PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE
 # run in the unit journal. Not fault evidence; must not demote a wall crash.
 BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'
 
+# A structural residue line of a multi-line JSON error body (Devin's
+# `cognition.ai/errorKind` dump, curl/API responses): a bare brace/bracket or
+# a `"key":` fragment. Only skipped when it directly follows wall evidence as
+# part of the SAME wall message (fleet-ops#2922), so a standalone JSON
+# fragment from a work fault still demotes.
+is_json_continuation() {
+    case "$1" in
+        '}'|']'|'{'|'[') return 0 ;;
+        '"'*)
+            local krx='^"[^"]*"[[:space:]]*:'
+            [[ "$1" =~ $krx ]] && return 0
+            return 1 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Return 0 if the crash was a provider wall: at least one line carries wall
 # evidence and none is a non-benign, non-wall work fault. Return 1
 # otherwise, including when the journal is unreadable (the safer default —
@@ -342,7 +358,7 @@ BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDIC
 detect_provider_wall() {
     local repo="$1"
     local jlines unit="pi-scout@${repo}.service"
-    local line found_wall=0 begin_at since_args=()
+    local line found_wall=0 begin_at since_args=() wall_block=0
     if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
         return 1
     fi
@@ -374,10 +390,24 @@ detect_provider_wall() {
         # benign skip / work-fault demote below.
         if grep -qE "$PROVIDER_WALL_PATTERNS" <<<"$line"; then
             found_wall=1
+            wall_block=1
             continue
         fi
-        grep -qE "$BENIGN_JOURNAL_PATTERNS" <<<"$line" && continue
+        grep -qE "$BENIGN_JOURNAL_PATTERNS" <<<"$line" && { wall_block=0; continue; }
+        # JSON continuation of the SAME wall message (fleet-ops#2922): the
+        # live 2026-09-02T19:31Z Devin crash printed `Devin exited ... : {`,
+        # `  "cognition.ai/errorKind": "resource_exhausted",`,
+        # `  "cognition.ai/retryable": true`, `}` as one multi-line provider
+        # error. Lines 3-4 are structural JSON residue of that wall message;
+        # demoting them flipped a pure provider-wall crash to "not
+        # provider-wall" and kept consecutive_wall at 0 even after
+        # resource_exhausted joined the patterns. Only a fragment attached to
+        # wall evidence is forgiven — a standalone one still demotes.
+        if [[ "$wall_block" == "1" ]] && is_json_continuation "$line"; then
+            continue
+        fi
         # Non-benign, non-wall line = a real work fault. Demote.
+        wall_block=0
         return 1
     done <<<"$jlines"
     [[ "$found_wall" == "1" ]]
