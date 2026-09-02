@@ -584,6 +584,43 @@ groups:
           summary: "product-first hold is starving fleet-ops: engaged > 80% of 14d while control merges < 0.5/week"
           description: "avg_over_time(fleet_intake_hold_active{repo=\"fleet-ops\"}[14d]) > 0.8 and fleet_intake_control_merge_rate_week{repo=\"fleet-ops\"} < 0.5 — the fleet-ops#2657 hard-stall pattern. The hold engages most of the time yet the control plane merges almost nothing; repair/mechanism work is locked out. Re-tune PRODUCT_FIRST_SELF_RATIO_MAX in lib/precedence-band.sh or widen the floor lanes."
 
+  - name: fleet_scout_effectiveness
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). The exporter always emits
+      # fleet_scout_effectiveness_last_run_seconds on a live tick, so
+      # absent() fires only when the piggyback path is dead — not on a
+      # quiet scout window. 3h for: matches the 5-min exporter piggyback
+      # cadence (waste-ledger uses 3h; intake-effectiveness uses 3h).
+      - alert: FleetScoutEffectivenessAbsent
+        expr: absent(fleet_scout_effectiveness_last_run_seconds) or (time() - fleet_scout_effectiveness_last_run_seconds) > 10800
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "scout-effectiveness metrics absent — the #2756 exporter path is missing or dead"
+          description: "Repair: lib/scout-effectiveness.py must emit fleet_scout_effectiveness_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/scout-effectiveness.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
+
+      # fleet-ops#2756 output-vs-outcome: the scout may RUN green
+      # (mechanism) while producing no mergeable product work (outcome).
+      # Fires when the trailing 14d effectiveness_ratio (merged_14d / runs)
+      # is < 0.1 AND at least one run happened — a productive scout should
+      # land > 0.3 issues/run that survive intake dedup (issue target).
+      # The ratio gauge is a 14d trailing raw value baked into the
+      # exporter, so this is a level check on a trend window. Omitted when
+      # runs == 0 (no scout ran — that is the FleetScoutStale rule's job),
+      # so a quiet window never trips it.
+      - alert: ScoutEffectivenessLow
+        expr: fleet_scout_effectiveness_ratio{repo="0509"} < 0.1 and fleet_scout_runs_total{repo="0509"} > 0
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "pi-scout@0509 runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
+          description: "fleet_scout_effectiveness_ratio{repo=\"0509\"} is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
+
   - name: fleet_console_truth
     rules:
       # fleet-ops#1157: a tile whose independent truth-check disagrees with
