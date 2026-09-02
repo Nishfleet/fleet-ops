@@ -135,6 +135,10 @@ ok "(a)(b)(c) throughput / lead-time-excludes-reverts / revert_rate"
 # =========================================================================
 # (e) empty window still emits heartbeat + zeros
 # =========================================================================
+# export_prom writes to FLEET_PRODUCT_SLO_OUT (like (f)); without it the
+# default /var/lib/prometheus/node-exporter path is not writable in hosted
+# CI, so the write fails before assertions run (FileNotFoundError, 2026-09-02).
+export FLEET_PRODUCT_SLO_OUT="$scratch/heartbeat.prom"
 python3 - "$helper" <<'PY' || fail "empty heartbeat failed"
 import importlib.util, sys
 from datetime import datetime, timezone
