@@ -241,6 +241,11 @@ bash "$here/memoryctl-ttl-provenance.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-waste-ledger.test.sh"
 
+# fleet-ops#2757: canary effectiveness metric family + CanaryEffectivenessLow
+# / CanarySilentTooLong. Hosted here so P14 runs it without a workflow-file
+# edit.
+bash "$here/canary-effectiveness.test.sh"
+
 # fleet-ops#2528: three WFR-input trend regression alerts live in the
 # dispatcher SKIP_SET + canary SKIP_FIRING (+ stubbed no-spawn /
 # no-STOP-REASON proof). Hosted here so P14 runs it without a

@@ -39,7 +39,8 @@ config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
 # + queue composition + verified-merges numerator. The exporter is the
 # canonical source for fleet_self_maintenance_*, fleet_pr_quality_*,
 # fleet_queue_*, and fleet_verified_merges_* families. The base service +
-# timer + drop-ins (10-git-mirrors, staleness-checker, waste-ledger) are all
+# timer + drop-ins (10-git-mirrors, staleness-checker, waste-ledger,
+# canary-effectiveness) are all
 # listed here so install.sh converges the whole unit. The self-maintenance
 # repo set is PR-tunable without an exporter code change.
 libexec/fleet-metrics-export.py /home/nish/.local/libexec/fleet-metrics-export.py
@@ -173,6 +174,13 @@ systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/sy
 # fault cannot fail Prometheus export.
 libexec/fleet-waste-export.py /home/nish/.local/libexec/fleet-waste-export.py
 systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/waste-ledger.conf
+# fleet-ops#2757: canary effectiveness family. Piggybacks the existing 5-min
+# fleet-metrics-export tick (no new timer). Leading '-' so a canary-
+# effectiveness fault cannot fail Prometheus export. Installs under
+# ~/.local/lib/pi-packet/ to match the issue rollback path and other lib/
+# helpers.
+lib/canary-effectiveness.py /home/nish/.local/lib/pi-packet/canary-effectiveness.py
+systemd/fleet-metrics-export.service.d/canary-effectiveness.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/canary-effectiveness.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;

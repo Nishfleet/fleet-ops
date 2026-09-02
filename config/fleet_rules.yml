@@ -463,6 +463,51 @@ groups:
           summary: "fleet waste ratio rose 15+ points versus yesterday's 24h window"
           description: "fleet_waste_ratio rose by more than 0.15 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level, not a page — Weekly Fleet Review owns the response. Inspect fleet_waste_empty_runs_24h (the #902 empty-run class) and fleet_waste_retries_24h (the #1204 salvage-bleed class) per lane."
 
+  - name: fleet_canary_effectiveness
+    rules:
+      # Organ heartbeat (fleet-ops#1010 / #2757). The exporter always emits
+      # fleet_canary_effectiveness_last_run_seconds on a live tick, so
+      # absent() fires only when the piggyback path is dead — not on a
+      # quiet incident window. 1h for: matches other 5-min exporter
+      # piggybacks (waste-ledger uses 3h; this is tighter because the
+      # metric is the only proof canaries catch regressions before users).
+      - alert: FleetCanaryEffectivenessAbsent
+        expr: absent(fleet_canary_effectiveness_last_run_seconds) or (time() - fleet_canary_effectiveness_last_run_seconds) > 1800
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "canary-effectiveness metrics absent — the #2757 exporter path is missing or dead"
+          description: "Repair: lib/canary-effectiveness.py must emit fleet_canary_effectiveness_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/canary-effectiveness.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
+
+      # effectiveness_ratio already covers the trailing 30d window inside
+      # the exporter. Gate on (caught+missed)>0 so a quiet product with
+      # zero incidents does not look like a broken canary.
+      - alert: CanaryEffectivenessLow
+        expr: fleet_canary_effectiveness_ratio < 0.02 and (fleet_canary_caught_regressions_total + fleet_canary_missed_regressions_total) > 0
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "canary organ {{ $labels.organ }} effectiveness_ratio < 0.02 over trailing 30d"
+          description: "fleet_canary_effectiveness_ratio{organ=\"{{ $labels.organ }}\"} is below 0.02 while at least one user-facing incident landed in the window (fleet-ops#2757). The canary is running but not catching regressions before users. Inspect fleet_canary_caught_regressions_total / fleet_canary_missed_regressions_total and the organ's failure signature."
+
+      # A canary that never fails AND never catches a regression may be
+      # testing the wrong surface. last_failure_seconds=0 means no failure
+      # in the trailing window; require runs>0 so a dead organ is the
+      # Absent alert, not this one.
+      - alert: CanarySilentTooLong
+        expr: fleet_canary_runs_total > 0 and fleet_canary_caught_regressions_total == 0 and (fleet_canary_last_failure_seconds == 0 or (time() - fleet_canary_last_failure_seconds) > 604800)
+        for: 12h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "canary organ {{ $labels.organ }} silent 7+ days with no caught regression"
+          description: "fleet_canary_last_failure_seconds{organ=\"{{ $labels.organ }}\"} is 0 or older than 7d AND caught_regressions_total is 0 while the organ is still running (fleet-ops#2757). A silent canary may be testing the wrong surface. Confirm the organ's failure signature still matches the product path users hit."
+
   - name: fleet_console_truth
     rules:
       # fleet-ops#1157: a tile whose independent truth-check disagrees with
