@@ -1241,12 +1241,19 @@ _seat_in_future() {
 #
 # Decision:
 #   - no file / unparseable / stale observed_at (> STALE_SECS) -> USABLE, but
-#     log a loud "no health data" line (do not brick the ladder). EXCEPTION:
+#     log a loud "no health data" line (do not brick the ladder). EXCEPTIONS:
 #     a seat_dead=true corpse is UNUSABLE regardless of observed_at staleness
 #     (fleet-ops#2327 — death is not a freshness question; only a probe
-#     success writes a healthy observation and clears the corpse).
+#     success writes a healthy observation and clears the corpse); a
+#     quota_exhausted seat whose usable_at (or bench_until) is still in the
+#     future is UNUSABLE for the same reason quota_bench is — the advertised
+#     reset window outlives STALE_SECS (live 2026-09-02: two cline-pass 402s
+#     with usable_at 16d out; the 6h fail-open re-offered them, they 402'd
+#     again, and FleetProviderQuotaExhausted never aged out of its 1h window).
 #   - seat_dead=true                              -> unusable (corpse, terminal)
-#   - health_class in {credentials_bad, quota_exhausted} -> unusable
+#   - health_class in {credentials_bad, quota_exhausted} -> unusable WHILE
+#     the observation is fresh; quota_exhausted with a future usable_at is
+#     also unusable when the observation is stale (see above).
 #   - quota_bench (fleet-ops#90): a hard-capped seat benched for its advertised
 #     reset window. UNUSABLE while bench_until is in the future (one log line
 #     per skip: "benched until <ts>"); once bench_until passes the seat is
@@ -1372,6 +1379,37 @@ seat_usable() {
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
         return 1
     fi
+    # quota_exhausted BEFORE stale-observed_at: usable_at (fallback:
+    # bench_until) is the advertised reset, which outlives STALE_SECS
+    # the same way quota_bench's bench_until does. Live 2026-09-02:
+    # cline-pass/deepseek-v4-flash + cline-pass/minimax-m3 both 402 with
+    # usable_at 16d out (retry_after ~1.4e6s from parseCliRetryAfter
+    # "resets in Nd Nh"). After 6h the stale fail-open re-offered them,
+    # they 402'd again, consecutive_failure_count climbed, and the
+    # fleet-ops#2712 1h window never emptied so FleetProviderQuotaExhausted
+    # stayed firing. Honour the wall until usable_at; once it passes,
+    # fail-open exactly once (one probe, not a 6h re-offer loop).
+    if [[ "$hc" == "quota_exhausted" ]]; then
+        local qe_until="$usable_at"
+        [[ -z "$qe_until" ]] && qe_until="$bench_until"
+        if [[ -n "$qe_until" ]] && _seat_in_future "$qe_until"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (quota_exhausted until $qe_until)"
+            return 1
+        fi
+        if [[ -n "$qe_until" ]]; then
+            seat_log "seat $p/$m: quota_exhausted wall expired ($qe_until passed) — assuming usable (fail-open)"
+            return 0
+        fi
+        # No usable_at/bench_until: keep the existing unconditional hold
+        # while the observation is fresh; if it is stale, fall through to
+        # the 6h fail-open (no advertised reset to honour).
+        if _seat_observed_fresh "$observed"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=quota_exhausted)"
+            return 1
+        fi
+        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s, quota_exhausted with no usable_at) — assuming usable"
+        return 0
+    fi
     # fleet-ops#2288: extension-written transient_fault markers (source
     # provider_fetch / after_provider_response) carry a FLAT usable_at window
     # from the seat-health extension; the write-side escalation lives in that
@@ -1398,7 +1436,7 @@ seat_usable() {
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
         return 0
     fi
-    if [[ "$hc" == "quota_exhausted" || "$hc" == "credentials_bad" ]]; then
+    if [[ "$hc" == "credentials_bad" ]]; then
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
         return 1
     fi
