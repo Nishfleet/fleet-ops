@@ -667,6 +667,54 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario19b: production seat-caps keep commandcode minimax/minimax-m3-free retired at cap=0 corpse with dated reason and no billing sibling"
 
+# --- 19c. production lock: opencode hy3-free retired (fleet-ops#2667/#2742) --
+# The provider dropped the slug (401 ModelError "Model hy3-free is not
+# supported") while a control on the same key still answers, so the seat
+# is a credentials_bad corpse (seat_dead=true, no comeback clock). The
+# cap=0 + intentional_cap_zero=corpse row is the production lock: it
+# keeps the free-roster-canary from re-filing "free-slug-available" on
+# every tick, and the seat-lib cap-0 classifier treats corpse as
+# INTENTIONAL (never re-audition, fleet-ops#2435) instead of stale. A
+# later PR that removes the row or re-raises the cap without a passing
+# re-audition fails here. fleet-ops#2742 is a stale duplicate of #2667
+# that stayed open because no lock named hy3-free (19b only pins the
+# commandcode sibling).
+hy3_cap=$(jq -r '(.providers.opencode.models["hy3-free"] // "missing") | if type == "object" then .cap else . end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$hy3_cap" == "missing" ]]; then
+  fail "scenario19c: production seat-caps must keep an opencode hy3-free row (retired corpse, fleet-ops#2667/#2742)"
+fi
+if [[ "$hy3_cap" != "0" ]]; then
+  fail "scenario19c: production opencode hy3-free must be capped 0 (provider dropped the slug, got $hy3_cap, fleet-ops#2667/#2742)"
+fi
+hy3_intent=$(jq -r '(.providers.opencode.models["hy3-free"] // "missing") | if type == "object" then (.intentional_cap_zero // "") else "" end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$hy3_intent" != "corpse" ]]; then
+  fail "scenario19c: opencode hy3-free must be intentional_cap_zero=corpse (got '$hy3_intent')"
+fi
+# Dated reason required: the retire reason must cite fleet-ops#2667 and a date.
+reason=$(jq -r '.providers.opencode._hy3free // ""' \
+    "$repo_root/config/seat-caps.json")
+if [[ -z "$reason" ]]; then
+  fail "scenario19c: production seat-caps must carry _hy3free dated reason (fleet-ops#2667)"
+fi
+if ! grep -qE 'fleet-ops#2667' <<<"$reason"; then
+  fail "scenario19c: _hy3free must cite fleet-ops#2667 (got: $reason)"
+fi
+if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
+  fail "scenario19c: _hy3free must start with an ISO date (got: $reason)"
+fi
+# No billing sibling (hy3, without the -free suffix) on the opencode
+# allowlist: free-form is the only path; a billing row would be a money
+# lane on a free-class provider. Exclude the retired free-form slug itself.
+while IFS= read -r k; do
+  case "$k" in
+    hy3-free) : ;;  # the retired free-form slug itself
+    hy3) fail "scenario19c: production opencode allowlists a non-free hy3 slug: $k" ;;
+  esac
+done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
+ok "scenario19c: production seat-caps keep opencode hy3-free retired at cap=0 corpse with dated reason and no billing sibling"
+
 # ===========================================================================
 # observe-to-close (fleet-ops#995): stale auto-filed tickets close when the
 # signal that filed them clears. The close path is OPT-IN: env=1 AND a fresh
