@@ -639,4 +639,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-drift-metrics-dropin\.
   || fail "fleet-ops-drift-metrics-dropin.test.sh must not be a known orphan (fleet-ops#2920)"
 ok "fleet-ops-drift-metrics-dropin.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2920)"
 
+# fleet-ops#2934 (PR #2948 follow-up): hard-pin the host line for
+# seat-empty-run-intermittent-count in ci-standards-audit so a future
+# refactor that drops it is caught by name. Same class-prevention as the
+# drift test above: parking it on known_orphans to silence the generic
+# message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-intermittent-count\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-intermittent-count.test.sh (fleet-ops#2934)"
+[[ -n "${reachable[seat-empty-run-intermittent-count.test.sh]:-}" ]] \
+  || fail "seat-empty-run-intermittent-count.test.sh must be hosted by a listed test (fleet-ops#2934)"
+[[ -z "${known_orphan_set[seat-empty-run-intermittent-count.test.sh]:-}" ]] \
+  || fail "seat-empty-run-intermittent-count.test.sh must not be a known orphan (fleet-ops#2934)"
+ok "seat-empty-run-intermittent-count.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2934)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

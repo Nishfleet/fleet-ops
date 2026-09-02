@@ -488,3 +488,14 @@ bash "$here/fleet-product-slo.test.sh"
 # class-prevention so a future drop of this host line fails by name.
 # Hermetic (stub gh + systemctl, overlay workspaces root).
 bash "$here/fleet-ops-drift-metrics-dropin.test.sh"
+
+# fleet-ops#2934 (PR #2948 follow-up): the empty-run count-merge window
+# test landed on main without a ci.yml listing or a host, so P14 ran red
+# on "1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: seat-empty-run-intermittent-count.test.sh"
+# for every push since 21:04Z. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+# The named pin in tests/p14-test-listing-gate.test.sh is the
+# class-prevention so a future drop of this host line fails by name.
+# Hermetic (scratch ledger/state, no gh/prometheus/systemd).
+bash "$here/seat-empty-run-intermittent-count.test.sh"
