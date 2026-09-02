@@ -380,6 +380,53 @@ echo "$out_b8" | grep -q "issue-fleet-ops-307: REAPED-A" \
     || fail "case-interaction: expected REAPED-A tag; output: $out_b8"
 ok "Mode A wins over Mode B when branch matches AND PR is merged"
 
+# --- 17. claim/issue-N + NO merged PR + ledger-terminal -> SKIP not-merged ---
+# (fleet-ops#2676 — issue's exact scenario, combined gates). A claim
+# branch whose cycle is ledger-terminal but whose PR was NEVER merged
+# must NOT be reaped. Mode A is the chosen mode for claim/issue-N
+# branches; if Mode A's merged gate fails, the reaper must NOT fall
+# through to Mode B (which would otherwise pass on the same path+ledger
+# gates). The work is on origin only via the branch ref, and the
+# branch was never merged — the safe call is to leave the worktree
+# alone. Without this guard, a worker whose claim cycle ended in
+# `salvaged` (no PR landed) would silently lose its worktree.
+add_claim_worktree_ledger() {
+    local parent="$1" wroot="$2" n="$3"
+    local parent_base; parent_base=$(basename "$parent")
+    local wt="$wroot/issue-${parent_base}-${n}"
+    # claim/issue-N branch (no merged PR for N+400 in fake gh state)
+    git -C "$parent" worktree add -q -B "claim/issue-${n}" "$wt" 2>/dev/null
+    # ledger-terminal entry for this unit (most-recent is terminal)
+    ledger_add "pi-issue-${parent_base}-${n}|salvaged|2026-09-01T10:00:00Z"
+    printf '%s' "$wt"
+}
+# claim/issue-408 (next free number above 307): ledger says salvaged, but
+# no merged PR entry -> SKIP not-merged, NOT a Mode-B fallthrough.
+add_claim_worktree_ledger "$parent_a" "$wroot" 408
+# Capture the unmerged/notterminal counters from the prior run (case
+# Mode-A/B-interaction) so we can prove case 17 incremented only one.
+prior_summary=$(echo "$out_b8" | grep -E '^fleet-worktree-reaper ' | tail -1)
+prior_unmerged=$(printf '%s' "$prior_summary" | sed -nE 's/.*unmerged=([0-9]+).*/\1/p')
+prior_notterminal=$(printf '%s' "$prior_summary" | sed -nE 's/.*notterminal=([0-9]+).*/\1/p')
+out_b9=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-408" ] \
+    || fail "case17: claim+ledger-terminal+no-merged-PR must NOT be reaped; output: $out_b9"
+echo "$out_b9" | grep -q "issue-fleet-ops-408: SKIP not-merged" \
+    || fail "case17: expected SKIP not-merged (Mode A's gate); output: $out_b9"
+# Safety: Mode B's notterminal counter must NOT have moved — proves
+# the reaper did not consult Mode B as a fallthrough when Mode A's
+# merged gate failed. If a future refactor lets the same worktree
+# fall through to Mode B, the notterminal counter would increment and
+# this assertion fails.
+post_summary=$(echo "$out_b9" | grep -E '^fleet-worktree-reaper ' | tail -1)
+post_unmerged=$(printf '%s' "$post_summary" | sed -nE 's/.*unmerged=([0-9]+).*/\1/p')
+post_notterminal=$(printf '%s' "$post_summary" | sed -nE 's/.*notterminal=([0-9]+).*/\1/p')
+[ "$post_unmerged" = "$((prior_unmerged + 1))" ] \
+    || fail "case17: unmerged must increment by 1 (Mode A's gate), was prior=$prior_unmerged post=$post_unmerged; output: $out_b9"
+[ "$post_notterminal" = "$prior_notterminal" ] \
+    || fail "case17: notterminal must NOT move (no Mode B fallthrough), was prior=$prior_notterminal post=$post_notterminal; output: $out_b9"
+ok "case17: claim branch + no merged PR + ledger-terminal SKIP not-merged (no Mode-B fallthrough)"
+
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
          systemd/fleet-worktree-reaper.service \
