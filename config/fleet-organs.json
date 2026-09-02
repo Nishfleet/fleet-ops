@@ -235,6 +235,16 @@
         "bin/fleet-quality-slo",
         "lib/quality-slo.py"
       ]
+    },
+    {
+      "name": "product-slo",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_product_slo_last_run_seconds",
+      "absent_alert": "FleetProductSloAbsent",
+      "files": [
+        "lib/fleet-product-slo.py",
+        "systemd/fleet-metrics-export.service.d/product-slo.conf"
+      ]
     }
   ]
 }

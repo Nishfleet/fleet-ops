@@ -621,6 +621,59 @@ groups:
           summary: "pi-scout@0509 runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
           description: "fleet_scout_effectiveness_ratio{repo=\"0509\"} is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
 
+
+  - name: fleet_product_slo
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR). The exporter always emits
+      # fleet_product_slo_last_run_seconds on a live tick, so absent() fires
+      # only when the piggyback path is dead — not on a quiet product week.
+      # 3h matches the scout/intake/waste piggyback cadence.
+      - alert: FleetProductSloAbsent
+        expr: absent(fleet_product_slo_last_run_seconds) or (time() - fleet_product_slo_last_run_seconds) > 10800
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "product-slo metrics absent — the #2755 exporter path is missing or dead"
+          description: "Repair: lib/fleet-product-slo.py must emit fleet_product_slo_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/product-slo.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
+
+      # fleet-ops#2755 accept §4: throughput < 2/week for 2 weeks.
+      # avg_over_time over 14d of the weekly gauge approximates "sustained
+      # low throughput" without a separate 2-week counter.
+      - alert: ProductThroughputStalled
+        expr: avg_over_time(fleet_product_throughput_weekly{repo="0509"}[14d]) < 2
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "0509 product throughput stalled (< 2 merged PRs/week over 14d)"
+          description: "avg_over_time(fleet_product_throughput_weekly{repo=\"0509\"}[14d]) < 2 (fleet-ops#2755). Product delivery is quiet while operational SLOs may still be green. Inspect fleet_product_merged_24h, scout effectiveness, and the intake product-first hold."
+
+      # fleet-ops#2755 accept §4: p50 lead time > 14 days.
+      - alert: ProductLeadTimeDegrading
+        expr: fleet_product_lead_time_days{repo="0509"} > 14
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "0509 product lead time p50 > 14 days"
+          description: "fleet_product_lead_time_days{repo=\"0509\"} > 14 (fleet-ops#2755). Median issue→merge for non-revert product merges exceeds two weeks. Check claim/queue stalls and review latency."
+
+      # fleet-ops#2755 accept §4: revert rate > 0.15 over trailing 4 weeks.
+      - alert: ProductRevertRateHigh
+        expr: fleet_product_revert_rate{repo="0509"} > 0.15
+        for: 1h
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "0509 product revert rate > 15% over 28d"
+          description: "fleet_product_revert_rate{repo=\"0509\"} > 0.15 (fleet-ops#2755). More than one in six product merges is a revert. Pause new product supply and inspect recent reverts before filing more 0509 work."
+
   - name: fleet_console_truth
     rules:
       # fleet-ops#1157: a tile whose independent truth-check disagrees with

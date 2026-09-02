@@ -95,10 +95,10 @@ SPECS = {
     },
     "shipped_24h": {
         "cmd": (
-            "PromQL sum(fleet_merged_prs_24h) @ 127.0.0.1:9090 "
+            "PromQL sum(fleet_product_merged_24h) @ 127.0.0.1:9090 "
             "(exact vs tile count) AND gh search prs "
             "'repo:<spot-repo> is:merged merged:>=<24h-iso> type:pr' "
-            "(percent vs that repo's item; cached family, 20% or abs<=2)"
+            "(percent vs that repo's item; product-slo family, 20% or abs<=2)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -239,16 +239,19 @@ def _promql_sum(expr):
 
 
 def _prom_textfile_mtime():
-    """Return the Prometheus fleet.ptextfile mtime in epoch seconds, or None.
+    """Return the product-slo textfile mtime in epoch seconds, or None.
 
-    Same family node_textfile_mtime_seconds{file=~".*fleet.prom"} that
-    generate.py uses for its staleness gate. Returns None when the series
-    is absent (the file has never been written) — not an error; the
-    downstream race check treats absent == "definitely changed" and falls
-    back to the gh spot check.
+    fleet-ops#2755: shipped_24h now reads fleet_product_merged_24h from
+    fleet-product-slo.prom, so the race gate watches that textfile (falling
+    back to the heartbeat gauge when node_textfile_mtime has not scraped it
+    yet). Returns None when both are absent — not an error; the downstream
+    race check then lets the Prom re-query run.
     """
     url = PROM + "/api/v1/query?" + urllib.parse.urlencode({
-        "query": 'node_textfile_mtime_seconds{file=~".*fleet.prom"}',
+        "query": (
+            'node_textfile_mtime_seconds{file=~".*fleet-product-slo.prom"} '
+            'or fleet_product_slo_last_run_seconds'
+        ),
     })
     payload = _http_json(url)
     if payload.get("status") != "success":
@@ -266,11 +269,12 @@ def _race_against_tile(tile):
     """True iff the textfile mtime advanced past the tile's observed_at.
 
     fleet-ops#2690: between generate.py and verify.py the metrics exporter
-    may refresh fleet.prom (every 5 min vs the 12-min push cycle). When
-    that happens the tile and the verifier look at the SAME Prom family
-    but at different snapshots — `tile.count != sum(fleet_merged_prs_24h)`
-    is a transient timing artifact, not a lying tile. The race gate tells
-    Prom-based checkers to defer to the gh check.
+    may refresh fleet-product-slo.prom (every 5 min vs the 12-min push
+    cycle). When that happens the tile and the verifier look at the SAME
+    Prom family but at different snapshots —
+    `tile.count != sum(fleet_product_merged_24h)` is a transient timing
+    artifact, not a lying tile. The race gate tells Prom-based checkers
+    to defer to the gh check.
 
     Tolerance of +1s absorbs clock-skew rounding between the tile's
     observed_at capture and the verifier's mtime query.
@@ -362,15 +366,16 @@ def run_open_prs_prom(tile):
 
 
 def run_shipped_prom(tile):
-    # fleet-ops#2690: skip the Prom re-query when the textfile advanced
-    # between generate and verify. The gh spot check still runs; only the
-    # same-source race is suppressed.
+    # fleet-ops#2690 / #2755: skip the Prom re-query when the textfile
+    # advanced between generate and verify. The gh spot check still runs;
+    # only the same-source race is suppressed. Source of truth is
+    # fleet_product_merged_24h (product repos only).
     if _race_against_tile(tile):
         raise VerifyError(
             "textfile mtime advanced past tile.observed_at — race, "
             "defer to gh spot check"
         )
-    return int(_promql_sum("sum(fleet_merged_prs_24h)"))
+    return int(_promql_sum("sum(fleet_product_merged_24h)"))
 
 
 def run_main_ci_prom(tile):
