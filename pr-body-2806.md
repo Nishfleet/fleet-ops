@@ -105,6 +105,25 @@ The installed `opus-heartbeat-gather` was edited in place (it is a hand-placed
 organ, NOT repo-tracked; only its tests live in this repo — the contract the
 test header documents). The repo diff carries the tests that pin the change.
 
+### Post-rebase re-verification (2026-09-03)
+
+Rebased onto origin/main (4352d8b4, 9 new commits) — clean, no conflicts.
+Re-ran every touched suite and gate on top of current main:
+
+- `bash tests/fleet-seat-comeback-release.test.sh` — 24 scenarios ALL OK.
+- `bash tests/fleet-metrics-export.test.sh` — ALL OK (incl. #14 mid-cycle grace).
+- `bash tests/opus-heartbeat-seat-comeback.test.sh` — ALL OK (incl. 900s grace).
+- `bash tests/fleet-seat-recovery.test.sh` — ALL OK.
+- `bash tests/rule-enforcement.test.sh` — ALL OK (128 rules, organ-heartbeat drill green).
+- `bash tests/manifest-shape.test.sh`, `bash tests/timer-manifest.test.sh` — OK.
+- Gates: fleet-no-agent-names-check, fleet-token-efficiency-check,
+  fleet-organ-heartbeat-check, fleet-exec-review-canary, fleet-wipe-lessons-check
+  scan — all PASS.
+
+Pre-existing (not this PR): `tests/p14-test-listing-gate.test.sh` reports
+`fleet-deploy-quality.test.sh` is unhosted — that gap came from #2885 on main
+and is already tracked as fleet-ops#2894. Not fixed here.
+
 ## mechanical-fix
 
 `mechanism: interval-breach detector + merged-streak corpse termination` — the
@@ -115,4 +134,6 @@ prevention ships in this PR (items 1 and 2 above).
 No new organ added; the existing seat-comeback-release organ gained a metric
 and a loud exit. Its fleet-organs.json registry entry and absent-alert are
 unchanged.
+
+loose-ends-canary: pr:nishfleet/fleet-ops#2881 stale-worker-pr
 Closes #2806
