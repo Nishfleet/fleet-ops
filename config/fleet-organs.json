@@ -65,6 +65,16 @@
       ]
     },
     {
+      "name": "intake-effectiveness",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_intake_effectiveness_last_run_seconds",
+      "absent_alert": "FleetIntakeEffectivenessAbsent",
+      "files": [
+        "lib/intake-prioritization-effectiveness.py",
+        "systemd/fleet-metrics-export.service.d/intake-effectiveness.conf"
+      ]
+    },
+    {
       "name": "console-tile-verify",
       "kind": "guard",
       "heartbeat_metric": "fleet_console_tile_verify_timestamp_seconds",

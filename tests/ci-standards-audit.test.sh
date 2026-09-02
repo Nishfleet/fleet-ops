@@ -406,3 +406,10 @@ bash "$here/fleet-empty-run-burst-canary.test.sh"
 # staying at count=1 every cycle. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-empty-run-clobber-park.test.sh"
+
+# fleet-ops#2759: intake prioritization effectiveness metric (precedence-band
+# product-first hold -> product merge lift). Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). Hermetic test (no gh/prometheus/systemd) — runs
+# fine in hosted CI.
+bash "$here/intake-prioritization-effectiveness.test.sh"
