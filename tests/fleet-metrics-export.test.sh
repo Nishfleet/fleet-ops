@@ -1389,4 +1389,114 @@ n4, providers4 = m._read_provider_quota_exhausted()
 assert n4 == 0 and providers4 == [], (n4, providers4)
 print("OK: missing ledger dir returns empty signal (no crash)")
 PY
-ok "fleet-ops#2712: provider-level quota exhaustion collapses N per-seat 402s into 1 account signal"
+# =========================================================================
+# 18. fleet-ops#2752: _read_never_released must skip future-walled seats.
+#     A seat whose bench_until/usable_at wall is still in the future is
+#     legitimately benched — the comeback-release prober will re-probe it
+#     when the wall passes. It must NOT be counted as a "never-probed
+#     comeback" (consecutive_failure_count in the stuck window), otherwise
+#     a long monthly/quota bench can reach NEVER_RELEASED_MIN_COUNT and
+#     trigger a false FleetSeatComebackNeverReleased alarm.
+# =========================================================================
+NR_SEATS="$scratch/nr-seats"
+mkdir -p "$NR_SEATS"
+python3 - "$exporter" "$NR_SEATS" <<'PY' || fail "never-released future-wall test failed"
+import importlib.util, json, sys, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+exporter, seat_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+now = time.time()
+
+def iso(offset_s):
+    return datetime.fromtimestamp(now + offset_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+PAST = iso(-7200)  # wall passed 2h ago
+FUT  = iso(7200)   # wall holds for another 2h
+
+fixtures = {
+    # 1. No wall clock, count in stuck window -> never-probed comeback.
+    "opencode__no-wall.json": {
+        "provider": "opencode", "model": "no-wall",
+        "http_status": 503, "health_class": "overload_bench",
+        "seat_dead": False, "usable_at": None, "bench_until": None,
+        "consecutive_failure_count": 19,
+    },
+    # 2. Past wall, count in stuck window -> still a never-probed comeback
+    #    (the wall has released, yet the seat is not healthy).
+    "opencode__past-wall.json": {
+        "provider": "opencode", "model": "past-wall",
+        "http_status": 503, "health_class": "overload_bench",
+        "seat_dead": False, "usable_at": PAST, "bench_until": PAST,
+        "consecutive_failure_count": 19,
+    },
+    # 3. Future wall, count in stuck window -> must NOT count; wall still
+    #    has the seat benched legitimately.
+    "opencode__future-wall.json": {
+        "provider": "opencode", "model": "future-wall",
+        "http_status": 503, "health_class": "overload_bench",
+        "seat_dead": False, "usable_at": FUT, "bench_until": FUT,
+        "consecutive_failure_count": 19,
+    },
+    # 4. Future wall but below stuck floor -> must NOT count anyway.
+    "opencode__future-wall-low.json": {
+        "provider": "opencode", "model": "future-wall-low",
+        "http_status": 503, "health_class": "overload_bench",
+        "seat_dead": False, "usable_at": FUT, "bench_until": FUT,
+        "consecutive_failure_count": 5,
+    },
+    # 5. Corpse -> excluded (FleetDeadCredentialSeats owns corpses).
+    "opencode__corpse.json": {
+        "provider": "opencode", "model": "corpse",
+        "http_status": 500, "health_class": "corpse",
+        "seat_dead": True, "usable_at": PAST, "bench_until": None,
+        "consecutive_failure_count": 19,
+    },
+    # 6. Healthy -> excluded.
+    "opencode__healthy.json": {
+        "provider": "opencode", "model": "healthy",
+        "http_status": 200, "health_class": "healthy",
+        "seat_dead": False, "usable_at": None, "bench_until": None,
+        "consecutive_failure_count": 0,
+    },
+    # 7. test__ fixture -> excluded.
+    "test__synthetic.json": {
+        "provider": "test", "model": "synthetic",
+        "http_status": 503, "health_class": "overload_bench",
+        "seat_dead": False, "usable_at": None, "bench_until": None,
+        "consecutive_failure_count": 19,
+    },
+    # 8. .spawn-bench sibling -> excluded.
+    "opencode__future-wall.spawn-bench.json": {
+        "provider": "opencode", "model": "future-wall",
+        "usable_at": FUT, "reason": "no_block:rc=0", "backoff_s": 300,
+    },
+}
+for name, body in fixtures.items():
+    (Path(seat_dir) / name).write_text(json.dumps(body))
+
+m.SEAT_LEDGER = Path(seat_dir)
+n, seats = m._read_never_released()
+ids = {f"{s['provider']}__{s['model']}" for s in seats}
+
+assert n == 2, f"never_released_n must be 2, got {n}: {ids}"
+assert {"opencode__no-wall", "opencode__past-wall"} <= ids, ids
+assert "opencode__future-wall" not in ids, f"future-walled seat must not count as never-released: {ids}"
+assert "opencode__future-wall-low" not in ids, "future-walled + below floor must not count"
+assert not any(i.startswith("test__") for i in ids), "test__ leaked into never-released"
+assert not any("corpse" in i for i in ids), "corpse leaked into never-released"
+assert not any(".spawn-bench" in i for i in ids), "spawn-bench leaked into never-released"
+print("OK: _read_never_released excludes future-walled, healthy, corpse, test, and spawn-bench seats (fleet-ops#2752)")
+
+# Missing ledger dir returns (0, []) — never raises.
+(Path(seat_dir)).rename(Path(seat_dir).parent / "nr-seats-renamed")
+n2, seats2 = m._read_never_released()
+assert n2 == 0 and seats2 == [], (n2, seats2)
+print("OK: _read_never_released missing ledger dir returns empty signal (no crash)")
+PY
+
+ok "fleet-ops#2712 + #2752: provider-level 402 collapse and never-released skips future-walled seats"
