@@ -83,6 +83,14 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export EMPTY_RUN_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 export EMPTY_RUN_MARKER_FRESH_S=1800
+# fleet-ops#2934: the empty-run count-merge window is its own knob now
+# (EMPTY_RUN_COUNT_WINDOW_S, default 2 h), separate from the spawn-fail
+# window (EMPTY_RUN_MARKER_FRESH_S). Pin it to the same 1800 s here so the
+# existing staleness assertion in (c) — which ages the marker past
+# EMPTY_RUN_MARKER_FRESH_S — still proves the reset. The #2934 fix's own
+# test (seat-empty-run-intermittent-count.test.sh) exercises the wider
+# default window.
+export EMPTY_RUN_COUNT_WINDOW_S=1800
 # Disable the corpse reclassification (fleet-ops#2594) so the parked seat
 # is not also written seat_dead=true by mark_seat_empty_run at the higher
 # SEAT_DEAD_CONSECUTIVE_THRESHOLD — this test proves the parking behaviour
@@ -216,8 +224,10 @@ ok "(b2) parked empty-run seat is HELD UNUSABLE by seat_usable — chronic no-op
 # The recovery signal: a healthy observation after the bench expired means
 # the seat produced output again. The next empty-run must NOT keep the
 # stale high count — it must merge from the clobbered ledger (count=0) and
-# start fresh. EMPTY_RUN_MARKER_FRESH_S bounds this; we simulate staleness
-# by editing the marker's written_at to well past the freshness window.
+# start fresh. EMPTY_RUN_COUNT_WINDOW_S bounds this for the empty-run path
+# (fleet-ops#2934 — pinned to 1800 s here to match the spawn-fail window);
+# we simulate staleness by editing the marker's written_at to well past the
+# freshness window.
 rm -f "$lf"
 stale_iso=$(date -u -d "@$(($(date -u +%s) - EMPTY_RUN_MARKER_FRESH_S - 600))" +%Y-%m-%dT%H:%M:%SZ)
 tmp=$(mktemp)

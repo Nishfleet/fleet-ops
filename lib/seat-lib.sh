@@ -3383,8 +3383,30 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # lowers the chronic-no-op park threshold below the generic
 # SEAT_FAILURE_CEILING (default 10 vs 20) so a free-lane no-op'er parks
 # within a following 2h window, not after 20 cycles (~5h at flat 900s).
+#
+# fleet-ops#2934: the count-merge window for EMPTY RUNS is LONGER than the
+# spawn-fail window. EMPTY_RUN_MARKER_FRESH_S (30 min) was the merge bound
+# for BOTH classes, but an intermittent no-op'er gaps its empty runs by
+# more than 30 min (live 2026-09-02: openrouter/deepseek/deepseek-v4-flash-
+# 0731 no-op'ed at 18:40:08Z count=2, then 20:22:31Z count=1 — the 1h42m
+# gap aged the marker past 30 min, the count reset, the ceiling never
+# fired, the seat re-entered rotation every 900 s and no-op'ed again). A
+# provider no-op is intermittent, not clustered the way a spawn-fail storm
+# is, so the recovery signal (no new empty run for N min) needs a longer
+# N to be trustworthy. EMPTY_RUN_COUNT_WINDOW_S (default 7200 = 2 h,
+# matching the waste.empty_runs_last_2h SLO window) bounds the empty-run
+# count merge: a marker younger than that is still fresh and its count
+# carries forward; a marker older than 2 h means the seat went a full SLO
+# window without no-op'ing — the real recovery signal — so the count
+# resets. spawn_fail keeps the 30-min window (spawn storms are clustered;
+# a 2 h window would let a long-ago spawn_fail inflate a fresh empty-run
+# count). The bench itself is still the FLAT 900 s cooldown (fleet-ops#2343
+# — no ladder); only the COUNT-accumulation window widens, so the
+# failure-ceiling park can engage for a chronic intermittent no-op'er
+# without re-introducing the bench ladder that churned healthy seats.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
-EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — see comment above
+EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn-fail count-merge window (see comment above)
+EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-7200}"  # 2 h — empty-run count-merge window (fleet-ops#2934); matches waste.empty_runs_last_2h
 EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-10}"  # default 10 (vs generic 20) parks chronic no-op seats faster
 
 mark_seat_empty_run() {
@@ -3400,12 +3422,16 @@ mark_seat_empty_run() {
     # wrapper's clobber-proof spawn-bench marker FIRST (any failure_mode,
     # written recently), then the (clobberable) ledger. Take the max as
     # the prior count. A STALE marker (older than
-    # EMPTY_RUN_MARKER_FRESH_S) means seat-health.ts produced a healthy
-    # observation AFTER the bench expired — the recovery signal — so we
-    # fall through to the ledger (which seat-health.ts clobbered to
-    # count=0) and start fresh. The marker is a SINGLE file per seat
-    # shared by mark_seat_empty_run and mark_seat_spawn_fail, so the
-    # count must accumulate across failure_mode classes (fleet-ops#2786:
+    # EMPTY_RUN_COUNT_WINDOW_S, default 2 h — fleet-ops#2934) means the
+    # seat went a full SLO window without no-op'ing — the real recovery
+    # signal — so we fall through to the ledger (which seat-health.ts
+    # clobbered to count=0) and start fresh. The window is LONGER than
+    # mark_seat_spawn_fail's (EMPTY_RUN_MARKER_FRESH_S, 30 min) because a
+    # provider no-op is intermittent, not clustered: a 30 min window let a
+    # ~1h42m gap reset the count on the live deepseek-v4-flash-0731 seat
+    # so the failure-ceiling park never fired. The marker is a SINGLE file
+    # per seat shared by mark_seat_empty_run and mark_seat_spawn_fail, so
+    # the count must accumulate across failure_mode classes (fleet-ops#2786:
     # a same-class-only merge lost the empty_run count the instant a
     # spawn_fail marker overwrote the file — live: 10 empty runs on
     # opencode/nemotron-3-ultra-free, every marker count=1).
@@ -3419,7 +3445,7 @@ mark_seat_empty_run() {
             now_s=$(date -u +%s)
             written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
             if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
-                && (( now_s - written_s <= EMPTY_RUN_MARKER_FRESH_S )); then
+                && (( now_s - written_s <= EMPTY_RUN_COUNT_WINDOW_S )); then
                 prev_count="$sb_mcount"
             fi
         fi
