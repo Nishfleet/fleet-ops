@@ -1542,7 +1542,7 @@ if [ -x "$FINDINGS_QUEUED_BIN" ]; then
         log "15. findings-queued session-close lint complete"
     else
         findings_queued_rc=$?
-        log "15. findings-queued session-close lint FAILED (rc=$findings_queued_rc) — a finding was named in chat and never filed; unit will land in --state=failed"
+        log "15. findings-queued session-close lint ALARM (rc=$findings_queued_rc) — a finding was named in chat and never filed; LOUD + auto-filed, observe-to-close"
     fi
 else
     log "15. findings-queued helper missing at $FINDINGS_QUEUED_BIN — skip (not installed; re-run ./install.sh)"
@@ -2849,7 +2849,14 @@ fi
 if [ "${gap_loop_rc:-0}" -ne 0 ]; then
     exit "$gap_loop_rc"
 fi
-if [ "${findings_queued_rc:-0}" -ne 0 ]; then
+# findings-queued: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "a finding was named in chat and never filed" — already
+# loud + auto-filed (deduped against the open issue) + observe-to-close-
+# drained; landing the unit in --state=failed every 15 min for it is the
+# trip-loop we are fixing (fleet-ops#1116). A helper crash (rc>=2, e.g.
+# FINDINGS-QUEUED-BROKEN) still trips the unit — see bin/fleet-findings-
+# queued's exit-code contract.
+if [ "${findings_queued_rc:-0}" -ge 2 ]; then
     exit "$findings_queued_rc"
 fi
 # decisions-ledger: only propagate when the helper CRASHED (rc >= 2).
