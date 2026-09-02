@@ -321,13 +321,40 @@ JSON
 # real _read_dead_credentials() scans it and main() must emit the distinct
 # dead-credential signal (total gauge + per-seat series) for exactly the dead
 # seat.
+#
+# fleet-ops#2667 REGRESSION GUARD: the ledger also gets a CORPSE seat. Since
+# fleet-ops#2327 the corpse escalation rewrites health_class to the terminal
+# "corpse" while leaving failure_mode="credentials_bad", so a health_class-only
+# match went blind on exactly the seats that had most earned the alert. Live
+# 2026-09-02: commandcode/minimax-m3-free (403) and opencode/hy3-free (401)
+# both sat seat_dead=true + failure_mode=credentials_bad + health_class=corpse
+# while fleet_pi_seat_dead_credential_total read 0 and PiSeatDeadCredential
+# could not fire. Four seats piled up unseen. The corpse fixture below fails
+# against a health_class-only match and passes once EITHER field is read.
 SEAT_LEDGER_OVERRIDE="$scratch/seed-dead"
 mkdir -p "$SEAT_LEDGER_OVERRIDE"
 cat >"$SEAT_LEDGER_OVERRIDE/xai-oauth__grok-4.5.json" <<'JSON'
 {"provider":"xai-oauth","model":"grok-4.5","http_status":401,"health_class":"credentials_bad","seat_dead":true,"observed_at":"2026-08-29T06:30:53Z","source":"cli_spawn","failure_mode":"credentials_bad","usable_at":null,"retryable":false,"seat_dead":true}
 JSON
+# fleet-ops#2667: the terminal corpse shape, copied verbatim from the live
+# ledger file opencode__hy3-free.json.
+cat >"$SEAT_LEDGER_OVERRIDE/opencode__hy3-free.json" <<'JSON'
+{"provider":"opencode","model":"hy3-free","http_status":401,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-09-01T22:35:48.022Z","source":"provider_fetch","failure_mode":"credentials_bad","usable_at":null,"consecutive_failure_count":1}
+JSON
+# fleet-ops#2667: a corpse that is NOT a credential fault must stay OUT of the
+# count. muse-spark died on repeated HTTP 500s (failure_mode=transient_http),
+# so matching "seat_dead=true AND health_class==corpse" would over-count. The
+# match must key on the credentials_bad signal, not on deadness alone.
+cat >"$SEAT_LEDGER_OVERRIDE/opencode__muse-spark-1.2-contributor-free.json" <<'JSON'
+{"provider":"opencode","model":"muse-spark-1.2-contributor-free","http_status":500,"health_class":"corpse","retryable":false,"seat_dead":true,"observed_at":"2026-08-30T09:02:18.000Z","source":"provider_fetch","failure_mode":"transient_http","usable_at":null,"consecutive_failure_count":150}
+JSON
 cat >"$SEAT_LEDGER_OVERRIDE/devin__glm-5-2.json" <<'JSON'
 {"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"observed_at":"2026-08-29T06:30:53Z"}
+JSON
+# fleet-ops#2667: a LIVE seat carrying a stale credentials_bad failure_mode but
+# seat_dead=false must stay out of the count — seat_dead is still the gate.
+cat >"$SEAT_LEDGER_OVERRIDE/bai__deepseek-v4-flash.json" <<'JSON'
+{"provider":"bai","model":"deepseek-v4-flash","http_status":200,"health_class":"healthy","seat_dead":false,"observed_at":"2026-09-02T01:00:00.000Z","failure_mode":"credentials_bad","consecutive_failure_count":0}
 JSON
 
 python3 - "$exporter" "$OUT_OVERRIDE" "$DETAIL_STUB" "$SM_CONFIG_OVERRIDE" "$SEAT_LEDGER_OVERRIDE" <<'PY' || fail "main() emission failed"
@@ -396,11 +423,18 @@ assert "# HELP fleet_verified_merges_24h" in body, body
 assert "# TYPE fleet_verified_merge_ratio gauge" in body, body
 # fleet-ops#1445: dead-credential signal — total gauge + per-seat series for
 # exactly the one seed dead seat; the healthy seat is not counted.
-assert "fleet_pi_seat_dead_credential_total 1" in body, body
+assert "fleet_pi_seat_dead_credential_total 2" in body, body
 assert '# HELP fleet_pi_seat_dead_credential_total' in body, body
 assert '# TYPE fleet_pi_seat_dead_credential_total gauge' in body, body
 assert '# HELP fleet_pi_seat_dead_credential ' in body, body
-assert 'fleet_pi_seat_dead_credential{seat="xai-oauth__grok-4.5",http_status="401"} 1' in body, body
+assert 'fleet_pi_seat_dead_credential{seat="xai-oauth__grok-4.5",http_status="401",health_class="credentials_bad"} 1' in body, body
+# fleet-ops#2667: the corpse seat is counted, and its health_class label says
+# "corpse" so the reader knows re-auth cannot help and the row must be retired.
+assert 'fleet_pi_seat_dead_credential{seat="opencode__hy3-free",http_status="401",health_class="corpse"} 1' in body, body
+# fleet-ops#2667: neither the non-credential corpse nor the live seat with a
+# stale failure_mode may be counted.
+assert "muse-spark" not in body, body
+assert 'seat="bai__deepseek-v4-flash"' not in body, body
 assert "devin__glm-5-2" not in body, "healthy seat must not appear in dead-credential series: " + body
 print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
