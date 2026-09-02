@@ -2315,6 +2315,7 @@ def _read_never_released():
     seats = []
     if not SEAT_LEDGER.is_dir():
         return 0, seats
+    now = time.time()
     try:
         threshold = int(os.environ.get("SEAT_DEAD_CONSECUTIVE_THRESHOLD", "25"))
     except (TypeError, ValueError):
@@ -2339,6 +2340,23 @@ def _read_never_released():
                 continue  # corpses are counted elsewhere (FleetDeadCredentialSeats)
             if data.get("health_class") == "healthy":
                 continue  # recovered
+            # fleet-ops#2752: a seat whose wall clock (bench_until ??
+            # usable_at) is still in the FUTURE is legitimately walled —
+            # it will self-release when the wall passes (the comeback-
+            # release prober re-probes it at that point). It is NOT a
+            # never-released corpse: the cline/cline-pass_minimax-m3
+            # corpse was written by repair-dispatch because this window
+            # counted a 17-day-future-walled quota seat as "stuck" (count
+            # 19, threshold 25 — the natural corpse path could never fire
+            # while the wall kept the seat benched), FleetSeatComebackNeverReleased
+            # fired, and the repair worker manually corpse'd a VALID
+            # subscription seat whose monthly cap resets 16d14h out. Only
+            # a seat whose wall has PASSED (or that never had one) can be
+            # a never-probed comeback — a future-walled seat is not owed a
+            # comeback yet.
+            _wall = _seat_wall_end_epoch(data)
+            if _wall is not None and _wall >= now:
+                continue
             try:
                 count = int(data.get("consecutive_failure_count") or 0)
             except (TypeError, ValueError):
