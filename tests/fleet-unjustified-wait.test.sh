@@ -12,6 +12,13 @@
 #   3. quota_exhausted/rate_limited seat with NO usable_at -> exit 1.
 #   4. credentials_bad seat WITHOUT seat_dead=true -> exit 1 (missing clock).
 #   5. seat_dead=true with a non-dead class -> exit 1 (inconsistent).
+#   5b. seat_dead=true with health_class=corpse (credentials_bad) -> exit 0
+#       (REGRESSION GUARD fleet-ops#2724/#2667; pre-fix LOUD every tick).
+#   5c. seat_dead=true with health_class=corpse (transient_http) -> exit 0
+#       (the corpse class covers non-credential failure modes too; the
+#       filter must not over-key on failure_mode, fleet-ops#2327/#2415).
+#   5d. seat_dead=false with health_class=corpse -> exit 1 (missing dead
+#       marker on a corpse is the matching inconsistent write).
 #   6. STOP-REASON with an illegal reason -> exit 1.
 #   7. READY-WORK stalled claim (CLAIMED, old, no DONE, no after:) with
 #      REPAIR=0 -> exit 1 (audit-only path still LOUD).
@@ -226,6 +233,58 @@ rc=$(run_bin)
 [[ "$rc" == "1" ]] || fail "seat_dead=true with healthy class should exit 1 (got $rc)"
 ok "seat_dead=true with non-dead class is flagged"
 rm -f "$scratch/seats/dead-healthy.json"
+
+# --- 5b. seat_dead=true with corpse class — REGRESSION GUARD (fleet-ops#2724) -
+# The live evidence on 2026-09-01: commandcode/minimax-m3-free carried
+# seat_dead=true, health_class=corpse, failure_mode=credentials_bad
+# (HTTP 403). seat-health.ts writes health_class="corpse" for any seat
+# past SEAT_DEAD_CONSECUTIVE_THRESHOLD (fleet-ops#2327/#2415). The legacy
+# dead-class filter (hc=="credentials_bad") missed the corpse and LOUDed
+# every tick, pinning heartbeat tier 1 at unjustified_rc=1 forever.
+# After the fix, a corpse seat with dead=true is clean: the dead marker
+# IS the named clock, and the seat is RETIRED (no usable_at comeback).
+cat >"$scratch/seats/corpse-creds.json" <<'JSON'
+{"provider":"commandcode","model":"minimax-m3-free","health_class":"corpse","seat_dead":true,"failure_mode":"credentials_bad","http_status":403,"observed_at":"2026-09-01T20:59:10.284Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "corpse seat_dead=true should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "corpse seat missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "corpse seat was falsely flagged as inconsistent"
+fi
+ok "corpse seat_dead=true (credentials_bad failure_mode) is clean"
+
+# --- 5c. seat_dead=true with corpse class — TRANSIENT failure_mode (fleet-ops#2724) -
+# The corpse escalation applies to ANY failure mode past the threshold
+# (credentials_bad for 401/403, transient_http for 5xx storms, etc). A
+# corpse with a non-credential failure_mode is still retired — same
+# clock (the dead marker), same "no usable_at comeback" contract. The
+# filter must not over-key on failure_mode.
+cat >"$scratch/seats/corpse-transient.json" <<'JSON'
+{"provider":"opencode","model":"muse-spark-1.2-contributor-free","health_class":"corpse","seat_dead":true,"failure_mode":"transient_http","http_status":500,"observed_at":"2026-08-30T09:02:18.000Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "corpse seat_dead=true (transient_http) should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "transient corpse missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "transient corpse was falsely flagged as inconsistent"
+fi
+ok "corpse seat_dead=true (transient_http failure_mode) is clean"
+
+# --- 5d. seat_dead=false with corpse class — inconsistent write (fleet-ops#2724) -
+# The OTHER half of the guard: a corpse with NO dead marker is still
+# inconsistent. seat-health.ts writes both atomically (seat-health.ts:768
+# merged.seat_dead = true; merged.health_class = "corpse"), but a corrupt
+# or hand-edited record could split them. The named clock for corpse is
+# the dead marker — without it the audit must LOUD.
+cat >"$scratch/seats/corpse-nodead.json" <<'JSON'
+{"provider":"commandcode","model":"minimax-m3-free","health_class":"corpse","seat_dead":false,"failure_mode":"credentials_bad","http_status":403,"observed_at":"2026-09-01T20:59:10.284Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "1" ]] || { cat "$scratch/err.log"; fail "corpse seat_dead=false should exit 1 (got $rc)"; }
+grep -q "dead marker missing" "$scratch/err.log" || { cat "$scratch/err.log"; fail "corpse seat_dead=false missing dead-marker-missing loud"; }
+ok "corpse seat_dead=false is flagged as missing dead marker"
+rm -f "$scratch/seats/corpse-creds.json" "$scratch/seats/corpse-transient.json" "$scratch/seats/corpse-nodead.json"
 
 # --- 6. STOP-REASON illegal reason -------------------------------------------
 printf '%s\n' '{"reason":"mystery-wait","detail":{}}' >"$scratch/STOP-REASON.json"
