@@ -803,6 +803,15 @@ PY
 # fleet-ops#1350: GitHub API rate-limit metrics + pi-intake sidecar.
 bash "$here/fleet-gh-rate-limit.test.sh" || fail "fleet-gh-rate-limit tests failed"
 
+# fleet-ops#2690: console tile shipped_24h disputed. Locks the two-source
+# fix (exporter GraphQL query pushes merged:>={cutoff} sort:merged-desc into
+# the search itself; verify.py skips the Prom re-query when the textfile
+# mtime advanced past tile.observed_at). Hosted here because
+# fleet-metrics-export.test.sh is directly listed in ci.yml (P14 runs it
+# without a workflow-file edit; the worker App cannot push
+# .github/workflows/**).
+bash "$here/console-shipped-24h-race.test.sh" || fail "console-shipped-24h-race tests failed"
+
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy
 #     observation. The seat-health extension's after_provider_response

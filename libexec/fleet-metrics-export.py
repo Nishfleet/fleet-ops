@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 # --- Config ----------------------------------------------------------------
@@ -422,9 +423,25 @@ query($cursor: String) {
 # PullRequest nodes for an ISSUE-typed query; `sort:updated-desc` + a 24h
 # mergedAt cutoff in the client keeps the page count bounded (a busy day is
 # ~50-100 merges; GH_PAGES=10 × first=100 covers 1000).
-MERGED_PRS_SEARCH_QUERY = """
+# fleet-ops#2690: push the 24h time filter into the search query and sort by
+# merge time. The previous `sort:updated-desc` + client-side cutoff could
+# exhaust the GH_PAGES×first=1000 pagination cap on stale-but-recently-updated
+# PRs (issues that were merged > 24h ago but received any update activity —
+# comments, labels, references — bubble to the top), which silently under-
+# counts the 24h window. The console tile (sum(fleet_merged_prs_24h)) then
+# disagreed with the verifier's spot gh search (REST `is:merged merged:>=`
+# filter) and ConsoleLying fired on a lying tile that was actually a lying
+# GraphQL. `merged:>=$cutoff sort:merged-desc` lets GitHub do the filtering
+# and ordering so the result is bounded by the 24h window.
+#
+# The cutoff is interpolated as a literal in the search query STRING by
+# _gh_merged_prs_raw — GraphQL does not expand variables inside the
+# `search(query: "...")` string field, so passing it as a $-variable would
+# not reach the GitHub search engine. cutoff_iso is generated server-side
+# from a trusted system value, never user input.
+MERGED_PRS_SEARCH_QUERY_TEMPLATE = """
 query($cursor: String) {
-  search(query: "org:Nishfleet is:pr is:merged sort:updated-desc", type: ISSUE, first: 100, after: $cursor) {
+  search(query: "org:Nishfleet is:pr is:merged merged:>={CUTOFF} sort:merged-desc", type: ISSUE, first: 100, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -783,12 +800,24 @@ def _gh_merged_prs_raw():
     (fleet-ops#1136 objective decision); the REST `gh search prs --json`
     surface omits additions/deletions/changedFiles, so GraphQL search is
     required.
+
+    fleet-ops#2690: the search query itself carries the 24h filter and
+    sort:merged-desc. Pagination now terminates naturally (the result set
+    is bounded by the window) — `merged:>=$cutoff` lets GitHub do the
+    filtering and `sort:merged-desc` orders by merge time so the most
+    recent merges come first. The GH_PAGES cap is still defended as a
+    safety net; hitting it on a 24h window means >GH_PAGES×100 PRs merged
+    in 24h across the org, which is the operational alarm to investigate.
     """
     cutoff_epoch = time.time() - 86400
+    cutoff_iso = datetime.fromtimestamp(
+        cutoff_epoch, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = MERGED_PRS_SEARCH_QUERY_TEMPLATE.replace("{CUTOFF}", cutoff_iso)
     out = []
     cursor = None
     for _ in range(GH_PAGES):
-        payload = _gh_graphql(MERGED_PRS_SEARCH_QUERY, cursor)
+        payload = _gh_graphql(query, cursor)
         if payload is None:
             return None
         if payload.get("errors"):
@@ -802,6 +831,9 @@ def _gh_merged_prs_raw():
             merged = node.get("mergedAt") or ""
             ep = _parse_iso_utc(merged)
             if ep is None or ep < cutoff_epoch:
+                # Defensive backstop — the query already filtered, but if
+                # GitHub's window edge drifted by a second a row could leak
+                # through. Drop it; do not emit a false 24h merge.
                 continue
             out.append({
                 "repo": repo,
@@ -817,11 +849,23 @@ def _gh_merged_prs_raw():
         cursor = page.get("endCursor")
         if not cursor:
             return out
+    # (the 24h-windowed query should never exhaust the page cap at fleet
+    # volume; if it does, that is the operational alarm — the print is
+    # the existing loud signal picked up by alerting.)
     print("gh merged-prs search: hit page cap", file=sys.stderr)
     return out
 
 
 def _gh_graphql(query, cursor=None):
+    """Run `gh api graphql` with the query plus optional cursor.
+
+    Note (fleet-ops#2690): earlier drafts of the #2690 fix passed the 24h
+    cutoff as a $-variable via `-f cutoff=<iso>`. That does NOT work —
+    GraphQL does not expand variables inside the `search(query: "...")`
+    string field, only at the top level of the query body. The cutoff is
+    interpolated into the search string by the caller (see
+    MERGED_PRS_SEARCH_QUERY_TEMPLATE and _gh_merged_prs_raw).
+    """
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     if cursor:
         cmd.extend(["-f", f"cursor={cursor}"])

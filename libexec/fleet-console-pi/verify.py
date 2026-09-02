@@ -238,6 +238,55 @@ def _promql_sum(expr):
     return total
 
 
+def _prom_textfile_mtime():
+    """Return the Prometheus fleet.ptextfile mtime in epoch seconds, or None.
+
+    Same family node_textfile_mtime_seconds{file=~".*fleet.prom"} that
+    generate.py uses for its staleness gate. Returns None when the series
+    is absent (the file has never been written) — not an error; the
+    downstream race check treats absent == "definitely changed" and falls
+    back to the gh spot check.
+    """
+    url = PROM + "/api/v1/query?" + urllib.parse.urlencode({
+        "query": 'node_textfile_mtime_seconds{file=~".*fleet.prom"}',
+    })
+    payload = _http_json(url)
+    if payload.get("status") != "success":
+        raise VerifyError(f"prom status={payload.get('status')}")
+    rows = (payload.get("data") or {}).get("result") or []
+    if not rows:
+        return None
+    try:
+        return max(float(r["value"][1]) for r in rows)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise VerifyError(f"bad textfile mtime sample: {exc}") from exc
+
+
+def _race_against_tile(tile):
+    """True iff the textfile mtime advanced past the tile's observed_at.
+
+    fleet-ops#2690: between generate.py and verify.py the metrics exporter
+    may refresh fleet.prom (every 5 min vs the 12-min push cycle). When
+    that happens the tile and the verifier look at the SAME Prom family
+    but at different snapshots — `tile.count != sum(fleet_merged_prs_24h)`
+    is a transient timing artifact, not a lying tile. The race gate tells
+    Prom-based checkers to defer to the gh check.
+
+    Tolerance of +1s absorbs clock-skew rounding between the tile's
+    observed_at capture and the verifier's mtime query.
+    """
+    observed_at = tile.get("observed_at")
+    if not isinstance(observed_at, (int, float)):
+        return False  # no anchor → can't race-detect; let the check run
+    try:
+        mtime = _prom_textfile_mtime()
+    except VerifyError:
+        return False  # Prom unreachable → defer to spot check (gh)
+    if mtime is None:
+        return False  # series missing; exporter has never written → not race
+    return mtime > float(observed_at) + 1.0
+
+
 def _systemctl_env():
     env = dict(os.environ)
     env["XDG_RUNTIME_DIR"] = XDG
@@ -313,6 +362,14 @@ def run_open_prs_prom(tile):
 
 
 def run_shipped_prom(tile):
+    # fleet-ops#2690: skip the Prom re-query when the textfile advanced
+    # between generate and verify. The gh spot check still runs; only the
+    # same-source race is suppressed.
+    if _race_against_tile(tile):
+        raise VerifyError(
+            "textfile mtime advanced past tile.observed_at — race, "
+            "defer to gh spot check"
+        )
     return int(_promql_sum("sum(fleet_merged_prs_24h)"))
 
 
@@ -506,10 +563,20 @@ def verify_tile(name, tile):
         else:
             verify["match"] = True
     except VerifyError as e:
-        verify["error"] = str(e)
-        verify["match"] = False
-        mismatch = 1
-        reasons.append(f"verify failed: {e}")
+        # fleet-ops#2690: a race between generate.py and verify.py (textfile
+        # mtime advanced past tile.observed_at) raises VerifyError from
+        # run_shipped_prom so the same-source Prom check does not falsely
+        # DISPUTE on a timing artifact. The gh spot check still runs and
+        # is the real cross-check. Treat it as a skip: mismatch stays 0,
+        # but record the reason so the canary sees it.
+        if "race" in str(e).lower():
+            verify["skipped"] = str(e)
+            verify["match"] = None
+        else:
+            verify["error"] = str(e)
+            verify["match"] = False
+            mismatch = 1
+            reasons.append(f"verify failed: {e}")
 
     spot = spec.get("spot")
     if spot and not SKIP_GH:
