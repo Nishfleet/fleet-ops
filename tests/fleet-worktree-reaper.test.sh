@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # tests/fleet-worktree-reaper.test.sh
 #
-# Proves the orphan worktree reaper (fleet-ops#2227, fleet-ops#2637)
-# deletes ONLY worktrees whose cycle state is recorded as terminal AND
-# whose work is preserved on origin AND whose tree is clean. Two modes:
+# Proves the orphan worktree reaper (fleet-ops#2227, fleet-ops#2637,
+# fleet-ops#2774) deletes ONLY worktrees whose cycle state is recorded
+# as terminal AND whose work is preserved on origin AND whose tree is
+# clean. Three modes:
 #
 #   Mode A (claim/issue-<N> + MERGED PR) — fleet-ops#2227 original.
 #   Mode B (issue-<short>-<N> path + dispatch-ledger terminal) — fleet-ops#2637.
+#   Mode C (any worktree + HEAD-on-origin + age gate) — fleet-ops#2774.
 #
 # Hermetic: fake gh (file-backed merged-PR answers), fake systemctl
 # (live-unit marker files), local bare repos + worktrees, no network.
 # The dispatch ledger is mocked via FLEET_DISPATCH_LEDGER pointing at a
-# scratch JSONL.
+# scratch JSONL. The age gate is tested via `touch -d` on the worktree
+# directory.
 #
 # Cases:
 #   Mode A (existing):
@@ -20,10 +23,10 @@
 #     3. merged + LIVE worker             -> SKIPPED (never touch a live cycle)
 #     4. NOT merged + terminal + clean    -> SKIPPED (no merged PR)
 #     5. gh merged query fails for a repo -> SKIPPED (fail safe, never blind)
-#     6. worktree on a non-claim branch   -> untouched (other mechanism owns it)
+#     6. worktree on a non-claim branch   -> REAPED-C (Mode C catch-all, fleet-ops#2774)
 #     7. --dry-run                        -> reports, deletes nothing
 #
-#   Mode B (new — fleet-ops#2637):
+#   Mode B (fleet-ops#2637):
 #     9.  pi-issue path + ledger-terminal + pushed + clean -> REAPED-B
 #    10.  pi-issue path + ledger-OPEN                       -> SKIP-B not-terminal
 #    11.  pi-issue path + ledger-terminal + HEAD not on origin -> SKIP-B head-not-on-origin
@@ -33,6 +36,13 @@
 #                                                            (fail closed, never blind)
 #    15.  pi-issue path + multiple ledger entries (open -> salvaged) -> REAPED-B
 #                                                            (most-recent wins)
+#
+#   Mode C (fleet-ops#2774 — any branch, HEAD-on-origin + age gate):
+#    18. fix/* branch + pushed + clean + old     -> REAPED-C
+#    19. fix/* branch + pushed + clean + YOUNG   -> SKIP-C too-young
+#    20. fix/* branch + NOT pushed + clean + old -> SKIP-C head-not-on-origin
+#    21. fix/* branch + pushed + dirty + old     -> SKIP dirty
+#    22. detached HEAD + on origin + clean + old -> REAPED-C
 #
 #   16. MANIFEST + unit files present    -> install rail intact
 set -euo pipefail
@@ -184,7 +194,9 @@ git -C "$parent_a" worktree add -q -B "claim/issue-103" "$wroot/issue-fleet-ops-
 # Case 5: gh fails for proj-x -> all proj-x worktrees SKIPPED
 add_claim_worktree "$parent_b" "$wroot" 200
 printf '1\n' >"$scratch/gh-state/proj-x.fail"
-# Case 6: non-claim branch worktree -> untouched
+# Case 6: non-claim branch worktree -> Mode C candidate, but freshly
+# created so the age gate skips it (too young). Proves the age gate
+# protects a just-created worktree even when HEAD is on origin.
 git -C "$parent_a" worktree add -q -B "feature/other" "$wroot/feature-other-fleet-ops" 2>/dev/null
 
 before=$(find "$wroot" -mindepth 1 -maxdepth 1 -type d | wc -l)
@@ -219,10 +231,10 @@ ok "case4: unmerged skipped"
     || fail "case5: gh-failed repo worktrees must NOT be reaped (fail safe)"
 ok "case5: gh-fail repo skipped"
 
-# Case 6: non-claim worktree untouched
+# Case 6: non-claim worktree skipped by Mode C age gate (too young)
 [ -d "$wroot/feature-other-fleet-ops" ] \
-    || fail "case6: non-claim worktree must be untouched"
-ok "case6: non-claim branch untouched"
+    || fail "case6: young Mode C worktree must be skipped (age gate)"
+ok "case6: non-claim branch skipped by Mode C age gate (too young)"
 
 # The reaper must report a reaped=1 line.
 echo "$out" | grep -q 'reaped=1' || fail "summary should report reaped=1"
@@ -426,6 +438,98 @@ post_notterminal=$(printf '%s' "$post_summary" | sed -nE 's/.*notterminal=([0-9]
 [ "$post_notterminal" = "$prior_notterminal" ] \
     || fail "case17: notterminal must NOT move (no Mode B fallthrough), was prior=$prior_notterminal post=$post_notterminal; output: $out_b9"
 ok "case17: claim branch + no merged PR + ledger-terminal SKIP not-merged (no Mode-B fallthrough)"
+
+# =====================================================================
+# Mode C (fleet-ops#2774): ANY worktree + HEAD-on-origin + age gate
+# =====================================================================
+# Mode C is the catch-all for worktrees not matched by Mode A (claim/
+# issue-* branch) or Mode B (issue-<short>-<N> path). It reaps orphan
+# worktrees on other branch shapes (fix/*, lane1/*, detached, …) when
+# HEAD is on origin (the vault's safe-cleanup check), the tree is clean,
+# and the worktree is older than --min-age-hours.
+
+# Helper: create a Mode C worktree at a NON-issue path on a NON-claim
+# branch. push=1 pushes the branch to origin; push=0 leaves HEAD local.
+# dirty=1 adds an uncommitted file. old=1 sets the directory mtime far
+# in the past so the age gate passes.
+add_modec_worktree() {
+    local parent="$1" wroot="$2" name="$3" branch="$4" \
+          push="${5:-1}" dirty="${6:-0}" old="${7:-0}"
+    local wt="$wroot/$name"
+    # Unique commit so HEAD is NOT the base commit (avoids accidental
+    # origin/main match when push=0).
+    printf 'modec-%s-%s\n' "$branch" "$name" >>"$parent/modec.txt"
+    git_ident "$parent"
+    git -C "$parent" add modec.txt
+    git -C "$parent" commit -q -m "modec-${branch}-${name}"
+    git -C "$parent" branch -f "$branch" HEAD >/dev/null 2>&1
+    git -C "$parent" worktree add -q -B "$branch" "$wt" 2>/dev/null
+    if [ "$dirty" = 1 ]; then
+        printf 'uncommitted\n' >"$wt/dirty.txt"
+    fi
+    if [ "$push" = 1 ]; then
+        git -C "$wt" push -q origin "$branch" 2>/dev/null
+    fi
+    if [ "$old" = 1 ]; then
+        # Set the worktree directory mtime to 2 days ago so the default
+        # 24h age gate passes.
+        touch -d '2 days ago' "$wt" 2>/dev/null || true
+    fi
+    printf '%s' "$wt"
+}
+
+# --- 18. fix/* branch + pushed + clean + old -> REAPED-C -------------------
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-500" "fix/mode-c-500" 1 0 1
+out_c1=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/fix-branch-500" ] \
+    || fail "case18: fix/* + pushed + clean + old should be REAPED-C; output: $out_c1"
+echo "$out_c1" | grep -q "fix-branch-500: REAPED-C" \
+    || fail "case18: expected REAPED-C tag; output: $out_c1"
+ok "case18: fix/* branch + pushed + clean + old REAPED-C"
+
+# --- 19. fix/* branch + pushed + clean + YOUNG -> SKIP-C too-young ---------
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-501" "fix/mode-c-501" 1 0 0
+out_c2=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-501" ] \
+    || fail "case19: young Mode C worktree must NOT be reaped; output: $out_c2"
+echo "$out_c2" | grep -q "fix-branch-501: SKIP-C too-young" \
+    || fail "case19: expected SKIP-C too-young; output: $out_c2"
+ok "case19: fix/* branch + pushed + clean + YOUNG SKIP-C too-young"
+# Now age it and reap to clean up.
+touch -d '2 days ago' "$wroot/fix-branch-501" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 20. fix/* branch + NOT pushed + clean + old -> SKIP-C head-not-on-origin
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-502" "fix/mode-c-502" 0 0 1
+out_c3=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-502" ] \
+    || fail "case20: not-pushed Mode C worktree must NOT be reaped; output: $out_c3"
+echo "$out_c3" | grep -q "fix-branch-502: SKIP-C head-not-on-origin" \
+    || fail "case20: expected SKIP-C head-not-on-origin; output: $out_c3"
+ok "case20: fix/* branch + NOT pushed SKIP-C head-not-on-origin"
+
+# --- 21. fix/* branch + pushed + dirty + old -> SKIP dirty -----------------
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-503" "fix/mode-c-503" 1 1 1
+out_c4=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-503" ] \
+    || fail "case21: dirty Mode C worktree must NOT be reaped; output: $out_c4"
+echo "$out_c4" | grep -q "fix-branch-503: SKIP dirty" \
+    || fail "case21: expected SKIP dirty; output: $out_c4"
+ok "case21: fix/* branch + pushed + dirty SKIP dirty"
+
+# --- 22. detached HEAD + on origin + clean + old -> REAPED-C ---------------
+# Create a worktree, push its branch, then detach HEAD in the worktree
+# to a commit that IS on origin (the pushed branch tip). A detached
+# worktree whose HEAD SHA is on an origin ref is safe to reap.
+add_modec_worktree "$parent_a" "$wroot" "detached-wt-504" "fix/detached-504" 1 0 1
+# Detach HEAD in the worktree (it's at the branch tip, which is on origin).
+git -C "$wroot/detached-wt-504" checkout -q --detach 2>/dev/null
+out_c5=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/detached-wt-504" ] \
+    || fail "case22: detached + on-origin + clean + old should be REAPED-C; output: $out_c5"
+echo "$out_c5" | grep -q "detached-wt-504: REAPED-C" \
+    || fail "case22: expected REAPED-C tag for detached; output: $out_c5"
+ok "case22: detached HEAD + on origin + clean + old REAPED-C"
 
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
