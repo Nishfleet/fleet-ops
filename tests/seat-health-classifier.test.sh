@@ -144,3 +144,27 @@ run_invariant \
     "healthy direction (real content must stay healthy)"
 
 ok "fleet-ops#1466 closure: 200/empty-body and empty-CLI now classify as non-healthy, real content still healthy"
+
+# fleet-ops#2867: classifyCliOutput must not treat an exit-0 write-up that
+# mentions another seat's HTTP 403 as a dead credential for THIS spawn.
+# Live 2026-09-02T17:20:41Z: pi-issue-fleet-ops-2734 answered on glm-5-2
+# (exit 0, PACKET-VERDICT tools=42 class=worked) then wrote up
+# commandcode/minimax-m3-free HTTP 403; the regex /\\b(401|403)\\b/ matched
+# the write-up, rewrote lanes/seats/devin__glm-5-2.json to corpse, and
+# fired FleetDeadCredentialSeats. The Devin CLI never returned 403.
+# Same credential answered PONG on glm-5-2 and swe-1-7 at 17:35Z.
+run_invariant \
+    "inv4: exit-0 narrative mentioning 403 stays healthy" \
+    "classifyCliOutput" \
+    '["Live re-probed both seats: minimax/minimax-m3-free → 403 (provider retired the free line). Control probes confirm credentials are LIVE.", 0]' \
+    "healthy" \
+    "healthy direction (exit-0 write-up mentioning 403 must stay healthy)"
+
+run_invariant \
+    "inv5: exit-1 real 403 still credentials_bad" \
+    "classifyCliOutput" \
+    '["Error: 403 Forbidden\\nauthentication failed", 1]' \
+    "credentials_bad" \
+    "non-healthy direction (failed spawn with 403 must stay credentials_bad)"
+
+ok "fleet-ops#2867: exit-0 403-narrative stays healthy; failed-spawn 403 stays credentials_bad"
