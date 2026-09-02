@@ -104,7 +104,7 @@ groups:
           service: fleet
         annotations:
           summary: "seat comeback overdue — wall past usable_at, still unobserved"
-          description: "One or more seats are still classed non-healthy with their usable_at/bench_until in the past (fleet-ops#2407): the router has fail-opened them but nothing re-observed them since, so they linger as an unproven walled state. The per-seat fleet_seat_comeback_overdue series names each seat. Repair worker: probe each named seat (a 1-token reply-OK probe or a real dispatch); a success writes a healthy observation and clears it, a fresh failure re-anchors usable_at and clears it. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats."
+          description: "One or more seats are still classed non-healthy with their usable_at/bench_until in the past by MORE than one probe interval (900s, fleet-ops#2806): the releaser had a full 15-min cycle to re-probe (re-anchor on a fresh failure, unwall on a success) and did not, so they linger as an unproven walled state past the releaser's cadence. The per-seat fleet_seat_comeback_overdue series names each seat; the releaser's fleet_seat_comeback_release_interval_breached gauge fires on the same boundary from inside the sweep. Repair worker: probe each named seat (a 1-token reply-OK probe or a real dispatch); a success writes a healthy observation and clears it, a fresh failure re-anchors usable_at and clears it. Inspect the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats and journalctl --user -u fleet-seat-comeback-release.service."
 
       # fleet-ops#2421: the ACTIVE release path (fleet-seat-comeback-release)
       # re-probes a seat whose wall clock has passed and unwalls a
