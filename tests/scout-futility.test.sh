@@ -900,6 +900,66 @@ rm -f "$state/0509.state"
   || fail "scenario17k: current-window KeyError must still demote, got consecutive_wall='$(state_field consecutive_wall 0509)'"
 ok "scenario17k: begin_at scopes journal so prior-run faults cannot demote current wall"
 
+# Scenario 17l: the Devin multi-line wall block is wall-class (fleet-ops
+# #2922, defect 2 residue). The live 2026-09-02T19:31Z pi-scout@0509 crash
+# printed "Devin exited ... : {" + indented JSON + "}" as FOUR journal lines
+# (reproduced verbatim in #2922's Evidence). PROVIDER_WALL_PATTERNS matches
+# line 1 ("Devin exited") and line 2 ("resource_exhausted"), but lines 3-4
+# ("cognition.ai/retryable": true, and the closing brace) are structural JSON
+# continuation of the SAME wall message — the old demote rule flipped that
+# pure provider-wall run to "not provider-wall", keeping consecutive_wall at
+# 0 and the #2351/#2468 dedupe gate closed. A JSON fragment attached to wall
+# evidence must not demote.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf 'EXTLOAD-OK extension=bash-spawn-hook guard=tool_call depth_max=1 ceiling=2800/3000 wrangler_deploy_guard=0509\n'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007Devin exited with code 1: Error: Agent error: Connection error, send a message to continue retrying (error id: 1804a50d2a8d4f15a03c9f3f408a3e93): {\n'
+    printf '  "cognition.ai/errorKind": "resource_exhausted",\n'
+    printf '  "cognition.ai/retryable": true\n'
+    printf '}\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17l: Devin resource_exhausted multi-line block must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17l: Devin multi-line JSON wall block is wall-class"
+
+# Scenario 17m: a JSON continuation fragment NOT attached to wall evidence
+# still demotes (conservative default preserved). A window that opens in the
+# middle of an unrelated message must not become wall-class on a 503 that
+# merely shares the window — work faults stay non-wall until proven
+# otherwise, so OnFailure repair still owns them.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf '  "cognition.ai/retryable": true\n'
+    printf '}\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "0" ]] \
+  || fail "scenario17m: unaffiliated JSON continuation must still demote, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17m: unaffiliated JSON continuation still demotes"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
