@@ -1669,6 +1669,39 @@ else
 fi
 
 # ============================================================================
+# 21. DUPLICATE-ISSUE DRAIN (fleet-ops#2762)
+# ============================================================================
+# Every tick, drain the same-problem duplicate backlog the filing gate
+# (fleet-ops#1212) identifies but never closes. The sweep clusters open
+# issues by title+body token overlap; for each duplicate cluster the oldest
+# open issue stays canonical and the remaining agent-ready members close
+# with a `duplicate-of` comment. agent-in-progress / agent-blocked /
+# red-on-main members get the marker comment only (merged by reference, no
+# close) so no active work or Nish-gated item is touched. Capped per run.
+# Fail-closed: FLEET_CLOSE_DUPLICATES_OK=1 is set only here, so one-off
+# tests cannot phantom-close real issues. rc 0 always (best-effort drain);
+# only a helper crash (rc >= 2) trips the unit.
+ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-/home/nish/.local/bin/fleet-issue-file}"
+close_duplicates_rc=0
+if [ -x "$ISSUE_FILE_BIN" ]; then
+    log "21. duplicate-issue drain starting"
+    # Fail-closed: only the production heartbeat closes (fleet-ops#820 class).
+    if FLEET_CLOSE_DUPLICATES_OK=1 "$ISSUE_FILE_BIN" close-duplicates --output-json "$LOG_DIR/close-duplicates.json"; then
+        log "21. duplicate-issue drain complete"
+    else
+        close_duplicates_rc=$?
+        if [ "$close_duplicates_rc" -ge 2 ]; then
+            log "21. duplicate-issue drain CRASHED (rc=$close_duplicates_rc)"
+        else
+            log "21. duplicate-issue drain complete (rc=$close_duplicates_rc)"
+            close_duplicates_rc=0
+        fi
+    fi
+else
+    log "21. fleet-issue-file missing at $ISSUE_FILE_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
 # ============================================================================
 # Every tick, prove "deferral requires a named clock": every benched seat,
@@ -2894,6 +2927,12 @@ fi
 # (fleet-ops#1116).
 if [ "${interventions_eliminated_rc:-0}" -ge 2 ]; then
     exit "$interventions_eliminated_rc"
+fi
+# duplicate-issue drain: only propagate when the helper CRASHED (rc >= 2).
+# rc 0 = drained (possibly zero); the drain is best-effort and never trips
+# the unit for finding duplicates (fleet-ops#1116 pattern).
+if [ "${close_duplicates_rc:-0}" -ge 2 ]; then
+    exit "$close_duplicates_rc"
 fi
 # unjustified-wait: only propagate when the helper CRASHED (rc >= 2).
 # exit 1 means "TOP GEAR invariant violated" — already loud + auto-
