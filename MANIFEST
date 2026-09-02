@@ -186,6 +186,13 @@ systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/syst
 # helpers.
 lib/canary-effectiveness.py /home/nish/.local/lib/pi-packet/canary-effectiveness.py
 systemd/fleet-metrics-export.service.d/canary-effectiveness.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/canary-effectiveness.conf
+# fleet-ops#2759: intake prioritization effectiveness family (precedence-band
+# product-first hold -> product merge lift). Piggybacks the existing 5-min
+# fleet-metrics-export tick (no new timer); writes
+# fleet-intake-effectiveness.prom. Leading '-' so an intake-effectiveness
+# fault cannot fail Prometheus export.
+lib/intake-prioritization-effectiveness.py /home/nish/.local/lib/pi-packet/intake-prioritization-effectiveness.py
+systemd/fleet-metrics-export.service.d/intake-effectiveness.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/intake-effectiveness.conf
 bin/pi-intake-run /home/nish/.local/bin/pi-intake-run
 # fleet-ops#379: mechanical intake priority. critical-path (and
 # escalate-senior, which implies it) claims before the agent-ready tail;

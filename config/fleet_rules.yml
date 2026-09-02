@@ -508,6 +508,60 @@ groups:
           summary: "canary organ {{ $labels.organ }} silent 7+ days with no caught regression"
           description: "fleet_canary_last_failure_seconds{organ=\"{{ $labels.organ }}\"} is 0 or older than 7d AND caught_regressions_total is 0 while the organ is still running (fleet-ops#2757). A silent canary may be testing the wrong surface. Confirm the organ's failure signature still matches the product path users hit."
 
+  - name: fleet_intake_prioritization
+    rules:
+      # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
+      # ships its absent() rule in the same PR).
+      # fleet_intake_effectiveness_last_run_seconds is written by the
+      # intake-effectiveness exporter every 5-min tick on the existing
+      # fleet-metrics-export oneshot (drop-in ExecStart, no new timer), even
+      # when the gh merge fetch fails (the hold + heartbeat gauges always
+      # emit), so absent() fires only when the #2759 path is dead or removed.
+      - alert: FleetIntakeEffectivenessAbsent
+        expr: absent(fleet_intake_effectiveness_last_run_seconds)
+        for: 3h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "intake prioritization effectiveness metrics absent — the #2759 exporter path is missing or dead"
+          description: "Repair: lib/intake-prioritization-effectiveness.py must emit fleet_intake_effectiveness_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/intake-effectiveness.conf (no new timer). Check fleet-metrics-export.timer is running and journalctl --user -u fleet-metrics-export.service for errors. Re-install per /home/nish/workspaces/agent-state/alert-repair/issue-2759-progress.md until fleet_intake_effectiveness_last_run_seconds appears."
+
+      # fleet-ops#2759 output-vs-outcome: the precedence-band product-first
+      # hold (fleet-ops#2519/#2539) may ENGAGE (mechanism green) while product
+      # merge throughput does not RISE (outcome red). Fires when the trailing
+      # 14d effectiveness lift is < 0.1 (the hold did not lift 0509 merges/day
+      # vs the no-hold baseline) AND the hold engaged more than half of that
+      # window. The effectiveness gauge is a 14d trailing raw value (the
+      # window is baked into the exporter), so this is a level check on a
+      # trend window, not an instantaneous threshold. Omitted when the
+      # baseline rate is 0, so a quiet window can never trip it.
+      - alert: IntakePrioritizationIneffective
+        expr: fleet_intake_prioritization_effectiveness{repo="0509"} < 0.1 and avg_over_time(fleet_intake_hold_active{repo="fleet-ops"}[14d]) > 0.5
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "product-first hold engages but product merge throughput does not increase (effectiveness < 0.1 over 14d, hold > 50% of window)"
+          description: "fleet_intake_prioritization_effectiveness{repo=\"0509\"} has been below 0.1 for the trailing 14d while fleet_intake_hold_active{repo=\"fleet-ops\"} was engaged more than half of that window. The precedence-band mechanism is green but the outcome is red: holding fleet-ops did not lift product (0509) merges/day versus the no-hold baseline. This is the fleet-ops#2759 output-vs-outcome metric's purpose. Inspect fleet_intake_product_merge_rate_during_hold{repo=\"0509\"} vs fleet_intake_product_merge_rate_baseline{repo=\"0509\"} and re-tune config/precedence-band.json thresholds."
+
+      # fleet-ops#2657: the hold must not hard-stall the fleet. When the hold
+      # is engaged > 80% of the trailing 14d AND the control plane merges
+      # fewer than 0.5 PRs/week (fleet_intake_control_merge_rate_week), the
+      # precedence is starving fleet-ops of the machinery the fleet depends
+      # on. #2657 was this exact pattern: the hold engaged and the fleet's
+      # own repair/mechanism work stalled.
+      - alert: IntakeHoldStarvesFleet
+        expr: avg_over_time(fleet_intake_hold_active{repo="fleet-ops"}[14d]) > 0.8 and fleet_intake_control_merge_rate_week{repo="fleet-ops"} < 0.5
+        for: 6h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "product-first hold is starving fleet-ops: engaged > 80% of 14d while control merges < 0.5/week"
+          description: "avg_over_time(fleet_intake_hold_active{repo=\"fleet-ops\"}[14d]) > 0.8 and fleet_intake_control_merge_rate_week{repo=\"fleet-ops\"} < 0.5 — the fleet-ops#2657 hard-stall pattern. The hold engages most of the time yet the control plane merges almost nothing; repair/mechanism work is locked out. Re-tune PRODUCT_FIRST_SELF_RATIO_MAX in lib/precedence-band.sh or widen the floor lanes."
+
   - name: fleet_console_truth
     rules:
       # fleet-ops#1157: a tile whose independent truth-check disagrees with
