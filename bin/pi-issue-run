@@ -682,12 +682,31 @@ fi
 # one that worked.
 : >"$tried_file"
 
-# fleet-ops#2462: reclaim-count reset on success. A successful run means the
-# issue is resolved (PR will be opened). Clear the counter + systemic marker
-# so a future re-open of this issue starts fresh, not inheriting a stale
-# cap or marker from this failure cycle.
-rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" 2>/dev/null || true
-rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
-seat_log "pi-issue-run: $inst SUCCESS reset reclaim-count + systemic marker (issue resolved)"
+# fleet-ops#2462 + #2772: reclaim-count reset on success — PR-gated. A
+# run that produced non-empty output but opened NO PR (the model asserted
+# success without shipping) is not a resolved issue: resetting the counter
+# there let a seat-storm claim loop defeat the MAX_RECLAIMS cap (fleet-ops#2772:
+# line=2672 claimed 11x in 12h; two no-PR "success" runs wiped the count
+# each time, so the cap never fired). Reset only when the work actually
+# shipped: an open PR from this claim branch, or the issue is already
+# closed (re-entrancy: an earlier run's PR merged). On API failure, fail
+# CLOSED (do not reset) — a stale tall count only escalates a completed
+# issue, which is harmless (a closed issue is not re-claimed).
+issue_num="${inst##*-}"
+_shipped=no
+_cl_open_pr=$(gh api "repos/Nishfleet/${pkt_repo}/pulls?state=open&head=${pkt_repo}:claim/issue-${issue_num}&per_page=1" 2>/dev/null || true)
+if printf '%s' "$_cl_open_pr" | jq -e 'length > 0' >/dev/null 2>&1; then
+    _shipped=yes
+else
+    _cl_issue_state=$(gh api "repos/Nishfleet/${pkt_repo}/issues/${issue_num}" --jq '.state // "open"' 2>/dev/null || true)
+    [[ "$_cl_issue_state" == "closed" ]] && _shipped=yes
+fi
+if [[ "$_shipped" == "yes" ]]; then
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
+    seat_log "pi-issue-run: $inst SUCCESS reset reclaim-count + systemic marker (shipped: PR open or issue closed)"
+else
+    seat_log "pi-issue-run: $inst SUCCESS but no open PR from claim/issue-${issue_num} and issue ${_cl_issue_state:-unknown} — reclaim-count NOT reset (claim-loop cap stays tall)"
+fi
 
 exit 0

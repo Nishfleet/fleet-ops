@@ -91,6 +91,22 @@ RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
 # (each seat bench is 600-900s, so 8 passes covers ~2h of provider storm)
 # without letting a stuck item starve the fleet for days.
 MAX_RECLAIMS="${PI_INTAKE_MAX_RECLAIMS:-8}"
+# fleet-ops#2772: claim-loop window gate. The #2462 reclaim-count cap is a
+# per-issue bump file that pi-issue-run RESETS on any non-empty-output run
+# (even one that opens no PR) and that only the failed-reap path increments
+# — so a seat-storm spin survives the cap (observed: fleet-ops line=2672
+# claimed 11x in 12h, 4x in the last 2h, dispatches_last_2h=0, #2772). This
+# gate counts raw claims for the same line from the claims log (the durable
+# append-only record, fleet-ops#1455) over a sliding window and fails the
+# claim LOUD (agent-blocked + machine-readable blocked-on) once
+# MAX_CLAIMS_IN_WINDOW claims happened inside RECLAIM_WINDOW_S — immune to
+# counter-file resets and to reap-path gaps. Defaults match the loop shape
+# that first flagged the spin: 4 claims in 2h. The 15-min reclaim cooldown
+# spaces failed claims, so 4-in-window is ~1h of continuous spinning, not a
+# burst of legitimate retries; and the gate sits AFTER the branch-liveness
+# check, so a live worker or open PR never trips it. Overridable for tests.
+RECLAIM_WINDOW_S="${PI_INTAKE_RECLAIM_WINDOW_S:-7200}"
+MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
 # — the same dir pi-issue-failed-reap writes (both use
 # ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
@@ -440,6 +456,18 @@ git -C "$REPO_DIR" fetch origin 2>&1 || {
 
 mkdir -p "$ISSUE_STATE_DIR"
 
+# fleet-ops#2772: snapshot the claims log once per tick for the claim-loop
+# gate below. A single read keeps the per-issue awk pass cheap (the log is
+# small and append-only; every worker already appends one line per claim).
+# Same-tick claims cannot be missed: a claim record for issue N is appended
+# only AFTER N has passed the gate, so the snapshot is consistent for every
+# N processed in this tick. Missing/unreadable log -> empty snapshot -> the
+# gate no-ops (fail-open), which also keeps drove-tick tests inert.
+_claims_log_snapshot=""
+if [[ -r "$CLAIMS_LOG" ]]; then
+    _claims_log_snapshot=$(cat "$CLAIMS_LOG" 2>/dev/null || true)
+fi
+
 # Step 3: process issues in ascending number order
 mapfile -t numbers < <(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")
 mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
@@ -606,6 +634,35 @@ blocked-on: nish-decision" 2>/dev/null || true
             echo "issue $N ($title): released-stale-claim (no live worker, no open PR — branch deleted, re-claiming)"
         else
             echo "issue $N ($title): skipped-claim-lost (stale branch delete failed; will retry next tick)"
+            continue
+        fi
+    fi
+
+    # fleet-ops#2772: claim-loop gate. By this point the branch-liveness
+    # check above has ruled out a live worker (skipped-claim-live) and an
+    # open PR (skipped-claim-pr-open), so every claim in the window that got
+    # this far was a dead spawn. Count this line's raw claims in the claims
+    # log over the sliding window; at or past the cap, the next claim is
+    # another paddle into the seat pool — fail it LOUD instead of spinning:
+    # agent-blocked + machine-readable blocked-on so blocked-reconcile / the
+    # senior conference pick it up (same escalate pattern as #2462
+    # skipped-max-reclaims). The record format is 4 space-separated fields:
+    # <ISO-Z ts> claimed line=<N> repo=<repo>; timestamps compare
+    # lexicographically (ISO-8601 UTC, zero-padded) — no mktime needed.
+    if [[ -n "$_claims_log_snapshot" ]]; then
+        _cl_now_epoch=$(date -u +%s)
+        _cl_cutoff=$(date -u -d "@$(( _cl_now_epoch - RECLAIM_WINDOW_S ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+            || _cl_cutoff="1970-01-01T00:00:00Z"
+        _cl_window_claims=$(awk -v n="$N" -v repo="$REPO" -v cutoff="$_cl_cutoff" '
+            $3 == "line=" n && $4 == "repo=" repo && $1 >= cutoff { c++ }
+            END { print c+0 }
+        ' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
+        if (( _cl_window_claims >= MAX_CLAIMS_IN_WINDOW )); then
+            echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
+            gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
+            gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Escalating to senior conference for review.
+
+blocked-on: nish-decision" 2>/dev/null || true
             continue
         fi
     fi
