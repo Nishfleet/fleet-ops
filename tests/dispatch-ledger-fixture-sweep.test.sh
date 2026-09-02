@@ -69,8 +69,10 @@ echo "$out" | grep -q "marked=5" || fail "expected 5 rows marked, got: $out"
 
 backup="$(echo "$out" | sed -n 's/^backup: //p')"
 [ -n "$backup" ] && [ -f "$backup" ] || fail "pre-sweep backup missing: $backup"
-diff -q "$LEDGER" "$backup" >/dev/null 2>&1 && fail "backup identical to ledger (expected pre-mutation copy)" \
-    || ok "pre-sweep backup differs from swept ledger (rollback provision present)"
+if diff -q "$LEDGER" "$backup" >/dev/null 2>&1; then
+    fail "backup identical to ledger (expected pre-mutation copy)"
+fi
+ok "pre-sweep backup differs from swept ledger (rollback provision present)"
 
 after_metric="$(open_fixture_rows "$LEDGER")"
 after_status_open="$(status_open_fixture_rows "$LEDGER")"
