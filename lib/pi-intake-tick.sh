@@ -149,6 +149,9 @@ precedence_band_pending_clear
 # reservations must start unspent each tick, else a recycled PID leaves the
 # starvation floor frozen for the whole tick.
 precedence_band_pending_starvation_clear
+# Main-red floor latch (fleet-ops#2911): a recycled PID must not freeze
+# the reserved P14/main-CI-red lane for the whole tick.
+precedence_band_pending_main_red_clear
 
 if [[ ! -x "$PRIOR_ART_BIN" ]]; then
     echo "pi-intake-tick: prior-art-claim-check missing at $PRIOR_ART_BIN" >&2
@@ -737,9 +740,13 @@ blocked-on: nish-decision" 2>/dev/null || true
     # when BAND_PRODUCT==0 (precedence-band.sh:363), i.e. no product work is
     # competing, so holding it would idle every worker for nothing — the
     # exact FleetUndersaturated stall fleet-ops#2841 diagnosed.
+    # allow-main-red-floor (fleet-ops#2911) is admitted too: product-first
+    # hold spends the machinery floor on the lowest-number ready issue, so
+    # a P14/main-CI-red repair otherwise sits skipped-product-first-held
+    # while the required check stays red.
     if [[ "$_pfirst_held" == "1" ]]; then
         case "$band_reason" in
-            allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit)
+            allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit|allow-main-red-floor)
                 echo "issue $N ($title): held-in-buffer floor lane ($band_reason) — one claim, queue not hard-stalled"
                 ;;
             *)

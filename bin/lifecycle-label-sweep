@@ -93,6 +93,20 @@ export HOME="${HOME:-/home/nish}"
 export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+# fleet-ops#2911: reuse the main-red classifier so a P14/hosting repair
+# without termination:/accept:/required:/metric: still becomes agent-ready
+# while fleet-ops default-branch CI is red. Spec-gate kept #2828/#2894
+# unlabeled for 5h+ (intake only lists -l agent-ready).
+PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
+_sweep_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$PRECEDENCE_BAND_LIB" && -f "$_sweep_dir/../lib/precedence-band.sh" ]]; then
+    PRECEDENCE_BAND_LIB="$_sweep_dir/../lib/precedence-band.sh"
+fi
+if [[ -f "$PRECEDENCE_BAND_LIB" ]]; then
+    # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
+    # shellcheck disable=SC1091
+    . "$PRECEDENCE_BAND_LIB"
+fi
 
 # --- help ---------------------------------------------------------------
 # fleet-ops#2889: --help/-h must print usage and exit 0 without taking the
@@ -450,7 +464,15 @@ while IFS= read -r repo; do
         # gap-audit leftovers already passed the panel; skip the body check.
         if [ "$label" = "agent-ready" ] \
             && ! printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
-            if ! issue_passes_spec_gate "$issue_body"; then
+            # fleet-ops#2911: while fleet-ops main is red, a P14/hosting
+            # repair without a spec still becomes agent-ready so intake can
+            # claim it. Spec-gate kept #2828/#2894 unlabeled (and therefore
+            # unclaimable) for 5h+ while undersat_rc=0.
+            if type precedence_band_fleet_ops_main_ci_red >/dev/null 2>&1 \
+                && precedence_band_fleet_ops_main_ci_red \
+                && precedence_band_is_main_red_issue "$title" "$issue_body"; then
+                log "  $repo#$num: SPEC-GATE-BYPASS main-red ($title)"
+            elif ! issue_passes_spec_gate "$issue_body"; then
                 log "  $repo#$num: SPEC-GATE-REFUSED agent-ready ($title)"
                 if [ "$DRY" != "1" ]; then
                     gh issue comment "$num" -R "$repo" \

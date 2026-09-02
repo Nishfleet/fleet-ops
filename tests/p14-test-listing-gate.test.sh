@@ -412,6 +412,14 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-outcome-metric\.tes
   || fail "alert-repair-outcome-metric.test.sh must not be a known orphan (fleet-ops#2694)"
 ok "alert-repair-outcome-metric.test.sh is pinned in the P14 reachable set (fleet-ops#2694)"
 
+# fleet-ops#2828 is a leftover of #2694 / PR #2853 (merged 2026-09-02T17:00Z).
+# Filed 2026-09-02T14:27:09Z after the host landed, body never carried a spec
+# so lifecycle-label-sweep refused agent-ready every tick (fleet-ops#543).
+# The named pin and host line above already do the work; this comment plus
+# the closing PR is the receipt, same shape as the #831/#799/#1331 receipts.
+# Verified 2026-09-02T20:12Z on origin/main: p14-test-listing-gate exits 0
+# ("P14 test list is closed") and names this pin.
+
 # fleet-ops#2768 (PR #2873 follow-up): hard-pin the host line for
 # dispatch-ledger-fixture-sweep. The test landed in PR #2873 without a
 # ci.yml listing or a host, leaving this gate red ("1 test file(s) are
@@ -451,6 +459,12 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-deploy-quality\.test\.sh"?
 [[ -z "${known_orphan_set[fleet-deploy-quality.test.sh]:-}" ]] \
   || fail "fleet-deploy-quality.test.sh must not be a known orphan (fleet-ops#2902)"
 ok "fleet-deploy-quality.test.sh is pinned in the P14 reachable set (fleet-ops#2902)"
+
+# fleet-ops#2894 is a leftover of #2902 / PR #2916 (merged 2026-09-02T19:38Z).
+# Filed 2026-09-02T18:56:05Z for the same unhosted fleet-deploy-quality.test.sh
+# that #2902 named; body never carried a spec so the sweep refused
+# agent-ready every tick. The named pin and host line above already do the
+# work; this comment plus the closing PR is the receipt.
 
 # fleet-ops#2902 (PR #2900 follow-up): hard-pin the host line for
 # fleet-issue-file-close-duplicates. The test landed on main in PR #2900

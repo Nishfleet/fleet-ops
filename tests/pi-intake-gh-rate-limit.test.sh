@@ -32,6 +32,7 @@ pick_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
 precedence_band_phase() { echo "band"; }
 precedence_band_pending_clear() { true; }
 precedence_band_pending_starvation_clear() { true; }
+precedence_band_pending_main_red_clear() { true; }
 precedence_band_is_leverage_issue() { return 1; }
 precedence_band_allow_claim() { return 0; }
 # fleet-ops#2519: product-first precedence gate (sourced from the same

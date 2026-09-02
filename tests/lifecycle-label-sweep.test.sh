@@ -156,6 +156,16 @@ export LIFECYCLE_SWEEP_LOCKDIR="$scratch/lock"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-08-26T16:00:00Z"
 unset LIFECYCLE_SWEEP_DRILL || true
+# Isolate spec-gate from live fleet.prom (fleet-ops#2911 main-red bypass).
+cat >"$scratch/main-ci-green.prom" <<'PROM'
+# TYPE fleet_main_ci_green gauge
+fleet_main_ci_green{repo="Nishfleet/fleet-ops"} 1
+PROM
+cat >"$scratch/main-ci-red.prom" <<'PROM'
+# TYPE fleet_main_ci_green gauge
+fleet_main_ci_green{repo="Nishfleet/fleet-ops"} 0
+PROM
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-green.prom"
 
 # Case 1: unlabeled generic on a product repo → scout-candidate (fleet-ops#457)
 cat >"$scratch/list.json" <<'JSON'
@@ -200,6 +210,39 @@ grep -q 'SPEC-GATE-REFUSED' "$scratch/err1c.txt" \
 grep -q 'spec-gate: refused agent-ready' "$scratch/comments.log" \
   || fail "spec-less fleet-ops must comment the refusal: $(cat "$scratch/comments.log")"
 ok "unlabeled fleet-ops issue without a spec → refused (spec-gate)"
+
+# Case 1d: unlabeled fleet-ops P14 repair WITHOUT a spec, while main is red
+# → agent-ready (fleet-ops#2911). Spec-gate kept #2828/#2894 unlabeled
+# (intake only lists -l agent-ready) for 5h+ while undersat_rc=0.
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-red.prom"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":2828,"title":"p14 listing gate red: alert-repair-outcome-metric.test.sh unhosted since #2796 (main P14 red; blocks every worker PR's gate view)","body":"Main's P14 listing gate has been red since PR #2796.\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err1d.txt")
+grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+  || fail "main-red P14 repair must become agent-ready: $(cat "$scratch/edits.log") $(cat "$scratch/err1d.txt")"
+grep -q 'SPEC-GATE-BYPASS main-red' "$scratch/err1d.txt" \
+  || fail "main-red P14 repair must log SPEC-GATE-BYPASS: $(cat "$scratch/err1d.txt")"
+ok "unlabeled fleet-ops P14 repair without a spec, main red → agent-ready (fleet-ops#2911)"
+# Case 1e: unlabeled fleet-ops NON-P14 issue without a spec, while main is
+# red, still refused — the bypass is class-scoped, not a blanket skip.
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-red.prom"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":5432,"title":"feat(quality): stamp ready with no spec","body":"please look at this\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err1e.txt")
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "non-P14 spec-less must stay refused while main is red: $(cat "$scratch/edits.log")"
+fi
+grep -q 'SPEC-GATE-REFUSED' "$scratch/err1e.txt" \
+  || fail "non-P14 spec-less must log SPEC-GATE-REFUSED: $(cat "$scratch/err1e.txt")"
+ok "unlabeled fleet-ops non-P14 issue without a spec, main red → still refused"
+# Restore green fixture so later cases stay isolated.
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-green.prom"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 
 # Case 2: AUTO-REVERT SKIP (live #361 shape) → noise-class, not agent-ready

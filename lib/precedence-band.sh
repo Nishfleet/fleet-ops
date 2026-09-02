@@ -72,6 +72,31 @@ precedence_band_pending_starvation_clear() {
     rm -f "$(precedence_band_pending_starvation_file)"
 }
 
+# Main-red floor latch (fleet-ops#2911). Separate from the machinery and
+# starvation latches so a P14/main-CI-red repair can still take one lane
+# per tick while product-first hold is spending the machinery floor on
+# the lowest-number ready issue.
+precedence_band_pending_main_red_file() {
+    printf '%s\n' "${BAND_PENDING_MAIN_RED_FILE:-${XDG_RUNTIME_DIR:-/tmp}/precedence-band-pending-main-red.$$}"
+}
+precedence_band_pending_main_red_get() {
+    if [[ -f "$(precedence_band_pending_main_red_file)" ]]; then
+        printf '1\n'
+    else
+        printf '0\n'
+    fi
+}
+precedence_band_pending_main_red_set() {
+    local f dir
+    f="$(precedence_band_pending_main_red_file)"
+    dir="$(dirname "$f")"
+    mkdir -p "$dir"
+    : >"$f"
+}
+precedence_band_pending_main_red_clear() {
+    rm -f "$(precedence_band_pending_main_red_file)"
+}
+
 precedence_band_resolve_json() {
     local here
     if [[ -n "$PRECEDENCE_BAND_JSON" && -f "$PRECEDENCE_BAND_JSON" ]]; then
@@ -175,6 +200,60 @@ PRECEDENCE_BAND_REPAIR_SIGNALS='\b(red|fail(s|ed|ing)?|broken|down|absent|stall(
 # fleet-ops#1448: "consider starvation-class issues as floor-eligible."
 # Scans title + body for dispatch/claim pipeline stall signals.
 PRECEDENCE_BAND_STARVATION_SIGNALS='\b(starv|starved|starvation|dispatcher.*idle|idle.*dispatcher|queue.*starv|starv.*queue|dispatch.*starv|intake.*starv|starv.*intake|claim.*starv|starv.*claim|no.*dispatch|no.*claim|skips|at[-_]capacity|ready_work|ready.*items?|dispatches?.*2h|claims?.*2h|empty.*run|no.op|outflow.*0|dispatch.*stalled|claim.*stalled|pipeline.*stalled)\b'
+
+# Main-red-class signals (fleet-ops#2911): issues whose job is to turn
+# fleet-ops default-branch CI green. Product-first hold spends its one
+# machinery-floor lane on the lowest-number ready issue; these sat
+# skipped-product-first-held (or unlabeled via spec-gate) for 5h+ while
+# undersat_rc=0. Scans title + body. Case-insensitive.
+PRECEDENCE_BAND_MAIN_RED_SIGNALS='\b(p14|listing[- ]gate|unhosted|FleetMainRed|main CI red|gate red on main|P14 reachable)\b'
+
+precedence_band_is_main_red_issue() {
+    local title="${1:-}" body="${2:-}"
+    printf '%s\n%s\n' "$title" "$body" \
+        | grep -qiE "$PRECEDENCE_BAND_MAIN_RED_SIGNALS"
+}
+
+# Prom file for fleet_main_ci_green. Tests inject FLEET_MAIN_CI_PROM.
+# Missing file is unavailable (floor does not fire — fail-open to product).
+precedence_band_main_ci_prom() {
+    if [[ -n "${FLEET_MAIN_CI_PROM:-}" ]]; then
+        [[ -f "$FLEET_MAIN_CI_PROM" ]] || return 1
+        printf '%s\n' "$FLEET_MAIN_CI_PROM"
+        return 0
+    fi
+    local p="/var/lib/prometheus/node-exporter/fleet.prom"
+    [[ -f "$p" ]] || return 1
+    printf '%s\n' "$p"
+}
+
+# Return 0 when fleet-ops default-branch CI is red (gauge == 0).
+# Return 1 (not red) when the prom is missing, unparseable, or green so
+# a dead exporter cannot steal a product lane.
+precedence_band_fleet_ops_main_ci_red() {
+    local prom line val
+    prom="$(precedence_band_main_ci_prom)" || return 1
+    line="$(grep -E '^fleet_main_ci_green\{[^}]*repo="(Nishfleet/)?fleet-ops"' "$prom" 2>/dev/null | head -1)" || return 1
+    [[ -n "$line" ]] || return 1
+    val="${line##* }"
+    [[ "$val" == "0" || "$val" == "0.0" ]]
+}
+
+# One-lane reservation while fleet-ops main is red (fleet-ops#2911).
+# Prints allow-main-red-floor and returns 0 when the lane is granted;
+# returns 1 when the issue is not a main-red repair, CI is not red, or
+# the latch is already spent this tick.
+precedence_band_try_main_red_floor() {
+    local title="${1:-}" body="${2:-}"
+    local pending
+    precedence_band_fleet_ops_main_ci_red || return 1
+    precedence_band_is_main_red_issue "$title" "$body" || return 1
+    pending="$(precedence_band_pending_main_red_get)"
+    [[ "$pending" == "0" ]] || return 1
+    precedence_band_pending_main_red_set
+    printf 'allow-main-red-floor\n'
+    return 0
+}
 
 # Classify issue quality from title (and optionally body/labels).
 # Prints: upgrade | repair | churn
@@ -319,6 +398,12 @@ precedence_band_allow_claim() {
             printf 'allow-surge-floor\n'
             return 0
         fi
+        # Main-red floor (fleet-ops#2911) also fires in surge: a P14 repair
+        # is not a surge_leverage_issue, so without this the 5h red-on-main
+        # stall repeats through a leftover surge window.
+        if precedence_band_try_main_red_floor "$title" "$body"; then
+            return 0
+        fi
         printf 'skip-surge-leverage\n'
         return 1
     fi
@@ -385,8 +470,20 @@ precedence_band_allow_claim() {
                 return 0
             fi
         fi
+        # Main-red floor (fleet-ops#2911): when default-branch CI is red,
+        # a P14/hosting/FleetMainRed repair gets one reserved lane even if
+        # the machinery floor was already spent on a lower-number issue.
+        if precedence_band_try_main_red_floor "$title" "$body"; then
+            return 0
+        fi
         printf 'skip-band\n'
         return 1
+    fi
+    # In-cap path (fleet-ops#2911): product-first hold still skips
+    # allow-band. A P14/main-CI-red repair must surface as
+    # allow-main-red-floor so the hold gate admits it while main is red.
+    if precedence_band_try_main_red_floor "$title" "$body"; then
+        return 0
     fi
     printf 'allow-band\n'
     return 0

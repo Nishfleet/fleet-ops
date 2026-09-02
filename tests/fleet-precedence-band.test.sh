@@ -47,6 +47,19 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 triage="$scratch/triage.md"
 : >"$triage"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
+# Isolate from live /var/lib/prometheus/node-exporter/fleet.prom so a
+# red-on-main host cannot fire the #2911 floor inside older scenarios.
+cat >"$scratch/main-ci-green.prom" <<'PROM'
+# TYPE fleet_main_ci_green gauge
+fleet_main_ci_green{repo="Nishfleet/fleet-ops"} 1
+PROM
+cat >"$scratch/main-ci-red.prom" <<'PROM'
+# TYPE fleet_main_ci_green gauge
+fleet_main_ci_green{repo="Nishfleet/fleet-ops"} 0
+PROM
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-green.prom"
+export BAND_PENDING_MAIN_RED_FILE="$scratch/pending-main-red.latch"
+rm -f "$BAND_PENDING_MAIN_RED_FILE"
 
 clean_policy() {
   cat >"$scratch/policy.json"
@@ -505,6 +518,8 @@ grep -F 'skipped-precedence-band' "$tick" >/dev/null \
   || fail "intake-tick must log skipped-precedence-band"
 grep -F 'precedence_band_pending_clear' "$tick" >/dev/null \
   || fail "intake-tick must clear the floor latch at start (fleet-ops#1452)"
+grep -F 'precedence_band_pending_main_red_clear' "$tick" >/dev/null \
+  || fail "intake-tick must clear the main-red floor latch at start (fleet-ops#2911)"
 allow_line=$(grep -n 'precedence_band_allow_claim' "$tick" | head -1 | cut -d: -f1)
 push_line=$(grep -n 'push --force-with-lease' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$allow_line" && -n "$push_line" ]] || fail "intake-tick must contain allow_claim and claim push"
@@ -1027,6 +1042,97 @@ set -e
   || fail "scenario19i: expected skip-band for empty title, got $reason"
 ok "scenario19i: empty title is not starvation-class (safe catch-all)"
 
+# --- 19j..19n. main-red floor (fleet-ops#2911) -----------------------------
+# The 2026-09-02 P14-red stall: product-first hold spent the machinery
+# floor on the lowest-number ready issue; P14-hosting repairs (#2828,
+# #2894, #2902, #2908) sat skipped-product-first-held or unlabeled via
+# spec-gate for 5h+ while undersat_rc=0. The reserved lane fires when
+# fleet_main_ci_green{repo=fleet-ops}==0 AND the issue is a P14/main-CI-red
+# repair, even if the machinery floor is already spent (over-cap + live
+# machinery > 0).
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-red.prom"
+export BAND_PENDING_MAIN_RED_FILE="$scratch/pending-main-red.latch"
+rm -f "$BAND_PENDING_FILE" "$BAND_PENDING_STARVATION_FILE" "$BAND_PENDING_MAIN_RED_FILE"
+# Same over-cap + saturated-product fixture as 19f (machinery floor spent).
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-starvation.txt"
+# Spend the machinery floor so a later claim cannot take allow-band-floor.
+precedence_band_pending_set
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 2828 '[]' "" "p14 listing gate red: alert-repair-outcome-metric.test.sh unhosted since #2796 (main P14 red; blocks every worker PR's gate view)")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario19j: main-red must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-main-red-floor" ]] \
+  || fail "scenario19j: expected allow-main-red-floor, got $reason"
+ok "scenario19j: P14 listing-gate repair gets one floor lane while main is red"
+# Latch: a SECOND main-red claim in the same tick is refused.
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 2894 '[]' "" "fix(ci): host fleet-deploy-quality.test.sh in the P14 reachable set")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19k: main-red latch must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19k: expected skip-band after main-red floor spent, got $reason"
+ok "scenario19k: main-red floor is latched — one lane per tick, then skip"
+# A non-P14 repair in the same over-cap position stays skip-band.
+rm -f "$BAND_PENDING_MAIN_RED_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 2911 '[]' "" "fix: resolve a specific booking bug")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19l: non-P14 over-cap must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19l: expected skip-band for non-P14 over-cap, got $reason"
+ok "scenario19l: non-P14 repair stays skip-band (only main-red-class is floor-eligible)"
+# Green main: the floor must not fire.
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-green.prom"
+rm -f "$BAND_PENDING_MAIN_RED_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 2828 '[]' "" "p14 listing gate red: alert-repair-outcome-metric.test.sh unhosted")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19m: green main must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19m: expected skip-band when main is green, got $reason"
+ok "scenario19m: main-red floor is silent when fleet-ops CI is green"
+# Missing prom: fail-open (do not steal a product lane).
+export FLEET_MAIN_CI_PROM="$scratch/does-not-exist.prom"
+rm -f "$BAND_PENDING_MAIN_RED_FILE"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 2828 '[]' "" "p14 listing gate red: alert-repair-outcome-metric.test.sh unhosted")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario19n: missing prom must rc=1, got $rc ($reason)"
+[[ "$reason" == "skip-band" ]] \
+  || fail "scenario19n: expected skip-band when prom is missing, got $reason"
+ok "scenario19n: missing fleet.prom does not fire the main-red floor (fail-open)"
+# In-cap path (the live 5h stall): 1 machinery + 4 product = 20% < 30%, so
+# allow-band would fire — and product-first hold skips allow-band. The
+# reserved lane must surface as allow-main-red-floor so the hold gate
+# admits it.
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-red.prom"
+rm -f "$BAND_PENDING_FILE" "$BAND_PENDING_STARVATION_FILE" "$BAND_PENDING_MAIN_RED_FILE"
+cat >"$scratch/units-incap.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@0509-1300.service
+pi-issue@0509-1301.service
+pi-issue@0509-1302.service
+pi-issue@fleet-ops-101.service
+UNITS
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-incap.txt"
+set +e
+reason=$(precedence_band_allow_claim fleet-ops 2828 '[]' "" "p14 listing gate red: alert-repair-outcome-metric.test.sh unhosted")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario19o: in-cap main-red must rc=0, got $rc ($reason)"
+[[ "$reason" == "allow-main-red-floor" ]] \
+  || fail "scenario19o: expected allow-main-red-floor on in-cap path, got $reason"
+ok "scenario19o: in-cap P14 repair surfaces as allow-main-red-floor (hold-gate can admit it)"
+# Restore the default green fixture so later scenarios stay isolated.
+export FLEET_MAIN_CI_PROM="$scratch/main-ci-green.prom"
+rm -f "$BAND_PENDING_MAIN_RED_FILE"
+export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-starvation.txt"
+
 # --- 18. run_canary default NOW is pinned (mechanical prevention #1444) -----
 # The #1444 FleetMainRed root cause: run_canary defaulted PRECEDENCE_BAND_NOW
 # to empty (live clock), so a phase-specific scenario that forgot to pin NOW
@@ -1283,7 +1389,7 @@ ok "scenario21a: tick holds via _pfirst_held flag, not a hard exit"
 hold_gate() {
     local band_reason="$1"
     case "$band_reason" in
-        allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit)
+        allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit|allow-main-red-floor)
             echo "allow-floor"
             ;;
         *)
@@ -1310,6 +1416,8 @@ ok "scenario21c: machinery/bootstrap/surge floor lanes dispatch one claim during
     || fail "scenario21d: allow-starvation-floor must be admitted during hold"
 [[ "$(hold_gate allow-multiplier)" == "allow-floor" ]] \
     || fail "scenario21d: allow-multiplier must be admitted during hold"
+[[ "$(hold_gate allow-main-red-floor)" == "allow-floor" ]] \
+    || fail "scenario21d: allow-main-red-floor must be admitted during hold (fleet-ops#2911)"
 
 # e. allow-band-surge-legit (fleet-ops#1516) is admitted during a product-first
 #    hold. It only fires when BAND_PRODUCT==0 (precedence-band.sh:363), i.e. no
