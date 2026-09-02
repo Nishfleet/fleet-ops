@@ -33,12 +33,12 @@
       "hard_ceiling": true,
       "quota_bench_default_s": 900,
       "models": {
-        "glm-5-2": 0,
+        "glm-5-2": 3,
         "swe-1-7": 0
       },
       "_devin_cap_note": "Nish 2026-08-27 00:20 IST: glm-5-2 max 3 concurrent - burst rate-limit collisions at 4 starved intake ticks (watch.log 18:48Z); provider cap stays 4 (swe-1-7 fills the 4th slot)",
       "_swe17": "2026-08-30 alert-repair FleetDeadCredentialSeats: swe-1-7 set to 0 (was 4) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-29T17:15:33Z, fleet-ops#1445, fleet-ops#2102). Re-auth is Nish-reserved (credentials). Cap stays 0 until the Devin credential is re-authenticated; restore to 4 and move the ledger back from lanes/seats-deadcred-quarantine-20260830T0135Z/ when healthy.",
-      "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). Re-auth is Nish-reserved (credentials). Cap stays 0 until the Devin credential is re-authenticated; restore to 3 and move the ledger back from lanes/seats-deadcred-quarantine-20260830T032913Z/ when healthy."
+      "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). Re-auth is Nish-reserved (credentials). Cap stays 0 until the Devin credential is re-authenticated; restore to 3 and move the ledger back from lanes/seats-deadcred-quarantine-20260830T032913Z/ when healthy. 2026-09-02 senior auditor RESTORED 0->3 (fleet-ops#2738, ledger seats/devin__glm-5-2.json healthy 200 seat_dead=false source=cli_spawn observed 2026-09-02T13:36:40Z, live probe PONG rc=0 2026-09-02T14:5xZ): the earlier 403 was a transient credential blip, the credential works now; the seat was self-starved at cap 0 by a stale 08-30 pin while the fleet ran undersat (ready=55 running=1 admit=22). Restore condition met. swe-1-7 stays 0 (no healthy ledger)."
     },
     "cursor": {
       "cap": 1,
@@ -191,10 +191,10 @@
       "quota_window": "weekly",
       "quota_bench_default_s": 604800,
       "models": {
-        "grok-4.6": 0,
-        "grok-4.5": 0
+        "grok-4.6": 1,
+        "grok-4.5": 1
       },
-      "_grok_402_note": "2026-08-30 auditor (STOP-REASON pi-scout@0509 trip 08:15Z): SuperGrok weekly sub DRAINED - xai-oauth/grok-4.5 returned HTTP 402 'Grok Build usage balance exhausted' at 2026-08-30T08:15:06Z (the exact run that produced the scout exit-1). Both grok models share the same Grok Build balance, so both capped to 0 with a dated reason. Restore to 1/1 when the SuperGrok sub renews or the balance is topped up (money = Nish-reserved); remove this comment on restore.",
+      "_grok_402_note": "2026-08-30 auditor (STOP-REASON pi-scout@0509 trip 08:15Z): SuperGrok weekly sub DRAINED - xai-oauth/grok-4.5 returned HTTP 402 'Grok Build usage balance exhausted' at 2026-08-30T08:15:06Z (the exact run that produced the scout exit-1). Both grok models share the same Grok Build balance, so both capped to 0 with a dated reason. Restore to 1/1 when the SuperGrok sub renews or the balance is topped up (money = Nish-reserved); remove this comment on restore. 2026-09-02 senior auditor RESTORED 0->1/1: ledgers seats/xai-oauth__grok-4.5.json + grok-4.6.json both healthy 200 cli_spawn observed 2026-09-02T14:32:48Z, grok-token-refresh OK at 14:36Z (access 16447s life) — sub renewed, the 08-30 drain is expired. Restore condition met.",
       "_comment_xai_oauth": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub, revived via stnly/pi-grok (pi-grok@0.10.1) OAuth provider \u2014 different from the api.x.ai 'grok' entry above (which has no live credential). Provider cap=1 + per-model cap=1 enforces the BINDING 'ALTERNATE, never stack' discipline: at most one xai-oauth worker in flight at any time, and seat-lib.sh _rr_pick alternates between grok-4.6 and grok-4.5 across picks so neither model drains the weekly sub alone. Subscription-backed $0 marginal \u2014 fits the 'prepaid subs run at max utilization' rule (cap=1 holds the lane, the live weekly meter must move within minutes of any draw, never-double-wire). Pick a $0 marginal prepaid lane over a $1.20/M minimax metered one. The provider must also be present in ~/.pi/agent/models.json (xai-oauth entry with models grok-4.6 + grok-4.5) for enumerate_seats to emit it; the cap map here is the allowlist, models.json is the inventory. If the OAuth token dies the seat-health extension writes a credentials_bad ledger entry and pick_seat skips the seat \u2014 no silent 'ready' lie. The pi-grok extension also self-heals the token (auto-refresh on 401), so a transient 403 should be rare; a persistent one is the dead-credential case this row is wired to catch."
     },
     "straitly": {
