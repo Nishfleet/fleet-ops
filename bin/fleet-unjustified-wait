@@ -15,6 +15,9 @@
 #        - credentials_bad    -> dead UNTIL a human repairs creds; the named
 #                                clock is `seat_dead=true` + observed_at (a
 #                                Nish-reserved gate — blocked, loud, auto-file).
+#        - corpse             -> TERMINAL dead class (fleet-ops#2327), seat
+#                                retired past SEAT_DEAD_CONSECUTIVE_THRESHOLD
+#                                for any failure mode; clock = dead marker.
 #        - seat_dead=true     -> same: clock = dead marker (repair gate).
 #        - healthy/transient  -> not waiting, no clock needed.
 #   2. STOP-REASON.json:      the last failure trip. If its reason is NOT one
@@ -231,9 +234,19 @@ audit_seats() {
                     n=$((n + 1))
                 fi
                 ;;
-            credentials_bad)
+            credentials_bad|corpse)
+                # fleet-ops#2724/#2667: the corpse class is the TERMINAL
+                # dead state seat-health.ts writes when a seat passes
+                # SEAT_DEAD_CONSECUTIVE_THRESHOLD (fleet-ops#2327/#2415).
+                # It replaces the legacy credentials_bad class for any
+                # failure mode past the threshold — credentials_bad for
+                # 401/403, transient_http for 5xx storms, etc — and clears
+                # usable_at because a corpse is RETIRED (no comeback clock).
+                # The named clock is the seat_dead marker itself; require
+                # it for both classes. A non-dead corpse is an inconsistent
+                # write that must be loud.
                 if [[ "$dead" != "true" ]]; then
-                    loud "UNJUSTIFIED-WAIT" "seat $name health_class=credentials_bad but seat_dead=$dead — dead marker missing (clock=repair gate)"
+                    loud "UNJUSTIFIED-WAIT" "seat $name health_class=$hc but seat_dead=$dead — dead marker missing (clock=repair gate)"
                     n=$((n + 1))
                 fi
                 ;;
@@ -243,8 +256,13 @@ audit_seats() {
         esac
         # A seat_dead=true marker with a non-dead class is an inconsistent
         # write — the dead marker is the repair-gate clock, so require it.
-        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" ]]; then
-            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad (clock inconsistent)"
+        # fleet-ops#2724: accept BOTH "credentials_bad" (legacy) and
+        # "corpse" (terminal, post-#2327 escalation in seat-health.ts) as
+        # dead-class states. Without this, every corpse seat tripped a
+        # false-positive UNJUSTIFIED-WAIT every tick and heartbeat tier 1
+        # returned unjustified_rc=1 forever.
+        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" && "$hc" != "corpse" ]]; then
+            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad|corpse (clock inconsistent)"
             n=$((n + 1))
         fi
     done
