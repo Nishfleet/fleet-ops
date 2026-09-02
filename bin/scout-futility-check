@@ -329,7 +329,7 @@ EOF
 # wins over its benign prefix (the notify+503 combo), so wall is checked
 # first; a line is only demoted when it carries neither wall evidence nor
 # benign machinery text.
-PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|Provider returned error|Upstream model provider is temporarily unavailable'
+PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Devin exited'
 # Benign pi-machinery / systemd lifecycle lines that always accompany a scout
 # run in the unit journal. Not fault evidence; must not demote a wall crash.
 BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'
@@ -342,15 +342,27 @@ BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDIC
 detect_provider_wall() {
     local repo="$1"
     local jlines unit="pi-scout@${repo}.service"
-    local line found_wall=0
+    local line found_wall=0 begin_at since_args=()
     if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
         return 1
     fi
-    # Last 50 lines (all priorities) — the provider wall error (503/429) is
-    # printed by the pi script to stdout/stderr at info priority, not err.
-    # The error may be far back if the run was long. Use -o cat to avoid
-    # timestamp/host wrappers confusing the pattern match.
-    jlines=$("$JOURNALCTL" --user -u "$unit" -n 50 --no-pager -o cat 2>/dev/null || true)
+    # Scope to THIS invocation when begin_at is known (fleet-ops auditor
+    # 2026-09-02T19:58Z). A bare -n 50 window spans prior failed runs on the
+    # same oneshot unit, so a previous Devin resource_exhausted / JSON
+    # fragment demoted the CURRENT 503 overloaded_error as "not provider-wall"
+    # and pinned consecutive_wall at 0 — the #2351/#2468 dedupe gate never
+    # opened for the wall class even when the current run was a pure 503.
+    # begin_at is written by cmd_begin; missing begin falls back to -n 50
+    # (same as before this fix; scenario17h still covers that path).
+    begin_at=$(read_field "$(state_path "$repo")" begin_at)
+    if [[ -n "$begin_at" ]]; then
+        since_args=(--since "$begin_at")
+    fi
+    # Last 50 lines (all priorities) within the since-window — the provider
+    # wall error (503/429) is printed by the pi script to stdout/stderr at
+    # info priority, not err. The error may be far back if the run was long.
+    # Use -o cat to avoid timestamp/host wrappers confusing the pattern match.
+    jlines=$("$JOURNALCTL" --user -u "$unit" -n 50 --no-pager -o cat "${since_args[@]}" 2>/dev/null || true)
     [[ -n "$jlines" ]] || return 1
     while IFS= read -r line; do
         line="${line#"${line%%[![:space:]]*}"}"  # ltrim

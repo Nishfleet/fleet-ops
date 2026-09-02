@@ -824,6 +824,82 @@ echo '[]' >"$open_issues"
   || fail "scenario17j: mixed benign + wall + work-fault journal must reset consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
 ok "scenario17j: work-fault line still demotes inside a production-mixed journal"
 
+# Scenario 17k: prior-run non-wall lines in the bare -n 50 window must NOT
+# demote the CURRENT run's 503 when begin_at scopes journalctl --since.
+# Proven live 2026-09-02T19:46Z: pi-scout@0509 died on overloaded_error but
+# detect_provider_wall returned false because the previous invocation's
+# "Devin exited ... resource_exhausted" / JSON fragment sat inside -n 50 and
+# demoted the whole window. begin_at (written by cmd_begin) scopes the read.
+# Fixture encoding: lines before '---SINCE---' = prior-run residue; lines
+# after = current run. The stub drops prior lines when --since is in argv.
+write_journalctl_stub_since() {
+    cat >"$scratch/bin/journalctl" <<'EOFSTUB'
+#!/usr/bin/env bash
+body_file="${JOURNALCTL_BODY_FILE:-/dev/null}"
+n=10
+prev=""
+since=0
+for arg in "$@"; do
+    if [[ "$prev" == "-n" ]]; then
+        case "$arg" in ''|*[!0-9]*) ;; *) n="$arg" ;; esac
+    fi
+    if [[ "$arg" == "--since" ]]; then since=1; fi
+    prev="$arg"
+done
+if [[ -f "$body_file" ]]; then
+    if [[ "$since" == "1" ]] && grep -q '^---SINCE---$' "$body_file"; then
+        body=$(awk 'f; /^---SINCE---$/ {f=1; next}' "$body_file")
+    else
+        body=$(cat "$body_file")
+    fi
+    if [[ " $* " == *" -p err "* ]]; then
+        printf '%s\n' "$body" | grep '^err:' | tail -n "$n" | sed 's/^err: //'
+    else
+        printf '%s\n' "$body" | sed 's/^\(info\|err\): //' | sed '/^---SINCE---$/d' | tail -n "$n"
+    fi
+fi
+exit 0
+EOFSTUB
+    chmod +x "$scratch/bin/journalctl"
+}
+write_journalctl_stub_since
+export JOURNALCTL="$scratch/bin/journalctl"
+{
+    # Prior-run residue: a real work-fault demoter (NOT a wall pattern).
+    printf 'Error: unexpected token in JSON at position 42\n'
+    printf 'Traceback (most recent call last): KeyError: patch\n'
+    printf '%s\n' '---SINCE---'
+    # Current-run pure wall (production-mixed)
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'PACKET-VERDICT tools=3 class=worked\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+# begin writes begin_at → detect_provider_wall passes --since → stub drops
+# the prior KeyError → current 503 is wall-class.
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17k: begin_at-scoped journal must classify current 503 as wall despite prior-run KeyError, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+# Current-window KeyError must still demote (scope must not swallow real faults).
+{
+    printf '%s\n' '---SINCE---'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'Error: unexpected token in JSON at position 42\n'
+    printf 'PACKET-VERDICT tools=3 class=worked\n'
+} >"$scratch/journalctl-body.txt"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "0" ]] \
+  || fail "scenario17k: current-window KeyError must still demote, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17k: begin_at scopes journal so prior-run faults cannot demote current wall"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
