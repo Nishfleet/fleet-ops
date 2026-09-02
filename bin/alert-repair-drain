@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# alert-repair-drain — drains stale alert-repair packets.
+#
+# Scans /home/nish/workspaces/agent-state/alert-repair/packet-*.md for
+# packets older than DRAIN_THRESHOLD (default 6h = 21600s). For each stale
+# packet:
+#   1. Finds the corresponding dispatch ledger entry (by unit name derived
+#      from the packet filename).
+#   2. If dispatch is "completed" (success/failed) -> archive the packet
+#      (move to alert-repair/archived/).
+#   3. If dispatch is "open" past its deadline -> re-dispatch via
+#      fleet-completion-canary's re-dispatch path (write STOP-REASON for
+#      dispatch-orphan if retries >= 2, else let completion canary handle
+#      on next tick).
+#   4. If no dispatch ledger entry exists (orphaned packet):
+#      - Historical orphans (>7d) predate dispatch ledger (fleet-ops#1009) -> archive
+#      - Recent orphans (6h-7d) -> escalate loud via STOP-REASON.json
+#   5. If dispatch is "open" but unit is failed -> ensure unit-escalation
+#      fired (write STOP-REASON reason=unit-failure if missing).
+#
+# Runs via systemd timer (alert-repair-drain.timer) every hour.
+#
+# Environment:
+#   ALERT_REPAIR_DIR        default /home/nish/workspaces/agent-state/alert-repair
+#   DISPATCH_LEDGER         default /home/nish/workspaces/agent-state/dispatch-ledger.jsonl
+#   DRAIN_THRESHOLD         default 21600 (6h in seconds)
+#   HISTORICAL_THRESHOLD    default 86400 (24h in seconds)
+#   DRAIN_DRY_RUN           1 = log actions only, no mutations
+#   SYSTEMCTL               default systemctl
+#   STOP_REASON             default /home/nish/workspaces/agent-state/STOP-REASON.json
+#   FLEET_COMPLETION_CANARY default /home/nish/.local/libexec/fleet-completion-canary
+#   TRIAGE_LOG              default /home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+ALERT_REPAIR_DIR="${ALERT_REPAIR_DIR:-/home/nish/workspaces/agent-state/alert-repair}"
+DISPATCH_LEDGER="${DISPATCH_LEDGER:-/home/nish/workspaces/agent-state/dispatch-ledger.jsonl}"
+DRAIN_THRESHOLD="${DRAIN_THRESHOLD:-21600}"  # 6h
+HISTORICAL_THRESHOLD="${HISTORICAL_THRESHOLD:-86400}"  # 24h
+DRY_RUN="${DRAIN_DRY_RUN:-0}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+STOP_REASON="${STOP_REASON:-/home/nish/workspaces/agent-state/STOP-REASON.json}"
+FLEET_COMPLETION_CANARY="${FLEET_COMPLETION_CANARY:-/home/nish/.local/libexec/fleet-completion-canary}"
+TRIAGE_LOG="${TRIAGE_LOG:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+mkdir -p "$ALERT_REPAIR_DIR/archived"
+
+log() {
+    printf '[%s] [alert-repair-drain] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE_LOG" 2>/dev/null || log "WARN: could not append to triage $TRIAGE_LOG"
+}
+
+now_epoch() {
+    date -u +%s
+}
+
+# Parse packet filename to extract unit name.
+# packet-FleetMainRed-20260902T055606Z.md -> alert-repair-FleetMainRed-20260902T055606Z
+packet_to_unit() {
+    local packet_file="$1"
+    local base
+    base=$(basename "$packet_file" .md)
+    # Remove "packet-" prefix
+    base="${base#packet-}"
+    printf 'alert-repair-%s' "$base"
+}
+
+# Find the latest dispatch ledger entry for a given unit.
+# Returns the JSON entry (last line for that unit/id).
+find_dispatch_entry() {
+    local unit="$1"
+    [[ -f "$DISPATCH_LEDGER" ]] || { printf ''; return 1; }
+    # Get the last line matching this unit
+    grep -F "\"unit\":\"$unit\"" "$DISPATCH_LEDGER" 2>/dev/null | tail -1 || true
+}
+
+# Parse a JSON value from a dispatch entry (jq-less, using python).
+parse_json_field() {
+    local json="$1"
+    local field="$2"
+    python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    val = d.get(sys.argv[2])
+    if val is None:
+        print('')
+    else:
+        print(val)
+except Exception:
+    print('')
+" "$json" "$field" 2>/dev/null || true
+}
+
+# Write STOP-REASON.json atomically (mirrors unit-escalation-write pattern).
+write_stop_reason() {
+    local reason="$1"
+    local detail_json="$2"
+    local source="$3"
+    local extension="${4:-alert-repair-drain}"
+
+    python3 - "$STOP_REASON" "$reason" "$detail_json" "$source" "$extension" <<'PY'
+import sys, json, os, time, fcntl, tempfile
+path, reason, detail_json, source, extension = sys.argv[1:6]
+detail = json.loads(detail_json)
+entry = {
+    "reason": reason,
+    "detail": detail,
+    "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),
+    "extension": extension,
+    "source": source,
+}
+lockpath = path + ".lock"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(lockpath, 'w') as lk:
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.sr-')
+    with os.fdopen(fd, 'w') as f:
+        json.dump(entry, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+PY
+}
+
+# Archive a packet file (move to archived/ with timestamp).
+archive_packet() {
+    local packet_file="$1"
+    local reason="$2"
+    local base
+    base=$(basename "$packet_file")
+    local archived_name="${base%.md}-drained-$(date -u +%Y%m%dT%H%M%SZ)-${reason}.md"
+    local archived_path="$ALERT_REPAIR_DIR/archived/$archived_name"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY-RUN: would archive $packet_file -> $archived_path"
+    else
+        mv -- "$packet_file" "$archived_path"
+        log "archived $packet_file -> $archived_path (reason: $reason)"
+    fi
+}
+
+# Main drain logic
+main() {
+    local now
+    now=$(now_epoch)
+    local cut=$((now - DRAIN_THRESHOLD))
+    local packets_found=0
+    local packets_drained=0
+    local packets_escalated=0
+    local packets_archived=0
+
+    log "alert-repair-drain starting (threshold=${DRAIN_THRESHOLD}s, cut=$(date -u -d @$cut +%Y-%m-%dT%H:%M:%SZ))"
+
+    # Find packet files older than threshold
+    for packet_file in "$ALERT_REPAIR_DIR"/packet-*.md; do
+        [[ -f "$packet_file" ]] || continue
+
+        # Check mtime
+        local mtime
+        mtime=$(stat -c %Y "$packet_file" 2>/dev/null || stat -f %m "$packet_file" 2>/dev/null || echo 0)
+        [[ "$mtime" -gt 0 ]] || continue
+
+        if (( mtime >= cut )); then
+            continue  # not stale yet
+        fi
+
+        packets_found=$((packets_found + 1))
+        local age=$((now - mtime))
+        local unit
+        unit=$(packet_to_unit "$packet_file")
+        local packet_base
+        packet_base=$(basename "$packet_file")
+
+        log "stale packet: $packet_base (age=${age}s, unit=$unit)"
+
+        # Find dispatch ledger entry
+        local dispatch_entry
+        dispatch_entry=$(find_dispatch_entry "$unit")
+
+        if [[ -z "$dispatch_entry" ]]; then
+            # Orphaned packet: no dispatch ledger entry
+            # Historical orphans (>7d) predate the dispatch ledger (fleet-ops#1009);
+            # archive them silently. Recent orphans (6h-7d) are genuine gaps -> escalate.
+            if (( age > HISTORICAL_THRESHOLD )); then
+                archive_packet "$packet_file" "historical-orphan"
+                packets_archived=$((packets_archived + 1))
+                packets_drained=$((packets_drained + 1))
+                log "  historical orphan (age=${age}s > ${HISTORICAL_THRESHOLD}s) -> archived"
+                continue
+            fi
+            loud "ALERT-REPAIR-ORPHANED" "packet $packet_base (unit=$unit) has no dispatch ledger entry — escalating as orphaned"
+            if [[ "$DRY_RUN" != "1" ]]; then
+                write_stop_reason "alert-repair-orphaned-packet" \
+                    "{\"packet\":\"$packet_base\",\"unit\":\"$unit\",\"age_s\":$age,\"mtime\":$mtime}" \
+                    "alert-repair-drain"
+            fi
+            packets_escalated=$((packets_escalated + 1))
+            continue
+        fi
+
+        local status
+        status=$(parse_json_field "$dispatch_entry" "status")
+        local verdict
+        verdict=$(parse_json_field "$dispatch_entry" "verdict")
+        local deadline_ts
+        deadline_ts=$(parse_json_field "$dispatch_entry" "deadline_ts")
+        local retries
+        retries=$(parse_json_field "$dispatch_entry" "retries")
+        local chain_id
+        chain_id=$(parse_json_field "$dispatch_entry" "chain_id")
+        local packet_path
+        packet_path=$(parse_json_field "$dispatch_entry" "packet_path")
+
+        log "  dispatch: status=$status verdict=$verdict deadline=$deadline_ts retries=$retries chain=$chain_id"
+
+        case "$status" in
+            completed)
+                # Dispatch completed (success or failed) - archive the packet
+                local archive_reason="completed-${verdict:-unknown}"
+                archive_packet "$packet_file" "$archive_reason"
+                packets_archived=$((packets_archived + 1))
+                packets_drained=$((packets_drained + 1))
+                ;;
+            open)
+                # Check if past deadline
+                local deadline_epoch=0
+                if [[ -n "$deadline_ts" ]]; then
+                    deadline_epoch=$(date -u -d "$deadline_ts" +%s 2>/dev/null || echo 0)
+                fi
+
+                if [[ "$deadline_epoch" -gt 0 && "$now" -ge "$deadline_epoch" ]]; then
+                    # Past deadline
+                    if [[ "$retries" -ge "$DISPATCH_MAX_RETRIES" ]]; then
+                        # Max retries reached - escalate via STOP-REASON
+                        loud "ALERT-REPAIR-DISPATCH-ORPHAN" "dispatch $unit (chain=$chain_id) past deadline with retries=$retries >= $DISPATCH_MAX_RETRIES — escalating as dispatch-orphan"
+                        if [[ "$DRY_RUN" != "1" ]]; then
+                            write_stop_reason "dispatch-orphan" \
+                                "{\"unit\":\"$unit\",\"chain_id\":\"$chain_id\",\"retries\":$retries,\"deadline_ts\":\"$deadline_ts\",\"packet\":\"$packet_base\"}" \
+                                "alert-repair-drain"
+                        fi
+                        packets_escalated=$((packets_escalated + 1))
+                    else
+                        # Let fleet-completion-canary handle re-dispatch on next tick
+                        log "  dispatch $unit past deadline but retries=$retries < $DISPATCH_MAX_RETRIES — completion canary will re-dispatch"
+                        packets_drained=$((packets_drained + 1))
+                    fi
+                else
+                    # Not past deadline yet - still in flight
+                    log "  dispatch $unit still in flight (deadline=$deadline_ts)"
+                    packets_drained=$((packets_drained + 1))
+                fi
+                ;;
+            *)
+                log "  unknown dispatch status: $status"
+                ;;
+        esac
+
+        # Additional check: if unit exists and is failed, ensure escalation fired
+        if [[ "$status" == "open" ]] || [[ "$status" == "completed" && "$verdict" == "failed" ]]; then
+            local unit_state
+            unit_state=$("$SYSTEMCTL" --user show "$unit.service" --property=ActiveState,SubState,Result --no-pager 2>/dev/null || true)
+            local active_state
+            active_state=$(grep '^ActiveState=' <<<"$unit_state" | cut -d= -f2)
+            local result
+            result=$(grep '^Result=' <<<"$unit_state" | cut -d= -f2)
+
+            if [[ "$active_state" == "failed" ]] || [[ "$result" =~ ^(exit-code|signal|oom-kill|timeout)$ ]]; then
+                log "  unit $unit is failed (ActiveState=$active_state, Result=$result)"
+                # Check if STOP-REASON already exists for this unit
+                if [[ -f "$STOP_REASON" ]]; then
+                    local sr_unit
+                    sr_unit=$(jq -r '.detail.unit // ""' "$STOP_REASON" 2>/dev/null || true)
+                    local sr_reason
+                    sr_reason=$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)
+                    if [[ "$sr_unit" != "$unit" ]] || [[ "$sr_reason" != "unit-failure" ]]; then
+                        loud "ALERT-REPAIR-UNIT-FAILED" "unit $unit failed but no unit-failure STOP-REASON — writing escalation"
+                        if [[ "$DRY_RUN" != "1" ]]; then
+                            # Get journal lines for detail
+                            local journal_lines
+                            journal_lines=$(journalctl --user -u "$unit.service" -n 5 --no-pager -o short-iso 2>/dev/null | head -5 | jq -Rs . || echo '""')
+                            write_stop_reason "unit-failure" \
+                                "{\"unit\":\"$unit\",\"journal\":$journal_lines,\"result\":\"$result\",\"source\":\"alert-repair-drain\"}" \
+                                "alert-repair-drain" "unit-escalation"
+                        fi
+                        packets_escalated=$((packets_escalated + 1))
+                    fi
+                else
+                    loud "ALERT-REPAIR-UNIT-FAILED" "unit $unit failed but no STOP-REASON at all — writing escalation"
+                    if [[ "$DRY_RUN" != "1" ]]; then
+                        local journal_lines
+                        journal_lines=$(journalctl --user -u "$unit.service" -n 5 --no-pager -o short-iso 2>/dev/null | head -5 | jq -Rs . || echo '""')
+                        write_stop_reason "unit-failure" \
+                            "{\"unit\":\"$unit\",\"journal\":$journal_lines,\"result\":\"$result\",\"source\":\"alert-repair-drain\"}" \
+                            "alert-repair-drain" "unit-escalation"
+                    fi
+                    packets_escalated=$((packets_escalated + 1))
+                fi
+            fi
+        fi
+    done
+
+    log "drain complete: found=$packets_found drained=$packets_drained archived=$packets_archived escalated=$packets_escalated"
+}
+
+main "$@"

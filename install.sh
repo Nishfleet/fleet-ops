@@ -593,6 +593,13 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now fleet-baseline-delta.timer
     fi
   fi
+  # fleet-ops#2677: hourly alert-repair packet drain — archives completed
+  # packets, escalates orphaned dispatches. Same #183 class.
+  if [ -f "$here/systemd/alert-repair-drain.timer" ]; then
+    if ! is_unit_enabled alert-repair-drain.timer; then
+      "$SYSTEMCTL" --user enable --now alert-repair-drain.timer
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.

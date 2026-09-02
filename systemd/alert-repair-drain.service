@@ -1,0 +1,14 @@
+[Unit]
+Description=Alert repair packet drain (stale packet escalation/archival)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/bin/alert-repair-drain
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Timeout generous enough for escalation writes
+TimeoutSec=300
+# Standard escalation coverage via global drop-in
