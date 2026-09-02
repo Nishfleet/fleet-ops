@@ -73,6 +73,12 @@
       "source": "repo"
     },
     {
+      "unit": "escalation-drain",
+      "class": "a",
+      "source": "repo",
+      "note": "fleet-ops#2677 + #2773: bounded-file maintainer for NISH-ESCALATIONS.md + alert-repair packets (hourly timer); same escalation-layer class as escalation-daily-sweep."
+    },
+    {
       "unit": "intake-reconcile",
       "class": "a",
       "source": "repo"
