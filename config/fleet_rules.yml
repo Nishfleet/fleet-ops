@@ -138,6 +138,25 @@ groups:
           summary: "fleet seat come-back release organ absent — no clean sweep in 2h"
           description: "fleet-seat-comeback-release has not written a clean (unstalled) sweep in over 2 hours (fleet-ops#2421). Repair worker: check the timer (fleet-seat-comeback-release.timer) is enabled and journalctl --user -u fleet-seat-comeback-release.service. The organ re-probes walled seats whose wall clock has passed and unwalls provably-usable ones; its death means released_n stays 0 again."
 
+      # fleet-ops#2469 + fleet-ops#2716: corpse-retire organ heartbeat. The
+      # bin writes fleet_seat_corpse_retire_last_run_seconds on every run
+      # (even a no-op sweep), so absent() catches a missing file. The
+      # timer fires daily (04:30 UTC), so a 2-day absent window catches a
+      # stopped organ with the same 48h rule the heartbeat organs use.
+      # Without this rule a dead bin would silently leave corpses growing
+      # in lanes/seats/ (the lived 2026-09-01 / 2026-08-31 evidence:
+      # opencode/muse-spark at c=150 sat in the live roster forever,
+      # inflating the seat-avail SLO denominator by exactly one).
+      - alert: FleetSeatCorpseRetireAbsent
+        expr: absent(fleet_seat_corpse_retire_last_run_seconds) or (time() - fleet_seat_corpse_retire_last_run_seconds) > 172800
+        for: 2h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet-seat-corpse-retire organ absent — no retirement sweep in 48h"
+          description: "fleet-seat-corpse-retire (fleet-ops#2469, fleet-ops#2716) has not written a sweep in over 48 hours. The bin moves corpse seat ledgers out of the live roster lanes/seats/ into a dated retirement dir; a dead bin leaves corpses growing forever and inflates the seat-avail SLO denominator by the corpse count. Repair worker: journalctl --user -u fleet-seat-corpse-retire.service, ensure the timer is enabled (fleet-seat-corpse-retire.timer), and bin/fleet-seat-corpse-retire --dry-run to inspect the candidate list. Live evidence (2026-08-31): muse-spark c=150 sat in the live roster; the bin was the missing piece."
+
       # fleet-ops#2638: never-probed comeback visibility. A seat in this gauge
       # means the comeback-release prober has fired on it >=10 times across
       # recent re-bench windows and the seat still has not recovered. The

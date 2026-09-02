@@ -386,6 +386,26 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/unit-escalation-write-pi-issue-e
   || fail "unit-escalation-write-pi-issue-exclusion.test.sh must not be a known orphan (fleet-ops#2475)"
 ok "unit-escalation-write-pi-issue-exclusion.test.sh is pinned in the P14 reachable set (fleet-ops#2475)"
 
+# fleet-ops#2469 + fleet-ops#2716: hard-pin the host line for
+# fleet-seat-corpse-retire. The test landed without a ci.yml listing (the
+# worker App cannot push .github/workflows/**) and is hosted from
+# tests/fleet-seat-recovery.test.sh — already in P14 via
+# fleet-seat-comeback-release.test.sh below it. P14 would run red on
+# "1 test file(s) are neither in ci.yml, hosted by a listed test,
+# live/destructive, nor a known orphan: fleet-seat-corpse-retire.test.sh".
+# This named pin is class-prevention so a future drop of the host line
+# cannot park the test on known_orphans to silence the generic $bad[]
+# message — it fails by name here first, same shape as every other hosted
+# test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-seat-corpse-retire\.test\.sh"?' \
+  "$here/fleet-seat-recovery.test.sh" \
+  || fail "fleet-seat-recovery.test.sh must bash-invoke fleet-seat-corpse-retire.test.sh (fleet-ops#2716)"
+[[ -n "${reachable[fleet-seat-corpse-retire.test.sh]:-}" ]] \
+  || fail "fleet-seat-corpse-retire.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2716)"
+[[ -z "${known_orphan_set[fleet-seat-corpse-retire.test.sh]:-}" ]] \
+  || fail "fleet-seat-corpse-retire.test.sh must not be a known orphan (fleet-ops#2716)"
+ok "fleet-seat-corpse-retire.test.sh is pinned in the P14 reachable set (fleet-ops#2716)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob

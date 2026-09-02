@@ -40,6 +40,15 @@ bash "$here/fleet-seat-recovery-units.test.sh"
 # .github/workflows/**). Runs in its own process (scratch ledger + stub pi).
 bash "$here/fleet-seat-comeback-release.test.sh"
 
+# fleet-ops#2469 + fleet-ops#2716: the PHYSICAL retirement path (move
+# corpse ledgers out of lanes/seats/ into seats-corpse-retired-<ts>/). The
+# release half (above) handles active un-walling; this handles terminal
+# corpses that no probe can recover. Hosted alongside so the P14 closure
+# reaches it without a ci.yml edit. Hermetic scenarios pin the threshold /
+# quota_exhausted / Path C (credentials_bad→corpse grace) cases plus the
+# prom metric shape.
+bash "$here/fleet-seat-corpse-retire.test.sh"
+
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 

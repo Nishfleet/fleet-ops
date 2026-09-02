@@ -884,6 +884,21 @@ bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-release
 systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
 systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
+# fleet-ops#2469 + fleet-ops#2716: PHYSICAL retirement of corpse seat
+# ledgers. fleet-seat-comeback-release handles the active release (a seat
+# whose wall clock passed gets re-probed and unwalled on success); it does
+# NOT move corpse ledgers out of the live roster. fleet-seat-corpse-retire
+# does — atomically renames any seat_dead=true ledger past the
+# seat_dead_consecutive_threshold OR a quota_exhausted ledger past
+# seat_dead_quota_age_s OR (fleet-ops#2716 Path C) a credentials_bad→corpse
+# reclassification past the seat_dead_corpse_grace window, into a dated
+# seats-corpse-retired-<ts>/ dir. Daily timer (04:30 UTC, after heartbeat &
+# metrics-export settle, before the Weekly Fleet Review). Heartbeat metric
+# + absent() rule (FleetSeatCorpseRetireAbsent) ship in the same PR
+# (config/fleet_rules.yml).
+bin/fleet-seat-corpse-retire /home/nish/.local/bin/fleet-seat-corpse-retire
+systemd/fleet-seat-corpse-retire.service /home/nish/.config/systemd/user/fleet-seat-corpse-retire.service
+systemd/fleet-seat-corpse-retire.timer /home/nish/.config/systemd/user/fleet-seat-corpse-retire.timer
 
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir

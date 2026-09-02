@@ -1,0 +1,46 @@
+# fleet-seat-corpse-retire.service — retire corpse seat ledgers past the
+# seat-dead threshold (fleet-ops#2469, fresh-corpus gap closed by
+# fleet-ops#2716 Path C).
+#
+# The 2026-08-31 snapshot: opencode/muse-spark-1.2-contributor-free at
+# c=150 straight HTTP 500s, seat_dead=true, class corpse (fleet-ops#2415),
+# no usable_at comeback clock. The seat was correctly excluded from the
+# router ladder (seat_usable treats seat_dead=true as terminal) and the
+# census counts it `dead_n` (fleet-ops#2435). The remaining gap: the corpse
+# ledger STILL sits in /home/nish/workspaces/agent-state/lanes/seats/, so
+# every consumer that counts files in that dir (daily-digest "Total seen",
+# opus-heartbeat-gather seat_table n, future capacity denominators) sees
+# a corpse as live roster capacity. The seat-avail SLO denominator
+# (fleet-ops#1291) is inflated by exactly the corpse count.
+#
+# fleet-ops#2716: a credentials_bad→corpse reclassification (e.g. commandcode
+# /minimax/minimax-m3-free on the provider-side retirement of the free MiniMax
+# M3 line, HTTP 403 FORBIDDEN) does NOT accumulate consecutive_failure_count —
+# the seat-health extension re-writes the ledger on every fresh probe, so
+# Path A's count>=threshold never matches. Path C (grace-period age)
+# captures these fresh corpses so the retire path actually removes them from
+# the roster, not just the rotation.
+#
+# This service runs bin/fleet-seat-corpse-retire, which moves the corpse
+# ledger into a dated seats-corpse-retired-<ts>/ directory. Atomic rename
+# on the same filesystem; a partial failure leaves the live ledger
+# intact. The bin writes fleet_seat_corpse_retire_last_run_seconds to the
+# textfile collector on every run (even a no-op), so the missing/stale
+# alert (FleetSeatCorpseRetireAbsent, config/fleet_rules.yml) catches a
+# dead organ.
+
+[Unit]
+Description=Retire corpse seat ledgers past the seat-dead threshold (fleet-ops#2469, fleet-ops#2716)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/2716
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-seat-corpse-retire'
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=5min
