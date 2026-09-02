@@ -13,11 +13,11 @@
 #      tier 1 exits 0; the wrapper exits 0.
 #   B. A tier-1 stub detector that exits 7 (crashed) MUST make tier 1
 #      exit 7 — propagated rc; unit goes red (real fault, must surface).
-#   C. The six detector integration points (deploy-check, red-pr-repair,
+#   C. The seven detector integration points (deploy-check, red-pr-repair,
 #      escalation-canary, decisions-ledger, failed-command-flagged,
-#      unjustified-wait) MUST be enumerated by a regression test that
-#      runs each stub and asserts the right tier-1 exit per stub. This
-#      is the shape-lock.
+#      unjustified-wait, findings-queued) MUST be enumerated by a regression
+#      test that runs each stub and asserts the right tier-1 exit per stub.
+#      This is the shape-lock.
 #   D. The existing bin/fleet-heartbeat-rc-propagation.test.sh (tier 1 /
 #      tier 2 stub shape) MUST stay green; this new test MUST be nested
 #      under tests/seat-lib.test.sh (workers cannot add a ci.yml line).
@@ -204,7 +204,7 @@ run_scenario() {
 # --- scenario 1: alarm-stub (rc=1) on every alarm detector -> exits 0 ------
 run_scenario 1 \
     deploy_rc=1 redpr_rc=1 canary_rc=1 \
-    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1
+    decisions_ledger_rc=1 failed_command_rc=1 unjustified_rc=1 findings_queued_rc=1
 if [ "$rc" -ne 0 ]; then
     fail "scenario 1: alarm-stub (rc=1) on every alarm detector made propagation exit $rc — alarm-vs-failure separation broken. output: $out"
 fi
@@ -213,7 +213,7 @@ ok "scenario 1: alarm-stub (rc=1) on alarm detectors -> propagation exits 0 (ala
 # --- scenario 2: crash-stub (rc=7) on every alarm detector -> exits 7 ------
 run_scenario 2 \
     deploy_rc=7 redpr_rc=7 canary_rc=7 \
-    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7
+    decisions_ledger_rc=7 failed_command_rc=7 unjustified_rc=7 findings_queued_rc=7
 if [ "$rc" -ne 7 ]; then
     fail "scenario 2: crash-stub (rc=7) on every alarm detector made propagation exit $rc — real crashes must surface. output: $out"
 fi
@@ -239,13 +239,13 @@ printf '%s\n' "$out" | grep -qE "tier 1 complete:" \
     || fail "scenario 4: all-cans-pass did not log 'tier 1 complete:' line. output: $out"
 ok "scenario 4: all-cans-pass baseline: propagation exits 0, logs 'tier 1 complete:'"
 
-# --- source gate (D): the six rc-propagation guards MUST be -ge 2 ----------
-# The class lock says the six integration points MUST only propagate rc
+# --- source gate (D): the seven rc-propagation guards MUST be -ge 2 ----------
+# The class lock says the seven integration points MUST only propagate rc
 # when the helper CRASHED (rc >= 2). This is the shape-lock. We grep
-# the source for the six -ge 2 lines and assert they are present, and
+# the source for the seven -ge 2 lines and assert they are present, and
 # we grep the rest of the file to ensure the OLD `-ne 0` shape is not
-# reintroduced for those six vars.
-declare -a D_VARS=(deploy_rc redpr_rc canary_rc decisions_ledger_rc failed_command_rc unjustified_rc)
+# reintroduced for those seven vars.
+declare -a D_VARS=(deploy_rc redpr_rc canary_rc decisions_ledger_rc failed_command_rc unjustified_rc findings_queued_rc)
 D_PASS=0
 D_TOTAL=0
 for v in "${D_VARS[@]}"; do
