@@ -55,6 +55,16 @@
       ]
     },
     {
+      "name": "canary-effectiveness",
+      "kind": "exporter",
+      "heartbeat_metric": "fleet_canary_effectiveness_last_run_seconds",
+      "absent_alert": "FleetCanaryEffectivenessAbsent",
+      "files": [
+        "lib/canary-effectiveness.py",
+        "systemd/fleet-metrics-export.service.d/canary-effectiveness.conf"
+      ]
+    },
+    {
       "name": "console-tile-verify",
       "kind": "guard",
       "heartbeat_metric": "fleet_console_tile_verify_timestamp_seconds",
