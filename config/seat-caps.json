@@ -33,12 +33,12 @@
       "hard_ceiling": true,
       "quota_bench_default_s": 900,
       "models": {
-        "glm-5-2": 0,
+        "glm-5-2": 3,
         "swe-1-7": 0
       },
       "_devin_cap_note": "Nish 2026-08-27 00:20 IST: glm-5-2 max 3 concurrent - burst rate-limit collisions at 4 starved intake ticks (watch.log 18:48Z); provider cap stays 4 (swe-1-7 fills the 4th slot)",
       "_swe17": "2026-08-30 alert-repair FleetDeadCredentialSeats: swe-1-7 set to 0 (was 4) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-29T17:15:33Z, fleet-ops#1445, fleet-ops#2102). Re-auth is Nish-reserved (credentials). Cap stays 0 until the Devin credential is re-authenticated; restore to 4 and move the ledger back from lanes/seats-deadcred-quarantine-20260830T0135Z/ when healthy.",
-      "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). Re-auth is Nish-reserved (credentials). Cap stays 0 until the Devin credential is re-authenticated; restore to 3 and move the ledger back from lanes/seats-deadcred-quarantine-20260830T032913Z/ when healthy."
+      "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). RESTORED to 3 on 2026-09-02: ledger lanes/seats/devin__glm-5-2.json healthy (health_class=healthy, http_status=200, seat_dead=false, observed_at=2026-09-02T17:00:58Z, source=comeback_release); alert-repair dispatches on devin/glm-5-2 succeeded rc=0 (2026-09-01T17:52:15Z, 05:10:42Z). Ledger evidence sha256 b6f069af96d884b8037b64cb29bc36388e7dc72120f4b3b240acf43ef9ef8f66. swe-1-7 stays 0 (still quarantined in lanes/seats-deadcred-quarantine-20260830T0135Z/)."
     },
     "cursor": {
       "cap": 1,

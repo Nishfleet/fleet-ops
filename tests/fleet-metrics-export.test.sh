@@ -485,7 +485,12 @@ assert 'fleet_pi_seat_dead_credential{seat="opencode__hy3-free",http_status="401
 # stale failure_mode may be counted.
 assert "muse-spark" not in body, body
 assert 'seat="bai__deepseek-v4-flash"' not in body, body
-assert "devin__glm-5-2" not in body, "healthy seat must not appear in dead-credential series: " + body
+# fleet-ops#2738: the healthy devin/glm-5-2 seed ledger legitimately appears
+# in the new fleet_seat_healthy_cap0 series (it is healthy + cap 0 in the
+# real repo config). The dead-credential intent is that it does not appear
+# in the dead-credential SERIES — pin that series specifically, not the
+# whole body, so the healthy_cap0 metric can surface the parked seat.
+assert 'fleet_pi_seat_dead_credential{seat="devin__glm-5-2"' not in body, "healthy seat must not appear in dead-credential series: " + body
 print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
 
@@ -847,6 +852,162 @@ quota = m._healthy_enrolled_seat_count()
 assert quota == len(enrolled) - 1, \
     f"quota_exhausted past-wall must NOT count healthy ({len(enrolled)-1}), got {quota}"
 print("OK: quota_exhausted never release-counts (availability honest)")
+PY
+
+
+# =========================================================================
+# 16. fleet-ops#2738: healthy-but-parked seat visibility metric.
+#     A seat whose ledger is healthy (health_class=healthy, seat_dead=false)
+#     but whose model cap in seat-caps.json is 0 is silently costing
+#     throughput — pick_seat skips it every tick while the seat-availability
+#     SLO burns. The devin/glm-5-2 restore lapsed this way (ledger healthy,
+#     cap 0 for 3+ days, no metric surfaced it). _read_healthy_cap0 must
+#     count exactly those seats: a healthy ledger + cap-0 config -> 1;
+#     a cap-restored config -> 0. Hermetic: scratch seat-caps + scratch
+#     ledger, no live state.
+# =========================================================================
+HC0_SEATS="$scratch/hc0-seats"
+mkdir -p "$HC0_SEATS"
+HC0_CAPS_CAP0="$scratch/hc0-caps-cap0.json"
+HC0_CAPS_CAP3="$scratch/hc0-caps-cap3.json"
+cat >"$HC0_CAPS_CAP0" <<'JSON'
+{
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "models": { "glm-5-2": 0, "swe-1-7": 0 } },
+    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } }
+  }
+}
+JSON
+cat >"$HC0_CAPS_CAP3" <<'JSON'
+{
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "models": { "glm-5-2": 3, "swe-1-7": 0 } },
+    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } }
+  }
+}
+JSON
+# Healthy devin/glm-5-2 ledger (the restored seat) + a healthy cap>0 ollama
+# seat (must NOT count) + a seat_dead=true devin/swe-1-7 (must NOT count) +
+# a non-healthy commandcode seat (must NOT count) + a test__ fixture (must
+# NOT count) + a .spawn-bench marker (must NOT count).
+cat >"$HC0_SEATS/devin__glm-5-2.json" <<'JSON'
+{"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"http_status":200,"observed_at":"2026-09-02T17:00:58Z"}
+JSON
+cat >"$HC0_SEATS/ollama__deepseek-v4-flash_0731.json" <<'JSON'
+{"provider":"ollama","model":"deepseek-v4-flash:0731","health_class":"healthy","seat_dead":false,"http_status":200,"observed_at":"2026-09-02T17:00:58Z"}
+JSON
+cat >"$HC0_SEATS/devin__swe-1-7.json" <<'JSON'
+{"provider":"devin","model":"swe-1-7","health_class":"corpse","seat_dead":true,"http_status":403,"observed_at":"2026-08-30T03:05:36Z"}
+JSON
+cat >"$HC0_SEATS/commandcode__deepseek_deepseek-v4-flash.json" <<'JSON'
+{"provider":"commandcode","model":"deepseek/deepseek-v4-flash","health_class":"overload_bench","seat_dead":false,"http_status":503,"observed_at":"2026-09-02T17:00:58Z"}
+JSON
+cat >"$HC0_SEATS/test__synthetic.json" <<'JSON'
+{"provider":"test","model":"synthetic","health_class":"healthy","seat_dead":false,"http_status":200,"observed_at":"2026-09-02T17:00:58Z"}
+JSON
+cat >"$HC0_SEATS/opencode__mimo-v2.5-free.spawn-bench.json" <<'JSON'
+{"provider":"opencode","model":"mimo-v2.5-free","usable_at":"2099-01-01T00:00:00Z","reason":"no_block:rc=0"}
+JSON
+
+python3 - "$exporter" "$HC0_CAPS_CAP0" "$HC0_CAPS_CAP3" "$HC0_SEATS" <<'PY' || fail "healthy-cap0 metric test failed"
+import importlib.util, json, sys
+from pathlib import Path
+
+exporter, caps_cap0, caps_cap3, seat_dir = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# --- cap-0 config: the healthy devin/glm-5-2 ledger is parked -> count 1 ---
+m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
+m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
+m.SEAT_LEDGER = Path(seat_dir)
+n0, seats0 = m._read_healthy_cap0()
+ids0 = {f"{s['provider']}__{s['model']}" for s in seats0}
+assert n0 == 1, f"cap0 config: healthy-cap0 must be 1 (only devin/glm-5-2), got {n0}: {ids0}"
+assert "devin__glm-5-2" in ids0, f"devin/glm-5-2 must be the parked seat, got {ids0}"
+# The cap>0 ollama seat must NOT count.
+assert not any("ollama" in i for i in ids0), "cap>0 ollama must not count as parked"
+# The corpse / non-healthy / test / spawn-bench seats must NOT count.
+assert not any("swe-1-7" in i for i in ids0), "seat_dead corpse must not count"
+assert not any("commandcode" in i for i in ids0), "non-healthy seat must not count"
+assert not any(i.startswith("test__") for i in ids0), "test__ fixture must not count"
+assert not any("spawn-bench" in i for i in ids0), "spawn-bench marker must not count"
+print("OK: cap0 config -> healthy-cap0_total 1 (devin/glm-5-2 parked)")
+
+# --- cap-restored config: glm-5-2 cap 3 -> count 0 (no healthy-parked) ---
+m.SEAT_CAPS_DEFAULT = Path(caps_cap3)
+m.SEAT_CAPS_FALLBACK = Path(caps_cap3)
+n3, seats3 = m._read_healthy_cap0()
+assert n3 == 0, f"cap3 config: healthy-cap0 must be 0 (glm-5-2 restored), got {n3}: {seats3}"
+print("OK: cap-restored config -> healthy-cap0_total 0 (restore cleared the alarm)")
+
+# --- missing config -> fail safe to 0 (no false alarm from a missing file) ---
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/hc0-caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/hc0-caps-fallback.json")
+n_miss, _ = m._read_healthy_cap0()
+assert n_miss == 0, f"missing config must fail safe to 0, got {n_miss}"
+print("OK: missing config -> healthy-cap0_total 0 (fail safe)")
+
+# --- model-cap map parses both bare-int and {cap,class} object values ---
+m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
+m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
+caps = m._seat_caps_model_cap_map()
+assert caps["devin/glm-5-2"] == 0, caps
+assert caps["devin/swe-1-7"] == 0, caps
+assert caps["ollama/deepseek-v4-flash:0731"] == 2, caps
+# Unlisted model defaults to 0 (mirrors seat-lib model_cap).
+assert caps.get("devin/unlisted-model", 0) == 0, caps
+print("OK: _seat_caps_model_cap_map parses int + object + unlisted->0")
+PY
+
+# =========================================================================
+# 16b. fleet-ops#2738: main() emits the healthy-cap0 family (HELP/TYPE once,
+#      total gauge, per-seat series) end-to-end. Reuses the cap-0 fixture
+#      so the per-seat series names devin/glm-5-2.
+# =========================================================================
+OUT_OVERRIDE="$scratch/hc0-out.prom"
+DETAIL_STUB="$scratch/hc0-detail-stub.json"
+echo '{"items":[]}' >"$DETAIL_STUB"
+python3 - "$exporter" "$OUT_OVERRIDE" "$DETAIL_STUB" "$SM_CONFIG_OVERRIDE" "$HC0_CAPS_CAP0" "$HC0_SEATS" <<'PY' || fail "main() healthy-cap0 emission failed"
+import importlib.util, json, sys
+from pathlib import Path
+
+exporter, out, detail, sm_cfg, caps_cap0, seat_dir = sys.argv[1:7]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.OUT = Path(out)
+m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm-fallback.json")
+m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
+m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
+m.SEAT_LEDGER = Path(seat_dir)
+# Stub network/gh/systemctl-dependent paths so main() runs offline.
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._healthy_enrolled_seat_count = lambda: 0
+m._enrolled_seat_total = lambda: 0
+m._read_comeback_overdue = lambda: (0, [])
+m._read_never_released = lambda: (0, [])
+m._read_provider_quota_exhausted = lambda: (0, [])
+try:
+    m.main()
+except SystemExit:
+    pass
+body = Path(out).read_text()
+assert "# HELP fleet_seat_healthy_cap0_total " in body, body
+assert "# TYPE fleet_seat_healthy_cap0_total gauge" in body, body
+assert "fleet_seat_healthy_cap0_total 1" in body, body
+assert "# HELP fleet_seat_healthy_cap0 " in body, body
+assert "# TYPE fleet_seat_healthy_cap0 gauge" in body, body
+assert 'fleet_seat_healthy_cap0{seat="devin__glm-5-2"} 1' in body, body
+# HELP/TYPE appear exactly once per metric name (fleet-ops#1844/#1855 class).
+assert body.count("# HELP fleet_seat_healthy_cap0_total ") == 1, body
+assert body.count("# TYPE fleet_seat_healthy_cap0_total gauge") == 1, body
+assert body.count("# HELP fleet_seat_healthy_cap0 ") == 1, body
+print("OK: main() emits healthy-cap0 family (total 1 + per-seat devin__glm-5-2, HELP/TYPE once)")
 PY
 
 
