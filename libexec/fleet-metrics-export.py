@@ -90,6 +90,18 @@ HELP_PQE = "# HELP fleet_provider_quota_exhausted_total Number of providers with
 TYPE_PQE = "# TYPE fleet_provider_quota_exhausted_total gauge"
 HELP_PQEP = "# HELP fleet_provider_quota_exhausted 1 for each provider whose seats are account-level quota exhausted (fleet-ops#2712)."
 TYPE_PQEP = "# TYPE fleet_provider_quota_exhausted gauge"
+# fleet-ops#2738: healthy-but-parked visibility. A seat whose ledger reports
+# health_class=healthy + seat_dead=false (the seat works) but whose model cap
+# in seat-caps.json is 0 is silently costing throughput — pick_seat skips it
+# every tick while the seat-availability SLO burns. The devin/glm-5-2 restore
+# lapsed exactly this way: the ledger came back healthy, the cap stayed 0 for
+# 3+ days. This gauge counts those seats so the WFR lens and the next
+# blind-audit see them instead of a quiet depressed rollup. Sustained > 0
+# here is the loud signal that a restore was forgotten.
+HELP_HCAP0 = "# HELP fleet_seat_healthy_cap0_total Number of seats whose ledger is healthy (health_class=healthy, seat_dead=false) but whose model cap in seat-caps.json is 0 — healthy-but-parked, silently costing throughput (fleet-ops#2738)."
+TYPE_HCAP0 = "# TYPE fleet_seat_healthy_cap0_total gauge"
+HELP_HCAP0P = "# HELP fleet_seat_healthy_cap0 1 for each healthy-but-parked seat (health_class=healthy, seat_dead=false, model cap=0) so the repair worker knows which cap to restore (fleet-ops#2738)."
+TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -2120,6 +2132,114 @@ def _read_provider_quota_exhausted():
     return len(providers), providers
 
 
+def _seat_caps_model_cap_map():
+    """Build a {provider/model: cap} map from seat-caps.json.
+
+    Mirrors lib/seat-lib.sh load_seat_caps model-cap parsing: a model value
+    may be a bare int (the cap) or an object {cap, class, ...}; the cap is
+    `.cap // 0` for objects. Unlisted models default to 0 (seat-lib's
+    model_cap returns 0 for unlisted, and pick_seat skips cap=0 models).
+    Returns None when the config is missing/unparseable so callers can
+    report source-unavailable instead of guessing.
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        caps = {}
+        for prov, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            models = cfg.get("models") or {}
+            if not isinstance(models, dict):
+                continue
+            for model, val in models.items():
+                if isinstance(val, bool):
+                    cap = 0
+                elif isinstance(val, (int, float)):
+                    cap = int(val)
+                elif isinstance(val, dict):
+                    raw = val.get("cap", 0)
+                    cap = int(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0
+                else:
+                    cap = 0
+                caps[f"{prov}/{model}"] = cap
+        return caps
+    return None
+
+
+def _read_healthy_cap0():
+    """Healthy-but-parked seats: ledger healthy, model cap in seat-caps is 0.
+
+    fleet-ops#2738: a seat whose ledger reports health_class=healthy and
+    seat_dead=false (the seat works — proven by a 200 observation) but whose
+    model cap in seat-caps.json is 0 is silently parked: pick_seat skips it
+    every tick while the seat-availability SLO burns. The devin/glm-5-2
+    restore lapsed exactly this way — the ledger came back healthy on
+    2026-09-01, the cap stayed 0 for 3+ days, and no metric surfaced it.
+    This gauge counts those seats (total + per-seat series) so the WFR lens
+    and the next blind-audit see a healthy-but-parked seat instead of a
+    quiet depressed rollup. Sustained > 0 here is the loud signal that a
+    restore was forgotten.
+
+    A held wrapper spawn-bench (fleet-ops#2493) outranks a later healthy
+    observation, so a spawn-bench-active seat is NOT counted as healthy
+    here (it is not actually healthy — the wrapper benched it). test__
+    fixtures and .spawn-bench sibling markers are skipped. Never raises on
+    a missing/unreadable ledger or config; returns (0, []) when the config
+    is unavailable so the metric fails safe (no false healthy-parked alarm
+    from a missing config).
+
+    Returns (count, [ {provider, model} ]).
+    """
+    caps = _seat_caps_model_cap_map()
+    if caps is None:
+        return 0, []
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            if data.get("health_class") != "healthy":
+                continue
+            # fleet-ops#2493: a held wrapper spawn-bench outranks a later
+            # healthy observation — the seat is not actually healthy.
+            if _spawn_bench_active(f):
+                continue
+            prov = data.get("provider")
+            model = data.get("model")
+            if not isinstance(prov, str) or not isinstance(model, str):
+                continue
+            if not prov or not model:
+                continue
+            # seat-lib model_cap returns 0 for unlisted models; mirror that
+            # so a healthy ledger for a removed model still flags (the cap
+            # is effectively 0 — pick_seat will not route to it).
+            if caps.get(f"{prov}/{model}", 0) == 0:
+                seats.append({"provider": prov, "model": model})
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
 # fleet-ops#2638: SEAT_DEAD_CONSECUTIVE_THRESHOLD mirror — the bash writer
 # (lib/seat-lib.sh) corpses quota_cap at this count; the prober
 # (bin/fleet-seat-comeback-release) corpses the same way on the overload/
@@ -2582,6 +2702,29 @@ def main():
         _seats = int(_s.get("seats") or 0)
         lines.append(
             f'fleet_provider_quota_exhausted{{provider="{_prov}",seats="{_seats}"}} 1'
+        )
+    # fleet-ops#2738: healthy-but-parked visibility. A seat whose ledger is
+    # healthy (health_class=healthy, seat_dead=false) but whose model cap in
+    # seat-caps.json is 0 is silently costing throughput — pick_seat skips it
+    # every tick while the seat-availability SLO burns. The total gauge drives
+    # the alert/WFR lens; the per-seat series names each parked seat so the
+    # repair worker knows which cap to restore. Sustained > 0 here is the loud
+    # signal that a restore was forgotten (the devin/glm-5-2 lapse lived here
+    # for 3+ days with no metric surfacing it).
+    _hc0_n, _hc0 = _read_healthy_cap0()
+    lines.append("")
+    lines.append(HELP_HCAP0)
+    lines.append(TYPE_HCAP0)
+    lines.append(f"fleet_seat_healthy_cap0_total {_hc0_n}")
+    lines.append("")
+    lines.append(HELP_HCAP0P)
+    lines.append(TYPE_HCAP0P)
+    for _s in _hc0:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        lines.append(
+            f'fleet_seat_healthy_cap0{{seat="{_seat_label}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)

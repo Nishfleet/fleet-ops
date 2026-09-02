@@ -265,6 +265,80 @@ fi
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
+# --- invariant 3c (fleet-ops#2738): healthy-ledger + cap-3 restore shape ---
+# A healthy devin/glm-5-2 ledger with the model cap restored to 3 must make
+# pick_seat return devin/glm-5-2 (the seat is picked — throughput restored).
+# The same healthy ledger with cap 0 must NOT pick glm-5-2 (the cap is the
+# gate, not the ledger). SQL-style pin on the restore: the cap value is the
+# only variable between the two picks; the ledger is identical and healthy.
+cat >"$scratch/models-restore.json" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "glm-5-2", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-restore-cap3.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "free", "models": { "glm-5-2": 3 } }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-restore-cap0.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "free", "models": { "glm-5-2": 0 } }
+  }
+}
+JSON
+ledger_restore="$scratch/ledger-restore"
+mkdir -p "$ledger_restore"
+fresh_obs_restore=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$fresh_obs_restore" \
+  '{provider:"devin",model:"glm-5-2",health_class:"healthy",seat_dead:false,http_status:200,observed_at:$obs}' \
+  > "$ledger_restore/devin__glm-5-2.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger_restore"
+export PI_MODELS_JSON="$scratch/models-restore.json"
+
+# --- cap 3: the restored seat is picked ---
+export SEAT_CAPS_JSON="$scratch/seat-caps-restore-cap3.json"
+export PI_PACKET_STATE="$scratch/state-restore-cap3"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] \
+  || fail "restore-cap3: healthy ledger + cap 3 must pick devin/glm-5-2, got rc=$rc out=$out"
+[[ "$out" == "devin	glm-5-2" ]] \
+  || fail "restore-cap3: expected devin/glm-5-2, got: $out"
+echo "OK: restore-cap3 -> pick_seat returns devin/glm-5-2 (healthy + cap 3 = picked)"
+
+# --- cap 0: the SAME healthy ledger is NOT picked (cap is the gate) ---
+export SEAT_CAPS_JSON="$scratch/seat-caps-restore-cap0.json"
+export PI_PACKET_STATE="$scratch/state-restore-cap0"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] \
+  || fail "restore-cap0: healthy ledger + cap 0 must NOT pick (no usable seat), got rc=$rc out=$out"
+[[ -z "$out" ]] \
+  || fail "restore-cap0: must print nothing (glm-5-2 is cap=0), got: $out"
+grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+  || fail "restore-cap0: must log NO USABLE SEAT (cap 0 gates the healthy seat), got: $(cat "$PI_PACKET_STATE/watch.log")"
+echo "OK: restore-cap0 -> pick_seat returns nothing (healthy ledger + cap 0 = parked)"
+
+# Restore the shared fixtures the rest of the suite uses.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 # --- invariant 1: ALL DEAD -> loud stall, rc=1, no stdout -----------------
 ledger="$scratch/ledger-alldead"
 mkdir -p "$ledger"
