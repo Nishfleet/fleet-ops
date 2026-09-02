@@ -719,13 +719,16 @@ groups:
     rules:
       # Organ heartbeat (fleet-ops#1010 standing pattern: every new organ
       # ships its absent() rule in the same PR). grok-token-refresh writes
-      # fleet_grok_token_refresh_last_success_seconds on every SUCCESSFUL
-      # headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"]. A
-      # SKIP (still fresh) preserves the prior last_success so the rule
-      # does not false-alarm on a healthy idle seat. 12h is two missed
-      # 4h timer cycles plus slack for the 6h access-token lifetime —
-      # by the time the absent() rule fires the credential is provably
-      # stale.
+      # fleet_grok_token_refresh_last_success_seconds on every run that
+      # does not REJECT — SUCCESS (rotated) and SKIP (credential still
+      # fresh, no rotation needed) both advance it to now. A SKIP is a
+      # successful run: the script ran and found the credential healthy.
+      # Only REJECT (failed grant) preserves the prior value. fleet-ops#2817:
+      # the old preserve-on-skip logic let last_success go stale while the
+      # timer kept SKIPping a fresh token, firing a false
+      # FleetGrokTokenRefreshStale. 12h is two missed 4h timer cycles —
+      # by the time the absent() rule fires the script has provably not
+      # run, not merely not rotated.
       - alert: FleetGrokTokenRefreshStale
         expr: absent(fleet_grok_token_refresh_last_success_seconds) or (time() - fleet_grok_token_refresh_last_success_seconds) > 43200
         for: 1h
@@ -733,8 +736,8 @@ groups:
           severity: warning
           service: fleet
         annotations:
-          summary: "grok-token-refresh has not succeeded in 12+ hours"
-          description: "Repair worker: fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script is the prevention side of fleet-ops#41 — it keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat (fleet-ops#1163) does not age into a 401. A dead refresh means the credential is silently aging toward its 6h OAuth lifetime. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. Helper: /home/nish/.local/bin/grok-token-refresh. fleet-ops#41."
+          summary: "grok-token-refresh has not run in 12+ hours"
+          description: "Repair worker: fleet_grok_token_refresh_last_success_seconds is absent or older than 12h (two 4h timer cycles). The script advances this metric on every SUCCESS and SKIP — only a REJECT (failed grant) or a dead timer leaves it stale. The script is the prevention side of fleet-ops#41 — it keeps ~/.pi/agent/auth.json[xai-oauth] alive so the live SuperGrok seat (fleet-ops#1163) does not age into a 401. Check journalctl --user -u grok-token-refresh.service and systemctl --user list-timers grok-token-refresh.timer. Helper: /home/nish/.local/bin/grok-token-refresh. fleet-ops#41."
 
   # fleet-ops#1291: SLO error budgets + multiwindow burn-rate alerts
   # (Google SRE Workbook Ch.5 canon). config/slo-definitions.json is the
