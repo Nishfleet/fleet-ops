@@ -622,4 +622,21 @@ grep -Fq 'bash "$here/p14-test-listing-gate.test.sh"' "$here/ci-standards-audit.
   || fail "ci-standards-audit.test.sh must host p14-test-listing-gate.test.sh"
 ok "p14-test-listing-gate.test.sh is hosted by ci-standards-audit.test.sh"
 
+# fleet-ops#2920 (PR #2937 follow-up): hard-pin the host line for
+# fleet-ops-drift-metrics-dropin in ci-standards-audit so a future
+# refactor that drops it is caught by name. The test landed on main
+# via PR #2937 without a ci.yml listing or a host; the reachable-set
+# check below also fails, but this named check runs first so the
+# operator gets the issue number in the FAIL line. class-prevention:
+# parking it on known_orphans to silence the generic message must
+# also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-drift-metrics-dropin\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-ops-drift-metrics-dropin.test.sh (fleet-ops#2920)"
+[[ -n "${reachable[fleet-ops-drift-metrics-dropin.test.sh]:-}" ]] \
+  || fail "fleet-ops-drift-metrics-dropin.test.sh must be hosted by a listed test (fleet-ops#2920)"
+[[ -z "${known_orphan_set[fleet-ops-drift-metrics-dropin.test.sh]:-}" ]] \
+  || fail "fleet-ops-drift-metrics-dropin.test.sh must not be a known orphan (fleet-ops#2920)"
+ok "fleet-ops-drift-metrics-dropin.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2920)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
