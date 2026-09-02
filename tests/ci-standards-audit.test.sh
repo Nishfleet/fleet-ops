@@ -283,6 +283,39 @@ bash "$here/alert-repair-outcome-metric.test.sh"
 # Hermetic (scratch ledger, no gh/prometheus/systemd).
 bash "$here/dispatch-ledger-fixture-sweep.test.sh"
 
+# fleet-ops#2902 (PR #2885 follow-up): the deploy-quality SLO test landed
+# on main without a ci.yml listing or a host, so P14 ran red on "2 test
+# file(s) are neither in ci.yml, hosted by a listed test, live/destructive,
+# nor a known orphan: fleet-deploy-quality.test.sh
+# fleet-issue-file-close-duplicates.test.sh" (reported in #2902). Hosted
+# here so P14 runs it without a workflow-file edit (the worker App cannot
+# push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (pin fixtures, no gh/prometheus/systemd).
+bash "$here/fleet-deploy-quality.test.sh"
+
+# fleet-ops#2902 (PR #2900 follow-up): the close-duplicates drain test
+# landed on main without a ci.yml listing or a host (same 2-orphan FAIL as
+# fleet-deploy-quality above, reported in #2902). Hosted here so P14 runs
+# it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (fake gh, no gh/prometheus/systemd).
+bash "$here/fleet-issue-file-close-duplicates.test.sh"
+
+# fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
+# detector landed on main without a ci.yml listing or a host — and P14 was
+# already red on the two orphans above, so this leftover slipped in
+# unmasked. Hosted here so P14 runs it without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic self-test with fixture worktrees; live scan zeroes out (exit 0)
+# when roots are absent, so it runs fine in hosted CI.
+bash "$here/worktree-leaky-test-containment.test.sh"
+
 # fleet-ops#1466: closure condition for the seat-health.ts 200/empty-body
 # false-healthy gap. The test imports the live extension at
 # $HOME/.pi/agent/extensions/seat-health.ts (or FLEET_SEAT_HEALTH_TS) and
