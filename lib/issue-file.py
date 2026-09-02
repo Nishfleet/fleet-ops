@@ -32,6 +32,13 @@ BORDERLINE_THRESHOLD = 0.40
 KEY_BONUS = 0.10
 LIST_LIMIT = 200
 
+# close-duplicates: only `agent-ready` issues (unclaimed) are safe to close —
+# agent-in-progress has a live worker, agent-blocked is Nish-gated, red-on-main
+# is a reserved class. Keep the oldest (lowest number) open issue as canonical.
+CLOSE_CAP = 10
+CLOSE_OK_ENV = "FLEET_CLOSE_DUPLICATES_OK"
+PROTECTED_LABELS = frozenset({"agent-in-progress", "agent-blocked", "red-on-main"})
+
 # Common key paths that appear in many unrelated issues and therefore
 # carry no duplicate signal. Filtered from the shared-key bonus so the
 # sweep does not collapse 30 unrelated "edit ci.yml" issues into one
@@ -192,6 +199,7 @@ def load_open_from_json(path: str) -> list[dict]:
                 "body": item.get("body") or "",
                 "url": item.get("url") or "",
                 "repository": item.get("repository") or item.get("repo") or "",
+                "labels": list(item.get("labels") or []),
             }
         )
     return out
@@ -210,7 +218,7 @@ def gh_list_open(repo: str) -> list[dict]:
             "--limit",
             str(LIST_LIMIT),
             "--json",
-            "number,title,body,url",
+            "number,title,body,url,labels",
         ],
         capture_output=True,
         text=True,
@@ -229,6 +237,12 @@ def gh_list_open(repo: str) -> list[dict]:
         number = item.get("number")
         if not isinstance(number, int):
             continue
+        labels = []
+        for lab in item.get("labels") or []:
+            if isinstance(lab, dict) and lab.get("name"):
+                labels.append(lab["name"])
+            elif isinstance(lab, str):
+                labels.append(lab)
         out.append(
             {
                 "number": number,
@@ -236,6 +250,7 @@ def gh_list_open(repo: str) -> list[dict]:
                 "body": item.get("body") or "",
                 "url": item.get("url") or "",
                 "repository": repo,
+                "labels": labels,
             }
         )
     return out
@@ -305,6 +320,16 @@ def duplicate_marker(ref: str, score: float) -> str:
 def gh_comment(repo: str, number: int, body: str) -> tuple[int, str]:
     proc = subprocess.run(
         [gh_bin(), "issue", "comment", str(number), "--repo", repo, "--body", body],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, (proc.stdout or "").strip() or (proc.stderr or "").strip()
+
+
+def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [gh_bin(), "issue", "close", str(number), "--repo", repo, "--comment", comment],
         capture_output=True,
         text=True,
         check=False,
@@ -459,23 +484,15 @@ def cmd_file(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sweep(args: argparse.Namespace) -> int:
-    repos = list(args.repo or [])
-    if not repos and not args.from_json:
-        repos = enrolled_repos()
-    issues: list[dict] = []
-    if args.from_json:
-        issues = load_open_from_json(args.from_json)
-    else:
-        seen: set[tuple[str, int]] = set()
-        for repo in repos:
-            for issue in gh_list_open(repo):
-                key = (issue["repository"], issue["number"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                issues.append(issue)
+def cluster_issues(issues: list[dict]) -> list[dict]:
+    """Cluster open issues by same-problem similarity (fleet-ops#1212 sweep).
 
+    Returns a list of cluster dicts (sorted by descending max_score then size):
+      {"kind": "duplicate"|"borderline", "max_score": float, "size": int,
+       "issues": [{"repository","number","title","url","labels"}, ...]}
+    Only clusters with >=2 members are returned. Each member carries its
+    labels so callers (close-duplicates) can filter by claim state.
+    """
     n = len(issues)
     parent = list(range(n))
 
@@ -548,14 +565,36 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                         "number": issues[i]["number"],
                         "title": issues[i].get("title") or "",
                         "url": issues[i].get("url") or "",
+                        "labels": list(issues[i].get("labels") or []),
                     }
                     for i in sorted(kept, key=lambda k: (issues[k].get("repository") or "", issues[k]["number"]))
                 ],
             }
         )
     clusters.sort(key=lambda c: (-c["max_score"], -c["size"]))
+    return clusters
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    repos = list(args.repo or [])
+    if not repos and not args.from_json:
+        repos = enrolled_repos()
+    issues: list[dict] = []
+    if args.from_json:
+        issues = load_open_from_json(args.from_json)
+    else:
+        seen: set[tuple[str, int]] = set()
+        for repo in repos:
+            for issue in gh_list_open(repo):
+                key = (issue["repository"], issue["number"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append(issue)
+
+    clusters = cluster_issues(issues)
     report = {
-        "open_count": n,
+        "open_count": len(issues),
         "repos": repos,
         "threshold_duplicate": DUP_THRESHOLD,
         "threshold_borderline": BORDERLINE_THRESHOLD,
@@ -563,6 +602,121 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         "clusters": clusters,
     }
     text = json.dumps(report, indent=2, sort_keys=True)
+    print(text)
+    if args.output_json:
+        Path(args.output_json).write_text(text + "\n", encoding="utf-8")
+    return 0
+
+
+def _closeable(issue: dict) -> bool:
+    """An issue is safe to auto-close as a duplicate only when it is
+    agent-ready (unclaimed, in the dispatch queue) and not carrying a
+    protected label. agent-in-progress has a live worker; agent-blocked is
+    Nish-gated; red-on-main is a reserved escalation class."""
+    labels = set(issue.get("labels") or [])
+    return "agent-ready" in labels and not (labels & PROTECTED_LABELS)
+
+
+def cmd_close_duplicates(args: argparse.Namespace) -> int:
+    """Drain the duplicate backlog the sweep identifies (fleet-ops#2762).
+
+    For each duplicate cluster (kind=duplicate, max_score >= DUP_THRESHOLD),
+    keep the oldest open issue as canonical and close the remaining
+    agent-ready members with a `duplicate-of` comment. Members that are not
+    closeable (in-progress / blocked / red-on-main) get a `duplicate-of`
+    comment only — merged by reference, not closed, so no active work is
+    disrupted. Capped per run. Fail-closed: FLEET_CLOSE_DUPLICATES_OK=1
+    required to actually close (one-off tests cannot phantom-close)."""
+    ok = os.environ.get(CLOSE_OK_ENV, "0") == "1"
+    repos = list(args.repo or [])
+    if not repos and not args.from_json:
+        repos = enrolled_repos()
+    issues: list[dict] = []
+    if args.from_json:
+        issues = load_open_from_json(args.from_json)
+    else:
+        seen: set[tuple[str, int]] = set()
+        for repo in repos:
+            for issue in gh_list_open(repo):
+                key = (issue["repository"], issue["number"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append(issue)
+
+    clusters = [c for c in cluster_issues(issues) if c["kind"] == "duplicate"]
+    cap = args.cap if args.cap is not None else CLOSE_CAP
+    closed = 0
+    commented = 0
+    skipped = 0
+    actions = []
+    for cluster in clusters:
+        members = sorted(cluster["issues"], key=lambda i: (i.get("repository") or "", i["number"]))
+        canonical = members[0]
+        canon_ref = issue_ref(
+            {"repository": canonical.get("repository") or "", "number": canonical["number"]}
+        )
+        for m in members[1:]:
+            ref = issue_ref({"repository": m.get("repository") or "", "number": m["number"]})
+            score = cluster["max_score"]
+            body = (
+                f"<!-- duplicate-of: {canon_ref} score={score:.2f} -->\n"
+                f"Closing as duplicate of {canon_ref} "
+                f"(fleet-issue-file close-duplicates, score={score:.2f}). "
+                f"The oldest open issue in this cluster is the canonical.\n"
+            )
+            if not _closeable(m):
+                # Merge by reference: post the marker but do not close.
+                if args.dry_run:
+                    print(f"[close-duplicates] dry-run comment {ref} -> {canon_ref}", file=sys.stderr)
+                    actions.append({"ref": ref, "canonical": canon_ref, "action": "comment", "reason": "protected"})
+                    commented += 1
+                    continue
+                repo = m.get("repository") or ""
+                rc, out = gh_comment(repo, m["number"], body)
+                if rc == 0:
+                    print(f"[close-duplicates] commented {ref} -> {canon_ref} (protected)", file=sys.stderr)
+                    actions.append({"ref": ref, "canonical": canon_ref, "action": "comment", "reason": "protected"})
+                    commented += 1
+                else:
+                    print(f"[close-duplicates] comment failed {ref}: {out}", file=sys.stderr)
+                    skipped += 1
+                continue
+            if closed >= cap:
+                print(f"[close-duplicates] cap reached ({cap}); skip close {ref}", file=sys.stderr)
+                skipped += 1
+                continue
+            if args.dry_run or not ok:
+                label = "dry-run close" if args.dry_run else "close-blocked (OK!=1)"
+                print(f"[close-duplicates] {label} {ref} -> {canon_ref}", file=sys.stderr)
+                actions.append({"ref": ref, "canonical": canon_ref, "action": "close" if args.dry_run else "noop", "reason": label})
+                if args.dry_run:
+                    closed += 1
+                else:
+                    skipped += 1
+                continue
+            repo = m.get("repository") or ""
+            rc, out = gh_close(repo, m["number"], body)
+            if rc == 0:
+                print(f"[close-duplicates] CLOSED {ref} -> {canon_ref}", file=sys.stderr)
+                actions.append({"ref": ref, "canonical": canon_ref, "action": "close", "reason": "duplicate"})
+                closed += 1
+            else:
+                print(f"[close-duplicates] close failed {ref}: {out}", file=sys.stderr)
+                skipped += 1
+
+    summary = {
+        "open_count": len(issues),
+        "duplicate_clusters": len(clusters),
+        "closed": closed,
+        "commented": commented,
+        "skipped": skipped,
+        "cap": cap,
+        "ok": ok,
+        "dry_run": args.dry_run,
+        "actions": actions,
+    }
+    text = json.dumps(summary, indent=2, sort_keys=True)
     print(text)
     if args.output_json:
         Path(args.output_json).write_text(text + "\n", encoding="utf-8")
@@ -597,6 +751,17 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--body", default="")
     sc.add_argument("--against-json", required=True)
     sc.set_defaults(func=cmd_score)
+
+    cd = sub.add_parser(
+        "close-duplicates",
+        help="close agent-ready duplicate-cluster members, keeping the oldest (fleet-ops#2762)",
+    )
+    cd.add_argument("--repo", "-R", action="append", default=[])
+    cd.add_argument("--from-json", default="")
+    cd.add_argument("--output-json", default="")
+    cd.add_argument("--cap", type=int, default=None)
+    cd.add_argument("--dry-run", action="store_true")
+    cd.set_defaults(func=cmd_close_duplicates)
     return p
 
 
