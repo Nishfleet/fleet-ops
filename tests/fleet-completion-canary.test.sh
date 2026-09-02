@@ -1277,6 +1277,101 @@ PY
 ok "class-parked run-hop chain drains same-tick, no re-summon/redispatch, rail stays drained (fleet-ops#2700)"
 
 
+# --- 9m. class-parked chain on the VERIFY hop drains (fleet-ops#2716) ------
+# Live evidence in the issue 2716 snapshot (2026-09-01T21:45:00Z):
+# chain_stalled_total=1.0 on hop=verify plane=alert-repair, FleetChainStalled
+# pending 21:38:04Z — a verify-hop chain was open and never terminated. The
+# #2700 fix (PR #2708) added a class-park gate to take_ladder that fires on
+# EVERY hop; for verify, the gate sets verify_deadline_ts=now (zero-grace)
+# so the #1610 detector-red block drains it on the next tick. This test
+# pins the same drain for verify: a unit already succeeded (so classify()
+# puts the chain at hop=verify with stall_count climbing past the verify
+# clock) and the class is parked in the future. The chain must drain as
+# detector-red via the deadline, NOT escalate, NOT redispatch, NOT keep
+# the FleetChainStalled rail red. Same #2651 semantics that #2700 / #2708
+# landed for run/dispatch — the verify partner.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state/open"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "VerifyParkedDrain"},
+   "activeAt": "2026-08-31T05:30:00Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-08-31T06:00:00Z] DISPATCH alertname=VerifyParkedDrain seat=minimax/MiniMax-M3 unit=u-VPD-20260831T060000Z
+PYEND
+# Unit succeeded (chain is at hop=verify, age > CLOCK_VERIFY → stalled).
+# Hand-parked: ladder=redispatch on a prior tick (a prior repair worker
+# parked the class until 2026-09-03). The canary's take_ladder sees the
+# parked class, sets ladder=stop-reason + verify_deadline_ts=now, and
+# returns "already" — the next tick finds the deadline expired and drains
+# as detector-red via the #1610 block.
+printf 'success\n' >"$scratch/sysctl/u-VPD-20260831T060000Z.result"
+printf 'inactive\n' >"$scratch/sysctl/u-VPD-20260831T060000Z.active"
+echo '{"alertname":"VerifyParkedDrain","stall_count":1,"ladder":"redispatch","hop":"verify","dispatch_unit":"u-VPD-20260831T060000Z","decision_class_until":"2026-09-03T00:00:00Z"}' \
+  >"$scratch/state/open/VerifyParkedDrain.json"
+
+# Tick 1 (07:45Z, ~6300s after dispatch — well past CLOCK_RUN=3600 +
+# CLOCK_VERIFY=1800): parked class at hop=verify. Must NOT write
+# STOP-REASON (the park is the verdict), must NOT redispatch, must set
+# verify_deadline_ts=now in the persisted state so the next tick can
+# drain via #1610.
+rc=$(run_bin "2026-08-31T07:45:00Z")
+[[ "$rc" == "0" ]] || fail "9m tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "9m tick-1: parked verify chain must NOT write STOP-REASON (park IS the verdict), got: $(cat "$scratch/STOP-REASON.json")"
+if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
+  fail "9m tick-1: parked verify chain must not invoke the dispatcher; log=$(cat "$scratch/dispatch.log")"
+fi
+python3 - "$scratch/state/open/VerifyParkedDrain.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("ladder") == "stop-reason", d
+assert d.get("decision_class_until") == "2026-09-03T00:00:00Z", d
+# The deadline must be SET (park sets verify_deadline_ts to a fresh
+# zero-grace mark so the next tick drains via the #1610 detector-red
+# block). A nil verify_deadline_ts would mean the parked-verify branch
+# set it locally but never persisted the deadline — the lived bug shape
+# from issue 2716 where the verify rail stayed red forever.
+assert d.get("verify_deadline_ts"), d
+PY
+# Rail still shows the chain as stalled THIS tick (deadline has not
+# passed yet — it is exactly now, set in take_ladder). Drain is on the
+# NEXT tick. Same shape as 9b.
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 1' "$scratch/fleet-chains.prom" \
+  || fail "9m tick-1: verify stalled must be 1 (deadline not yet expired), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+# Tick 2 (07:46Z, 60s later — past the zero-grace deadline): #1610
+# detector-red block fires. Chain drains as detector-red, NOT escalated
+# (a parked verify chain ends as detector-red, the canonical terminal for
+# verify-stalled parked chains).
+rc=$(run_bin "2026-08-31T07:46:00Z")
+[[ "$rc" == "0" ]] || fail "9m tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q '"terminal": "detector-red"' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9m tick-2: ledger must carry terminal=detector-red; got: $(cat "$scratch/state/chains.terminated.jsonl")"
+python3 - "$scratch/state/open/VerifyParkedDrain.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("terminal") == "detector-red", d
+assert d.get("dead_until"), d
+# Class park preserved across the cooldown (the dispatcher keeps skipping
+# this class each repeat_interval while the park is the verdict).
+assert d.get("decision_class_until") == "2026-09-03T00:00:00Z", d
+PY
+# Rail must report the chain as drained this tick (the #1610 close path
+# decrements open_hops / stalled_hops so the metric does not over-count).
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9m tick-2: verify stalled must be 0 (drained via #1610), got: $(grep verify "$scratch/fleet-chains.prom")"
+
+ok "class-parked verify-hop chain drains via #1610 detector-red, rail stays drained (fleet-ops#2716)"
+
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================

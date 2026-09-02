@@ -35,6 +35,14 @@
 #     into the future on a probe failure (the #2493 timeouts). The count
 #     legitimately stays 1 only in the one stuck case: the wall cannot be
 #     advanced (read-only ledger, section 3c).
+#   - retirement (fleet-ops#2716): a corpse ledger (seat_dead=true,
+#     health_class=corpse) whose observed_at has aged past the corpse
+#     grace window (default 6h) is PHYSICALLY moved out of the live
+#     roster into a dated lanes/seats-corpse-retired-<UTC-ts>/ dir; a
+#     fresh corpse (inside grace) or a corpse still carrying a future
+#     wall clock is held. This is the terminal step of the seat
+#     lifecycle this organ owns (seat-caps.json retiring the slug only
+#     stops the rotation, #2708).
 #
 # Sandbox: scratch SEATS_DIR/state/prom + stub pi only. No live ledger,
 # no live pi, no systemd.
@@ -168,15 +176,23 @@ grep -q "would probe straitly/gpt-5.6-sol" <<<"$out" \
   || fail "dry-run: expired quota_exhausted seat must be selected for probe: $out"
 grep -qi "test__test" <<<"$out" && fail "dry-run: test__ fixture must never be probed: $out"
 grep -qi "spawn-bench" <<<"$out" && fail "dry-run: spawn-bench pseudo-seat must never be probed: $out"
-grep -qi "devin/glm-5-2" <<<"$out" && fail "dry-run: corpse must never be probed: $out"
+grep -qi "would probe devin/glm-5-2" <<<"$out" && fail "dry-run: corpse must never be probed: $out"
 grep -qi "nemotron" <<<"$out" && fail "dry-run: future-wall seat must never be probed: $out"
 grep -qi "bai/deepseek" <<<"$out" && fail "dry-run: healthy seat must never be probed: $out"
+# fleet-ops#2716: the devin corpse (observed 2026-08-29, ~36h old) IS past
+# the 6h corpse grace — dry-run must PREVIEW its retirement but never act.
+grep -q "would retire devin/glm-5-2" <<<"$out" \
+  || fail "dry-run: aged corpse must be scanned for retirement: $out"
 # Dry-run must not touch the ledger, state or prom.
 [[ ! -e "$STATE" ]] || fail "dry-run must not write state"
 [[ ! -e "$PROM" ]] || fail "dry-run must not write prom"
+[[ ! -d "$TMPD/seats-corpse-retired-$NOW_ISO" ]] \
+  || fail "dry-run must not create a corpse retirement dir"
+[[ -f "$SEATDIR/devin__glm-5-2.json" ]] \
+  || fail "dry-run must not move the corpse ledger"
 grep -q '"health_class":"overload_bench"' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" \
   || fail "dry-run must not modify the ledger"
-ok "dry-run selects only owed expired-wall seats; test__/spawn-bench/corpse/future/healthy never probed"
+ok "dry-run selects only owed expired-wall seats; test__/spawn-bench/future/healthy never probed, aged corpse previewed for retirement"
 
 # --- 2. live run, probes SUCCEED: both seats released --------------------
 set +e
@@ -205,7 +221,20 @@ grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
   || fail "prom stalled must be 0: $(cat "$PROM")"
 grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
   || fail "prom last-green must be written on a green sweep: $(cat "$PROM")"
-ok "successful probes release (unwall) both expired seats; green prom, exit 0"
+# fleet-ops#2716: the devin corpse (observed 2026-08-29T00:00:00Z, ~36h old)
+# is past the 6h corpse grace — the live sweep must PHYSICALLY retire it out
+# of the live roster: ledger gone from SEATDIR, present in the dated
+# seats-corpse-retired-<ts>/ audit dir, retired_total=1 in prom and state.
+[[ ! -e "$SEATDIR/devin__glm-5-2.json" ]] \
+  || fail "corpse ledger must be retired out of the live roster: $(cat "$SEATDIR/devin__glm-5-2.json")"
+retdir="$TMPD/seats-corpse-retired-$NOW_ISO"
+[[ -f "$retdir/devin__glm-5-2.json" ]] \
+  || fail "retired corpse ledger must land in the dated retirement dir ($retdir): $(ls -la "$TMPD" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$PROM" \
+  || fail "prom retired_total must be 1: $(cat "$PROM")"
+retired_total=$(jq -r '.retired_total' "$STATE")
+[[ "$retired_total" == "1" ]] || fail "state retired_total must be 1, got $retired_total"
+ok "successful probes release (unwall) both expired seats; corpse retired out of the roster; green prom, exit 0"
 
 # --- 3. re-bench on probe failure (fleet-ops#2493) -----------------------
 # The fleet-ops#2493 fix: a probe that fails with no real HTTP response
@@ -741,5 +770,132 @@ nr=$(never_released_n)
 [[ "$nr" == "2" ]] \
   || fail "never-released: must count 2 stuck seats (poolside c=15, mimo c=24; healthy glm excluded), got $nr"
 ok "never-released metric: 2 stuck seats counted (poolside+mimo), healthy seat excluded (fleet-ops#2638)"
+
+# --- 13. corpse-ledger retirement (fleet-ops#2716) ------------------------
+# The terminal step of the seat lifecycle this organ owns: a corpse
+# (seat_dead=true, health_class=corpse) ledger must not sit in the live
+# roster forever — seat-caps.json retiring the slug (cap 0 +
+# intentional_cap_zero=corpse, fleet-ops#2708) stops the rotation but the
+# ledger file keeps counting as roster membership in the census
+# (daily-digest 'Total seen', opus-heartbeat-gather seat_table n). The
+# corpse is physically moved into lanes/seats-corpse-retired-<UTC-ts>/
+# once its observed_at ages past CORPSE_GRACE_S (default 6h). A fresh
+# corpse (inside grace) and a corpse that still carries a future wall
+# clock are held.
+#
+# Fixed NOW for this section (independent of the sweep sections above) so
+# the dated retirement dir is a clean scratch name.
+NOW2_ISO="2026-08-30T13:00:00Z"
+RETSEAT="$TMPD/seats13"
+RETDIR="$TMPD/seats-corpse-retired-$NOW2_ISO"
+
+# 13a. grace hold: a fresh corpse (1h old, inside the 6h grace window)
+#      must NOT be retired — the recovery window is still open.
+rm -rf "$RETSEAT"; mkdir -p "$RETSEAT"; rm -rf "$RETDIR"
+cat > "$RETSEAT/devin__glm-5-2.json" << 'EOF'
+{"provider":"devin","model":"glm-5-2","http_status":503,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"after_provider_response","failure_mode":"transient_http","usable_at":null,"consecutive_failure_count":150}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13a.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13a.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13a.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13a: grace-hold sweep must exit 0, got $rc ($(cat "$TMPD/ret13a.err"))"
+[[ -f "$RETSEAT/devin__glm-5-2.json" ]] \
+  || fail "13a: fresh corpse (age 1h < grace 6h) must NOT be retired: $(cat "$TMPD/ret13a.err")"
+[[ ! -d "$RETDIR" ]] || fail "13a: no retirement dir may be created while the corpse is inside grace: $(ls -la "$TMPD" 2>&1)"
+grep -q "RETIRED" "$TMPD/ret13a.err" \
+  && fail "13a: fresh corpse must not be retired: $(cat "$TMPD/ret13a.err")"
+ok "13a: fresh corpse inside the 6h grace window is held (recovery window still open)"
+
+# 13b. grace override + retirement: the same 1h-old corpse with
+#      FLEET_SEAT_COMEBACK_CORPSE_GRACE_S=3600 is past grace -> retired.
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13b.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13b.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    FLEET_SEAT_COMEBACK_CORPSE_GRACE_S=3600 \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13b.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13b: retirement sweep must exit 0, got $rc ($(cat "$TMPD/ret13b.err"))"
+[[ ! -e "$RETSEAT/devin__glm-5-2.json" ]] \
+  || fail "13b: corpse past grace must be moved out of the live roster: $(ls "$RETSEAT")"
+[[ -f "$RETDIR/devin__glm-5-2.json" ]] \
+  || fail "13b: corpse ledger must land in seats-corpse-retired-<ts>/: $(ls -la "$TMPD" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom13b.prom" \
+  || fail "13b: prom retired_total must be 1: $(cat "$TMPD/prom13b.prom")"
+# Idempotence: a second sweep with the ledger already empty must not
+# re-retire (no file to move) and must keep retired_total=1.
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13b.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13b.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    FLEET_SEAT_COMEBACK_CORPSE_GRACE_S=3600 \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13b2.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13b idem: re-run on an empty ledger must exit 0, got $rc ($(cat "$TMPD/ret13b2.err"))"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom13b.prom" \
+  || fail "13b idem: retired_total must stay 1 across re-runs: $(cat "$TMPD/prom13b.prom")"
+retired_total=$(jq -r '.retired_total' "$TMPD/state13b.json")
+[[ "$retired_total" == "1" ]] || fail "13b idem: state retired_total must stay 1, got $retired_total"
+ok "13b: corpse past grace (env override 3600s) retired out of the roster; re-run idempotent"
+
+# 13c. defensive hold: an OLD corpse that still carries a FUTURE wall clock
+#      is held (a clock means a comeback is still owed — fleet-ops#2394 shape).
+rm -rf "$RETSEAT"; mkdir -p "$RETSEAT"; rm -rf "$RETDIR"
+cat > "$RETSEAT/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-29T01:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":null,"bench_until":"2026-08-30T14:00:00Z","consecutive_failure_count":150}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13c.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13c.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    FLEET_SEAT_COMEBACK_CORPSE_GRACE_S=3600 \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13c.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13c: future-clock-corpse sweep must exit 0, got $rc ($(cat "$TMPD/ret13c.err"))"
+[[ -f "$RETSEAT/opencode__mimo-v2.5-free.json" ]] \
+  || fail "13c: corpse with a future wall clock must NOT be retired: $(cat "$TMPD/ret13c.err")"
+[[ ! -d "$RETDIR" ]] || fail "13c: no retirement dir may be created for a held corpse: $(ls -la "$TMPD" 2>&1)"
+grep -q "RETIRED" "$TMPD/ret13c.err" \
+  && fail "13c: future-clock corpse must not be retired: $(cat "$TMPD/ret13c.err")"
+ok "13c: old corpse still carrying a future wall clock is held (comeback still owed)"
+
+# 13d. clean sweep: a roster with no corpses retires nothing (retired_total
+#      stays 0), creates no retirement dir, exit 0.
+rm -rf "$RETSEAT"; mkdir -p "$RETSEAT"; rm -rf "$RETDIR"
+cat > "$RETSEAT/bai__deepseek-v4-flash.json" << 'EOF'
+{"provider":"bai","model":"deepseek-v4-flash","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T12:30:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$RETSEAT/opencode__nemotron-3-ultra-free.json" << 'EOF'
+{"provider":"opencode","model":"nemotron-3-ultra-free","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T08:00:00Z","source":"provider_fetch","failure_mode":"rate_limit","usable_at":"2026-08-30T23:00:00Z","consecutive_failure_count":3}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13d.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13d.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13d.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13d: clean sweep must exit 0, got $rc ($(cat "$TMPD/ret13d.err"))"
+[[ ! -d "$RETDIR" ]] || fail "13d: clean roster must create no retirement dir: $(ls -la "$TMPD" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom13d.prom" \
+  || fail "13d: prom retired_total must be 0 on a clean roster: $(cat "$TMPD/prom13d.prom")"
+ok "13d: clean roster (healthy + rate_limited) retires nothing, creates no dir (fleet-ops#2716)"
 
 echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638)"
