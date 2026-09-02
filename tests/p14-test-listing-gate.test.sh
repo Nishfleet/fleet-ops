@@ -412,6 +412,26 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-outcome-metric\.tes
   || fail "alert-repair-outcome-metric.test.sh must not be a known orphan (fleet-ops#2694)"
 ok "alert-repair-outcome-metric.test.sh is pinned in the P14 reachable set (fleet-ops#2694)"
 
+# fleet-ops#2768 (PR #2873 follow-up): hard-pin the host line for
+# dispatch-ledger-fixture-sweep. The test landed in PR #2873 without a
+# ci.yml listing or a host, leaving this gate red ("1 test file(s) are
+# neither in ci.yml, hosted by a listed test, live/destructive, nor a
+# known orphan: dispatch-ledger-fixture-sweep.test.sh", run 33662643290).
+# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
+# — the worker App cannot push .github/workflows/** so the host is the
+# only path. This named pin is class-prevention so a future drop of the
+# host line cannot park the test on known_orphans to silence the generic
+# $bad[] message — it fails by name here first, same shape as every other
+# hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/dispatch-ledger-fixture-sweep\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke dispatch-ledger-fixture-sweep.test.sh (fleet-ops#2768)"
+[[ -n "${reachable[dispatch-ledger-fixture-sweep.test.sh]:-}" ]] \
+  || fail "dispatch-ledger-fixture-sweep.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#2768)"
+[[ -z "${known_orphan_set[dispatch-ledger-fixture-sweep.test.sh]:-}" ]] \
+  || fail "dispatch-ledger-fixture-sweep.test.sh must not be a known orphan (fleet-ops#2768)"
+ok "dispatch-ledger-fixture-sweep.test.sh is pinned in the P14 reachable set (fleet-ops#2768)"
+
 # fleet-ops#2772 (PR #2857 follow-up): hard-pin the host line for
 # fleet-ops-2772-claim-loop-gate. The test landed on main in PR #2857 (the
 # #2772 fix PR) without a ci.yml listing or a host, leaving this gate red

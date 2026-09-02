@@ -28,6 +28,28 @@ echo "=== sweep: $sweep ==="
 [[ -x "$sweep" ]] || fail "dispatch-ledger-fixture-sweep not executable"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
+# --help/-h must print usage and exit 0 with no ledger side effects
+# (fleet-ops#1549 class: help must sit before the first write).
+help_scratch="$(mktemp -d -t dispatch-sweep-help.XXXXXX)"
+help_ledger="$help_scratch/dispatch-ledger.jsonl"
+printf '%s\n' '{"id":"untouched"}' >"$help_ledger"
+for flag in --help -h; do
+    out=$(FLEET_DISPATCH_LEDGER="$help_ledger" bash "$sweep" "$flag") || rc=$?
+    rc=${rc:-0}
+    [[ "$rc" -eq 0 ]] || fail "$flag exited $rc (must exit 0)"
+    echo "$out" | grep -Eq "Usage: dispatch-ledger-fixture-sweep" \
+      || fail "$flag did not print usage (got: $(printf '%s' "$out" | head -1))"
+    [[ "$(cat "$help_ledger")" == '{"id":"untouched"}' ]] \
+      || fail "$flag mutated the ledger"
+    shopt -s nullglob
+    help_backups=("$help_scratch"/*sweep-backup*)
+    shopt -u nullglob
+    (( "${#help_backups[@]}" == 0 )) || fail "$flag created a backup"
+    rc=
+done
+rm -rf "$help_scratch"
+ok "--help/-h print usage, exit 0, write nothing"
+
 scratch="$(mktemp -d -t dispatch-sweep-test.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
