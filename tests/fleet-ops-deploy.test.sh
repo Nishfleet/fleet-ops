@@ -46,6 +46,14 @@
 #      from a leftover service) is still red (fleet-ops#774). The class is
 #      binary — branch is main or not — so the `resolved-at:` comment must
 #      not wait for the whole canary to be green.
+#  20. The deploy-clone on main but dirty (uncommitted tracked changes) or
+#      diverged (HEAD not an ancestor of origin/main) blocks merge-to-live
+#      with the same DEPLOY-BLOCKED line as off-main, but the off-main
+#      auto-file does not fire (the branch IS main). Both fleet-ops-deploy
+#      and the drift canary auto-file the distinct deploy-blocked-on-main
+#      class (fleet-ops#2725) so the block does not sit silent for 30+ min
+#      until the blind-audit catches it. Dedup and observe-to-close (#620)
+#      mirror the off-main class.
 #  18. fleet-ops-deploy invokes install.sh --system after the user-scope
 #      install (fleet-ops#1247). A --system failure fails the deploy.
 #  19. The drift canary rc is captured explicitly, not inverted: a canary
@@ -128,6 +136,12 @@ grep -q 'not main (fleet-ops#477)' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must block a named non-main branch (fleet-ops#477)"
 grep -q -- '--file-off-main' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must auto-file off-main via the canary --file-off-main flag"
+grep -q 'deploy-blocked-on-main: fleet-ops#2725' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must auto-file deploy-blocked-on-main with the #2725 marker"
+grep -q -- '--file-deploy-blocked-main' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must auto-file deploy-blocked-on-main via the canary --file-deploy-blocked-main flag"
+grep -q 'auto_file_deploy_blocked_main' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must wire the deploy-blocked-on-main auto-file (fleet-ops#2725)"
 grep -q 'fleet-ops#477' "$repo_root/prompts/worker.md" \
     || fail "worker.md must tell workers not to check out branches on the deploy-clone (fleet-ops#477)"
 # fleet-ops#559: the historical intake-reconcile enable safety net must not
@@ -1512,6 +1526,177 @@ fi
 [[ "$out" == *"install.sh --system failed"* ]] \
     || fail "scenario18b: expected --system in the LOUD line (got: $out)"
 ok "scenario18b: install.sh --system failure fails deploy"
+
+# --- scenario 20: deploy-clone on main but dirty/diverged auto-files the
+# deploy-blocked-on-main class (fleet-ops#2725). The off-main auto-file does
+# NOT fire (the branch IS main), so without this auto-file the block sat
+# silent for 30+ min until the blind-audit caught it. Both fleet-ops-deploy
+# and the drift canary must file the class from whichever runs first.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+dbm_gh="$scratch/gh-deploy-blocked-main"
+dbm_gh_log="$scratch/gh-deploy-blocked-main.log"
+: >"$dbm_gh_log"
+echo '[]' >"$scratch/open-dbm.json"
+cat >"$dbm_gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+  *"issue list"*)
+    cat "${GH_OPEN_ISSUES:-/dev/null}"
+    exit 0
+    ;;
+  *"issue create"*)
+    echo "https://github.com/Nishfleet/fleet-ops/issues/27250"
+    exit 0
+    ;;
+  *"issue comment"*)
+    if [ -n "${GH_COMMENTED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_COMMENTED"
+    fi
+    exit 0
+    ;;
+  *"issue close"*)
+    if [ -n "${GH_CLOSED:-}" ]; then
+      printf '%s\n' "$3" >>"$GH_CLOSED"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$dbm_gh"
+
+# 20a: dirty working tree on main -> DEPLOY-BLOCK + auto-file the #2725 class.
+echo '# hot patch on main' >> "$checkout/bin/demo-script"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_deploy
+); then
+    fail "scenario20a: deploy should block on dirty tracked files on main, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario20a: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"dirty tracked files"* ]] || fail "scenario20a: expected dirty reason (got: $out)"
+grep -q 'issue create' "$dbm_gh_log" \
+    || fail "scenario20a: must auto-file deploy-blocked-on-main (log=$(cat "$dbm_gh_log"))"
+ok "scenario20a: dirty-on-main DEPLOY-BLOCKs and auto-files the #2725 class"
+
+# 20b: the drift canary also auto-files the same class from check_checkout.
+: >"$dbm_gh_log"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+    fail "scenario20b: canary should fail on dirty tracked files on main, got: $out"
+fi
+[[ "$out" == *"DRIFT-CHECKOUT"* ]] || fail "scenario20b: expected DRIFT-CHECKOUT (got: $out)"
+grep -q 'issue create' "$dbm_gh_log" \
+    || fail "scenario20b: canary must auto-file deploy-blocked-on-main (log=$(cat "$dbm_gh_log"))"
+ok "scenario20b: canary DRIFT-CHECKOUT auto-files the #2725 class on dirty main"
+
+# 20c: dedup — an open issue carrying the marker is not filed twice.
+: >"$dbm_gh_log"
+jq -n --arg b $'body\ndeploy-blocked-on-main: fleet-ops#2725\n' \
+  '[{number: 2725, body: $b}]' >"$scratch/open-dbm.json"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+    fail "scenario20c: canary should still fail after dedup, got: $out"
+fi
+grep -q 'issue create' "$dbm_gh_log" \
+    && fail "scenario20c: must not file a duplicate (log=$(cat "$dbm_gh_log"))"
+[[ "$out" == *"dedup:"* ]] || fail "scenario20c: expected dedup log (got: $out)"
+ok "scenario20c: open issue with the #2725 marker is not filed twice"
+
+# 20d: diverged HEAD on main (local commit not on origin/main) -> DEPLOY-BLOCK
+# + auto-file the #2725 class. Distinct from plain stale-behind (HEAD is an
+# ancestor, just behind) which deploy fast-forwards and does not auto-file.
+git -C "$checkout" checkout -q -- bin/demo-script
+git -C "$checkout" reset --hard -q origin/main
+diverge_base=$(git -C "$checkout" rev-parse HEAD)
+printf '\n# diverged hot-patch\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "diverged hot-patch on main"
+# origin/main stays at diverge_base; HEAD is now ahead+diverged.
+: >"$dbm_gh_log"
+echo '[]' >"$scratch/open-dbm.json"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_deploy
+); then
+    fail "scenario20d: deploy should block on a diverged HEAD on main, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario20d: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"not an ancestor of origin/main"* ]] \
+    || fail "scenario20d: expected non-ancestor reason (got: $out)"
+grep -q 'issue create' "$dbm_gh_log" \
+    || fail "scenario20d: must auto-file deploy-blocked-on-main (log=$(cat "$dbm_gh_log"))"
+ok "scenario20d: diverged-on-main DEPLOY-BLOCKs and auto-files the #2725 class"
+
+# 20e: green canary observes-to-close an open deploy-blocked-on-main issue
+# (fleet-ops#620). Once the checkout is clean and at origin/main, the
+# observe-to-close fires the same tick.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+dbm_comment_log="$scratch/gh-dbm-commented.log"
+dbm_closed_log="$scratch/gh-dbm-closed.log"
+: >"$dbm_gh_log"
+: >"$dbm_comment_log"
+: >"$dbm_closed_log"
+jq -n --arg b $'body\ndeploy-blocked-on-main: fleet-ops#2725\n' \
+  '[{number: 2725, body: $b, comments: []}]' >"$scratch/open-dbm.json"
+if out=$(
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  GH_OPEN_ISSUES="$scratch/open-dbm.json" \
+  GH_COMMENTED="$dbm_comment_log" \
+  GH_CLOSED="$dbm_closed_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_CLOSE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    run_canary
+); then
+  : pass
+else
+  fail "scenario20e: canary should pass on clean main (got: $out)"
+fi
+[[ "$out" == *"OBSERVED-RESOLVED"* ]] \
+  || fail "scenario20e: expected OBSERVED-RESOLVED (got: $out)"
+[[ "$out" == *"deploy-blocked on main"* ]] \
+  || fail "scenario20e: expected deploy-blocked on main in log (got: $out)"
+grep -q 'issue comment' "$dbm_gh_log" \
+  || fail "scenario20e: must call gh issue comment (log=$(cat "$dbm_gh_log"))"
+grep -q '^2725$' "$dbm_comment_log" \
+  || fail "scenario20e: must comment on #2725 (commented=$(cat "$dbm_comment_log"))"
+grep -q 'issue close' "$dbm_gh_log" \
+  && fail "scenario20e: must not close on the same tick as the comment (log=$(cat "$dbm_gh_log"))"
+ok "scenario20e: green canary observes-to-close on open deploy-blocked-on-main issue (fleet-ops#620)"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 

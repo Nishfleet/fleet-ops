@@ -28,6 +28,14 @@ branch is not an ancestor of origin/main. DRIFT-OFF-MAIN auto-files (deduped).
 `--file-off-main` files that class without running the rest of the canary so
 fleet-ops-deploy can file when it blocks before the canary runs.
 
+fleet-ops#2725: the deploy-clone on main but dirty (uncommitted tracked
+changes) or diverged (HEAD not an ancestor of origin/main) also blocks
+merge-to-live, but the off-main auto-file does not fire (the branch IS
+main). DRIFT-CHECKOUT auto-files that class (deduped).
+`--file-deploy-blocked-main` files that class without running the rest of
+the canary so fleet-ops-deploy can file when it blocks before the canary
+runs.
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -37,7 +45,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-VOLATILE; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-DEPLOY-BLOCKED-MAIN, DRIFT-VOLATILE; 0 skip gh
   FLEET_OPS_DRIFT_CLOSE           1 (default) close a drift issue on a later green tick once it carries `resolved-at:`; 0 only comment (fleet-ops#1156)
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
@@ -95,6 +103,12 @@ PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
 VOLATILE_MARKER = "volatile-unit-path: fleet-ops#369"
+# fleet-ops#2725: the deploy-clone on main but dirty/diverged is a distinct
+# class from off-main (the branch IS main). It blocks merge-to-live with the
+# same DEPLOY-BLOCKED line but had no auto-file path, so it sat silent until
+# the blind-audit caught it 30+ min later. This marker gives the class its
+# own auto-file + observe-to-close wiring.
+DEPLOY_BLOCKED_MAIN_MARKER = "deploy-blocked-on-main: fleet-ops#2725"
 
 DRIFT_MARKERS = (
     SOURCE_MARKER,
@@ -104,6 +118,7 @@ DRIFT_MARKERS = (
     OFF_MAIN_MARKER,
     HOTPATCH_MARKER,
     VOLATILE_MARKER,
+    DEPLOY_BLOCKED_MAIN_MARKER,
 )
 
 PAPER_OVER_DROPIN = (
@@ -299,6 +314,37 @@ def auto_file_off_main(msg: str) -> None:
     )
 
 
+def auto_file_deploy_blocked_main(msg: str) -> None:
+    """File one issue if the deploy-clone is on main but dirty or diverged.
+
+    fleet-ops#2725: a dirty working tree (uncommitted tracked changes) or a
+    HEAD that is not an ancestor of origin/main (a hot-patch commit not yet
+    on origin/main) blocks merge-to-live with the same DEPLOY-BLOCKED line
+    as off-main, but the off-main auto-file does not fire (the branch IS
+    main). Without this auto-file the block sat silent for 30+ min until
+    the blind-audit caught it. The drift canary and fleet-ops-deploy both
+    call this so the class is filed from whichever runs first.
+    """
+    extra = (
+        "The canonical deploy-clone is on branch main but merge-to-live is "
+        "blocked: either the working tree has uncommitted tracked changes "
+        "(a hot-patch not yet on a PR) or HEAD is not an ancestor of "
+        "origin/main (a local commit not yet merged). fleet-ops-deploy "
+        "refuses to fast-forward until the checkout is clean and an "
+        "ancestor of origin/main. Resolve by committing the change on a "
+        "branch/PR and merging it, or by discarding the local hot-patch if "
+        "it is already superseded (git checkout/restore the file, or "
+        "git reset --hard origin/main when the local commit is obsolete). "
+        "This canary auto-files that class (fleet-ops#2725)."
+    )
+    auto_file_drift(
+        DEPLOY_BLOCKED_MAIN_MARKER,
+        "Live fleet-ops-deploy-clone is on main but dirty/diverged, blocking merge-to-live",
+        extra,
+        msg,
+    )
+
+
 def auto_file_volatile(msg: str) -> None:
     """File one issue if a unit file or enable-link resolves into a volatile path.
 
@@ -366,6 +412,7 @@ def observe_close_drift_issues(
         PRODUCTS_MARKER: "products/fleet-ops symlink",
         OFF_MAIN_MARKER: "off-main deploy-clone",
         HOTPATCH_MARKER: "hot-patch",
+        DEPLOY_BLOCKED_MAIN_MARKER: "deploy-blocked on main",
     }
 
     markers = (only_marker,) if only_marker else DRIFT_MARKERS
@@ -891,7 +938,29 @@ def check_checkout(checkout: Path) -> None:
         auto_file_off_main(msg)
         fail_loud("DRIFT-OFF-MAIN", msg)
 
+    # fleet-ops#2725: a HEAD that is not an ancestor of origin/main is a
+    # diverged/hot-patch commit on main — merge --ff-only would refuse it,
+    # so merge-to-live is blocked. This is a distinct class from plain
+    # stale-behind (HEAD is an ancestor, just behind) which deploy
+    # fast-forwards. Auto-file so the block does not sit silent until the
+    # blind-audit catches it 30+ min later.
     if head != origin_main:
+        rc_anc, _, _ = run(
+            ["git", "-C", str(checkout), "merge-base", "--is-ancestor", "HEAD", "origin/main"],
+            check=False,
+        )
+        if rc_anc != 0:
+            msg = (
+                f"canonical checkout on main is diverged: HEAD {head[:12]} "
+                f"is not an ancestor of origin/main {origin_main[:12]} "
+                f"(hot-patch commit not on origin/main; fleet-ops#2725)"
+            )
+            auto_file_deploy_blocked_main(msg)
+            fail_loud("DRIFT-CHECKOUT", msg)
+        # Plain stale-behind (HEAD is an ancestor, just behind origin/main)
+        # is not a block: deploy fast-forwards it. Keep the fail_loud so a
+        # canary-only run still flags drift, but do not auto-file — the
+        # next deploy tick resolves it.
         fail_loud("DRIFT-CHECKOUT", f"checkout stale: HEAD {head[:12]} != origin/main {origin_main[:12]}")
 
     rc, porcelain, _ = run(
@@ -901,7 +970,13 @@ def check_checkout(checkout: Path) -> None:
     if rc != 0:
         fail_loud("DRIFT-CHECKOUT", f"git status failed: {porcelain}")
     if porcelain.strip():
-        fail_loud("DRIFT-CHECKOUT", f"checkout has uncommitted tracked changes:\n{porcelain.strip()}")
+        msg = (
+            f"canonical checkout on main has uncommitted tracked changes "
+            f"(HEAD {head[:12]}, origin/main {origin_main[:12]}; "
+            f"hot-patch not yet on a PR; fleet-ops#2725):\n{porcelain.strip()}"
+        )
+        auto_file_deploy_blocked_main(msg)
+        fail_loud("DRIFT-CHECKOUT", msg)
 
     # Off-main class is binary: branch is main or not. Observe-to-close the
     # matching open issue as soon as we know the branch is main, so the
@@ -909,6 +984,10 @@ def check_checkout(checkout: Path) -> None:
     # still be red (fleet-ops#774). The end-of-canary observe_close_drift_issues
     # call dedups on the comment blob, so this is idempotent.
     observe_close_drift_issues(checkout, head, only_marker=OFF_MAIN_MARKER)
+    # fleet-ops#2725: deploy-blocked-on-main is also binary once we reach here
+    # (clean + on main + at origin/main means the block is gone). Observe-to-
+    # close its open issue the same tick, independent of later checks.
+    observe_close_drift_issues(checkout, head, only_marker=DEPLOY_BLOCKED_MAIN_MARKER)
 
     log(f"checkout {checkout} is at origin/main ({head[:12]}) and clean")
 
@@ -1112,6 +1191,15 @@ def main(argv: list[str] | None = None) -> None:
             else "canonical deploy-clone is on a named branch other than main (fleet-ops#477)"
         )
         auto_file_off_main(msg)
+        sys.exit(0)
+
+    if args[:1] == ["--file-deploy-blocked-main"]:
+        msg = (
+            args[1]
+            if len(args) > 1
+            else "canonical deploy-clone is on main but dirty/diverged, blocking merge-to-live (fleet-ops#2725)"
+        )
+        auto_file_deploy_blocked_main(msg)
         sys.exit(0)
 
     checkout = find_checkout()

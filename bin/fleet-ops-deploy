@@ -59,6 +59,22 @@ auto_file_off_main() {
         || log "WARN: off-main auto-file failed"
 }
 
+# fleet-ops#2725: the deploy-clone on main but dirty/diverged blocks
+# merge-to-live with the same DEPLOY-BLOCKED line as off-main, but the
+# off-main auto-file does not fire (the branch IS main). Without this the
+# block sat silent for 30+ min until the blind-audit caught it. File the
+# class from the deploy step so it is queued the moment the block starts.
+auto_file_deploy_blocked_main() {
+    local why="$1"
+    local py="$DEPLOY_CHECKOUT/bin/fleet-ops-drift.py"
+    if [ ! -f "$py" ]; then
+        log "WARN: deploy-blocked-on-main auto-file skipped (missing $py)"
+        return 0
+    fi
+    python3 "$py" --file-deploy-blocked-main "$why" \
+        || log "WARN: deploy-blocked-on-main auto-file failed"
+}
+
 log "starting: checkout=$DEPLOY_CHECKOUT"
 
 # fleet-ops#370: the paper-over drop-in must die even when merge is later
@@ -171,6 +187,11 @@ if [ "${#reasons[@]}" -gt 0 ]; then
     why=${why%; }
     if [ -n "$branch" ] && [ "$branch" != "main" ]; then
         auto_file_off_main "$why"
+    else
+        # fleet-ops#2725: on main but dirty/diverged — file the distinct
+        # deploy-blocked-on-main class so it does not sit silent until the
+        # blind-audit catches it 30+ min later.
+        auto_file_deploy_blocked_main "$why"
     fi
     loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why"
     deploy_audit "fleet-ops" "deploy-blocked" "$why"
