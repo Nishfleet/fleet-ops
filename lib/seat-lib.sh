@@ -3193,12 +3193,39 @@ mark_seat_spawn_fail() {
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # Merge consecutive_failure_count from any existing entry (so a real
-    # session-time 429 resetting later doesn't briefly flip us back to 0).
-    local prev_count=0
+    # Merge consecutive_failure_count from the wrapper's clobber-proof
+    # spawn-bench marker FIRST (any failure_mode, written recently), then
+    # the (clobberable) ledger. Take the max as the prior count. A STALE
+    # marker (older than EMPTY_RUN_MARKER_FRESH_S) means seat-health.ts
+    # produced a healthy observation AFTER the bench expired — the recovery
+    # signal — so fall through to the ledger and start fresh. The marker is
+    # a SINGLE file per seat shared by mark_seat_empty_run and
+    # mark_seat_spawn_fail, so the count must accumulate across
+    # failure_mode classes (fleet-ops#2786: a seat that alternates between
+    # empty_run and spawn_fail must still reach the failure-ceiling park;
+    # reading only the clobberable ledger lets a healthy observation reset
+    # the count to 0 between wrapper writes — the same #2627 reset pattern
+    # the marker was built to bust).
+    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s
+    sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_marker_path" ]]; then
+        sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
+        [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+        sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ -n "$sb_written" ]]; then
+            now_s=$(date -u +%s)
+            written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+            if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
+                && (( now_s - written_s <= EMPTY_RUN_MARKER_FRESH_S )); then
+                prev_count="$sb_mcount"
+            fi
+        fi
+    fi
     if [[ -f "$path" ]]; then
-        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
-        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+        local ledger_count
+        ledger_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$ledger_count" =~ ^[0-9]+$ ]] || ledger_count=0
+        [[ "$ledger_count" -gt "$prev_count" ]] && prev_count="$ledger_count"
     fi
     local merged_count=$((prev_count + 1))
     # fleet-ops#1408: escalate the bench by consecutive_failure_count so a
@@ -3298,16 +3325,26 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # deepseek-v4-flash-0731 no-op'ed 5+ times in 2h with every ledger write
 # showing count=1, the #1362 park never fired, 18 empty runs/2h). The
 # wrapper-side spawn-bench marker (fleet-ops#1512) is clobber-proof — read
-# the count from a SAME-CLASS (empty_run) marker FIRST, fall back to the
-# ledger, take the max as the prior count, then pass the merged count +1
-# to the marker writer so the marker carries it forward across the next
-# clobber. EMPTY_RUN_MARKER_FRESH_S bounds the merge: a STALE marker means
-# the seat produced a healthy observation after the bench expired (count
-# was reset to 0 by seat-health.ts — the recovery signal), so fall through
-# to the ledger and start a fresh count. EMPTY_RUN_FAILURE_CEILING lowers
-# the chronic-no-op park threshold below the generic SEAT_FAILURE_CEILING
-# (default 10 vs 20) so a free-lane no-op'er parks within a following 2h
-# window, not after 20 cycles (~5h at flat 900s).
+# the count from the marker FIRST (any failure_mode, written recently),
+# fall back to the ledger, take the max as the prior count, then pass the
+# merged count +1 to the marker writer so the marker carries it forward
+# across the next clobber. EMPTY_RUN_MARKER_FRESH_S bounds the merge: a
+# STALE marker means the seat produced a healthy observation after the
+# bench expired (count was reset to 0 by seat-health.ts — the recovery
+# signal), so fall through to the ledger and start a fresh count.
+# fleet-ops#2786: the marker is a SINGLE file per seat shared by both
+# mark_seat_empty_run and mark_seat_spawn_fail. A same-class-only merge
+# (the original #2627 design) loses the empty_run count the instant a
+# spawn_fail marker overwrites the file — live: opencode/nemotron-3-ultra-free
+# produced 10 empty runs over 3 days, every marker showing count=1 because
+# a spawn_fail marker sat between empty runs and the same-class check
+# skipped it. The fix: merge the count from ANY recent marker regardless
+# of failure_mode. The counts share one file, so cross-class accumulation
+# is the only way the failure-ceiling park ever fires for a seat that
+# alternates between empty_run and spawn_fail. EMPTY_RUN_FAILURE_CEILING
+# lowers the chronic-no-op park threshold below the generic
+# SEAT_FAILURE_CEILING (default 10 vs 20) so a free-lane no-op'er parks
+# within a following 2h window, not after 20 cycles (~5h at flat 900s).
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — see comment above
 EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-10}"  # default 10 (vs generic 20) parks chronic no-op seats faster
@@ -3321,30 +3358,31 @@ mark_seat_empty_run() {
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # fleet-ops#2627: merge consecutive_failure_count from the wrapper's
-    # clobber-proof spawn-bench marker FIRST (same empty_run class, written
-    # recently), then the (clobberable) ledger. Take the max as the prior
-    # count. A STALE marker (older than EMPTY_RUN_MARKER_FRESH_S) means seat-
-    # health.ts produced a healthy observation AFTER the bench expired — the
-    # recovery signal — so we fall through to the ledger (which seat-health.ts
-    # clobbered to count=0) and start fresh. A DIFFERENT-CLASS marker
-    # (spawn_fail) does not merge — the empty_run count is tracked
-    # independently and only empty_run markers carry it forward.
-    local prev_count=0 sb_mode sb_mcount sb_written sb_marker_path now_s written_s
+    # fleet-ops#2627/#2786: merge consecutive_failure_count from the
+    # wrapper's clobber-proof spawn-bench marker FIRST (any failure_mode,
+    # written recently), then the (clobberable) ledger. Take the max as
+    # the prior count. A STALE marker (older than
+    # EMPTY_RUN_MARKER_FRESH_S) means seat-health.ts produced a healthy
+    # observation AFTER the bench expired — the recovery signal — so we
+    # fall through to the ledger (which seat-health.ts clobbered to
+    # count=0) and start fresh. The marker is a SINGLE file per seat
+    # shared by mark_seat_empty_run and mark_seat_spawn_fail, so the
+    # count must accumulate across failure_mode classes (fleet-ops#2786:
+    # a same-class-only merge lost the empty_run count the instant a
+    # spawn_fail marker overwrote the file — live: 10 empty runs on
+    # opencode/nemotron-3-ultra-free, every marker count=1).
+    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s
     sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
     if [[ -f "$sb_marker_path" ]]; then
-        sb_mode=$(jq -r '.failure_mode // ""' "$sb_marker_path" 2>/dev/null || true)
-        if [[ "$sb_mode" == "empty_run" ]]; then
-            sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
-            [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
-            sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
-            if [[ -n "$sb_written" ]]; then
-                now_s=$(date -u +%s)
-                written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
-                if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
-                    && (( now_s - written_s <= EMPTY_RUN_MARKER_FRESH_S )); then
-                    prev_count="$sb_mcount"
-                fi
+        sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
+        [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+        sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ -n "$sb_written" ]]; then
+            now_s=$(date -u +%s)
+            written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+            if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
+                && (( now_s - written_s <= EMPTY_RUN_MARKER_FRESH_S )); then
+                prev_count="$sb_mcount"
             fi
         fi
     fi

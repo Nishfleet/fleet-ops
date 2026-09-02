@@ -101,6 +101,12 @@ ledger_file() {
         "${p//[^A-Za-z0-9._-]/_}" "${m//[^A-Za-z0-9._-]/_}"
 }
 
+marker_file() {
+    local p="$1" m="$2"
+    printf '%s/%s__%s.spawn-bench.json' "$LEDGER" \
+        "${p//[^A-Za-z0-9._-]/_}" "${m//[^A-Za-z0-9._-]/_}"
+}
+
 # Seed a ledger with a given consecutive_failure_count + health_class so the
 # next marker call merges from that count (simulates the live 72/64/63 state).
 seed_ledger() {
@@ -145,6 +151,7 @@ park="${SEAT_PARK_WALL_S}"
 # --- (1) below the ceiling: base backoff holds, no park, no metric ---------
 p="devin"; m="glm-5-2"
 lf=$(ledger_file "$p" "$m")
+mf=$(marker_file "$p" "$m")
 seed_ledger "$p" "$m" $((ceil - 2)) "transient_fault"
 mark_seat_spawn_fail "$p" "$m" "test:below" >/dev/null 2>&1 || fail "mark_seat_spawn_fail below-ceiling failed"
 c=$(jq -r '.consecutive_failure_count' "$lf")
@@ -161,9 +168,10 @@ ok "below ceiling (count=$c): base backoff ${w}s holds, no park, no metric"
 # Use a fresh seat per marker so each starts from count = ceiling-1.
 run_park_case() {
     local label="$1" p="$2" m="$3" marker_fn="$4" field="${5:-usable_at}"
-    local lf
+    local lf mf
     lf=$(ledger_file "$p" "$m")
-    rm -f "$lf"
+    mf=$(marker_file "$p" "$m")
+    rm -f "$lf" "$mf"
     seed_ledger "$p" "$m" $((ceil - 1)) "transient_fault"
     "$marker_fn" "$p" "$m" "test:cross:${label}" >/dev/null 2>&1 \
         || fail "$marker_fn crossing ceiling failed"
@@ -193,7 +201,8 @@ run_park_case "hang-bench"   "devin"    "glm-5-2"                       mark_sea
 # next failure lands — it does NOT have to climb from 0 to 60 again.
 p="devin"; m="glm-5-2"
 lf=$(ledger_file "$p" "$m")
-rm -f "$lf"
+mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 72 "quota_bench"
 mark_seat_quota_bench "$p" "$m" "test:live:72" >/dev/null 2>&1 \
     || fail "mark_seat_quota_bench on live-72 seat failed"
@@ -216,6 +225,7 @@ ok "metric file merges $lines parked seats (no clobber)"
 # --- (5) fail-open: after the park wall expires the seat is usable again ---
 p="devin"; m="glm-5-2"
 lf=$(ledger_file "$p" "$m")
+mf=$(marker_file "$p" "$m")
 # Force the park wall into the past.
 past_iso=$(date -u -d '@0' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
 tmp=$(mktemp)
@@ -249,9 +259,10 @@ ok "expired park wall fail-opens — a recovered seat is re-eligible (park is a 
 #   6f healthy ledger with a high count (extension reset) -> usable
 p="opencode"; m="muse-spark-1.2-contributor-free"
 lf=$(ledger_file "$p" "$m")
+mf=$(marker_file "$p" "$m")
 
 # 6a: the exact live snapshot shape (c=149, transient_fault, fresh).
-rm -f "$lf"
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
 if seat_usable "$p" "$m"; then
     fail "6a: seat_usable returned USABLE for a c=149 transient_fault ledger (read-side park missing)"
@@ -259,7 +270,7 @@ fi
 ok "6a: c=149 transient_fault ledger is parked (read-side long wall holds)"
 
 # 6b: one below the ceiling is not parked (flat behaviour unchanged).
-rm -f "$lf"
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" $((ceil - 1)) "transient_fault"
 if ! seat_usable "$p" "$m"; then
     fail "6b: seat_usable parked a c=$((ceil - 1)) transient_fault ledger (must stay below the ceiling)"
@@ -267,7 +278,7 @@ fi
 ok "6b: c=$((ceil - 1)) transient_fault ledger is usable (below the ceiling, no park)"
 
 # 6c: observed at 25h (stale AND past the default 24h park wall) fail-opens.
-rm -f "$lf"
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
 old_iso=$(date -u -d '@'$(( $(date -u +%s) - 90000 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 tmp="$scratch/6c.json"
@@ -280,7 +291,7 @@ ok "6c: observed past the park wall fail-opens (one probe per wall, not forever)
 # 6d/6e: short park wall to prove the PARK branch fail-opens on its own clock
 # (observed still fresh) and holds when the wall has not elapsed.
 export SEAT_PARK_WALL_S=30
-rm -f "$lf"
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
 # observed 120s ago: fresh (<6h) but the 30s park wall already elapsed.
 mid_iso=$(date -u -d '@'$(( $(date -u +%s) - 120 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
@@ -291,7 +302,7 @@ if ! seat_usable "$p" "$m"; then
 fi
 ok "6d: short wall elapsed while observed fresh -> usable (park branch fail-open)"
 
-rm -f "$lf"
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
 # observed 10s ago: fresh and inside the 30s wall.
 now_iso=$(date -u -d '@'$(( $(date -u +%s) - 10 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
@@ -304,7 +315,7 @@ ok "6e: inside the park wall -> parked even with a flat usable_at"
 export SEAT_PARK_WALL_S=86400
 
 # 6f: a healthy ledger with a high count (the extension's reset shape) is usable.
-rm -f "$lf"
+rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "healthy"
 if ! seat_usable "$p" "$m"; then
     fail "6f: healthy ledger with high count must not park (count resets on success)"
