@@ -416,4 +416,74 @@ grep -q 'no usable seat' "$scratch/scenario8.err" \
 [[ ! -s "$calls" ]] || fail "scenario8: pi must NOT be called on a walled lane (calls=$(cat "$calls"))"
 ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate stays PENDING, no escalation storm)"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault"
+# -----------------------------------------------------------------------------
+# Scenario 9: quota_exhausted fail-open is caught by seat-health preflight
+#              (fleet-ops#3351 sibling of #3176).
+# seat_usable fail-opens a 402 once usable_at passes. The auditor must not
+# call that seat and re-anchor observed_at / restart the 1h provider window.
+# Two straitly 402s with usable_at in the past; resolve_seat picks the default
+# deepseek, seat_health_ok_for_call reads the ledger and writes SKIP, and pi
+# is never invoked.
+# -----------------------------------------------------------------------------
+reset_state
+quota_lib="$scratch/seat-lib-quota.sh"
+cat >"$quota_lib" <<'LIB'
+# shellcheck shell=bash
+load_seat_caps() { :; }
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' straitly deepseek/deepseek-v4-pro
+  printf '%s\t%s\t-\t1\n' straitly gpt-5.6-sol
+}
+class_of() { printf 'metered\n'; }
+model_cap() { printf '1\n'; }
+# Simulate the #3351 fail-open: every straitly seat is "usable" per the floor.
+seat_usable() { return 0; }
+seat_ledger_path() {
+  local p="${1//[^A-Za-z0-9._-]/_}" m="${2//[^A-Za-z0-9._-]/_}"
+  printf '%s/%s__%s.json\n' "${PI_SEAT_HEALTH_LEDGER_DIR:-/dev/null}" "$p" "$m"
+}
+LIB
+
+seat_health_dir="$scratch/seat-health-quota"
+mkdir -p "$seat_health_dir"
+deepseek_observed='2026-09-03T17:52:38.402Z'
+gpt_observed='2026-09-03T17:52:42.611Z'
+past_usable='2026-09-04T17:50:00.000Z'
+
+jq -n \
+  --arg p 'straitly' --arg m 'deepseek/deepseek-v4-pro' \
+  --arg obs "$deepseek_observed" --arg use "$past_usable" \
+  '{provider:$p,model:$m,http_status:402,retry_after:null,health_class:"quota_exhausted",retryable:true,seat_dead:false,poison_ladder:false,observed_at:$obs,source:"provider_fetch",failure_mode:"quota_exhausted",usable_at:$use,consecutive_failure_count:1}' \
+  >"$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json"
+
+jq -n \
+  --arg p 'straitly' --arg m 'gpt-5.6-sol' \
+  --arg obs "$gpt_observed" --arg use "$past_usable" \
+  '{provider:$p,model:$m,http_status:402,retry_after:null,health_class:"quota_exhausted",retryable:true,seat_dead:false,poison_ladder:false,observed_at:$obs,source:"provider_fetch",failure_mode:"quota_exhausted",usable_at:$use,consecutive_failure_count:2}' \
+  >"$seat_health_dir/straitly__gpt-5.6-sol.json"
+
+export AUDIT_STATE_DIR="$state_dir"
+export PI_SEAT_HEALTH_LEDGER_DIR="$seat_health_dir"
+set +e
+PI_PACKET_SEAT_LIB="$quota_lib" \
+  bash "$bin" 'demo--99--straitly' >"$scratch/scenario9.out" 2>"$scratch/scenario9.err"
+rc9=$?
+set -e
+unset PI_PACKET_SEAT_LIB
+unset PI_SEAT_HEALTH_LEDGER_DIR
+
+[[ "$rc9" == 0 ]] || fail "scenario9: quota_exhausted preflight must exit 0 (SKIP lane), got $rc9 ($(cat "$scratch/scenario9.err"))"
+[[ -f "$state_dir/demo/99/straitly.vote" ]] \
+  || fail "scenario9: SKIP vote must be written ($(cat "$scratch/scenario9.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote") == 'SKIP' ]] \
+  || fail "scenario9: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote")"
+[[ ! -s "$calls" ]] || fail "scenario9: pi must NOT be called on a quota_exhausted seat (calls=$(cat "$calls"))"
+[[ $(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json") == "$deepseek_observed" ]] \
+  || fail "scenario9: deepseek observed_at was re-anchored ($(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json"))"
+[[ $(jq -r '.observed_at' "$seat_health_dir/straitly__gpt-5.6-sol.json") == "$gpt_observed" ]] \
+  || fail "scenario9: gpt-5.6-sol observed_at was re-anchored ($(jq -r '.observed_at' "$seat_health_dir/straitly__gpt-5.6-sol.json"))"
+grep -q 'class=quota_exhausted' "$scratch/scenario9.err" \
+  || fail "scenario9: preflight log should name quota_exhausted ($(cat "$scratch/scenario9.err"))"
+ok "scenario9: quota_exhausted preflight writes SKIP, skips pi, leaves observed_at untouched (fleet-ops#3351)"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, quota_exhausted preflight closes #3351"
