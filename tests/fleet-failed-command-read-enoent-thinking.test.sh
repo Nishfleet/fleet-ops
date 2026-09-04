@@ -55,8 +55,8 @@
 #   4. live #1001 shape: stale-checkout read ENOENT + ls ~/.local/bin
 #      finding the right file at the right symlink + later "clear
 #      picture" prose that does NOT name the failure -> finding.
-#   5. worker.md cites fleet-ops#953 (prompt-side lock).
-#   6. worker.md cites fleet-ops#1001 (prompt-side lock for the
+#   5. lib/failed-command-flagged.py cites fleet-ops#953 (detector-side lock: case list moved to lib, fleet-ops#3246).
+#   6. lib/failed-command-flagged.py cites fleet-ops#1001 (detector-side lock for the
 #      stale-checkout read-ENOENT class).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1001.
 #   8. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
@@ -185,25 +185,25 @@ grep -q 'fleet-escalation-canary' <<<"$snippet" \
 ok "live #1001: stale-checkout read ENOENT + canonical ls + 'clear picture' prose is flagged"
 rm -f "$sessions/read-enoent-stale-checkout.jsonl"
 
-# --- 5. worker.md cites fleet-ops#953 (prompt-side lock) -------------------
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#953 (detector-side lock: case list moved to lib, fleet-ops#3246) -------------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#953' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#953 (prompt-side lock for the live ENOENT wording)"
-grep -q "ENOENT: no such file or directory, access" "$worker" \
-  || fail "prompts/worker.md must name the live ENOENT wording so workers flag it"
-ok "worker.md cites fleet-ops#953 and the live ENOENT wording"
+grep -q 'fleet-ops#953' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#953 (detector-side lock for the live ENOENT wording)"
+grep -q "ENOENT: no such file or directory, access" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live ENOENT wording so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#953 and the live ENOENT wording"
 
-# --- 6. worker.md cites fleet-ops#1001 (prompt-side lock) ------------------
+# --- 6. lib/failed-command-flagged.py cites fleet-ops#1001 (detector-side lock: case list moved to lib, fleet-ops#3246) ------------------
 # The 01a041a4 session's read-ENOENT is a sibling shape on a different
 # session slug (a stale, non-canonical checkout). Dropping the #1001
 # citation from the prompt is a regression even if the #953 lock and
 # the live #1001 drill still pass.
-grep -q 'fleet-ops#1001' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1001 (prompt-side lock for the stale-checkout read-ENOENT class)"
-grep -q 'fleet-escalation-canary' "$worker" \
-  || fail "prompts/worker.md must name the live #1001 path so workers flag the stale-checkout shape"
-ok "worker.md cites fleet-ops#1001 and the live stale-checkout path"
+grep -q 'fleet-ops#1001' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1001 (detector-side lock for the stale-checkout read-ENOENT class)"
+grep -q 'fleet-escalation-canary' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1001 path so workers flag the stale-checkout shape"
+ok "lib/failed-command-flagged.py cites fleet-ops#1001 and the live stale-checkout path"
 
 # --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1001 -------
 # The lib docstring is the standing-rule contract for the next detector

@@ -57,4 +57,24 @@ grep -q 'no-match probe' "$worker" || fail "no-match-probe exception missing fro
 grep -q 'fleet-failed-command-flagged' "$worker" || fail "pointer to the session-close lint missing from worker.md"
 ok "core failed-command rule, no-match-probe exception, and lint pointer all present"
 
+# --- 4. Line-count ceiling (fleet-ops#3245 / #3120) --------------------------
+# The 2026-09-04 trim lands worker.md at <=80 lines. Re-bloat past that is
+# the class this issue prevents: every packet carried 261 lines / 32 KB of
+# rules before the issue. The 32 KB / 4 KB caps above stay as the loose
+# backstop; this is the tight line-count guard.
+LINE_CEILING=80
+line_count=$(wc -l < "$worker")
+if [[ "$line_count" -gt "$LINE_CEILING" ]]; then
+	fail "worker.md is ${line_count} lines, exceeds ${LINE_CEILING}-line ceiling (fleet-ops#3245). Trim; do not re-bloat the packet."
+fi
+ok "worker.md is ${line_count} lines, under ${LINE_CEILING}-line ceiling"
+
+# --- 5. The two lines folded from #3249 -------------------------------------
+# (1) todo list + 10-minute stop. (2) the bar is 'extremely well', never 'perfect'.
+grep -q "if no item has been completed in 10 minutes" "$worker" \
+	|| fail "worker.md must keep the 10-minute stop (fleet-ops#3249 folded into #3245)"
+grep -q "extremely well" "$worker" \
+	|| fail "worker.md must keep the 'extremely well' bar (fleet-ops#3249 folded into #3245)"
+ok "todo 10-minute stop and 'extremely well' bar both present"
+
 echo "worker-prompt-size-ceiling: PASS"

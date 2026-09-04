@@ -36,23 +36,22 @@ and is also treated as a probe. Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
-`read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, #953,
+`read` tool returning ENOENT / EACCES / EISDIR (fleet-ops#651, #664, fleet-ops#953,
 fleet-ops#958, #972, #967, #977, #1001, #1059, #1100, #1170, #1243, #1255) is a
 real swallowed failure: it is not a probe like ls no-match or read
 offset beyond end. The EISDIR class (#1170 / #1243) is the `read` tool pointed at
-a directory path instead of a file — Pi returns `EISDIR: illegal operation
-on a directory, read` with isError=True and no exit-code line, and the
+a directory path instead of a file — Pi returns `EISDIR: illegal operation on a directory, read` with isError=True and no exit-code line, and the
 assistant walked it past with thinking-only recovery turns; it is a
 real failure, never a negative result like the #651 offset-beyond-end
 exemption. The dedicated regression test
 tests/fleet-failed-command-read-eisdir.test.sh pins the live
 fleet-ops#1170 shape (01a04334 reading the sessions dir) and the
 fleet-ops#1243 sibling on a DIFFERENT session slug (01a043ee reading
-the 0509 e2e/fixtures dir, walked past with "Now let me also look at
+the 0509-work/e2e/fixtures dir, walked past with "Now let me also look at
 the printStackTrace threshold setting you mentioned:") so a future
 refactor that adds a "directory read is benign" exemption is caught. #972 is the same session shape as #958 (the
 01a03e61 read-ENOENT session); it is a leftover open duplicate filed by
-the same GitHub-search-index-delay that produced #951 / #965 / #966, so
+the same GitHub-search-index-delay that produced #951 / fleet-ops#965 / #966, so
 the citation chain must carry it. #967 is the same session shape as
 #958 / #972 (the 01a03e61 read-ENOENT session); it is a leftover open
 duplicate filed by the same GitHub-search-index-delay that produced
@@ -60,7 +59,7 @@ duplicate filed by the same GitHub-search-index-delay that produced
 same session shape as #958 / #972 / #967 (the 01a03e61 read-ENOENT
 session); it is a leftover open duplicate filed by the same
 GitHub-search-index-delay that produced #951 / #965 / #966, so the
-citation chain must carry it. #1001 is the same read-ENOENT shape as
+citation chain must carry it. fleet-ops#1001 is the same read-ENOENT shape as
 #958 / #972 / #967 / #977 but on a DIFFERENT session slug (the
 01a041a4 completion-canary build session, where the worker read
 `/home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary` —
@@ -74,7 +73,7 @@ filed by the same detector as the 01a03e61 pile, so the citation
 chain must carry it. The leftover-duplicate observe-to-close
 drain for the 01a03e61 pile (#662, #953, #958, #972, #967, #977, #982)
 is locked under
-tests/fleet-failed-command-observe-duplicate-enoent.test.sh. #1059 is
+tests/fleet-failed-command-observe-duplicate-enoent.test.sh. fleet-ops#1059 is
 the same read-ENOENT shape as #953 / #1001 but on a DIFFERENT session
 slug (the 01a04220 archived-packet session, where the worker `read`
 `/home/nish/.local/state/pi-issues/fleet-ops-938.in` — a Pi issue packet
@@ -149,7 +148,8 @@ tool returning "Could not find the exact text in <path>. The old text
 must match exactly including all whitespace and newlines."
 (fleet-ops#956, #965) — or the variant
 "Found N occurrences of the text in <path>. The text must be unique."
-(fleet-ops#1053, same class: oldText matched multiple locations, not zero)
+(fleet-ops#1053, same class: oldText matched multiple locations, not zero;
+live path AUDITOR-LOG.md)
 — or the multi-edit array variant
 "Could not find edits[0] in <path>. The oldText must match exactly
 including all whitespace and newlines." (fleet-ops#1173, same class:
@@ -159,7 +159,7 @@ variant
 This might indicate an issue with special characters or the text not
 existing as expected." (fleet-ops#1139, same class: the edit matched but
 the intended change did NOT land) — or the schema-validation variant
-"Validation failed for tool \"edit\": - path: must have required properties path"
+"Validation failed for tool "edit": - path: must have required properties path"
 (fleet-ops#1286, same class: the harness rejected
 the call BEFORE dispatch because the `edit` arguments omitted a
 required top-level field, isError=true, details={}, no
@@ -227,11 +227,11 @@ citation chain must carry it. The leftover-duplicate observe-to-close
 drain for the 01a03dee pile (#956, #965, #970, #975, #980) is locked
 under tests/fleet-failed-command-observe-duplicate-open.test.sh.
 A `python3 -c` / `python3 << 'EOF'` probe that crashes
-with a Python traceback (KeyError, NameError, etc.) and
+with a Python traceback (KeyError, NameError, etc.; e.g. KeyError: 'input_domain') and
 'Command exited with code 1' (fleet-ops#957, #966, #1003) is also a real
 swallowed failure: the command is not grep/rg/diff/ls/which so it is
 not a no-match probe, and a silent re-probe, a thinking block, or
-later prose that moves on is not a user-facing flag. The live #1003
+later prose that moves on is not a user-facing flag. The live fleet-ops#1003
 shape is the same class as #957 (python3 -c walked past) but the
 wording and the `gh | python3 -c` pipe are distinct: a
 `gh issue view <N> --comments --json <fields> | python3 -c "...d['comments']..."`
@@ -252,7 +252,7 @@ filed by the same GitHub-search-index-delay that produced
 leftover-duplicate observe-to-close drain for the 01a041a5 pile
 (#1003, #1019) is locked under
 tests/fleet-failed-command-observe-duplicate-1003.test.sh.
-fleet-ops#1142 is the same `gh issue view --comments --json
+fleet-ops#1142 is the same `gh issue view 1003 --comments --json
 author,body,createdAt | python3 -c "...d['comments']..."` KeyError as
 #1003, on a DIFFERENT session (01a04326, the worker claiming #1003).
 The next turn was a thinking block ("the same bug") plus a successful

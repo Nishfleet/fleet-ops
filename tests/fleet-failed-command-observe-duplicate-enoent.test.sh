@@ -47,7 +47,7 @@
 #   2. later tick with the marker already on all seven: closes all
 #      seven, still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. prompt-side citation lock: prompts/worker.md cites #972, #967
+#   4. prompt-side citation lock: prompts/lib/failed-command-flagged.py cites #972, #967
 #      and #977 (the 01a03e61 leftover-duplicate pile).
 #   5. detector-side citation lock: lib/failed-command-flagged.py
 #      docstring cites #972, #967 and #977.
@@ -328,17 +328,17 @@ ok "live #972: still-dirty slug leaves all seven leftover duplicates open"
 # next to #967 — all are siblings in the 01a03e61 leftover-duplicate
 # pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
-grep -q '#972' "$worker" \
-  || fail "prompts/worker.md must carry the #972 citation next to the #958 read-ENOENT citation"
-grep -q 'fleet-ops#958, #972' "$worker" \
-  || fail "prompts/worker.md must cite #972 next to the #958 read-ENOENT citation"
-ok "worker.md cites #972"
-grep -q '#972, #967' "$worker" \
-  || fail "prompts/worker.md must carry the #967 citation next to the #972 leftover-duplicate citation"
-ok "worker.md cites #967"
-grep -q '#967, #977' "$worker" \
-  || fail "prompts/worker.md must carry the #977 citation next to the #967 leftover-duplicate citation"
-ok "worker.md cites #977"
+grep -q '#972' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #972 citation next to the #958 read-ENOENT citation"
+grep -q 'fleet-ops#958, #972' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite #972 next to the #958 read-ENOENT citation"
+ok "lib/failed-command-flagged.py cites #972"
+grep -q '#972, #967' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #967 citation next to the #972 leftover-duplicate citation"
+ok "lib/failed-command-flagged.py cites #967"
+grep -q '#967, #977' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #977 citation next to the #967 leftover-duplicate citation"
+ok "lib/failed-command-flagged.py cites #977"
 
 # --- 5. detector-side citation lock for #972 / #967 / #977 ----------------
 # The lib docstring is the standing-rule contract for the next

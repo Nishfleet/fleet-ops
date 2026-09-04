@@ -13,17 +13,11 @@
 # tests/worker-prompt-size-ceiling.test.sh (32 KB) stays as the loose backstop;
 # this test is the tight guard that takes over once the trim lands.
 #
-# WHY A REPLAY DRILL IS THE GREEN PATH NOW
-#   The trim itself is owned by sibling issues #3245 (<=80 lines), #3246 (move
-#   the failed-command case list out of the prompt), and #3247 (conditional
-#   0509 blocks). Until those merge, the real prompts/worker.md is still
-#   ~32 KB and the live assertion is genuinely red. This test therefore ships
-#   with a replay drill that PROVES the assertion mechanism (a compliant
-#   fixture passes, an over-size fixture is caught) and a live check that
-#   reports the real packet size. The live check hard-fails only when
-#   WORKER_PACKET_SIZE_ENFORCE=1, which is the one-line CI flip that activates
-#   the tight guard once #3245/#3246/#3247 land. Until then the 32 KB ceiling
-#   test remains the enforced backstop, so re-bloat is still caught.
+# The replay drill still proves the assertion mechanism (a compliant fixture
+# passes, an over-size fixture is caught). The live check hard-fails by
+# default now that #3245 (trim), #3246 (case list out of the prompt), and
+# #3247 (conditional 0509 blocks) have landed. Override with
+# WORKER_PACKET_SIZE_ENFORCE=0 only for a local debug of a mid-trim worktree.
 #
 #   Wiring this test into .github/workflows/ci.yml is a gate-path change that
 #   the nishfleet-worker App token cannot make (no Workflows permission); it
@@ -117,10 +111,10 @@ echo "=== live check: real prompts/worker.md ==="
 # --- Live: real non-0509 packet ----------------------------------------------
 live_non0509=$(packet_bytes "$worker" Nishfleet/fleet-ops fleet-ops 3248)
 if (( live_non0509 > NON_0509_CEILING )); then
-    if [[ "${WORKER_PACKET_SIZE_ENFORCE:-0}" == "1" ]]; then
-        fail "live non-0509 packet is ${live_non0509}B, exceeds ${NON_0509_CEILING}B ceiling — prompt trim (#3245/#3246/#3247) has not landed. ENFORCE=1 is on."
+    if [[ "${WORKER_PACKET_SIZE_ENFORCE:-1}" == "1" ]]; then
+        fail "live non-0509 packet is ${live_non0509}B, exceeds ${NON_0509_CEILING}B ceiling — prompt trim (#3245) re-bloat. ENFORCE=1 is on."
     fi
-    echo "WARN: live non-0509 packet is ${live_non0509}B, exceeds ${NON_0509_CEILING}B ceiling — prompt trim pending (siblings #3245/#3246/#3247). Hard-fail activates with WORKER_PACKET_SIZE_ENFORCE=1 once the trim lands; the 32 KB backstop (tests/worker-prompt-size-ceiling.test.sh) stays enforced in the meantime."
+    echo "WARN: live non-0509 packet is ${live_non0509}B, exceeds ${NON_0509_CEILING}B ceiling — WORKER_PACKET_SIZE_ENFORCE=0, so this is a debug skip, not a green run."
 else
     ok "live non-0509 packet is ${live_non0509}B, under ${NON_0509_CEILING}B ceiling"
 fi
@@ -128,13 +122,13 @@ fi
 # --- Live: real 0509 packet --------------------------------------------------
 live_0509=$(packet_bytes "$worker" Nishfleet/0509 0509 100)
 if (( live_0509 > ZERO_NINE_CEILING )); then
-    if [[ "${WORKER_PACKET_SIZE_ENFORCE:-0}" == "1" ]]; then
-        fail "live 0509 packet is ${live_0509}B, exceeds ${ZERO_NINE_CEILING}B ceiling — prompt trim + conditional 0509 blocks (#3245/#3246/#3247) have not landed. ENFORCE=1 is on."
+    if [[ "${WORKER_PACKET_SIZE_ENFORCE:-1}" == "1" ]]; then
+        fail "live 0509 packet is ${live_0509}B, exceeds ${ZERO_NINE_CEILING}B ceiling — prompt trim (#3245) re-bloat. ENFORCE=1 is on."
     fi
-    echo "WARN: live 0509 packet is ${live_0509}B, exceeds ${ZERO_NINE_CEILING}B ceiling — prompt trim + conditional 0509 blocks pending (siblings #3245/#3246/#3247). Hard-fail activates with WORKER_PACKET_SIZE_ENFORCE=1 once they land."
+    echo "WARN: live 0509 packet is ${live_0509}B, exceeds ${ZERO_NINE_CEILING}B ceiling — WORKER_PACKET_SIZE_ENFORCE=0, so this is a debug skip, not a green run."
 else
     ok "live 0509 packet is ${live_0509}B, under ${ZERO_NINE_CEILING}B ceiling"
 fi
 
 echo
-echo "worker-packet-size: PASS (drill green; live check reports ${live_non0509}B non-0509 / ${live_0509}B 0509; ENFORCE=${WORKER_PACKET_SIZE_ENFORCE:-0})"
+echo "worker-packet-size: PASS (drill green; live check reports ${live_non0509}B non-0509 / ${live_0509}B 0509; ENFORCE=${WORKER_PACKET_SIZE_ENFORCE:-1})"

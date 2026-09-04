@@ -33,10 +33,11 @@
 #      "full picture" prose bundled with todos -> finding.
 #   2. same shape plus a later user-facing flag that NAMES the
 #      failure -> clean.
-#   3. worker.md cites fleet-ops#958 (prompt-side lock).
+#   3. lib/failed-command-flagged.py cites fleet-ops#958 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   4. seat-lib.test.sh hosts this file (CI cannot gain a new P14 line).
-#   5. guard-fires drill: a worker.md copy stripped of the locked
-#      wording fails the scenario-3 checks (fleet-ops#2101 prevention).
+#   5. guard-fires drill: a lib copy stripped of the locked
+#      wording fails the scenario-3 checks (fleet-ops#2101 prevention;
+#      case list lives in lib after fleet-ops#3245/#3246).
 
 set -euo pipefail
 
@@ -116,23 +117,24 @@ count=$(jq '.findings | length' <<<"$report")
 ok "live #958 positive: skip-then-todos shape plus later named flag is clean"
 rm -f "$sessions/read-enoent-skip-todos-flagged.jsonl"
 
-# --- 3. worker.md cites fleet-ops#958 (prompt-side lock) -------------------
+# --- 3. lib/failed-command-flagged.py cites fleet-ops#958 (detector-side lock: case list moved to lib, fleet-ops#3246) -------------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#958' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#958 (prompt-side lock for the live skip-then-todos ENOENT shape)"
-grep -q "ENOENT: no such file or directory, access" "$worker" \
-  || fail "prompts/worker.md must name the live ENOENT wording so workers flag it"
-ok "worker.md cites fleet-ops#958 and the live ENOENT wording"
+grep -q 'fleet-ops#958' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#958 (detector-side lock for the live skip-then-todos ENOENT shape)"
+grep -q "ENOENT: no such file or directory, access" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live ENOENT wording so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#958 and the live ENOENT wording"
 
 # --- 5. guard-fires drill: drift in the #958 citation fails scenario 3 ------
-# fleet-ops#2101: prompts/worker.md lost the #958 citation (plus 17 siblings)
-# and the P14 suite caught it red on main (FleetMainRed). The scenario-3
-# greps are the guard. This drill proves the guard FIRES: a worker.md copy
-# with the locked wording stripped must fail the exact scenario-3 checks, so
-# a future refactor cannot soften those greps without a named FAIL here.
-drift="$scratch/worker.md"
-cp "$worker" "$drift" || fail "could not copy worker.md to scratch"
+# fleet-ops#2101: the prompt-side #958 citation (plus 17 siblings) was lost
+# and the P14 suite caught it red on main (FleetMainRed). After #3245/#3246
+# the case list lives in lib/failed-command-flagged.py. This drill proves
+# the guard FIRES: a lib copy with the locked wording stripped must fail
+# the exact scenario-3 checks, so a future refactor cannot soften those
+# greps without a named FAIL here.
+drift="$scratch/failed-command-flagged.py"
+cp "$lib" "$drift" || fail "could not copy lib/failed-command-flagged.py to scratch"
 sed -i 's/fleet-ops#958//g' "$drift" || fail "could not strip #958 citation from drill copy"
 sed -i 's/ENOENT: no such file or directory, access/ENOENT-X/g' "$drift" || fail "could not strip ENOENT wording from drill copy"
 if grep -q 'fleet-ops#958' "$drift"; then
@@ -142,13 +144,13 @@ set +e
 grep -q 'fleet-ops#958' "$drift"
 rc=$?
 set -e
-[[ "$rc" == 1 ]] || fail "guard must fire when worker.md loses the fleet-ops#958 citation (got rc=$rc)"
+[[ "$rc" == 1 ]] || fail "guard must fire when lib/failed-command-flagged.py loses the fleet-ops#958 citation (got rc=$rc)"
 set +e
 grep -q 'ENOENT: no such file or directory, access' "$drift"
 rc=$?
 set -e
-[[ "$rc" == 1 ]] || fail "guard must fire when worker.md loses the ENOENT wording (got rc=$rc)"
-ok "guard fires when worker.md drifts off the fleet-ops#958 lock wording"
+[[ "$rc" == 1 ]] || fail "guard must fire when lib/failed-command-flagged.py loses the ENOENT wording (got rc=$rc)"
+ok "guard fires when lib/failed-command-flagged.py drifts off the fleet-ops#958 lock wording"
 
 # --- 4. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh"' \

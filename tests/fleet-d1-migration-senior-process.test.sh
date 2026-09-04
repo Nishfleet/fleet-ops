@@ -2,8 +2,10 @@
 # tests/fleet-d1-migration-senior-process.test.sh
 #
 # Proves the D1 prod migration senior process enforcer (fleet-ops#906):
-#   1. prompts/worker.md carries the senior process rule and voids the
-#      2026-08-27 "do it right now" D1 prod migration decision.
+#   1. prompts/worker-blocks/d1-gate-integrity.md (the fragment intake
+#      assembles into 0509 packets, fleet-ops#3247) carries the senior
+#      process rule and voids the 2026-08-27 "do it right now" D1 prod
+#      migration decision.
 #   2. prompts/scout.md carries the senior process in the D1 schema gate.
 #   3. config/rule-enforcement.json marks the correction row as enforced
 #      and names the prompt files + this test.
@@ -11,7 +13,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/prompts/worker-blocks/d1-gate-integrity.md"
 scout="$repo_root/prompts/scout.md"
 matrix="$repo_root/config/rule-enforcement.json"
 
@@ -61,8 +63,8 @@ mech=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations-correc
 printf '%s\n' "$mech" | grep -q 'prompt' \
   || fail "matrix mechanism must name the prompt gate (got: $mech)"
 proof=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations-correction") | .proof' "$matrix")
-printf '%s\n' "$proof" | grep -q 'prompts/worker.md' \
-  || fail "matrix proof must name prompts/worker.md (got: $proof)"
+printf '%s\n' "$proof" | grep -q 'prompts/worker-blocks/d1-gate-integrity.md' \
+  || fail "matrix proof must name prompts/worker-blocks/d1-gate-integrity.md (got: $proof)"
 printf '%s\n' "$proof" | grep -q 'tests/fleet-d1-migration-senior-process.test.sh' \
   || fail "matrix proof must name this test (got: $proof)"
 ok "matrix row is enforced with prompt gate and proof"
@@ -76,8 +78,8 @@ printf '%s\n' "$mech_orig" | grep -q 'void' \
 printf '%s\n' "$mech_orig" | grep -q 'senior process' \
   || fail "original mechanism must name the senior process (got: $mech_orig)"
 proof_orig=$(jq -r '.rules[] | select(.id == "led-2026-08-27-d1-prod-migrations") | .proof' "$matrix")
-printf '%s\n' "$proof_orig" | grep -q 'prompts/worker.md' \
-  || fail "original proof must name prompts/worker.md (got: $proof_orig)"
+printf '%s\n' "$proof_orig" | grep -q 'prompts/worker-blocks/d1-gate-integrity.md' \
+  || fail "original proof must name prompts/worker-blocks/d1-gate-integrity.md (got: $proof_orig)"
 printf '%s\n' "$proof_orig" | grep -q 'tests/fleet-d1-migration-senior-process.test.sh' \
   || fail "original proof must name this test (got: $proof_orig)"
 ok "original matrix row is enforced as voided and superseded by the prompt gate"
