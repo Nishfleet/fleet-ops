@@ -3520,6 +3520,17 @@ _transport_is_down() {
     fi
     # Fallback: a bare `pi --version` semver test (cheap, no probe bin needed).
     local pi_bin="${PI_BIN:-/home/nish/.local/bin/pi}" ver
+    if [[ ! -x "$pi_bin" ]]; then
+        # Probe AND pi both ABSENT: transport health is undeterminable, not
+        # down — fail-open per the gate contract above ("benching is not
+        # suppressed on a box without the probe"). Reading absence as down
+        # suppressed every bench writer on GitHub CI runners (neither
+        # /home/nish/.local/bin path exists there), went red on main within
+        # one merge (#3235, run 33888017048) and stayed red for 5 commits
+        # because P14 tests is not a required check. A CLOBBERED pi (the
+        # #3238 incident) still passes -x, so real boxes keep the gate.
+        return 1
+    fi
     ver="$(timeout 30 "$pi_bin" --version 2>/dev/null | head -n1 || true)"
     if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         return 1

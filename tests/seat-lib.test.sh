@@ -1008,6 +1008,19 @@ devin_bw=$(jq -r '.bench_window_s' "$devin_lf")
 [[ "$devin_hc" == "quota_bench" ]] || fail "writer: Devin health_class expected quota_bench, got $devin_hc"
 [[ "$devin_bw" == "2100" ]] || fail "writer: Devin bench_window_s expected 2100, got $devin_bw"
 
+# 9b-transport-gate: probe AND pi both ABSENT must fail-OPEN (skip the gate),
+# not read as transport-down. GitHub CI runners have neither
+# /home/nish/.local/bin/pi-transport-check nor .../pi, so a down-reading made
+# every bench writer return 1 and went red on main from #3235 onward (run
+# 33899911568: 'writer: Devin mark_seat_quota_bench expected rc=0, got 1').
+# Same live Devin text, both bins pointed at a nonexistent path.
+set +e
+bash -c 'source "$0"; load_seat_caps; PI_TRANSPORT_CHECK="$4"; PI_BIN="$4"; mark_seat_quota_bench "$1" "$2" "$3"' \
+    "$lib" "devin" "swe-1-7" "$devin_err" "$scratch/no-such-transport-probe" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "transport gate: probe AND pi absent -> fail-open, writer must succeed (rc=$rc)"
+
 # 9b-mimo: OpenCode free-tier FreeUsageLimitError (HTTP 429, no reset window).
 # Stage 1 matches 'rate limit exceeded'; stage 2a (no 'resets in' / 'retry-after'
 # text) fails; stage 2b (hard-cap keyword) must now match FreeUsageLimitError so
