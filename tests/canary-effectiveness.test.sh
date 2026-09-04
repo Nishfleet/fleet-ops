@@ -314,6 +314,48 @@ unset FLEET_CANARY_EFF_STORE FLEET_CANARY_EFF_EVENTS FLEET_CANARY_EFF_OUT FLEET_
 ok "two-tick retention drill: attribution survives retention loss via durable store"
 
 # =========================================================================
+# 3d. Live-tick drill (fleet-ops#3055 / #366): the injected-fault drill runs
+# inside the exporter tick, not only in CI — a silent classify regression
+# must turn the gauge red instead of pinning caught=0 for 19h again. The
+# real main() live path calls run_live_drill() and exports the result.
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "live drill helpers failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ce", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ce"] = m
+spec.loader.exec_module(m)
+from datetime import datetime, timezone
+
+# Healthy classify path => drill passes: ok=1, last_green=now.
+now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+ok, green = m.run_live_drill(now)
+assert ok == 1, ok
+assert green == now.timestamp(), green
+
+# The exported body carries the drill gauges when the drill ran.
+from pathlib import Path
+import tempfile, os
+tmp = Path(tempfile.mkdtemp(prefix="ce-drill-test."))
+try:
+    out = tmp / "drill.prom"
+    body = m.export_prom([m.OrganStats(organ="0509-surface-probe")],
+                         now=now, out=out, drill_ok=1, drill_green=green)
+    assert 'fleet_canary_effectiveness_drill_last_green_seconds 1788350400' in body
+    assert 'fleet_canary_effectiveness_drill_ok 1' in body
+    assert 'fleet_canary_effectiveness_ratio{organ="0509-surface-probe"} 0.000000' in body
+    # Red drill: ok=0 and last_green=0 (stale -> alert fires).
+    body0 = m.export_prom([m.OrganStats(organ="0509-surface-probe")],
+                          now=now, out=out, drill_ok=0, drill_green=0.0)
+    assert 'fleet_canary_effectiveness_drill_last_green_seconds 0' in body0
+    assert 'fleet_canary_effectiveness_drill_ok 0' in body0
+finally:
+    import shutil; shutil.rmtree(tmp, ignore_errors=True)
+print("OK: live drill green + red gauges")
+PY
+ok "live-tick drill: hermetic injected-fault drill runs through main() path"
+
+# =========================================================================
 # 4. MANIFEST + drop-in + no new timer
 # =========================================================================
 grep -Fxq "lib/canary-effectiveness.py /home/nish/.local/lib/pi-packet/canary-effectiveness.py" "$manifest" \
@@ -344,6 +386,11 @@ grep -q 'alert: CanarySilentTooLong' "$rules" \
   || fail "rules missing CanarySilentTooLong"
 grep -q 'fleet_canary_missed_regressions_total > 0' "$rules" \
   || fail "CanarySilentTooLong must gate on missed_regressions_total > 0"
+# fleet-ops#3055: the live-tick drill guard must ship with the gauge.
+grep -q 'alert: FleetCanaryEffectivenessDrillStale' "$rules" \
+  || fail "rules missing FleetCanaryEffectivenessDrillStale"
+grep -q 'absent(fleet_canary_effectiveness_drill_last_green_seconds)' "$rules" \
+  || fail "DrillStale must watch fleet_canary_effectiveness_drill_last_green_seconds"
 
 jq -e '.organs[] | select(.name=="canary-effectiveness")
   | select(.heartbeat_metric=="fleet_canary_effectiveness_last_run_seconds")
