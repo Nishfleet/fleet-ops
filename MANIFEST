@@ -684,6 +684,14 @@ lib/loose-ends.py /home/nish/.local/lib/fleet-ops/loose-ends.py
 # health_class=healthy + http_status=200 seat. Observe-to-close drains
 # auto-filed tickets when the burst clears. Heartbeat-tier1 block 44.
 bin/fleet-empty-run-burst-canary /home/nish/.local/bin/fleet-empty-run-burst-canary
+# fleet-ops#3123: scout-leak canary. Mechanical leak detector for the
+# ScoutEffectivenessLow pipeline: reads lib/scout-effectiveness.py's
+# node-exporter .prom gauges, isolates the dominant leak stage (duped /
+# never-ready / unclaimed / unmerged), auto-files a targeted
+# `fix(scout-leak):` mechanism issue, and observe-to-closes when the alert
+# resolves (ratio >= 0.1) or the stage's leak drains to 0. No new timer;
+# heartbeat-tier1 block 45. Not an organ (exports no heartbeat metric).
+bin/fleet-scout-leak-canary /home/nish/.local/bin/fleet-scout-leak-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.

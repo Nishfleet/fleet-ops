@@ -447,6 +447,7 @@ bash "$here/fleet-ops-2462-claim-cap.test.sh"
 # without a workflow-file edit (the worker App cannot push
 # .github/workflows/**).
 bash "$here/fleet-empty-run-burst-canary.test.sh"
+bash "$here/fleet-scout-leak-canary.test.sh"
 
 # fleet-ops#2627: empty-run count must accumulate across healthy ledger
 # clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the

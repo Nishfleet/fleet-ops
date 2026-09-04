@@ -6,9 +6,10 @@
 # P14 runs it without a workflow-file edit.
 #
 # Proves:
-#   1. compute_stats: filed -> survive_intake -> agent_ready -> merged_14d
-#      pipeline attribution is correct, including dupe-closed-within-1h
-#      exclusion from survive_intake.
+#   1. compute_stats: filed -> survive_intake -> agent_ready -> claimed ->
+#      merged_14d pipeline attribution is correct, including
+#      dupe-closed-within-1h exclusion from survive_intake and the
+#      agent-in-progress claimed gate (fleet-ops#3123).
 #   2. effectiveness_ratio = merged_14d / runs (0 when no runs).
 #   3. Empty window still emits fleet_scout_effectiveness_last_run_seconds
 #      (organ heartbeat) + per-repo zeros including effectiveness_ratio.
@@ -65,9 +66,9 @@ END = 1788350400
 runs = [START + 100, START + 200, START + 300]
 
 issues = [
-    # filed, not dupe, agent-ready, merged within 14d -> merged_14d=1
+    # filed, not dupe, agent-ready, claimed, merged within 14d -> merged_14d=1
     m.ScoutIssue(number=1, repo="0509", created_ts=START + 150,
-                 labels=("scout-candidate", "agent-ready"),
+                 labels=("scout-candidate", "agent-ready", "agent-in-progress"),
                  state="closed", state_reason="completed",
                  closed_ts=START + 5000, merged_ts=START + 8000),
     # filed, closed as duplicate within 1h -> NOT survive_intake
@@ -104,6 +105,7 @@ assert s.runs == 3, s.runs
 assert s.filed == 5, f"filed={s.filed}"
 assert s.survive_intake == 4, f"survive={s.survive_intake}"  # all except #2 (dupe <1h)
 assert s.agent_ready == 2, f"agent_ready={s.agent_ready}"  # #1, #4 (5 excluded)
+assert s.claimed == 1, f"claimed={s.claimed}"  # only #1 carries agent-in-progress
 assert s.merged_14d == 1, f"merged_14d={s.merged_14d}"  # only #1 (#6 merged >14d)
 assert abs(s.effectiveness_ratio - 1 / 3) < 1e-9, s.effectiveness_ratio
 print("OK: compute_stats pipeline attribution")
@@ -149,6 +151,8 @@ grep -q 'fleet_scout_issues_survive_intake{repo="0509"} 0' "$FLEET_SCOUT_EFF_OUT
   || fail "empty window must emit survive_intake=0"
 grep -q 'fleet_scout_issues_agent_ready{repo="0509"} 0' "$FLEET_SCOUT_EFF_OUT" \
   || fail "empty window must emit agent_ready=0"
+grep -q 'fleet_scout_issues_claimed{repo="0509"} 0' "$FLEET_SCOUT_EFF_OUT" \
+  || fail "empty window must emit claimed=0"
 grep -q 'fleet_scout_issues_merged_14d{repo="0509"} 0' "$FLEET_SCOUT_EFF_OUT" \
   || fail "empty window must emit merged_14d=0"
 ok "empty window emits heartbeat + per-repo zeros"
@@ -227,7 +231,8 @@ python3 "$helper" --stdout >"$scratch/prom.stdout" || fail "export rc nonzero"
 # Every metric has exactly one HELP and one TYPE.
 for metric in fleet_scout_runs_total fleet_scout_issues_filed \
               fleet_scout_issues_survive_intake fleet_scout_issues_agent_ready \
-              fleet_scout_issues_merged_14d fleet_scout_effectiveness_ratio \
+              fleet_scout_issues_claimed fleet_scout_issues_merged_14d \
+              fleet_scout_effectiveness_ratio \
               fleet_scout_effectiveness_last_run_seconds; do
   help_count=$(grep -c "^# HELP $metric " "$FLEET_SCOUT_EFF_OUT" || true)
   type_count=$(grep -c "^# TYPE $metric " "$FLEET_SCOUT_EFF_OUT" || true)

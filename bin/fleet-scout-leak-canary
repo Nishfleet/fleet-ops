@@ -1,0 +1,439 @@
+#!/usr/bin/env bash
+# fleet-scout-leak-canary — mechanical leak detector for the
+# ScoutEffectivenessLow pipeline (fleet-ops#3123).
+#
+# The ScoutEffectivenessLow alert (config/fleet_rules.yml) fires when
+# fleet_scout_effectiveness_ratio{repo="0509"} < 0.1 with runs > 0 — the
+# scout runs but its output is not translating to merged work. The alert
+# reports the SYMPTOM. This canary is the mechanical isolation: it reads
+# the same live gauges the alert reads (the node-exporter textfile written
+# by lib/scout-effectiveness.py, /var/lib/prometheus/node-exporter/
+# fleet-scout-effectiveness.prom) and computes the leak at each pipeline
+# gate:
+#
+#   filed -> survive_intake -> agent_ready -> claimed -> merged_14d
+#     L1 duped        = filed  - survive_intake   ("filed but duped")
+#     L2 never-ready  = survive_intake - agent_ready
+#     L3 unclaimed    = agent_ready - claimed     ("agent-ready but unclaimed")
+#     L4 unmerged     = claimed - merged_14d      ("claimed but unmerged")
+#
+# (L2 — survived intake but never promoted to agent-ready — is the live
+# dominant leak as of 2026-09-04: filed=115, survive=115, agent_ready=0.
+# The accept text names the other three stages explicitly; L2 is the gate
+# between them, and a detector that skipped it would report "no dominant
+# leak" while the pipeline starves — the exact failure this issue bans.)
+# Green-and-empty upstream (runs that file nothing) is NOT this canary's
+# class — scout-futility-check (fleet-ops#454/#2468) already owns it.
+#
+# Observe-to-open: when the fire gate is met (ratio < 0.1 AND runs > 0)
+# AND no open ticket already carries the marker for the dominant leak
+# stage, file a `fix(scout-leak):` mechanism issue naming the stage, the
+# live counts, and the stage-specific mechanism hypothesis (intake dedup
+# too aggressive / promotion gate dead / no healthy seats / claim
+# branches not merging).
+#
+# Observe-to-close: the detector runs every scout cycle and auto-files
+# (heartbeat cadence, no new scheduler). A ticket closes when (a) the
+# ScoutEffectivenessLow alert resolves (ratio >= 0.1 with runs > 0, the
+# issue's termination condition), or (b) this stage's leak count drops
+# to 0 (that gate drained — its mechanism landed or the pool emptied).
+# A stage that is merely no longer dominant keeps its ticket: the leak
+# still exists, and the OTHER stage's fix is a separate mechanism.
+#
+# No new scheduler: heartbeat-tier1 block 45. Not an organ: it exports
+# no heartbeat metric — it is a reaction detector over the
+# scout-effectiveness organ's own gauges.
+#
+# Exit codes:
+#   0  clean tick (alert not firing) OR firing with observe-to-open/close
+#      handled (alarms but does not fail the heartbeat, fleet-ops#1116)
+#   1  watcher broken (.prom missing / unparseable / claimed metric line
+#      absent — the exporter upgrade is not emitting it yet) — LOUD but
+#      tick green; the FleetScoutEffectivenessAbsent alert owns fail-loud
+#   2  helper crash (jq/awk missing, fixture permissions) — heartbeat
+#      fails loud and unit lands in --state=failed
+#
+# Environment seams (tests):
+#   FLEET_SCOUT_LEAK_PROM        .prom path (default the node-exporter
+#                                path lib/scout-effectiveness.py writes)
+#   FLEET_SCOUT_LEAK_REPO        default Nishfleet/fleet-ops
+#   FLEET_SCOUT_LEAK_RATIO       fire-gate ratio (default 0.1)
+#   FLEET_SCOUT_LEAK_FILE        1 (default) file issues; 0 skip gh
+#   FLEET_ISSUE_FILE             fleet-issue-file (filing-time dedupe)
+#   FLEET_HEARTBEAT_TRIAGE       triage file
+#   FLEET_OPS_REPO               canary source repo (nothing today)
+#   GH                           gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+PROM="${FLEET_SCOUT_LEAK_PROM:-/var/lib/prometheus/node-exporter/fleet-scout-effectiveness.prom}"
+REPO="${FLEET_SCOUT_LEAK_REPO:-Nishfleet/fleet-ops}"
+RATIO_CUTOFF="${FLEET_SCOUT_LEAK_RATIO:-0.1}"
+FILE_ISSUES="${FLEET_SCOUT_LEAK_FILE:-1}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+MARKER_PREFIX="fleet-scout-leak-canary:"
+
+log() {
+    printf '[%s] [fleet-scout-leak-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    cat <<'EOF'
+usage: fleet-scout-leak-canary [--help]
+
+Mechanical leak detector for the ScoutEffectivenessLow pipeline
+(fleet-ops#3123). Reads the live scout-effectiveness .prom gauges
+(lib/scout-effectiveness.py output), isolates the dominant leak stage
+(duped / never-ready / unclaimed / unmerged), and observe-to-opens a
+targeted `fix(scout-leak):` mechanism issue. Observe-to-closes when the
+alert resolves (ratio >= 0.1) or the stage's leak drains to 0. Runs from
+heartbeat-tier1 block 45 — no new scheduler.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+# is_uint value — strict non-negative integer (default 0).
+is_uint() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# float_lt a b — true when a < b (awk handles the decimal comparison).
+float_lt() {
+    awk -v a="$1" -v b="$2" 'BEGIN { exit !(a < b) }'
+}
+
+# parse_metric name — print the value of a fleet_scout_*{repo="0509"}
+# gauge line from the .prom textfile (ints and decimals). Empty when
+# absent. grep -F keeps the {repo="0509"} selector literal — no ERE
+# brace-escaping traps.
+parse_metric() {
+    local name="$1"
+    # `|| true`: a missing gauge makes the middle grep exit 1; under
+    # pipefail+set -e the calling assignment would die silently instead
+    # of returning the empty string the DATA-NOT-READY branch needs.
+    grep -v '^#' "$PROM" 2>/dev/null \
+        | grep -F "$name{repo=\"0509\"}" \
+        | head -n 1 \
+        | awk '{print $NF}' \
+        || true
+}
+
+# read_uint name — parse + validate a counter gauge; LOUD + exit 1 when
+# the line is missing or not an unsigned integer (watcher broken).
+read_uint() {
+    local name="$1" v
+    v=$(parse_metric "$name")
+    if ! is_uint "$v"; then
+        loud "SCOUT-LEAK-WATCHER-BROKEN" \
+            ".prom $PROM: metric $name missing or not a uint ('$v') — cannot isolate leak"
+        exit 1
+    fi
+    printf '%s\n' "$v"
+}
+
+# read_float name — parse + validate a decimal gauge (the ratio); LOUD +
+# exit 1 when missing or not a number.
+read_float() {
+    local name="$1" v
+    v=$(parse_metric "$name")
+    if ! printf '%s' "$v" | grep -qE '^[0-9]*\.?[0-9]+$'; then
+        loud "SCOUT-LEAK-WATCHER-BROKEN" \
+            ".prom $PROM: metric $name missing or not a number ('$v')"
+        exit 1
+    fi
+    printf '%s\n' "$v"
+}
+
+# max0 a b — print a-b when positive, else 0. Integer args.
+max0() {
+    local a="$1" b="$2"
+    if (( a > b )); then
+        printf '%s\n' "$((a - b))"
+    else
+        printf '0\n'
+    fi
+}
+
+# stage_leak stage — print the current leak count for a stage.
+# Stages: duped never-ready unclaimed unmerged.
+stage_leak() {
+    case "$1" in
+        duped)       max0 "$FILED" "$SURVIVE" ;;
+        never-ready) max0 "$SURVIVE" "$READY" ;;
+        unclaimed)   max0 "$READY" "$CLAIMED" ;;
+        unmerged)    max0 "$CLAIMED" "$MERGED" ;;
+        *) printf '0\n' ;;
+    esac
+}
+
+# stage_title stage — targeted mechanism-issue title for the stage.
+stage_title() {
+    local stage="$1"
+    case "$stage" in
+        duped)
+            printf 'scout leak: intake absorbs filed issues as duplicates (filed=%s duped=%s)' \
+                "$FILED" "$(stage_leak duped)"
+            ;;
+        never-ready)
+            printf 'scout leak: filed issues never reach agent-ready (survived=%s agent_ready=%s)' \
+                "$SURVIVE" "$READY"
+            ;;
+        unclaimed)
+            printf 'scout leak: agent-ready issues never claimed (agent_ready=%s unclaimed=%s)' \
+                "$READY" "$(stage_leak unclaimed)"
+            ;;
+        unmerged)
+            printf 'scout leak: claimed issues never merge (claimed=%s unmerged=%s)' \
+                "$CLAIMED" "$(stage_leak unmerged)"
+            ;;
+    esac
+}
+
+# stage_hypotheses stage — stage-specific mechanism hypotheses the
+# filed ticket must test (the "targeted mechanism issue" the accept
+# requires — never a bare "effectiveness low" report).
+stage_hypotheses() {
+    local stage="$1"
+    case "$stage" in
+        duped)
+            printf -- '- Intake dedup too aggressive: filing-time scoring (fleet-issue-file, fleet-ops#1212) closes scout candidates as possible-duplicates within the 1h window. Compare the duped set against #3056/#3045 — if the "dupes" are not being re-offered, the dedup gate eats the supply.\n'
+            printf -- '- Fix direction: loosen the dupe-window or re-queue duped candidates after N hours instead of keeping them closed.\n'
+            ;;
+        never-ready)
+            printf -- '- Promotion gate dead: candidates survive intake but no labeler ever applies agent-ready. The product-first hold / precedence-band (config/precedence-band.json, lib/pi-intake-tick.sh, fleet-ops#2657 family) may be suppressing promotion, or the labeler path is broken.\n'
+            printf -- '- Fix direction: prove who is supposed to add agent-ready to scout candidates and why it stops; repair the labeler or re-tune the hold ratio.\n'
+            ;;
+        unclaimed)
+            printf -- '- No healthy seats / no claim nudge: agent-ready work sits unclaimed. Check seat health (pi-seat-health.json), the low-water-mark scout nudge (fleet-ops#146) and seat caps for the lane that should pick these up.\n'
+            printf -- '- Fix direction: un-stick the claim path (seat unbench, low-water-mark threshold, seat_max_concurrent ceiling) for the lane owning 0509 product work.\n'
+            ;;
+        unmerged)
+            printf -- '- Claim branches not merging: claimed work stalls at the PR stage. Check the merge queue (red checks, draft, missing Verification, auto-enqueue backstop, red-pr-repair fleet-ops#124) for the fleet-ops/0509 claim PRs.\n'
+            printf -- '- Fix direction: clear whichever gate keeps claim PRs red, then the merged_14d count rises and this gate drains.\n'
+            ;;
+    esac
+}
+
+# ============================================================================
+# Gate 1: .prom present + all six gauges parseable.
+# ============================================================================
+if [[ ! -f "$PROM" ]]; then
+    loud "SCOUT-LEAK-WATCHER-BROKEN" "scout-effectiveness .prom missing: $PROM (exporter not writing?)"
+    exit 1
+fi
+
+RUNS=$(read_uint fleet_scout_runs_total) || exit 1
+FILED=$(read_uint fleet_scout_issues_filed) || exit 1
+SURVIVE=$(read_uint fleet_scout_issues_survive_intake) || exit 1
+READY=$(read_uint fleet_scout_issues_agent_ready) || exit 1
+MERGED=$(read_uint fleet_scout_issues_merged_14d) || exit 1
+
+# claimed is the newest stage (fleet-ops#3123); a live .prom written by a
+# pre-upgrade exporter lacks it. Do not goose the tick: the exporter is
+# upgraded with this canary and emits it on the next piggyback tick.
+CLAIMED=$(parse_metric fleet_scout_issues_claimed)
+if ! is_uint "$CLAIMED"; then
+    loud "SCOUT-LEAK-DATA-NOT-READY" \
+        ".prom $PROM has no fleet_scout_issues_claimed line — exporter pre-#3123; waiting for the upgraded exporter's next tick"
+    exit 0
+fi
+
+RATIO=$(read_float fleet_scout_effectiveness_ratio) || exit 1
+
+# ============================================================================
+# Fire gate — the same expression as the ScoutEffectivenessLow alert:
+# ratio < 0.1 AND runs > 0. Not met = clean tick -> observe-to-close.
+# ============================================================================
+fire=0
+if float_lt "$RATIO" "$RATIO_CUTOFF" && (( RUNS > 0 )); then
+    fire=1
+fi
+
+# Dominant leak among the four intra-pipeline gates. Tie-break order:
+# duped -> never-ready -> unclaimed -> unmerged (upstream to downstream),
+# so a rebuilt pipeline reports the earliest gate and later gates surface
+# as the earlier one drains.
+declare -a STAGES=(duped never-ready unclaimed unmerged)
+DOMINANT=""
+DOMINANT_N=0
+for s in "${STAGES[@]}"; do
+    n=$(stage_leak "$s")
+    if (( n > DOMINANT_N )); then
+        DOMINANT="$s"
+        DOMINANT_N="$n"
+    fi
+done
+
+log "tick: runs=$RUNS filed=$FILED survive=$SURVIVE ready=$READY claimed=$CLAIMED merged=$MERGED ratio=$RATIO fire=$fire dominant=$DOMINANT($DOMINANT_N)"
+
+# ============================================================================
+# Observe-to-close (and dedup) — one open-issue list, used for both.
+# ============================================================================
+open_json=""
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 200 \
+        --json number,body 2>/dev/null)
+    local_rc=$?
+    set -e
+    if [[ "$local_rc" -ne 0 || -z "$open_json" ]]; then
+        log "gh issue list failed (rc=$local_rc) — dedup + observe-to-close skipped"
+    elif ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "gh issue list returned non-JSON — dedup + observe-to-close skipped"
+        open_json=""
+    fi
+fi
+
+close_all=false
+if (( ! fire )); then
+    close_all=true
+fi
+
+# For each open canary-filed ticket: close when the alert resolved
+# (close_all) or when THIS stage's leak drained to 0.
+if [[ -n "$open_json" ]]; then
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row" 2>/dev/null) || continue
+        body=$(jq -r '.body // ""' <<<"$row" 2>/dev/null) || continue
+        [[ -n "$num" && -n "$body" ]] || continue
+        stage=$(printf '%s\n' "$body" | grep -oE 'fleet-scout-leak-canary: [a-z-]+' \
+            | head -n 1 | sed 's/^fleet-scout-leak-canary: //') || true
+        [[ -n "$stage" ]] || continue
+        if [[ "$close_all" == "true" ]]; then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: ScoutEffectivenessLow resolved — fleet_scout_effectiveness_ratio=$RATIO >= $RATIO_CUTOFF (runs=$RUNS) at $ts. The pipeline is translating scout runs into merged work again; this leak ticket drains."
+            set +e
+            "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1
+            crc=$?
+            set -e
+            if [[ "$crc" -eq 0 ]]; then
+                log "observe-to-close: resolved alert closed #$num ($stage)"
+            else
+                log "observe-to-close: failed to close #$num ($stage, rc=$crc)"
+            fi
+            continue
+        fi
+        n=$(stage_leak "$stage")
+        if (( n == 0 )); then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: $stage leak drained to 0 (gauge values: filed=$FILED survive=$SURVIVE ready=$READY claimed=$CLAIMED merged=$MERGED) at $ts. The mechanism this ticket asked for landed or the pool emptied."
+            set +e
+            "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1
+            crc=$?
+            set -e
+            if [[ "$crc" -eq 0 ]]; then
+                log "observe-to-close: drained stage #$num ($stage)"
+            else
+                log "observe-to-close: failed to close #$num ($stage, rc=$crc)"
+            fi
+        fi
+    done < <(printf '%s' "$open_json" | jq -c '.[]' 2>/dev/null)
+fi
+
+if (( ! fire )); then
+    log "OK: no ScoutEffectivenessLow (ratio=$RATIO, runs=$RUNS); observe-to-close ran"
+    exit 0
+fi
+
+# ============================================================================
+# Fire gate met: file (or dedup against) a `fix(scout-leak):` ticket for
+# the dominant stage. No dominant intra-pipeline leak (all gates 0 while
+# ratio < 0.1) means the loss is upstream — scout-futility-check's class,
+# not ours; do not file a phantom.
+# ============================================================================
+if [[ -z "$DOMINANT" || "$DOMINANT_N" -eq 0 ]]; then
+    loud "SCOUT-LEAK-NO-DOMINANT" \
+        "ratio=$RATIO < $RATIO_CUTOFF but every intra-pipeline gate is 0 (filed=$FILED survive=$SURVIVE ready=$READY claimed=$CLAIMED merged=$MERGED) — loss is upstream of the funnel (scout-futility-check's class)"
+    log "OK: no dominant intra-pipeline leak; upstream futility class covered elsewhere"
+    exit 0
+fi
+
+if [[ -n "$open_json" ]]; then
+    dup=$(printf '%s' "$open_json" \
+        | jq -r --arg m "$MARKER_PREFIX $DOMINANT" '.[] | select((.body // "") | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$dup" ]]; then
+        log "dedup: open $REPO#$dup already carries marker for $DOMINANT"
+        exit 0
+    fi
+fi
+
+title="fix(scout-leak): $(stage_title "$DOMINANT")"
+body_file="$(mktemp -t scout-leak-body.XXXXXX)"
+trap 'rm -f "$body_file"' EXIT INT TERM
+{
+    printf 'ScoutEffectivenessLow is firing (ratio=%s < %s, runs=%s) and the dominant pipeline leak is **%s** (%s issues).\n\n' \
+        "$RATIO" "$RATIO_CUTOFF" "$RUNS" "$DOMINANT" "$DOMINANT_N"
+    printf '## Live gauges (lib/scout-effectiveness.py, trailing 14d)\n\n'
+    printf '| metric | value |\n|--------|-------|\n'
+    printf '| fleet_scout_runs_total | %s |\n' "$RUNS"
+    printf '| fleet_scout_issues_filed | %s |\n' "$FILED"
+    printf '| fleet_scout_issues_survive_intake | %s |\n' "$SURVIVE"
+    printf '| fleet_scout_issues_agent_ready | %s |\n' "$READY"
+    printf '| fleet_scout_issues_claimed | %s |\n' "$CLAIMED"
+    printf '| fleet_scout_issues_merged_14d | %s |\n' "$MERGED"
+    printf '| fleet_scout_effectiveness_ratio | %s |\n' "$RATIO"
+    printf '\n## Leak at each gate\n\n'
+    for s in "${STAGES[@]}"; do
+        n=$(stage_leak "$s")
+        if [[ "$s" == "$DOMINANT" ]]; then
+            printf -- '- **%s** (DOMINANT): %s\n' "$s" "$n"
+        else
+            printf -- '- %s: %s\n' "$s" "$n"
+        fi
+    done
+    printf '\n## Mechanism hypothesis (%s)\n\n' "$DOMINANT"
+    stage_hypotheses "$DOMINANT"
+    printf '\n## What to fix\n\n'
+    printf '1. Confirm the hypothesis above with a live trace of the %s set (filed-but-not-surviving, not-promoted, unclaimed, or unmerged issues).\n' "$DOMINANT"
+    printf '2. Land the mechanism change (this is a mechanism ticket, fleet-ops#366 — a report without a prevention mechanism is a failed fix).\n'
+    printf '3. This ticket drains automatically when the stage leak drops to 0 (observe-to-close) or ScoutEffectivenessLow resolves (ratio >= %s with runs > 0).\n\n' "$RATIO_CUTOFF"
+    printf '## Verification\n\n'
+    printf -- '- Stage gate: `fleet-scout-leak-canary` (heartbeat-tier1 block 45) reads live gauges from %s each tick and no longer reports %s as dominant.\n' "$PROM" "$DOMINANT"
+    printf -- '- Alert resolution: `curl -s 127.0.0.1:9090/api/v1/query?query=fleet_scout_effectiveness_ratio{repo=\\"0509\\"} | jq -r .data.result[0].value[1]` >= %s.\n\n' "$RATIO_CUTOFF"
+    printf 'run-proof: canary tick at %s; .prom=%s; runs=%s filed=%s survive=%s ready=%s claimed=%s merged=%s ratio=%s dominant=%s.\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PROM" "$RUNS" "$FILED" "$SURVIVE" "$READY" "$CLAIMED" "$MERGED" "$RATIO" "$DOMINANT"
+    printf '\n%s %s\n' "$MARKER_PREFIX" "$DOMINANT"
+} >"$body_file"
+
+if [[ "$FILE_ISSUES" != "1" ]]; then
+    log "file skipped (FLEET_SCOUT_LEAK_FILE=$FILE_ISSUES) marker=$MARKER_PREFIX $DOMINANT"
+    log "OK: dominant leak isolated: $DOMINANT ($DOMINANT_N of filed=$FILED)"
+    exit 0
+fi
+
+loud "SCOUT-LEAK-DOMINANT" \
+    "dominant leak stage=$DOMINANT ($DOMINANT_N) ratio=$RATIO runs=$RUNS filed=$FILED survive=$SURVIVE ready=$READY claimed=$CLAIMED merged=$MERGED"
+if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$(cat "$body_file")" >/dev/null 2>&1; then
+    log "filed: $title"
+else
+    loud "SCOUT-LEAK-FILE-ERR" "fleet-issue-file failed for $MARKER_PREFIX $DOMINANT"
+fi
+log "OK: dominant leak isolated + ticket filed: $DOMINANT ($DOMINANT_N of filed=$FILED)"
+exit 0

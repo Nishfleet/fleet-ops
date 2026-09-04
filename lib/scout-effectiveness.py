@@ -12,6 +12,7 @@ Metric family (trailing 14d window unless noted):
   fleet_scout_issues_filed{repo="0509"}
   fleet_scout_issues_survive_intake{repo="0509"}
   fleet_scout_issues_agent_ready{repo="0509"}
+  fleet_scout_issues_claimed{repo="0509"}
   fleet_scout_issues_merged_14d{repo="0509"}
   fleet_scout_effectiveness_ratio{repo="0509"}   merged_14d / runs
   fleet_scout_effectiveness_last_run_seconds     heartbeat (always)
@@ -20,6 +21,11 @@ Pipeline attribution (issue accept §1):
   filed           scout-candidate issue created inside the window
   survive_intake  NOT closed as duplicate within 1h of creation
   agent_ready     carries (or carried) the agent-ready label
+  claimed         carries (or carried) the agent-in-progress label —
+                  the claim gate between agent-ready and merged; GitHub
+                  labels are sticky across close, so a claimed-then-
+                  merged issue still carries agent-in-progress and counts
+                  (fleet-ops#3123)
   merged_14d      a merged PR referencing the issue landed within 14d
                   of the issue's creation
 
@@ -99,6 +105,12 @@ HELP_READY = (
     "agent-ready label (promoted to actionable), per repo (fleet-ops#2756)."
 )
 TYPE_READY = "# TYPE fleet_scout_issues_agent_ready gauge"
+HELP_CLAIMED = (
+    "# HELP fleet_scout_issues_claimed Filed scout issues that carry the "
+    "agent-in-progress label (claimed by a worker), per repo. GitHub labels "
+    "survive close, so merged claims stay counted (fleet-ops#3123)."
+)
+TYPE_CLAIMED = "# TYPE fleet_scout_issues_claimed gauge"
 HELP_MERGED = (
     "# HELP fleet_scout_issues_merged_14d Filed scout issues whose closing "
     "PR merged within the merge window of the issue creation, per repo "
@@ -136,6 +148,7 @@ class RepoStats:
     filed: int = 0
     survive_intake: int = 0
     agent_ready: int = 0
+    claimed: int = 0
     merged_14d: int = 0
 
     @property
@@ -419,6 +432,12 @@ def compute_stats(
         # agent_ready: carries the agent-ready label
         if "agent-ready" in iss.labels:
             s.agent_ready += 1
+        # claimed: carries the agent-in-progress label (claim gate between
+        # agent-ready and merged). GitHub labels are sticky across close, so a
+        # claimed-then-merged issue still counts — claimed is "handled by a
+        # worker", not "currently in flight" (fleet-ops#3123).
+        if "agent-in-progress" in iss.labels:
+            s.claimed += 1
         # merged_14d: closing PR merged within merge window of creation
         if iss.merged_ts is not None:
             if 0 <= (iss.merged_ts - iss.created_ts) <= merge_window:
@@ -451,6 +470,12 @@ def export_prom(stats: list[RepoStats], *, now: datetime) -> str:
         lines.append(
             f'fleet_scout_issues_agent_ready{{repo="{prom_label(s.repo)}"}} '
             f"{s.agent_ready}"
+        )
+    lines += ["", HELP_CLAIMED, TYPE_CLAIMED]
+    for s in stats:
+        lines.append(
+            f'fleet_scout_issues_claimed{{repo="{prom_label(s.repo)}"}} '
+            f"{s.claimed}"
         )
     lines += ["", HELP_MERGED, TYPE_MERGED]
     for s in stats:
@@ -571,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
             f"(repo={REPO}, runs={stats[0].runs}, "
             f"filed={stats[0].filed}, survive={stats[0].survive_intake}, "
             f"agent_ready={stats[0].agent_ready}, "
+            f"claimed={stats[0].claimed}, "
             f"merged_14d={stats[0].merged_14d}, "
             f"ratio={stats[0].effectiveness_ratio:.4f})",
             file=sys.stderr,
