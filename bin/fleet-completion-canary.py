@@ -25,6 +25,8 @@ Hop clocks (packet 11):
 Ladder (this process takes it; no human):
   first stall at dispatch/run → re-dispatch via alert-repair-dispatch
     (seat pick is `--print-seat`, not a copy of _pick_seat)
+  run hop still active past CLOCK_RUN → stop the unit (self-terminate),
+    then re-dispatch; stalled{run} drains on that tick (fleet-ops#3328)
   twice-failed / verify stall / synthetic CanaryDrill → STOP-REASON.json
     (reason=alert-repair-stalled) which summons the senior conference
   terminal close persists the ladder marker; a re-open of the SAME dispatch
@@ -42,7 +44,8 @@ with fleet-escalation-completion (24h cycle budget, wired into heartbeat).
 Dispatch plane (fleet-ops#1009): pi-systemd-run appends one JSONL entry
 per dispatch to $AGENT_STATE/dispatch-ledger.jsonl. This canary walks
 open entries each tick:
-  in-flight unit (active/activating)     -> leave open
+  in-flight unit (active/activating)     -> leave open (alert-repair run hop
+                                           past CLOCK_RUN is stopped above)
   unit finished (Result or journal)      -> close completed/{success,failed}
   orphan past deadline, retries < 2      -> re-dispatch SAME packet file
                                            on the next healthy seat
@@ -459,6 +462,43 @@ def unit_success(result: str, active: str) -> bool:
     return result == "success" and active != "failed"
 
 
+def stop_overrun_unit(unit: str | None, age: int) -> bool:
+    """Stop a still-running repair unit that has exceeded CLOCK_RUN.
+
+    CLOCK_RUN is the run hop's cycle budget (packet 11: unit finishes
+    within 60 min of dispatch). A Type=simple systemd-run --collect unit
+    has no TimeoutStartSec/RuntimeMaxSec by default, so a hung pi worker
+    stays ActiveState=active past the budget and holds fleet_chain_stalled
+    {plane=alert-repair,hop=run}=1 (live fleet-ops#3328: FleetMainRed unit
+    alert-repair-FleetMainRed-20260904T161106Z still running at age=4257s).
+    Stopping it is the self-terminate: systemd then reports inactive, the
+    hop can redispatch, and the stalled metric can drain. Returns True when
+    a stop was issued (or the unit was already gone). False only when the
+    stop command itself failed.
+    """
+    if not unit:
+        return True
+    for prefix in SELF_UNITS:
+        if unit.startswith(prefix):
+            return True
+    # Pass the same unit string unit_status shows, so test fakes and live
+    # systemd both key on one name (systemd accepts foo and foo.service).
+    try:
+        r = subprocess.run(
+            [SYSTEMCTL, "--user", "stop", "--no-block", unit],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"ERROR: stop overrun unit={unit} age={age}s failed: {exc}")
+        return False
+    if r.returncode != 0:
+        log(f"ERROR: stop overrun unit={unit} age={age}s rc={r.returncode} "
+            f"stderr={(r.stderr or '').strip()[:200]}")
+        return False
+    log(f"stopped overrun unit={unit} age={age}s (CLOCK_RUN={CLOCK_RUN}s)")
+    return True
+
+
 def load_chain_state(name: str) -> dict:
     p = STATE / "open" / f"{name}.json"
     if not p.is_file():
@@ -773,6 +813,19 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict,
         return "stop-reason"
 
     if hop in {"dispatch", "run"}:
+        # fleet-ops#3328: a still-running unit past CLOCK_RUN is the stall.
+        # Redispatching without stopping it leaves the original unit holding
+        # hop=run (parse_actions keeps the latest DISPATCH, but the old unit
+        # stays ActiveState=active and the stall metric stays 1). Stop first;
+        # salvage ExecStopPost still banks the worktree (TimeoutStopSec=180).
+        if hop == "run" and unit_running(chain.get("result") or "",
+                                         chain.get("active") or ""):
+            if not stop_overrun_unit(chain.get("dispatch_unit"), age):
+                write_stop_reason(chain, hop, age)
+                loud("UNREPAIRED-FAIL",
+                     f"alertname={name} hop={hop} age={age}s — stop of overrun "
+                     f"unit failed; STOP-REASON written")
+                return "stop-reason"
         rc, dispatched = redispatch_real(name)
         append_redispatch_log(name, hop, seat_label,
                               f"redispatch-rc={rc} dispatched={dispatched}")
@@ -1774,18 +1827,16 @@ def main() -> int:
                 if hop == "verify" and state.get("verify_deadline_ts"):
                     deadline_dt = now + timedelta(seconds=VERIFY_DEADLINE)
                     state["verify_deadline_ts"] = iso(deadline_dt)
-                # fleet-ops#3226: a successful redispatch at hop=dispatch
-                # DRAINED the dispatch hop — take_ladder wrote a DISPATCH
-                # line and spawned a unit, so the chain advanced from
-                # dispatch to run. Counting it as still open+stalled at
-                # dispatch on the same tick fires FleetChainStalled for a
-                # drain that already happened (live: DeployBlockedStuck
-                # redispatch 13:22:13Z, chain_stalled_total went 0->1 at
-                # hop=dispatch while the unit was already running). Decrement
-                # both counters; the next tick classifies the chain at
-                # hop=run and counts it there. The stop-reason terminal
-                # paths above already do this same decrement.
-                if action == "redispatch" and hop == "dispatch":
+                # fleet-ops#3226 (dispatch) / fleet-ops#3328 (run): a
+                # successful redispatch DRAINED this hop. Counting it as
+                # still open+stalled on the same tick fires FleetChainStalled
+                # for a drain that already happened (live #3226:
+                # DeployBlockedStuck at hop=dispatch; live #3328: FleetMainRed
+                # at hop=run age=4257s, unit still active, redispatch left
+                # stalled{run}=1). Decrement both counters; the next tick
+                # classifies the new unit. The stop-reason terminal paths
+                # already do this same decrement.
+                if action == "redispatch" and hop in {"dispatch", "run"}:
                     open_hops[hop] -= 1
                     stalled_hops[hop] -= 1
                 save_chain_state(name, state)
