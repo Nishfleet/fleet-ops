@@ -50,6 +50,16 @@ issue_passes_spec_gate() {
 
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
+# fleet-ops#3121: a PASS reason must carry repo-specific evidence — an issue
+# number (#NNN), a file path, or a URL. Keyword-only compliance (the padded
+# "[duplicate check: ...]" / "[north-star fit: ...]" tags) is not a judgement
+# and must not count toward 2-of-3. Returns 0 if evidence is present.
+evidence_in_reason() {
+    local reason="$1"
+    # Issue number: #NNN or owner/repo#NNN.
+    printf '%s' "$reason" | grep -qE '#[0-9]+|https?://|/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[A-Za-z0-9_./-]+\.(sh|py|js|ts|tsx|jsx|md|json|yml|yaml|toml|go|rs|rb|java|c|cpp|h)\b'
+}
+
 [ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
 repo="$1"
 candidate="$2"
@@ -80,7 +90,29 @@ main() {
     fi
 
     votes=$(votes_json)
-    pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
+    # fleet-ops#3121: a PASS vote whose reason has no repo-specific evidence
+    # (issue #, path, URL) does not count toward 2-of-3. Keyword-only
+    # compliance is not a judgement. Log each rejected vote.
+    local pass_reason role_i
+    local valid_pass=0
+    local n_votes
+    n_votes=$(printf '%s\n' "$votes" | jq 'length')
+    local i=0
+    while [ "$i" -lt "$n_votes" ]; do
+        local v_verdict v_role v_reason
+        v_verdict=$(printf '%s\n' "$votes" | jq -r ".[$i].verdict")
+        v_role=$(printf '%s\n' "$votes" | jq -r ".[$i].role")
+        v_reason=$(printf '%s\n' "$votes" | jq -r ".[$i].reason // empty")
+        if [ "$v_verdict" = "PASS" ]; then
+            if evidence_in_reason "$v_reason"; then
+                valid_pass=$((valid_pass + 1))
+            else
+                log "$repo/#$candidate: $v_role PASS rejected — keyword-only reason, no evidence (issue#/path/URL)"
+            fi
+        fi
+        i=$((i + 1))
+    done
+    pass=$valid_pass
     fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
     reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
 

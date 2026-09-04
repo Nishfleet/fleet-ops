@@ -11,7 +11,7 @@
 # Each tick:
 #   1. List open `escalate-senior` issues in the escalation repo.
 #   2. For each, ensure the three panel units exist or start any missing one
-#      (devin, free-glm-5-3, straitly) via the dedicated
+#      (devin, free-glm-5-3, senior) via the dedicated
 #      `pi-escalation-audit@<repo>--<candidate>--<role>` template.
 #   3. If a needed unit is failed (StartLimitBurst exhausted), reset-failed
 #      then start it so a recovered seat is not wedged (fleet-ops#616).
@@ -59,7 +59,7 @@ started_this_tick=0
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
-ROLES=(devin free-glm-5-3 straitly)
+ROLES=(devin free-glm-5-3 senior)
 
 command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
 [ -x "$TALLY_BIN" ] || { log "FATAL: tally script missing or not executable: $TALLY_BIN"; exit 2; }

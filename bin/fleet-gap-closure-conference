@@ -38,7 +38,27 @@ here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 [ -x "$TALLY_BIN" ] || TALLY_BIN="${HOME}/.local/bin/fleet-gap-closure-tally"
 [ -x "$PI_AUDIT_RUN" ] || PI_AUDIT_RUN="${HOME}/.local/bin/fleet-gap-closure-auditor"
 
-DEFAULT_AUDITORS='[{"id":"glm-5-2","provider":"devin","model":"glm-5-2"},{"id":"glm-5-3","provider":"zenmux","model":"z-ai/glm-5.3-free"},{"id":"ds4-pro","provider":"straitly","model":"deepseek/deepseek-v4-pro"}]'
+# fleet-ops#3121: the third auditor is the senior seat, resolved from
+# config/seat-caps.json senior_seats_in_order (cursor -> xai-oauth ->
+# openrouter). The dead straitly/ds4-pro role is gone. Falls back to the
+# first listed entry verbatim if seat-caps is unreadable; GAP_LOOP_AUDITORS
+# still overrides the whole list for tests.
+SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$here/../config/seat-caps.json}"
+resolve_senior_auditor() {
+    local entry p m
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        p="${entry%%/*}"
+        m="${entry#*/}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        printf '{"id":"senior","provider":"%s","model":"%s"}' "$p" "$m"
+        return 0
+    done < <(jq -r '.senior_seats_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # Fallback: keep the panel convenable even if seat-caps is missing.
+    printf '{"id":"senior","provider":"cursor","model":"cursor-grok-4.6-high"}'
+}
+senior_auditor="$(resolve_senior_auditor)"
+DEFAULT_AUDITORS="$(printf '[{"id":"glm-5-2","provider":"devin","model":"glm-5-2"},{"id":"glm-5-3","provider":"zenmux","model":"z-ai/glm-5.3-free"},%s]' "$senior_auditor")"
 AUDITORS="${GAP_LOOP_AUDITORS:-$DEFAULT_AUDITORS}"
 
 mkdir -p "$JOBS_DIR"

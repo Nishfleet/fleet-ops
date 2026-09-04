@@ -328,7 +328,11 @@ EOF
     log "DRILL: loaded findings from $drill_src"
 else
 # --- pick a capable seat ---------------------------------------------------
-seat=$(pick_seat "" "" 1 "" || true)
+# fleet-ops#3121: the blind audit is a senior-review pass, so it walks the
+# senior_seats_in_order list (cursor -> xai-oauth -> openrouter) rather than
+# the general worker bucket. pick_seat routes difficulty=senior-review to
+# resolve_senior_seat in seat-lib.sh.
+seat=$(pick_seat "" "" 1 "" senior-review || true)
 if [ -z "$seat" ]; then
     log "FATAL: no capable seat available"
     exit 1

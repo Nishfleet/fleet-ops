@@ -398,7 +398,7 @@ main() {
     role="${parts[2]}"
 
     case "$role" in
-        devin|free-glm-5-3|free|straitly) : ;;
+        devin|free-glm-5-3|free|senior|straitly) : ;;
         *) log "unknown role '$role' in instance $instance"; exit 2 ;;
     esac
 

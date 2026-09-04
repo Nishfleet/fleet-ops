@@ -4,7 +4,7 @@
 # Drives the senior-auditor admission panel. Each heartbeat tick:
 #   1. List open scout-candidate issues per enrolled repo.
 #   2. For each candidate, ensure the three pi-audit@ units exist or start
-#      any missing one (devin, free-glm-5-3, straitly).
+#      any missing one (devin, free-glm-5-3, senior).
 #   3. If a needed unit is failed (StartLimitBurst exhausted), reset-failed
 #      then start it so a recovered seat is not wedged for the remaining
 #      StartLimitIntervalSec (fleet-ops#616).
@@ -41,10 +41,16 @@ TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTB
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 TALLY_BIN="${AUDIT_TALLY_BIN:-/home/nish/.local/bin/pi-audit-tally}"
 PENDING_AGE_S="${AUDIT_PENDING_AGE_S:-2400}"
+# fleet-ops#3121: owner-authored issues bypass the panel. An issue whose
+# author is the repo owner AND whose body passes the agent-ready spec gate
+# goes straight to agent-ready (no three-senior panel). One log line per
+# bypass so the path is observable.
+OWNER_BYPASS_AUTHOR="${AUDIT_OWNER_BYPASS_AUTHOR:-nish3451}"
+OWNER_BYPASS_REPOS="${AUDIT_OWNER_BYPASS_REPOS:-}"  # empty = all enrolled repos
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
-ROLES=(devin free-glm-5-3 straitly)
+ROLES=(devin free-glm-5-3 senior)
 
 # fleet-ops#146 (storm-tolerant panel):
 # Cap how many pi-audit@ units this tick may START --no-block. Without
@@ -68,6 +74,65 @@ loud() {
     local tag="$1"; shift
     printf '[%s] [AUDITOR-%s] %s\n' "$(ts)" "$tag" "$*" >&2
     { printf '\n[%s] [AUDITOR-%s] %s\n' "$(ts)" "$tag" "$*"; } >> "$TRIAGE" 2>/dev/null || true
+}
+
+# fleet-ops#3121: spec-gate reuse for the owner-authored bypass.
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1"
+    local py
+    py=$(spec_gate_py)
+    if [ ! -f "$py" ]; then
+        log "SPEC-GATE missing at $py — refuse owner bypass (fail closed)"
+        return 1
+    fi
+    printf '%s' "$body" | python3 "$py" check-body >/dev/null
+}
+
+# fleet-ops#3121: owner-authored bypass. Returns 0 and admits the candidate
+# (agent-ready, drop scout-candidate) when the issue author is the configured
+# owner AND the body passes the spec gate. Returns 1 otherwise (no bypass).
+# Logs exactly one line per bypass attempt so the path is observable.
+owner_bypass_admit() {
+    local repo="$1" candidate="$2"
+    local json author body
+    json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json author,body 2>/dev/null) || {
+        log "$repo/#$candidate: owner bypass — gh view FAILED, no bypass"
+        return 1
+    }
+    author=$(printf '%s' "$json" | jq -r '.author.login // empty')
+    body=$(printf '%s' "$json" | jq -r '.body // empty')
+    if [ "$author" != "$OWNER_BYPASS_AUTHOR" ]; then
+        return 1
+    fi
+    if ! issue_passes_spec_gate "$body"; then
+        log "$repo/#$candidate: owner bypass — author=$author but spec-gate FAILED, panel runs"
+        return 1
+    fi
+    log "$repo/#$candidate: owner bypass — author=$author spec-gate PASS, admitting (no panel)"
+    if [ "${AUDIT_DRY_RUN:-0}" = "1" ]; then
+        log "DRY-RUN: would add agent-ready + remove scout-candidate for $repo/#$candidate (owner bypass)"
+        return 0
+    fi
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label agent-ready >/dev/null 2>&1; then
+        log "$repo/#$candidate: owner bypass — gh issue edit FAILED"
+        return 1
+    fi
+    rm -f "$(pending_stamp "$repo" "$candidate")" 2>/dev/null || true
+    return 0
 }
 
 [ -f "$INTAKE_JSON" ] || { log "FATAL: intake-repos.json missing: $INTAKE_JSON"; exit 2; }
@@ -176,6 +241,13 @@ process_candidate() {
     local repo="$1" candidate="$2"
     local missing=0 active=0 failed=0
     local v role unit state
+
+    # fleet-ops#3121: owner-authored + spec-gate bypass — skip the panel.
+    # Tried before any vote/unit work so an owner issue never pays the
+    # StartLimitBurst cost of a panel it does not need.
+    if owner_bypass_admit "$repo" "$candidate"; then
+        return 0
+    fi
 
     for role in "${ROLES[@]}"; do
         v=$(vote_path "$repo" "$candidate" "$role")

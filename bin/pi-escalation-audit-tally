@@ -38,6 +38,14 @@ ADMIT_LABEL="${AUDIT_ADMIT_LABEL:-agent-ready}"
 
 log() { printf '[%s] [pi-escalation-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
+# fleet-ops#3121: a PASS reason must carry repo-specific evidence — an issue
+# number (#NNN), a file path, or a URL. Keyword-only compliance is not a
+# judgement and must not count toward 2-of-3. Returns 0 if evidence present.
+evidence_in_reason() {
+    local reason="$1"
+    printf '%s' "$reason" | grep -qE '#[0-9]+|https?://|/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[A-Za-z0-9_./-]+\.(sh|py|js|ts|tsx|jsx|md|json|yml|yaml|toml|go|rs|rb|java|c|cpp|h)\b'
+}
+
 [ $# -eq 2 ] || { log "usage: pi-escalation-audit-tally <repo-slug> <candidate>"; exit 2; }
 repo_slug="$1"
 candidate="$2"
@@ -127,7 +135,25 @@ main() {
     fi
 
     votes=$(votes_json)
-    pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
+    # fleet-ops#3121: a PASS vote whose reason has no repo-specific evidence
+    # (issue #, path, URL) does not count toward 2-of-3. Keyword-only
+    # compliance is not a judgement. Log each rejected vote.
+    local valid_pass=0 n_votes i=0 v_verdict v_role v_reason
+    n_votes=$(printf '%s\n' "$votes" | jq 'length')
+    while [ "$i" -lt "$n_votes" ]; do
+        v_verdict=$(printf '%s\n' "$votes" | jq -r ".[$i].verdict")
+        v_role=$(printf '%s\n' "$votes" | jq -r ".[$i].role")
+        v_reason=$(printf '%s\n' "$votes" | jq -r ".[$i].reason // empty")
+        if [ "$v_verdict" = "PASS" ]; then
+            if evidence_in_reason "$v_reason"; then
+                valid_pass=$((valid_pass + 1))
+            else
+                log "$repo_slug/#$candidate: $v_role PASS rejected — keyword-only reason, no evidence (issue#/path/URL)"
+            fi
+        fi
+        i=$((i + 1))
+    done
+    pass=$valid_pass
     fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
     reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
 
