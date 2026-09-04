@@ -99,9 +99,46 @@
 # check). The age gate is the freshness proof that replaces the
 # ledger's cycle-terminal proof.
 #
+# MODE D — stale dirty orphan salvage (fleet-ops#3023 follow-through):
+#   The 2026-09-03 snapshot showed worktree_dirs=487 AFTER Mode C
+#   landed: the residual is dominated by dirty worktrees the safety
+#   gates correctly refuse — uncommitted work exists nowhere else, so
+#   deleting the worktree destroys it. Mode D banks that dirt first,
+#   then lets the normal mode gates decide:
+#   1. STALE:  worktree directory mtime older than --salvage-age-days
+#              (default 14) — a much longer grace than Mode C's 24h,
+#              because deletion follows a banked copy, not the tree.
+#   2. BANK:   run pi-salvage-worktree on the worktree — the same
+#              secret-scan + quarantine + push path a dying pi-issue
+#              worker gets (fleet-ops#1204). The dirt is committed to
+#              wip/wfr-<name>-<ts> and pushed to origin.
+#   3. PROOF:  the pushed ref must appear in a fresh `git ls-remote
+#              origin` — the helper's own log line is never trusted.
+#              A quarantined or push-failed salvage stays local-only
+#              and the worktree is kept. EXCEPTION — archived repos:
+#              `gh repo view --json isArchived` is checked once per
+#              parent; on an archived repo the push can NEVER land, so
+#              the local wip ref the helper leaves in the parent clone
+#              is the maximal possible preservation, and its existence
+#              is verified the same way (SALVAGE-BANKED-LOCAL). Any
+#              other push failure keeps the pushed-bank requirement.
+#   4. GATES:  a banked worktree then flows through its normal mode
+#              gates — Mode A still needs a terminal PR, Mode B a
+#              terminal ledger entry. The pushed wip ref satisfies the
+#              head-on-origin proof for Modes B/C (the ref's tip is
+#              the worktree's post-salvage HEAD, dirt included).
+#   5. LIMIT:  at most --salvage-limit salvage attempts per run
+#              (default 50) so a first-run backlog drains gradually
+#              across daily timer ticks instead of one burst of pushes.
+#   Salvage unit names use the wfr-<basename> shape so the ledger
+#   records never collide with a real pi-issue unit (Mode B's
+#   terminality check is unaffected). Dry-run never banks: stale dirty
+#   worktrees are reported as salvage_candidates instead.
+#
 # Standing rule honored: never delete a live worktree belonging to
 # another agent cycle (gates A.3 / B.3 — systemd is authoritative;
-# gate C.4 — age + systemd for pi-issue paths).
+# gate C.4 — age + systemd for pi-issue paths; gate D.1 — a stale
+# worktree's dirt is banked on origin before the tree is removed).
 #
 # Removal uses `git worktree remove` (no --force), which itself refuses
 # a dirty or locked worktree — defense in depth on top of gates A.4,
@@ -115,6 +152,9 @@
 #   --root DIR       Worktree root (default /home/nish/workspaces/agent-worktrees).
 #   --min-age-hours N  Mode C freshness gate: only reap worktrees whose
 #                    directory mtime is older than N hours (default 24).
+#   --salvage-age-days N  Mode D gate: only bank+reap dirty worktrees
+#                    whose directory mtime is older than N days (default 14).
+#   --salvage-limit N  Max Mode D salvage attempts per run (default 50).
 #   --summary-file P  Write the run breakdown as JSON to P (default:
 #                    $AGENT_STATE/worktree-reaper-last-run.json). Use
 #                    --no-summary-file to disable.
@@ -127,6 +167,13 @@
 #                          $AGENT_STATE/dispatch-ledger.jsonl)
 #   FLEET_WORKTREE_REAPER_MERGED_LIMIT  gh pr list --limit (default 5000)
 #   FLEET_WORKTREE_REAPER_MIN_AGE_HOURS  Mode C age gate (default 24)
+#   FLEET_WORKTREE_REAPER_SALVAGE_AGE_DAYS  Mode D stale-dirty gate
+#                          (default 14 days)
+#   FLEET_WORKTREE_REAPER_SALVAGE_AGE_S  Mode D gate in seconds —
+#                          overrides the days computation (tests)
+#   FLEET_WORKTREE_REAPER_SALVAGE_LIMIT  Mode D per-run cap (default 50)
+#   PI_SALVAGE_BIN     pi-salvage-worktree binary for Mode D banking
+#                          (default: pi-salvage-worktree on PATH)
 #   FLEET_WORKTREE_REAPER_NOW_EPOCH      override epoch for age tests
 #   FLEET_WORKTREE_REAPER_SUMMARY_FILE   summary JSON path (default:
 #                       $AGENT_STATE/worktree-reaper-last-run.json; "" disables)
@@ -141,6 +188,12 @@ ROOT="${FLEET_WORKTREE_REAPER_ROOT:-/home/nish/workspaces/agent-worktrees}"
 DRY_RUN=0
 MERGED_LIMIT="${FLEET_WORKTREE_REAPER_MERGED_LIMIT:-5000}"
 MIN_AGE_HOURS="${FLEET_WORKTREE_REAPER_MIN_AGE_HOURS:-24}"
+SALVAGE_AGE_DAYS="${FLEET_WORKTREE_REAPER_SALVAGE_AGE_DAYS:-14}"
+SALVAGE_LIMIT="${FLEET_WORKTREE_REAPER_SALVAGE_LIMIT:-50}"
+# pi-salvage-worktree (fleet-ops#1204) owns the bank semantics — secret
+# scan, quarantine, wip/<unit>-<ts> push. Mode D reuses it rather than
+# duplicating the scan.
+SALVAGE_BIN="${PI_SALVAGE_BIN:-pi-salvage-worktree}"
 NOW_EPOCH="${FLEET_WORKTREE_REAPER_NOW_EPOCH:-}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
@@ -153,7 +206,10 @@ LEDGER="${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}"
 SUMMARY_FILE="${FLEET_WORKTREE_REAPER_SUMMARY_FILE:-$AGENT_STATE/worktree-reaper-last-run.json}"
 
 usage() {
-    sed -n '2,105p' "$0" | sed 's/^# \?//' >&2
+    # Print the whole header comment block (line 2 through the first
+    # non-comment line) — the fixed `2,105p` range used to truncate
+    # before the Usage/Options sections.
+    awk 'NR>1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print; next } exit }' "$0" >&2
     exit 2
 }
 
@@ -162,6 +218,8 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --root) ROOT="${2:?--root needs a DIR}"; shift 2 ;;
         --min-age-hours) MIN_AGE_HOURS="${2:?--min-age-hours needs an N}"; shift 2 ;;
+        --salvage-age-days) SALVAGE_AGE_DAYS="${2:?--salvage-age-days needs an N}"; shift 2 ;;
+        --salvage-limit) SALVAGE_LIMIT="${2:?--salvage-limit needs an N}"; shift 2 ;;
         --summary-file) SUMMARY_FILE="${2:?--summary-file needs a PATH}"; shift 2 ;;
         --no-summary-file) SUMMARY_FILE=""; shift ;;
         -h|--help) usage ;;
@@ -169,6 +227,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 [[ "$MIN_AGE_HOURS" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --min-age-hours must be a non-negative integer" >&2; exit 2; }
+[[ "$SALVAGE_AGE_DAYS" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --salvage-age-days must be a non-negative integer" >&2; exit 2; }
+[[ "$SALVAGE_LIMIT" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --salvage-limit must be a non-negative integer" >&2; exit 2; }
+# Mode D stale gate in seconds; the _S env seam overrides the days
+# computation so tests can use small values (mirrors NOW_EPOCH).
+SALVAGE_AGE_S="${FLEET_WORKTREE_REAPER_SALVAGE_AGE_S:-$(( SALVAGE_AGE_DAYS * 86400 ))}"
 
 command -v git >/dev/null 2>&1 || { echo "fleet-worktree-reaper: git missing" >&2; exit 2; }
 command -v jq >/dev/null 2>&1  || { echo "fleet-worktree-reaper: jq missing" >&2; exit 2; }
@@ -215,6 +278,9 @@ skipped_nogit=0
 skipped_notpushed=0
 skipped_notterminal=0
 skipped_young=0
+salvaged=0
+salvage_attempts=0
+salvage_candidates=0
 failed=0
 
 # is_live_worker <short> <issue_n>  — mirrors claim-reconcile.
@@ -334,6 +400,65 @@ head_on_origin_cached() {
 worktree_age_seconds() {
     local wt="$1"
     stat -c %Y "$wt" 2>/dev/null || echo 0
+}
+
+# salvage_and_bank <worktree> -> 0 when the worktree's uncommitted work
+# is banked on origin under wip/wfr-<basename>-<ts>; 1 otherwise.
+# Reuses pi-salvage-worktree (fleet-ops#1204) — the same secret-scan +
+# quarantine + push semantics a dying pi-issue worker gets — so the
+# scan logic is not duplicated here. The proof is a fresh ls-remote of
+# the banked ref, never the helper's own log line: a quarantined or
+# push-failed salvage stays local-only and returns 1 so the worktree
+# is kept. The wfr-<basename> unit name keeps ledger records clear of
+# real pi-issue units (Mode B's terminality check reads unit names).
+salvage_and_bank() {
+    local wt="$1" parent_archived="${2:-0}"
+    command -v "$SALVAGE_BIN" >/dev/null 2>&1 || return 1
+    local base unit ts br out rc
+    # Unit name is the ROOT-relative path so nested worktrees cannot
+    # collide (e.g. candidates/<run>/candidate-1 appears under many
+    # parents — basename alone would collide on the wip ref name).
+    base="${wt#"$ROOT"/}"
+    unit="wfr-$(printf '%s' "$base" | tr -c 'A-Za-z0-9:_.-' '_')"
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    br="wip/${unit}-${ts}"
+    # On an archived repo the push is a doomed ~30s network round-trip;
+    # PI_SALVAGE_NO_PUSH skips it — the helper still does the branch
+    # handling, secret scan, commit, local ref, and ledger record.
+    set +e
+    out=$(PI_SALVAGE_WORKDIR="$wt" \
+          PI_SALVAGE_UNIT="$unit" \
+          PI_SALVAGE_NOW="$ts" \
+          PI_SALVAGE_PACKET="" \
+          PI_SALVAGE_NO_PUSH="$parent_archived" \
+          FLEET_DISPATCH_LEDGER="$LEDGER" \
+          "$SALVAGE_BIN" 2>&1)
+    rc=$?
+    set -e
+    [ -n "$out" ] && log "  $wt: salvage helper: ${out//$'\n'/ | }"
+    if [ "$rc" -ne 0 ]; then
+        log "  $wt: salvage helper exited rc=$rc — kept"
+        return 1
+    fi
+    # The bank must be PROVEN: a fresh ls-remote of the exact ref the
+    # helper was told to create — the helper's own log line is never
+    # trusted.
+    if git -C "$wt" ls-remote --exit-code origin "refs/heads/${br}" >/dev/null 2>&1; then
+        log "  $wt: SALVAGE-BANKED $br on origin"
+        return 0
+    fi
+    # Archived remote: the push can NEVER land (read-only), so the local
+    # wip ref the helper leaves in the parent clone is the maximal
+    # possible preservation. Verify the ref exists, then the bank counts.
+    # On a live repo, a missing pushed ref (quarantine, transient push
+    # failure, no permission) keeps the worktree.
+    if [ "$parent_archived" = "1" ] \
+       && git -C "$wt" rev-parse --verify --quiet "refs/heads/${br}" >/dev/null 2>&1; then
+        log "  $wt: SALVAGE-BANKED-LOCAL $br (archived repo — origin is read-only)"
+        return 0
+    fi
+    log "  $wt: salvage not on origin (quarantined or push failed) — kept"
+    return 1
 }
 
 # now_epoch -> echoes the current epoch (overridable for tests).
@@ -456,6 +581,16 @@ for parent in "${parents[@]}"; do
         awk -F'\t' '$1=="CLOSED"{print $2}' "$combined" >"$closed_set" 2>/dev/null || true
     fi
 
+    # Per-parent archived flag (Mode D): an archived repo can never
+    # accept a salvage push — the local wip ref is the maximal possible
+    # bank there. gh failure or any non-"true" answer => not archived
+    # (pushed-bank requirement stays; fail safe).
+    parent_archived=0
+    if [ "$("$GH" repo view "$owner_repo" --json isArchived -q '.isArchived' 2>/dev/null)" = "true" ]; then
+        parent_archived=1
+        log "repo $owner_repo: ARCHIVED — salvage banks local-only (origin read-only)"
+    fi
+
     # Build the per-parent origin SHA cache once (Mode B + C share it).
     # One `git ls-remote origin` per parent; every worktree under this
     # parent checks HEAD against the cached set. Fail-closed: if the
@@ -491,11 +626,47 @@ for parent in "${parents[@]}"; do
             log "  $path: SKIP live worker ($branch, mode=$mode, unit=pi-issue-$pshort-$pn)"
             continue
         fi
+        wt_banked=0
         if ! git -C "$path" diff --quiet --ignore-submodules HEAD 2>/dev/null \
            || [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
-            skipped_dirty=$((skipped_dirty + 1))
-            log "  $path: SKIP dirty ($branch, mode=$mode)"
-            continue
+            # Dirty gate. A STALE dirty orphan gets one Mode D salvage
+            # attempt (fleet-ops#3023): bank the dirt to
+            # wip/wfr-<name>-<ts> on origin, then let the mode gates
+            # re-evaluate — the pushed ref is the work-on-origin proof.
+            # Younger dirty worktrees and failed salvages keep the
+            # existing SKIP dirty refusal.
+            wt_mtime=$(worktree_age_seconds "$path")
+            age_s=$(( $(now_epoch) - wt_mtime ))
+            if [ "$age_s" -ge "$SALVAGE_AGE_S" ]; then
+                # salvage_candidates counts the WHOLE stale-dirty
+                # backlog (uncapped) so the summary reports the true
+                # pile size; the per-run bank cap applies to attempts.
+                salvage_candidates=$((salvage_candidates + 1))
+                if [ "$DRY_RUN" = 1 ]; then
+                    log "  $path: DRY-SALVAGE-CAND ($branch, mode=$mode, age=${age_s}s)"
+                elif [ "$salvage_attempts" -lt "$SALVAGE_LIMIT" ]; then
+                    salvage_attempts=$((salvage_attempts + 1))
+                    if salvage_and_bank "$path" "$parent_archived"; then
+                        salvaged=$((salvaged + 1))
+                        wt_banked=1
+                        # A banked tree should now be clean (the helper
+                        # committed the dirt); re-verify before the mode
+                        # gates see it as reaped-eligible.
+                        if ! git -C "$path" diff --quiet --ignore-submodules HEAD 2>/dev/null \
+                           || [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+                            wt_banked=0
+                            log "  $path: salvage banked but tree still dirty — kept"
+                        fi
+                    fi
+                else
+                    log "  $path: SKIP-D salvage-limit ($branch, mode=$mode, limit=$SALVAGE_LIMIT)"
+                fi
+            fi
+            if [ "$wt_banked" = 0 ]; then
+                skipped_dirty=$((skipped_dirty + 1))
+                log "  $path: SKIP dirty ($branch, mode=$mode)"
+                continue
+            fi
         fi
 
         if [ "$mode" = "A" ]; then
@@ -559,17 +730,21 @@ for parent in "${parents[@]}"; do
             fi
             # Use the per-parent cache if available; fall back to the
             # per-worktree ls-remote (preserves the original contract).
-            if [ "$origin_cache_ok" = 1 ]; then
-                if ! head_on_origin_cached "$path" "$origin_cache"; then
-                    skipped_notpushed=$((skipped_notpushed + 1))
-                    log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
-                    continue
-                fi
-            else
-                if ! head_on_origin "$path"; then
-                    skipped_notpushed=$((skipped_notpushed + 1))
-                    log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
-                    continue
+            # A Mode D banked tree needs no check: the pushed wip ref
+            # already proved the work (HEAD + dirt) is on origin.
+            if [ "$wt_banked" = 0 ]; then
+                if [ "$origin_cache_ok" = 1 ]; then
+                    if ! head_on_origin_cached "$path" "$origin_cache"; then
+                        skipped_notpushed=$((skipped_notpushed + 1))
+                        log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                        continue
+                    fi
+                else
+                    if ! head_on_origin "$path"; then
+                        skipped_notpushed=$((skipped_notpushed + 1))
+                        log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                        continue
+                    fi
                 fi
             fi
             if [ "$DRY_RUN" = 1 ]; then
@@ -590,16 +765,22 @@ for parent in "${parents[@]}"; do
             # Mode C: HEAD on origin (vault safe-cleanup order) + age
             # gate. No ledger, no merged-PR requirement — the vault says
             # "merged is the wrong question; is this branch PUSHED."
-            # Fail-closed on the origin cache: never delete blind.
-            if [ "$origin_cache_ok" = 0 ]; then
-                skipped_notpushed=$((skipped_notpushed + 1))
-                log "  $path: SKIP-C origin-cache-fail ($branch) — fail safe"
-                continue
-            fi
-            if ! head_on_origin_cached "$path" "$origin_cache"; then
-                skipped_notpushed=$((skipped_notpushed + 1))
-                log "  $path: SKIP-C head-not-on-origin ($branch) — work is local; refuse"
-                continue
+            # Fail-closed on the origin cache: never delete blind. A
+            # Mode D banked tree skips both checks: the pushed wip ref
+            # already proved the work (HEAD + dirt) is on origin, and
+            # the cache was built before the push so it cannot contain
+            # the post-salvage HEAD anyway.
+            if [ "$wt_banked" = 0 ]; then
+                if [ "$origin_cache_ok" = 0 ]; then
+                    skipped_notpushed=$((skipped_notpushed + 1))
+                    log "  $path: SKIP-C origin-cache-fail ($branch) — fail safe"
+                    continue
+                fi
+                if ! head_on_origin_cached "$path" "$origin_cache"; then
+                    skipped_notpushed=$((skipped_notpushed + 1))
+                    log "  $path: SKIP-C head-not-on-origin ($branch) — work is local; refuse"
+                    continue
+                fi
             fi
             # Age gate: worktree directory mtime must be older than
             # --min-age-hours. Protects a worktree a runner just created
@@ -639,12 +820,14 @@ log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path othe
 reaped=$reaped (A=$reaped_a [closed=$reaped_a_closed] B=$reaped_b C=$reaped_c) \
 skipped_live=$skipped_live skipped_unmerged=$skipped_unmerged \
 skipped_dirty=$skipped_dirty skipped_notpushed=$skipped_notpushed \
-skipped_notterminal=$skipped_notterminal skipped_young=$skipped_young nogit=$skipped_nogit failed=$failed"
-printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s [closed=%s] B=%s C=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s nogit=%s failed=%s\n' \
+skipped_notterminal=$skipped_notterminal skipped_young=$skipped_young \
+salvaged=$salvaged salvage_attempts=$salvage_attempts salvage_candidates=$salvage_candidates nogit=$skipped_nogit failed=$failed"
+printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s [closed=%s] B=%s C=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s salvaged=%s salvage_attempts=%s salvage_candidates=%s nogit=%s failed=%s\n' \
     "$total_scanned" "$total_claim" "$total_pi_path" "$total_other" \
     "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" \
     "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
-    "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed"
+    "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" \
+    "$salvaged" "$salvage_attempts" "$salvage_candidates" "$skipped_nogit" "$failed"
 
 # Persist the run breakdown as JSON so the duty officer and manual
 # verification can see WHY worktree_dirs is high (reaped vs skipped_dirty
@@ -652,10 +835,11 @@ printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s 
 # failure is logged, never fatal.
 if [ -n "$SUMMARY_FILE" ]; then
     run_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s}' \
+    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"salvaged":%s,"salvage_attempts":%s,"salvage_candidates":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s}' \
         "$run_ts" "$DRY_RUN" "$total_scanned" "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" \
         "$skipped_live" "$skipped_unmerged" "$skipped_dirty" "$skipped_notpushed" \
-        "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed" \
+        "$skipped_notterminal" "$skipped_young" "$salvaged" "$salvage_attempts" "$salvage_candidates" \
+        "$skipped_nogit" "$failed" \
         "$total_claim" "$total_pi_path" "$total_other")
     if ! printf '%s\n' "$summary_json" >"$SUMMARY_FILE.tmp.$$" 2>/dev/null \
        || ! mv -f "$SUMMARY_FILE.tmp.$$" "$SUMMARY_FILE" 2>/dev/null; then
