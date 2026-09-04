@@ -10,7 +10,11 @@ measures the deployment pipeline from the sources that actually record it:
       cycle that ran the sanctioned deploy on the VPS. Green = a cycle
       whose "origin/main moved ... — invoking sanctioned deploy" line is
       NOT followed by a LOUD DEPLOY-BLOCKED / DEPLOY-CHECK-FAILED line.
-      Published as the p95 over the trailing window.
+      A merge whose wait contains a DEPLOY-BLOCKED event is excluded:
+      that class is DeployBlockedStuck, and counting it after the
+      episode ends is the hangover that kept DeploymentLatencyHigh
+      firing for 24h+ on 2026-09-02..04 (fleet-ops#3136). Published
+      as the p95 over the remaining samples in the trailing window.
   (b) rollback rate = auto-revert events / deployments over the trailing
       30 days. An auto-revert event is a PR titled
       "revert: auto-restore green main (reverts <sha>)" — the one artifact
@@ -108,6 +112,11 @@ TS_RE = re.compile(r"\[?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]?")
 APP_TS_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
 MOVED_RE = re.compile(r"origin/main moved \S+ -> \S+")
 BLOCKED_RE = re.compile(r"DEPLOY-BLOCKED|DEPLOY-CHECK-FAILED")
+# A successful idle tick or a completed deploy ends a blocked episode even
+# when origin/main did not move again (fleet-ops#3136: restoring the clone
+# to main produced "nothing to do", but blocked_duration kept aging
+# because the newest parsed event was still the last DEPLOY-BLOCKED).
+CLEAR_RE = re.compile(r"nothing to do|deploy completed rc=0")
 DISPATCH_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]\s+DISPATCH alertname=([A-Za-z0-9_]+)")
 RESOLVED_RE = re.compile(
     r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\].*?\bRESOLVED\b.*?\balertname=([A-Za-z0-9_]+)"
@@ -392,6 +401,8 @@ def _parse_journal_lines(text):
             events.append((ts, "blocked"))
         elif MOVED_RE.search(line):
             events.append((ts, "moved"))
+        elif CLEAR_RE.search(line):
+            events.append((ts, "clear"))
     events.sort(key=lambda e: e[0])
     return events
 
@@ -487,6 +498,29 @@ def _episode_starts(text, crit):
     return starts
 
 
+def _blocked_timestamps(events):
+    """Return sorted epochs of DEPLOY-BLOCKED / DEPLOY-CHECK-FAILED lines."""
+    return [ts for ts, kind in events if kind == "blocked"]
+
+
+def _span_contains_blocked(blocked_ts, start, end):
+    """True when a blocked event sits in [start, end] inclusive.
+
+    Those merge→green samples are the DeployBlockedStuck class, not
+    deploy latency. Counting them after the episode ends is the hangover
+    that kept DeploymentLatencyHigh firing for 24h+ after the clone was
+    unblocked (fleet-ops#3136 live: p95 97594s of 460 samples, 411 of
+    them blocked-span; the 50 clean samples p95'd at 327s).
+    blocked_ts is sorted; scan stops once ts > end.
+    """
+    for ts in blocked_ts:
+        if ts > end:
+            return False
+        if start <= ts <= end:
+            return True
+    return False
+
+
 def _green_finishes(events):
     """Return sorted green-deploy finish epochs.
 
@@ -514,9 +548,10 @@ def _green_finishes(events):
 def _blocked_episode(events, now):
     """Return (duration, run_start) of the CURRENT blocked episode.
 
-    0 duration when the newest event is not a blocked cycle — either the
-    pipeline is green or main has not moved. A run is the contiguous tail
-    of blocked events with inter-line gaps <= BLOCK_RUN_GAP_S.
+    0 duration when the newest event is not a blocked cycle — a green
+    deploy, a successful idle tick ("nothing to do" / deploy completed),
+    or main has not moved. A run is the contiguous tail of blocked events
+    with inter-line gaps <= BLOCK_RUN_GAP_S.
     """
     if not events:
         return 0.0, None
@@ -608,13 +643,20 @@ def compute(env=None):
         alerts[0][0] if alerts else window_start)
 
     # (a) deployment latency: mergedAt -> next green cycle finish.
+    # Skip samples whose wait contains a DEPLOY-BLOCKED event — that is
+    # DeployBlockedStuck, and leaving it in the p95 after the episode
+    # ends is the #3136 hangover (repair loop terminal=green, detector
+    # still red for 24h+).
     greens = _green_finishes(events) if events is not None else []
+    blocked_ts = _blocked_timestamps(events) if events is not None else []
     latency = []
     for m in merged:
         if m < journal_start - 86400:
             continue  # deploy record predates the journal — not measurable
         for g in greens:
             if g >= m:
+                if _span_contains_blocked(blocked_ts, m, g):
+                    break
                 latency.append(g - m)
                 break
     latency_p95 = _p95(latency) if events is not None else None
