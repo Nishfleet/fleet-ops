@@ -4,15 +4,15 @@
 # Proves the mechanical core of the intake/scout repair rotation (#27):
 # when the hardcoded tick seat (minimax/MiniMax-M3) is walled by a 429 / quota,
 # pick_seat returns a DIFFERENT usable seat so the repair agent can re-run the
-# tick on it instead of leaving the unit failed. And when EVERY seat in the
-# ladder is walled, pick_seat returns empty (exit 1) — the genuine "fail loud"
-# escalation path, not a quiet degraded mode.
+# tick on it instead of leaving the unit failed.
 #
-# This is the deterministic backing for the prompt change in
-# prompts/intake-repair.md and prompts/scout-repair.md: those prompts instruct
-# the repair agent to call `pick_seat <walled-p> <walled-m> 0 <tried-file>`.
-# This test proves that call actually rotates and that the all-walled case is
-# detectable, so the prompt's "if seat is empty -> escalate" branch is real.
+# fleet-ops#3324 (PR #3371) changed the all-walled path: a recoverable bench
+# (rate_limited / transient_fault / empty_run / overload_bench) is fail-opened
+# onto the shortest remaining untried seat instead of stalling. Empty + exit 1
+# is now the money-wall signal (402 / quota_exhausted / corpse /
+# credentials_bad), which is what the repair prompts treat as genuine
+# escalation. This test locked the pre-#3324 stall and redded main the moment
+# #3371 landed (P14 "all seats walled: pick_seat returned 0, expected 1").
 #
 # Runs entirely offline: stubbed models.json, seat-caps.json, and ledger dir.
 # No pi, no systemd, no network.
@@ -40,6 +40,9 @@ export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
 export PI_BIN="$scratch/pi-stub"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export PI_MODELS_JSON="$scratch/models.json"
+export PI_SEAT_NOUSABLE_COOLDOWN_S=0
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
 
 # --- stub inputs ----------------------------------------------------------
 # A minimal models.json with two providers: the walled metered seat and a
@@ -128,17 +131,46 @@ nm=$(printf '%s' "$seat" | cut -f2)
   || fail "pick_seat rotated to $np/$nm, expected devin/swe-1-7 (the only other allowlisted seat)"
 ok "walled minimax/MiniMax-M3 -> pick_seat rotated to devin/swe-1-7"
 
-# --- invariant 2: every seat walled -> pick_seat returns empty (fail loud) ---
-# Wall devin too. Now both allowlisted seats are rate_limited with future resets.
+# --- invariant 2: every remaining recoverable bench is fail-opened (#3324) ---
+# Wall devin too. Both allowlisted seats are now rate_limited with future
+# resets. pick_seat must NOT stall: the floor fail-opens the shortest
+# remaining recoverable bench that is not in the tried file. minimax is
+# excluded by tried, so the floor returns devin/swe-1-7 and logs the
+# seat-floor line. Empty+exit 1 is reserved for a money wall (invariant 2b).
 write_ledger devin swe-1-7 rate_limited "$usable" "$obs"
 
 set +e
-seat=$(pick_seat minimax MiniMax-M3 0 "$tried")
+seat=$(pick_seat minimax MiniMax-M3 0 "$tried" 2>"$STATE_DIR/floor.err")
 rc=$?
 set -e
-[[ "$rc" == 1 ]] || fail "all seats walled: pick_seat returned $rc, expected 1 (refuse to route outside cap map)"
-[[ -z "$seat" ]] || fail "all seats walled: pick_seat returned '$seat', expected empty (the fail-loud escalation signal)"
-ok "every seat walled -> pick_seat empty + exit 1 (genuine escalation, not quiet degraded mode)"
+[[ "$rc" == 0 ]] || fail "all recoverable benches walled: pick_seat returned $rc, expected 0 (seat-floor fail-open, fleet-ops#3324)"
+[[ -n "$seat" ]] || fail "all recoverable benches walled: pick_seat returned empty, expected the shortest remaining recoverable bench"
+np=$(printf '%s' "$seat" | cut -f1)
+nm=$(printf '%s' "$seat" | cut -f2)
+[[ "$np" == "devin" && "$nm" == "swe-1-7" ]] \
+  || fail "fail-open returned $np/$nm, expected devin/swe-1-7 (the only untried recoverable bench; minimax is in the tried file)"
+grep -q "seat-floor: fail-open devin/swe-1-7" "$STATE_DIR/floor.err" \
+  || fail "fail-open must log 'seat-floor: fail-open devin/swe-1-7 (bench had <n>s left)'; err=$(cat "$STATE_DIR/floor.err")"
+ok "every recoverable bench walled -> pick_seat fail-opens shortest remaining untried bench (fleet-ops#3324)"
+
+# --- invariant 2b: money wall still stalls (empty + exit 1) -----------------
+# Same two-seat ladder, both quota_exhausted. The floor must never lift a
+# 402 / quota_exhausted wall — that is the genuine fail-loud escalation
+# the repair prompts still route to.
+write_ledger minimax MiniMax-M3 quota_exhausted "$usable" "$obs"
+write_ledger devin swe-1-7 quota_exhausted "$usable" "$obs"
+
+set +e
+seat=$(pick_seat minimax MiniMax-M3 0 "$tried" 2>"$STATE_DIR/money.err")
+rc=$?
+set -e
+[[ "$rc" == 1 ]] || fail "money wall: pick_seat returned $rc, expected 1 (never fail-open a 402)"
+[[ -z "$seat" ]] || fail "money wall: pick_seat returned '$seat', expected empty"
+grep -q "NO USABLE SEAT" "$STATE_DIR/money.err" \
+  || fail "money wall must log NO USABLE SEAT; err=$(cat "$STATE_DIR/money.err")"
+grep -q "seat-floor: fail-open" "$STATE_DIR/money.err" \
+  && fail "money wall must NOT log seat-floor fail-open; err=$(cat "$STATE_DIR/money.err")"
+ok "quota_exhausted money wall still stalls empty + exit 1 (genuine escalation)"
 
 # --- invariant 3: the prompts instruct the agent to use this exact call -----
 # Guard against the prompt drift that caused #27 in the first place: the
@@ -154,7 +186,9 @@ for p in prompts/intake-repair.md prompts/scout-repair.md; do
   grep -qi 'never on the vendor'\''s error prose\|NEVER on the vendor' "$f" \
     || fail "$p must forbid classifying from the vendor error prose"
   grep -qi 'fail LOUD\|fail loud' "$f" \
-    || fail "$p must specify the all-walled case fails loud, not quiet"
+    || fail "$p must specify the money-wall / unrecoverable case fails loud, not quiet"
+  grep -qi 'fail-open\|fleet-ops#3324' "$f" \
+    || fail "$p must name the #3324 fail-open so a recoverable 429 is not escalated as empty"
 done
 ok "intake-repair.md and scout-repair.md classify 429 as a lane fault and rotate"
 
@@ -180,4 +214,4 @@ ok "scout-repair.md clears a wedged unit and wraps start in a timeout (fleet-ops
 # along inside the already-wired repair-rotation job.
 bash "$here/pi-intake-repair-run.test.sh"
 
-ok "repair rotation: 429 rotates to a healthy seat; all-walled fails loud"
+ok "repair rotation: 429 rotates to a healthy seat; recoverable all-walled fail-opens; money wall fails loud"

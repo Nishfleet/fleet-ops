@@ -234,16 +234,12 @@ Steps:
    blocked-on: Nishfleet/<repo>#<n>
    blocked-on: nish-decision
 
-   One line per dependency. Use `nish-decision` only when the blocker is a
-   Nish call about money, legal, product direction, or customer data.
-   Anything else (including privacy, security, deploy, tooling, or
-   operational choices) goes to `blocked-on: orchestrator` with the
-   `needs-orchestrator` label so the orchestrator triages it. Prose
-   `#n` mentions are ignored — without `blocked-on:` the issue sits on the
-   desk-triage list until a human answers. blocked-reconcile verifies each
-   blocker live: CLOSED `owner/repo#n` issues resolve; a later comment that
-   answers a nish-decision MUST include a `decision-resolved:` line so
-   detection is deterministic. Strike through each resolved body line
+   One line per dependency. Use `nish-decision` only for money, legal,
+   product direction, or customer data. Anything else is
+   `blocked-on: orchestrator` plus `needs-orchestrator`. Prose
+   `#n` mentions are ignored. blocked-reconcile verifies each blocker live:
+   CLOSED `owner/repo#n` issues resolve; a later nish-decision answer MUST
+   include a `decision-resolved:` line. Strike through resolved body lines
    (`~~blocked-on: Nishfleet/<repo>#<n>~~`, `~~blocked-on: nish-decision~~`).
    Then
    remove the worktree with `bin/fleet-wipe-lessons-check worktree-remove <path>`
