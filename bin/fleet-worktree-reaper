@@ -103,6 +103,10 @@
 #   --root DIR       Worktree root (default /home/nish/workspaces/agent-worktrees).
 #   --min-age-hours N  Mode C freshness gate: only reap worktrees whose
 #                    directory mtime is older than N hours (default 24).
+#   --summary-file P  Write the run breakdown as JSON to P (default:
+#                    $AGENT_STATE/worktree-reaper-last-run.json). Use
+#                    --no-summary-file to disable.
+#   --no-summary-file  Skip writing the summary JSON.
 #
 # Environment seams (tests):
 #   SYSTEMCTL          systemctl binary
@@ -112,6 +116,8 @@
 #   FLEET_WORKTREE_REAPER_MERGED_LIMIT  gh pr list --limit (default 5000)
 #   FLEET_WORKTREE_REAPER_MIN_AGE_HOURS  Mode C age gate (default 24)
 #   FLEET_WORKTREE_REAPER_NOW_EPOCH      override epoch for age tests
+#   FLEET_WORKTREE_REAPER_SUMMARY_FILE   summary JSON path (default:
+#                       $AGENT_STATE/worktree-reaper-last-run.json; "" disables)
 #
 # Exit codes:
 #   0  best-effort GC complete (per-worktree failures are logged + counted,
@@ -128,6 +134,11 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 GH="${GH:-gh}"
 AGENT_STATE="${AGENT_STATE:-${HOME:-/home/nish}/workspaces/agent-state}"
 LEDGER="${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}"
+# Summary file: persist the run breakdown so the duty officer (and manual
+# verification) can see WHY worktree_dirs is high — reaped vs skipped_dirty
+# vs skipped_notpushed — without grepping journalctl. Default writes to
+# agent-state/worktree-reaper-last-run.json; set to "" to disable.
+SUMMARY_FILE="${FLEET_WORKTREE_REAPER_SUMMARY_FILE:-$AGENT_STATE/worktree-reaper-last-run.json}"
 
 usage() {
     sed -n '2,105p' "$0" | sed 's/^# \?//' >&2
@@ -139,6 +150,8 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --root) ROOT="${2:?--root needs a DIR}"; shift 2 ;;
         --min-age-hours) MIN_AGE_HOURS="${2:?--min-age-hours needs an N}"; shift 2 ;;
+        --summary-file) SUMMARY_FILE="${2:?--summary-file needs a PATH}"; shift 2 ;;
+        --no-summary-file) SUMMARY_FILE=""; shift ;;
         -h|--help) usage ;;
         *) echo "fleet-worktree-reaper: unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -583,3 +596,21 @@ printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s 
     "$reaped" "$reaped_a" "$reaped_b" "$reaped_c" \
     "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
     "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed"
+
+# Persist the run breakdown as JSON so the duty officer and manual
+# verification can see WHY worktree_dirs is high (reaped vs skipped_dirty
+# vs skipped_notpushed) without grepping journalctl. Best-effort: a write
+# failure is logged, never fatal.
+if [ -n "$SUMMARY_FILE" ]; then
+    run_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_b":%s,"reaped_c":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s}' \
+        "$run_ts" "$DRY_RUN" "$total_scanned" "$reaped" "$reaped_a" "$reaped_b" "$reaped_c" \
+        "$skipped_live" "$skipped_unmerged" "$skipped_dirty" "$skipped_notpushed" \
+        "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed" \
+        "$total_claim" "$total_pi_path" "$total_other")
+    if ! printf '%s\n' "$summary_json" >"$SUMMARY_FILE.tmp.$$" 2>/dev/null \
+       || ! mv -f "$SUMMARY_FILE.tmp.$$" "$SUMMARY_FILE" 2>/dev/null; then
+        log "summary-file write FAILED ($SUMMARY_FILE) — non-fatal"
+        rm -f "$SUMMARY_FILE.tmp.$$" 2>/dev/null || true
+    fi
+fi

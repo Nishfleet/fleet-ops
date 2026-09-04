@@ -44,6 +44,10 @@
 #    21. fix/* branch + pushed + dirty + old     -> SKIP dirty
 #    22. detached HEAD + on origin + clean + old -> REAPED-C
 #
+#   Summary file (fleet-ops#2965):
+#    23. --summary-file PATH writes valid JSON run breakdown
+#    24. --no-summary-file disables the write
+#
 #   16. MANIFEST + unit files present    -> install rail intact
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -530,6 +534,35 @@ out_c5=$("$bin" --root "$wroot" 2>&1) || true
 echo "$out_c5" | grep -q "detached-wt-504: REAPED-C" \
     || fail "case22: expected REAPED-C tag for detached; output: $out_c5"
 ok "case22: detached HEAD + on origin + clean + old REAPED-C"
+
+# --- 23. --summary-file writes JSON run breakdown (fleet-ops#2965) ---------
+# The reaper persists its run breakdown as JSON so the duty officer can
+# see WHY worktree_dirs is high (reaped vs skipped_dirty vs
+# skipped_notpushed) without grepping journalctl. Verify the file is
+# valid JSON, has the expected fields, and reflects the run's counts.
+summary_out="$(mktemp -t wt-reaper-summary.XXXXXX)"
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-600" "fix/mode-c-600" 1 0 1
+out_s=$("$bin" --root "$wroot" --summary-file "$summary_out" 2>&1) || true
+[ -f "$summary_out" ] || fail "case23: summary file not written"
+jq -e '.script == "fleet-worktree-reaper"' "$summary_out" >/dev/null 2>&1 \
+    || fail "case23: summary JSON missing script field; content: $(cat "$summary_out")"
+jq -e '.reaped >= 1' "$summary_out" >/dev/null 2>&1 \
+    || fail "case23: summary JSON reaped should be >=1; content: $(cat "$summary_out")"
+jq -e '.dry_run == 0' "$summary_out" >/dev/null 2>&1 \
+    || fail "case23: summary JSON dry_run should be 0 for live run; content: $(cat "$summary_out")"
+jq -e 'has("skipped_dirty") and has("skipped_notpushed")' "$summary_out" >/dev/null 2>&1 \
+    || fail "case23: summary JSON missing skip fields; content: $(cat "$summary_out")"
+ok "case23: --summary-file writes valid JSON run breakdown"
+
+# --- 24. --no-summary-file disables the write (fleet-ops#2965) -------------
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-601" "fix/mode-c-601" 1 0 1
+rm -f "$summary_out"
+out_ns=$("$bin" --root "$wroot" --no-summary-file 2>&1) || true
+[ ! -f "$summary_out" ] \
+    || fail "case24: --no-summary-file should not write; file exists: $(cat "$summary_out")"
+ok "case24: --no-summary-file disables summary write"
+
+rm -f "$summary_out"
 
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
