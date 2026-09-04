@@ -113,6 +113,78 @@ PY
 ok "compute_stats: filed -> survive_intake -> agent_ready -> merged_14d pipeline"
 
 # =========================================================================
+# 1b. count_finished_runs: systemd Finished only (fleet-ops#3170)
+#     ExecStartPre begin / Failed to start / no-seat must NOT count.
+#     Live: 220 last_run changes vs 50 Finished / 155 Failed to start.
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "count_finished_runs failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("se", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["se"] = m
+spec.loader.exec_module(m)
+
+journal = """\
+Sep 04 12:23:07 systemd[1038]: Failed to start pi-scout@0509.service - Pi fleet product scout
+Sep 04 12:23:06 bash[1]: pi-scout-run: 0509/scout no healthy seat available
+Sep 04 14:01:05 systemd[1038]: Finished pi-scout@0509.service - Pi fleet product scout
+Sep 04 16:00:00 systemd[1038]: Finished pi-scout@fleet-ops.service - Pi fleet product scout
+Sep 04 18:00:00 systemd[1038]: Finished pi-scout@0509.service - another success
+Sep 04 18:00:01 systemd[1038]: Starting pi-scout@0509.service - must not count
+"""
+n = m.count_finished_runs(journal, "0509")
+assert n == 2, n  # two Finished @0509; fleet-ops Finished + Failed + no-seat + Starting excluded
+assert m.count_finished_runs(journal, "fleet-ops") == 1
+assert m.count_finished_runs("", "0509") == 0
+print("OK: count_finished_runs ignores Failed/no-seat/other-repo")
+PY
+ok "count_finished_runs: Finished only, not begins or no-seat failures"
+
+# =========================================================================
+# 1c. merge_issues: promoted issues that dropped scout-candidate still count
+#     (pi-audit-tally removes scout-candidate when adding agent-ready).
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "merge_issues failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("se", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["se"] = m
+spec.loader.exec_module(m)
+
+START = 1788350400 - 14 * 86400
+still_candidate = m.ScoutIssue(
+    number=10, repo="0509", created_ts=START + 100,
+    labels=("scout-candidate",), state="open")
+promoted = m.ScoutIssue(
+    number=11, repo="0509", created_ts=START + 200,
+    labels=("agent-ready",), state="open")  # scout-candidate already dropped
+claimed = m.ScoutIssue(
+    number=12, repo="0509", created_ts=START + 300,
+    labels=("agent-in-progress",), state="closed",
+    merged_ts=START + 4000)
+# same number from two label lists -> union labels, not double-count
+dual_a = m.ScoutIssue(
+    number=13, repo="0509", created_ts=START + 400,
+    labels=("scout-candidate",), state="open")
+dual_b = m.ScoutIssue(
+    number=13, repo="0509", created_ts=START + 400,
+    labels=("agent-ready", "scout-candidate"), state="open")
+
+merged = m.merge_issues([
+    [still_candidate, dual_a],
+    [promoted, dual_b],
+    [claimed],
+])
+nums = sorted(i.number for i in merged)
+assert nums == [10, 11, 12, 13], nums
+by = {i.number: i for i in merged}
+assert "agent-ready" in by[13].labels and "scout-candidate" in by[13].labels
+assert by[11].labels == ("agent-ready",)
+print("OK: merge_issues unions labels and dedupes by number")
+PY
+ok "merge_issues: promoted-without-scout-candidate still in the cohort"
+
+# =========================================================================
 # 2. effectiveness_ratio = 0 when no runs
 # =========================================================================
 python3 - "$helper" <<'PY' || fail "zero-runs ratio failed"

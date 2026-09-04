@@ -30,10 +30,17 @@ Pipeline attribution (issue accept §1):
                   of the issue's creation
 
 Sources:
-  - Prometheus query_range for fleet_scout_last_run_seconds (each value
-    change = one actual scout run where ExecCondition passed; written by
-    scout-futility-check ExecStartPre begin, fleet-ops#1277)
-  - `gh issue list` for scout-candidate issues in the product repo
+  - journalctl --user -u pi-scout@<repo>.service: each
+    `Finished pi-scout@<repo>.service` line is one successful run
+    (fleet-ops#3170). ExecStartPre begin / Failed to start / no-seat
+    ticks are NOT runs — counting them (220 begins vs 50 Finished)
+    was the 2026-09-04 ScoutEffectivenessLow false-fire.
+    Falls back to fleet_scout_last_run_seconds value-changes only when
+    the journal is empty.
+  - `gh issue list` union of scout-candidate / agent-ready /
+    agent-in-progress / discarded. pi-audit-tally drops scout-candidate
+    on promote, so a candidate-only query silently loses the issues
+    that actually merged (fleet-ops#3170).
   - `gh pr list --state merged` for PR bodies referencing issue numbers
 
 Piggybacks fleet-metrics-export.service via
@@ -43,6 +50,7 @@ timer. Always exits 0 so a fault cannot fail Prometheus export.
 Environment seams (tests):
   FLEET_SCOUT_EFF_OUT, FLEET_SCOUT_EFF_NOW, FLEET_SCOUT_EFF_FIXTURE,
   FLEET_SCOUT_EFF_PROM_URL, FLEET_SCOUT_EFF_GH,
+  FLEET_SCOUT_EFF_JOURNAL, FLEET_SCOUT_EFF_JOURNALCTL,
   FLEET_SCOUT_EFF_WINDOW_DAYS, FLEET_SCOUT_EFF_REPO,
   FLEET_SCOUT_EFF_DUPE_HOURS, FLEET_SCOUT_EFF_READY_HOURS,
   FLEET_SCOUT_EFF_MERGE_DAYS, XDG_RUNTIME_DIR, HOME
@@ -75,6 +83,8 @@ PROM_URL = os.environ.get(
 ).rstrip("/")
 GH = os.environ.get("FLEET_SCOUT_EFF_GH", "gh")
 FIXTURE = os.environ.get("FLEET_SCOUT_EFF_FIXTURE", "")
+JOURNAL_FILE = os.environ.get("FLEET_SCOUT_EFF_JOURNAL", "")
+JOURNALCTL = os.environ.get("FLEET_SCOUT_EFF_JOURNALCTL", "journalctl")
 NOW_ISO = os.environ.get("FLEET_SCOUT_EFF_NOW", "")
 WINDOW_DAYS = int(os.environ.get("FLEET_SCOUT_EFF_WINDOW_DAYS", "14"))
 REPO = os.environ.get("FLEET_SCOUT_EFF_REPO", "0509")
@@ -85,14 +95,16 @@ PROM_TIMEOUT = 20
 GH_TIMEOUT = 30
 
 HELP_RUNS = (
-    "# HELP fleet_scout_runs_total Actual pi-scout executions (ExecCondition "
-    "passed) observed in the trailing effectiveness window, per repo "
-    "(fleet-ops#2756)."
+    "# HELP fleet_scout_runs_total Successful pi-scout executions (systemd "
+    "Finished) observed in the trailing effectiveness window, per repo. "
+    "ExecStartPre begins and Failed-to-start / no-seat ticks are excluded "
+    "(fleet-ops#2756 / #3170)."
 )
 TYPE_RUNS = "# TYPE fleet_scout_runs_total gauge"
 HELP_FILED = (
-    "# HELP fleet_scout_issues_filed Scout-candidate issues created inside "
-    "the trailing effectiveness window, per repo (fleet-ops#2756)."
+    "# HELP fleet_scout_issues_filed Scout-pipeline issues created inside "
+    "the trailing effectiveness window, per repo (union of scout-candidate / "
+    "agent-ready / agent-in-progress / discarded; fleet-ops#2756 / #3170)."
 )
 TYPE_FILED = "# TYPE fleet_scout_issues_filed gauge"
 HELP_SURVIVE = (
@@ -257,6 +269,92 @@ def count_runs_from_prometheus(repo: str, start: float, end: float) -> int:
     return runs
 
 
+_FINISHED_RE = re.compile(
+    r"Finished pi-scout@(?P<repo>[A-Za-z0-9._-]+)\.service\b"
+)
+
+
+def count_finished_runs(journal_text: str, repo: str) -> int:
+    """Count systemd Finished lines for pi-scout@<repo>.service.
+
+    This is the honest run count. scout-futility-check writes
+    fleet_scout_last_run_seconds on ExecStartPre begin, which also
+    fires for 6-second no-seat failures (fleet-ops#3170 live: 220
+    begins, 155 Failed to start, 50 Finished). Those failures are
+    not scout work and must not inflate the effectiveness denominator.
+    """
+    if not journal_text:
+        return 0
+    n = 0
+    needle = f"Finished pi-scout@{repo}.service"
+    for line in journal_text.splitlines():
+        if needle in line:
+            n += 1
+            continue
+        m = _FINISHED_RE.search(line)
+        if m and m.group("repo") == repo:
+            n += 1
+    return n
+
+
+def load_journal(repo: str, start_ts: float) -> str:
+    """Return journal text for pi-scout@<repo> covering the window.
+
+    FLEET_SCOUT_EFF_JOURNAL wins (tests). Otherwise journalctl --user.
+    Empty string on any fault — caller falls back to prometheus.
+    """
+    if JOURNAL_FILE:
+        try:
+            return Path(JOURNAL_FILE).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"scout-effectiveness: journal file failed: {exc}", file=sys.stderr)
+            return ""
+    since = datetime.fromtimestamp(start_ts, timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+    args = [
+        JOURNALCTL,
+        "--user",
+        "-u",
+        f"pi-scout@{repo}.service",
+        "--since",
+        since,
+        "--no-pager",
+    ]
+    env = os.environ.copy()
+    env.setdefault("HOME", HOME)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=PROM_TIMEOUT,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"scout-effectiveness: journalctl failed: {exc}", file=sys.stderr)
+        return ""
+    if proc.returncode != 0:
+        print(
+            f"scout-effectiveness: journalctl rc={proc.returncode}: "
+            f"{(proc.stderr or '')[:200]}",
+            file=sys.stderr,
+        )
+        return ""
+    return proc.stdout or ""
+
+
+def count_runs(repo: str, start: float, end: float) -> int:
+    """Prefer systemd Finished; fall back to last_run value-changes."""
+    journal = load_journal(repo, start)
+    finished = count_finished_runs(journal, repo)
+    if journal:
+        return finished
+    return count_runs_from_prometheus(repo, start, end)
+
+
 # --- gh issue / pr collection ---------------------------------------------
 
 
@@ -295,6 +393,34 @@ def _issue_refs_in_body(body: str) -> set[int]:
     return {int(m) for m in _REF_RE.findall(body or "")}
 
 
+LIFECYCLE_LABELS = (
+    "scout-candidate",
+    "agent-ready",
+    "agent-in-progress",
+    "discarded",
+)
+
+
+def _row_to_issue(row: dict[str, Any], repo_full: str) -> ScoutIssue | None:
+    created = parse_iso(row.get("createdAt"))
+    if created is None:
+        return None
+    closed = parse_iso(row.get("closedAt"))
+    labels = tuple(
+        (lab.get("name") if isinstance(lab, dict) else str(lab))
+        for lab in (row.get("labels") or [])
+    )
+    return ScoutIssue(
+        number=int(row.get("number") or 0),
+        repo=repo_full,
+        created_ts=created.timestamp(),
+        labels=labels,
+        state=str(row.get("state") or "open"),
+        state_reason=str(row.get("stateReason") or ""),
+        closed_ts=closed.timestamp() if closed else None,
+    )
+
+
 def load_issues_gh(repo_full: str, label: str) -> list[ScoutIssue]:
     rows = _gh_json(
         [
@@ -317,26 +443,49 @@ def load_issues_gh(repo_full: str, label: str) -> list[ScoutIssue]:
         return []
     issues: list[ScoutIssue] = []
     for row in rows:
-        created = parse_iso(row.get("createdAt"))
-        if created is None:
-            continue
-        closed = parse_iso(row.get("closedAt"))
-        labels = tuple(
-            (lab.get("name") if isinstance(lab, dict) else str(lab))
-            for lab in (row.get("labels") or [])
-        )
-        issues.append(
-            ScoutIssue(
-                number=int(row.get("number") or 0),
-                repo=repo_full,
-                created_ts=created.timestamp(),
-                labels=labels,
-                state=str(row.get("state") or "open"),
-                state_reason=str(row.get("stateReason") or ""),
-                closed_ts=closed.timestamp() if closed else None,
-            )
-        )
+        iss = _row_to_issue(row, repo_full)
+        if iss is not None:
+            issues.append(iss)
     return issues
+
+
+def merge_issues(groups: Iterable[Iterable[ScoutIssue]]) -> list[ScoutIssue]:
+    """Union issues from several label lists, combining labels per number.
+
+    pi-audit-tally removes scout-candidate when it adds agent-ready, so a
+    candidate-only query drops the issues that actually progressed. Union
+    the four lifecycle labels; if the same number appears twice, merge
+    labels rather than double-count (fleet-ops#3170).
+    """
+    by_num: dict[int, ScoutIssue] = {}
+    for group in groups:
+        for iss in group:
+            prev = by_num.get(iss.number)
+            if prev is None:
+                by_num[iss.number] = iss
+                continue
+            labels = tuple(dict.fromkeys((*prev.labels, *iss.labels)))
+            # Prefer the row that carries more lifecycle evidence.
+            merged_ts = prev.merged_ts if prev.merged_ts is not None else iss.merged_ts
+            closed_ts = prev.closed_ts if prev.closed_ts is not None else iss.closed_ts
+            state = prev.state if prev.state == "closed" else iss.state
+            reason = prev.state_reason or iss.state_reason
+            by_num[iss.number] = ScoutIssue(
+                number=iss.number,
+                repo=iss.repo or prev.repo,
+                created_ts=min(prev.created_ts, iss.created_ts) or iss.created_ts,
+                labels=labels,
+                state=state,
+                state_reason=reason,
+                closed_ts=closed_ts,
+                merged_ts=merged_ts,
+            )
+    return list(by_num.values())
+
+
+def load_pipeline_issues(repo_full: str) -> list[ScoutIssue]:
+    groups = [load_issues_gh(repo_full, lab) for lab in LIFECYCLE_LABELS]
+    return merge_issues(groups)
 
 
 def load_merges_gh(repo_full: str) -> dict[int, float]:
@@ -552,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
             runs, issues = load_fixture(FIXTURE)
         else:
             repo_full = f"Nishfleet/{REPO}"
-            runs_count = count_runs_from_prometheus(
+            runs_count = count_runs(
                 REPO, start.timestamp(), end.timestamp()
             )
             runs = []
@@ -564,7 +713,7 @@ def main(argv: list[str] | None = None) -> int:
                 step = span / runs_count if runs_count else 0
                 for k in range(runs_count):
                     runs.append(start.timestamp() + step * (k + 0.5))
-            issues = load_issues_gh(repo_full, "scout-candidate")
+            issues = load_pipeline_issues(repo_full)
             merges = load_merges_gh(repo_full)
             issues = [
                 ScoutIssue(
