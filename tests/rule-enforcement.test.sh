@@ -682,7 +682,7 @@ cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
       "mechanism": "not yet",
       "proof": "fleet-ops#1",
       "status": "queued(#1)",
-      "queued_since": "2026-08-26"
+      "queued_since": "2026-08-18"
     }
   ]
 }
@@ -809,7 +809,6 @@ run_drill() {
     FLEET_RULE_ENFORCEMENT_LIB="$lib" \
     FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_ISSUE_REPO="Nishfleet/fleet-ops" \
-    FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z" \
     GH_LOG="$glog" \
     GH_CREATED="$created" \
@@ -865,6 +864,40 @@ cat >"$drill/standing.md" <<'EOF'
 EOF
 cat >"$drill/ledger.md" <<'EOF'
 - 2026-08-26 | covered ledger rule | a decision
+EOF
+# Rewrite the matrix so sr-queued-fixture is non-stale (queued_since=now).
+# The vault covers it, but the row stays queued — #78 must NOT be closed
+# (only enforced rows get observe-to-close). No stale_queued violation =>
+# canary exits 0.
+cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "sr-covered-fixture",
+      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-covered-fixture",
+      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-queued-fixture",
+      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
+      "mechanism": "not yet",
+      "proof": "fleet-ops#1",
+      "status": "queued(#1)",
+      "queued_since": "2026-08-26"
+    }
+  ]
+}
 EOF
 : >"$created"
 : >"$drill/triage.md"
