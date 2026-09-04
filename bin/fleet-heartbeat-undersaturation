@@ -46,6 +46,7 @@
 #   FLEET_HEARTBEAT_LOG_DIR   marker + throughput state
 #   FLEET_HEARTBEAT_TRIAGE    triage file
 #   PI_PACKET_STATE           active-seats registry root
+#   FLEET_UNDERSAT_CLAIMS_LOG  intake claims log (dispatch signal; see below)
 #
 # Exit: 0 = healthy, OR first wedged tick (repair attempted). Non-zero =
 #       second consecutive wedged tick (fail loud).
@@ -83,6 +84,29 @@ pi_binary_broken() {
         return 1   # executable
     fi
     return 0       # missing, not executable, or exec-format error
+}
+
+# fleet-ops#3218: the claims log is the durable record of which issues intake
+# actually claimed (pi-intake-tick.sh appends one line per successful claim).
+# count_ready() counts ALL agent-ready issues, but intake's filter chain
+# (blocked-on body, protected-verifier-vacation, precedence-band / product-
+# first hold, reclaim-cooldown, spec-incomplete) deliberately skips most. Raw
+# ready (32) >= admit (21) but effective claimable supply can be ~2/tick. The
+# canary false-fires below-admit-floor / full-wedge every tick because the
+# supply count is inflated vs what intake can actually claim. The claims log
+# is the "fleet IS dispatching" signal: if intake claimed >=1 issue in the
+# last 30 min, the below-floor state is filter-limited supply, not a wedge.
+CLAIMS_LOG="${FLEET_UNDERSAT_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
+intake_claimed_recently() {
+    [ -f "$CLAIMS_LOG" ] || return 1
+    # claims log format: 2026-09-04T11:51:49Z claimed line=3189 repo=fleet-ops
+    # Compare the date prefix (YYYY-MM-DDTHH:MM) against a 30-min-ago cutoff.
+    local cutoff
+    cutoff=$(date -u -d '-30 min' +%Y-%m-%dT%H:%M 2>/dev/null) || return 1
+    awk -v cutoff="$cutoff" '
+        $1 >= cutoff && /claimed/ { found=1 }
+        END { exit !found }
+    ' "$CLAIMS_LOG"
 }
 
 mkdir -p "$LOG_DIR"
@@ -453,6 +477,21 @@ if [ "$undersat" -eq 1 ]; then
         loud "UNDERSAT-FAIL-LOUD" "work=$work ready=$ready running=$running admit=$admit reason=pi-binary-broken — $PI_BIN not executable; every repair spawns pi workers so the wedge cannot self-heal. Reinstall pi (npm i -g @earendil-works/pi-coding-agent) and re-run."
         rm -f "$FLAG"
         exit 1
+    fi
+    # fleet-ops#3218: count_ready() counts ALL agent-ready issues, but intake's
+    # filter chain (blocked-on, verifier-vacation, precedence-band / product-
+    # first hold, reclaim-cooldown) deliberately skips most. If intake IS
+    # dispatching (claimed >=1 in the last 30 min per the claims log), the
+    # below-floor state is filter-limited supply, not a wedge — the fleet is
+    # working at the capacity of its claimable supply. Suppress the false trip
+    # so the canary does not cycle REPAIR->FAIL-LOUD for 18h on a healthy,
+    # filter-limited fleet (the 2026-09-04 36th-trip class). A genuine wedge
+    # (intake broken, all seats dead) produces a stale claims log -> this
+    # check passes through to the normal repair / fail-loud ladder.
+    if intake_claimed_recently; then
+        loud "UNDERSAT-FILTER-LIMITED" "work=$work ready=$ready running=$running admit=$admit reason=$reason — intake claimed >=1 in last 30min; fleet dispatching at capacity of claimable supply (raw ready inflated by blocked-on / verifier-vacation / precedence-band skips); not a wedge"
+        rm -f "$FLAG"
+        exit 0
     fi
     if [ "$prev_wedged" -eq 1 ]; then
         # Second consecutive undersat tick — repair already ran last tick and

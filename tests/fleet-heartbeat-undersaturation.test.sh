@@ -329,6 +329,13 @@ export FLEET_UNDERSAT_ADMIT_CEILING=25
 export WORK_INPROGRESS_NUMBERS="$scratch/work_inprogress_numbers"
 export WORK_READY_NUMBERS="$scratch/work_ready_numbers"
 export OPEN_PR_ISSUES="$scratch/open_pr_issues"
+# fleet-ops#3218: claims log test seam. The canary suppresses false-wedge
+# when intake claimed >=1 in the last 30 min (filter-limited supply, not a
+# broken fleet). Scenarios default to an EMPTY claims log so the existing
+# wedge/repair/fail-loud assertions are unchanged; scenario 13 populates it.
+claims_log="$scratch/claims.log"
+: >"$claims_log"
+export FLEET_UNDERSAT_CLAIMS_LOG="$claims_log"
 # Pointers the fake systemctl reads to decide what to return per scenario.
 RUNNING_UNITS="$scratch/running_units"
 FAILED_UNITS="$scratch/failed_units"
@@ -352,6 +359,7 @@ reset_state() {
   : >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
   : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"
   : >"$WORK_INPROGRESS_NUMBERS"; : >"$WORK_READY_NUMBERS"; : >"$OPEN_PR_ISSUES"
+  : >"$claims_log"
 }
 
 # ============================================================================
@@ -798,3 +806,80 @@ ok "scenario12: live activating worker (seat file, age<threshold) -> NOT touched
 export FLEET_UNDERSAT_ADMIT_CEILING=25
 
 ok "undersaturation: zombie activating units cancelled, live workers protected (fleet-ops#3213)"
+
+# ============================================================================
+# Scenario 13 (fleet-ops#3218): count_ready() counts ALL agent-ready issues,
+# but intake's filter chain (blocked-on body, verifier-vacation, precedence-
+# band / product-first hold, reclaim-cooldown) deliberately skips most. Raw
+# ready (32) >= admit (21) but effective claimable supply can be ~2/tick. The
+# canary MUST NOT false-fire below-admit-floor / full-wedge when intake IS
+# dispatching — the claims log is the "fleet is working" signal. This is the
+# 2026-09-04 36th-trip class: the canary cycled REPAIR->FAIL-LOUD for 18h on
+# a healthy, filter-limited fleet. A genuine wedge (intake broken) produces a
+# stale claims log -> normal ladder fires.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '32\n' >"$scratch/work_ready"          # ready >> admit (inflated by skips)
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\n' >"$scratch/running_units"  # running=1 < 5
+: >"$scratch/failed_units"
+printf 'pi-issue@demo-1.service\n' >"$scratch/live_seat_units"
+printf '{"unit":"pi-issue-demo-1","provider":"devin","model":"glm-5-2"}' \
+    >"$seat_state/active-seats/pi-issue-demo-1.json"
+# Claims log has a RECENT entry (within 30 min) -> intake IS dispatching.
+now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s claimed line=3189 repo=fleet-ops\n' "$now_ts" >"$claims_log"
+# Pre-seed the wedge marker so we PROVE the filter-limited path does NOT fail
+# loud even when the previous tick was wedged (the regression's exact 2nd tick).
+printf '%s\n' "$now_ts" >"$log_dir/undersaturation.flag"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario13: filter-limited tick must exit 0, got $env_rc ($env_out)"
+
+# No repair actions (the fleet is dispatching; nothing to repair).
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
+    fail "scenario13: filter-limited tick must not repair, but calls=($(cat "$calls"))"
+fi
+# No fail-loud; the filter-limited loud line IS emitted so the state is visible.
+! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" \
+    || fail "scenario13: triage must NOT have UNDERSAT-FAIL-LOUD (filter-limited is not a wedge)"
+! grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario13: triage must NOT have UNDERSAT-REPAIR"
+grep -q 'UNDERSAT-FILTER-LIMITED' "$triage" \
+    || fail "scenario13: triage missing UNDERSAT-FILTER-LIMITED line"
+# Marker cleared (healthy outcome), so the next tick starts clean.
+[[ ! -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario13: stale wedge marker must be cleared after filter-limited tick"
+ok "scenario13: ready>>admit + running<admit + intake dispatching -> filter-limited, NOT a wedge (fleet-ops#3218)"
+
+# Scenario 13b: SAME supply/running state but claims log is STALE (no recent
+# claim) -> the normal repair / fail-loud ladder MUST fire. This proves the
+# claims-log check does not hide a genuine wedge.
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '32\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf 'pi-issue@demo-1.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+printf 'pi-issue@demo-1.service\n' >"$scratch/live_seat_units"
+printf '{"unit":"pi-issue-demo-1","provider":"devin","model":"glm-5-2"}' \
+    >"$seat_state/active-seats/pi-issue-demo-1.json"
+# Claims log has a STALE entry (2h ago) -> intake is NOT dispatching recently.
+old_ts=$(date -u -d '-2 hour' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s claimed line=3189 repo=fleet-ops\n' "$old_ts" >"$claims_log"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario13b: first below-admit tick (stale claims) must exit 0 (repair), got $env_rc ($env_out)"
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario13b: triage missing UNDERSAT-REPAIR (stale claims -> normal ladder)"
+! grep -q 'UNDERSAT-FILTER-LIMITED' "$triage" \
+    || fail "scenario13b: triage must NOT have UNDERSAT-FILTER-LIMITED (stale claims)"
+ok "scenario13b: ready>>admit + running<admit + STALE claims -> normal repair ladder fires (fleet-ops#3218)"
+
+# Restore the default admit pin.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
+
+ok "undersaturation: filter-limited supply (intake dispatching) is not a wedge (fleet-ops#3218)"
