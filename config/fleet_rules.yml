@@ -546,6 +546,23 @@ groups:
           summary: "canary-effectiveness metrics absent — the #2757 exporter path is missing or dead"
           description: "Repair: lib/canary-effectiveness.py must emit fleet_canary_effectiveness_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/canary-effectiveness.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
 
+      # fleet-ops#3055: the injected-fault drill runs inside every live
+      # exporter tick (hermetic — temp store + fixtures, never the real
+      # store). last_green only advances when the drill passes; a red/
+      # absent drill means the classify path silently broke again (the
+      # 2026-09-02 class pinned caught=0 for 19h because no drill ran
+      # anywhere). 30m matches the 5-min exporter tick: six red ticks
+      # before the fleet hears about it.
+      - alert: FleetCanaryEffectivenessDrillStale
+        expr: absent(fleet_canary_effectiveness_drill_last_green_seconds) or fleet_canary_effectiveness_drill_last_green_seconds == 0 or (time() - fleet_canary_effectiveness_drill_last_green_seconds) > 1800
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "canary-effectiveness drill not green — the classify path can no longer prove it catches injected regressions"
+          description: "fleet_canary_effectiveness_drill_last_green_seconds is absent, 0, or older than 30m. The injected-fault drill must pass on every live exporter tick (fleet-ops#3055); a red drill means the canary can silently stop catching regressions. Repair: lib/canary-effectiveness.py, then re-run the exporter tick and confirm drill_ok=1."
+
       # effectiveness_ratio already covers the trailing 30d window inside
       # the exporter. Gate on (caught+missed)>0 so a quiet product with
       # zero incidents does not look like a broken canary.

@@ -24,6 +24,16 @@ Metric family (trailing 30d window unless noted):
   fleet_canary_effectiveness_ratio{organ=...}   caught / (caught + missed)
   fleet_canary_last_failure_seconds{organ=...}  0 when no failure in window
   fleet_canary_effectiveness_last_run_seconds   organ heartbeat (always)
+  fleet_canary_effectiveness_drill_last_green_seconds
+                                               epoch of last passing
+                                               injected-fault drill (fleet-ops#3055)
+  fleet_canary_effectiveness_drill_ok           1 = drill passed last tick
+
+Drill (fleet-ops#3055): the hermetic self-test fault-injection drill runs
+inside every LIVE tick (not only CI), so the classify path cannot silently
+degrade again the way it did 2026-09-02 (19h of caught=0 with no drill
+anywhere). The drill gauge only advances on a pass; a red/absent drill
+trips FleetCanaryEffectivenessDrillStale.
 
 Attribution rule (issue accept §1):
   canary failure → incident in the same product surface within 24h
@@ -53,6 +63,8 @@ Environment seams (tests):
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -137,6 +149,17 @@ HELP_HB = (
     "canary-effectiveness export tick (organ heartbeat, fleet-ops#2757)."
 )
 TYPE_HB = "# TYPE fleet_canary_effectiveness_last_run_seconds gauge"
+HELP_DRILL = (
+    "# HELP fleet_canary_effectiveness_drill_last_green_seconds Epoch of the "
+    "last exporter tick whose injected-fault drill passed; 0 = drill red "
+    "(fleet-ops#3055)."
+)
+TYPE_DRILL = "# TYPE fleet_canary_effectiveness_drill_last_green_seconds gauge"
+HELP_DRILL_OK = (
+    "# HELP fleet_canary_effectiveness_drill_ok 1 if the injected-fault "
+    "drill passed on this tick, else 0 (fleet-ops#3055)."
+)
+TYPE_DRILL_OK = "# TYPE fleet_canary_effectiveness_drill_ok gauge"
 
 
 @dataclass(frozen=True)
@@ -726,7 +749,12 @@ def collect_live(start: datetime, end: datetime) -> tuple[list[Event], list[Inci
 
 
 def export_prom(
-    stats: list[OrganStats], *, now: datetime, out: Path = OUT
+    stats: list[OrganStats],
+    *,
+    now: datetime,
+    out: Path = OUT,
+    drill_ok: int | None = None,
+    drill_green: float | None = None,
 ) -> str:
     lines: list[str] = [
         HELP_RUNS,
@@ -763,6 +791,18 @@ def export_prom(
             f'fleet_canary_last_failure_seconds{{organ="{prom_label(s.organ)}"}} '
             f"{int(s.last_failure_seconds)}"
         )
+    if drill_ok is not None:
+        lines += [
+            "",
+            HELP_DRILL,
+            TYPE_DRILL,
+            f"fleet_canary_effectiveness_drill_last_green_seconds "
+            f"{int(drill_green or 0)}",
+            "",
+            HELP_DRILL_OK,
+            TYPE_DRILL_OK,
+            f"fleet_canary_effectiveness_drill_ok {1 if drill_ok else 0}",
+        ]
     lines += [
         "",
         HELP_HB,
@@ -803,6 +843,37 @@ def compute_all(
         stats_for_organ(organ, events, incidents, catch_hours=catch_hours)
         for organ in ORGANS
     ]
+
+
+def run_live_drill(now: datetime) -> tuple[int, float]:
+    """Run the hermetic injected-fault drill inside the live exporter tick
+    (fleet-ops#3055). Returns (ok, last_green_seconds): ok=1 with
+    last_green=now when the drill passes; ok=0 with last_green=0 when it
+    fails. The gauge only advances on a passing drill, so a silent
+    classify regression (the 2026-09-02 class that pinned caught=0 for
+    19h while no drill ran anywhere) goes red/stale and the
+    FleetCanaryEffectivenessDrillStale alert fires instead of waiting for
+    the next real incident.
+
+    Hermetic by construction: self_test() drives the real main() against
+    its own temp store + fixture events (never the live store or the real
+    node-exporter path), so this costs a few milliseconds per tick.
+    Never raises — a drill fault must not fail the exporter.
+    """
+    buf = io.StringIO()
+    rc = 1
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        try:
+            rc = self_test()
+        except Exception as exc:  # noqa: BLE001 — never fail the exporter
+            print(f"canary-effectiveness: live drill crashed: {exc}", file=buf)
+            rc = 1
+    if rc != 0:
+        print(
+            f"canary-effectiveness: DRILL RED: {buf.getvalue().strip()[:400]}",
+            file=sys.stderr,
+        )
+    return (1, now.timestamp()) if rc == 0 else (0, 0.0)
 
 
 def self_test() -> int:
@@ -939,7 +1010,9 @@ def usage() -> int:
         "  Computes canary effectiveness metrics and writes\n"
         f"  {OUT} (override with FLEET_CANARY_EFF_OUT).\n"
         "  Offline fixture: FLEET_CANARY_EFF_EVENTS=/path/to.json\n"
-        "  --self-test: inject a synthetic fault and prove it is caught.",
+        "  --self-test: inject a synthetic fault and prove it is caught.\n"
+        "  Each live tick also runs the hermetic self-test drill and exports\n"
+        "  drill_ok / drill_last_green_seconds (fleet-ops#3055).",
         file=sys.stderr,
     )
     return 2
@@ -997,7 +1070,23 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
         stats = compute_all(events, incidents)
-        body = export_prom(stats, now=end, out=out)
+        # Live-drill the classify path every tick (fleet-ops#3055): the
+        # 2026-09-02 incident ran 19h with the exporter reporting
+        # caught=0 while nothing live ever ran the injected-fault drill.
+        # The drill is hermetic (temp store + fixtures); its result is
+        # exported so a silent regression is visible within one alert
+        # window instead of at the next real incident.
+        drill_ok: int | None = None
+        drill_green: float | None = None
+        if not events_file:
+            drill_ok, drill_green = run_live_drill(end)
+        body = export_prom(
+            stats,
+            now=end,
+            out=out,
+            drill_ok=drill_ok,
+            drill_green=drill_green,
+        )
         if to_stdout:
             sys.stdout.write(body if body.endswith("\n") else body + "\n")
         print(
