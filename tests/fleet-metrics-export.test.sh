@@ -1567,3 +1567,70 @@ with tempfile.TemporaryDirectory() as td:
 PY
 
 ok "fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected} emitted (missing/legit/wrong/unparseable)"
+
+# =========================================================================
+# fleet-ops#3231: fleet_observe_to_close_total{reason}
+# The exporter reads the last observe-to-close summary's closes_by_reason
+# and emits four labelled series. only claim-branch and closes-trailer may
+# increment; bare-mention and protected must stay 0 (an alert fires on
+# either > 0 — the PR #3205 regression class that closed #3140/#3146 by a
+# bare mention). Missing/unparseable file emits all four as 0.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "observe-to-close metric emission failed"
+import importlib.util, json, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+# 1. Missing file -> all four series 0, family present with HELP/TYPE once.
+with tempfile.TemporaryDirectory() as td:
+    m.MERGED_PR_CLOSE_JSON = Path(td) / "missing.json"
+    lines = []
+    m._emit_observe_to_close(lines)
+    out = "\n".join(lines)
+    assert "fleet_observe_to_close_total" in out, out
+    assert out.count("# HELP fleet_observe_to_close_total") == 1, out
+    assert out.count("# TYPE fleet_observe_to_close_total") == 1, out
+    for r in ["claim-branch","closes-trailer","bare-mention","protected"]:
+        assert f'fleet_observe_to_close_total{{reason="{r}"}} 0' in out, out
+    print("OK: missing file -> 4 series all 0, HELP/TYPE once")
+
+# 2. Legal closes (claim-branch + closes-trailer) are emitted faithfully;
+#    a WRONG bare-mention close is emitted too so the alert can fire.
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "merged-pr-close.json"
+    p.write_text(json.dumps({
+        "closed": 2,
+        "closes_by_reason": {
+            "claim-branch": 1,
+            "closes-trailer": 1,
+            "bare-mention": 1,
+            "protected": 0,
+        },
+    }))
+    m.MERGED_PR_CLOSE_JSON = p
+    lines = []
+    m._emit_observe_to_close(lines)
+    out = "\n".join(lines)
+    assert 'reason="claim-branch"} 1' in out, out
+    assert 'reason="closes-trailer"} 1' in out, out
+    assert 'reason="bare-mention"} 1' in out, out
+    assert 'reason="protected"} 0' in out, out
+    print("OK: summary with a wrong bare-mention close is emitted faithfully (alert can fire)")
+
+# 3. Unparseable file -> all four 0 (no crash).
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "bad.json"
+    p.write_text("{not json")
+    m.MERGED_PR_CLOSE_JSON = p
+    lines = []
+    m._emit_observe_to_close(lines)
+    out = "\n".join(lines)
+    assert 'reason="claim-branch"} 0' in out, out
+    print("OK: unparseable file -> 4 series all 0 (no crash)")
+PY
+
+ok "fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)"

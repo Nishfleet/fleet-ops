@@ -2797,6 +2797,57 @@ def _emit_close_duplicates(lines):
         )
 
 
+# --- observe-to-close close guard (fleet-ops#3231) ---------------------
+# The heartbeat writes bin/fleet-merged-pr-close's per-tick summary to
+# $FLEET_HEARTBEAT_LOG_DIR/merged-pr-close.json every tick. We emit the
+# close count by reason so an alert can fire the instant a close happens on
+# a bare mention or on a protected (critical-path / owner-authored) issue —
+# the PR #3205 regression that wrongly closed #3140/#3146. Both labelled
+# series must stay 0; only claim-branch and closes-trailer may increment.
+# The family is always emitted (zeros when the file is missing) so the
+# absent rule never false-fires on a skipped tick.
+MERGED_PR_CLOSE_JSON = Path(
+    os.environ.get(
+        "FLEET_MERGED_PR_CLOSE_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/merged-pr-close.json",
+    )
+)
+HELP_MPC = (
+    "# HELP fleet_observe_to_close_total Issues auto-closed by observe-to-close "
+    "in the last heartbeat tick, by reason (fleet-ops#3231). Legal close "
+    "reasons are claim-branch (delivery PR head) and closes-trailer (explicit "
+    "Closes/Fixes/Resolves trailer). bare-mention and protected must always "
+    "be 0; an alert on either > 0 catches a wrong close of a mentioned or "
+    "critical-path/owner-authored issue."
+)
+TYPE_MPC = "# TYPE fleet_observe_to_close_total gauge"
+_MPC_REASONS = ("claim-branch", "closes-trailer", "bare-mention", "protected")
+
+
+def _emit_observe_to_close(lines):
+    """Append fleet_observe_to_close_total{reason}.
+
+    Reads the last observe-to-close summary's closes_by_reason map. Never
+    raises: a missing/unparseable file emits all four series as 0 so the
+    family is always present and the absent rule stays quiet.
+    """
+    counts = {r: 0 for r in _MPC_REASONS}
+    try:
+        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
+        raw = data.get("closes_by_reason") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if k in counts and isinstance(v, (int, float)):
+                    counts[k] = int(v)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_MPC)
+    lines.append(TYPE_MPC)
+    for reason in _MPC_REASONS:
+        lines.append(f'fleet_observe_to_close_total{{reason="{reason}"}} {counts[reason]}')
+
+
 def _emit_deploy_quality(lines):
     """Append the fleet_deployment_* family from lib/fleet-deploy-quality.py.
 
@@ -3372,6 +3423,10 @@ def main():
     # --- close-duplicates close guard (fleet-ops#3161) ---
     # Per-tick close count by label; cross_repo and protected must stay 0.
     _emit_close_duplicates(lines)
+
+    # --- observe-to-close close guard (fleet-ops#3231) ---
+    # Per-tick close count by reason; bare-mention and protected must stay 0.
+    _emit_observe_to_close(lines)
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)

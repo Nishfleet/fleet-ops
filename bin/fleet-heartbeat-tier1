@@ -1634,6 +1634,7 @@ merged_pr_close_rc=0
 if [ -x "$MERGED_PR_CLOSE_BIN" ]; then
     log "19. merged-pr observe-to-close starting"
     if MERGED_PR_CLOSE_REPOS="$(printf '%s\n' "$claim_repos")" \
+        MERGED_PR_CLOSE_SUMMARY="$LOG_DIR/merged-pr-close.json" \
         FLEET_MERGED_PR_CLOSE_OK=1 \
         "$MERGED_PR_CLOSE_BIN" 2>>"$TICK_LOG"; then
         log "19. merged-pr observe-to-close complete"
