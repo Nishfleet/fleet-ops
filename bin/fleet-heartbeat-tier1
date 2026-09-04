@@ -272,7 +272,7 @@ classify_failure() {
     local journal="$1"
     local low
     low=$(printf '%s' "$journal" | tr '[:upper:]' '[:lower:]')
-    if printf '%s' "$low" | grep -qiE 'rate limit|reached.*message.*limit|429|too many requests|etimedout|connection timed out|connect etimedout|econn|handshake.*timeout|spawn.*timeout|timed out waiting|retryable.*true|transient_fault'; then
+    if printf '%s' "$low" | grep -qiE 'rate[- ]?limit|reached.*message.*limit|429|too many requests|etimedout|connection timed out|connect etimedout|econn|handshake.*timeout|spawn.*timeout|timed out waiting|retryable.*true|transient_fault|no usable seat|no healthy seat|every.*allowlisted.*seat.*dead'; then
         printf 'transient-lane'; return
     fi
     if printf '%s' "$low" | grep -qiE 'start.*limit|startlimitburst|start-limit|start-limit-hit'; then

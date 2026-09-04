@@ -191,7 +191,7 @@ now_iso() {
 # path with a frozen clock).
 ts_epoch() {
     local t="$1" e
-    [[ -n "$t" ]] || return 1
+    [[ -n "$t" ]] || return 0
     t="${t%Z}"
     e=$(date -u -d "$t" +%s 2>/dev/null || true)
     [[ "$e" =~ ^[0-9]+$ ]] && printf '%s\n' "$e" || true
