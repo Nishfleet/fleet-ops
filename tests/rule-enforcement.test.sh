@@ -41,6 +41,64 @@ count=$(jq '.rules | length' "$matrix")
 [[ "$count" -gt 0 ]] || fail "matrix.rules is empty"
 ok "committed matrix is valid ($count rules)"
 
+# fleet-ops#3139: calendar-stale queued rows (age > queued_stale_days) are a
+# live contract, not a frozen-now fixture. The live vault join below pins
+# --now 2026-08-26, which hides 2026-08-26 queued_since rows. This pin uses
+# today's date so a closed-umbrella row cannot sit queued for 9 days again.
+stale_calendar=$(python3 - "$matrix" <<'PY'
+import json, datetime, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+limit = int(data.get("queued_stale_days") or 7)
+today = datetime.date.today()
+stale = []
+for rule in data.get("rules") or []:
+    status = str(rule.get("status") or "")
+    if not status.startswith("queued"):
+        continue
+    since = rule.get("queued_since")
+    if not since:
+        continue
+    age = (today - datetime.date.fromisoformat(since)).days
+    if age > limit:
+        stale.append(f"{rule.get('id')} {status} queued_since={since} age_days={age}")
+print(len(stale))
+for row in stale:
+    print(row)
+PY
+)
+stale_n=${stale_calendar%%$'\n'*}
+[[ "$stale_n" == "0" ]] || fail "committed matrix has calendar-stale queued rows (fleet-ops#3139): $stale_calendar"
+ok "committed matrix has 0 calendar-stale queued rows (fleet-ops#3139)"
+
+# fleet-ops#3139: the closed-umbrella rows named in the ticket must not
+# remain queued(#closed). Enforced if the live gate exists; advisory if a
+# senior reason says it cannot be a VPS enforcer.
+for id in sr-switched-on-proven sr-all-functions-mechanical sr-everything-mechanical \
+          led-blind-audit led-mechanical-fix led-everything-mechanical \
+          led-cursor-grok-re-admitted led-2026-08-28-legit-work-only-fleet-wide-law; do
+  jq -e --arg id "$id" '.rules[] | select(.id == $id and .status == "enforced")' \
+    "$matrix" >/dev/null \
+    || fail "matrix row $id must be status=enforced (fleet-ops#3139)"
+done
+ok "closed-umbrella rows with a live gate are enforced (fleet-ops#3139)"
+for id in led-senior-conference led-2026-08-28-0509-completeness-claims-distrusted; do
+  status=$(jq -r --arg id "$id" '.rules[] | select(.id == $id) | .status' "$matrix")
+  case "$status" in
+    "advisory"*) ok "matrix row $id is advisory (fleet-ops#3139)" ;;
+    *) fail "matrix row $id must be advisory(reason), got ${status:-missing} (fleet-ops#3139)" ;;
+  esac
+done
+jq -e '.rules[] | select(.id == "led-gap-closure-loop" and .status == "queued(#362)")' \
+  "$matrix" >/dev/null \
+  || fail "led-gap-closure-loop must stay queued(#362) while fleet-ops#362 is open"
+ok "led-gap-closure-loop stays queued(#362) (fleet-ops#3139)"
+for closed in 378 377 366 223 437 1365 1516; do
+  hits=$(jq -r --arg s "queued(#${closed})" '.rules[] | select(.status == $s) | .id' "$matrix")
+  [[ -z "$hits" ]] || fail "queued(#${closed}) still present after the umbrella closed (fleet-ops#3139): $hits"
+done
+ok "closed umbrellas 378/377/366/223/437/1365/1516 have no queued rows (fleet-ops#3139)"
+
 jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforced")' \
   "$matrix" >/dev/null \
   || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
@@ -572,6 +630,11 @@ jq -e '.stale_queued | length == 1' "$scratch/stale.json" >/dev/null \
   || fail "stale queued not reported: $(cat "$scratch/stale.json")"
 ok "join: queued older than 7 days is a violation"
 
+# fleet-ops#3139: stale queued must auto-file even when the umbrella env is
+# empty. Production never sets FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES, so a
+# closed-umbrella queued row older than queued_stale_days used to scream
+# and then sit with no distinct mechanism issue.
+
 # --- duplicate source fails validate ----------------------------------------
 cat >"$scratch/bad-duplicate.json" <<'EOF'
 {
@@ -809,7 +872,7 @@ run_drill() {
     FLEET_RULE_ENFORCEMENT_LIB="$lib" \
     FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_ISSUE_REPO="Nishfleet/fleet-ops" \
-    FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=1 \
+    FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES="${FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES-1}" \
     FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z" \
     GH_LOG="$glog" \
     GH_CREATED="$created" \
@@ -908,6 +971,63 @@ grep -q '^479$' "$closed" || fail "observe-to-close close: must close #479 (clos
 grep -q 'OBSERVE-CLOSED' <<<"$env_out" || fail "observe-to-close close: must log OBSERVE-CLOSED (out=$env_out)"
 ok "drill: canary-covered marker is not posted twice"
 ok "drill: observe-to-close closes #479 (marker + enforced); queued #78 stays open"
+
+# fleet-ops#3139: a calendar-stale queued row auto-files even with an empty
+# umbrella env. Restore a covered vault plus one stale queued row, then run
+# with FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES="" (production default).
+cat >"$drill/standing.md" <<'EOF'
+# fixture
+## Covered fixture rule (Nish, 2026-08-26)
+## Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)
+EOF
+cat >"$drill/ledger.md" <<'EOF'
+- 2026-08-26 | covered ledger rule | a decision
+EOF
+cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "sr-covered-fixture",
+      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-covered-fixture",
+      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-queued-fixture",
+      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
+      "mechanism": "not yet",
+      "proof": "fleet-ops#1",
+      "status": "queued(#1)",
+      "queued_since": "2026-08-01"
+    }
+  ]
+}
+EOF
+: >"$created"
+: >"$drill/triage.md"
+unset GH_OPEN_ISSUES || true
+export FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=""
+export FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z"
+run_drill
+[[ "$env_rc" == "1" ]] || fail "stale-empty-umbrella: canary must exit 1 (rc=$env_rc out=$env_out)"
+grep -q 'queued row older than stale window' "$drill/triage.md" \
+  || fail "stale-empty-umbrella: triage must name the stale queued row"
+create_count=$(grep -c create "$created" 2>/dev/null || echo 0)
+[[ "$create_count" == "1" ]] || fail "stale-empty-umbrella: expected 1 gh issue create (stale queued), got $create_count (log=$(cat "$glog") out=$env_out)"
+grep -q 'FILED queued/sr-queued-fixture' <<<"$env_out" \
+  || fail "stale-empty-umbrella: must log FILED queued/sr-queued-fixture (out=$env_out)"
+ok "drill: stale queued auto-files with empty umbrella env (fleet-ops#3139)"
+export FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=1
 
 # fleet-ops#519: run the no-agent-names gate drill as part of the
 # rule-enforcement suite so it is exercised in CI without a workflow edit.

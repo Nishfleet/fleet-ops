@@ -47,8 +47,11 @@
 #     9. Rule-enforcement coverage (fleet-ops#383): every vault standing rule
 #        and ledger decision names a live enforcer in
 #        config/rule-enforcement.json. Missing or stale queued = VIOLATION;
-#        uncovered rules and queued rows owned by an umbrella tracker
-#        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
+#        uncovered rules, stale queued rows (age > queued_stale_days), and
+#        queued rows owned by an umbrella tracker auto-file a distinct
+#        mechanism issue, deduped by signal key, cap per tick. Stale queued
+#        files even when FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES is empty
+#        (fleet-ops#3139; production never sets that env).
 #        When a previously auto-filed source is now `enforced`, the canary
 #        comments `canary-covered:` on the open issue (observe-to-close).
 #    10. Backup staleness (fleet-ops#388): restic-r2-backup.timer active and
@@ -104,6 +107,8 @@
 #                                       umbrella trackers (e.g. 416). The canary
 #                                       auto-files a distinct mechanism issue for
 #                                       each queued row owned by an umbrella issue.
+#                                       Calendar-stale queued rows auto-file even
+#                                       when this env is empty (fleet-ops#3139).
 #   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
 #   FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT  1 skips block 11 (offline tests)
 #   FLEET_VAULT_CONFLICT_TIMER          default vault-conflict-resolver.timer
@@ -591,7 +596,7 @@ else
                 log "9.  WARN: gh missing — cannot auto-file or observe-to-close mechanism issues"
             fi
 
-            if [[ "$uncovered_n" -gt 0 ]] || { [[ "$queued_n" -gt 0 ]] && [[ ${#UMBRELLA_ISSUES[@]} -gt 0 ]]; }; then
+            if [[ "$uncovered_n" -gt 0 ]] || [[ "$stale_n" -gt 0 ]] || { [[ "$queued_n" -gt 0 ]] && [[ ${#UMBRELLA_ISSUES[@]} -gt 0 ]]; }; then
             declare -A UMBRELLA_MAP=()
             for u in "${UMBRELLA_ISSUES[@]}"; do
                 [[ -n "$u" ]] && UMBRELLA_MAP["$u"]=1
@@ -636,7 +641,11 @@ else
             while IFS= read -r item; do
                 [[ -n "$item" ]] || continue
                 issue_n=$(jq -r '.issue' <<<"$item")
-                if [[ "${UMBRELLA_MAP[$issue_n]:-0}" == "1" ]]; then
+                # Umbrella-owned queued OR calendar-stale queued (fleet-ops#3139).
+                # Production leaves UMBRELLA_ISSUES empty, so stale is the path
+                # that actually files a distinct mechanism issue when the
+                # umbrella tracker has closed and the row sat past queued_stale_days.
+                if [[ "${UMBRELLA_MAP[$issue_n]:-0}" == "1" ]] || jq -e '.age_days > .stale_days' <<<"$item" >/dev/null 2>&1; then
                     file_item "$item" "queued"
                 fi
             done < <(jq -c '.queued[]' <<<"$rule_report")

@@ -21,10 +21,9 @@
     {
       "id": "sr-switched-on-proven",
       "source": "global-standing-rules.md: Switched on and proven, or it is not done (Nish, 2026-08-18)",
-      "mechanism": "Senior conference criterion: new unit/timer/workflow PRs must link one real end-to-end run",
-      "proof": "fleet-ops#378",
-      "status": "queued(#378)",
-      "queued_since": "2026-08-26"
+      "mechanism": "PR-body gate: a new systemd unit/timer/path or GitHub workflow must carry a run-proof: line or a Verification: section with a live run-cue. prove-one-run-check rejects armed-without-ran. Nested CI host is tests/fleet-heartbeat-blind-audit-trigger.test.sh -> tests/prove-one-run-check.test.sh.",
+      "proof": "bin/prove-one-run-check; tests/prove-one-run-check.test.sh; tests/fleet-heartbeat-blind-audit-trigger.test.sh; prompts/worker.md; fleet-ops#378",
+      "status": "enforced"
     },
     {
       "id": "sr-findings-queued",
@@ -338,10 +337,9 @@
     {
       "id": "sr-all-functions-mechanical",
       "source": "global-standing-rules.md: All functions mechanical (Nish, 2026-08-25)",
-      "mechanism": "Blind-audit manual-seam lens hunts hand-performed actions; remaining prose still unenforced",
-      "proof": "fleet-ops#377",
-      "status": "queued(#377)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Blind-audit manual-seam lens enumerates hand-performed operations each cycle, files unmatched seams, and the second occurrence of a hand action requires a mechanism.",
+      "proof": "bin/fleet-blind-audit; lib/manual-seam-lens.py; prompts/blind-audit.md; fleet-ops#377",
+      "status": "enforced"
     },
     {
       "id": "sr-agent-agnostic",
@@ -381,10 +379,9 @@
     {
       "id": "sr-everything-mechanical",
       "source": "global-standing-rules.md: Everything is mechanical — failures included (Nish, 2026-08-26 — NON-NEGOTIABLE)",
-      "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; detector→queue is #362",
-      "proof": "fleet-ops#366; fleet-ops#362",
-      "status": "queued(#366)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Failure-mechanism gate rejects a failure-fix PR that ships no prevention mechanism and no mechanism-impossible: declaration. Detector→queue / observe-to-close remaining work stays on fleet-ops#362 (led-gap-closure-loop).",
+      "proof": "bin/fleet-failure-mechanism-gate; lib/failure-mechanism-gate.py; tests/failure-mechanism-gate.test.sh; prompts/senior-conference.md; prompts/worker.md; fleet-ops#366",
+      "status": "enforced"
     },
     {
       "id": "led-plumbing-ban",
@@ -403,10 +400,9 @@
     {
       "id": "led-senior-conference",
       "source": "decisions-ledger.md: 2026-08-26 | serious builds get the senior conference",
-      "mechanism": "Panel verdict as a required check; automerge waits",
-      "proof": "fleet-ops#223",
-      "status": "queued(#223)",
-      "queued_since": "2026-08-26"
+      "mechanism": "none — seriousness-gate.yml + senior-panel.yml are a required GitHub check; the nishfleet-worker App has no Workflows permission, so a worker cannot land them. fleet-ops#223 closed 2026-08-29 after the senior panel dismissed the escalation; re-land needs Nish's own scope.",
+      "proof": "n/a — Nish-reserved workflow files; artifacts recoverable from 7e8279fe; fleet-ops#223",
+      "status": "advisory(senior: required-check workflows are Nish-reserved; worker App cannot push .github/workflows/**; #223 closed without the gate on main)"
     },
     {
       "id": "led-capacity-measured",
@@ -425,18 +421,17 @@
     {
       "id": "led-gap-closure-loop",
       "source": "decisions-ledger.md: 2026-08-26 | gap-closure loop",
-      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE; observe-to-close still open",
-      "proof": "fleet-ops#180 (blocked); fleet-ops#362",
+      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE. Rule-enforcement observe-to-close (canary-covered: then close) is live; the generic every-LOUD-signal reconciler remains fleet-ops#362.",
+      "proof": "bin/fleet-escalation-canary block 9 observe-to-close; lib/rule-enforcement.py observe_targets/close_targets; fleet-ops#362",
       "status": "queued(#362)",
-      "queued_since": "2026-08-26"
+      "queued_since": "2026-09-04"
     },
     {
       "id": "led-blind-audit",
       "source": "decisions-ledger.md: 2026-08-26 | recurring blind audit",
-      "mechanism": "fleet-blind-audit unit+timer exist; cadence still depends on an empty board",
-      "proof": "bin/fleet-blind-audit; systemd/fleet-blind-audit.timer; fleet-ops#378",
-      "status": "queued(#378)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Daily Persistent timer fires fleet-blind-audit regardless of board state. Heartbeat-tier1 block 11 cadence canary screams BLIND-AUDIT-CADENCE-OVERDUE when the last-run stamp is stale.",
+      "proof": "bin/fleet-blind-audit; systemd/fleet-blind-audit.timer; lib/blind-audit-cadence.sh; tests/fleet-heartbeat-blind-audit-cadence.test.sh; bin/fleet-heartbeat-tier1 block 11; fleet-ops#378",
+      "status": "enforced"
     },
     {
       "id": "led-escalation-coverage",
@@ -574,18 +569,16 @@
     {
       "id": "led-mechanical-fix",
       "source": "decisions-ledger.md: 2026-08-26 | every failure gets a mechanical fix",
-      "mechanism": "Conference rejects failure-fixes with no prevention mechanism",
-      "proof": "fleet-ops#366",
-      "status": "queued(#366)",
-      "queued_since": "2026-08-26"
+      "mechanism": "fleet-failure-mechanism-gate evaluate REJECTS a failure-fix PR with no prevention mechanism and no mechanism-impossible: declaration. Blind-audit hunts recurred failure classes.",
+      "proof": "bin/fleet-failure-mechanism-gate; lib/failure-mechanism-gate.py; tests/failure-mechanism-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; fleet-ops#366",
+      "status": "enforced"
     },
     {
       "id": "led-everything-mechanical",
       "source": "decisions-ledger.md: 2026-08-26 | EVERYTHING mechanical",
       "mechanism": "Blind-audit manual-seam lens; second occurrence of a hand action requires a mechanism",
-      "proof": "fleet-ops#377",
-      "status": "queued(#377)",
-      "queued_since": "2026-08-26"
+      "proof": "bin/fleet-blind-audit; lib/manual-seam-lens.py; prompts/blind-audit.md; fleet-ops#377",
+      "status": "enforced"
     },
     {
       "id": "led-enforcement-mechanical",
@@ -639,10 +632,9 @@
     {
       "id": "led-cursor-grok-re-admitted",
       "source": "decisions-ledger.md: 2026-08-27 | cursor grok-4.6 heavy re-admitted",
-      "mechanism": "Cursor grok-4.6 re-admitted to heavy lanes per dated decision; seat-caps row + routing must reflect it",
-      "proof": "decisions-ledger 2026-08-27; config/seat-caps.json",
-      "status": "queued(#437)",
-      "queued_since": "2026-08-27"
+      "mechanism": "enumerate_seats admits cursor-grok-4.6-high as heavy-capable; other cursor models stay light-only. seat-caps providers.cursor.models.cursor-grok-4.6-high=1. Drill in tests/seat-lib.test.sh 9b-cursor-heavy.",
+      "proof": "lib/seat-lib.sh enumerate_seats; config/seat-caps.json; tests/seat-lib.test.sh; fleet-ops#381",
+      "status": "enforced"
     },
     {
       "id": "led-straitly-ds4-pro-workers",
@@ -843,10 +835,9 @@
     {
       "id": "led-2026-08-28-0509-completeness-claims-distrusted",
       "source": "decisions-ledger.md: 2026-08-28 | 0509 completeness claims distrusted (Nish: \"scouts/researchers/auditors are blatantly lying\")",
-      "mechanism": "Adversarial live-product audit queued on 0509: verify closed-work claims against the deployed product, fix the known-live defects (0509#1286/#1343 stale proof dates, 0509#1290, 0509#1269), and fix the DETECTOR for each false 'done'. Any agent claiming 0509 work 'complete' without live-browser evidence is violating this rule.",
-      "proof": "0509#1286; 0509#1343; 0509#1290; 0509#1269; 0509#1365 (unknown-defect sweep)",
-      "status": "queued(#1365)",
-      "queued_since": "2026-08-28"
+      "mechanism": "none — 0509 product-audit direction, not a VPS control-plane enforcer. Fleet-side false-done distrust is sr-execution-is-review + 0509 gate-integrity. queued(#1365) was the wrong umbrella (vault-capture PR, closed 2026-08-27).",
+      "proof": "n/a — product audit on 0509; sibling led-2026-08-28-0509-product-direction-three-epics is already advisory",
+      "status": "advisory(senior: 0509 live-product completeness is product direction, not a fleet-ops canary; queued #1365 was a mismatched vault-capture ticket)"
     },
     {
       "id": "led-2026-08-28-0509-product-direction-three-epics",
@@ -858,10 +849,9 @@
     {
       "id": "led-2026-08-28-legit-work-only-fleet-wide-law",
       "source": "decisions-ledger.md: 2026-08-28 | Legit-work-only is fleet-wide law (Nish)",
-      "mechanism": "Written to global-standing-rules.md with enforcement via precedence-band empty-product surge expansion: when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity — BUT only for legit work. Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. Enforcer assigned to fleet-ops#1516.",
-      "proof": "lib/precedence-band.sh; tests/fleet-precedence-band.test.sh; config/precedence-band.json; fleet-ops#1516",
-      "status": "queued(#1516)",
-      "queued_since": "2026-08-28"
+      "mechanism": "precedence_band_is_legit_work rejects churn-class (chore, refactor, polish, machinery-on-machinery) at intake. Empty-product surge may expand past machinery_max_pct only for legit work. Standing-rule twin is sr-legit-work-no-spinning-wheels (already enforced).",
+      "proof": "lib/precedence-band.sh; tests/fleet-precedence-band.test.sh; config/precedence-band.json; bin/fleet-precedence-band-canary; fleet-ops#1516",
+      "status": "enforced"
     },
     {
       "id": "led-2026-08-28-optimization-target-max-quality-throughput",
