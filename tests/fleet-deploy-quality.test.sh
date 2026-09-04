@@ -341,6 +341,26 @@ tests:
               summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
               description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
   - interval: 1m
+    name: DeployBlockedStuck resolves when the block clears (fleet-ops#3178)
+    input_series:
+      - series: 'fleet_deploy_blocked_duration_seconds{repo="fleet-ops"}'
+        values: '0x1 901x10 0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DeployBlockedStuck
+        exp_alerts:
+          - exp_labels:
+              alertname: DeployBlockedStuck
+              repo: fleet-ops
+              severity: critical
+              service: fleet
+            exp_annotations:
+              summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
+              description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+      - eval_time: 15m
+        alertname: DeployBlockedStuck
+        exp_alerts: []
+  - interval: 1m
     name: rollback-rate-high-fires
     input_series:
       - series: 'fleet_deployment_rollback_rate{repo="fleet-ops"}'
