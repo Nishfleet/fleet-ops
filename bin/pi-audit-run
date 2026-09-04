@@ -107,31 +107,36 @@ log() {
 # Returns 0 if the call should proceed, 1 if the runner should SKIP.
 seat_health_ok_for_call() {
     local p="$1" m="$2" marker="${PI_SEAT_HEALTH_MARKER:-$HOME/../workspaces/agent-state/lanes/pi-seat-health.json}"
-    local lp="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
     local f
 
-    # Prefer the per-seat ledger (set by find_free_seat / find_any_capable_seat
-    # upstream); the global lanes marker is the alert-repair-dispatch fallback.
-    if [ -n "$lp" ] && [ -n "$p" ] && [ -n "$m" ]; then
-        f="$lp/${p}__${m}.json"
-        if [ -f "$f" ]; then
-            local hc
-            hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
-            case "$hc" in
-                # fleet-ops#2327: "corpse" is the terminal dead class the
-                # extension writes when seat_dead fires — a corpse is retired,
-                # never routable. seat_usable already blocks it upstream; this
-                # preflight skips it too (defense in depth).
-                transient_fault|rate_limited|corpse)
-                    log "seat_health preflight: $p/$m class=$hc -> SKIP"
-                    return 1
-                    ;;
-            esac
-            # credentials_bad / quota_exhausted are already caught by
-            # seat_usable upstream; if the runner got here the seat was
-            # considered usable. Do not double-skip.
-            return 0
+    # Prefer the per-seat ledger (the same authority seat_usable uses); the
+    # global lanes marker is the alert-repair-dispatch fallback.
+    if command -v seat_ledger_path >/dev/null 2>&1; then
+        f=$(seat_ledger_path "$p" "$m" 2>/dev/null) || f=''
+    else
+        local lp="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
+        if [ -n "$lp" ] && [ -n "$p" ] && [ -n "$m" ]; then
+            f="$lp/${p}__${m}.json"
         fi
+    fi
+    if [ -n "$f" ] && [ -f "$f" ]; then
+        local hc
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
+        case "$hc" in
+            # fleet-ops#2327: "corpse" is the terminal dead class the
+            # extension writes when seat_dead fires — a corpse is retired,
+            # never routable. seat_usable already blocks it upstream; this
+            # preflight skips it too (defense in depth).
+            # fleet-ops#3351: quota_exhausted is fail-opened by seat_usable once
+            # usable_at passes (one recovery probe). The auditor must not call a
+            # 402 seat and re-anchor observed_at; recovery probes stay with
+            # fleet-seat-comeback-release.
+            transient_fault|rate_limited|quota_exhausted|corpse)
+                log "seat_health preflight: $p/$m class=$hc -> SKIP"
+                return 1
+                ;;
+        esac
+        return 0
     fi
 
     [ -f "$marker" ] || return 0
@@ -143,7 +148,7 @@ seat_health_ok_for_call() {
     # provider+model. A different recorded seat is no signal here.
     [ "$rec_p" = "$p" ] && [ "$rec_m" = "$m" ] || return 0
     case "$hc" in
-        transient_fault|rate_limited|corpse) return 1 ;;
+        transient_fault|rate_limited|quota_exhausted|corpse) return 1 ;;
     esac
     return 0
 }
