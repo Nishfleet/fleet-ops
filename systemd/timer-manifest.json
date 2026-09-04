@@ -459,7 +459,7 @@
       "source": "repo"
     },
     "fleet-worktree-reaper.timer": {
-      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227 + #2637) — Mode A: claim/issue-<N> + merged PR. Mode B: issue-<short>-<N> PATH + dispatch-ledger terminal entry + HEAD on origin. Either mode's full gate chain must pass (no live worker, clean tree, work preserved on origin). Catches worker churn within one waking window; fail-safe (dry-run capable, gh failure skips repo, missing ledger fails closed), cheap (git + one gh pr list per repo + one git ls-remote per Mode B candidate).",
+      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227 + #2637 + #2774 + #3023) — Mode A: claim/issue-<N> + merged or closed PR. Mode B: issue-<short>-<N> PATH + dispatch-ledger terminal entry + HEAD on origin. Mode C: any worktree + HEAD on origin + 24h age gate. Mode D: dirty worktree stale >=14d is banked to wip/wfr-<name>-<ts> on origin via pi-salvage-worktree (secret-scan + quarantine), then the mode gates reap it — capped at 50 banks/run so the backlog drains across daily ticks. Every mode's full gate chain must pass (no live worker, work preserved on origin before removal). Fail-safe: dry-run capable, gh failure skips repo, missing ledger fails closed, unbanked salvage keeps the tree.",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"

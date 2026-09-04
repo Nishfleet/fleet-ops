@@ -52,6 +52,17 @@
 #    23. --summary-file PATH writes valid JSON run breakdown
 #    24. --no-summary-file disables the write
 #
+#   Mode D (fleet-ops#3023 follow-through — stale dirty orphan salvage):
+#    30. Mode C + dirty + STALE + banked   -> SALVAGE-BANKED + REAPED-C
+#    31. Mode C + dirty + STALE + no-push  -> kept (unbanked, fail safe)
+#    32. Mode C + dirty + YOUNG (<salvage age) -> SKIP dirty, helper NOT invoked
+#    33. claim + merged PR + dirty + STALE -> SALVAGE-BANKED + REAPED-A
+#    34. --dry-run + dirty + STALE          -> DRY-SALVAGE-CAND, no bank
+#    35. --salvage-limit 0 + dirty + STALE  -> SKIP-D salvage-limit, no bank
+#    36. summary JSON carries salvaged/salvage_attempts/salvage_candidates
+#    37. Mode B + ledger-terminal + dirty + STALE + unpushed -> SALVAGE-BANKED
+#        + REAPED-B (the pushed wip ref is the head-on-origin proof)
+#
 #   16. MANIFEST + unit files present    -> install rail intact
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -201,11 +212,48 @@ exit 0
 FAKE
 chmod +x "$scratch/bin/systemctl"
 
+# --- fake pi-salvage-worktree: Mode D bank helper ------------------------
+# Emulates the real helper's contract: commit the worktree's dirt, create
+# wip/<unit>-<NOW> pointing at the post-commit HEAD, push it to origin
+# (the scratch bare repo via file://), and log `status=pushed`. A
+# <basename>.no-push marker under $FAKE_SALVAGE_DIR emulates a
+# quarantined/push-failed (local-only) salvage: the dirt is committed
+# locally but nothing lands on origin, so the reaper's ls-remote proof
+# must fail and the worktree is kept. Every invocation is appended to
+# $FAKE_SALVAGE_DIR/invoked so cases can prove the helper was or was not
+# called. Exporting PI_SALVAGE_BIN also guarantees the REAL helper is
+# never invoked by any case in this file.
+mkdir -p "$scratch/salvage-state"
+cat >"$scratch/bin/pi-salvage-worktree" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+wt="${PI_SALVAGE_WORKDIR:?need PI_SALVAGE_WORKDIR}"
+unit="${PI_SALVAGE_UNIT:?need PI_SALVAGE_UNIT}"
+ts="${PI_SALVAGE_NOW:?need PI_SALVAGE_NOW}"
+br="wip/${unit}-${ts}"
+base="${wt##*/}"
+printf '%s\n' "$wt" >>"${FAKE_SALVAGE_DIR:?need FAKE_SALVAGE_DIR}/invoked"
+git -C "$wt" add -A -- . >/dev/null 2>&1
+git -C "$wt" -c user.email=fleet-salvage@localhost -c user.name=fleet-salvage \
+    commit -q -m "salvage: bank uncommitted work for unit ${unit}" >/dev/null 2>&1 || true
+git -C "$wt" branch -f "$br" HEAD >/dev/null 2>&1 || true
+status=local
+if [ ! -f "$FAKE_SALVAGE_DIR/${base}.no-push" ]; then
+    if git -C "$wt" push -q origin "HEAD:refs/heads/${br}" >/dev/null 2>&1; then
+        status=pushed
+    fi
+fi
+echo "salvaged branch=$br status=$status unit=$unit" >&2
+FAKE
+chmod +x "$scratch/bin/pi-salvage-worktree"
+
 export PATH="$scratch/bin:$PATH"
 export SYSTEMCTL="$scratch/bin/systemctl"
 export GH="$scratch/bin/gh"
 export GH_STATE_DIR="$scratch/gh-state"
 export FAKE_LIVE="$scratch/live"
+export FAKE_SALVAGE_DIR="$scratch/salvage-state"
+export PI_SALVAGE_BIN="$scratch/bin/pi-salvage-worktree"
 export FLEET_WORKTREE_REAPER_MERGED_LIMIT=5000
 
 # --- build repos + worktrees ----------------------------------------------
@@ -653,6 +701,129 @@ jq -e '.reaped_a_closed >= 1' "$summary_out_cl" >/dev/null 2>&1 \
     || fail "case29: summary JSON reaped_a_closed should be >=1; content: $(cat "$summary_out_cl")"
 ok "case29: summary JSON carries reaped_a_closed"
 rm -f "$summary_out_cl"
+
+# =====================================================================
+# Mode D (fleet-ops#3023 follow-through): stale dirty orphan salvage.
+# A dirty worktree older than --salvage-age-days (default 14d; cases
+# touch the dir 20 days back so the 2-day-old cases above stay inert)
+# is banked to wip/wfr-<basename>-<ts> on origin via the salvage
+# helper, then the normal mode gates reap it.
+# =====================================================================
+
+# --- 30. Mode C + dirty + STALE + banked -> SALVAGE-BANKED + REAPED-C ----
+# push=0 so the branch's HEAD is NOT on origin — the banked wip ref is
+# the work-on-origin proof, not the branch.
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-800" "fix/mode-d-800" 0 1 0
+touch -d '20 days ago' "$wroot/fix-branch-800"
+out_d1=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/fix-branch-800" ] \
+    || fail "case30: stale dirty orphan should be salvaged + REAPED-C; output: $out_d1"
+echo "$out_d1" | grep -q "fix-branch-800: SALVAGE-BANKED" \
+    || fail "case30: expected SALVAGE-BANKED tag; output: $out_d1"
+echo "$out_d1" | grep -q "fix-branch-800: REAPED-C" \
+    || fail "case30: expected REAPED-C tag; output: $out_d1"
+# The banked work must be proven on origin (the matching orphan's dirt
+# survives the worktree removal — the issue's 'proves it is collected').
+git -C "$parent_a" ls-remote origin "refs/heads/wip/wfr-fix-branch-800-*" \
+    | grep -q . \
+    || fail "case30: banked wip ref missing on origin; output: $out_d1"
+ok "case30: stale dirty orphan SALVAGE-BANKED + REAPED-C, wip ref on origin"
+
+# --- 31. Mode C + dirty + STALE + no-push -> kept (fail safe) ------------
+# A salvage whose bank never lands on origin must not be reaped.
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-801" "fix/mode-d-801" 0 1 0
+touch -d '20 days ago' "$wroot/fix-branch-801"
+printf '1\n' >"$FAKE_SALVAGE_DIR/fix-branch-801.no-push"
+out_d2=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-801" ] \
+    || fail "case31: unbanked salvage must NOT reap the worktree; output: $out_d2"
+echo "$out_d2" | grep -q "fix-branch-801: salvage not on origin" \
+    || fail "case31: expected 'salvage not on origin' line; output: $out_d2"
+ok "case31: push-failed salvage keeps the worktree (fail safe)"
+# Clean up: drop the marker so a later run can bank it.
+rm -f "$FAKE_SALVAGE_DIR/fix-branch-801.no-push"
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 32. Mode C + dirty + YOUNG -> SKIP dirty, helper NOT invoked ---------
+# old=1 touches the dir 2 days back — under the default 14d salvage
+# gate, so the helper must never see it.
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-802" "fix/mode-d-802" 0 1 1
+rm -f "$FAKE_SALVAGE_DIR/invoked"
+out_d3=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-802" ] \
+    || fail "case32: young dirty worktree must NOT be reaped; output: $out_d3"
+echo "$out_d3" | grep -q "fix-branch-802: SKIP dirty" \
+    || fail "case32: expected SKIP dirty; output: $out_d3"
+{ [ ! -f "$FAKE_SALVAGE_DIR/invoked" ] \
+    || ! grep -q "fix-branch-802" "$FAKE_SALVAGE_DIR/invoked"; } \
+    || fail "case32: salvage helper must not run on a young dirty worktree"
+ok "case32: dirty but under salvage age SKIP dirty (helper not invoked)"
+
+# --- 33. claim + merged PR + dirty + STALE -> SALVAGE-BANKED + REAPED-A ---
+# The dominant real-world shape: a claim worktree whose PR merged but
+# whose tree is dirty. Bank the dirt, then the Mode A gate reaps.
+add_claim_worktree "$parent_a" "$wroot" 810 1
+touch -d '20 days ago' "$wroot/issue-fleet-ops-810"
+out_d4=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/issue-fleet-ops-810" ] \
+    || fail "case33: stale dirty merged claim should be salvaged + REAPED-A; output: $out_d4"
+echo "$out_d4" | grep -q "issue-fleet-ops-810: REAPED-A" \
+    || fail "case33: expected REAPED-A tag; output: $out_d4"
+ok "case33: stale dirty merged claim SALVAGE-BANKED + REAPED-A"
+
+# --- 34. --dry-run + dirty + STALE -> candidate, no bank ------------------
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-803" "fix/mode-d-803" 0 1 0
+touch -d '20 days ago' "$wroot/fix-branch-803"
+rm -f "$FAKE_SALVAGE_DIR/invoked"
+dry_d=$("$bin" --dry-run --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-803" ] \
+    || fail "case34: dry-run must not delete; output: $dry_d"
+echo "$dry_d" | grep -q "fix-branch-803: DRY-SALVAGE-CAND" \
+    || fail "case34: expected DRY-SALVAGE-CAND; output: $dry_d"
+[ ! -f "$FAKE_SALVAGE_DIR/invoked" ] \
+    || fail "case34: dry-run must not invoke the salvage helper"
+ok "case34: dry-run reports salvage candidate without banking"
+
+# --- 35. --salvage-limit 0 + dirty + STALE -> SKIP-D salvage-limit --------
+out_lim=$("$bin" --root "$wroot" --salvage-limit 0 2>&1) || true
+[ -d "$wroot/fix-branch-803" ] \
+    || fail "case35: --salvage-limit 0 must not bank or reap; output: $out_lim"
+echo "$out_lim" | grep -q "fix-branch-803: SKIP-D salvage-limit" \
+    || fail "case35: expected SKIP-D salvage-limit; output: $out_lim"
+[ ! -f "$FAKE_SALVAGE_DIR/invoked" ] \
+    || fail "case35: limit-capped run must not invoke the helper"
+ok "case35: --salvage-limit 0 caps salvage attempts"
+# Now a real run banks + reaps it.
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+[ ! -d "$wroot/fix-branch-803" ] \
+    || fail "case35: un-capped run should salvage + reap fix-branch-803"
+ok "case35: un-capped run salvages + reaps the candidate"
+
+# --- 36. summary JSON carries the Mode D fields ---------------------------
+summary_out_d="$(mktemp -t wt-reaper-summary-d.XXXXXX)"
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-804" "fix/mode-d-804" 0 1 0
+touch -d '20 days ago' "$wroot/fix-branch-804"
+"$bin" --root "$wroot" --summary-file "$summary_out_d" >/dev/null 2>&1 || true
+jq -e 'has("salvaged") and has("salvage_attempts") and has("salvage_candidates")' \
+    "$summary_out_d" >/dev/null 2>&1 \
+    || fail "case36: summary JSON missing Mode D fields; content: $(cat "$summary_out_d")"
+jq -e '.salvaged >= 1' "$summary_out_d" >/dev/null 2>&1 \
+    || fail "case36: salvaged should be >=1 after a banked run; content: $(cat "$summary_out_d")"
+ok "case36: summary JSON carries salvaged/salvage_attempts/salvage_candidates"
+rm -f "$summary_out_d"
+
+# --- 37. Mode B + ledger-terminal + dirty + STALE + unpushed -> REAPED-B --
+# A dirty pi-issue worktree whose HEAD is not on origin and whose unit
+# is ledger-terminal: the pushed wip ref is the head-on-origin proof.
+add_path_worktree "$parent_a" "$wroot" 811 "feature/mode-d-811" 0 1
+touch -d '20 days ago' "$wroot/issue-fleet-ops-811"
+ledger_add "pi-issue-fleet-ops-811|salvaged|2026-09-01T10:00:00Z"
+out_db=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/issue-fleet-ops-811" ] \
+    || fail "case37: stale dirty ledger-terminal worktree should be salvaged + REAPED-B; output: $out_db"
+echo "$out_db" | grep -q "issue-fleet-ops-811: REAPED-B" \
+    || fail "case37: expected REAPED-B tag; output: $out_db"
+ok "case37: Mode B ledger-terminal stale dirty SALVAGE-BANKED + REAPED-B"
 
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
