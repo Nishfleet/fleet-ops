@@ -84,14 +84,28 @@ FAKE
 chmod +x "$gh_fake"
 
 # Fake systemctl: just enough for the healthy path (work>0, running>0).
+# list-units reports the RUNNING_UNITS set and show --property=ExecStart
+# answers a pi-worker literal so count_running counts a live worker.
+# fleet-ops#3155: the empty list-units made every "healthy" tick a first-tick
+# wedge (running=0, work>0) that only exited 0 via the repair path — any new
+# wedge-path probe (like #3082's pi_binary_broken) then fail-louds the test on
+# a runner where the real pi binary is absent.
 systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
 #!/usr/bin/env bash
 shift
 cmd="$1"; shift
 case "$cmd" in
-    list-units) ;;
+    list-units)
+        # Flag-only form (count_running): list the running set. A leading unit
+        # name (label-hygiene liveness probe) lists nothing.
+        case "${1:-}" in
+            ''|-*) cat "${RUNNING_UNITS:-/dev/null}" 2>/dev/null || true ;;
+            *)     ;;
+        esac
+        ;;
     is-active)  echo active ;;
+    show)       printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n' ;;
     *)          ;;
 esac
 FAKE
@@ -106,6 +120,10 @@ export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
 export RUNNING_UNITS="$scratch/running_units"
 export LIVE_SEAT_UNITS="$scratch/live_seat_units"
+# fleet-ops#1558: pin the admit floor so the tick does not read live
+# seat-lib / MemAvailable on hosts where /home/nish/.local/lib/pi-packet/
+# seat-lib.sh exists (same pin as tests/fleet-heartbeat-undersaturation.test.sh).
+export FLEET_UNDERSAT_ADMIT_CEILING=25
 
 printf '1\n' >"$WORK_READY"
 printf '1\n' >"$WORK_INPROGRESS"
@@ -117,6 +135,13 @@ env_out=$(SYSTEMCTL="$systemctl_fake" GH="$gh_fake" "$bin" 2>&1)
 env_rc=$?
 set -e
 [[ "$env_rc" == 0 ]] || fail "healthy tick must exit 0, got $env_rc ($env_out)"
+
+# Regression guard (fleet-ops#3155): the tick must take the genuinely healthy
+# path — exit 0 alone is not proof, because a first-tick wedge also exits 0
+# via the repair path. If the scenario drifts back to a wedge, this fails loud
+# instead of silently depending on whatever the repair path happens to allow.
+[[ "$env_out" == *"undersaturation: healthy"* ]] \
+    || fail "tick must log the healthy path, not ride a wedge repair to exit 0 ($env_out)"
 
 # The throughput line must show product=1, control-plane=2.
 grep -q 'merged_product_PRs=1' "$triage" || fail "triage missing product PR split (got: $(cat "$triage"))"
