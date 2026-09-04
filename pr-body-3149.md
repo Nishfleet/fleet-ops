@@ -1,0 +1,95 @@
+## What changed
+
+Scout yield is 218 runs -> 115 filed -> 6 merged in 14d (2.7%) because it
+inspects code, CI and sitemap but never what customers do. Prompt-only change
+to `prompts/scout.md` and the research-context assembler (`lib/packet-assembly.sh`),
+plus a small money-path walk helper. No new organ, no new unit/timer/workflow.
+
+### 1. RESEARCH CONTEXT gains a best-effort `usage` block (0509)
+
+`lib/packet-assembly.sh` now assembles a `## Usage (live product telemetry)`
+block from sources that already exist, dropping any that is empty:
+
+- **Cloudflare analytics** — schema-validated GraphQL (`httpRequests1dGroups`
+  date x requests/uniques) via the sanctioned CF token. See the caveat below.
+- **lp_run_audit / landing-page telemetry** — reads a dump dir when present.
+- **/search query log** — reads a dump dir when present.
+- **Inbound customer email (last 7d)** — reads a mailbox export dir when present.
+
+Each empty/unavailable source prints a visible DROP marker and never fails the
+scout run. `packet_assemble_0509_scout` embeds the block; `pi-scout-run` needs
+no change.
+
+### 2. Nightly money-path walk (inside the scout run, not a new unit)
+
+`lib/scout-money-path-walk.mjs` drives `0509.io` search -> result -> pricing ->
+signup start in fresh mobile + desktop sessions, using the Playwright **already
+installed in the 0509 checkout** (no new browser harness). Per step it records
+HTTP status, console errors, dead-CTA probes and visible copy, captures a
+screenshot as `evidence:`, and caps findings at 4. The scout converts each
+finding into a candidate carrying the screenshot path.
+
+### 3. Scout self-score + usage citation (prompt)
+
+`prompts/scout.md` now requires every 0509 candidate's `source:` to cite a usage
+source or a Nish-authored issue — code-shaped candidates with no usage citation
+are dropped — and ends each run by printing `scout-yield: filed=<n> merged_14d=<m>`
+so the journal and the exporter can graph the trend.
+
+### 4. CI Semgrep green on the walk
+
+The first submission of this branch failed CI Semgrep on the new walk file: the
+p/default `path-join-resolve-traversal` rule flags `path.join()` at the three
+places that build evidence screenshot filenames. The inputs are in-file
+constants (viewport names `mobile`/`desktop` and fixed step names), never user
+input, so it is a false positive; the repo's established convention is a
+justified `// nosemgrep` on the immediately-preceding comment line. With those
+annotations in place `semgrep --config p/default --error .` reports **0 findings**.
+
+## Caveat found during verification (filed as a new issue)
+
+The sanctioned CF token (`~/.config/cloudflare/deploy-ci.env`) lacks
+`zone.analytics.read` for the 0509 zone, so the Cloudflare analytics usage
+source currently drops with the authz marker (the GraphQL shape itself parses
+cleanly; the token is authz-gated). The Workers Analytics Engine endpoint
+returns no datasets. The walk is not blocked by this. Filed as issue #3172
+(plain, no labels) so the source can be enabled once the token is scoped.
+
+## Verification
+
+- Money-path walk RUN live against 0509.io (fresh mobile + desktop sessions):
+  `env OUTDIR=/tmp/walk-run 0509_DIR=/home/nish/workspaces/products/0509 node
+  lib/scout-money-path-walk.mjs` -> exit 0, **8 screenshots**, every step
+  search/result/pricing/signup-start HTTP 200, no console errors, no dead CTAs,
+  findings "none (all steps green)".
+- Integrated packet assembly with the walk ENABLED, in the production-like
+  environment (real HOME so Playwright finds browsers, real gh, real CF token):
+  `packet_assemble_0509_scout prompts/scout.md 0509 <packet>` returned **0**,
+  embedded the Usage block, and the money-path walk ran INSIDE the assembly,
+  emitting 8 screenshots and a green search->result->pricing->signup walk
+  (all HTTP 200).
+- Empty sources drop: CF analytics drops with the #3172 authz marker; the
+  lp_run_audit / /search query log / inbound mailbox sources drop with "no
+  dump" markers because no readers export them yet; none fails assembly (rc=0).
+- Repo test `bash tests/pi-scout-packet-assembly.test.sh` -> green (exit 0),
+  covering the usage-block header, empty-source drops, walk-skipped path, and
+  the prompt contract (usage citation + money-path walk + `scout-yield`).
+- `semgrep --config p/default --error .` -> **0 findings** (the prior CI
+  blocker on the walk's path-join basenames is fixed with nosemgrep).
+- `bash -n lib/packet-assembly.sh`, `node --check lib/scout-money-path-walk.mjs`
+  -> OK. `sgscan --base origin/main` -> no new security findings.
+
+run-proof: live scout packet assembly returned 0 with the money-path walk
+enabled inside it — the walk drove 0509.io search->result->pricing->signup-start
+in fresh mobile + desktop sessions and emitted 8 screenshots at
+/tmp/pa-run3-yFQT/walk/20260904T094120Z/ with all steps HTTP 200 and zero
+findings; standalone `node lib/scout-money-path-walk.mjs` also exited 0 with 8
+screenshots.
+
+organ-heartbeat: lib/scout-money-path-walk.mjs not-an-organ: invoked only from
+inside the existing nightly scout run by packet-assembly.sh; it is not a timer,
+exporter, guard, or canary and exports no heartbeat metric.
+
+loose-ends-canary: pr:nishfleet/fleet-ops#3149 usage-block scout
+
+Closes #3149
