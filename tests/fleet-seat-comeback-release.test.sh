@@ -44,14 +44,17 @@
 #     wall clock is held. This is the terminal step of the seat
 #     lifecycle this organ owns (seat-caps.json retiring the slug only
 #     stops the rotation, #2708).
-#   - comeback-release stuck corpses (fleet-ops#3156): a PROBER-created
-#     no-wall corpse (failure_mode comeback_never_released, wall null) is
-#     the lived seats_dead stuck case — inside its 6h grace nothing
-#     releases or retires it. It now gets ONE second-chance re-probe:
-#     on success it is UNWALLED (transitions OUT of corpse), on failure
-#     it is explicitly RETIRED immediately (grace bypass). Only that
-#     subclass is re-probed; other corpse sources (after_provider_response
-#     etc.) and corpses still owed a comeback clock stay held/terminal.
+#   - comeback-release stuck corpses (fleet-ops#3156/#3229): a no-wall
+#     corpse from a RECOVERABLE source — the PROBER-created no-wall corpse
+#     (failure_mode comeback_never_released, wall null) AND a no-wall corpse
+#     from a transient failure mode (rate_limit / transient_http / cli_timeout
+#     / transient_other / empty_run / overload) — is the lived seats_dead
+#     stuck case: inside its 6h grace nothing releases or retires it. It now
+#     gets ONE second-chance re-probe: on success it is UNWALLED (transitions
+#     OUT of corpse), on failure it is explicitly RETIRED immediately (grace
+#     bypass). A no-wall corpse from a PERMANENT class (credentials_bad
+#     401/403, quota_exhausted-by-age 402) and any corpse still owed a
+#     comeback clock stay held/terminal.
 #
 # Sandbox: scratch SEATS_DIR/state/prom + stub pi only. No live ledger,
 # no live pi, no systemd.
@@ -858,10 +861,14 @@ RETSEAT="$TMPD/seats13"
 RETDIR="$TMPD/seats-corpse-retired-$NOW2_ISO"
 
 # 13a. grace hold: a fresh corpse (1h old, inside the 6h grace window)
-#      must NOT be retired — the recovery window is still open.
+#      must NOT be retired — the recovery window is still open. Uses a
+#      credentials_bad corpse (fleet-ops#3229: a PERMANENT class is NOT in
+#      the recoverable-mode re-probe carve-out, so it is held silently and
+#      the #2716 grace/retirement path is what this exercises — a transient
+#      corpse would now be re-probed out of corpse before retirement).
 rm -rf "$RETSEAT"; mkdir -p "$RETSEAT"; rm -rf "$RETDIR"
 cat > "$RETSEAT/devin__glm-5-2.json" << 'EOF'
-{"provider":"devin","model":"glm-5-2","http_status":503,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"after_provider_response","failure_mode":"transient_http","usable_at":null,"consecutive_failure_count":150}
+{"provider":"devin","model":"glm-5-2","http_status":403,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"after_provider_response","failure_mode":"credentials_bad","usable_at":null,"consecutive_failure_count":30}
 EOF
 set +e
 PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
@@ -1140,9 +1147,13 @@ grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom17a.prom" \
   || fail "17a: prom retired_total must be 1 (grace bypass): $(cat "$TMPD/prom17a.prom")"
 ok "17a: failed second-chance re-probe retires the no-wall corpse immediately (grace bypass, fleet-ops#3156)"
 
-# 17b. guard: a no-wall corpse from ANOTHER source (after_provider_response,
-#      transient_http — the test-13a shape) inside grace is NOT re-probed
-#      even with a healthy probe stub; it is held (recovery window open).
+# 17b. fleet-ops#3229: a no-wall corpse from a RECOVERABLE transient failure
+#      mode (transient_http, source after_provider_response — the shape that
+#      used to be held silently under the #3156 source guard) inside grace is
+#      now re-probed. With a healthy probe stub the corpse transitions OUT of
+#      corpse (unwalled) instead of parking dead for the full 6h grace — a
+#      transient condition can clear on its own, so one bounded probe during
+#      grace lets the seat recover the moment it clears.
 rm -rf "$TMPD/seats17"
 mkdir -p "$TMPD/seats17"
 cat > "$TMPD/seats17/devin__glm-5-2.json" << 'EOF'
@@ -1158,14 +1169,17 @@ PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
     bash "$BIN" >/dev/null 2>"$TMPD/ret17b.err"
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "17b: guard-hold sweep must exit 0, got $rc ($(cat "$TMPD/ret17b.err"))"
-[[ -f "$TMPD/seats17/devin__glm-5-2.json" ]] \
-  || fail "17b: non-prober no-wall corpse must be held, not retired: $(cat "$TMPD/ret17b.err")"
-grep -q "re-probe" "$TMPD/ret17b.err" \
-  && fail "17b: non-prober corpse must NOT be re-probed: $(cat "$TMPD/ret17b.err")"
-grep -qi "devin/glm-5-2" "$TMPD/ret17b.err" \
-  && fail "17b: non-prober corpse must not be mentioned at all (held silently): $(cat "$TMPD/ret17b.err")"
-ok "17b: non-prober no-wall corpse inside grace is held, never re-probed (source guard, fleet-ops#3156)"
+[[ "$rc" == "0" ]] || fail "17b: transient-corpse re-probe sweep must exit 0, got $rc ($(cat "$TMPD/ret17b.err"))"
+grep -q "corpse re-probe devin/glm-5-2: no wall, second-chance re-probe" "$TMPD/ret17b.err" \
+  || fail "17b: recoverable-mode no-wall corpse must be re-probed (fleet-ops#3229): $(cat "$TMPD/ret17b.err")"
+grep -q "UNWALLED devin/glm-5-2" "$TMPD/ret17b.err" \
+  || fail "17b: healthy re-probe must unwall the transient corpse: $(cat "$TMPD/ret17b.err")"
+jq -e '.seat_dead == false and .health_class == "healthy"' \
+  "$TMPD/seats17/devin__glm-5-2.json" >/dev/null \
+  || fail "17b: transient corpse must land healthy after the re-probe: $(cat "$TMPD/seats17/devin__glm-5-2.json")"
+grep -q "^fleet_seat_comeback_release_released_total 1$" "$TMPD/prom17b.prom" \
+  || fail "17b: prom released_total must be 1: $(cat "$TMPD/prom17b.prom")"
+ok "17b: recoverable-mode no-wall corpse inside grace is re-probed and unwalled (fleet-ops#3229)"
 
 # 17c. non-dead seat with NO wall clock (bench_until and usable_at null) is
 #      no longer silently skipped (the removed pre-#3156 defensive hold):
@@ -1239,6 +1253,73 @@ jq -e '.health_class == "quota_exhausted" and .seat_dead == false' \
 grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom17d.prom" \
   || fail "17d: prom retired_total must be 0 (reclassified, not retired): $(cat "$TMPD/prom17d.prom")"
 ok "17d: extension reclassifies corpse during failed re-probe — logged as reclassification, not 'retire failed — held' (fleet-ops#3179)"
+
+# 17e. fleet-ops#3229 (the issue's exact shape): a no-wall corpse from a
+#      rate_limit failure mode written by the seat-health extension
+#      (source=provider_fetch, http_status=429 — the lived
+#      opencode/mimo-v2.5-free c=30 corpse that parked dead for the 6h grace
+#      with no probe ever fired) inside grace is re-probed. With a FAILING
+#      probe stub the corpse is explicitly retired immediately (grace bypass)
+#      — the bounded re-probe confirms the seat is still dead and delists it
+#      at once instead of waiting the full 6h. This is the issue's option 1:
+#      a bounded re-probe, not a forever cycle.
+rm -rf "$TMPD/seats17" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_fetch","failure_mode":"rate_limit","usable_at":null,"bench_until":null,"consecutive_failure_count":30}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17e.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17e.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17e.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17e: rate_limit corpse re-probe sweep must exit 0, got $rc ($(cat "$TMPD/ret17e.err"))"
+grep -q "corpse re-probe opencode/mimo-v2.5-free: no wall, second-chance re-probe" "$TMPD/ret17e.err" \
+  || fail "17e: rate_limit no-wall corpse must be re-probed (fleet-ops#3229): $(cat "$TMPD/ret17e.err")"
+grep -q "explicitly retired opencode/mimo-v2.5-free after failed no-wall corpse re-probe" "$TMPD/ret17e.err" \
+  || fail "17e: failed re-probe must explicitly retire the rate_limit corpse: $(cat "$TMPD/ret17e.err")"
+[[ ! -e "$TMPD/seats17/opencode__mimo-v2.5-free.json" ]] \
+  || fail "17e: rate_limit corpse must leave the live roster on failed re-probe: $(ls "$TMPD/seats17")"
+[[ -f "$TMPD/seats-corpse-retired-$NOW_ISO/opencode__mimo-v2.5-free.json" ]] \
+  || fail "17e: retired corpse must land in the dated retirement dir: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom17e.prom" \
+  || fail "17e: prom retired_total must be 1 (grace bypass): $(cat "$TMPD/prom17e.prom")"
+ok "17e: rate_limit no-wall corpse (the issue's mimo shape) re-probed; failed re-probe retires it immediately (fleet-ops#3229)"
+
+# 17f. fleet-ops#3229 permanent-mode guard: a no-wall corpse from a
+#      PERMANENT failure mode (credentials_bad 401/403 — the model is gone /
+#      the key is bad, re-probing cannot help) inside grace is NOT re-probed
+#      even with a healthy probe stub; it is held silently for the 6h grace
+#      (then retired by the #2716 path). This preserves the #3156 source
+#      guard for classes where a re-probe is wasted, while #3229 widens it
+#      only for recoverable transient modes.
+rm -rf "$TMPD/seats17"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/opencode__hy3-free.json" << 'EOF'
+{"provider":"opencode","model":"hy3-free","http_status":401,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"credentials_bad","usable_at":null,"consecutive_failure_count":30}
+EOF
+rm -rf "$TMPD/seats-corpse-retired-$NOW_ISO"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17f.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17f.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17f.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17f: permanent-corpse guard sweep must exit 0, got $rc ($(cat "$TMPD/ret17f.err"))"
+[[ -f "$TMPD/seats17/opencode__hy3-free.json" ]] \
+  || fail "17f: permanent no-wall corpse must be held, not retired/re-probed: $(cat "$TMPD/ret17f.err")"
+grep -q "re-probe" "$TMPD/ret17f.err" \
+  && fail "17f: permanent-mode corpse must NOT be re-probed: $(cat "$TMPD/ret17f.err")"
+grep -qi "opencode/hy3-free" "$TMPD/ret17f.err" \
+  && fail "17f: permanent-mode corpse must not be mentioned at all (held silently): $(cat "$TMPD/ret17f.err")"
+ok "17f: credentials_bad no-wall corpse inside grace is held, never re-probed (permanent-mode guard, fleet-ops#3229)"
 
 # --- 18. fleet-ops#3176: PQE 1h==1h deadlock — comeback-release must NOT ---
 #      re-anchor a quota_exhausted seat whose observed_at is still inside the
