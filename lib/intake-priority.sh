@@ -34,6 +34,12 @@ INTAKE_PRIORITY_WINDOW="${INTAKE_PRIORITY_WINDOW:-3}"
 INTAKE_PRIORITY_LABEL="${INTAKE_PRIORITY_LABEL:-critical-path}"
 INTAKE_PRIORITY_ESCALATE_LABEL="${INTAKE_PRIORITY_ESCALATE_LABEL:-escalate-senior}"
 INTAKE_PRIORITY_GAP_LABEL="${INTAKE_PRIORITY_GAP_LABEL:-gap-audit}"
+# fleet-ops#3120: an `umbrella` label marks a tracking parent that is not
+# claimable — its children are the real work. Intake must never hand one to a
+# regular worker; doing so spins dead claims (4 in 7200s on #3120) because the
+# umbrella has no implementable body. Dropped up front, same shape as
+# escalate-senior.
+INTAKE_PRIORITY_UMBRELLA_LABEL="${INTAKE_PRIORITY_UMBRELLA_LABEL:-umbrella}"
 INTAKE_PRIORITY_PRECEDENCE_FILE="${GAP_LOOP_PRECEDENCE_FILE:-/home/nish/workspaces/agent-state/gap-closure/precedence}"
 
 intake_priority_loop_open() {
@@ -46,15 +52,17 @@ intake_priority_loop_open() {
 
 intake_priority_classify() {
     # stdin: gh issue list JSON array. stdout: classified JSON array.
-    local label escalate gap_label gap_critical="false"
+    local label escalate gap_label umbrella gap_critical="false"
     label="$INTAKE_PRIORITY_LABEL"
     escalate="$INTAKE_PRIORITY_ESCALATE_LABEL"
     gap_label="$INTAKE_PRIORITY_GAP_LABEL"
+    umbrella="$INTAKE_PRIORITY_UMBRELLA_LABEL"
     if intake_priority_loop_open; then
         gap_critical="true"
     fi
     jq -c --arg label "$label" --arg escalate "$escalate" \
-          --arg gap "$gap_label" --argjson gap_critical "$gap_critical" '
+          --arg gap "$gap_label" --argjson gap_critical "$gap_critical" \
+          --arg umbrella "$umbrella" '
       def names:
         (.labels // [])
         | map(if type == "string" then . else (.name // empty) end);
@@ -65,6 +73,9 @@ intake_priority_classify() {
         # fleet-ops#234: escalate-senior is senior-panel-owned, never a
         # regular-worker claim. Mark it escalation so the walk can exclude it.
         escalation: has($escalate),
+        # fleet-ops#3120: umbrella is a tracking parent, not claimable. Mark
+        # it so the walk can drop it before ordering.
+        umbrella: has($umbrella),
         critical: (has($label) or ($gap_critical and has($gap))),
         display_kind: (
           if has($escalate) then $escalate
@@ -141,7 +152,9 @@ intake_priority_walk() {
     sim="$(mktemp)"
     # fleet-ops#234: escalate-senior issues never enter the regular-worker
     # claim order; the senior-auditor panel owns them. Drop them up front.
-    remaining="$(jq -c '[.[] | select(.escalation != true)]' <<<"$remaining")"
+    # fleet-ops#3120: umbrella tracking parents are not claimable either —
+    # their children are the work. Drop them the same way.
+    remaining="$(jq -c '[.[] | select(.escalation != true and .umbrella != true)]' <<<"$remaining")"
     intake_priority_recent_kinds "$state_file" 20 >"$sim" || true
 
     while jq -e 'length > 0' <<<"$remaining" >/dev/null; do
