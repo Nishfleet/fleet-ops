@@ -679,4 +679,21 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-intermittent-coun
   || fail "seat-empty-run-intermittent-count.test.sh must not be a known orphan (fleet-ops#2934)"
 ok "seat-empty-run-intermittent-count.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2934)"
 
+# fleet-ops#3295 (PR #3352 follow-up): hard-pin the host line for
+# pi-intake-tick-umbrella-exclusion in pi-intake-run (already listed in
+# ci.yml) so a future refactor that drops it is caught by name. PR #3352
+# added the test without a ci.yml listing or a host, leaving main red on
+# the generic "1 test file(s) are neither ..." FAIL from run 33908689540
+# (P14 red on every push since). This named pin is class-prevention:
+# parking it on known_orphans to silence the generic message must also
+# fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-umbrella-exclusion\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-umbrella-exclusion.test.sh (fleet-ops#3295)"
+[[ -n "${reachable[pi-intake-tick-umbrella-exclusion.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-umbrella-exclusion.test.sh must be hosted by a listed test (fleet-ops#3295)"
+[[ -z "${known_orphan_set[pi-intake-tick-umbrella-exclusion.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-umbrella-exclusion.test.sh must not be a known orphan (fleet-ops#3295)"
+ok "pi-intake-tick-umbrella-exclusion.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3295)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

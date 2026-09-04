@@ -150,3 +150,12 @@ bash "$here/pi-intake-tick-repo-conditional-blocks.test.sh"
 # to <=12 KB non-0509 / <=20 KB 0509. ci.yml lists this file, so the
 # drill runs here instead of a new workflow line.
 bash "$here/worker-packet-size.test.sh"
+
+# --- 14. fleet-ops#3295 umbrella-label exclusion (CI hook) --------------
+# tests/pi-intake-tick-umbrella-exclusion.test.sh (added by PR #3352)
+# locks the jq filter in lib/pi-intake-tick.sh that drops umbrella-issue
+# labeled issues from the dispatch list, so a tracker with no
+# implementable work is never dispatched (dead-seat loop, live #3128).
+# ci.yml lists this file, so the drill runs here instead of a new
+# workflow line (workers cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-umbrella-exclusion.test.sh"
