@@ -20,6 +20,8 @@ Attribution rule (issue accept §1):
     = caught-by-canary
   incident with no prior canary failure in that 24h window
     = missed-by-canary
+  incident before the organ's first observed run/failure
+    = ignored (the canary was not yet watching; cannot miss)
 
 Sources:
   - Prometheus query_range for probe/drill gauges (0509-surface-probe,
@@ -264,6 +266,20 @@ def correlate(
     return caught, missed
 
 
+def observe_since(events: Iterable[Event]) -> float | None:
+    """Earliest observed run or failure for this organ, or None if never seen.
+
+    Incidents before this instant cannot be missed-by-canary: the organ was
+    not yet watching. A canary with no observed events therefore contributes
+    zero caught and zero missed (ratio stays 0 and the Low alert stays quiet
+    because caught+missed==0).
+    """
+    stamps = [e.ts for e in events if e.kind in {"run", "failure"}]
+    if not stamps:
+        return None
+    return min(stamps)
+
+
 def stats_for_organ(
     organ: Organ,
     events: list[Event],
@@ -275,7 +291,12 @@ def stats_for_organ(
     runs = sum(1 for e in org_events if e.kind == "run")
     fails = [e for e in org_events if e.kind == "failure"]
     repos = set(organ.product_repos)
-    org_incidents = [i for i in incidents if i.repo in repos]
+    since = observe_since(org_events)
+    org_incidents = [
+        i
+        for i in incidents
+        if i.repo in repos and since is not None and i.ts >= since
+    ]
     caught, missed = correlate(fails, org_incidents, catch_hours=catch_hours)
     last_fail = max((e.ts for e in fails), default=0.0)
     return OrganStats(

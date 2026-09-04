@@ -7,6 +7,8 @@
 #
 # Proves:
 #   1. Helpers: correlate caught vs missed under the 24h prior-failure rule.
+#      Incidents before the organ's first observed run/failure are not
+#      missed (the canary was not yet watching).
 #   2. Different organ failure signatures (gauge vs unit journal fixture)
 #      attribute to the right organ and do not cross-contaminate.
 #   3. Empty window still emits fleet_canary_effectiveness_last_run_seconds
@@ -86,8 +88,40 @@ assert by["siterep-live-canary"].missed == 1
 assert abs(by["0509-surface-probe"].effectiveness_ratio - 1.0) < 1e-9
 assert by["siterep-live-canary"].effectiveness_ratio == 0.0
 print("OK: correlate")
+
+# Pre-observe incidents must not count as missed. Live 2026-09-04
+# CanaryEffectivenessLow was 0/0 caught vs 2+1+1 missed because
+# 0509#1132 (2026-08-26), 0509#1411 (2026-08-28) and fleet-ops#1466
+# (2026-08-28 04:58Z) all predate the organs' first observed run
+# (probe 2026-08-29T02:30Z, completion-canary 2026-08-28T21:52Z,
+# resilience-drill 2026-08-29T00:25Z). A canary cannot miss a
+# regression it was not yet watching. Post-observe misses still count.
+first_probe = 1_000.0
+pre_inc = m.Incident(repo="Nishfleet/0509", ts=first_probe - 86_400, number=1132)
+post_miss = m.Incident(repo="Nishfleet/0509", ts=first_probe + 3_600, number=1419)
+post_catch = m.Incident(repo="Nishfleet/0509", ts=first_probe + 8_000, number=1500)
+events_obs = [
+    m.Event(organ="0509-surface-probe", ts=first_probe, kind="run"),
+    m.Event(organ="0509-surface-probe", ts=first_probe + 7_200, kind="run"),
+    m.Event(organ="0509-surface-probe", ts=first_probe + 7_200, kind="failure"),
+]
+by_obs = {s.organ: s for s in m.compute_all(events_obs, [pre_inc, post_miss, post_catch])}
+assert by_obs["0509-surface-probe"].caught == 1, by_obs["0509-surface-probe"]
+assert by_obs["0509-surface-probe"].missed == 1, by_obs["0509-surface-probe"]
+# Pre-observe 1132 dropped; 1419 (no prior failure) missed; 1500 caught.
+# Organs with zero observed events must not inherit another organ's
+# product-repo incidents as misses (fleet-ops#1466 vs resilience-drill).
+by_none = {s.organ: s for s in m.compute_all(
+    [m.Event(organ="fleet-completion-canary", ts=first_probe, kind="run")],
+    [m.Incident(repo="Nishfleet/fleet-ops", ts=first_probe - 100, number=1466)],
+)}
+assert by_none["fleet-completion-canary"].missed == 0, by_none["fleet-completion-canary"]
+assert by_none["fleet-resilience-drill"].missed == 0, by_none["fleet-resilience-drill"]
+assert by_none["fleet-completion-canary"].caught == 0
+print("OK: pre-observe")
 PY
 ok "helpers: correlate caught vs missed; organs do not cross-contaminate"
+ok "helpers: pre-observe incidents are not missed"
 
 # =========================================================================
 # 2. Empty window still emits the heartbeat + per-organ zeros
