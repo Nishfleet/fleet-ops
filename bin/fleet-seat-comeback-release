@@ -185,6 +185,21 @@ NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 if [[ -f "$SEAT_LIB" ]]; then source "$SEAT_LIB" || true; fi
 
+# fleet-ops#3366: load seat-caps.json so the sweep can detect slugs that
+# have been intentionally retired (cap 0 + intentional_cap_zero=corpse).
+# Without this, a retired slug's corpse ledger gets a second-chance re-probe
+# (fleet-ops#3156), the re-probe fails, the corpse is retired to the dated
+# dir — but the slug is still cap>0 in seat-caps.json, so the router keeps
+# re-picking the seat, the extension re-creates a fresh ledger, and the
+# cycle repeats every tick (count climbing 26→27→28→29→30 across cycles).
+# The guard below skips re-probing a retired slug and force-retires its
+# corpse ledger immediately. Best-effort: if seat-caps.json is absent or
+# unparseable, load_seat_caps returns 1 and the SEAT_CAP_ZERO_CLASS_INTENTIONAL
+# map stays empty — the guard never fires, preserving the pre-#3366 behaviour.
+if declare -F load_seat_caps >/dev/null 2>&1; then
+    load_seat_caps 2>/dev/null || true
+fi
+
 # fleet-ops#2661: consecutive-overload escalation. A probe failure on an
 # overload_bench seat is an overload_503 strike on that provider; >=MIN strikes
 # within the 2h window arm an EXPONENTIAL provider-wide wall (learned-caps.json
@@ -820,6 +835,44 @@ main() {
         m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
         [[ -n "$m" ]] || continue
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        # fleet-ops#3366: a slug that has been intentionally retired in
+        # seat-caps.json (cap 0 + intentional_cap_zero=corpse) must NOT be
+        # re-probed by this organ. The lived oscillation: the prober corpsed
+        # the seat at count>=25, the #3156 second-chance re-probe failed, the
+        # corpse was retired to seats-corpse-retired-<ts>/ — but the slug was
+        # still cap>0 in seat-caps.json, so the router kept re-picking the
+        # seat, the extension re-created a fresh ledger, and the bin re-probed
+        # → re-failed → re-corpseed → re-retired every ~15-30min. The count
+        # climbed 26→27→28→29→30 across cycles. The fix: if the slug is marked
+        # intentional_cap_zero=corpse in seat-caps.json, skip probing entirely.
+        # If the ledger is a corpse, force-retire it immediately (no re-probe,
+        # no grace wait — the slug is already declared dead in config). If the
+        # ledger is non-dead (a fresh ledger the extension just wrote), skip it
+        # silently — the cap-0 skip in pick_seat will stop the router from
+        # re-picking it on the next cycle, and the ledger will age out / be
+        # overwritten. This guard is defense-in-depth: the primary fix is the
+        # cap-0 retirement in seat-caps.json, but this guard prevents the
+        # oscillation even if the config change has not yet propagated to the
+        # live seat-caps.json copy, and catches any future case where a slug
+        # is retired in config but a stale ledger lingers in the live dir.
+        if [[ -n "${SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]:-}" ]]; then
+            if [[ "$hc" == "corpse" ]]; then
+                if (( DRY_RUN )); then
+                    log "DRY-RUN: would retire $p/$m (slug intentionally retired in seat-caps.json: ${SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]}, force-retiring corpse without re-probe, fleet-ops#3366)"
+                else
+                    if retire_corpse "$p" "$m" "$f" 1; then
+                        log "RETIRED $p/$m (slug intentionally retired in seat-caps.json: ${SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]}, corpse force-retired without re-probe, fleet-ops#3366)"
+                    fi
+                fi
+            else
+                if (( DRY_RUN )); then
+                    log "DRY-RUN: would skip $p/$m (slug intentionally retired in seat-caps.json: ${SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]}, health_class=$hc — not probed, fleet-ops#3366)"
+                else
+                    log "skip $p/$m: slug intentionally retired in seat-caps.json (${SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]}), health_class=$hc — not probed (fleet-ops#3366)"
+                fi
+            fi
+            continue
+        fi
         # A healthy seat resets this organ's own-failure streak for that
         # seat (recovery happened — via a real worker or a successful
         # probe). The streak must NOT persist across a healthy interlude:
