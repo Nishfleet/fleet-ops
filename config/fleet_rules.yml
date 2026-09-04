@@ -237,6 +237,22 @@ groups:
           summary: "keystone routing organ absent — reliability-first routing is missing or dead"
           description: "fleet-ops#1133: the keystone routing ledger (keystone-routing.jsonl) has not been touched in 3h. pick_seat is not routing keystone packets to strong seats, or the ledger was wiped. Check seat-lib.sh packet_is_keystone / pick_seat keystone branch and the pi-packet state dir."
 
+      # fleet-ops#3324: the minimum-usable floor fail-opens a recoverable
+      # bench instead of stalling. A sustained climb on the counter means the
+      # fleet is living on slightly-early retries (every tick empty, every
+      # tick fail-open) — am-executor repair, not Nish. Money walls never
+      # increment this counter. increase() over 5m staying >0 for 30m is
+      # "increasing for 30 min".
+      - alert: FleetSeatFloorFailopen
+        expr: increase(fleet_seat_floor_failopen_total[5m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "seat-floor fail-open climbing for 30 min — fleet living on slightly-early retries"
+          description: "Repair worker: pick_seat has been fail-opening the shortest remaining recoverable bench (transient_fault / rate_limited / empty_run / overload_bench) for 30 minutes (fleet-ops#3324). That is a starved capable set, not a money wall. Inspect watch.log for 'seat-floor: fail-open', the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, and journalctl --user -u pi-intake@*. A money-walled seat is never fail-opened; if every remaining seat is quota_exhausted / corpse / credentials_bad the counter stays flat and this rule stays silent."
+
       - alert: FleetTestAlert
         expr: fleet_test_alert == 1
         for: 1m
