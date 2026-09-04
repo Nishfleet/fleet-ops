@@ -145,6 +145,16 @@ SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
 # corpse reclassification recover via a healthy observation (seat-lib
 # clears a corpse on a successful probe) before the ledger is retired.
 CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
+# fleet-ops#3176: the provider-quota-exhausted alert window in
+# libexec/fleet-metrics-export.py (PROVIDER_QUOTA_WINDOW_S, default 3600s).
+# A quota_exhausted (HTTP 402) seat whose observed_at is STILL inside this
+# window must NOT be probed: a fresh 402 re-anchors observed_at=now and
+# refreshes the 1h window, so FleetProviderQuotaExhausted never ages out
+# (the 1h==1h deadlock). The seat-health extension now defaults a no-Retry-
+# After 402 to free_balance_exhausted_s=86400 (strictly longer than this
+# window), so the probe cadence dwarfs the window; this gate is the
+# belt-and-suspenders for a shorter provider Retry-After or a legacy ledger.
+PROVIDER_QUOTA_WINDOW_S="${FLEET_SEAT_COMEBACK_PQE_WINDOW_S:-3600}"
 NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
 # fleet-ops#2661: the provider-wide overload wall reuses the learned-caps
 # mechanism a lib/seat-lib.sh provides (_record_learned_cap,_seat_now_epoch);
@@ -213,6 +223,32 @@ wall_end_of() {
     # bench_until ?? usable_at — the router (seat_usable) prefers bench_until
     # and falls back to usable_at; mirror that.
     jq -r '(.bench_until // .usable_at // "")' "$1" 2>/dev/null || true
+}
+
+# fleet-ops#3176: a quota_exhausted (HTTP 402) seat whose observed_at is
+# STILL inside PROVIDER_QUOTA_WINDOW_S is intentionally held — comeback-
+# release must NOT probe it. A fresh 402 re-anchors observed_at=now and
+# refreshes the 1h PQE window, so FleetProviderQuotaExhausted never ages
+# out (the 1h==1h deadlock). The seat waits for the window to age out;
+# only then does the next probe fire (observed_at outside the window, so a
+# 402 re-anchor fires PQE for 1h and then ages out, not forever). This
+# helper is the shared gate for the sweep, the post-sweep expired count,
+# and the interval-breach check so an intentionally-held PQE-window seat
+# is not probed, not counted as stuck, and not counted as breached.
+# Returns 0 (true) when the seat is quota_exhausted AND observed_at is
+# inside the window; 1 otherwise. Mirrors the exporter's inside-window
+# test: (now - epoch) <= PROVIDER_QUOTA_WINDOW_S.
+quota_exhausted_in_pqe_window() {
+    local f="$1" hc obs obs_e now_e age
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "quota_exhausted" ]] || return 1
+    obs=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    obs_e=$(ts_epoch "$obs")
+    [[ -n "$obs_e" ]] || return 1
+    now_e=$(now_epoch)
+    age=$(( now_e - obs_e ))
+    (( age <= PROVIDER_QUOTA_WINDOW_S )) && return 0
+    return 1
 }
 
 # --- state (per-seat last probe time + cumulative counters) ---------------
@@ -817,6 +853,24 @@ main() {
 
         wall_end=$(wall_end_of "$f")
         we=$(ts_epoch "$wall_end")
+        # fleet-ops#3176: a quota_exhausted seat whose observed_at is STILL
+        # inside PROVIDER_QUOTA_WINDOW_S is intentionally held — do NOT probe.
+        # A fresh 402 re-anchors observed_at=now and refreshes the 1h PQE
+        # window, so FleetProviderQuotaExhausted never ages out (the 1h==1h
+        # deadlock). The seat waits for the window to age out; only then does
+        # the next probe fire. The ledger is left UNTOUCHED so observed_at
+        # can age out honestly (no re-bench, no re-anchor, no corpse). This
+        # is the belt-and-suspenders for a shorter provider Retry-After or a
+        # legacy ledger with a 1h usable_at; the seat-health extension now
+        # defaults a no-Retry-After 402 to 86400s, so the probe cadence
+        # already dwarfs the window for the common case. Placed BEFORE the
+        # wall-clock block so a held-bench_until force-probe does not log a
+        # misleading "force probe" line for a seat that is held by the PQE
+        # window, not by a re-bench.
+        if quota_exhausted_in_pqe_window "$f"; then
+            log "skip probe $p/$m: quota_exhausted observed_at still inside the ${PROVIDER_QUOTA_WINDOW_S}s PQE window — hold so the 1h alert can age out (fleet-ops#3176)"
+            continue
+        fi
         # fleet-ops#2638: track usable_at SEPARATELY from bench_until. The
         # bin's wall_end_of prefers bench_until — when a prior probe failed
         # and rebench_seat advanced bench_until=now+REBENCH_BACKOFF_S, the
@@ -888,6 +942,14 @@ main() {
             fi
         else
             ((probed++)) || true
+            # fleet-ops#3176: capture the health_class BEFORE rebench_seat
+            # clobbers it to transient_fault (rebench_seat only preserves
+            # overload_bench; quota_exhausted is rewritten to transient_fault).
+            # The pre-rebench class is the truth for the corpse-by-count guard
+            # below: a 402 (quota_exhausted) is time-based, not count-based,
+            # and must NOT be corpseed by the prober's count threshold.
+            local _pre_rebench_hc
+            _pre_rebench_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
             # fleet-ops#2806: advance this organ's own consecutive-failure
             # streak on EVERY probe failure, regardless of whether the
             # extension re-anchored the wall first (the #2493 skip path).
@@ -940,7 +1002,27 @@ main() {
             [[ "$_ledger_count" =~ ^[0-9]+$ ]] || _ledger_count=0
             _merged=$_ledger_count
             (( ${OWN_FAIL["$base"]:-0} > _merged )) && _merged=${OWN_FAIL["$base"]:-0}
-            corpse_seat "$p" "$m" "$f" "$_merged" || true
+            # fleet-ops#3176: do NOT corpse a quota_exhausted (HTTP 402) seat
+            # by count. quota_exhausted is TIME-based per seat-health.ts
+            # shouldMarkSeatDead (corpse when observed_at age >=
+            # seat_dead_quota_age_s=86400), NOT count-based — a 402 with a
+            # fresh observed_at is a normal walled seat waiting for its reset
+            # window, not a corpse. The live straitly/gpt-5.6-sol was CORPSED
+            # at count=38>=25 by this prober's count-based corpse path, even
+            # though its observed_at was only ~1h old (the 1h==1h re-probe
+            # loop inflated the count). Skip the count-based corpse for
+            # quota_exhausted; the time-based corpse fires in seat-health.ts
+            # when the 402 has not cleared in 24h. The re-bench above still
+            # advances the wall so the seat is not hammered every tick. Use
+            # the PRE-rebench class: rebench_seat clobbers quota_exhausted to
+            # transient_fault (it only preserves overload_bench), so reading
+            # the ledger here would see transient_fault and the guard would
+            # never fire.
+            if [[ "$_pre_rebench_hc" == "quota_exhausted" ]]; then
+                log "skip corpse $p/$m: quota_exhausted is time-based (seat_dead at observed_at age >= 24h), not count-based — re-benched, not corpseed (fleet-ops#3176)"
+            else
+                corpse_seat "$p" "$m" "$f" "$_merged" || true
+            fi
             # fleet-ops#2661: a probe failure on an overload_bench seat is an
             # overload_503 strike on that provider. the rebench preserved the overload
             # class (in rebench_seat above), so the ledger still classes it
@@ -969,6 +1051,12 @@ main() {
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
         [[ "$dead" != "true" ]] || continue
+        # fleet-ops#3176: a quota_exhausted seat held inside the PQE window
+        # is intentionally not probed (a fresh 402 would refresh the 1h
+        # alert window). It is not "stuck" — the release path is operating
+        # correctly by holding it. Exclude it from the expired count so the
+        # loud-stall check does not page on a deliberate hold.
+        quota_exhausted_in_pqe_window "$f" && continue
         wall_end=$(wall_end_of "$f")
         we=$(ts_epoch "$wall_end")
         if [[ -n "$we" ]] && (( we <= now )); then
@@ -1000,6 +1088,12 @@ main() {
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
         [[ "$dead" != "true" ]] || continue
+        # fleet-ops#3176: a quota_exhausted seat held inside the PQE window
+        # is intentionally not probed (see the expired-count exclusion above).
+        # Exclude it from the interval-breach check too — the releaser did
+        # not "miss a full probe cycle", it deliberately held the seat so
+        # the 1h alert window can age out.
+        quota_exhausted_in_pqe_window "$f" && continue
         local seat_usable us_e
         seat_usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
         us_e=$(ts_epoch "$seat_usable")

@@ -1155,4 +1155,188 @@ grep -q "^fleet_seat_comeback_release_released_total 1$" "$TMPD/prom17c.prom" \
   || fail "17c: prom released_total must be 1: $(cat "$TMPD/prom17c.prom")"
 ok "17c: non-dead no-wall seat re-probed and released, not silently stuck (fleet-ops#3156)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156)"
+# --- 18. fleet-ops#3176: PQE 1h==1h deadlock — comeback-release must NOT ---
+#      re-anchor a quota_exhausted seat whose observed_at is still inside the
+#      PROVIDER_QUOTA_WINDOW_S (3600s) window. The live straitly/gpt-5.6-sol
+#      + deepseek-v4-pro + qwen3.8-max burn: a 402 with no Retry-After got
+#      daily_quota_s=3600 (== the PQE window), comeback-release probed at the
+#      1h mark, the fresh 402 re-anchored observed_at=now, and the 1h window
+#      never emptied so FleetProviderQuotaExhausted fired forever. The fix:
+#      (a) seat-health.ts now defaults quota_exhausted to
+#      free_balance_exhausted_s=86400 (strictly longer than 3600s); (b)
+#      comeback-release skips probing a quota_exhausted seat whose observed_at
+#      is inside the window; (c) comeback-release does NOT corpse a 402 by
+#      count (quota_exhausted is time-based, not count-based). This test pins
+#      all three on a scratch ledger with the exporter's PQE helper.
+# -------------------------------------------------------------------------
+# PQE count over $SEATDIR evaluated at a FIXED now (the exporter's
+# _read_provider_quota_exhausted uses time.time(); pin it so the test is
+# stable regardless of when it runs). Mirrors the overdue_n() helper.
+pqe_n() {
+    local seatdir="$1" now_epoch="$2"
+    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$seatdir" "$now_epoch" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.SEAT_LEDGER = Path(sys.argv[2])
+m.time.time = lambda: int(sys.argv[3])
+n, _ = m._read_provider_quota_exhausted()
+print(n)
+PY
+}
+
+# 18a. Two 402s inside the 1h PQE window, expired usable_at. Comeback tick
+#      must SKIP them (PQE gate), leave the ledger UNTOUCHED (observed_at not
+#      re-anchored), and NOT probe. PQE total stays 1 (in window) right after
+#      the tick — the point is the tick did not re-anchor, so observed_at can
+#      still age out.
+rm -rf "$TMPD/seats18"
+mkdir -p "$TMPD/seats18"
+# observed_at 5 min ago (inside 1h window), usable_at 5 min ago (expired wall
+# — would normally be probed). count=24 so a count-based corpse would fire at
+# 25 if the probe ran and failed (the 3176 guard must prevent both).
+cat > "$TMPD/seats18/straitly__gpt-5.6-sol.json" << 'EOF'
+{"provider":"straitly","model":"gpt-5.6-sol","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:55:00Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T11:55:00Z","consecutive_failure_count":24}
+EOF
+cat > "$TMPD/seats18/straitly__deepseek_deepseek-v4-pro.json" << 'EOF'
+{"provider":"straitly","model":"deepseek/deepseek-v4-pro","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:55:00Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T11:55:00Z","consecutive_failure_count":23}
+EOF
+# Pin the pre-tick PQE total: 2 straitly seats inside the window -> 1 provider.
+pre_pqe=$(pqe_n "$TMPD/seats18" "$NOW_EPOCH")
+[[ "$pre_pqe" == "1" ]] \
+  || fail "18a: pre-tick PQE total must be 1 (2 straitly seats in window), got $pre_pqe"
+# Snapshot observed_at BEFORE the tick to prove it is not re-anchored.
+obs_before=$(jq -r '.observed_at' "$TMPD/seats18/straitly__gpt-5.6-sol.json")
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats18" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state18a.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom18a.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret18a.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "18a: PQE-window skip sweep must exit 0, got $rc ($(cat "$TMPD/ret18a.err"))"
+# The skip log must name both seats and the PQE window hold.
+grep -q "skip probe straitly/gpt-5.6-sol: quota_exhausted observed_at still inside the 3600s PQE window" "$TMPD/ret18a.err" \
+  || fail "18a: must log PQE-window skip for gpt-5.6-sol: $(cat "$TMPD/ret18a.err")"
+grep -q "skip probe straitly/deepseek/deepseek-v4-pro: quota_exhausted observed_at still inside the 3600s PQE window" "$TMPD/ret18a.err" \
+  || fail "18a: must log PQE-window skip for deepseek-v4-pro: $(cat "$TMPD/ret18a.err")"
+# No probe, no re-bench, no corpse.
+grep -qi "REBENCHED" "$TMPD/ret18a.err" && fail "18a: must NOT re-bench a PQE-window-held seat: $(cat "$TMPD/ret18a.err")"
+grep -qi "CORPSED" "$TMPD/ret18a.err" && fail "18a: must NOT corpse a PQE-window-held seat: $(cat "$TMPD/ret18a.err")"
+# Ledger UNTOUCHED — observed_at not re-anchored (the deadlock root cause).
+obs_after=$(jq -r '.observed_at' "$TMPD/seats18/straitly__gpt-5.6-sol.json")
+[[ "$obs_after" == "$obs_before" ]] \
+  || fail "18a: observed_at must NOT be re-anchored by the skip (was $obs_before, now $obs_after)"
+# count unchanged (no probe, no re-bench increment).
+count_after=$(jq -r '.consecutive_failure_count' "$TMPD/seats18/straitly__gpt-5.6-sol.json")
+[[ "$count_after" == "24" ]] \
+  || fail "18a: count must stay 24 (no probe), got $count_after"
+# PQE total right after the tick is still 1 (observed_at unchanged, still in
+# window) — the tick did NOT make it worse. The win is observed_at can age out.
+post_pqe=$(pqe_n "$TMPD/seats18" "$NOW_EPOCH")
+[[ "$post_pqe" == "1" ]] \
+  || fail "18a: post-tick PQE total must stay 1 (no re-anchor), got $post_pqe"
+ok "18a: PQE-window-held 402s are skipped (no probe, no re-bench, no corpse, observed_at not re-anchored) — the 1h window can age out (fleet-ops#3176)"
+
+# 18b. Advance past the PQE window (now+2h). observed_at is now 2h05m old
+#      (outside 3600s). PQE total must be 0 — observed_at aged out because the
+#      18a tick did not re-anchor it. This is the closure: without the fix the
+#      tick would have re-anchored and PQE would still be 1 here.
+NOW_PLUS_2H_ISO="2026-08-30T14:00:00Z"
+NOW_PLUS_2H_EPOCH=$(date -u -d "$NOW_PLUS_2H_ISO" +%s)
+aged_pqe=$(pqe_n "$TMPD/seats18" "$NOW_PLUS_2H_EPOCH")
+[[ "$aged_pqe" == "0" ]] \
+  || fail "18b: PQE total must be 0 after observed_at ages out (no re-anchor), got $aged_pqe"
+ok "18b: PQE total drops to 0 once observed_at ages out — the 1h==1h deadlock is broken (fleet-ops#3176)"
+
+# 18c. After the window ages out, the next comeback tick DOES probe (the gate
+#      releases). A failed probe re-benches but does NOT corpse a 402 by count
+#      (quota_exhausted is time-based, not count-based — the live
+#      straitly/gpt-5.6-sol was CORPSED at count=38 by the prober's count-based
+#      corpse path even though its observed_at was only ~1h old). Pin both: the
+#      probe fires, re-benches, count climbs to 25, but seat_dead stays false.
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats18" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state18c.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom18c.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_PLUS_2H_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret18c.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "18c: post-window probe sweep must exit 0, got $rc ($(cat "$TMPD/ret18c.err"))"
+# The PQE-window skip must NOT fire now (observed_at is outside the window).
+grep -q "skip probe straitly/gpt-5.6-sol: quota_exhausted observed_at still inside" "$TMPD/ret18c.err" \
+  && fail "18c: must NOT skip a seat whose observed_at is outside the PQE window: $(cat "$TMPD/ret18c.err")"
+# The probe fired and re-benched (the wall was expired, the gate released).
+grep -q "REBENCHED straitly/gpt-5.6-sol" "$TMPD/ret18c.err" \
+  || fail "18c: must re-bench gpt-5.6-sol after the probe fails (gate released): $(cat "$TMPD/ret18c.err")"
+# CRITICAL: the 402 must NOT be corpseed by count even though count crosses 25.
+grep -q "skip corpse straitly/gpt-5.6-sol: quota_exhausted is time-based" "$TMPD/ret18c.err" \
+  || fail "18c: must log skip-corpse for quota_exhausted (time-based, not count-based): $(cat "$TMPD/ret18c.err")"
+grep -q "CORPSED straitly/gpt-5.6-sol" "$TMPD/ret18c.err" \
+  && fail "18c: must NOT corpse a 402 by count (quota_exhausted is time-based): $(cat "$TMPD/ret18c.err")"
+dead=$(jq -r '.seat_dead' "$TMPD/seats18/straitly__gpt-5.6-sol.json")
+[[ "$dead" == "false" ]] \
+  || fail "18c: seat_dead must stay false for a 402 corpseed-by-count guard, got $dead"
+# rebench_seat clobbers quota_exhausted to transient_fault (it only preserves
+# overload_bench); the corpse guard uses the PRE-rebench class to decide. The
+# ledger post-rebench carries transient_fault (the prober's re-bench class),
+# NOT corpse — the time-based corpse fires in seat-health.ts on a real 402
+# response at observed_at age >= 24h, not here.
+hc=$(jq -r '.health_class' "$TMPD/seats18/straitly__gpt-5.6-sol.json")
+[[ "$hc" == "transient_fault" ]] \
+  || fail "18c: health_class must be transient_fault (re-bench clobber, not corpse), got $hc"
+# count climbed to 25 (the re-bench incremented it) but no corpse.
+count=$(jq -r '.consecutive_failure_count' "$TMPD/seats18/straitly__gpt-5.6-sol.json")
+[[ "$count" == "25" ]] \
+  || fail "18c: count must climb to 25 (re-bench increment), got $count"
+ok "18c: post-window probe fires + re-benches, but 402 NOT corpseed by count (time-based, not count-based) — fleet-ops#3176"
+
+# 18d. seat-health.ts backoff pin: a no-Retry-After 402 must default to
+#      free_balance_exhausted_s=86400 (strictly longer than the 3600s PQE
+#      window), not daily_quota_s=3600. A provider Retry-After still wins.
+#      This is the out-of-repo extension; skip if not installed (mirrors the
+#      seat-health-quarantine / seat-health-seat-dead CI safety pattern).
+EXT_PATH="${FLEET_SEAT_HEALTH_TS:-$HOME/.pi/agent/extensions/seat-health.ts}"
+if [[ -f "$EXT_PATH" ]] && command -v node >/dev/null 2>&1; then
+    node_major=$(node -e 'console.log(Number.parseInt(process.versions.node.split(".")[0], 10))')
+    node_minor=$(node -e 'console.log(Number.parseInt(process.versions.node.split(".")[1], 10))')
+    if [[ "$node_major" -ge 22 ]] || { [[ "$node_major" -eq 22 ]] && [[ "$node_minor" -ge 6 ]]; }; then
+        backoff_out=$(node --experimental-strip-types --no-warnings=ExperimentalWarning \
+            --input-type=module -e "
+import { computeUsableAt } from ${EXT_PATH@Q};
+const now = Date.now();
+const u = computeUsableAt('quota_exhausted', null, now, 0);
+const s = u === null ? null : Math.round((Date.parse(u) - now) / 1000);
+console.log('BACKOFF:' + s);
+" 2>&1 | tail -1)
+        [[ "$backoff_out" == BACKOFF:* ]] || fail "18d: node did not emit BACKOFF line (got $backoff_out)"
+        backoff="${backoff_out#BACKOFF:}"
+        [[ "$backoff" == "86400" ]] \
+          || fail "18d: quota_exhausted no-Retry-After backoff must be 86400 (free_balance_exhausted_s, strictly > 3600s PQE window), got $backoff"
+        # A provider Retry-After of 3600 still wins (max(base, retry)).
+        retry_out=$(node --experimental-strip-types --no-warnings=ExperimentalWarning \
+            --input-type=module -e "
+import { computeUsableAt } from ${EXT_PATH@Q};
+const now = Date.now();
+const u = computeUsableAt('quota_exhausted', 3600, now, 0);
+const s = u === null ? null : Math.round((Date.parse(u) - now) / 1000);
+console.log('RETRY:' + s);
+" 2>&1 | tail -1)
+        [[ "$retry_out" == RETRY:* ]] || fail "18d: node did not emit RETRY line (got $retry_out)"
+        retry="${retry_out#RETRY:}"
+        [[ "$retry" == "3600" ]] \
+          || fail "18d: quota_exhausted Retry-After=3600 must be honoured (3600), got $retry"
+        ok "18d: seat-health.ts quota_exhausted default backoff=86400 (strictly > 3600s PQE window); provider Retry-After=3600 still wins (fleet-ops#3176)"
+    else
+        ok "18d: SKIP seat-health.ts backoff pin (node < 22.6 for --experimental-strip-types) (fleet-ops#3176)"
+    fi
+else
+    ok "18d: SKIP seat-health.ts backoff pin (extension not installed at $EXT_PATH) (fleet-ops#3176)"
+fi
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + PQE 1h==1h deadlock fix (fleet-ops#3176)"
