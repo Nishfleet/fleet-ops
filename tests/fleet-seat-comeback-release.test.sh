@@ -127,7 +127,47 @@ cat > "$TMPD/pi-timeout" <<'EOF'
 #!/usr/bin/env bash
 exit 124
 EOF
-chmod +x "$TMPD/pi-tool-ok" "$TMPD/pi-pong-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout"
+# fleet-ops#3179: a failed probe that ALSO simulates the seat-health
+# extension reclassifying the corpse DURING the probe. The real pi --print
+# triggers the extension, which writes a new ledger entry on a real HTTP
+# response (e.g. 402 quota_exhausted re-writes health_class=quota_exhausted,
+# seat_dead=false, usable_at 24h in the future). This stub mirrors that
+# race: it rewrites the seat's ledger file with a walled non-corpse entry
+# THEN exits 1 (probe failure — no tool token in the output).
+cat > "$TMPD/pi-fail-reclassify" <<'EOF'
+#!/usr/bin/env bash
+# Simulate the seat-health extension reclassifying a corpse during a
+# failed probe. Derive the ledger file from --provider/--model args and
+# PI_SEAT_HEALTH_LEDGER_DIR, rewrite it with a walled non-corpse entry,
+# then exit 1 (probe failure — no tool token in the output).
+_provider="" _model=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --provider) _provider="$2"; shift 2 ;;
+        --model) _model="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+_ledger_dir="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
+if [[ -n "$_provider" && -n "$_model" && -n "$_ledger_dir" ]]; then
+    _base="${_provider}__${_model//\//_}.json"
+    _seat_file="$_ledger_dir/$_base"
+    if [[ -f "$_seat_file" ]]; then
+        now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+        future=$(date -u -d "@$(($(date -u +%s) + 86400))" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || echo "$now")
+        tmp="$_seat_file.$$.tmp"
+        jq -nc --arg provider "$_provider" --arg model "$_model" \
+            --arg now "$now" --arg future "$future" \
+            '{provider:$provider, model:$model, http_status:402, retry_after:null,
+              health_class:"quota_exhausted", retryable:true, seat_dead:false,
+              poison_ladder:false, observed_at:$now, source:"provider_fetch",
+              failure_mode:"quota_exhausted", usable_at:$future,
+              consecutive_failure_count:44}' > "$tmp" 2>/dev/null && mv "$tmp" "$_seat_file" 2>/dev/null || true
+    fi
+fi
+exit 1
+EOF
+chmod +x "$TMPD/pi-tool-ok" "$TMPD/pi-pong-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout" "$TMPD/pi-fail-reclassify"
 
 # --- synthetic fixtures ---------------------------------------------------
 # 1. Walled, wall clock EXPIRED, release-at-expiry class (overload_bench,
@@ -1155,4 +1195,49 @@ grep -q "^fleet_seat_comeback_release_released_total 1$" "$TMPD/prom17c.prom" \
   || fail "17c: prom released_total must be 1: $(cat "$TMPD/prom17c.prom")"
 ok "17c: non-dead no-wall seat re-probed and released, not silently stuck (fleet-ops#3156)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156)"
+# 17d. fleet-ops#3179: extension reclassifies the corpse DURING a failed
+#      re-probe. The real pi --print triggers the seat-health extension,
+#      which writes a new ledger entry on a real HTTP response (e.g. 402
+#      quota_exhausted) BEFORE the bash probe_seat returns. The ledger
+#      file is NO LONGER a corpse (health_class=quota_exhausted,
+#      seat_dead=false, usable_at 24h future). The pre-#3179 code called
+#      retire_corpse --force, which saw a non-corpse file, returned 1
+#      ("held"), and logged the misleading "retire failed — held" even
+#      though the seat was reclassified, not held. The fix: re-read the
+#      ledger after the failed probe; if the extension reclassified it,
+#      log the reclassification (the seat has a comeback clock now); only
+#      force-retire when the ledger is STILL a corpse.
+rm -rf "$TMPD/seats17" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/straitly__deepseek_deepseek-v4-pro.json" << 'EOF'
+{"provider":"straitly","model":"deepseek/deepseek-v4-pro","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":43,"corpse_threshold":25}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17d.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17d.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail-reclassify" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17d.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17d: extension-reclassify sweep must exit 0, got $rc ($(cat "$TMPD/ret17d.err"))"
+grep -q "corpse re-probe straitly/deepseek/deepseek-v4-pro: no wall, second-chance re-probe" "$TMPD/ret17d.err" \
+  || fail "17d: no-wall corpse must be re-probed (fleet-ops#3156): $(cat "$TMPD/ret17d.err")"
+grep -q "extension reclassified to health_class=quota_exhausted" "$TMPD/ret17d.err" \
+  || fail "17d: must log extension reclassification, not 'retire failed — held' (fleet-ops#3179): $(cat "$TMPD/ret17d.err"))"
+# The seat must NOT be retired (it was reclassified, not force-retired).
+[[ ! -d "$TMPD/seats-corpse-retired-$NOW_ISO" || ! -f "$TMPD/seats-corpse-retired-$NOW_ISO/straitly__deepseek_deepseek-v4-pro.json" ]] \
+  || fail "17d: reclassified corpse must NOT be retired: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
+# The seat must still be in the live roster, now as quota_exhausted (not corpse).
+[[ -f "$TMPD/seats17/straitly__deepseek_deepseek-v4-pro.json" ]] \
+  || fail "17d: reclassified seat must remain in live roster: $(ls "$TMPD/seats17")"
+jq -e '.health_class == "quota_exhausted" and .seat_dead == false' \
+  "$TMPD/seats17/straitly__deepseek_deepseek-v4-pro.json" >/dev/null \
+  || fail "17d: seat must be quota_exhausted not corpse after extension reclassification: $(cat "$TMPD/seats17/straitly__deepseek_deepseek-v4-pro.json")"
+# retired_total must NOT have incremented (the seat was not retired).
+grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom17d.prom" \
+  || fail "17d: prom retired_total must be 0 (reclassified, not retired): $(cat "$TMPD/prom17d.prom")"
+ok "17d: extension reclassifies corpse during failed re-probe — logged as reclassification, not 'retire failed — held' (fleet-ops#3179)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179)"
