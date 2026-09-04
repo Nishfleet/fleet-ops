@@ -410,4 +410,66 @@ grep -q 'no usable seat' "$scratch/scenario8.err" \
 [[ ! -s "$calls" ]] || fail "scenario8: pi must NOT be called on a walled lane (calls=$(cat "$calls"))"
 ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate stays PENDING, no escalation storm)"
 
+# -----------------------------------------------------------------------------
+# Scenario 9: straitly provider fully walled, but a healthy capable seat
+# exists elsewhere -> the straitly role falls back across providers and
+# writes a REAL vote, so the senior panel can still convene 2-of-3.
+# fleet-ops#3109: before this fix the role was provider-locked; a straitly
+# 402 wall left the straitly vote missing on ~40 0509 candidates, the
+# heartbeat re-armed each straitly audit unit every tick, and the
+# pi-audit@0509 fanout failed 41 instances. The vote must land on the
+# fallback seat, NOT lane-fault (which leaves the panel stuck forever).
+# -----------------------------------------------------------------------------
+reset_state
+fallback_lib="$scratch/seat-lib-cross-fallback.sh"
+cat >"$fallback_lib" <<'LIB'
+# shellcheck shell=bash
+# Whole straitly provider walled; healthy capable free seats exist.
+load_seat_caps() { :; }
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' commandcode deepseek/deepseek-v4-flash
+  printf '%s\t%s\t-\t1\n' hetzner Qwen/Qwen3.6-35B-A3B-FP8
+  printf '%s\t%s\t-\t1\n' straitly deepseek/deepseek-v4-pro
+  printf '%s\t%s\t-\t1\n' straitly gpt-5.6-sol
+}
+class_of() {
+  case "$1" in
+    commandcode|hetzner|opencode|orcarouter|groq|inferx) printf 'free\n' ;;
+    straitly|zenmux|openrouter|minimax|openrouter-anthropic) printf 'metered\n' ;;
+    *) printf '\n' ;;
+  esac
+}
+model_cap() { printf '1\n'; }
+seat_usable() {
+  [[ "$1" == "straitly" ]] && return 1
+  return 0
+}
+seat_ledger_path() { printf '%s/%s__%s.json\n' "${PI_SEAT_HEALTH_LEDGER_DIR:-/dev/null}" "$1" "$2"; }
+LIB
+
+unset AUDIT_STRAITLY_SEAT
+export AUDIT_STATE_DIR="$state_dir"  # scenario 7 unset it; vote must land under $state_dir
+set +e
+PI_PACKET_SEAT_LIB="$fallback_lib" \
+  PI_RESPONSE=$'FAIL\nThis is not a duplicate; it does not advance the north star.' \
+  bash "$bin" 'demo--50--straitly' >"$scratch/scenario9.out" 2>"$scratch/scenario9.err"
+rc9=$?
+set -e
+unset PI_PACKET_SEAT_LIB
+
+[[ "$rc9" == 0 ]] \
+  || fail "scenario9: straitly must fall back to a healthy capable seat, got rc=$rc9 ($(cat "$scratch/scenario9.err"))"
+[[ -f "$state_dir/demo/50/straitly.vote" ]] \
+  || fail "scenario9: no straitly vote written after cross-provider fallback ($(cat "$scratch/scenario9.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/50/straitly.vote") == "FAIL" ]] \
+  || fail "scenario9: verdict should be a real FAIL, got $(jq -r '.verdict' "$state_dir/demo/50/straitly.vote")"
+[[ -s "$calls" ]] || fail "scenario9: pi was never called"
+call9=$(head -n1 "$calls")
+call9_prov=$(printf '%s\n' "$call9" | cut -f1)
+[[ "$call9_prov" != "straitly" ]] \
+  || fail "scenario9: whole straitly provider was walled; pi must run on a different provider (call_line='$call9')"
+grep -q 'falling back to any capable seat' "$scratch/scenario9.err" \
+  || fail "scenario9: log must name the cross-provider fallback ($(cat "$scratch/scenario9.err"))"
+ok "scenario9: straitly cross-provider fallback writes a real vote so the panel convenes while straitly is walled"
+
 ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault"

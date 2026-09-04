@@ -19,7 +19,16 @@
 #                      with a model cap > 0 (commandcode ds-flash, hetzner
 #                      qwen), fall back to any usable capable seat, and only
 #                      then admit total wall.
-#   straitly         -> straitly/deepseek/deepseek-v4-pro (default seat)
+#   straitly         -> straitly/deepseek/deepseek-v4-pro (default seat), rotating
+#                      within the straitly provider when the default is dead.
+#                      If the ENTIRE straitly provider is walled, fall back to
+#                      any usable capable seat (same cross-provider fallback
+#                      free-glm-5-3 uses) so the senior panel can still convene
+#                      2-of-3. Before fleet-ops#3109 this role was provider-
+#                      locked: a straitly wall left the straitly vote missing on
+#                      every 0509 candidate, the heartbeat re-armed the straitly
+#                      audit unit every tick, and the pi-audit@0509 fanout failed
+#                      41 instances while ScoutEffectivenessLow sat ~0.03.
 #
 # Environment seams:
 #   AUDIT_STATE_DIR              vote file tree (default ~/.local/state/fleet-audit)
@@ -213,6 +222,40 @@ resolve_free_role() {
     return 1
 }
 
+# Resolve the straitly auditor role. Preferred: the default straitly seat
+# (deepseek-v4-pro); failing that, rotate within the straitly provider like
+# free does. If the whole straitly provider is walled (quota_exhausted /
+# benched / transient), fall back to ANY usable capable seat — the same
+# cross-provider fallback resolve_free_role gets from find_any_capable_seat.
+# Without this the straitly vote never lands while the provider is down, the
+# panel can never reach 2-of-3, every candidate stays PENDING, and the
+# heartbeat re-arms the missing straitly audit unit every tick for every
+# candidate: the pi-audit@0509 fanout that failed 41 instances on 2026-09-03/04
+# while ScoutEffectivenessLow read 0.0279 (fleet-ops#3109). Only when every
+# capable seat is unusable do we return 1 and let main() treat the role as a
+# lane fault (exit 0, no vote).
+resolve_straitly_role() {
+    local seat
+    if seat_usable straitly deepseek/deepseek-v4-pro 2>/dev/null; then
+        printf 'straitly\tdeepseek/deepseek-v4-pro\n'
+        return 0
+    fi
+    local p m _capable
+    while IFS=$'\t' read -r p m _ _capable; do
+        [ "$p" = "straitly" ] || continue
+        [ -n "$m" ] || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done < <(enumerate_seats)
+    log "no usable straitly seat (default deepseek-v4-pro unavailable); falling back to any capable seat"
+    if seat=$(find_any_capable_seat); then
+        printf '%s\n' "$seat"
+        return 0
+    fi
+    return 1
+}
+
 resolve_seat() {
     local role="$1"
     case "$role" in
@@ -231,21 +274,10 @@ resolve_seat() {
                 printf '%s\t%s\n' "${AUDIT_STRAITLY_SEAT%%:*}" "${AUDIT_STRAITLY_SEAT#*:}"
             else
                 # Default straitly seat (seat-caps class=metered). If the
-                # default is dead, rotate within the provider like free does.
-                if seat_usable straitly deepseek/deepseek-v4-pro 2>/dev/null; then
-                    printf 'straitly\tdeepseek/deepseek-v4-pro\n'
-                else
-                    local p m _capable
-                    while IFS=$'\t' read -r p m _ _capable; do
-                        [ "$p" = "straitly" ] || continue
-                        [ -n "$m" ] || continue
-                        seat_usable "$p" "$m" 2>/dev/null || continue
-                        printf '%s\t%s\n' "$p" "$m"
-                        return 0
-                    done < <(enumerate_seats)
-                    log "no usable straitly seat (default deepseek-v4-pro unavailable)"
-                    return 1
-                fi
+                # default is dead, rotate within the provider like free does;
+                # if the whole provider is walled, fall back to any usable
+                # capable seat so the panel can still convene (fleet-ops#3109).
+                resolve_straitly_role
             fi
             ;;
         *)
