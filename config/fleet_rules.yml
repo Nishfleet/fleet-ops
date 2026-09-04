@@ -792,17 +792,17 @@ groups:
       # ships its absent() rule in the same PR). scout-futility-check writes
       # fleet_scout_last_run_seconds on ExecStartPre begin — not on
       # ExecStopPost of an ExecCondition skip, so a rest-skipped tick does
-      # not look like a live scout. 8h is two missed 4h timer cycles.
+      # not look like a live scout. 4h is two missed 2h timer cycles.
       # 0 means begin has never succeeded (missing snapshot).
       - alert: FleetScoutStale
-        expr: absent(fleet_scout_last_run_seconds) or (time() - fleet_scout_last_run_seconds) > 28800
+        expr: absent(fleet_scout_last_run_seconds) or (time() - fleet_scout_last_run_seconds) > 14400
         for: 15m
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "pi-scout@{{ $labels.repo }} has not actually begun in 8+ hours"
-          description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 8h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
+          summary: "pi-scout@{{ $labels.repo }} has not actually begun in 4+ hours"
+          description: "Repair worker: fleet_scout_last_run_seconds is absent or older than 4h (two pi-scout@ timer cycles). This is last ExecStartPre begin, not last timer fire — ExecCondition skip still triggers the timer. Check journalctl --user -u pi-scout@{{ $labels.repo }}.service for action=rest vs missing begin snapshot. If hours_of_work < 24, start the scout. Helper: /home/nish/.local/bin/scout-futility-check. fleet-ops#1277."
 
       # Organ heartbeat (fleet-ops#1137 standing pattern). The truth
       # staleness checker exports fleet_truth_staleness_last_run_seconds on
