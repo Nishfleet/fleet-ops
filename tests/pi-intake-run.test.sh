@@ -144,7 +144,13 @@ bash "$here/pi-intake-tick-protected-verifier-vacation.test.sh"
 # .github/workflows/ci.yml).
 bash "$here/pi-intake-tick-repo-conditional-blocks.test.sh"
 
-# --- 13. fleet-ops#3248 worker packet size ceiling (CI hook) ------------
+# --- 13. fleet-ops#3295 umbrella-label exclusion (CI hook) ------------
+# tests/pi-intake-tick-umbrella-exclusion.test.sh locks the intake tick's
+# umbrella-label drop (same family as escalate-senior-exclusion). ci.yml
+# lists this file, so the drill runs here instead of a workflow line.
+bash "$here/pi-intake-tick-umbrella-exclusion.test.sh"
+
+# --- 14. fleet-ops#3248 worker packet size ceiling (CI hook) ------------
 # tests/worker-packet-size.test.sh locks the rendered worker packet
 # (worker.md + TARGET line, assembled as lib/pi-intake-tick.sh writes it)
 # to <=12 KB non-0509 / <=20 KB 0509. ci.yml lists this file, so the
