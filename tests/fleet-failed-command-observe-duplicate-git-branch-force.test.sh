@@ -304,7 +304,7 @@ ok "live #985: still-dirty slug leaves the leftover duplicate open"
 # tests/fleet-failed-command-git-branch-cannot-force-update.test.sh;
 # this file adds the #985 citation next to #849 — #985 is the leftover
 # open duplicate of #849 in the 01a04105 git-branch-force pile.
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 grep -q 'fleet-ops#849, #985' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#985 next to #849 (the 01a04105 git-branch-force leftover-duplicate citation)"
 ok "worker.md cites #985 next to #849"

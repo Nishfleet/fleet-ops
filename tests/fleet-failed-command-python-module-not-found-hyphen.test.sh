@@ -205,7 +205,7 @@ ok "python3 -c ModuleNotFoundError (typo) plus later user-facing flag is clean"
 rm -f "$sessions/python-modnotfound-named.jsonl"
 
 # --- 5. worker.md cites fleet-ops#937 (prompt-side lock) ----------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#937' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#937 (prompt-side lock for the live hyphenated-module shape)"

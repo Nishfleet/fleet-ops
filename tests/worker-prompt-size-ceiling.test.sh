@@ -57,4 +57,9 @@ grep -q 'no-match probe' "$worker" || fail "no-match-probe exception missing fro
 grep -q 'fleet-failed-command-flagged' "$worker" || fail "pointer to the session-close lint missing from worker.md"
 ok "core failed-command rule, no-match-probe exception, and lint pointer all present"
 
+# fleet-ops#3120: byte-size budget for the conditionally assembled packet.
+# Nested here because workers cannot add a P14 line to .github/workflows/ci.yml.
+bash "$here/worker-packet-size.test.sh" || fail "worker-packet-size test failed"
+ok "worker-packet-size test passed"
+
 echo "worker-prompt-size-ceiling: PASS"

@@ -171,7 +171,7 @@ ok "read EISDIR with later unrelated prose is still flagged"
 rm -f "$sessions/read-eisdir-unrelated-prose.jsonl"
 
 # --- 5. worker.md cites fleet-ops#1170 and fleet-ops#1243 ------------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1170' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1170 (prompt-side lock for the live EISDIR wording)"

@@ -314,7 +314,7 @@ ok "live #966: still-dirty slug leaves all six leftover duplicates open"
 # already pins #957; this file adds the #966 citation next to it, and
 # the #971 citation next to #966 — both are siblings in the 01a03e38
 # leftover-duplicate pile (fleet-ops#951).
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 grep -q '#966' "$worker" \
   || fail "prompts/worker.md must carry the #966 citation next to the #957 python-traceback citation"
 grep -q 'fleet-ops#957, #966' "$worker" \

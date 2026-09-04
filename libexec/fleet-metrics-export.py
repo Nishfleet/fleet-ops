@@ -105,6 +105,14 @@ TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
+PACKET_DIR = Path(
+    os.environ.get("FLEET_METRICS_PACKET_DIR", "/home/nish/.local/state/pi-issues")
+)
+# fleet-ops#3120: worker packet size per repo. Intake writes <repo>-<issue>.in
+# here; we surface the median size so the packet-budget gate (12 KB non-0509,
+# 20 KB 0509) is observable from the metrics stream.
+HELP_PACKET = "# HELP fleet_packet_bytes Median size in bytes of worker packets written by pi-intake-tick.sh per repo."
+TYPE_PACKET = "# TYPE fleet_packet_bytes gauge"
 
 # Self-observation metrics (Task 2). All stdlib; gh is cached to <=1 call/30min.
 HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing 24h."
@@ -560,6 +568,46 @@ def _read_seat():
         except ValueError:
             epoch = None
     return healthy, epoch
+
+
+def _packet_sizes():
+    """Return a dict of repo -> median worker packet bytes.
+
+    pi-intake-tick.sh writes packets as <repo>-<issue>.in in PACKET_DIR.
+    Files are grouped by repo prefix; the median size per repo is the
+    packet-budget signal (fleet-ops#3120: 12 KB non-0509, 20 KB 0509).
+    Missing/empty directory returns an empty dict, not an error.
+    """
+    if not PACKET_DIR.is_dir():
+        return {}
+    by_repo: dict[str, list[int]] = {}
+    for path in PACKET_DIR.glob("*.in"):
+        # filename shape: <repo>-<issue>.in (issue is a number)
+        name = path.name
+        if not name.endswith(".in"):
+            continue
+        stem = name[:-3]
+        # split on the LAST dash so repo names with dashes stay intact
+        dash = stem.rfind("-")
+        if dash == -1:
+            continue
+        repo = stem[:dash]
+        if not repo:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        by_repo.setdefault(repo, []).append(size)
+    sizes: dict[str, int] = {}
+    for repo, vals in by_repo.items():
+        vals.sort()
+        mid = len(vals) // 2
+        if len(vals) % 2:
+            sizes[repo] = vals[mid]
+        else:
+            sizes[repo] = (vals[mid - 1] + vals[mid]) // 2
+    return sizes
 
 
 def _read_dead_credentials():
@@ -3123,6 +3171,17 @@ def main():
     lines.append(HELP_MAINT)
     lines.append(TYPE_MAINT)
     lines.append(f"fleet_maintenance_quiescing {_maintenance_quiescing()}")
+
+    # --- Worker packet sizes (fleet-ops#3120) ---
+    packet_sizes = _packet_sizes()
+    if packet_sizes:
+        lines.append("")
+        lines.append(HELP_PACKET)
+        lines.append(TYPE_PACKET)
+        for repo in sorted(packet_sizes):
+            lines.append(
+                f'fleet_packet_bytes{{repo="{_prom_label(repo)}"}} {packet_sizes[repo]}'
+            )
 
     # --- Keystone routing (fleet-ops#1133) ---
     # Counters are always exported (0 when the ledger is empty/missing — a

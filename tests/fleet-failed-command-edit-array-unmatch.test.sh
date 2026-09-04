@@ -143,7 +143,7 @@ ok "single-edit 'Could not find the exact text' continues to be flagged (contras
 rm -f "$sessions/edit-single-unmatch-contrast.jsonl"
 
 # --- 6. prompts/worker.md cites fleet-ops#1173 (prompt-side lock) -----------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1173' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1173 (prompt-side lock)"
