@@ -106,6 +106,17 @@ export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
 export RUNNING_UNITS="$scratch/running_units"
 export LIVE_SEAT_UNITS="$scratch/live_seat_units"
+# fleet-ops#3082: the undersaturation repair probes the pi binary before
+# attempting repair. Point PI_BIN at a working stub so this healthy-path
+# tick is not falsely fail-loud'd on a runner where /home/nish/.local/bin/pi
+# is absent (same stub the sibling undersaturation test uses).
+pi_bin_fake="$scratch/pi"
+cat >"$pi_bin_fake" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$pi_bin_fake"
+export PI_BIN="$pi_bin_fake"
 
 printf '1\n' >"$WORK_READY"
 printf '1\n' >"$WORK_INPROGRESS"
