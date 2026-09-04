@@ -206,6 +206,12 @@ SKIP_FIRING = {
     # WFR-input trend regression (fleet-ops#2440/#2441): no DISPATCH comes,
     # so a firing trend delta must never ladder to a STOP-REASON.
     "FleetVerifiedMergeRegression",
+    # fleet-ops#3367: consistency check, not a repairable alert. The
+    # dispatcher skip-list means no DISPATCH is ever expected, so a
+    # firing-without-dispatch chain must not ladder. Repair is
+    # mechanism-impossible (a stale Prometheus gauge is fixed in the
+    # exporter code, not by a repair worker).
+    "FleetSloMainGreenGreenMapDisagree",
 }
 SYNTHETIC = {"CanaryDrill"}
 SELF_UNITS = ("fleet-completion-canary",)

@@ -101,7 +101,15 @@ SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
            # WFR-input trend regression (fleet-ops#1136): the WFR ratchets.
            # Trend alert (delta, not level) — repair mechanism-impossible; an
            # alert-repair worker cannot reverse a 24h delta in turn.
-           "FleetVerifiedMergeRegression"}
+           "FleetVerifiedMergeRegression",
+           # fleet-ops#3367: consistency check, not a repairable alert. The
+           # SLO compliance and green-map rollup both derive from the same
+           # main_ci dict; a disagreement means a stale/frozen SLO gauge
+           # (config parse failure, exporter crash mid-emit). An alert-repair
+           # worker cannot fix a stale Prometheus gauge — the fix is in the
+           # exporter code (emit instrumented=0 on config failure, which this
+           # PR already ships). Skip to avoid a verify-stall loop.
+           "FleetSloMainGreenGreenMapDisagree"}
 
 # Seat selection — pick a healthy lane instead of hardcoding one. The
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed

@@ -1004,7 +1004,23 @@ groups:
           service: fleet
         annotations:
           summary: "SLO main_green slow burn — CI green fraction trending below the 99% budget line"
-          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. fleet-ops#1291."
+          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. NOTE: this is a windowed burn-rate alert (6h AND 30m avg_over_time), not a point-in-time check — it legitimately fires for up to 30m after all repos go green because the 30m window still includes recent red history. The green map (fleet_main_ci_green) is point-in-time; the SLO is windowed. They disagree by design during recovery. fleet-ops#1291, #3367."
+
+      # fleet-ops#3367: consistency check — SLO compliance and the per-repo
+      # green map both derive from the same main_ci dict in one atomic export,
+      # so they must agree at every scrape. A disagreement means a stale/frozen
+      # SLO gauge (e.g. config parse failure left old compliance in Prometheus
+      # while fleet_main_ci_green kept updating). "More than one scrape" = 2m
+      # (4 scrapes at 30s); a single-scrape race is tolerated.
+      - alert: FleetSloMainGreenGreenMapDisagree
+        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and (abs(fleet_slo_compliance{slo="main_green"} - (sum(fleet_main_ci_green) / count(fleet_main_ci_green))) > 0.001)
+        for: 2m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO main_green compliance disagrees with the per-repo green map"
+          description: "fleet_slo_compliance{slo=\"main_green\"} and sum(fleet_main_ci_green)/count(fleet_main_ci_green) disagree for >2m. Both derive from the same main_ci dict in one atomic export, so a disagreement means a stale/frozen SLO gauge while the green map updates — a real consistency bug. Check the exporter journal (journalctl --user -u fleet-metrics-export.service) and config/slo-definitions.json. fleet-ops#3367."
 
       # --- seat_availability: ratio SLO, target 0.90, budget = 10% of week ---
       - alert: FleetSloSeatAvailFastBurn

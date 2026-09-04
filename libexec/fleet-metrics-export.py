@@ -385,7 +385,24 @@ SLO_DEFS_DEFAULT = Path(
 )
 SLO_DEFS_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/slo-definitions.json"
-) 
+)
+# fleet-ops#3367: fallback SLO IDs used when slo-definitions.json is
+# missing/unparseable. _emit_slo_metrics MUST emit a fresh
+# fleet_slo_instrumented=0 for every known SLO on a config failure so
+# Prometheus does not retain stale instrumented=1 + compliance gauges from
+# the previous run — a stale SLO gauge alongside a fresh fleet_main_ci_green
+# is the real disagreement source (the docstring already promised this but
+# the code returned without emitting any gauges). Keep in sync with the
+# "slos" array in config/slo-definitions.json.
+_KNOWN_SLO_IDS = (
+    "main_green",
+    "chain_repair_latency",
+    "0509_user_journey",
+    "digest_delivery",
+    "waste_ratio",
+    "seat_availability",
+    "gh_rate_limit_headroom",
+)
 # fleet-waste-export writes fleet_waste_ratio here; the SLO emitter reads
 # the live value rather than recomputing it (single source of truth).
 WASTE_PROM = Path(
@@ -2908,8 +2925,16 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
     lines.append("")
     lines.extend(sb.format_prometheus_help_type())
     if defs is None:
+        # fleet-ops#3367: emit instrumented=0 for every known SLO so
+        # Prometheus overwrites any stale instrumented=1 from the previous
+        # run. Without this, a config glitch leaves stale compliance +
+        # instrumented=1 gauges in Prometheus while fleet_main_ci_green
+        # keeps updating — a real SLO-vs-green-map disagreement that keeps
+        # the burn alerts firing on frozen data.
         print("slo: config/slo-definitions.json missing/unparseable; "
-              "emitting empty SLO family", file=sys.stderr)
+              "emitting instrumented=0 for all known SLOs", file=sys.stderr)
+        for sid in _KNOWN_SLO_IDS:
+            lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 0')
         return
     slos = defs.get("slos") or []
     for slo in slos:
