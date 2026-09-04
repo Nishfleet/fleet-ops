@@ -12,7 +12,8 @@
 # This test builds a scratch SEATS_DIR with known fixtures and a stub
 # PI_BIN (never touches the real pi / real ledger), then asserts:
 #   - selection: only genuinely-expired walled seats are probed; test__
-#     fixtures, .spawn-bench pseudo-seats, corpses and future-wall seats
+#     fixtures, .spawn-bench pseudo-seats, corpses (except the
+#     fleet-ops#3156 no-wall prober-corpse subclass) and future-wall seats
 #     are never probed (the two predecessor-killer bugs, fleet-ops#2394).
 #   - release: a successful probe unwalls the seat (health_class=healthy,
 #     usable_at/bench_until null, count 0) -> released_total increments,
@@ -43,6 +44,14 @@
 #     wall clock is held. This is the terminal step of the seat
 #     lifecycle this organ owns (seat-caps.json retiring the slug only
 #     stops the rotation, #2708).
+#   - comeback-release stuck corpses (fleet-ops#3156): a PROBER-created
+#     no-wall corpse (failure_mode comeback_never_released, wall null) is
+#     the lived seats_dead stuck case — inside its 6h grace nothing
+#     releases or retires it. It now gets ONE second-chance re-probe:
+#     on success it is UNWALLED (transitions OUT of corpse), on failure
+#     it is explicitly RETIRED immediately (grace bypass). Only that
+#     subclass is re-probed; other corpse sources (after_provider_response
+#     etc.) and corpses still owed a comeback clock stay held/terminal.
 #
 # Sandbox: scratch SEATS_DIR/state/prom + stub pi only. No live ledger,
 # no live pi, no systemd.
@@ -688,8 +697,11 @@ grep -q "CORPSED commandcode/poolside/laguna-s-2.1-free" "$TMPD/corpse.err" \
 jq -e '.seat_dead == true and .health_class == "corpse" and .bench_until == null and .usable_at == null and .source == "comeback_release_corpse" and .failure_mode == "comeback_never_released" and .consecutive_failure_count == 25' \
   "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
   || fail "corpse: ledger must be seat_dead=true, wall cleared, count=25: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
-# Corpse is terminal: a follow-up sweep must skip it (no re-probe, no
-# re-corpsed log, no corpse_total advance).
+# fleet-ops#3156: a PROBER-created no-wall corpse (failure_mode
+# comeback_never_released, wall null) is NOT terminal-skipped. It gets ONE
+# second-chance re-probe: with the healthy probe stub the corpse RE-PROBES
+# and, on success, UNWALLS (transitions OUT of corpse). It must not be
+# re-corpsed (already a corpse) and must not stay stuck.
 set +e
 PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
@@ -699,16 +711,22 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     bash "$BIN" >/dev/null 2>"$TMPD/corpse-followup.err"
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "corpse follow-up: expected exit 0 (skipped), got $rc"
-grep -q "CORPSED" "$TMPD/corpse-followup.err" && fail "corpse follow-up: must NOT re-corpsed (terminal): $(cat "$TMPD/corpse-followup.err")"
-grep -qi "poolside" "$TMPD/corpse-followup.err" && fail "corpse follow-up: must not mention poolside at all (terminal skip): $(cat "$TMPD/corpse-followup.err")"
-# corpse_total + never-released metric cleared (the corpse is no longer
-# stuck — it's terminal).
+[[ "$rc" == "0" ]] || fail "corpse follow-up: expected exit 0, got $rc"
+grep -q "corpse re-probe commandcode/poolside/laguna-s-2.1-free: no wall, second-chance re-probe" "$TMPD/corpse-followup.err" \
+  || fail "corpse follow-up: no-wall corpse must be re-probed (fleet-ops#3156): $(cat "$TMPD/corpse-followup.err")"
+grep -q "UNWALLED commandcode/poolside/laguna-s-2.1-free" "$TMPD/corpse-followup.err" \
+  || fail "corpse follow-up: healthy re-probe must unwall the corpse: $(cat "$TMPD/corpse-followup.err")"
+# The seat transitioned OUT of corpse: healthy, seat_dead false, streak 0.
+jq -e '.seat_dead == false and .health_class == "healthy" and .failure_mode == "none" and .consecutive_failure_count == 0' \
+  "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
+  || fail "corpse follow-up: seat must transition OUT of corpse (healthy, seat_dead=false): $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
+# corpse_total stays 1 (the first pass wrote the corpse; the #3156
+# transition-out is not a second corpse write).
 corpse_total=$(jq -r '.corpse_total // 0' "$STATE")
-[[ "$corpse_total" == "1" ]] || fail "corpse: corpse_total must be 1, got $corpse_total"
+[[ "$corpse_total" == "1" ]] || fail "corpse: corpse_total must stay 1, got $corpse_total"
 grep -q "^fleet_seat_comeback_release_corpse_total 1$" "$PROM" \
   || fail "corpse: prom corpse_total must be 1: $(cat "$PROM")"
-ok "corpse at threshold: c=24 + failed probe -> c=25 corpse write, terminal skip on next sweep (fleet-ops#2638)"
+ok "corpse at threshold: c=24 + failed probe -> c=25 corpse write; second-chance re-probe unwalls it OUT of corpse (fleet-ops#2638/#3156)"
 
 # --- 11. fleet-ops#2638: corpse does NOT fire below threshold ------------
 # Pin the boundary: a seat at count=23 + failed probe -> count becomes 24
@@ -949,7 +967,8 @@ grep -q "CORPSED commandcode/poolside/laguna-s-2.1-free" "$TMPD/own-streak.err" 
 jq -e '.seat_dead == true and .health_class == "corpse" and .bench_until == null and .usable_at == null and .source == "comeback_release_corpse" and .consecutive_failure_count == 25' \
   "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
   || fail "own-streak corpse: ledger must be seat_dead=true, wall cleared, count=25: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
-# Terminal skip: a follow-up sweep must not re-probe or re-corpsed the seat.
+# fleet-ops#3156: the prober-created no-wall corpse gets ONE second-chance
+# re-probe — with the healthy stub it transitions OUT of corpse (unwalled).
 set +e
 PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
@@ -959,12 +978,15 @@ PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     bash "$BIN" >/dev/null 2>"$TMPD/own-streak-followup.err"
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "own-streak corpse follow-up: expected exit 0 (skipped), got $rc"
-grep -qi "poolside" "$TMPD/own-streak-followup.err" \
-  && fail "own-streak corpse follow-up: corpse must be skipped terminally: $(cat "$TMPD/own-streak-followup.err")"
+[[ "$rc" == "0" ]] || fail "own-streak corpse follow-up: expected exit 0, got $rc"
+grep -q "UNWALLED commandcode/poolside/laguna-s-2.1-free" "$TMPD/own-streak-followup.err" \
+  || fail "own-streak corpse follow-up: no-wall corpse must be re-probed and unwalled (fleet-ops#3156): $(cat "$TMPD/own-streak-followup.err")"
+jq -e '.seat_dead == false and .health_class == "healthy"' \
+  "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" >/dev/null \
+  || fail "own-streak corpse follow-up: seat must transition OUT of corpse: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
 corpse_total=$(jq -r '.corpse_total // 0' "$STATE")
 [[ "$corpse_total" == "1" ]] || fail "own-streak corpse: corpse_total must be 1, got $corpse_total"
-ok "corpse on merged own-failure streak: own=24 + failed probe -> 25 corpse, terminal skip (fleet-ops#2806)"
+ok "corpse on merged own-failure streak: own=24 + failed probe -> 25 corpse; #3156 re-probe unwalls it out of corpse (fleet-ops#2806/#3156)"
 
 # --- 15. fleet-ops#2806: no interval-breach false positive in-cadence ----
 # A seat whose usable_at passed less than one probe interval ago (500s <
@@ -1037,4 +1059,100 @@ grep -q "^fleet_seat_comeback_release_interval_breached_total 0$" "$PROM" \
   || fail "streak-reset: prom interval_breached_total must be 0: $(cat "$PROM")"
 ok "own-failure streak resets on a healthy interlude; no probe, no breach (fleet-ops#2806)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806)"
+# --- 17. fleet-ops#3156: no-wall corpse comeback-release paths ------------
+# The lived seats_dead stuck case (opencode/mimo-v2.5-free c=25,
+# straitly/deepseek-v4-pro c=43): the prober corpsed the seat
+# (failure_mode=comeback_never_released, wall clocks null) but inside its
+# 6h grace NOTHING releases or retires it — the corpse sits as seats_dead
+# for the full grace window with no probe ever fired. The fix: a
+# no-wall prober corpse gets ONE second-chance re-probe — success unwalls
+# it (transition OUT of corpse, covered by the follow-up asserts above),
+# failure RETIRES it immediately (grace bypass). Other corpse sources
+# inside grace stay held (recovery window still open, no re-probe).
+
+# 17a. failed second-chance re-probe -> explicit immediate retirement.
+#      A fresh prober no-wall corpse (age 1h < 6h grace) with a FAILING
+#      probe must be retired at once (no 6h wait), retired_total=1.
+rm -rf "$TMPD/seats17" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":25,"corpse_threshold":25}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17a.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17a.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17a.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17a: failed re-probe retirement sweep must exit 0, got $rc ($(cat "$TMPD/ret17a.err"))"
+grep -q "corpse re-probe opencode/mimo-v2.5-free: no wall, second-chance re-probe" "$TMPD/ret17a.err" \
+  || fail "17a: no-wall corpse must be re-probed (fleet-ops#3156): $(cat "$TMPD/ret17a.err")"
+grep -q "explicitly retired opencode/mimo-v2.5-free after failed no-wall corpse re-probe" "$TMPD/ret17a.err" \
+  || fail "17a: failed re-probe must explicitly retire the corpse: $(cat "$TMPD/ret17a.err")"
+[[ ! -e "$TMPD/seats17/opencode__mimo-v2.5-free.json" ]] \
+  || fail "17a: corpse must leave the live roster on failed re-probe: $(ls "$TMPD/seats17")"
+[[ -f "$TMPD/seats-corpse-retired-$NOW_ISO/opencode__mimo-v2.5-free.json" ]] \
+  || fail "17a: retired corpse must land in the dated retirement dir: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom17a.prom" \
+  || fail "17a: prom retired_total must be 1 (grace bypass): $(cat "$TMPD/prom17a.prom")"
+ok "17a: failed second-chance re-probe retires the no-wall corpse immediately (grace bypass, fleet-ops#3156)"
+
+# 17b. guard: a no-wall corpse from ANOTHER source (after_provider_response,
+#      transient_http — the test-13a shape) inside grace is NOT re-probed
+#      even with a healthy probe stub; it is held (recovery window open).
+rm -rf "$TMPD/seats17"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/devin__glm-5-2.json" << 'EOF'
+{"provider":"devin","model":"glm-5-2","http_status":503,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"transient_http","usable_at":null,"consecutive_failure_count":150}
+EOF
+rm -rf "$TMPD/seats-corpse-retired-$NOW_ISO"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17b.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17b.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17b.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17b: guard-hold sweep must exit 0, got $rc ($(cat "$TMPD/ret17b.err"))"
+[[ -f "$TMPD/seats17/devin__glm-5-2.json" ]] \
+  || fail "17b: non-prober no-wall corpse must be held, not retired: $(cat "$TMPD/ret17b.err")"
+grep -q "re-probe" "$TMPD/ret17b.err" \
+  && fail "17b: non-prober corpse must NOT be re-probed: $(cat "$TMPD/ret17b.err")"
+grep -qi "devin/glm-5-2" "$TMPD/ret17b.err" \
+  && fail "17b: non-prober corpse must not be mentioned at all (held silently): $(cat "$TMPD/ret17b.err")"
+ok "17b: non-prober no-wall corpse inside grace is held, never re-probed (source guard, fleet-ops#3156)"
+
+# 17c. non-dead seat with NO wall clock (bench_until and usable_at null) is
+#      no longer silently skipped (the removed pre-#3156 defensive hold):
+#      it is re-probed and, on success, unwalled. Proves the non-dead
+#      no-wall class cannot sit stuck forever either.
+rm -rf "$TMPD/seats17"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/straitly__deepseek-v4-pro.json" << 'EOF'
+{"provider":"straitly","model":"deepseek-v4-pro","http_status":null,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:55:00Z","source":"provider_fetch","failure_mode":"rate_limit","usable_at":null,"bench_until":null,"consecutive_failure_count":3}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17c.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17c.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17c.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17c: no-wall non-dead sweep must exit 0, got $rc ($(cat "$TMPD/ret17c.err"))"
+grep -q "UNWALLED straitly/deepseek-v4-pro" "$TMPD/ret17c.err" \
+  || fail "17c: no-wall non-dead seat must be re-probed and unwalled (fleet-ops#3156): $(cat "$TMPD/ret17c.err")"
+jq -e '.seat_dead == false and .health_class == "healthy"' \
+  "$TMPD/seats17/straitly__deepseek-v4-pro.json" >/dev/null \
+  || fail "17c: seat must land healthy after the no-wall re-probe: $(cat "$TMPD/seats17/straitly__deepseek-v4-pro.json")"
+grep -q "^fleet_seat_comeback_release_released_total 1$" "$TMPD/prom17c.prom" \
+  || fail "17c: prom released_total must be 1: $(cat "$TMPD/prom17c.prom")"
+ok "17c: non-dead no-wall seat re-probed and released, not silently stuck (fleet-ops#3156)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156)"

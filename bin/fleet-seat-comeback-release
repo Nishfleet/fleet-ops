@@ -30,8 +30,12 @@
 #   - probe failure -> the extension re-anchors usable_at from the real
 #     HTTP response (fresh wall); the seat stays walled until that window
 #     passes and the next comeback is owed. A corpse reclassification
-#     (seat_dead=true, health_class=corpse) is respected: a corpse is
-#     terminal (fleet-ops#2327/#2415) and is NEVER released here.
+#     (seat_dead=true, health_class=corpse) is terminal, EXCEPT the
+#     prober-created no-wall corpse (failure_mode=comeback_never_released,
+#     no wall clock), which gets a second-chance re-probe (fleet-ops#3156):
+#     on success it is unwalled (transitions out of corpse), on failure it
+#     is explicitly retired immediately. Other corpse classes still respect
+#     the 6h grace window before physical retirement.
 #
 # Loud backstop (fleet-ops#2421): after the sweep, if walled seats still
 # hold EXPIRED wall clocks AND nothing was released this run, the release
@@ -45,9 +49,17 @@
 # Deliberate exclusions (the two bugs that killed the predecessor
 # seat-walled-probe, fleet-ops#2394): .spawn-bench bench-marker pseudo-seats
 # and test__ fixtures (provider == "test") are never probed. Corpse seats
-# (seat_dead=true) are never probed either: they carry no comeback clock
-# (fleet-ops#2415) and FleetDeadCredentialSeats owns the still-live
-# credentials_bad class. fleet-ops#2716: a corpse that has aged past the
+# (seat_dead=true) are normally never probed either: they carry no comeback
+# clock (fleet-ops#2415) and FleetDeadCredentialSeats owns the still-live
+# credentials_bad class. fleet-ops#3156 CARVES OUT the one recoverable
+# subclass — a PROBER-created no-wall corpse (failure_mode
+# comeback_never_released / source comeback_release_corpse, no wall clock)
+# gets a single second-chance re-probe: on success it is unwalled
+# (transitions OUT of corpse), on failure it is explicitly retired at once
+# instead of sitting through the full grace window. Only that subclass is
+# re-probed; other corpse sources and any corpse still owed a comeback
+# (future wall) keep the terminal/hold behavior below. fleet-ops#2716: a
+# corpse that has aged past the
 # corpse grace window (CORPSE_GRACE_S, default 6h) is PHYSICALLY retired
 # out of the live roster here — seat-caps.json retiring the slug (cap 0 +
 # intentional_cap_zero=corpse, #2708) stops the rotation but leaves the
@@ -609,8 +621,13 @@ corpse_seat() {
 # corpse inside its grace window sits for CORPSE_GRACE_S by design, so
 # logging it every 15-min tick is noise); only the retirement itself
 # (RETIRED) and the dry-run preview (DRY-RUN: would retire) are logged.
+#
+# Optional 4th argument `force` (non-zero) bypasses the grace window. It is
+# used by the fleet-ops#3156 no-wall corpse re-probe path: a second-chance
+# re-probe failed, so the corpse is explicitly retired immediately rather
+# than waiting the full 6h for a recovery that the prober just disproved.
 retire_corpse() {
-    local p="$1" m="$2" f="$3" hc obs obs_e now_e age we wall_end
+    local p="$1" m="$2" f="$3" force="${4:-0}" hc obs obs_e now_e age we wall_end
     hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
     [[ "$hc" == "corpse" ]] || return 1
     now_e=$(now_epoch)
@@ -626,9 +643,16 @@ retire_corpse() {
     age=$(( now_e - obs_e ))
     # A corpse inside the grace window is still in its recovery window
     # (a healthy observation clears the corpse, seat-lib) — held.
-    (( age >= CORPSE_GRACE_S )) || return 1
+    # fleet-ops#3156: a failed no-wall re-probe forces immediate retirement.
+    if (( ! force )); then
+        (( age >= CORPSE_GRACE_S )) || return 1
+    fi
     if (( DRY_RUN )); then
-        log "DRY-RUN: would retire $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s)"
+        if (( force )); then
+            log "DRY-RUN: would retire $p/$m (corpse re-probe failed, explicitly retired, age=${age}s, fleet-ops#3156)"
+        else
+            log "DRY-RUN: would retire $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s)"
+        fi
         return 0
     fi
     local retired_dir="${CORPSE_RETIRE_DIR:-}"
@@ -641,7 +665,11 @@ retire_corpse() {
         return 1
     fi
     RETIRED_TOTAL=$((RETIRED_TOTAL + 1))
-    log "RETIRED $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s, moved to $retired_dir)"
+    if (( force )); then
+        log "RETIRED $p/$m (corpse explicitly retired after failed no-wall re-probe, age=${age}s, moved to $retired_dir, fleet-ops#3156)"
+    else
+        log "RETIRED $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s, moved to $retired_dir)"
+    fi
     return 0
 }
 
@@ -737,7 +765,42 @@ main() {
         # in #2708 but the ledger survived). retire_corpse physically moves
         # it once its observed_at has aged past the corpse grace window.
         if [[ "$dead" == "true" ]]; then
-            retire_corpse "$p" "$m" "$f" || true
+            if retire_corpse "$p" "$m" "$f"; then
+                continue
+            fi
+            # fleet-ops#3156: a no-wall corpse (prober-created, failure_mode
+            # "comeback_never_released") gets a second-chance re-probe instead
+            # of sitting idle for the full 6h grace. A successful re-probe
+            # unwalls it (transitions out of corpse); a failed re-probe is
+            # explicit terminal retirement. Corpses with a future wall or from
+            # another source keep the original grace behavior.
+            local _cwe _cwall_end _cfm _csrc
+            _cwall_end=$(wall_end_of "$f")
+            _cwe=$(ts_epoch "$_cwall_end")
+            _cfm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
+            _csrc=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
+            if [[ -z "$_cwe" && ( "$_cfm" == "comeback_never_released" || "$_csrc" == "comeback_release_corpse" ) ]]; then
+                log "corpse re-probe $p/$m: no wall, second-chance re-probe (fleet-ops#3156)"
+                if probe_seat "$p" "$m"; then
+                    ((probed++)) || true
+                    reset_overload_strikes "$p"
+                    # A successful probe clears the organ streak too.
+                    OWN_FAIL["$base"]="0"
+                    if unwall_seat "$p" "$m" "$f"; then
+                        ((released_this_run++)) || true
+                    fi
+                else
+                    ((probed++)) || true
+                    # Failed second-chance re-probe: the seat is confirmed
+                    # terminal. Retire it immediately (no 6h grace).
+                    if retire_corpse "$p" "$m" "$f" 1; then
+                        log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
+                    else
+                        log "corpse re-probe $p/$m: retire failed — held"
+                    fi
+                fi
+                last_probe["$base"]="$(now_epoch)"
+            fi
             continue
         fi
 
@@ -769,12 +832,10 @@ main() {
         # the most recent bench_until is still held.
         usable_at_field=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
         usable_epoch=$(ts_epoch "$usable_at_field")
-        if [[ -z "$we" && -z "$usable_epoch" ]]; then
-            # No wall clock: a defensive hold (class held without a clock).
-            # Nothing to come back from; the census counts it walled and the
-            # comeback-overdue metric skips it too (fleet-ops#2407).
-            continue
-        fi
+        # fleet-ops#3156: a non-dead seat with no wall clock is no longer
+        # silently skipped; it is re-probed here. A successful probe unwalls
+        # it; a failed probe re-benches (or corpses at the threshold). The
+        # no-wall state is a stuck comeback, not a defensive hold.
         if [[ -n "$we" ]] && (( we > now )); then
             # bench_until is held. Skip UNLESS usable_at (the original
             # failure clock) is past — force the probe to break the
