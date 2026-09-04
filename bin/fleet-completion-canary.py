@@ -563,7 +563,41 @@ def print_seat(exclude: str | None) -> tuple[str, str, str] | None:
     return parts[0], parts[1], parts[2]
 
 
-def redispatch_real(alertname: str) -> int:
+def _dispatch_line_seen(alertname: str) -> bool:
+    """Return True if actions.log has a DISPATCH line for alertname.
+
+    The dispatcher writes DISPATCH only when it spawns a unit; skips
+    (skip-list, class-park, claim-held, all-seats-wedged, no-spawn) write
+    SKIP/SKIPPED-CLAIMED/NO-SPAWN and return rc=0 WITHOUT a DISPATCH line.
+    This is the dispatch hop's observed terminal state — the receipt that
+    a repair unit was actually spawned (fleet-ops#3190).
+    """
+    if not ACTIONS.is_file():
+        return False
+    try:
+        for line in ACTIONS.read_text(errors="replace").splitlines():
+            m = LOG_RE.search(line)
+            if m and m.group(2) == "DISPATCH" and m.group(3) == alertname:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def redispatch_real(alertname: str) -> tuple[int, bool]:
+    """Run the dispatcher. Return (rc, dispatched).
+
+    dispatched is True only when a DISPATCH line was written to actions.log
+    — the observed terminal state of the dispatch hop. A skip (skip-list,
+    class-park, claim-held, all-seats-wedged, no-spawn) returns rc=0
+    WITHOUT writing a DISPATCH line, so dispatched=False. Counting such a
+    skip as progress pins the chain at hop=dispatch forever: each tick sees
+    rc=0, sets ladder="redispatch", but no DISPATCH line ever arrives, so
+    classify() keeps returning hop=dispatch and the chain never advances
+    (fleet-ops#3190: DeployBlockedStuck redispatch rc=0 on
+    openrouter/deepseek-v4-flash-0731, chain_stalled_total went 0->1 while
+    the hop stayed open).
+    """
     env = os.environ.copy()
     env["AMX_STATUS"] = "firing"
     env["AMX_RECEIVER"] = "completion-canary-redispatch"
@@ -573,9 +607,12 @@ def redispatch_real(alertname: str) -> int:
                            timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         log(f"ERROR: redispatch {alertname} failed: {exc}")
-        return 1
-    log(f"redispatch alertname={alertname} dispatcher_rc={r.returncode}")
-    return 0 if r.returncode == 0 else r.returncode
+        return 1, False
+    rc = 0 if r.returncode == 0 else r.returncode
+    dispatched = _dispatch_line_seen(alertname)
+    log(f"redispatch alertname={alertname} dispatcher_rc={r.returncode} "
+        f"dispatched={dispatched}")
+    return rc, dispatched
 
 
 def write_stop_reason(chain: dict, hop: str, age: int) -> None:
@@ -736,13 +773,33 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict,
         return "stop-reason"
 
     if hop in {"dispatch", "run"}:
-        rc = redispatch_real(name)
-        append_redispatch_log(name, hop, seat_label, f"redispatch-rc={rc}")
+        rc, dispatched = redispatch_real(name)
+        append_redispatch_log(name, hop, seat_label,
+                              f"redispatch-rc={rc} dispatched={dispatched}")
         if rc != 0:
             write_stop_reason(chain, hop, age)
             loud("UNREPAIRED-FAIL",
                  f"alertname={name} hop={hop} age={age}s — redispatch failed "
                  f"rc={rc}; STOP-REASON written")
+            return "stop-reason"
+        if not dispatched:
+            # fleet-ops#3190: rc=0 only proves the dispatcher RAN, not that
+            # it spawned a unit. A skip (skip-list, class-park, claim-held,
+            # all-seats-wedged, no-spawn) returns rc=0 WITHOUT writing a
+            # DISPATCH line — the dispatch hop's observed terminal state is
+            # the DISPATCH line in actions.log, not the exit code. Counting
+            # a skip as progress (ladder="redispatch") pinned DeployBlockedStuck
+            # at hop=dispatch while chain_stalled_total went 0->1: each tick
+            # saw rc=0, set ladder="redispatch", but no DISPATCH line ever
+            # arrived, so classify() kept returning hop=dispatch and the
+            # chain never advanced. Escalate instead — STOP-REASON hands
+            # the chain to the senior conference, same as the no-op-redispatch
+            # path above (fleet-ops#2247).
+            write_stop_reason(chain, hop, age)
+            loud("UNREPAIRED-FAIL",
+                 f"alertname={name} hop={hop} age={age}s — redispatch rc=0 "
+                 f"but no DISPATCH line (skip/no-spawn); dispatch hop did "
+                 f"not reach terminal state; STOP-REASON (senior conference)")
             return "stop-reason"
         loud("UNREPAIRED-FAIL",
              f"alertname={name} hop={hop} age={age}s — re-dispatched via "
