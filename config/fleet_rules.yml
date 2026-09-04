@@ -516,19 +516,21 @@ groups:
           summary: "canary organ {{ $labels.organ }} effectiveness_ratio < 0.02 over trailing 30d"
           description: "fleet_canary_effectiveness_ratio{organ=\"{{ $labels.organ }}\"} is below 0.02 while at least one user-facing incident landed in the window (fleet-ops#2757). The canary is running but not catching regressions before users. Inspect fleet_canary_caught_regressions_total / fleet_canary_missed_regressions_total and the organ's failure signature."
 
-      # A canary that never fails AND never catches a regression may be
-      # testing the wrong surface. last_failure_seconds=0 means no failure
-      # in the trailing window; require runs>0 so a dead organ is the
-      # Absent alert, not this one.
+      # A canary that never fails AND never catches a regression while
+      # user-facing incidents are being missed may be testing the wrong
+      # surface. last_failure_seconds=0 means no failure in the trailing
+      # window; require runs>0 so a dead organ is the Absent alert, not
+      # this one, and require missed>0 so a quiet product with zero
+      # incidents does not look like a broken canary.
       - alert: CanarySilentTooLong
-        expr: fleet_canary_runs_total > 0 and fleet_canary_caught_regressions_total == 0 and (fleet_canary_last_failure_seconds == 0 or (time() - fleet_canary_last_failure_seconds) > 604800)
+        expr: fleet_canary_runs_total > 0 and fleet_canary_caught_regressions_total == 0 and fleet_canary_missed_regressions_total > 0 and (fleet_canary_last_failure_seconds == 0 or (time() - fleet_canary_last_failure_seconds) > 604800)
         for: 12h
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "canary organ {{ $labels.organ }} silent 7+ days with no caught regression"
-          description: "fleet_canary_last_failure_seconds{organ=\"{{ $labels.organ }}\"} is 0 or older than 7d AND caught_regressions_total is 0 while the organ is still running (fleet-ops#2757). A silent canary may be testing the wrong surface. Confirm the organ's failure signature still matches the product path users hit."
+          summary: "canary organ {{ $labels.organ }} silent 7+ days with no caught regression while misses exist"
+          description: "fleet_canary_last_failure_seconds{organ=\"{{ $labels.organ }}\"} is 0 or older than 7d, caught_regressions_total is 0 AND missed_regressions_total is >0 while the organ is still running (fleet-ops#2757 / fleet-ops#3030). A silent canary may be testing the wrong surface. Confirm the organ's failure signature still matches the product path users hit."
 
   - name: fleet_intake_prioritization
     rules:

@@ -242,6 +242,8 @@ grep -q 'fleet_canary_effectiveness_ratio < 0.02' "$rules" \
   || fail "CanaryEffectivenessLow must gate on ratio < 0.02"
 grep -q 'alert: CanarySilentTooLong' "$rules" \
   || fail "rules missing CanarySilentTooLong"
+grep -q 'fleet_canary_missed_regressions_total > 0' "$rules" \
+  || fail "CanarySilentTooLong must gate on missed_regressions_total > 0"
 
 jq -e '.organs[] | select(.name=="canary-effectiveness")
   | select(.heartbeat_metric=="fleet_canary_effectiveness_last_run_seconds")
@@ -256,6 +258,79 @@ if command -v promtool >/dev/null 2>&1; then
   promtool check rules "$rules" >/dev/null \
     || fail "promtool check rules failed"
   ok "promtool check rules"
+
+  # fleet-ops#3030: CanarySilentTooLong must not fire on a quiet product
+  # (runs>0, caught=0, missed=0) and must fire when the canary is missing
+  # real user-facing regressions (missed>0). CanaryEffectivenessLow stays
+  # quiet when caught+missed=0.
+  cat >"$scratch/canary-silent.test.yml" <<YQ
+rule_files:
+  - $rules
+evaluation_interval: 10m
+tests:
+  - interval: 10m
+    name: CanarySilentTooLong fires only while the organ is missing user regressions
+    input_series:
+      - series: 'fleet_canary_runs_total{organ="resilience-drill"}'
+        values: '10x1087'
+      - series: 'fleet_canary_caught_regressions_total{organ="resilience-drill"}'
+        values: '0x1087'
+      - series: 'fleet_canary_missed_regressions_total{organ="resilience-drill"}'
+        values: '3x1087'
+      - series: 'fleet_canary_effectiveness_ratio{organ="resilience-drill"}'
+        values: '0x1087'
+      - series: 'fleet_canary_last_failure_seconds{organ="resilience-drill"}'
+        values: '0x1087'
+    alert_rule_test:
+      - eval_time: 7d13h
+        alertname: CanarySilentTooLong
+        exp_alerts:
+          - exp_labels:
+              alertname: CanarySilentTooLong
+              organ: resilience-drill
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: 'canary organ resilience-drill silent 7+ days with no caught regression while misses exist'
+              description: 'fleet_canary_last_failure_seconds{organ="resilience-drill"} is 0 or older than 7d, caught_regressions_total is 0 AND missed_regressions_total is >0 while the organ is still running (fleet-ops#2757 / fleet-ops#3030). A silent canary may be testing the wrong surface. Confirm the organ''s failure signature still matches the product path users hit.'
+      - eval_time: 7d13h
+        alertname: CanaryEffectivenessLow
+        exp_alerts:
+          - exp_labels:
+              alertname: CanaryEffectivenessLow
+              organ: resilience-drill
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: 'canary organ resilience-drill effectiveness_ratio < 0.02 over trailing 30d'
+              description: 'fleet_canary_effectiveness_ratio{organ="resilience-drill"} is below 0.02 while at least one user-facing incident landed in the window (fleet-ops#2757). The canary is running but not catching regressions before users. Inspect fleet_canary_caught_regressions_total / fleet_canary_missed_regressions_total and the organ''s failure signature.'
+  - interval: 10m
+    name: CanarySilentTooLong stays quiet on a product with no user incidents
+    input_series:
+      - series: 'fleet_canary_runs_total{organ="resilience-drill"}'
+        values: '9x1087'
+      - series: 'fleet_canary_caught_regressions_total{organ="resilience-drill"}'
+        values: '0x1087'
+      - series: 'fleet_canary_missed_regressions_total{organ="resilience-drill"}'
+        values: '0x1087'
+      - series: 'fleet_canary_effectiveness_ratio{organ="resilience-drill"}'
+        values: '0x1087'
+      - series: 'fleet_canary_last_failure_seconds{organ="resilience-drill"}'
+        values: '0x1087'
+    alert_rule_test:
+      - eval_time: 7d13h
+        alertname: CanarySilentTooLong
+        exp_alerts: []
+      - eval_time: 7d13h
+        alertname: CanaryEffectivenessLow
+        exp_alerts: []
+YQ
+  if ! out="$(promtool test rules "$scratch/canary-silent.test.yml" 2>&1)"; then
+    fail "promtool test rules failed: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules did not succeed: $out"
+  ok "promtool test rules: CanarySilentTooLong/CanaryEffectivenessLow fire/silent correctly"
 else
   echo "SKIP: promtool not on PATH"
 fi
