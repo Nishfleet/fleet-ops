@@ -135,3 +135,10 @@ bash "$here/pi-intake-tick-claim-set-e-guard.test.sh"
 # ci.yml lists this file, so the drill runs here instead of a new
 # workflow line (workers cannot edit .github/workflows/ci.yml).
 bash "$here/pi-intake-tick-protected-verifier-vacation.test.sh"
+# --- 12. fleet-ops#3247 repo-conditional worker prompt blocks (CI hook) ---
+# tests/pi-intake-tick-repo-conditional-blocks.test.sh pins the conditional
+# assembly of the D1+gate-integrity and GEO/AEO worker prompt blocks in
+# lib/pi-intake-tick.sh so non-0509 / non-geo packets stay lean. Same
+# nested-CI shape as the other pi-intake-tick-* drills above; ci.yml lists
+# this file so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-repo-conditional-blocks.test.sh"

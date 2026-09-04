@@ -3476,3 +3476,17 @@ SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; s
   | grep -qE '^0\.5$' \
   || fail "seat_yield_for unknown/missing must default to 0.5"
 ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
+
+# --- fleet-ops#3263: provider spawnSync timeout gate (CI hook) ----------------
+# tests/provider-timeout.test.sh pins both devin-provider and cursor-provider
+# Pi extensions under MANIFEST and proves each spawnSync timeout stays
+# >= 0.9 x PI_HANG_TIMEOUT_S so the provider never dies before the hang
+# watchdog (the 2026-09-04 1801s stall). Hosted here because ci.yml lists
+# this file and the providers are seat transport.
+bash "$here/provider-timeout.test.sh" || fail "provider-timeout tests failed"
+
+# --- fleet-ops#3272: watch.log rotation (CI hook) ----------------------------
+# tests/watch-log-rotation.test.sh pins the user-level logrotate config for
+# pi-packet watch.log and the seat_log journal fallback in lib/seat-lib.sh.
+# Hosted here because ci.yml lists this file and seat_log lives in seat-lib.
+bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation tests failed"

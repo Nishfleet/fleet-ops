@@ -58,3 +58,11 @@ grep -q 'fleet-failed-command-flagged' "$worker" || fail "pointer to the session
 ok "core failed-command rule, no-match-probe exception, and lint pointer all present"
 
 echo "worker-prompt-size-ceiling: PASS"
+
+# --- 4. fleet-ops#3248 tight packet-size guard (CI hook) ---------------------
+# tests/worker-packet-size.test.sh is the tight guard (12 KB non-0509 /
+# 20 KB 0509) that takes over once the prompt-trim landing set
+# (#3245/#3246/#3247) merges. Until then it runs as a replay drill + live
+# WARN; the 32 KB ceiling above stays the enforced backstop. ci.yml lists
+# this file, so the tight guard runs here instead of a new workflow line.
+bash "$here/worker-packet-size.test.sh"

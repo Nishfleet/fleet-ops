@@ -308,13 +308,17 @@ ok "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh is pinned in the P14 re
 # main ("1 test file(s) are neither in ci.yml, hosted by a listed test,
 # live/destructive, nor a known orphan: fleet-spawn-guard-stash-readonly.test.sh").
 # That P14 failure is what auto-revert watches, so every merge to main was
-# reverted. Host it from rule-enforcement.test.sh (same nested-CI pattern
-# as dirty-worktree-audit, fleet-ops#787) and add this named pin so a
-# future drop of the host line cannot park the test on known_orphans to
+# reverted. Host it from spawn-guard.test.sh (the consolidated spawn-guard
+# suite, itself hosted from rule-enforcement.test.sh — same nested-CI
+# pattern as dirty-worktree-audit, fleet-ops#787) and add this named pin so
+# a future drop of the host line cannot park the test on known_orphans to
 # silence the generic $bad[] message — it would fail by name here first.
+# fleet-ops#3300: PR #3334 consolidated the direct rule-enforcement.test.sh
+# host into spawn-guard.test.sh but left this pin grepping the old host,
+# so every push to main went red. The pin now targets the actual host.
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly\.test\.sh"?' \
-  "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
+  "$here/spawn-guard.test.sh" \
+  || fail "spawn-guard.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
 [[ -n "${reachable[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \
   || fail "fleet-spawn-guard-stash-readonly.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#308)"
 [[ -z "${known_orphan_set[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \

@@ -174,6 +174,12 @@ bash "$here/pi-transport-self-heal.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#3111: tests-no-local-bin-clobber lint. A test must NEVER write into
+# the real ~/.local/bin / ~/.local/lib/node_modules / ~/.pi (the 2026-09-03
+# clobber starved the fleet for 33h). Same meta-lint shape as the listing gate
+# above (scans tests/); hosted here so P14 runs it without a workflow-file edit.
+bash "$here/tests-no-local-bin-clobber.test.sh"
+
 # fleet-ops#1457: stop-the-line detector drill. The detector + watch
 # workflows landed in #1465, but the test was never registered in ci.yml
 # (workers cannot push .github/workflows/**), so the p14-test-listing-gate
