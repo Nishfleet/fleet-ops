@@ -505,6 +505,19 @@ process_entry() {
     # the providers import ../seat-health.ts relative to their own file, and
     # a repo-tree symlink would resolve that against a nonexistent sibling.
     if [[ "$src" == config/seat-caps.json ]] || is_extension_src "$src"; then
+        # fleet-ops#3125/#3262: when the cap map changes, reset learned AIMD
+        # state so a stale learned cap / bench from the old config never pins
+        # a raised declared floor or ceiling (e.g. devin hard_ceiling removal
+        # + model ceilings). The pre-install dest differs from the repo copy
+        # only on a real change (this install step refuses cap downgrades
+        # above), so an idempotent `install.sh` run is a no-op.
+        if [[ "$src" == config/seat-caps.json && -f "$dest" ]] && ! cmp -s "$dest" "$repo"; then
+            learned="$HOME/.local/state/pi-packet/learned-caps.json"
+            if [[ -f "$learned" ]]; then
+                mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+                echo "reset learned-caps.json (seat-caps.json changed on deploy)"
+            fi
+        fi
         rm -f "$dest"
         install -D -m 0644 "$repo" "$dest"
     else

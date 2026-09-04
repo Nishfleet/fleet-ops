@@ -6,14 +6,14 @@
   "rules": [
     {
       "id": "sr-decisions-ledger",
-      "source": "global-standing-rules.md: Decisions ledger — check before asking Nish (Nish's direct order, 2026-08-25)",
+      "source": "global-standing-rules.md: Decisions ledger \u2014 check before asking Nish (Nish's direct order, 2026-08-25)",
       "mechanism": "Heartbeat session-close lint: Pi JSONL assistant asks whose tokens overlap a ledger line without ledger-checked are LOUD + auto-filed. Claude PreToolUse hook remains the AskUserQuestion choke (vault guard_decisions_ledger.py).",
       "proof": "bin/fleet-decisions-ledger; lib/decisions-ledger.py; tests/fleet-decisions-ledger.test.sh; fleet-heartbeat-tier1 block 16; nish-vault/_system/shared-memory/guards/guard_decisions_ledger.py",
       "status": "enforced"
     },
     {
       "id": "sr-quality-speed-efficiency",
-      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 — NON-NEGOTIABLE)",
+      "source": "global-standing-rules.md: Quality > speed > efficiency, strictly (Nish, 2026-08-25 \u2014 NON-NEGOTIABLE)",
       "mechanism": "CI required checks + gate-integrity ratchet: weakening tests or gates is a blocker",
       "proof": ".github/workflows/ci.yml; tests/required-check-purity.test.sh; 0509 gate-integrity",
       "status": "enforced"
@@ -28,15 +28,15 @@
     {
       "id": "sr-findings-queued",
       "source": "global-standing-rules.md: Every finding gets queued, automatically (Nish, 2026-08-22)",
-      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates — Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602). Observe-to-close: a clean heartbeat tick closes the auto-filed issue when that session slug is no longer a finding (fleet-ops#724)",
+      "mechanism": "Heartbeat session-close lint: assistant text matching the named ask-phrases without gh issue create / routed-by-standing-order in the same session is LOUD + auto-filed. Scans every reachable transcript root with the same predicates \u2014 Pi sessions, Cursor agent-transcripts, and Claude project sessions (fleet-ops#602). Observe-to-close: a clean heartbeat tick closes the auto-filed issue when that session slug is no longer a finding (fleet-ops#724)",
       "proof": "bin/fleet-findings-queued; lib/findings-queued.py; tests/fleet-findings-queued.test.sh; fleet-heartbeat-tier1 block 15",
       "status": "enforced"
     },
     {
       "id": "sr-get-it-moving",
       "source": "global-standing-rules.md: Get it moving, always (Nish, 2026-08-18)",
-      "mechanism": "none — judgment of implied permission",
-      "proof": "n/a — un-mechanizable without wrapping every idle pause",
+      "mechanism": "none \u2014 judgment of implied permission",
+      "proof": "n/a \u2014 un-mechanizable without wrapping every idle pause",
       "status": "advisory(senior: whether permission was already implied is a judgment call, not a merge artifact)"
     },
     {
@@ -62,8 +62,8 @@
     },
     {
       "id": "sr-free-model-roster",
-      "source": "global-standing-rules.md: Free-model roster stays fresh — quality-gated (Nish, 2026-08-18)",
-      "mechanism": "Heartbeat free-roster canary: two fail-loud gates (Ollama carve-out — providers.ollama.models must be deepseek-v4-flash only, the scout never polls the ollama catalog; penny-for-speed — every cap>0 free provider with a non-empty models map must be in free_providers_in_order) plus observe-to-open detectors that auto-file an audition+wire ticket when a free-form (-free / *-pass/) slug appears unwired on a free-class provider, and a bench ticket when a wired free slug leaves the live catalog. The audition league quality bench stays a scout judgment carried in the filed ticket.",
+      "source": "global-standing-rules.md: Free-model roster stays fresh \u2014 quality-gated (Nish, 2026-08-18)",
+      "mechanism": "Heartbeat free-roster canary: two fail-loud gates (Ollama carve-out \u2014 providers.ollama.models must be deepseek-v4-flash only, the scout never polls the ollama catalog; penny-for-speed \u2014 every cap>0 free provider with a non-empty models map must be in free_providers_in_order) plus observe-to-open detectors that auto-file an audition+wire ticket when a free-form (-free / *-pass/) slug appears unwired on a free-class provider, and a bench ticket when a wired free slug leaves the live catalog. The audition league quality bench stays a scout judgment carried in the filed ticket.",
       "proof": "bin/fleet-free-roster-canary; tests/fleet-free-roster-canary.test.sh; fleet-heartbeat-tier1 block 21; fleet-ops#518",
       "status": "enforced"
     },
@@ -91,8 +91,8 @@
     {
       "id": "sr-quality-outranks",
       "source": "global-standing-rules.md: Quality outranks everything (Nish, 2026-08-18)",
-      "mechanism": "none — taste overlay on the quality>speed gate",
-      "proof": "n/a — mechanical core lives in sr-quality-speed-efficiency",
+      "mechanism": "none \u2014 taste overlay on the quality>speed gate",
+      "proof": "n/a \u2014 mechanical core lives in sr-quality-speed-efficiency",
       "status": "advisory(senior: delightfulness and overdelivery are taste; the mechanical quality bar is sr-quality-speed-efficiency)"
     },
     {
@@ -112,7 +112,7 @@
     {
       "id": "sr-verify-before-answering",
       "source": "global-standing-rules.md: Verify before answering (Nish, 2026-08-19)",
-      "mechanism": "none — cannot wrap every claim without an oracle of 'answered from memory'",
+      "mechanism": "none \u2014 cannot wrap every claim without an oracle of 'answered from memory'",
       "proof": "n/a",
       "status": "advisory(senior: live-truth discipline is an answering rule; there is no merge artifact to gate)"
     },
@@ -161,7 +161,7 @@
     {
       "id": "sr-gap-rules-audit",
       "source": "global-standing-rules.md: Gap rules from the 2026-08-20 rulebook audit (Nish, 2026-08-20)",
-      "mechanism": "Monthly systemd timer (Persistent=true) plus heading-growth bonus on heartbeat-tier1 §39; sibling .bak-rulebook-redteam-YYYYMMDD backups are a hard gate before filing",
+      "mechanism": "Monthly systemd timer (Persistent=true) plus heading-growth bonus on heartbeat-tier1 \u00a739; sibling .bak-rulebook-redteam-YYYYMMDD backups are a hard gate before filing",
       "proof": "bin/fleet-rulebook-redteam; systemd/fleet-rulebook-redteam.timer; lib/rulebook-redteam-cadence.sh; tests/fleet-rulebook-redteam.test.sh",
       "status": "enforced"
     },
@@ -224,20 +224,20 @@
     {
       "id": "led-2026-08-28-25-concurrent-workers",
       "source": "decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: \"I want 25 workers on all the time... quality is the bar, it has to keep climbing\")",
-      "mechanism": "Amended by Capacity: ceiling accepted — the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000. Undersaturation below the measured ceiling with ready supply stays a fault (existing undersaturation canary).",
+      "mechanism": "Amended by Capacity: ceiling accepted \u2014 the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000. Undersaturation below the measured ceiling with ready supply stays a fault (existing undersaturation canary).",
       "proof": "config/seat-caps.json; bin/fleet-heartbeat-undersaturation; lib/seat-lib.sh; decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted",
       "status": "advisory(senior: amended by capacity ceiling; floor is now measured safe max of netcup-rs2000)"
     },
     {
       "id": "sr-skills-native",
       "source": "global-standing-rules.md: Skills are native for every agent on every machine (Nish, 2026-08-20)",
-      "mechanism": "Heartbeat skills-symlink canary: ~/.claude/skills and ~/.codex/skills must carry the same SKILL.md names (GATE, fail-loud); a house-method skill on any of {claude, codex, pi} must be on every present surface of that set; a broken skill symlink screams. A mismatch is a silent miss — the agent thinks a skill exists and it does not. Violations auto-file one fleet-ops issue per kind (deduped on an open issue whose body carries the marker).",
+      "mechanism": "Heartbeat skills-symlink canary: ~/.claude/skills and ~/.codex/skills must carry the same SKILL.md names (GATE, fail-loud); a house-method skill on any of {claude, codex, pi} must be on every present surface of that set; a broken skill symlink screams. A mismatch is a silent miss \u2014 the agent thinks a skill exists and it does not. Violations auto-file one fleet-ops issue per kind (deduped on an open issue whose body carries the marker).",
       "proof": "bin/fleet-skills-symlink-canary; tests/skills-symlink-canary.test.sh; fleet-heartbeat-tier1 block 41",
       "status": "enforced"
     },
     {
       "id": "sr-one-fleet",
-      "source": "global-standing-rules.md: One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 — corrected 2026-08-25)",
+      "source": "global-standing-rules.md: One fleet (Nish, 2026-08-21; machinery superseded 2026-08-23 \u2014 corrected 2026-08-25)",
       "mechanism": "intake-repos.json permanently excludes fleet2; shape test fails closed if it is enrolled",
       "proof": "config/intake-repos.json excluded.fleet2; tests/intake-repos-shape.test.sh",
       "status": "enforced"
@@ -294,27 +294,27 @@
     {
       "id": "sr-ambiguity-authoritative",
       "source": "global-standing-rules.md: Ambiguity resolves to the authoritative recommendation, not to Nish (Nish, 2026-08-24)",
-      "mechanism": "none — research quality is not mechanically observable",
+      "mechanism": "none \u2014 research quality is not mechanically observable",
       "proof": "n/a",
       "status": "advisory(senior: choosing the authoritative source is a judgment; the council is the mechanism for high-stakes gray areas, not a CI check)"
     },
     {
       "id": "sr-no-hand-built-orch",
-      "source": "global-standing-rules.md: No hand-built orchestration. Ever. (Nish, 2026-08-24 — FORBIDDEN, non-negotiable)",
+      "source": "global-standing-rules.md: No hand-built orchestration. Ever. (Nish, 2026-08-24 \u2014 FORBIDDEN, non-negotiable)",
       "mechanism": "Semgrep on fleet-ops CI + senior conference auto-reject; org-wide reusable ruleset still rolling out",
       "proof": ".github/workflows/ci.yml semgrep job; fleet-ops#223; remaining org rollout fleet-ops#302/#303",
       "status": "enforced"
     },
     {
       "id": "sr-ci-standard",
-      "source": "global-standing-rules.md: CI standard: batched, minimal, near-zero failures — every repo, current and future (Nish, 2026-08-24, NON-NEGOTIABLE)",
+      "source": "global-standing-rules.md: CI standard: batched, minimal, near-zero failures \u2014 every repo, current and future (Nish, 2026-08-24, NON-NEGOTIABLE)",
       "mechanism": "Central reusable-pr-checks + ci-standards-audit + template callers",
       "proof": ".github/workflows/reusable-pr-checks.yml; tests/ci-standards-audit.test.sh; tests/reusable-workflows.test.sh",
       "status": "enforced"
     },
     {
       "id": "sr-reversibility",
-      "source": "global-standing-rules.md: Engineer reversibility, don't gate (Nish, 2026-08-24 — fleet default)",
+      "source": "global-standing-rules.md: Engineer reversibility, don't gate (Nish, 2026-08-24 \u2014 fleet default)",
       "mechanism": "auto-revert on red main + siterep-deploy-rollback on failed verify",
       "proof": ".github/workflows/auto-revert.yml; systemd/siterep-deploy-rollback.service; tests/auto-revert-required-check-gate.test.sh",
       "status": "enforced"
@@ -328,7 +328,7 @@
     },
     {
       "id": "sr-prs-self-land",
-      "source": "global-standing-rules.md: Agent-authored PRs land themselves (Nish, 2026-08-25 — \"automatic / autonomous ... for all repos, current and future\")",
+      "source": "global-standing-rules.md: Agent-authored PRs land themselves (Nish, 2026-08-25 \u2014 \"automatic / autonomous ... for all repos, current and future\")",
       "mechanism": "auto-merge-arm.yml on every active repo; repo-standards-sync enables allow_auto_merge",
       "proof": ".github/workflows/auto-merge-arm.yml; .github/workflows/repo-standards-sync.yml",
       "status": "enforced"
@@ -336,27 +336,27 @@
     {
       "id": "sr-all-functions-mechanical",
       "source": "global-standing-rules.md: All functions mechanical (Nish, 2026-08-25)",
-      "mechanism": "Blind-audit manual-seam lens (bin/fleet-blind-audit) hunts hand-performed actions; second occurrence of a hand action requires a mechanism. Full prose coverage of every function is not yet mechanically observable — the lens catches repeats, not first occurrences.",
+      "mechanism": "Blind-audit manual-seam lens (bin/fleet-blind-audit) hunts hand-performed actions; second occurrence of a hand action requires a mechanism. Full prose coverage of every function is not yet mechanically observable \u2014 the lens catches repeats, not first occurrences.",
       "proof": "fleet-ops#377; bin/fleet-blind-audit; prompts/blind-audit.md; systemd/fleet-blind-audit.timer",
       "status": "advisory(senior: blind-audit lens exists and catches repeated hand actions, but first-occurrence prose coverage across all functions is not yet mechanically observable)"
     },
     {
       "id": "sr-agent-agnostic",
-      "source": "global-standing-rules.md: Standing machinery is agent-agnostic — the boundary and its enforcement (Nish, 2026-08-25)",
+      "source": "global-standing-rules.md: Standing machinery is agent-agnostic \u2014 the boundary and its enforcement (Nish, 2026-08-25)",
       "mechanism": "repo-standards-sync is GitHub-hosted; no named exceptions remain in the standing-rules list",
       "proof": ".github/workflows/repo-standards-sync.yml",
       "status": "enforced"
     },
     {
       "id": "sr-execution-is-review",
-      "source": "global-standing-rules.md: Execution IS the review — run it, log the bugs, fix, run again (Nish, 2026-08-25 — non-negotiable)",
+      "source": "global-standing-rules.md: Execution IS the review \u2014 run it, log the bugs, fix, run again (Nish, 2026-08-25 \u2014 non-negotiable)",
       "mechanism": "PR-body receipt gate plus heartbeat canary: every worker PR must carry Verification: run-cues or a run-proof: line; the canary scans recent nishfleet-worker PRs on enrolled repos and auto-files a skip; the watch fails loud when gh/python/helper is broken. The inner loop stays agentic (no bin/exec-review dispatcher).",
       "proof": "bin/fleet-exec-review-canary; lib/exec-review-receipt.py; tests/fleet-exec-review-canary.test.sh; prompts/worker.md; fleet-heartbeat-tier1 block 26; fleet-ops#537",
       "status": "enforced"
     },
     {
       "id": "sr-never-vibes",
-      "source": "global-standing-rules.md: Never decide by vibes — always measure (Nish, 2026-08-26)",
+      "source": "global-standing-rules.md: Never decide by vibes \u2014 always measure (Nish, 2026-08-26)",
       "mechanism": "Heartbeat vibes canary: ram_gb_per_worker (the rule's origin constant) must carry a top-level _comment_* citation with a date AND a bin/... measurement command (GATE, fail-loud); every other behaviour-driving constant in config/seat-caps.json (per-provider cap, quota_bench_default_s, cap=0 reason) either carries a dated measurement citation or has a filed ticket (DETECTOR, observe-to-open). A bare 'feels right' or a fleet-ops# ref alone is not a marker.",
       "proof": "bin/fleet-vibes-canary; tests/fleet-vibes-canary.test.sh; fleet-heartbeat-tier1 block 40",
       "status": "enforced"
@@ -370,15 +370,15 @@
     },
     {
       "id": "sr-memory-oom",
-      "source": "global-standing-rules.md: Memory: prevent, throttle, then kill — in that order (Nish, 2026-08-26)",
+      "source": "global-standing-rules.md: Memory: prevent, throttle, then kill \u2014 in that order (Nish, 2026-08-26)",
       "mechanism": "user-1000.slice MemoryHigh + ManagedOOMMemoryPressure; oomd-drill proves the kill path",
       "proof": "systemd/system/user-1000.slice.d/50-ram-governor.conf; bin/oomd-drill; tests/system-dropins-shape.test.sh",
       "status": "enforced"
     },
     {
       "id": "sr-everything-mechanical",
-      "source": "global-standing-rules.md: Everything is mechanical — failures included (Nish, 2026-08-26 — NON-NEGOTIABLE)",
-      "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; the mechanical-fix rule in prompts/worker.md requires a prevention mechanism (detector, gate, regression test, or observe-to-close wiring) in the same PR. bin/fleet-failed-command-flagged auto-files fix(failed-command): issues for walked-past failures (detector→queue).",
+      "source": "global-standing-rules.md: Everything is mechanical \u2014 failures included (Nish, 2026-08-26 \u2014 NON-NEGOTIABLE)",
+      "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; the mechanical-fix rule in prompts/worker.md requires a prevention mechanism (detector, gate, regression test, or observe-to-close wiring) in the same PR. bin/fleet-failed-command-flagged auto-files fix(failed-command): issues for walked-past failures (detector\u2192queue).",
       "proof": "fleet-ops#366; fleet-ops#362; prompts/worker.md (mechanical-fix rule); bin/fleet-failed-command-flagged; tests/fleet-failed-command-flagged.test.sh",
       "status": "enforced"
     },
@@ -420,14 +420,14 @@
     {
       "id": "led-gap-closure-loop",
       "source": "decisions-ledger.md: 2026-08-26 | gap-closure loop",
-      "mechanism": "Audit→fix→drill→re-audit until unanimous DONE. Detector→queue reconciler + observe-to-close implemented in fleet-escalation-canary block 9: every LOUD signal auto-files an issue (deduped by signal key), issues only close when the detector goes green on a real tick. Remaining drill work tracked in fleet-ops#362.",
+      "mechanism": "Audit\u2192fix\u2192drill\u2192re-audit until unanimous DONE. Detector\u2192queue reconciler + observe-to-close implemented in fleet-escalation-canary block 9: every LOUD signal auto-files an issue (deduped by signal key), issues only close when the detector goes green on a real tick. Remaining drill work tracked in fleet-ops#362.",
       "proof": "fleet-ops#180; fleet-ops#362; bin/fleet-escalation-canary block 9 (auto-file + observe-to-close); lib/rule-enforcement.py; tests/rule-enforcement.test.sh",
       "status": "enforced"
     },
     {
       "id": "led-blind-audit",
       "source": "decisions-ledger.md: 2026-08-26 | recurring blind audit",
-      "mechanism": "fleet-blind-audit unit+timer exist with a daily calendar floor (OnCalendar=*-*-* 03:30:00, Persistent=true) that fires regardless of board state — the drained-gap-board gate was structurally defeated (fleet-ops#378), so the timer is the primary trigger and the board-drained dispatch is a bonus.",
+      "mechanism": "fleet-blind-audit unit+timer exist with a daily calendar floor (OnCalendar=*-*-* 03:30:00, Persistent=true) that fires regardless of board state \u2014 the drained-gap-board gate was structurally defeated (fleet-ops#378), so the timer is the primary trigger and the board-drained dispatch is a bonus.",
       "proof": "bin/fleet-blind-audit; systemd/fleet-blind-audit.timer; fleet-ops#378",
       "status": "enforced"
     },
@@ -497,21 +497,21 @@
     {
       "id": "led-transformation-bets",
       "source": "decisions-ledger.md: 2026-08-25 | transformation bets",
-      "mechanism": "none — product ranking is Nish/orchestrator judgment",
+      "mechanism": "none \u2014 product ranking is Nish/orchestrator judgment",
       "proof": "n/a",
       "status": "advisory(senior: ranking bets is product direction; fleet capacity is the throttle, not a gate)"
     },
     {
       "id": "led-seo-geo-aeo",
       "source": "decisions-ledger.md: 2026-08-25 | SEO/GEO/AEO",
-      "mechanism": "none — enforced by 0509 product work, not a VPS canary",
+      "mechanism": "none \u2014 enforced by 0509 product work, not a VPS canary",
       "proof": "n/a",
       "status": "advisory(senior: product-priority ranking, not a fleet control-plane rule)"
     },
     {
       "id": "led-discovery-feature",
       "source": "decisions-ledger.md: 2026-08-25 | discovery feature",
-      "mechanism": "none — 0509 product spike",
+      "mechanism": "none \u2014 0509 product spike",
       "proof": "n/a",
       "status": "advisory(senior: gated product feature; the 12-domain spike is a product proof, not a standing-rule enforcer)"
     },
@@ -546,7 +546,7 @@
     {
       "id": "led-coderabbit",
       "source": "decisions-ledger.md: 2026-08-25 | CodeRabbit",
-      "mechanism": "none — waiting on a Nish-reserved auth action",
+      "mechanism": "none \u2014 waiting on a Nish-reserved auth action",
       "proof": "n/a",
       "status": "advisory(senior: Nish re-auths when convenient; fleet is ordered to run without the local gate until then)"
     },
@@ -574,7 +574,7 @@
     {
       "id": "led-everything-mechanical",
       "source": "decisions-ledger.md: 2026-08-26 | EVERYTHING mechanical",
-      "mechanism": "Blind-audit manual-seam lens (bin/fleet-blind-audit); second occurrence of a hand action requires a mechanism. Full prose coverage is not yet mechanically observable — the lens catches repeats, not first occurrences.",
+      "mechanism": "Blind-audit manual-seam lens (bin/fleet-blind-audit); second occurrence of a hand action requires a mechanism. Full prose coverage is not yet mechanically observable \u2014 the lens catches repeats, not first occurrences.",
       "proof": "fleet-ops#377; bin/fleet-blind-audit; prompts/blind-audit.md; systemd/fleet-blind-audit.timer",
       "status": "advisory(senior: blind-audit lens exists and catches repeated hand actions, but first-occurrence prose coverage across all functions is not yet mechanically observable)"
     },
@@ -588,16 +588,16 @@
     {
       "id": "led-worker-lane-refresh",
       "source": "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)",
-      "mechanism": "Heartbeat MiniMax M3 catalog canary on commandcode and opencode: fail-loud if seat-caps allowlists a billing MiniMax M3 slug or a free-form slug whose models.json cost is non-zero; observe-to-open detector auto-files a prove-free + wire ticket when a -free or *-pass/ MiniMax M3 slug appears unwired. Paid-flash watcher auto-files a cheapest-and-best bench+wire ticket when a still-parked flash slug (Qwen 3.8 flash) appears in Pi's catalog on openrouter/zenmux; GLM 5.3 flash watch removed once #384 wired it free on cline (#1739) and the paid-lane question was resolved (DeepSeek V4 flash cheaper+best). The paid flash lane itself is wired: config/seat-caps.json providers.openrouter.models allowlists deepseek/deepseek-v4-flash-0731 (metered, $0.045/$0.09 per M — cheapest+best of the three candidates), pinned by tests/seat-caps-citation.test.sh scenario 8.",
+      "mechanism": "Heartbeat MiniMax M3 catalog canary on commandcode and opencode: fail-loud if seat-caps allowlists a billing MiniMax M3 slug or a free-form slug whose models.json cost is non-zero; observe-to-open detector auto-files a prove-free + wire ticket when a -free or *-pass/ MiniMax M3 slug appears unwired. Paid-flash watcher auto-files a cheapest-and-best bench+wire ticket when a still-parked flash slug (Qwen 3.8 flash) appears in Pi's catalog on openrouter/zenmux; GLM 5.3 flash watch removed once #384 wired it free on cline (#1739) and the paid-lane question was resolved (DeepSeek V4 flash cheaper+best). The paid flash lane itself is wired: config/seat-caps.json providers.openrouter.models allowlists deepseek/deepseek-v4-flash-0731 (metered, $0.045/$0.09 per M \u2014 cheapest+best of the three candidates), pinned by tests/seat-caps-citation.test.sh scenario 8.",
       "proof": "bin/opencode-m3-catalog-canary; tests/opencode-m3-catalog-canary.test.sh; bin/fleet-paid-flash-canary; tests/paid-flash-canary.test.sh; fleet-heartbeat-tier1 blocks 17-18; config/seat-caps.json providers.openrouter; tests/seat-caps-citation.test.sh scenario 8; fleet-ops#545; fleet-ops#384",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou",
       "source": "decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: \"can't stress enough\")",
-      "mechanism": "Heartbeat volume-lane-order canary: volume_providers_in_order must equal ollama,devin,commandcode,cline exactly; every volume provider must be live (cap>0 + models); cursor must not appear in the volume prefix; seat-lib pick_seat must load SEAT_VOLUME_ORDER and prefer the volume_seats bucket before leftover free / leftover prepaid / metered. Observe-to-open when xai-oauth is in models.json but unwired (coordinates #1163). Observe-to-close: any open issue carrying a `volume-lane-order-canary: <id> <kind>` marker is re-evaluated on every tick; once the underlying signal clears (volume prefix, volume provider cap/models, cursor exclusion, seat-lib wire), the canary drains the issue with an evidence comment. xai-oauth stays out of scope (wire owned by #1163).",
-      "proof": "bin/fleet-volume-lane-order-canary; tests/fleet-volume-lane-order-canary.test.sh; config/seat-caps.json volume_providers_in_order; lib/seat-lib.sh SEAT_VOLUME_ORDER + volume_seats; fleet-heartbeat-tier1 block 33; fleet-ops#1178",
-      "status": "enforced"
+      "mechanism": "RETIRED 2026-09-04 by fleet-ops#3125 (Nish decision, measured yield supersedes the 2026-08-27 volume order). Product picks now route by product_order:yield (rolling PR-yield ledger in lib/seat-lib.sh pick_seat, ledger written by libexec/fleet-metrics-export.py per fleet-ops#3250) instead of the volume_providers_in_order prefix; the volume-lane-order canary and its test were deleted in the same change. Keep retired: the order it guarded no longer exists.",
+      "proof": "config/seat-caps.json product_order; lib/seat-lib.sh yield ordering; fleet-ops#3125 decisions 2026-09-04 (retire volume order)",
+      "status": "advisory(senior: RETIRED by fleet-ops#3125 2026-09-04 \u2014 Nish decision replaced the 2026-08-27 volume-first order with yield-ranked; the volume canary and its test were deleted)"
     },
     {
       "id": "led-north-star-quality",
@@ -671,14 +671,14 @@
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-decided",
-      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — DECIDED (plain-language re-ask, informed)",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 DECIDED (plain-language re-ask, informed)",
       "mechanism": "CI drill tests/fleet-d1-prod-migration-grant.test.sh asserts prompts/worker.md keeps the D1 schema rule (expand/contract, rollback-before-data, one phase per PR, banned DROP/NOT NULL without DEFAULT, real integration test, no stale API names). The vacation grant is time-bound through 2026-09-08 and supersedes the earlier same-day void/correction rows.",
       "proof": "tests/fleet-d1-prod-migration-grant.test.sh; prompts/worker.md; config/rule-enforcement.json; fleet-ops#907",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-process-amendment",
-      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations — process amendment (Nish, same conversation)",
+      "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 process amendment (Nish, same conversation)",
       "mechanism": "CI drill tests/fleet-d1-prod-migration-process.test.sh asserts prompts/worker.md keeps the D1 prod migration execution rule (senior process gate, never single-agent apply, independent senior blind-review, blocked-on: senior-conference). On encountering a prod D1 migration task, workers block themselves and route to senior-conference instead of applying alone.",
       "proof": "tests/fleet-d1-prod-migration-process.test.sh; prompts/worker.md; fleet-ops#908",
       "status": "enforced"
@@ -693,36 +693,36 @@
     {
       "id": "led-2026-08-27-vacation-window-corrected",
       "source": "decisions-ledger.md: 2026-08-27 | Vacation window corrected",
-      "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire — official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted — worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness. PRE-EXPIRY PROBE (fleet-ops#2134): model-seat credentials that carry a known expiry (the OAuth `expires` field pi writes to ~/.pi/agent/auth.json[<provider>]) are probed N hours before expiry; on PRE-EXPIRY-DETECTED the wrapper auto-files a renewal issue (deduped by `signal: cred-expiry/<provider>`) and observe-to-closes it the tick the signal clears — firing before the production 403 the reactive seat-health ledger only catches after a worker burns a slot (the devin/swe-1-7 gap, fleet-ops#2108). grok-token-refresh heals xai-oauth on a 4h timer; this probe is the defence-in-depth for a broken heal path.",
+      "mechanism": "Heartbeat-tier1 block 31 canary: fleet-credential-expiry-canary proves GET /app accepts a minted App JWT (GitHub App private keys do not expire \u2014 official managing-private-keys-for-github-apps docs) and that FLEET_SYNC_PAT's GitHub-Authentication-Token-Expiration header (changelog 2021-07-26) is after 2026-09-08 when the PAT is present. Installation tokens are <=1h and reminted \u2014 worker-app-canary (block 16) covers mint liveness. verify-fleet-sync-pat (#482) covers PAT scope/push liveness. PRE-EXPIRY PROBE (fleet-ops#2134): model-seat credentials that carry a known expiry (the OAuth `expires` field pi writes to ~/.pi/agent/auth.json[<provider>]) are probed N hours before expiry; on PRE-EXPIRY-DETECTED the wrapper auto-files a renewal issue (deduped by `signal: cred-expiry/<provider>`) and observe-to-closes it the tick the signal clears \u2014 firing before the production 403 the reactive seat-health ledger only catches after a worker burns a slot (the devin/swe-1-7 gap, fleet-ops#2108). grok-token-refresh heals xai-oauth on a 4h timer; this probe is the defence-in-depth for a broken heal path.",
       "proof": "bin/fleet-credential-expiry-canary; lib/credential-expiry-canary.py (pre_expiry_probe + load_auth_expiries); tests/credential-expiry-canary.test.sh (#17-25 pre-expiry probe + auto-file + observe-to-close); bin/fleet-heartbeat-tier1 block 31; fleet-ops#938; fleet-ops#2134",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-weekly-fleet-review-approved",
       "source": "decisions-ledger.md: 2026-08-27 | Weekly Fleet Review approved",
-      "mechanism": "Weekly systemd timer (Sun 04:30 IST, post-vps-weekly-update) fires agent-cron-run weekly-fleet-review: blind 6-lens senior research + conference (throughput, output-quality, machinery, truth, outside-world, SECURITY — fleet-ops#1146 Nish addition), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only. Role-gate catalog entry locks the cap and the signal-attribution contract; the rule-enforcement canary observes the source as covered on a real heartbeat tick (observe-to-close).",
+      "mechanism": "Weekly systemd timer (Sun 04:30 IST, post-vps-weekly-update) fires agent-cron-run weekly-fleet-review: blind 6-lens senior research + conference (throughput, output-quality, machinery, truth, outside-world, SECURITY \u2014 fleet-ops#1146 Nish addition), output capped at 5 specced actions or ledger discards, self-scoring against the rolling 4-week ratio, output = claimed work only. Role-gate catalog entry locks the cap and the signal-attribution contract; the rule-enforcement canary observes the source as covered on a real heartbeat tick (observe-to-close).",
       "proof": "systemd/fleet-weekly-fleet-review.timer; systemd/fleet-weekly-fleet-review.service; prompts/weekly-fleet-review.md; bin/agent-cron-run; config/role-quality-gates.json; lib/role-quality-gates.py (check_weekly_fleet_review_output_contract); tests/weekly-fleet-review.test.sh; fleet-ops#1146",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-token-economy-rebalance-nish-from-live-meters",
       "source": "decisions-ledger.md: 2026-08-27 | Token economy rebalance (Nish, from live meters)",
-      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus config/seat-caps.json and lib/seat-lib.sh pick_seat enforce the 2026-08-27 rebalance: devin cap 4 and first in the prepaid alternation; cursor cap 1 and excluded from free lanes; xai-oauth (SuperGrok) cap 1, last in the prepaid alternation, weekly quota, alternating grok-4.6 and grok-4.5; free lanes (commandcode/hetzner/opencode) before prepaid and metered (minimax/straitly) last; the legacy grok.com/CLI slug and opencode-anthropic (Claude) cap 0 with dated reasons. Cursor $400 overage pacing is tracked in Nishfleet/fleet-ops#1167.",
+      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus config/seat-caps.json and lib/seat-lib.sh pick_seat enforce the 2026-08-27 rebalance: devin cap 4 provider floor (AIMD probes to 8, model floors glm-5-2 3 / swe-1-7 4 with model ceilings 6/8, per fleet-ops#3125); cursor cap 1 and excluded from free lanes; xai-oauth (SuperGrok) provider cap 2 with grok-4.6 at 2 and grok-4.5 at 0 (fleet-ops#3125 expiry-first); free lanes (commandcode/hetzner/opencode) before prepaid and metered (minimax/straitly) last for scout/canary/audit picks; product picks route by product_order:yield with class tie-break prepaid -> metered -> free; the legacy grok.com/CLI slug and opencode-anthropic (Claude) cap 0 with dated reasons. Cursor $400 overage pacing is tracked in Nishfleet/fleet-ops#1167.",
       "proof": "config/seat-caps.json; lib/seat-lib.sh; tests/fleet-token-economy.test.sh; tests/seat-lib.test.sh; Nishfleet/fleet-ops#1163; Nishfleet/fleet-ops#1167",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-cursor-400-correction-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 correction (Nish)",
-      "mechanism": "lib/seat-lib.sh keystone-only provider hardcode plus cursor_overage model gating (non-overage cursor models rejected when included_exhausted is true). volume-lane-order canary ensures cursor stays out of the volume set. seat-selection metrics (record_seat_selection + export_seat_selection_prom) provide the 24h selection meter. Dollar-level Cursor billing has no programmatic API — the included_exhausted flip and $16/day spending check are Nish dashboard actions.",
-      "proof": "lib/seat-lib.sh _provider_is_keystone_only + pick_seat cursor_overage logic; config/seat-caps.json cursor_overage section + keystone_only_providers; tests/fleet-token-economy.test.sh; tests/token-economy-routing.test.sh; bin/fleet-volume-lane-order-canary; bin/fleet-credential-expiry-canary (seat liveness)",
-      "status": "advisory(senior: dollar-level Cursor budget tracking has no programmatic billing API; time-bound budget expires with the 25d cycle; existing mechanical guardrails — keystone-only, overage model gating, volume-lane exclusion, seat-selection metrics, CI config tests — enforce the runtime surface)"
+      "mechanism": "lib/seat-lib.sh keystone-only provider hardcode plus cursor_overage model gating (non-overage cursor models rejected when included_exhausted is true). product picks are yield-ordered across every non-keystone seat and keystone_only_providers excludes cursor from non-keystone product/scout picks (fleet-ops#3125), so cursor stays out of issue-work routing. seat-selection metrics (record_seat_selection + export_seat_selection_prom) provide the 24h selection meter. Dollar-level Cursor billing has no programmatic API \u2014 the included_exhausted flip and $16/day spending check are Nish dashboard actions.",
+      "proof": "lib/seat-lib.sh _provider_is_keystone_only + pick_seat cursor_overage logic; config/seat-caps.json cursor_overage section + keystone_only_providers; tests/fleet-token-economy.test.sh; tests/token-economy-routing.test.sh; config/seat-caps.json product_order + keystone_only_providers; bin/fleet-credential-expiry-canary (seat liveness)",
+      "status": "advisory(senior: dollar-level Cursor budget tracking has no programmatic billing API; time-bound budget expires with the 25d cycle; existing mechanical guardrails \u2014 keystone-only, overage model gating, volume-lane exclusion, seat-selection metrics, CI config tests \u2014 enforce the runtime surface)"
     },
     {
       "id": "led-2026-08-27-cursor-400-sequencing-model-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)",
-      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus lib/seat-lib.sh pick_seat enforce the 2026-08-27 Cursor $400 sequencing: `cursor_overage.opens_after_included_exhausted=true` keeps the $400 closed until the `included_exhausted` flag flips; `overage_model` is pinned to `cursor-grok-4.6-high`; `daily_spend_target_usd` is 16; `keystone_only_providers` and `providers.cursor.cap=1` keep cursor on keystone/senior-review only; `pick_seat` rejects any non-overage cursor model when `included_exhausted` is true. `bin/fleet-volume-lane-order-canary` keeps cursor out of the volume prefix. The `included_exhausted` flip and $16/day spending ceiling are Nish dashboard actions; the runtime surface is mechanically gated.",
-      "proof": "config/seat-caps.json cursor_overage + keystone_only_providers + providers.cursor.cap; lib/seat-lib.sh _provider_is_keystone_only + pick_seat cursor_overage logic; tests/fleet-token-economy.test.sh; tests/token-economy-routing.test.sh; bin/fleet-volume-lane-order-canary; bin/fleet-credential-expiry-canary (seat liveness)",
+      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus lib/seat-lib.sh pick_seat enforce the 2026-08-27 Cursor $400 sequencing: `cursor_overage.opens_after_included_exhausted=true` keeps the $400 closed until the `included_exhausted` flag flips; `overage_model` is pinned to `cursor-grok-4.6-high`; `daily_spend_target_usd` is 16; `keystone_only_providers` and `providers.cursor.cap=1` keep cursor on keystone/senior-review only; `pick_seat` rejects any non-overage cursor model when `included_exhausted` is true. `keystone_only_providers` + product yield-order keep cursor out of issue-work routing (fleet-ops#3125). The `included_exhausted` flip and $16/day spending ceiling are Nish dashboard actions; the runtime surface is mechanically gated.",
+      "proof": "config/seat-caps.json cursor_overage + keystone_only_providers + providers.cursor.cap; lib/seat-lib.sh _provider_is_keystone_only + pick_seat cursor_overage logic; tests/fleet-token-economy.test.sh; tests/token-economy-routing.test.sh; config/seat-caps.json product_order + keystone_only_providers; bin/fleet-credential-expiry-canary (seat liveness)",
       "status": "enforced"
     },
     {
@@ -735,7 +735,7 @@
     {
       "id": "led-2026-08-27-precedence-band-overnight-machinery-surge-nish",
       "source": "decisions-ledger.md: 2026-08-27 | Precedence band + overnight machinery surge (Nish)",
-      "mechanism": "Heartbeat fleet-precedence-band-canary + pi-intake-tick (fleet-ops#1223): config/precedence-band.json locks the dial (cutoff_utc, machinery_max_pct<=30, product_min_pct>=70, machinery_repo=fleet-ops, owner=weekly-fleet-review, product_front=REPO#NUMBER, surge_leverage_issues); pi-intake-tick sources lib/precedence-band.sh and calls precedence_band_allow_claim before the claim push — until cutoff_utc fleet-ops intake claims only surge_leverage_issues, from cutoff_utc a new machinery claim that would push live share over machinery_max_pct is skipped unless the issue carries a `priority` or `emergency` label; machinery floor (fleet-ops#1452): when live machinery == 0 one repair lane always runs, one claim per process (BAND_PENDING_MACHINERY latch so a --no-block tick cannot dump the queue), ratio resumes from the second machinery unit; the canary rejects a live pi-issue@fleet-ops-N claim whose N is not in surge_leverage_issues (surge) or a live machinery share > machinery_max_pct with 2+ machinery units (band; one repair lane is the floor, not drift); tighten-only ratchet — any loosening of machinery_max_pct / product_min_pct vs the prior committed value requires a strictly-later wfr_waiver_on in the live config; a re-stamped waiver is rejected; WFR owns the dial.",
+      "mechanism": "Heartbeat fleet-precedence-band-canary + pi-intake-tick (fleet-ops#1223): config/precedence-band.json locks the dial (cutoff_utc, machinery_max_pct<=30, product_min_pct>=70, machinery_repo=fleet-ops, owner=weekly-fleet-review, product_front=REPO#NUMBER, surge_leverage_issues); pi-intake-tick sources lib/precedence-band.sh and calls precedence_band_allow_claim before the claim push \u2014 until cutoff_utc fleet-ops intake claims only surge_leverage_issues, from cutoff_utc a new machinery claim that would push live share over machinery_max_pct is skipped unless the issue carries a `priority` or `emergency` label; machinery floor (fleet-ops#1452): when live machinery == 0 one repair lane always runs, one claim per process (BAND_PENDING_MACHINERY latch so a --no-block tick cannot dump the queue), ratio resumes from the second machinery unit; the canary rejects a live pi-issue@fleet-ops-N claim whose N is not in surge_leverage_issues (surge) or a live machinery share > machinery_max_pct with 2+ machinery units (band; one repair lane is the floor, not drift); tighten-only ratchet \u2014 any loosening of machinery_max_pct / product_min_pct vs the prior committed value requires a strictly-later wfr_waiver_on in the live config; a re-stamped waiver is rejected; WFR owns the dial.",
       "proof": "bin/fleet-precedence-band-canary; lib/pi-packet/precedence-band-canary.py; lib/precedence-band.sh; lib/pi-intake-tick.sh; config/precedence-band.json; tests/fleet-precedence-band.test.sh; fleet-heartbeat-tier1 block 36; fleet-ops#1223; fleet-ops#1452",
       "status": "enforced"
     },
@@ -791,14 +791,14 @@
     {
       "id": "led-2026-08-28-machinery-violations-senior-conference",
       "source": "decisions-ledger.md: 2026-08-28 | Machinery violations self-adjudicate via senior conference (Nish: \"violations should automatically go to other senior agents to confer... most things should close on their own automatically\")",
-      "mechanism": "fleet-machinery-authorization-gate REJECT / hunt findings auto-route to senior conference on existing rails (queue + pi-issue + boundary-notify; zero new organs). Convener runs TWO blind senior POVs then verdicts: MECHANICAL-INSTEAD (default on doubt), EXCEPTION-APPROVED (both POVs; allowlist PR), or NISH-RESERVED (boundary-notify — only path reaching Nish). Weekly Fleet Review audits all verdicts.",
+      "mechanism": "fleet-machinery-authorization-gate REJECT / hunt findings auto-route to senior conference on existing rails (queue + pi-issue + boundary-notify; zero new organs). Convener runs TWO blind senior POVs then verdicts: MECHANICAL-INSTEAD (default on doubt), EXCEPTION-APPROVED (both POVs; allowlist PR), or NISH-RESERVED (boundary-notify \u2014 only path reaching Nish). Weekly Fleet Review audits all verdicts.",
       "proof": "bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit; fleet-ops#1548",
       "status": "enforced"
     },
     {
       "id": "sr-legit-work-no-spinning-wheels",
-      "source": "global-standing-rules.md: Legit work only — no spinning wheels, fleet-wide (Nish, 2026-08-28)",
-      "mechanism": "Precedence-band empty-product surge expansion (fleet-ops#1516): when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity — BUT only for legit work (upgrade/repair per quality classification). Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The existing quality/churn metrics (upgrade/repair/churn baseline from fleet-ops#1136) are the gate.",
+      "source": "global-standing-rules.md: Legit work only \u2014 no spinning wheels, fleet-wide (Nish, 2026-08-28)",
+      "mechanism": "Precedence-band empty-product surge expansion (fleet-ops#1516): when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity \u2014 BUT only for legit work (upgrade/repair per quality classification). Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The existing quality/churn metrics (upgrade/repair/churn baseline from fleet-ops#1136) are the gate.",
       "proof": "lib/precedence-band.sh (precedence_band_classify_quality, precedence_band_is_legit_work, precedence_band_allow_claim); lib/pi-intake-tick.sh (passes title for quality check); tests/fleet-precedence-band.test.sh scenarios 17g-17z; config/precedence-band.json; fleet-ops#1516",
       "status": "enforced"
     },
@@ -841,13 +841,13 @@
       "id": "led-2026-08-28-0509-product-direction-three-epics",
       "source": "decisions-ledger.md: 2026-08-28 | 0509 product direction: three epics (Nish, verbatim)",
       "mechanism": "Product direction, not a fleet control-plane rule. Three epics: (a) auto competitor discovery, (b) full-site competitor tracking, (c) competitor + self mention tracking across the internet. Decomposed via scout-and-plan + spec-gate, evals before specs.",
-      "proof": "n/a — product direction, gated by 0509 epics + spec-gate + evals",
+      "proof": "n/a \u2014 product direction, gated by 0509 epics + spec-gate + evals",
       "status": "advisory(senior: product direction; gated by 0509 epics + spec-gate + evals)"
     },
     {
       "id": "led-2026-08-28-legit-work-only-fleet-wide-law",
       "source": "decisions-ledger.md: 2026-08-28 | Legit-work-only is fleet-wide law (Nish)",
-      "mechanism": "Written to global-standing-rules.md with enforcement via precedence-band empty-product surge expansion: when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity — BUT only for legit work. Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The precedence-band canary (fleet-heartbeat-tier1 block 36) enforces the dial.",
+      "mechanism": "Written to global-standing-rules.md with enforcement via precedence-band empty-product surge expansion: when product-ready is empty, machinery may expand beyond machinery_max_pct up to full capacity \u2014 BUT only for legit work. Churn-class (chore, refactor, polish, machinery-on-machinery) is rejected at intake via lib/precedence-band.sh precedence_band_is_legit_work check. The precedence-band canary (fleet-heartbeat-tier1 block 36) enforces the dial.",
       "proof": "lib/precedence-band.sh; tests/fleet-precedence-band.test.sh; config/precedence-band.json; bin/fleet-precedence-band-canary; fleet-heartbeat-tier1 block 36; fleet-ops#1516",
       "status": "enforced"
     },
@@ -861,28 +861,28 @@
     {
       "id": "led-2026-08-28-quality-constraint-never-trade-off",
       "source": "decisions-ledger.md: 2026-08-28 | Quality is a CONSTRAINT, never a trade-off (Nish)",
-      "mechanism": "Amends the quality-throughput entry: no layer may relax a quality gate for speed — such proposals are rejected as invalid, not weighed. Written to global-standing-rules.md with per-layer enforcement (five layers: merge, closure, dial, proposal, metric). #1516/#1136 must register the enforcer in the matrix on landing.",
+      "mechanism": "Amends the quality-throughput entry: no layer may relax a quality gate for speed \u2014 such proposals are rejected as invalid, not weighed. Written to global-standing-rules.md with per-layer enforcement (five layers: merge, closure, dial, proposal, metric). #1516/#1136 must register the enforcer in the matrix on landing.",
       "proof": "global-standing-rules.md: Quality is a constraint, never a trade-off; .github/workflows/ci.yml; .github/workflows/auto-revert.yml; 0509#1365; lib/quality-routing.py; fleet-ops#1136; fleet-ops#1516",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-28-hostinger-kvm4-revival",
       "source": "decisions-ledger.md: 2026-08-28 | hostinger-kvm4 revival queued under existing decisions (ledger-derived, no new ask)",
-      "mechanism": "VOIDED by hostinger-kvm4 is RETIRED entry — the box is decommissioned, not idle prepaid capacity. Never revive, never investigate; netcup-rs2000 is the sole fleet host.",
+      "mechanism": "VOIDED by hostinger-kvm4 is RETIRED entry \u2014 the box is decommissioned, not idle prepaid capacity. Never revive, never investigate; netcup-rs2000 is the sole fleet host.",
       "proof": "decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED; fleet-ops#1501 (hostname-drift cleanup)",
       "status": "advisory(senior: VOIDED by hostinger RETIRED entry; hostinger is decommissioned)"
     },
     {
       "id": "led-2026-08-28-hostinger-kvm4-retired",
       "source": "decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED (Nish: \"Hostinger was retired. It's now Netcup dummy\")",
-      "mechanism": "Hostinger-kvm4 is decommissioned — the retirement itself is the enforcement. Netcup-rs2000 is the sole fleet host. Every standing rule/doc still naming hostinger-kvm4 reads as netcup-rs2000 (hostname-drift cleanup filed as fleet-ops#1501).",
+      "mechanism": "Hostinger-kvm4 is decommissioned \u2014 the retirement itself is the enforcement. Netcup-rs2000 is the sole fleet host. Every standing rule/doc still naming hostinger-kvm4 reads as netcup-rs2000 (hostname-drift cleanup filed as fleet-ops#1501).",
       "proof": "fleet-ops#1501 (hostname-drift cleanup); hostinger-kvm4 decommissioned; netcup-rs2000 is sole fleet host",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-28-capacity-ceiling-accepted",
       "source": "decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted (Nish, via decision prompt)",
-      "mechanism": "AMENDS the 25-worker floor: the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000 (currently ~11 mixed; #1587's browser-memory squeeze raises it — new measured ceiling becomes the new floor automatically). Undersaturation below the measured ceiling with ready supply stays a fault that auto-dispatches repair (existing undersaturation canary). Quality gates untouched.",
+      "mechanism": "AMENDS the 25-worker floor: the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000 (currently ~11 mixed; #1587's browser-memory squeeze raises it \u2014 new measured ceiling becomes the new floor automatically). Undersaturation below the measured ceiling with ready supply stays a fault that auto-dispatches repair (existing undersaturation canary). Quality gates untouched.",
       "proof": "config/seat-caps.json; bin/fleet-heartbeat-undersaturation; lib/seat-lib.sh; bin/ram-measure; fleet-ops#1587",
       "status": "enforced"
     },
@@ -896,7 +896,7 @@
     {
       "id": "led-2026-08-28-manual-evidence-pinning-and-triage-greps-fleet-op",
       "source": "decisions-ledger.md: 2026-08-28 | Manual evidence-pinning and triage greps (fleet-ops#1521 line 5)",
-      "mechanism": "The escalation pipeline attaches the failing unit's evidence to STOP-REASON automatically: unit-escalation@%i.service (OnFailure drop-in) runs bin/unit-escalation-write %i, which writes the last 5 journal lines (detail.journal) plus the last 5 error-priority lines, syslog err or higher (detail.journal_errors), into STOP-REASON.json so the senior auditor carries the failure evidence without a hand journalctl grep. Unit name always from systemd's %i (never an 'unknown unit' placeholder). The phone page (fleet-heartbeat-failed-notify) carries the same guarantee: systemd v250+ sets MONITOR_UNIT for OnFailure= activations with a single trigger source (verified live, systemd 255; absent when multiple units trip the same target — the 2026-08-28 'unknown unit' shape) and the helper refuses to page when MONITOR_UNIT is unset — a name-less page is structurally impossible, and the per-unit STOP-REASON path covers every failure with the correct name and evidence. Drill: live writer run on a real failed unit.",
+      "mechanism": "The escalation pipeline attaches the failing unit's evidence to STOP-REASON automatically: unit-escalation@%i.service (OnFailure drop-in) runs bin/unit-escalation-write %i, which writes the last 5 journal lines (detail.journal) plus the last 5 error-priority lines, syslog err or higher (detail.journal_errors), into STOP-REASON.json so the senior auditor carries the failure evidence without a hand journalctl grep. Unit name always from systemd's %i (never an 'unknown unit' placeholder). The phone page (fleet-heartbeat-failed-notify) carries the same guarantee: systemd v250+ sets MONITOR_UNIT for OnFailure= activations with a single trigger source (verified live, systemd 255; absent when multiple units trip the same target \u2014 the 2026-08-28 'unknown unit' shape) and the helper refuses to page when MONITOR_UNIT is unset \u2014 a name-less page is structurally impossible, and the per-unit STOP-REASON path covers every failure with the correct name and evidence. Drill: live writer run on a real failed unit.",
       "proof": "bin/unit-escalation-write; systemd/unit-escalation@.service; tests/unit-escalation-write-journal-evidence.test.sh; tests/escalation-units-shape.test.sh; tests/fleet-heartbeat-failed-notify-threshold.test.sh (unknown-unit lock); drill: live writer run on a real failed unit + live OnFailure= notify page (fleet-ops#1526)",
       "status": "enforced"
     }

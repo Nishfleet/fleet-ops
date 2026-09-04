@@ -46,10 +46,10 @@ jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforc
   || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
 ok "matrix row led-worker-lane-refresh is enforced"
 
-jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou" and .status == "enforced")' \
+jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou" and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' \
   "$matrix" >/dev/null \
-  || fail "led-2026-08-27-worker-lane-order must be status=enforced (fleet-ops#1178)"
-ok "matrix row led-2026-08-27-worker-lane-order is enforced"
+  || fail "led-2026-08-27-worker-lane-order must be status=advisory(RETIRED by fleet-ops#3125) not enforced (fleet-ops#1178 retired 2026-09-04)"
+ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume order replaced by yield)"
 
 jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced")' \
   "$matrix" >/dev/null \
@@ -83,10 +83,14 @@ do
   ok "matrix row for $src is enforced"
 done
 # fleet-ops#1178: apostrophe in "can't" — assert via --arg, not a double-quoted for-loop entry.
+# fleet-ops#3125 (2026-09-04): the volume lane order is RETIRED (yield-ranked
+# product routing replaced the volume prefix) — the row must carry an
+# advisory RETIRED status, not enforced.
 src_1178='decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")'
 status=$(jq -r --arg src "$src_1178" '.rules[] | select(.source == $src) | .status' "$matrix")
-[[ "$status" == "enforced" ]] || fail "matrix must have $src_1178 as enforced, got ${status:-missing}"
-ok "matrix row for worker lane order (fleet-ops#1178) is enforced"
+[[ "$status" == "enforced" || ( "$status" == advisory* && "$status" == *RETIRED* ) ]] \
+  || fail "matrix must have $src_1178 as enforced or advisory-RETIRED, got ${status:-missing}"
+ok "matrix row for worker lane order (fleet-ops#1178) is retired-advisory (volume canary deleted)"
 
 src_1245='decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish'
 status=$(jq -r --arg src "$src_1245" '.rules[] | select(.source == $src) | .status' "$matrix")
@@ -149,12 +153,6 @@ do
     *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1403)" ;;
   esac
 done
-
-# fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
-# vault join so a busy board of other uncovered sibling ledger lines
-# cannot skip this drill (the live join still asserts our covered_rows).
-bash "$here/fleet-volume-lane-order-canary.test.sh" || fail "volume-lane-order canary drill failed"
-ok "rule-enforcement: volume-lane-order canary drill"
 
 # fleet-ops#1245: GEO/AEO parked-tactics + brand-gate canary. Hosted
 # BEFORE the live vault join for the same reason as #1178.
@@ -233,9 +231,13 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
+  # fleet-ops#3125: the worker-lane-order rule is RETIRED — the join counts it
+  # as covered/advisory but does not enumerate it in covered_rows, so assert
+  # the matrix row carries the advisory-RETIRED status (uncovered==0 above
+  # already proves the live ledger line is covered).
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
-    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report worker lane order as enforced covered_rows (fleet-ops#1178): $(jq -c '.covered_rows' <<<"$live")"
+    '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
+    || fail "matrix must mark worker lane order as advisory-RETIRED (fleet-ops#1178 retired 2026-09-04 by fleet-ops#3125)"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report cursor \$400 sequencing as enforced covered_rows (fleet-ops#1179): $(jq -c '.covered_rows' <<<"$live")"
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
@@ -1121,7 +1123,7 @@ ok "rule-enforcement: worker-memory drop-in drill"
 bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard-stash-readonly, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard-stash-readonly, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never

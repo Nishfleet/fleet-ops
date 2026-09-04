@@ -222,6 +222,11 @@ declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
 declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 # fleet-ops#217/#424 AIMD: probe ceiling, hard-ceiling flag, dated cap=0 reason.
 declare -A SEAT_PROVIDER_MAX_PROBE=()
+# fleet-ops#3125: model-granularity AIMD probe ceiling (devin glm-5-2 -> 6,
+# swe-1-7 -> 8). Loaded from per-model object rows that carry
+# max_probe_ceiling next to cap; absent means the declared model cap is the
+# hard ceiling (no model-level probe).
+declare -A SEAT_MODEL_PROBE_CEILING=()
 declare -A SEAT_PROVIDER_HARD_CEILING=()
 declare -A SEAT_PROVIDER_REASON=()
 # fleet-ops#1432: classification of cap=0 seats as intentional (dead_decoy /
@@ -233,7 +238,10 @@ declare -A SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
 declare -A SEAT_CAP_ZERO_CLASS_STALE=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
-SEAT_VOLUME_ORDER=""
+# fleet-ops#3125: seat-caps product_order. "yield" routes product picks
+# (PI_PICK_ROLE=product) through the rolling PR-yield ledger instead of the
+# free-first ladder; empty/absent keeps the class-bucket ladder.
+SEAT_PRODUCT_ORDER=""
 declare -A SEAT_KEYSTONE_ONLY=()
 SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
 SEAT_CURSOR_INCLUDED_EXHAUSTED=0
@@ -331,7 +339,8 @@ load_seat_caps() {
     SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
-    SEAT_VOLUME_ORDER=""
+    SEAT_PRODUCT_ORDER=""
+    SEAT_MODEL_PROBE_CEILING=()
     SEAT_KEYSTONE_ONLY=()
     SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
     SEAT_CURSOR_INCLUDED_EXHAUSTED=0
@@ -403,11 +412,13 @@ load_seat_caps() {
     # optional; absent fields emit "" so the guards above skip them.
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    while IFS=$'\t' read -r p m cap class; do
+    while IFS=$'\x1f\n' read -r p m cap class mprobe; do
         [[ -n "$p" && -n "$m" ]] || continue
-        # Models map may be a bare number (cap) or an object {cap, class}.
-        # Per-model class is an override for a free lane inside a mixed
-        # provider (e.g. cline has prepaid-pass seats and a free z-ai GLM).
+        # Models map may be a bare number (cap) or an object {cap, class,
+        # max_probe_ceiling}. Per-model class is an override for a free lane
+        # inside a mixed provider (e.g. cline has prepaid-pass seats and a
+        # free z-ai GLM); max_probe_ceiling opts the seat into model-level
+        # AIMD probing (fleet-ops#3125).
         if [[ "$cap" =~ ^[0-9]+$ ]]; then
             SEAT_MODEL_CAP["$p/$m"]="$cap"
         else
@@ -415,6 +426,9 @@ load_seat_caps() {
             local mcap
             mcap=$(jq -r '.cap // 0' <<<"$cap" 2>/dev/null)
             [[ "$mcap" =~ ^[0-9]+$ ]] && SEAT_MODEL_CAP["$p/$m"]="$mcap"
+        fi
+        if [[ "$mprobe" =~ ^[0-9]+$ ]]; then
+            SEAT_MODEL_PROBE_CEILING["$p/$m"]="$mprobe"
         fi
         if [[ -n "$class" ]]; then
             [[ "$class" == "subscription" ]] && class="prepaid-quota"
@@ -433,15 +447,17 @@ load_seat_caps() {
                 SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"
             fi
         fi
-    # Same bare-number guard as the providers loop: .value.models on a bare
-    # number crashes jq before `// {}` can rescue it, emptying all model caps.
-    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # Unit separator (\x1f), not TSV, for the same reason the providers loop
+    # uses it: bash `read` collapses consecutive tabs, so an empty per-model
+    # `class` would shift `max_probe_ceiling` out of mprobe and the model
+    # probe ceilings would silently never load (fleet-ops#3125).
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end), (if (.value|type)=="object" then (.value.max_probe_ceiling // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
-    # fleet-ops#1178: cross-class volume front-of-ladder (ollama -> devin ->
-    # commandcode -> cline FIRST). Empty means legacy free-then-prepaid behaviour.
-    SEAT_VOLUME_ORDER=$(jq -r '.volume_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # fleet-ops#3125: product_order selects the product-pick ordering.
+    # "yield" = rank every candidate by the rolling PR-yield ledger.
+    SEAT_PRODUCT_ORDER=$(jq -r '.product_order // ""' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     # fleet-ops#1167: cursor (and any listed provider) is keystone/senior-review only.
     while IFS= read -r ko; do
@@ -929,6 +945,96 @@ _aimd_probe_admitted() {
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
     _record_learned_cap "$p" "$new" "probe" ""
+    return 0
+}
+
+# --- Model-granularity AIMD (fleet-ops#3125) --------------------------------
+# Same contract as the provider-level AIMD above, keyed on "provider/model".
+# A model row that carries max_probe_ceiling (e.g. devin glm-5-2 declared 3 /
+# probe to 6) may probe above its declared model cap; a model row without one
+# keeps the declared cap as a hard ceiling (the pre-#3125 behaviour for every
+# seat). Learned state is recorded under the "p/m" key in learned-caps.json —
+# the providers map keys are opaque strings, so a "devin/glm-5-2" key sits
+# next to "devin" without collision. install.sh resets learned-caps.json when
+# a deploy changes seat-caps.json so a stale learned cap never pins a raised
+# declared floor.
+#
+# effective_model_cap <p> <m> -> echoes the model cap pick_seat honours.
+# Order: no ceiling declared -> declared; provider hard_ceiling -> declared;
+# fresh provider error -> backoff (declared/2, floor 1); bench held ->
+# learned; bench expired -> decay to declared; else learned clamped to
+# [declared, ceiling].
+effective_model_cap() {
+    local p="$1" m="$2"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+    local declared ceiling
+    declared=$(model_cap "$p" "$m")
+    ceiling="${SEAT_MODEL_PROBE_CEILING[$p/$m]:-}"
+    # No declared model probe ceiling (or one at/below the declared cap)
+    # means the declared model cap is the binding value exactly as before.
+    if [[ ! "$ceiling" =~ ^[0-9]+$ ]] || (( ceiling <= declared )); then
+        echo "$declared"
+        return
+    fi
+    if provider_hard_ceiling "$p"; then
+        echo "$declared"
+        return
+    fi
+    local key="$p/$m"
+    if provider_has_recent_error "$p"; then
+        local backoff=$(( declared / 2 ))
+        (( backoff < 1 )) && backoff=1
+        local bench
+        bench=$(_provider_bench_until "$p")
+        local cur="${LEARNED_CAP[$key]:-}"
+        local cur_bench="${LEARNED_BENCH_UNTIL[$key]:-}"
+        if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
+            _record_learned_cap "$key" "$backoff" "backoff" "$bench"
+        fi
+        echo "$backoff"
+        return
+    fi
+    local bench="${LEARNED_BENCH_UNTIL[$key]:-}"
+    if [[ -n "$bench" ]] && _seat_in_future "$bench"; then
+        local backed="${LEARNED_CAP[$key]:-}"
+        [[ "$backed" =~ ^[0-9]+$ ]] || backed="$declared"
+        echo "$backed"
+        return
+    fi
+    if [[ -n "$bench" ]] && ! _seat_in_future "$bench"; then
+        _record_learned_cap "$key" "$declared" "decay" ""
+        echo "$declared"
+        return
+    fi
+    local current="${LEARNED_CAP[$key]:-}"
+    if [[ ! "$current" =~ ^[0-9]+$ ]]; then current="$declared"; fi
+    local eff=$(( current < ceiling ? current : ceiling ))
+    (( eff < declared )) && eff=$declared
+    echo "$eff"
+}
+
+# Model-level probe admission. Returns 0 (admit one extra on this seat) iff
+# ALL of: provider not hard_ceiling, the model row declares a probe ceiling,
+# eff < ceiling, active == eff, zero provider errors, RAM governor headroom.
+# Records learned_cap=eff+1 under the "p/m" key with result=probe.
+# Args: provider model eff_cap active_count
+_model_probe_admitted() {
+    local p="$1" m="$2" eff="$3" active="$4"
+    if provider_hard_ceiling "$p"; then return 1; fi
+    local ceiling="${SEAT_MODEL_PROBE_CEILING[$p/$m]:-}"
+    [[ "$ceiling" =~ ^[0-9]+$ ]] || return 1
+    (( eff < ceiling )) || return 1
+    (( active == eff )) || return 1
+    if provider_has_recent_error "$p"; then return 1; fi
+    local ram_cap active_total
+    ram_cap=$(ram_governor_cap) || ram_cap=0
+    [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
+    active_total=$(count_active_total)
+    (( ram_cap > active_total )) || return 1
+    local new=$(( eff + 1 ))
+    (( new > ceiling )) && new=$ceiling
+    _record_learned_cap "$p/$m" "$new" "probe" ""
     return 0
 }
 
@@ -2841,12 +2947,21 @@ pick_seat() {
                 continue
             fi
         fi
+        # fleet-ops#3125: model-level AIMD. effective_model_cap is the declared
+        # cap unless the model row declares a max_probe_ceiling (devin seats);
+        # when it does, the same AIMD rules apply at model granularity and a
+        # saturated seat admits one additive probe below the ceiling.
         m_active=$(count_active_on_seat "$p" "$m")
-        if (( m_cap > 0 )) && (( m_active >= m_cap )); then
-            # fleet-ops#1624: same flood fix for the model-cap-reached branch.
-            _at_capacity_n=$((_at_capacity_n + 1))
-            _at_capacity_sample+=("$p/$m")
-            continue
+        m_eff_cap=$(effective_model_cap "$p" "$m")
+        if (( m_eff_cap > 0 )) && (( m_active >= m_eff_cap )); then
+            if _model_probe_admitted "$p" "$m" "$m_eff_cap" "$m_active"; then
+                seat_log "seat $p/$m AIMD model probe admitted (model cap $m_eff_cap -> $((m_eff_cap + 1)): $m_active active, zero errors, RAM headroom)"
+            else
+                # fleet-ops#1624: same flood fix for the model-cap-reached branch.
+                _at_capacity_n=$((_at_capacity_n + 1))
+                _at_capacity_sample+=("$p/$m")
+                continue
+            fi
         fi
 
         class=$(model_class_of "$p" "$m")
@@ -2993,51 +3108,54 @@ pick_seat() {
     # fleet-ops#1133 keystone inverts cost-first: prepaid (strongest class)
     # first, then metered, free last. Skip prepaid round-robin so a hard
     # packet cannot rotate onto ollama-flash as "just another prepaid".
-    # Skip volume front-of-ladder (#1178) on keystone so reliability beats
-    # cheap. Unmarked packets keep volume-first, then leftover free,
-    # leftover prepaid (alternate), then metered.
-    local -a volume_seats=() leftover_free=() leftover_prepaid=()
-    if ! _is_keystone_class "$difficulty" && [[ -n "$SEAT_VOLUME_ORDER" ]]; then
-        declare -A _vol_seen=()
-        local _vp _fm
-        for _vp in $SEAT_VOLUME_ORDER; do
-            _vol_seen["$_vp"]=1
-        done
-        for _fm in "${free_seats[@]:-}" "${prepaid_seats[@]:-}"; do
-            [[ -n "$_fm" ]] || continue
-            p="${_fm%%$'\t'*}"
-            if [[ -n "${_vol_seen[$p]:-}" ]]; then
-                volume_seats+=("$_fm")
+    # fleet-ops#3125: product_order=yield. Product picks (PI_PICK_ROLE=
+    # product, exported by pi-issue-run / pi-packet-run) rank every candidate
+    # seat by the rolling last-20-sessions PR yield in seat-yield.json (the
+    # #3250 ledger, loaded via load_seat_yield/seat_yield_for), descending;
+    # ties break by class (prepaid-quota -> metered -> free, so prepaid subs
+    # still drain first among equal performers) then by each bucket's
+    # existing order. A seat absent from the ledger, or provisional (<20
+    # measured sessions), carries 0.5 — new seats are tried, not starved.
+    # Keystone and non-product picks keep the class ladder below.
+    local -a product_seats=()
+    if ! _is_keystone_class "$difficulty" \
+        && [[ "${PI_PICK_ROLE:-scout}" == "product" ]] \
+        && [[ "$SEAT_PRODUCT_ORDER" == "yield" ]]; then
+        local -a _yranked=()
+        mapfile -t _yranked < <(
+            _i=0
+            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+                [[ -n "$_fm" ]] || continue
+                _p="${_fm%%$'\t'*}"
+                _m="${_fm#*$'\t'}"
+                _yld=$(seat_yield_for "$_p" "$_m")
+                case "$(model_class_of "$_p" "$_m")" in
+                    prepaid-quota) _rank=0 ;;
+                    metered)       _rank=1 ;;
+                    *)             _rank=2 ;;
+                esac
+                printf '%s\t%s\t%s\t%s\n' "$_yld" "$_rank" "$_i" "$_fm"
+                _i=$((_i + 1))
+            done | sort -t$'\t' -k1,1nr -k2,2n -k3,3n
+        )
+        local _yline _ylog="" _yn=0
+        for _yline in "${_yranked[@]:-}"; do
+            [[ -n "$_yline" ]] || continue
+            local _ys _yr _yi _yp _ym
+            IFS=$'\t' read -r _ys _yr _yi _yp _ym <<<"$_yline"
+            product_seats+=("${_yp}"$'\t'"${_ym}")
+            if (( _yn < 6 )); then
+                _ylog+="${_yp}/${_ym}@${_ys} "
+                _yn=$((_yn + 1))
             fi
         done
-        if (( ${#volume_seats[@]} > 0 )); then
-            mapfile -t volume_seats < <(_order_seats_by "$SEAT_VOLUME_ORDER" "${volume_seats[@]}")
-        fi
-        for _fm in "${free_seats[@]:-}"; do
-            [[ -n "$_fm" ]] || continue
-            p="${_fm%%$'\t'*}"
-            [[ -n "${_vol_seen[$p]:-}" ]] && continue
-            leftover_free+=("$_fm")
-        done
-        for _fm in "${prepaid_seats[@]:-}"; do
-            [[ -n "$_fm" ]] || continue
-            p="${_fm%%$'\t'*}"
-            [[ -n "${_vol_seen[$p]:-}" ]] && continue
-            leftover_prepaid+=("$_fm")
-        done
-        if (( ${#leftover_free[@]} > 0 )); then
-            free_seats=("${leftover_free[@]}")
-        else
-            free_seats=()
-        fi
-        if (( ${#leftover_prepaid[@]} > 0 )); then
-            prepaid_seats=("${leftover_prepaid[@]}")
-        else
-            prepaid_seats=()
+        # One line per pick so the operator sees the computed yield order.
+        if (( ${#product_seats[@]} > 0 )); then
+            seat_log "pick_seat: yield-order (product): ${_ylog% }"
         fi
     fi
 
-    local chosen="" chosen_p=""
+    local chosen="" chosen_p="" chosen_m=""
     if _is_keystone_class "$difficulty"; then
         if (( ${#prepaid_seats[@]} > 0 )); then
             chosen="${prepaid_seats[0]}"
@@ -3051,11 +3169,11 @@ pick_seat() {
             chosen="${free_seats[0]}"
             seat_log "pick_seat: KEYSTONE routing to $chosen (free last-resort)"
         fi
-    elif (( ${#volume_seats[@]} > 0 )); then
-        chosen="${volume_seats[0]}"
+    elif (( ${#product_seats[@]} > 0 )); then
+        chosen="${product_seats[0]}"
         chosen_p="${chosen%%$'\t'*}"
         chosen_m="${chosen#*$'\t'}"
-        # Prepaid members of the volume set still burn weekly pacing.
+        # Prepaid seats still burn weekly pacing when yield picks them.
         if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
             _record_prepaid_pick "$chosen_p"
         fi

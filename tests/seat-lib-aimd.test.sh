@@ -33,10 +33,13 @@ command -v jq >/dev/null || fail "jq required"
 scratch="$(mktemp -d -t seat-lib-aimd.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Three providers cover the AIMD matrix:
+# Four providers cover the AIMD matrix:
 #   commandcode — free, cap=2, max_probe_ceiling=4 (probes freely)
 #   minimax     — metered, cap=2, max_probe_ceiling=2 (never above declared)
-#   devin       — prepaid, cap=4, hard_ceiling=true (never probes/backoffs)
+#   devin       — prepaid, cap=4, AIMD ceiling 8, model probe ceilings
+#                 (fleet-ops#3125: glm-5-2 declared 4 / probe to 6,
+#                  swe-1-7 declared 4 with NO model ceiling)
+#   ollama      — prepaid, cap=4, hard_ceiling=true (never probes/backoffs)
 cat >"$scratch/models.json" <<'JSON'
 {
   "providers": {
@@ -47,7 +50,10 @@ cat >"$scratch/models.json" <<'JSON'
       "models": [ { "id": "MiniMax-M3", "cost": { "input": 0 } } ]
     },
     "devin": {
-      "models": [ { "id": "glm-5-2", "cost": { "input": 0 } } ]
+      "models": [ { "id": "glm-5-2", "cost": { "input": 0 } }, { "id": "swe-1-7", "cost": { "input": 0 } } ]
+    },
+    "ollama": {
+      "models": [ { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 } } ]
     }
   }
 }
@@ -63,7 +69,8 @@ cat >"$scratch/seat-caps.json" <<'JSON'
   "providers": {
     "commandcode": { "cap": 2, "class": "free", "max_probe_ceiling": 4, "models": { "deepseek/deepseek-v4-flash": 4 } },
     "minimax": { "cap": 2, "class": "metered", "max_probe_ceiling": 2, "models": { "MiniMax-M3": 2 } },
-    "devin": { "cap": 4, "class": "prepaid-quota", "hard_ceiling": true, "max_probe_ceiling": 4, "models": { "glm-5-2": 4 } }
+    "devin": { "cap": 4, "class": "prepaid-quota", "max_probe_ceiling": 8, "models": { "glm-5-2": { "cap": 4, "max_probe_ceiling": 6 }, "swe-1-7": 4 } },
+    "ollama": { "cap": 4, "class": "prepaid-quota", "hard_ceiling": true, "max_probe_ceiling": 4, "models": { "deepseek-v4-flash:0731": 4 } }
   }
 }
 JSON
@@ -178,21 +185,49 @@ set -e
 [[ "$eff" == "2" ]] || fail "metered: effective cap must clamp to max_probe_ceiling=2, got $eff"
 ok "metered: never probes above declared max (ceiling=2), learned cap clamped"
 
-# --- invariant 4: hard_ceiling — never probes, never backs off ------------
+# --- invariant 4: hard_ceiling (ollama) — never probes, never backs off -- 
 rm -f "$state/active-seats"/*.json "$ledger"/*.json "$learned" "$audit"
-write_ledger devin "glm-5-2" rate_limited "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$future"
+write_ledger ollama "deepseek-v4-flash:0731" rate_limited "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$future"
 set +e
-eff=$(run effective_provider_cap devin 2>/dev/null)
+eff=$(run effective_provider_cap ollama 2>/dev/null)
 set -e
-[[ "$eff" == "4" ]] || fail "devin hard_ceiling: effective cap must stay 4 even on 429, got $eff"
-[[ ! -f "$learned" ]] || fail "devin hard_ceiling: must NOT write learned state (no probe, no backoff)"
-seed_active devin 4
+[[ "$eff" == "4" ]] || fail "ollama hard_ceiling: effective cap must stay 4 even on 429, got $eff"
+[[ ! -f "$learned" ]] || fail "ollama hard_ceiling: must NOT write learned state (no probe, no backoff)"
+seed_active ollama 4
 set +e
 probe_rc=0
-run _aimd_probe_admitted devin 4 4 2>/dev/null || probe_rc=$?
+run _aimd_probe_admitted ollama 4 4 2>/dev/null || probe_rc=$?
 set -e
-[[ "$probe_rc" != "0" ]] || fail "devin hard_ceiling: must not admit a probe"
-ok "devin hard_ceiling: cap stays 4 on 429, no probe, no learned state"
+[[ "$probe_rc" != "0" ]] || fail "ollama hard_ceiling: must not admit a probe"
+ok "ollama hard_ceiling: cap stays 4 on 429, no probe, no learned state"
+
+# --- invariant 4b: devin model-level AIMD (fleet-ops#3125) -----------------
+# glm-5-2 declares cap 4 / probe ceiling 6: at declared==active with no
+# provider error it admits cap+1 and records under the "devin/glm-5-2" key;
+# a model WITHOUT a ceiling (swe-1-7) stays at declared and never probes.
+rm -f "$state/active-seats"/*.json "$ledger"/*.json "$learned" "$audit"
+write_ledger devin "glm-5-2" healthy "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "null"
+seed_active devin 4
+set +e
+meff=$(run effective_model_cap devin "glm-5-2" 2>/dev/null)
+mprobe_rc=0
+run _model_probe_admitted devin "glm-5-2" 4 4 2>/dev/null || mprobe_rc=$?
+set -e
+[[ "$meff" == "4" ]] || fail "devin model: effective_model_cap glm-5-2 must start at declared 4, got $meff"
+[[ "$mprobe_rc" == "0" ]] || fail "devin model: glm-5-2 must admit a probe at 4/4 below ceiling 6 (fleet-ops#3125)"
+[[ -f "$learned" ]] || fail "devin model: learned-caps.json must be written on model probe"
+mlc=$(jq -r '.providers["devin/glm-5-2"].learned_cap // "none"' "$learned")
+[[ "$mlc" == "5" ]] || fail "devin model: learned_cap must be 5 under the devin/glm-5-2 key, got $mlc (file=$(cat "$learned"))"
+grep -q "aimd devin/glm-5-2: learned_cap=5 result=probe" "$audit" \
+  || fail "devin model: audit line must record the model probe: $(cat "$audit")"
+set +e
+meff2=$(run effective_model_cap devin "swe-1-7" 2>/dev/null)
+sprobe_rc=0
+run _model_probe_admitted devin "swe-1-7" 4 4 2>/dev/null || sprobe_rc=$?
+set -e
+[[ "$meff2" == "4" ]] || fail "devin model: swe-1-7 without a ceiling must stay at declared, got $meff2"
+[[ "$sprobe_rc" != "0" ]] || fail "devin model: swe-1-7 must not probe (no declared ceiling)"
+ok "devin model AIMD: glm-5-2 probes to ceiling 6, swe-1-7 without ceiling stays at declared"
 
 # --- invariant 5: bench expiry -> decay toward the floor ------------------
 rm -f "$state/active-seats"/*.json "$ledger"/*.json
@@ -226,8 +261,14 @@ ok "siblings: later probe write keeps the other provider's learned cap"
 # --- production seat-caps.json AIMD fields (the live floor/ceiling) --------
 caps="$repo_root/config/seat-caps.json"
 [[ -f "$caps" ]] || fail "production seat-caps.json missing"
-jq -e '.providers.devin.hard_ceiling == true' "$caps" >/dev/null \
-  || fail "production: devin must be hard_ceiling=true"
+jq -e '.providers.devin.hard_ceiling == null' "$caps" >/dev/null \
+  || fail "production: devin must NOT be hard_ceiling (fleet-ops#3125: AIMD probes to 8)"
+jq -e '.providers.devin.max_probe_ceiling == 8' "$caps" >/dev/null \
+  || fail "production: devin max_probe_ceiling must be 8 (fleet-ops#3125)"
+jq -e '.providers.devin.models["glm-5-2"].max_probe_ceiling == 6' "$caps" >/dev/null \
+  || fail "production: devin glm-5-2 must declare probe ceiling 6 (fleet-ops#3125)"
+jq -e '.providers.devin.models["swe-1-7"].max_probe_ceiling == 8' "$caps" >/dev/null \
+  || fail "production: devin swe-1-7 must declare probe ceiling 8 (fleet-ops#3125)"
 jq -e '.providers.ollama.hard_ceiling == true' "$caps" >/dev/null \
   || fail "production: ollama must be hard_ceiling=true"
 jq -e '.providers.commandcode.max_probe_ceiling == 6' "$caps" >/dev/null \
@@ -240,6 +281,6 @@ jq -e '.providers.opencode.max_probe_ceiling == 5' "$caps" >/dev/null \
   || fail "production: opencode max_probe_ceiling must be 5 (fleet-ops#1350: cap 3 + 2-probe headroom, measured clean to n=5)"
 jq -e '.providers.minimax.max_probe_ceiling == null' "$caps" >/dev/null \
   || fail "production: minimax must omit max_probe_ceiling (no climb)"
-ok "production seat-caps.json: hard_ceiling on devin/ollama, probe ceilings on free lanes"
+ok "production seat-caps.json: devin AIMD (ceiling 8, glm-5-2->6, swe-1-7->8), ollama hard_ceiling, probe ceilings on free lanes"
 
 echo "All AIMD invariants passed."

@@ -3,8 +3,8 @@
 #
 # Proves fleet-ops#1167 pick_seat behaviour that the config drill
 # (tests/fleet-token-economy.test.sh) cannot see:
-#   1. Volume/light packets never land on cursor (keystone-only).
-#   2. Leftover prepaid after the volume prefix is xai-oauth, not cursor.
+#   1. Light packets never land on cursor (keystone-only).
+#   2. Leftover prepaid is xai-oauth, not cursor.
 #   3. Keystone (and senior-review) still route to cursor.
 #   4. When included_exhausted=true, only cursor-grok-4.6-high is offered.
 #   5. Every pick appends seat-selection.jsonl (fleet_seat_selection_24h).
@@ -52,7 +52,6 @@ JSON
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
   "ram_gb_per_worker": 1.5,
-  "volume_providers_in_order": ["commandcode"],
   "free_providers_in_order": ["commandcode"],
   "prepaid_providers_in_order": ["cursor", "xai-oauth"],
   "keystone_only_providers": ["cursor"],
@@ -98,11 +97,11 @@ pick() {
     fi
 }
 
-# --- 1. light/volume never lands on cursor --------------------------------
+# --- 1. light (scout role) never lands on cursor -------------------------
 light=$(pick 0 light) || fail "1: light pick must succeed"
 [[ "$light" == "commandcode	deepseek/deepseek-v4-flash" ]] \
-  || fail "1: light expected commandcode (volume prefix), got: $light"
-ok "1: light/volume picks commandcode, not cursor"
+  || fail "1: light expected commandcode (free-first), got: $light"
+ok "1: light picks commandcode, not cursor"
 
 # --- 2. leftover prepaid is xai-oauth, not cursor -------------------------
 tried_vol="$scratch/tried-volume.txt"

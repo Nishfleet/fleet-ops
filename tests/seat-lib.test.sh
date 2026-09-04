@@ -3303,6 +3303,11 @@ bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
 
+# fleet-ops#3125: product picks route by the rolling PR-yield ledger
+# (product_order=yield); ties break by class; scout picks stay free-first.
+# Hosted here (no workflow edit).
+bash "$here/seat-lib-yield-order.test.sh" || fail "seat-lib-yield-order tests failed"
+
 # fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
 # privacy guard test, because workers cannot edit .github/workflows.
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
