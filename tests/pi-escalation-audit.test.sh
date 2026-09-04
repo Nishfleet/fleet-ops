@@ -106,7 +106,7 @@ mk_gh "$ghlog"; mk_systemctl "$syslog"; mk_tally_stub "$tlog"
 AUDIT_GH="$scratch/gh" SYSTEMCTL="$scratch/systemctl" AUDIT_TALLY_BIN="$scratch/tally" \
     "$audit" >/dev/null 2>&1
 
-for role in devin free-glm-5-3 straitly; do
+for role in devin free-glm senior; do
     grep -q "start --no-block pi-escalation-audit@fleet-ops--456--$role.service" "$syslog" \
         || fail "scenario1: orchestrator must start $role panel unit: $(cat "$syslog")"
 done
@@ -115,8 +115,8 @@ ok "scenario1: orchestrator starts all three panel units, no tally before votes"
 
 # Now write votes and re-run -> tally fires.
 write_vote fleet-ops 456 devin PASS "duplicate no; real fix needed"
-write_vote fleet-ops 456 free-glm-5-3 PASS "duplicates none; durable regression"
-write_vote fleet-ops 456 straitly PASS "no duplicate; fix the red check"
+write_vote fleet-ops 456 free-glm PASS "duplicates none; durable regression"
+write_vote fleet-ops 456 senior PASS "no duplicate; fix the red check"
 : >"$tlog"
 AUDIT_GH="$scratch/gh" SYSTEMCTL="$scratch/systemctl" AUDIT_TALLY_BIN="$scratch/tally" \
     "$audit" >/dev/null 2>&1
@@ -130,8 +130,8 @@ ok "scenario1: orchestrator calls tally when all three votes are present"
 rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/tally2.log" "$scratch/gh2.log"
 mk_gh "$scratch/gh2.log"
 write_vote fleet-ops 456 devin PASS "no duplicate; durable mechanism fix needed"
-write_vote fleet-ops 456 free-glm-5-3 FAIL "duplicate of open issue; dismiss"
-write_vote fleet-ops 456 straitly PASS "no duplicate; fix the regression"
+write_vote fleet-ops 456 free-glm FAIL "duplicate of open issue; dismiss"
+write_vote fleet-ops 456 senior PASS "no duplicate; fix the regression"
 AUDIT_GH="$scratch/gh" "$tally" fleet-ops 456 >/dev/null 2>&1
 grep -q 'issue create' "$scratch/gh2.log" || fail "scenario2: admit must file a fix issue: $(cat "$scratch/gh2.log")"
 grep -q 'issue close 456' "$scratch/gh2.log" || fail "scenario2: admit must close the wrapper: $(cat "$scratch/gh2.log")"
@@ -144,8 +144,8 @@ ok "scenario2: 2-of-3 PASS files an agent-ready fix issue and closes the wrapper
 rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/gh3.log"
 mk_gh "$scratch/gh3.log"
 write_vote fleet-ops 456 devin FAIL "duplicate of #123; no durable work"
-write_vote fleet-ops 456 free-glm-5-3 FAIL "transient flake already self-resolved; not durable"
-write_vote fleet-ops 456 straitly PASS "no duplicate but low value"
+write_vote fleet-ops 456 free-glm FAIL "transient flake already self-resolved; not durable"
+write_vote fleet-ops 456 senior PASS "no duplicate but low value"
 AUDIT_GH="$scratch/gh" "$tally" fleet-ops 456 >/dev/null 2>&1
 grep -q 'issue close 456' "$scratch/gh3.log" || fail "scenario3: dismiss must close the wrapper: $(cat "$scratch/gh3.log")"
 grep -q 'issue comment' "$scratch/gh3.log" || fail "scenario3: dismiss must comment the reasons: $(cat "$scratch/gh3.log")"
@@ -158,8 +158,8 @@ ok "scenario3: 2-of-3 FAIL dismisses (comment + close, no fix issue)"
 rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/gh4.log"
 mk_gh "$scratch/gh4.log"
 write_vote fleet-ops 456 devin PASS "no duplicate; fix it"
-write_vote fleet-ops 456 free-glm-5-3 FAIL "duplicate"
-# straitly vote absent
+write_vote fleet-ops 456 free-glm FAIL "duplicate"
+# senior vote absent
 AUDIT_GH="$scratch/gh" "$tally" fleet-ops 456 >/dev/null 2>&1
 grep -q 'issue create' "$scratch/gh4.log" && fail "scenario4: pending must not file"
 grep -q 'issue close' "$scratch/gh4.log" && fail "scenario4: pending must not close"
@@ -172,8 +172,8 @@ rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/gh5.log"
 GH_ISSUE_STATE="CLOSED"
 mk_gh "$scratch/gh5.log"
 write_vote fleet-ops 456 devin PASS "no duplicate; fix"
-write_vote fleet-ops 456 free-glm-5-3 PASS "no duplicate; durable"
-write_vote fleet-ops 456 straitly PASS "no duplicate; fix the red"
+write_vote fleet-ops 456 free-glm PASS "no duplicate; durable"
+write_vote fleet-ops 456 senior PASS "no duplicate; fix the red"
 AUDIT_GH="$scratch/gh" "$tally" fleet-ops 456 >/dev/null 2>&1
 grep -q 'issue create' "$scratch/gh5.log" && fail "scenario5: closed guard must not re-file: $(cat "$scratch/gh5.log")"
 ok "scenario5: already-closed wrapper is not re-filed (double-file guard)"
@@ -188,16 +188,16 @@ rm -rf "$AUDIT_STATE_DIR/fleet-ops/456"; rm -f "$scratch/tally6.log" "$scratch/s
 mk_gh "$scratch/gh6.log"
 mk_systemctl "$scratch/sys6.log"; mk_tally_stub "$scratch/tally6.log"
 write_vote fleet-ops 456 devin PASS "no duplicate; durable fix needed"
-write_vote fleet-ops 456 free-glm-5-3 FAIL "duplicate of open issue"
-write_vote fleet-ops 456 straitly SKIP "provider returned exit 1: transient failure"
+write_vote fleet-ops 456 free-glm FAIL "duplicate of open issue"
+write_vote fleet-ops 456 senior SKIP "provider returned exit 1: transient failure"
 AUDIT_GH="$scratch/gh" SYSTEMCTL="$scratch/systemctl" AUDIT_TALLY_BIN="$scratch/tally" \
     "$audit" >/dev/null 2>&1
 [[ -s "$scratch/sys6.log" ]] || fail "scenario6: orchestrator must act on the SKIP'd role"
-grep -q 'start --no-block pi-escalation-audit@fleet-ops--456--straitly.service' "$scratch/sys6.log" \
-    || fail "scenario6: must re-run the SKIP'd straitly role: $(cat "$scratch/sys6.log")"
+grep -q 'start --no-block pi-escalation-audit@fleet-ops--456--senior.service' "$scratch/sys6.log" \
+    || fail "scenario6: must re-run the SKIP'd senior role: $(cat "$scratch/sys6.log")"
 [[ -s "$scratch/tally6.log" ]] && fail "scenario6: must NOT tally with a SKIP vote in place: $(cat "$scratch/tally6.log")"
 # And the SKIP vote file must be gone so it cannot wedge a later tally.
-[ -f "$AUDIT_STATE_DIR/fleet-ops/456/straitly.vote" ] \
+[ -f "$AUDIT_STATE_DIR/fleet-ops/456/senior.vote" ] \
     && fail "scenario6: SKIP vote must be discarded, not left in place"
 ok "scenario6: SKIP vote is discarded and the role re-run instead of wedging the panel"
 

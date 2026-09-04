@@ -194,6 +194,10 @@ SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 SEAT_VOLUME_ORDER=""
 declare -A SEAT_KEYSTONE_ONLY=()
+# fleet-ops#3121: the senior (judge/orchestrator/reviewer) role seat ladder,
+# in priority order (provider/model). First usable seat wins. Replaces the
+# dead straitly role and the old keystone_only_providers dual mechanism.
+SEAT_SENIOR_ORDER=()
 SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
 SEAT_CURSOR_INCLUDED_EXHAUSTED=0
 SEAT_CURSOR_DAILY_TARGET_USD=16
@@ -255,6 +259,7 @@ load_seat_caps() {
     SEAT_PREPAID_ORDER=""
     SEAT_VOLUME_ORDER=""
     SEAT_KEYSTONE_ONLY=()
+    SEAT_SENIOR_ORDER=()
     SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
     SEAT_CURSOR_INCLUDED_EXHAUSTED=0
     SEAT_CURSOR_DAILY_TARGET_USD=16
@@ -365,11 +370,14 @@ load_seat_caps() {
     # commandcode -> cline FIRST). Empty means legacy free-then-prepaid behaviour.
     SEAT_VOLUME_ORDER=$(jq -r '.volume_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    # fleet-ops#1167: cursor (and any listed provider) is keystone/senior-review only.
-    while IFS= read -r ko; do
-        [[ -n "$ko" ]] || continue
-        SEAT_KEYSTONE_ONLY["$ko"]=1
-    done < <(jq -r '.keystone_only_providers // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # fleet-ops#3121: senior role seat ladder (replaces keystone_only_providers
+    # — one mechanism, not two; cursor stays keystone/senior-review via the
+    # hardcoded _provider_is_keystone_only gate below, and the senior ladder
+    # lists the seats a senior call may draw, in priority order).
+    while IFS= read -r sn; do
+        [[ -n "$sn" ]] || continue
+        SEAT_SENIOR_ORDER+=("$sn")
+    done < <(jq -r '.senior_seats_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     ov_model=$(jq -r '.cursor_overage.overage_model // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     [[ -n "$ov_model" ]] && SEAT_CURSOR_OVERAGE_MODEL="$ov_model"
     ov_ex=$(jq -r '.cursor_overage.included_exhausted // false' "$SEAT_CAPS_JSON" 2>/dev/null || true)
@@ -1112,6 +1120,42 @@ _provider_is_keystone_only() {
     local p="$1"
     [[ "$p" == "cursor" ]] && return 0
     [[ -n "${SEAT_KEYSTONE_ONLY[$p]:-}" ]] && return 0
+    return 1
+}
+
+# fleet-ops#3121: resolve the senior (judge/orchestrator/reviewer) role seat.
+# Returns the FIRST usable seat from senior_seats_in_order (priority order);
+# a walled seat is skipped, never a unit failure. If the whole ladder is
+# walled, falls through to any usable capable seat (the "walled role resolves
+# to its fallback" rule). Fail-closed: prints nothing and returns 1 only when
+# NO seat anywhere is usable in this moment — callers treat that as a lane
+# fault (exit 0, no vote, retry next tick), not a crash.
+#
+# Prints "provider<TAB>model" on stdout. Re-entrant safe: this is a plain
+# read of the already-loaded SEAT_SENIOR_ORDER; load_seat_caps must have run
+# (pick_seat / callers force-load it).
+find_senior_seat() {
+    local sn p m
+    for sn in "${SEAT_SENIOR_ORDER[@]}"; do
+        [[ -n "$sn" ]] || continue
+        p="${sn%%/*}"
+        m="${sn#*/}"
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ]] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    # Whole senior ladder walled — fall through to any usable capable seat.
+    seat_log "find_senior_seat: senior ladder exhausted/walled; falling through to any capable seat"
+    local ep em ec
+    while IFS=$'\t' read -r ep em _ ec; do
+        [[ -n "$ep" && -n "$em" ]] || continue
+        [[ "$ec" == "1" ]] || continue
+        seat_usable "$ep" "$em" 2>/dev/null || continue
+        printf '%s\t%s\n' "$ep" "$em"
+        return 0
+    done < <(enumerate_seats)
     return 1
 }
 

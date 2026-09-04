@@ -48,6 +48,15 @@ issue_passes_spec_gate() {
     printf '%s' "$body" | python3 "$py" check-body >/dev/null
 }
 
+# fleet-ops#3121: keyword-only compliance is not a judgement. A PASS reason
+# must carry repo-specific evidence — an issue number (#N), a path, or a URL —
+# or the admission (2-of-3 PASS) is keyword-babble, not a senior verdict.
+# Returns 0 when the reason names evidence, 1 when it is keyword-only.
+reason_has_evidence() {
+    local r="$1"
+    grep -qE '#[0-9]+|[a-z][a-z0-9+.-]*://|[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' <<<"$r"
+}
+
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 [ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
@@ -88,6 +97,29 @@ main() {
 
     if [ "$pass" -ge 2 ]; then
         # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
+        # fleet-ops#3121: nor without repo-specific evidence in the PASS
+        # reasons — keyword-only compliance is not a judgement.
+        local pass_reasons evidenceless
+        pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
+        evidenceless=0
+        while IFS= read -r r; do
+            [ -n "$r" ] || continue
+            if ! reason_has_evidence "$r"; then
+                evidenceless=1
+                log "$repo/#$candidate PASS reason lacks repo-specific evidence (issue #, path, or URL): $(printf '%s' "$r" | head -c 160)"
+            fi
+        done <<<"$pass_reasons"
+        if [ "$evidenceless" = "1" ]; then
+            log "$repo/#$candidate EVIDENCE-REFUSED (2-of-3 PASS but keyword-only reasons)"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (keyword-only PASS reasons)"
+            else
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "evidence-refused (fleet-ops#3121). 2-of-3 PASS, but at least one PASS reason is keyword-only with no repo-specific evidence (issue number, path, or URL). Keyword-only compliance is not a judgement." \
+                    >/dev/null 2>&1 || true
+            fi
+            exit 0
+        fi
         issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
         issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
         if ! issue_passes_spec_gate "$issue_body"; then
