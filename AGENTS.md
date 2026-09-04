@@ -19,5 +19,4 @@
 ## Useful env vars for canary
 
 - `FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1` enables auto-filing mechanism issues.
-- `FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=416` tells the canary to auto-file queued rows owned by issue 416.
 - `FLEET_RULE_ENFORCEMENT_NOW=YYYY-MM-DDTHH:MM:SSZ` fixes the "now" timestamp for queued-age checks in tests.
