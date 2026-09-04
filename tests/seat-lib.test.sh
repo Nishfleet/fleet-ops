@@ -1548,14 +1548,20 @@ out=$(SEAT_CAPS_JSON="$scratch/seat-caps-cc-only.json" \
   bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/tried-cc.txt" 2>/dev/null)
 rc=$?
 set -e
-# Only the benched commandcode/minimax-m3-free is allowlisted, so an
-# ALL-benched commandcode returns rc=1 NO USABLE SEAT. The acceptance
-# criterion is: pick_seat does NOT return the benched commandcode row.
-[[ "$rc" == "1" ]] || fail "pick-after-overload: pick_seat must rc=1 (only seat benched), got rc=$rc out='$out'"
-# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+# Only the benched commandcode/minimax-m3-free is allowlisted.
+# fleet-ops#3324: overload_bench is a recoverable class, so the
+# minimum-usable floor fail-opens it instead of stalling. The
+# acceptance criterion is still that the writer benched the seat
+# (unusable summary + ledger class); the floor then lifts it.
+[[ "$rc" == "0" ]] || fail "pick-after-overload: pick_seat must rc=0 (floor fail-open), got rc=$rc out='$out'"
+[[ "$out" == $'commandcode\tminimax/minimax-m3-free' ]] \
+  || fail "pick-after-overload: expected commandcode/minimax-m3-free fail-open, got '$out'"
+grep -q "seat-floor: fail-open commandcode/minimax/minimax-m3-free" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log seat-floor fail-open (log tail: $(tail -5 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary
+# BEFORE the floor lifts the seat.
 grep -q "unusable.*seats.*commandcode" "$PI_PACKET_STATE/watch.log" \
   || fail "pick-after-overload: must log unusable summary including commandcode/minimax-m3-free (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
-[[ -z "$out" ]] || fail "pick-after-overload: stdout must be empty (no seat), got '$out'"
 # Distinct from quota path: the skip line mentions the overload bench class
 # (the auditor distinguishes them via health_class=overload_bench). The
 # writer logs 'overload-bench: benched ...' (dash) in PI_PACKET_STATE; the
@@ -1646,7 +1652,7 @@ ok "overload_bench: is_overload_error matches commandcode 503 + Retry-After; rej
 ok "overload_bench: writer uses 503_bench_default_s=600 when body has no Retry-After; bench_until ~now+600s; failure_mode=overload_503"
 ok "overload_bench: writer prefers parsed Retry-After (45s) over provider default (600s)"
 ok "overload_bench: writer fails open (rc=1, no marker) when no Retry-After and no 503_bench_default_s"
-ok "overload_bench: pick_seat skips a benched commandcode/minimax-m3-free; rc=1 NO USABLE SEAT; logs 'benched until' + 'overload-bench:'"
+ok "overload_bench: pick_seat fail-opens a benched commandcode/minimax-m3-free via the #3324 floor; logs unusable summary + seat-floor: fail-open"
 ok "overload_bench: 503_bench_default_s AND overload_bench_default_s are both accepted as field names"
 ok "overload_bench: distinct from quota_bench (health_class / failure_mode) for post-mortem rollup (fleet-ops#652)"
 
@@ -3382,6 +3388,12 @@ bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests fa
 # seat-failure-ceiling above (workers cannot edit .github/workflows/**;
 # hosting keeps the P14 test-listing gate green without a workflow edit).
 bash "$here/seat-quota-corpse.test.sh" || fail "seat-quota-corpse tests failed"
+
+# fleet-ops#3324: minimum-usable floor. pick_seat fail-opens the shortest
+# remaining recoverable bench instead of stalling with NO USABLE SEAT.
+# Hosted here from this already-listed seat-lib test so the P14
+# test-listing gate stays green without a workflow edit.
+bash "$here/seat-floor-failopen.test.sh" || fail "seat-floor-failopen tests failed"
 
 # fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
 # later healthy observation that seat-health.ts writes to the per-seat ledger
