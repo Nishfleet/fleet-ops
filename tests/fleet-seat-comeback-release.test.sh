@@ -170,7 +170,42 @@ if [[ -n "$_provider" && -n "$_model" && -n "$_ledger_dir" ]]; then
 fi
 exit 1
 EOF
-chmod +x "$TMPD/pi-tool-ok" "$TMPD/pi-pong-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout" "$TMPD/pi-fail-reclassify"
+# fleet-ops#3301: a failed probe that ALSO simulates the seat-health
+# extension re-anchoring a 429 retry window DURING the probe. Live
+# 2026-09-04T16:30Z: pi --print on mimo-v2.5-free returned HTTP 429, the
+# extension wrote usable_at +15min, rebench_seat skipped ("wall moved to
+# the future"), then corpse_seat wiped that window to usable_at=null.
+# This stub mirrors the extension write, then exits 1 (no tool token).
+cat > "$TMPD/pi-fail-reanchor-429" <<'EOF'
+#!/usr/bin/env bash
+_provider="" _model=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --provider) _provider="$2"; shift 2 ;;
+        --model) _model="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+_ledger_dir="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
+if [[ -n "$_provider" && -n "$_model" && -n "$_ledger_dir" ]]; then
+    _base="${_provider}__${_model//\//_}.json"
+    _seat_file="$_ledger_dir/$_base"
+    if [[ -f "$_seat_file" ]]; then
+        # Frozen future wall relative to FLEET_SEAT_COMEBACK_NOW=2026-08-30T12:00:00Z
+        # (the live journal shape: observed_at=now, usable_at=now+15min).
+        tmp="$_seat_file.$$.tmp"
+        jq -nc --arg provider "$_provider" --arg model "$_model" \
+            '{provider:$provider, model:$model, http_status:429, retry_after:null,
+              health_class:"rate_limited", retryable:true, seat_dead:false,
+              poison_ladder:false, observed_at:"2026-08-30T12:00:04.204Z",
+              source:"provider_fetch", failure_mode:"rate_limit",
+              usable_at:"2026-08-30T12:15:04.204Z",
+              consecutive_failure_count:27}' > "$tmp" 2>/dev/null && mv "$tmp" "$_seat_file" 2>/dev/null || true
+    fi
+fi
+exit 1
+EOF
+chmod +x "$TMPD/pi-tool-ok" "$TMPD/pi-pong-ok" "$TMPD/pi-fail" "$TMPD/pi-timeout" "$TMPD/pi-fail-reclassify" "$TMPD/pi-fail-reanchor-429"
 
 # --- synthetic fixtures ---------------------------------------------------
 # 1. Walled, wall clock EXPIRED, release-at-expiry class (overload_bench,
@@ -1505,4 +1540,41 @@ else
     ok "18d: SKIP seat-health.ts backoff pin (extension not installed at $EXT_PATH) (fleet-ops#3176)"
 fi
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176)"
+# --- 19. fleet-ops#3301: skip corpse when THIS sweep re-anchored a wall ---
+# Lived 2026-09-04T16:30Z opencode/mimo-v2.5-free: wall expired, probe
+# failed with HTTP 429, the extension wrote usable_at +15min, rebench_seat
+# skipped ("wall moved to the future"), then corpse_seat rewrote the
+# ledger to failure_mode=comeback_never_released / usable_at=null. The
+# seat then sat at 27 consecutive failures with no retry window. Honour
+# the wall: skip the corpse write so the 15-min window stands. Count-based
+# corpse still fires on the next sweep IF that sweep's probe does not
+# re-anchor (no HTTP window) — test 10 pins that path.
+rm -rf "$SEATDIR"
+mkdir -p "$SEATDIR"
+cat > "$SEATDIR/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:45:00Z","source":"provider_fetch","failure_mode":"rate_limit","usable_at":"2026-08-30T11:45:00Z","consecutive_failure_count":26}
+EOF
+STATE="$TMPD/state-3301.json"
+PROM="$TMPD/release-3301.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail-reanchor-429" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret19.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "19: sweep must exit 0, got $rc ($(cat "$TMPD/ret19.err"))"
+grep -q "skip rebench opencode/mimo-v2.5-free: wall moved to the future" "$TMPD/ret19.err" \
+  || fail "19: must skip rebench because the extension re-anchored: $(cat "$TMPD/ret19.err")"
+grep -q "skip corpse opencode/mimo-v2.5-free: extension re-anchored a future wall this sweep" "$TMPD/ret19.err" \
+  || fail "19: must skip corpse so the retry window stands (fleet-ops#3301): $(cat "$TMPD/ret19.err")"
+grep -q "CORPSED opencode/mimo-v2.5-free" "$TMPD/ret19.err" \
+  && fail "19: must NOT corpse a seat whose extension just set a future wall: $(cat "$TMPD/ret19.err")"
+jq -e '.seat_dead == false and .health_class == "rate_limited" and .failure_mode == "rate_limit" and .usable_at == "2026-08-30T12:15:04.204Z" and .consecutive_failure_count == 27' \
+  "$SEATDIR/opencode__mimo-v2.5-free.json" >/dev/null \
+  || fail "19: ledger must keep the extension's 429 retry window, not a no-wall corpse: $(cat "$SEATDIR/opencode__mimo-v2.5-free.json")"
+ok "19: extension-reanchored 429 retry window is not wiped by corpse_seat (fleet-ops#3301)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301)"
