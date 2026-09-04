@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -692,12 +693,97 @@ def compute_all(
     ]
 
 
+def self_test() -> int:
+    """Inject a synthetic canary failure + incident within the 24h catch
+    window and prove the emitter classifies it as caught, end-to-end through
+    the real compute_all -> export_prom pipeline (fleet-ops#3047).
+
+    The live exporter reported caught=0 across all organs because the 30d
+    incident window exceeds the ~7d retention of Prometheus/journald, so
+    every real incident predates the earliest observable canary failure and
+    is honestly unclassifiable. That is correct, but it left no proof the
+    detection path actually fires when a classifiable fault lands. This
+    drill injects exactly that: a probe failure at T0 and a bug issue 1h
+    later in the same product repo, then asserts caught=1 and ratio=1.0 in
+    both the computed stats and the exported prometheus body.
+    """
+    t0 = 1_700_000_000.0  # deterministic; far from any real incident ts
+    events = [
+        Event(
+            organ="0509-surface-probe",
+            ts=t0,
+            kind="run",
+            detail="self-test run",
+        ),
+        Event(
+            organ="0509-surface-probe",
+            ts=t0,
+            kind="failure",
+            detail="self-test injected failure",
+        ),
+    ]
+    incidents = [
+        Incident(
+            repo="Nishfleet/0509",
+            ts=t0 + 3600,
+            number=999999,
+            labels=("bug",),
+            title="self-test injected regression",
+        ),
+    ]
+    stats = compute_all(events, incidents)
+    by = {s.organ: s for s in stats}
+    s = by["0509-surface-probe"]
+    if s.caught != 1 or s.missed != 0:
+        print(
+            f"SELF-TEST FAIL: expected caught=1 missed=0, got "
+            f"caught={s.caught} missed={s.missed} failures={s.failures}",
+            file=sys.stderr,
+        )
+        return 1
+    if abs(s.effectiveness_ratio - 1.0) > 1e-9:
+        print(
+            f"SELF-TEST FAIL: expected ratio=1.0, got {s.effectiveness_ratio}",
+            file=sys.stderr,
+        )
+        return 1
+    # Prove the export path emits the caught metric (write to a temp file,
+    # never the real node-exporter path).
+    tmpdir = tempfile.mkdtemp(prefix="canary-selftest.")
+    out_path = Path(tmpdir) / "selftest.prom"
+    global OUT
+    saved_out = OUT
+    OUT = out_path
+    try:
+        body = export_prom(stats, now=datetime.fromtimestamp(
+            t0 + 7200, tz=timezone.utc
+        ))
+    finally:
+        OUT = saved_out
+    expected = (
+        'fleet_canary_caught_regressions_total{organ="0509-surface-probe"} 1'
+    )
+    if expected not in body:
+        print(
+            "SELF-TEST FAIL: export body missing caught=1 line",
+            file=sys.stderr,
+        )
+        return 1
+    if not out_path.exists():
+        print("SELF-TEST FAIL: export did not write the prom file", file=sys.stderr)
+        return 1
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    print("SELF-TEST OK: injected fault detected (caught=1, ratio=1.0)")
+    return 0
+
+
 def usage() -> int:
     print(
-        "usage: canary-effectiveness.py [--stdout] [--help]\n"
+        "usage: canary-effectiveness.py [--stdout] [--self-test] [--help]\n"
         "  Computes canary effectiveness metrics and writes\n"
         f"  {OUT} (override with FLEET_CANARY_EFF_OUT).\n"
-        "  Offline fixture: FLEET_CANARY_EFF_EVENTS=/path/to.json",
+        "  Offline fixture: FLEET_CANARY_EFF_EVENTS=/path/to.json\n"
+        "  --self-test: inject a synthetic fault and prove it is caught.",
         file=sys.stderr,
     )
     return 2
@@ -711,6 +797,8 @@ def main(argv: list[str] | None = None) -> int:
         a = argv[i]
         if a in ("-h", "--help"):
             return usage()
+        if a == "--self-test":
+            return self_test()
         if a == "--stdout":
             to_stdout = True
             i += 1
