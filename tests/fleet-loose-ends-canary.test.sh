@@ -26,6 +26,12 @@
 #      fails loud.
 #  16. Contracts: prompts/worker.md, heartbeat-tier1 wiring, MANIFEST,
 #      matrix enforced, no bin/loose-ends dispatcher.
+#  17. FILE=1 against a scratch QUESTIONS.md (the #1596 "Back again"
+#      fixture) must NOT invoke gh issue create, and must LOUD
+#      LOOSE-ENDS-NONCANONICAL-FILE (fleet-ops#1670 / #1596).
+#  18. FILE=1 against a QUESTIONS.md under the canonical dir still files.
+#  19. Bulk gh issue list must not request the comments field (HTTP 504
+#      on a comment-storm issue blocked observe-to-close of #1596).
 #
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -86,10 +92,12 @@ case "$cmd" in
           case "$1" in
             --title) title="$2"; shift 2 ;;
             --body) body="$2"; shift 2 ;;
+            --body-file) body=$(cat "$2"); shift 2 ;;
             --repo|-R) shift 2 ;;
             *) shift ;;
           esac
         done
+        printf 'create %s\n' "$title" >>"$store/creates"
         n=$(find "$store" -maxdepth 1 -name 'issue-*.body' | wc -l)
         f="$store/issue-$((n+1)).body"
         printf '%s\n' "$title" > "$f"
@@ -112,6 +120,9 @@ case "$cmd" in
         echo "https://github.com/Nishfleet/fleet-ops/issues/${num}#issuecomment-1"
         ;;
       list)
+        # Record the --json field list so the #1596 504 regression can
+        # assert the bulk list never asks for comments.
+        printf '%s\n' "$*" >>"$store/list-args"
         printf '[\n'
         first=1
         for f in "$store"/issue-*.body; do
@@ -130,6 +141,34 @@ case "$cmd" in
             "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
         done
         printf '\n]\n'
+        ;;
+      view)
+        num=""
+        json_fields=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --json) json_fields="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            *)
+              if [ -z "$num" ]; then num="$1"; fi
+              shift ;;
+          esac
+        done
+        [ -n "$num" ] || exit 1
+        comments_file="$store/issue-${num}.comments"
+        if [ -f "$comments_file" ]; then
+          comments_json=$(python3 -c 'import json,sys;print(json.dumps([{"body": sys.stdin.read()}]))' <"$comments_file")
+        else
+          comments_json='[]'
+        fi
+        body_file="$store/issue-${num}.body"
+        if [ -f "$body_file" ]; then
+          body=$(tail -n +2 "$body_file")
+        else
+          body=""
+        fi
+        printf '{"number":%s,"body":%s,"comments":%s}\n' "$num" \
+          "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$comments_json"
         ;;
       close)
         num=""
@@ -503,5 +542,81 @@ if [[ -x "$repo_root/bin/loose-ends" ]]; then
 fi
 ok "16e: no bin/loose-ends dispatcher"
 
+# --- 17. Non-canonical QUESTIONS.md + FILE=1 must not create (fleet-ops#1596)
+# The live leak: a worker ran the canary with FLEET_LOOSE_ENDS_FILE=1 against
+# the test fixture whose row text is "Back again" and filed #1596. The
+# canonical-dir guard treats FILE=1 as 0 for question auto-file only.
+canon_q_dir="$scratch/canon-q"
+mkdir -p "$canon_q_dir"
+{
+    for i in $(seq 1 19); do printf '# filler %d\n' "$i"; done
+    printf '| 2026-08-20 | Back again | claude-mac | OPEN |\n'
+} >"$scratch/q-back-again.md"
+: >"$triage"
+rm -f "$scratch/gh-issues/creates"
+create_before=$(find "$scratch/gh-issues" -name 'issue-*.body' | wc -l)
+set +e
+env -u FLEET_LOOSE_ENDS_NAG_HOURS \
+    FLEET_LOOSE_ENDS_QUESTIONS="$scratch/q-back-again.md" \
+    FLEET_LOOSE_ENDS_CANONICAL_QUESTIONS_DIR="$canon_q_dir" \
+    FLEET_LOOSE_ENDS_SCAN_PRS="0" FLEET_LOOSE_ENDS_SCAN_WORKTREES="0" \
+    FLEET_LOOSE_ENDS_FILE="1" FLEET_LOOSE_ENDS_CLOSE="0" \
+    "$bin" --nag-only >"$scratch/noncanon.out" 2>"$scratch/noncanon.err"
+noncanon_rc=$?
+set -e
+[[ "$noncanon_rc" -eq 0 ]] || fail "17: non-canonical FILE=1 must still exit 0 (got $noncanon_rc)"
+grep -q 'LOOSE-ENDS-NONCANONICAL-FILE' "$triage" \
+    || fail "17: non-canonical FILE=1 must LOUD LOOSE-ENDS-NONCANONICAL-FILE"
+[[ ! -f "$scratch/gh-issues/creates" ]] \
+    || { cat "$scratch/gh-issues/creates" >&2; fail "17: scratch QUESTIONS.md must not invoke gh issue create"; }
+create_after=$(find "$scratch/gh-issues" -name 'issue-*.body' | wc -l)
+[[ "$create_after" -eq "$create_before" ]] \
+    || fail "17: scratch QUESTIONS.md must not add issue bodies (before=$create_before after=$create_after)"
+ok "17: non-canonical QUESTIONS.md + FILE=1 does not file"
+
+# --- 18. Canonical QUESTIONS.md + FILE=1 still files ----------------------
+{
+    printf '# QUESTIONS LEDGER\n\n'
+    printf '| Asked | Question | Asked-by | Status |\n'
+    printf '|---|---|---|---|\n'
+    printf '| 2026-08-20 | Canonical token ask | claude-mac | OPEN |\n'
+} >"$canon_q_dir/QUESTIONS.md"
+: >"$triage"
+rm -f "$scratch/gh-issues/creates"
+set +e
+env -u FLEET_LOOSE_ENDS_NAG_HOURS \
+    FLEET_LOOSE_ENDS_QUESTIONS="$canon_q_dir/QUESTIONS.md" \
+    FLEET_LOOSE_ENDS_CANONICAL_QUESTIONS_DIR="$canon_q_dir" \
+    FLEET_LOOSE_ENDS_SCAN_PRS="0" FLEET_LOOSE_ENDS_SCAN_WORKTREES="0" \
+    FLEET_LOOSE_ENDS_FILE="1" FLEET_LOOSE_ENDS_CLOSE="0" \
+    "$bin" --nag-only >"$scratch/canon.out" 2>"$scratch/canon.err"
+canon_rc=$?
+set -e
+[[ "$canon_rc" -eq 0 ]] || fail "18: canonical FILE=1 must exit 0 (got $canon_rc)"
+[[ -f "$scratch/gh-issues/creates" ]] \
+    || { cat "$scratch/canon.err" >&2; fail "18: canonical QUESTIONS.md + FILE=1 must invoke gh issue create"; }
+grep -q 'open-question' "$scratch/gh-issues/creates" \
+    || fail "18: create log must name the open-question title"
+ok "18: canonical QUESTIONS.md + FILE=1 still files"
+
+# --- 19. Bulk list never asks for comments (fleet-ops#1596 HTTP 504) ------
+# Live proof 2026-09-05: `gh issue list --limit 200 --json number,body,comments`
+# returned HTTP 504; the same list without comments returned 200 rows including
+# #1596. Observe-to-close must keep using per-issue `gh issue view --json comments`.
+: >"$scratch/gh-issues/list-args"
+env -u FLEET_LOOSE_ENDS_NAG_HOURS \
+    FLEET_LOOSE_ENDS_QUESTIONS="$scratch/q-empty.md" \
+    FLEET_LOOSE_ENDS_SCAN_PRS="0" FLEET_LOOSE_ENDS_SCAN_WORKTREES="0" \
+    FLEET_LOOSE_ENDS_FILE="1" FLEET_LOOSE_ENDS_CLOSE="0" \
+    "$bin" --nag-only >/dev/null 2>&1
+[[ -s "$scratch/gh-issues/list-args" ]] || fail "19: FILE=1 tick must call gh issue list"
+if grep -E -- '--json[[:space:]]+[^[:space:]]*comments' "$scratch/gh-issues/list-args"; then
+    cat "$scratch/gh-issues/list-args" >&2
+    fail "19: bulk gh issue list must not request comments"
+fi
+grep -q -- '--json number,body' "$scratch/gh-issues/list-args" \
+    || { cat "$scratch/gh-issues/list-args" >&2; fail "19: bulk list must request number,body only"; }
+ok "19: bulk gh issue list omits comments"
+
 echo
-echo "OK: fleet-loose-ends-canary (fleet-ops#528) — 16 scenarios green"
+echo "OK: fleet-loose-ends-canary (fleet-ops#528) — 19 scenarios green"
