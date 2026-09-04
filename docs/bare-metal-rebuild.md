@@ -126,6 +126,32 @@ Masking at provision time stops the unit re-entering failed state and paging
 `SystemUnitFailed` every alert cycle. `fleet-bare-metal-rebuild --check`
 verifies each is still masked, so drift is caught.
 
+#### Do NOT mask `systemd-networkd-wait-online.service` (fleet-ops#3103)
+
+`systemd-networkd-wait-online.service` must **not** be added to
+`masked_units`. The 2026-09-03..04 SystemUnitFailed incident (live 2026-09-04,
+fleet-ops#3103) is the counter-example:
+
+- Root cause of the flapping failure: the netplan-generated .network left eth0
+  Setup stuck at `configuring` (networkd waited on a DHCPv6 lease that never
+  arrives on this host), so wait-online could never reach its online condition
+  and exited 1 (Result=exit-code), paging `SystemUnitFailed`. The host was
+  online the whole time (eth0 routable, default route via 159.195.212.1).
+- The repair is the network/setup completing, not a mask: when eth0 reaches
+  `routable (configured)` (networkctl status eth0), wait-online succeeds
+  immediately. The static netplan config (no DHCPv6) is correct.
+- Masking does not hold here: netplan owns this unit and regenerates + re-enables
+  it on netplan apply, silently removing an /etc/systemd/system mask within
+  minutes. A `masked_units` entry for it makes `--check`/`live_check` report a
+  permanent violation (unit not masked) and cannot keep it masked anyway.
+  A 2026-09-04 double-merge briefly added it to `masked_units`; it was reverted
+  the same day for these reasons.
+
+If it flaps again, verify eth0 setup completes (`networkctl status eth0` shows
+`routable (configured)`), reset the failed state or `systemctl restart
+systemd-networkd-wait-online`, and confirm the netplan config stays static only.
+Do not mask it and do not hand-edit away netplan's regeneration of it.
+
 ### No revival quarantine-boot gate
 
 There is no quarantine-boot gate and none is required. A 2026-08-28 ledger
