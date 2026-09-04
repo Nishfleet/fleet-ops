@@ -119,6 +119,15 @@ with a real run-cue or a `run-proof:` line. Run
 before opening the PR. A worker that skipped the run is a failed run
 (fleet-ops#537). Heartbeat scans recent worker PRs and auto-files any skip.
 
+A PR touching a rebuild/masking path (the bare-metal rebuild manifest,
+`bin/fleet-bare-metal-rebuild*`, `lib/bare-metal-masked-units.sh`,
+`docs/bare-metal-rebuild.md`, or `tests/fleet-bare-metal-rebuild.test.sh`)
+is not done without a `run-proof:` line or a `Verification:` run cue (e.g.
+`systemctl is-enabled <unit>` or the rebuild `--manifest-check` output). Run
+`bin/fleet-rebuild-verify-check --body <pr-body-file> --name-status <(git diff --name-status origin/main...HEAD)`
+before opening the PR. A rebuild/masking change with no live-state proof is
+fleet-ops#3141 class (fleet-ops#3191).
+
 A PR that adds a new file under `bin/` is not done without a `research:` line
 naming a last-30-days-scale pass (`last30days`, official docs, or equivalent
 live search), the existing options that were compared, and why they lost or

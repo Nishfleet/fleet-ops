@@ -1112,6 +1112,11 @@ bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
 # host so the worker token does not need to edit .github/workflows/**.
 bash "$here/fleet-token-efficiency.test.sh" || fail "token-efficiency gate drill failed"
 ok "rule-enforcement: token-efficiency gate drill"
+# fleet-ops#3191: rebuild/masking PR gate — a change to the rebuild manifest,
+# unit-masking config, or rebuild scripts/runbook/test must carry a VERIFY
+# line. Nested host so the worker token does not edit .github/workflows/**.
+bash "$here/fleet-rebuild-verify-check.test.sh" || fail "rebuild-verify gate drill failed"
+ok "rule-enforcement: rebuild-verify gate drill"
 # fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Same
 # CI constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-rulebook-redteam.test.sh" || fail "rulebook red-team drill failed"

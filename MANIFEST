@@ -87,6 +87,8 @@ lib/blind-audit-cadence.sh /home/nish/.local/lib/pi-packet/blind-audit-cadence.s
 bin/prove-one-run-check /home/nish/.local/bin/prove-one-run-check
 # fleet-ops#517: new bin/ files need a research: line before the PR opens.
 bin/research-before-build-check /home/nish/.local/bin/research-before-build-check
+# fleet-ops#3191: rebuild/masking changes must carry a VERIFY line.
+bin/fleet-rebuild-verify-check /home/nish/.local/bin/fleet-rebuild-verify-check
 # fleet-ops#1250: claim-step bounce for build-shaped issues with no Prior art.
 bin/prior-art-claim-check /home/nish/.local/bin/prior-art-claim-check
 # fleet-ops#523: token-efficiency gate for custom prompt assemblers.
