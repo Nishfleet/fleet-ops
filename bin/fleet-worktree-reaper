@@ -17,15 +17,27 @@
 # TWO REAPING MODES — a worktree is deleted only when ALL gates for its
 # mode hold. The two modes are independent; either may match.
 #
-# MODE A — claim branch MERGED (fleet-ops#2227, the original reaper):
+# MODE A — claim branch with a terminal PR (fleet-ops#2227, extended
+# fleet-ops#3023 to also reap CLOSED-not-merged claims):
 #   1. SHAPE:  branch is claim/issue-<N> (the pi-issue claim shape).
-#   2. MERGED: a MERGED PR with head claim/issue-<N> exists on the
-#              worktree's repo. Squash-merge safe: uses PR state, not
-#              SHA ancestry. gh failure for a repo => skip EVERY
-#              worktree on it (fail safe, never delete blind).
+#   2. TERMINAL PR: a PR with head claim/issue-<N> exists on the
+#              worktree's repo in state MERGED or CLOSED. MERGED means
+#              the work landed on main (reaped immediately). CLOSED means
+#              the cycle ended without merging — rejected or superseded;
+#              the worktree is reaped only after the age gate (grace
+#              period for a close-reopen). Squash-merge safe: uses PR
+#              state, not SHA ancestry. A claim with NO PR (never opened)
+#              is skipped — the cycle state cannot be proved. gh failure
+#              for a repo => skip EVERY worktree on it (fail safe, never
+#              delete blind).
 #   3. TERMINAL: pi-issue@<short>-<N>.service is not active/activating.
 #   4. CLEAN:  git status --porcelain empty. Dirty skipped, never
 #              force-removed.
+#   5. AGE (CLOSED only): worktree directory mtime older than
+#              --min-age-hours. MERGED claims are reaped immediately
+#              (merged is final); CLOSED claims get the same grace
+#              period as Mode C so a freshly-closed PR a worker may
+#              reopen is not swept on the next timer tick.
 #
 # MODE B — pi-issue worker PATH with terminal cycle in dispatch-ledger
 # (fleet-ops#2637):
@@ -192,6 +204,7 @@ total_claim=0
 total_pi_path=0
 total_other=0
 reaped_a=0
+reaped_a_closed=0
 reaped_b=0
 reaped_c=0
 reaped=0
@@ -219,12 +232,16 @@ is_live_worker() {
     return 1
 }
 
-# merged_claim_refs <owner/repo> -> echoes `claim/issue-<N>` names, one/line.
-# Empty + rc=1 (gh failure) is distinguished from empty + rc=0 (no merged).
-merged_claim_refs() {
+# closed_claim_refs <owner/repo> -> echoes "<STATE>\t<ref>" lines for
+# claim/issue-<N> PRs in state MERGED or CLOSED. GitHub's --state closed
+# returns both (a merged PR has state=MERGED inside the closed set). The
+# caller splits on the state column: MERGED => reap immediately, CLOSED
+# => reap after the age gate (fleet-ops#3023). Empty + rc=1 (gh failure)
+# is distinguished from empty + rc=0 (no closed PRs).
+closed_claim_refs() {
     local repo="$1"
-    "$GH" pr list -R "$repo" --state merged --json headRefName --limit "$MERGED_LIMIT" 2>/dev/null \
-        | jq -r '.[].headRefName | select(startswith("claim/issue-"))' 2>/dev/null
+    "$GH" pr list -R "$repo" --state closed --json headRefName,state --limit "$MERGED_LIMIT" 2>/dev/null \
+        | jq -r '.[] | select(.headRefName|startswith("claim/issue-")) | "\(.state)\t\(.headRefName)"' 2>/dev/null
 }
 
 # parse_pi_issue_path <path> -> sets globals PI_SHORT, PI_N if path matches
@@ -423,12 +440,20 @@ for parent in "${parents[@]}"; do
     done < <(git -C "$parent" worktree list --porcelain 2>/dev/null)
     [ "${#wt_paths[@]}" -gt 0 ] || continue
 
-    # Batch the merged-PR query once per repo (Mode A only).
+    # Batch the closed-PR query once per repo (Mode A). GitHub's
+    # --state closed returns both MERGED and CLOSED PRs; split into two
+    # sets so Mode A can reap MERGED immediately and CLOSED after the
+    # age gate (fleet-ops#3023).
+    combined=$("$(command -v mktemp)" 2>/dev/null) || combined=""
     merged_set=$("$(command -v mktemp)" 2>/dev/null) || merged_set=""
+    closed_set=$("$(command -v mktemp)" 2>/dev/null) || closed_set=""
     gh_ok=1
-    if ! merged_claim_refs "$owner_repo" >"$merged_set" 2>/dev/null; then
+    if ! closed_claim_refs "$owner_repo" >"$combined" 2>/dev/null; then
         gh_ok=0
-        log "repo $owner_repo: gh merged query FAILED — Mode A skip all claim-shaped worktrees (fail safe)"
+        log "repo $owner_repo: gh closed query FAILED — Mode A skip all claim-shaped worktrees (fail safe)"
+    else
+        awk -F'\t' '$1=="MERGED"{print $2}' "$combined" >"$merged_set" 2>/dev/null || true
+        awk -F'\t' '$1=="CLOSED"{print $2}' "$combined" >"$closed_set" 2>/dev/null || true
     fi
 
     # Build the per-parent origin SHA cache once (Mode B + C share it).
@@ -474,28 +499,50 @@ for parent in "${parents[@]}"; do
         fi
 
         if [ "$mode" = "A" ]; then
-            # Gate A.2: merged. gh failure => fail safe: skip every Mode A
-            # worktree on this repo (never delete blind).
+            # Gate A.2: terminal PR (MERGED or CLOSED). gh failure =>
+            # fail safe: skip every Mode A worktree on this repo (never
+            # delete blind).
             if [ "$gh_ok" = 0 ]; then
                 skipped_unmerged=$((skipped_unmerged + 1))
                 log "  $path: SKIP gh-fail repo ($branch)"
                 continue
             fi
-            if ! grep -qx "$branch" "$merged_set"; then
+            a_kind=""
+            if grep -qx "$branch" "$merged_set" 2>/dev/null; then
+                a_kind="merged"
+            elif grep -qx "$branch" "$closed_set" 2>/dev/null; then
+                # CLOSED-not-merged: the cycle ended (rejected or
+                # superseded). Reap after the age gate so a freshly-
+                # closed PR a worker may reopen is not swept on the next
+                # timer tick (fleet-ops#3023). MERGED is reaped
+                # immediately (merged is final).
+                wt_mtime=$(worktree_age_seconds "$path")
+                now_s=$(now_epoch)
+                age_s=$(( now_s - wt_mtime ))
+                min_age_s=$(( MIN_AGE_HOURS * 3600 ))
+                if [ "$age_s" -lt "$min_age_s" ]; then
+                    skipped_young=$((skipped_young + 1))
+                    log "  $path: SKIP-A closed-too-young ($branch, age=${age_s}s < ${min_age_s}s)"
+                    continue
+                fi
+                a_kind="closed"
+            else
                 skipped_unmerged=$((skipped_unmerged + 1))
                 log "  $path: SKIP not-merged ($branch)"
                 continue
             fi
             if [ "$DRY_RUN" = 1 ]; then
                 reaped_a=$((reaped_a + 1))
+                [ "$a_kind" = "closed" ] && reaped_a_closed=$((reaped_a_closed + 1))
                 reaped=$((reaped + 1))
-                log "  $path: DRY-REAP-A ($branch, merged, terminal, clean)"
+                log "  $path: DRY-REAP-A ($branch, $a_kind, terminal, clean)"
                 continue
             fi
             if git -C "$parent" worktree remove "$path" 2>/dev/null; then
                 reaped_a=$((reaped_a + 1))
+                [ "$a_kind" = "closed" ] && reaped_a_closed=$((reaped_a_closed + 1))
                 reaped=$((reaped + 1))
-                log "  $path: REAPED-A ($branch)"
+                log "  $path: REAPED-A ($branch, $a_kind)"
             else
                 failed=$((failed + 1))
                 log "  $path: REMOVE-A FAILED ($branch) — left in place"
@@ -582,18 +629,20 @@ for parent in "${parents[@]}"; do
             fi
         fi
     done
+    [ -n "$combined" ] && rm -f "$combined"
     [ -n "$merged_set" ] && rm -f "$merged_set"
+    [ -n "$closed_set" ] && rm -f "$closed_set"
     [ -n "$origin_cache" ] && rm -f "$origin_cache"
 done
 
 log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path other=$total_other \
-reaped=$reaped (A=$reaped_a B=$reaped_b C=$reaped_c) \
+reaped=$reaped (A=$reaped_a [closed=$reaped_a_closed] B=$reaped_b C=$reaped_c) \
 skipped_live=$skipped_live skipped_unmerged=$skipped_unmerged \
 skipped_dirty=$skipped_dirty skipped_notpushed=$skipped_notpushed \
 skipped_notterminal=$skipped_notterminal skipped_young=$skipped_young nogit=$skipped_nogit failed=$failed"
-printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s B=%s C=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s nogit=%s failed=%s\n' \
+printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s (A=%s [closed=%s] B=%s C=%s) live=%s unmerged=%s dirty=%s notpushed=%s notterminal=%s young=%s nogit=%s failed=%s\n' \
     "$total_scanned" "$total_claim" "$total_pi_path" "$total_other" \
-    "$reaped" "$reaped_a" "$reaped_b" "$reaped_c" \
+    "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" \
     "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
     "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed"
 
@@ -603,8 +652,8 @@ printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s 
 # failure is logged, never fatal.
 if [ -n "$SUMMARY_FILE" ]; then
     run_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_b":%s,"reaped_c":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s}' \
-        "$run_ts" "$DRY_RUN" "$total_scanned" "$reaped" "$reaped_a" "$reaped_b" "$reaped_c" \
+    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s}' \
+        "$run_ts" "$DRY_RUN" "$total_scanned" "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" \
         "$skipped_live" "$skipped_unmerged" "$skipped_dirty" "$skipped_notpushed" \
         "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed" \
         "$total_claim" "$total_pi_path" "$total_other")
