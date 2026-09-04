@@ -32,6 +32,8 @@
 #  16. Issue-close evidence: closed without PR/commit evidence is flagged.
 #  17. Escalated dispatch/run chain terminates as terminal=escalated (not parked)
 #      — the fleet-ops#2367 drain (STOP-REASON hand-off is the terminal).
+#  18. Still-running run hop past CLOCK_RUN stops the unit (self-terminate)
+#      and drains stalled{run} on the same tick (fleet-ops#3328).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -94,6 +96,23 @@ case "$cmd" in
         fi
         # Real systemd: systemctl show always exits 0 (even for not-found
         # units). The old fake exited 1 for not-found, masking the #2100 bug.
+        exit 0
+        ;;
+      stop)
+        # fleet-ops#3328: canary stops a still-running unit past CLOCK_RUN.
+        # Real systemctl stop --no-block UNIT (with or without .service).
+        unit=""
+        for a in "$@"; do
+          case "$a" in
+            -*) ;;
+            *) unit="$a" ;;
+          esac
+        done
+        [ -n "$unit" ] || exit 0
+        printf 'stopped\n' >"$store/$unit.stopped"
+        echo "inactive" >"$store/$unit.active"
+        echo "timeout" >"$store/$unit.result"
+        echo "stop $unit" >>"$store/stop.log"
         exit 0
         ;;
       *) exit 1 ;;
@@ -455,10 +474,22 @@ if [ -f "$scratch/state/chains.terminated.jsonl" ]; then
     fail "6b: chain closed green while alert still firing (fleet-ops#2833 regression); ledger=$(cat "$scratch/state/chains.terminated.jsonl")"
   fi
 fi
-# The chain must be open (hop=verify or hop=run), not closed.
-grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 1' "$scratch/fleet-chains.prom" \
-  || grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 1' "$scratch/fleet-chains.prom" \
-  || fail "6b: chain must stay open while alert still firing; prom=$(grep fleet_chain_open "$scratch/fleet-chains.prom")"
+# The chain must still be OPEN (not dropped/closed) while the alert is still
+# firing. The open-chain state file is the durable proof — the prom metric is
+# tick-dependent: a successful run-hop redispatch drains open{run} on the SAME
+# tick (fleet-ops#3328, mirroring the #3226 dispatch drain), so the gauge can
+# read 0 on the redispatch tick even though the chain persists in state with
+# ladder=redispatch. The #2833 invariant is "no green terminal + state open".
+chain_state="$scratch/state/open/FleetQueueSelfMaintenanceRatioHigh.json"
+[[ -f "$chain_state" ]] \
+  || fail "6b: chain state must persist while alert still firing (fleet-ops#2833); state dir=$(ls -1 "$scratch/state/open" 2>/dev/null || echo empty)"
+python3 - "$chain_state" <<'PY' || fail "6b: chain state must not be terminal-green (fleet-ops#2833); state=$(cat "$chain_state")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("ladder") != "green", d
+assert "terminal" not in d or d["terminal"] not in ("green", "detector-green"), d
+print("6b state ok:", d.get("hop"), d.get("ladder"))
+PY
 ok "RESOLVED while still firing does NOT close green (fleet-ops#2833)"
 
 # --- 6c. RESOLVED after alert genuinely left 9090 closes green (fleet-ops#2833) ---
@@ -754,8 +785,13 @@ rc=$(run_bin "2026-08-29T19:07:00Z")
 # Before the fix: hop=verify (false success), stalled, ladder stop-reason.
 # After the fix: unit_status sees LoadState=not-found + journal "Failed" →
 # ("exit-code", "inactive") → not unit_success → hop=run → AMX redispatch.
-grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 1' "$scratch/fleet-chains.prom" \
-  || fail "9d: failed --collect unit must be hop=run (not verify), got: $(grep -E 'hop="(run|verify)"' "$scratch/fleet-chains.prom")"
+# fleet-ops#3328: a successful run redispatch drains the hop metric the same
+# tick (mirrors #3226 for dispatch), so open{run}=0 / stalled{run}=0 — the
+# dispatcher invocation below is the proof the chain was at hop=run.
+grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9d: successful run redispatch must drain open{run} (fleet-ops#3328), got: $(grep -E 'hop="(run|verify)"' "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9d: successful run redispatch must drain stalled{run}, got: $(grep run "$scratch/fleet-chains.prom")"
 grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
   || fail "9d: verify must be 0 (failed unit not misclassified as success), got: $(grep verify "$scratch/fleet-chains.prom")"
 
@@ -909,6 +945,54 @@ grep -q 'fleet_chain_stalled{plane="alert-repair",hop="dispatch"} 0' "$scratch/f
 grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
   || fail "9e-drain: open{dispatch} must be 0 (chain advanced to run); prom=$(grep dispatch "$scratch/fleet-chains.prom")"
 ok "successful dispatch redispatch drains the hop metric (stalled=0, open=0) (fleet-ops#3226)"
+
+# --- 9e-run. still-running unit past CLOCK_RUN self-terminates + drains (fleet-ops#3328) --
+# Live incident: FleetMainRed unit alert-repair-FleetMainRed-20260904T161106Z
+# stayed ActiveState=active Type=simple with no RuntimeMaxSec. At 17:22:08Z
+# age=4257s > CLOCK_RUN=3600 the canary redispatched onto a new seat but
+# left the original unit running, so hop=run stayed open+stalled and
+# FleetChainStalled fired. Fix: stop the overrun unit (self-terminate),
+# then redispatch, and drain stalled{run}/open{run} on the same tick.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$scratch/sysctl"/*.result "$scratch/sysctl"/*.active "$scratch/sysctl"/*.journal "$scratch/sysctl"/*.stopped "$scratch/sysctl/stop.log"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-09-04T16:11:10Z] DISPATCH alertname=FleetMainRed seat=openrouter/deepseek/deepseek-v4-flash-0731 unit=alert-repair-FleetMainRed-20260904T161106Z reason=healthy packet=/x rc=0
+PYEND
+# Unit STILL RUNNING past CLOCK_RUN (the live Type=simple hang).
+echo "success" >"$scratch/sysctl/alert-repair-FleetMainRed-20260904T161106Z.result"
+echo "active"  >"$scratch/sysctl/alert-repair-FleetMainRed-20260904T161106Z.active"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-09-04T16:10:00Z",
+   "labels":{"alertname":"FleetMainRed"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# now=17:22:08 → age since dispatch 16:11:10 = 4258s > 3600 CLOCK_RUN.
+rc=$(run_bin "2026-09-04T17:22:08Z")
+[[ "$rc" == "0" ]] || fail "9e-run rc=$rc stderr=$(cat "$scratch/err.log")"
+# The overrun unit MUST have been stopped (self-terminate).
+grep -q 'stop alert-repair-FleetMainRed-20260904T161106Z' "$scratch/sysctl/stop.log" \
+  || fail "9e-run: overrun unit must be stopped; stop.log=$(cat "$scratch/sysctl/stop.log" 2>/dev/null || echo missing) stderr=$(cat "$scratch/err.log")"
+[[ -f "$scratch/sysctl/alert-repair-FleetMainRed-20260904T161106Z.stopped" ]] \
+  || fail "9e-run: missing .stopped receipt for overrun unit"
+# Redispatch must have happened (DISPATCH line for the new unit + REDISPATCH).
+grep -q 'REDISPATCH alertname=FleetMainRed' "$scratch/actions.log" \
+  || fail "9e-run: missing REDISPATCH receipt; log=$(cat "$scratch/actions.log")"
+grep -q "dispatch AMX_ALERT_1_LABEL_alertname=FleetMainRed" "$scratch/dispatch.log" \
+  || fail "9e-run: dispatcher must re-dispatch after stop; log=$(cat "$scratch/dispatch.log")"
+# MUST NOT escalate on tick 1 — the redispatch gets a chance to run.
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  && fail "9e-run: must not write STOP-REASON on first run-hop redispatch"
+# Same-tick drain: stalled{run}=0 and open{run}=0 (the hop advanced).
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9e-run: stalled{run} must be 0 after stop+redispatch (fleet-ops#3328); prom=$(grep run "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="run"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9e-run: open{run} must be 0 after drain; prom=$(grep run "$scratch/fleet-chains.prom")"
+ok "still-running run hop past CLOCK_RUN self-terminates and drains (fleet-ops#3328)"
 
 # --- 9f. redispatch no-op at hop=run escalates (fleet-ops#2247) ----------------
 # Same class, hop=run: the redispatched unit died without resolving the alert.
