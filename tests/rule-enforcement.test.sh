@@ -981,14 +981,13 @@ ok "rule-enforcement: fleet-wipe-lessons gate drill"
 bash "$here/dirty-worktree-audit.test.sh" || fail "dirty-worktree-audit drill failed"
 ok "rule-enforcement: dirty-worktree-audit drill"
 
-# fleet-ops#754: spawn-guard git_stash_forbidden allow/block matrix. The
-# test pins the live regex in ~/.pi/agent/extensions/spawn-guard-core.ts
-# (read-only git stash list/show allowed; pop/apply/push/drop/clear/
-# branch/create/store blocked). Hosted CI skips the live join when the
-# extension is absent. Nested host so the worker token does not need to
-# edit .github/workflows/**.
-bash "$here/fleet-spawn-guard-stash-readonly.test.sh" || fail "spawn-guard stash-readonly drill failed"
-ok "rule-enforcement: spawn-guard stash-readonly drill"
+# fleet-ops#754 + #3244: spawn-guard live regex allow/block matrices. The
+# guard lives in ~/.pi/agent/extensions/spawn-guard-core.ts. The nested
+# suite runs the git_stash_forbidden drill (#754) and the sudo-write drill
+# (#3244). Hosted CI skips the live join when the extension is absent.
+# Nested host so the worker token does not need to edit .github/workflows/**.
+bash "$here/spawn-guard.test.sh" || fail "spawn-guard drill failed"
+ok "rule-enforcement: spawn-guard drill"
 
 # fleet-ops#459: NORTH STAR quality guard. Nested host so the worker token
 # does not need to edit .github/workflows/**.
@@ -1123,7 +1122,7 @@ ok "rule-enforcement: worker-memory drop-in drill"
 bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard-stash-readonly, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never
