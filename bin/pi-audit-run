@@ -19,13 +19,15 @@
 #                      with a model cap > 0 (commandcode ds-flash, hetzner
 #                      qwen), fall back to any usable capable seat, and only
 #                      then admit total wall.
-#   straitly         -> straitly/deepseek/deepseek-v4-pro (default seat)
+#   senior           -> first usable seat from senior_seats_in_order
+#                      (default cursor -> xai-oauth -> openrouter). Replaces
+#                      the old straitly vendor-specific role (fleet-ops#3121).
 #
 # Environment seams:
 #   AUDIT_STATE_DIR              vote file tree (default ~/.local/state/fleet-audit)
 #   AUDIT_DEVIN_SEAT             override provider:model, e.g. "devin:glm-5-2"
 #   AUDIT_FREE_GLM53_SEAT        override provider:model
-#   AUDIT_STRAITLY_SEAT          override provider:model
+#   AUDIT_SENIOR_SEAT            override provider:model
 #   AUDIT_PROMPT                 path to auditor prompt
 #   AUDIT_PLAN_FILE              decisions ledger source
 #   AUDIT_GH, AUDIT_SYSTEMCTL    overrides for tests
@@ -226,26 +228,15 @@ resolve_seat() {
         free-glm-5-3|free)
             resolve_free_role
             ;;
-        straitly)
-            if [ -n "${AUDIT_STRAITLY_SEAT:-}" ]; then
-                printf '%s\t%s\n' "${AUDIT_STRAITLY_SEAT%%:*}" "${AUDIT_STRAITLY_SEAT#*:}"
+        senior|straitly)
+            if [ -n "${AUDIT_SENIOR_SEAT:-"${AUDIT_STRAITLY_SEAT:-}"}" ]; then
+                local override="${AUDIT_SENIOR_SEAT:-"${AUDIT_STRAITLY_SEAT:-}"}"
+                printf '%s\t%s\n' "${override%%:*}" "${override#*:}"
+            elif command -v resolve_senior_seat >/dev/null 2>&1; then
+                resolve_senior_seat
             else
-                # Default straitly seat (seat-caps class=metered). If the
-                # default is dead, rotate within the provider like free does.
-                if seat_usable straitly deepseek/deepseek-v4-pro 2>/dev/null; then
-                    printf 'straitly\tdeepseek/deepseek-v4-pro\n'
-                else
-                    local p m _capable
-                    while IFS=$'\t' read -r p m _ _capable; do
-                        [ "$p" = "straitly" ] || continue
-                        [ -n "$m" ] || continue
-                        seat_usable "$p" "$m" 2>/dev/null || continue
-                        printf '%s\t%s\n' "$p" "$m"
-                        return 0
-                    done < <(enumerate_seats)
-                    log "no usable straitly seat (default deepseek-v4-pro unavailable)"
-                    return 1
-                fi
+                log "no senior seat resolution available (no senior_seats_in_order)"
+                return 1
             fi
             ;;
         *)

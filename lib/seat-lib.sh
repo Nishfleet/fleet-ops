@@ -195,6 +195,8 @@ SEAT_PREPAID_ORDER=""
 SEAT_VOLUME_ORDER=""
 declare -A SEAT_KEYSTONE_ONLY=()
 SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
+SEAT_SENIOR_CURSOR_CEILING=300
+declare -a SEAT_SENIOR_ORDER=()
 SEAT_CURSOR_INCLUDED_EXHAUSTED=0
 SEAT_CURSOR_DAILY_TARGET_USD=16
 SEAT_COMEBACK_MIN_PROBE_S=900
@@ -255,6 +257,8 @@ load_seat_caps() {
     SEAT_PREPAID_ORDER=""
     SEAT_VOLUME_ORDER=""
     SEAT_KEYSTONE_ONLY=()
+    SEAT_SENIOR_ORDER=()
+    SEAT_SENIOR_CURSOR_CEILING=300
     SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
     SEAT_CURSOR_INCLUDED_EXHAUSTED=0
     SEAT_CURSOR_DAILY_TARGET_USD=16
@@ -288,7 +292,7 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
+    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb ss
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
     while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz; do
@@ -370,6 +374,17 @@ load_seat_caps() {
         [[ -n "$ko" ]] || continue
         SEAT_KEYSTONE_ONLY["$ko"]=1
     done < <(jq -r '.keystone_only_providers // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # fleet-ops#3121: senior auditor/reviewer seat list. Replaces hardcoded
+    # straitly and every senior call site reads this single list.
+    SEAT_SENIOR_ORDER=()
+    while IFS= read -r ss; do
+        [[ -n "$ss" ]] || continue
+        SEAT_SENIOR_ORDER+=("$ss")
+    done < <(jq -r '.senior_seats_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    ss=$(jq -r '.senior_cursor_weekly_ceiling // 300' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$ss" =~ ^[0-9]+$ ]] && SEAT_SENIOR_CURSOR_CEILING="$ss"
+
     ov_model=$(jq -r '.cursor_overage.overage_model // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     [[ -n "$ov_model" ]] && SEAT_CURSOR_OVERAGE_MODEL="$ov_model"
     ov_ex=$(jq -r '.cursor_overage.included_exhausted // false' "$SEAT_CAPS_JSON" 2>/dev/null || true)
@@ -2149,6 +2164,99 @@ _prepaid_paced() {
     (( usage >= thresh ))
 }
 
+# fleet-ops#3121: resolve the senior auditor/reviewer seat.
+# Senior calls are not general worker routing; they walk a fixed ordered list
+# (cursor -> xai-oauth -> openrouter) and pick the first usable seat.
+# Cursor draws count against the existing prepaid-usage/cursor.json weekly
+# meter and are capped by senior_cursor_weekly_ceiling (default 300). Active
+# provider/model counts are honoured so cursor stays single-flight.
+# Args: fail_p fail_m [tried_file]
+# Prints provider\tmodel on stdout, rc 0 on success, rc 1 if none usable.
+resolve_senior_seat() {
+    local fail_p="${1:-}" fail_m="${2:-}" tried_file="${3:-}"
+
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ${#SEAT_SENIOR_ORDER[@]} == 0 )); then
+        seat_log "resolve_senior_seat: no senior_seats_in_order configured"
+        return 1
+    fi
+
+    # Build active-seats cache once for this selection.
+    _PICK_ACTIVE_CACHE_BUILT=0
+    _build_pick_active_cache
+
+    # Credential cache per selection pass.
+    _cred_cache=()
+
+    # Build tried set for exclusion.
+    declare -A tried=()
+    [[ -n "$fail_p" && -n "$fail_m" ]] && tried["$fail_p/$fail_m"]=1
+    if [[ -n "$tried_file" && -f "$tried_file" ]]; then
+        local tp tm
+        while IFS=/ read -r tp tm; do
+            [[ -n "$tp" ]] && tried["$tp/$tm"]=1
+        done <"$tried_file"
+    fi
+
+    local entry p m p_cap m_cap p_active m_active eff_cap
+    for entry in "${SEAT_SENIOR_ORDER[@]}"; do
+        [[ -n "$entry" ]] || continue
+        p="${entry%%/*}"
+        m="${entry#*/}"
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ -n "${tried[$p/$m]:-}" ]] && continue
+
+        # P4-A cap-map allowlist: unlisted or cap=0 is not a senior seat.
+        p_cap=$(provider_cap "$p")
+        (( p_cap > 0 )) || continue
+        m_cap=$(model_cap "$p" "$m")
+        [[ -n "${SEAT_MODEL_CAP[$p/$m]:-}" ]] || continue
+        (( m_cap > 0 )) || continue
+
+        # fleet-ops#3121: senior cursor ceiling (shared prepaid-usage meter).
+        if [[ "$p" == "cursor" ]]; then
+            local cu
+            cu=$(_prepaid_usage "cursor")
+            if (( cu >= SEAT_SENIOR_CURSOR_CEILING )); then
+                seat_log "resolve_senior_seat: cursor weekly meter $cu/${SEAT_SENIOR_CURSOR_CEILING} exhausted; skipping"
+                continue
+            fi
+        fi
+
+        # Active concurrency so cursor stays single-flight.
+        p_active=$(count_active_on_provider "$p")
+        eff_cap=$(effective_provider_cap "$p")
+        if (( eff_cap > 0 )) && (( p_active >= eff_cap )); then
+            if ! _aimd_probe_admitted "$p" "$eff_cap" "$p_active"; then
+                continue
+            fi
+        fi
+        m_active=$(count_active_on_seat "$p" "$m")
+        if (( m_cap > 0 )) && (( m_active >= m_cap )); then
+            continue
+        fi
+
+        if ! provider_has_credential "$p"; then
+            continue
+        fi
+        if ! seat_usable "$p" "$m"; then
+            continue
+        fi
+
+        # Use the seat. Record selection and prepaid meter where applicable.
+        record_seat_selection "$p" "$m" "senior-review"
+        keystone_record_event routed "$p" "$m"
+        if [[ "$(model_class_of "$p" "$m")" == "prepaid-quota" ]]; then
+            _record_prepaid_pick "$p"
+        fi
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+
+    seat_log "resolve_senior_seat: no usable senior seat in senior_seats_in_order"
+    return 1
+}
+
 # Re-order a seat list (provider\tmodel entries) by a provider-order string.
 _order_seats_by() {
     local order="$1"
@@ -2504,6 +2612,16 @@ pick_seat() {
     if _is_keystone_class "$difficulty" && (( tried_count >= 2 )); then
         seat_log "pick_seat: KEYSTONE ESCALATION — ${tried_count} strikes; refusing further cheap retries (senior conference via OnFailure)"
         keystone_record_event escalated
+        return 1
+    fi
+
+    # fleet-ops#3121: senior-review is a fixed ordered list, not the general
+    # bucket walk. resolve_senior_seat enforces the cursor weekly ceiling and
+    # single-flight cap; if no senior seat is usable the caller gets no seat.
+    if [[ "$difficulty" == "senior-review" ]]; then
+        if resolve_senior_seat "$fail_p" "$fail_m" "$tried_file"; then
+            return 0
+        fi
         return 1
     fi
 
