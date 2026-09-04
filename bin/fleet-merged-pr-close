@@ -34,6 +34,13 @@
 #      only merges when every required check is green).
 #      If MORE than one merged PR references the issue, the signal is
 #      ambiguous — LOUD SKIP, defer to a human, never close.
+#      If the in-window scan finds NOTHING, probe the claim/issue-<N> head
+#      branch for a merged delivery PR directly: a merged claim-branch PR is
+#      unambiguous delivery even outside the window (all in-flight guards
+#      above already cleared), and the window edge only moves forward so an
+#      out-of-window delivery would otherwise strand its issue forever
+#      (fleet-ops#820: delivery PR #930 shipped 8 days earlier than a 7-day
+#      window could see).
 #
 # Observe-to-close is opt-in via FLEET_MERGED_PR_CLOSE_OK=1 (mirrors
 # FLEET_FINDINGS_QUEUED_OK_TO_CLOSE, fleet-ops#820). The close path is
@@ -269,6 +276,32 @@ while IFS= read -r repo; do
         fi
 
         nmatches=${#matches[@]}
+        # 4b. Out-of-window delivery fallback (fleet-ops#820): a merged PR on
+        #     the claim/issue-<N> head branch is unambiguous delivery evidence
+        #     (the fleet merge queue only merges with every required check
+        #     green), and all guards above already cleared — no open PR, no
+        #     live worker, no divergent claim branch. When the in-window scan
+        #     found nothing, probe for that delivery PR directly even though
+        #     its mergedAt has fallen out of the lookback window. Without
+        #     this, an issue whose delivery PR shipped just before the window
+        #     edge can never be closed and re-claims forever (fleet-ops#820's
+        #     #930 merged 8 days earlier than a 7-day window could see). The
+        #     window edge only moves forward, so an out-of-window PR will
+        #     NEVER re-enter it — this fallback is the only path that closes
+        #     such a delivered-but-stuck issue.
+        if [ "$nmatches" -eq 0 ]; then
+            if claim_merged=$("$GH" pr list -R "$repo" --head "claim/issue-${num}" \
+                --state merged --json number,url,mergedAt 2>/dev/null); then
+                while IFS=$'\t' read -r cn cu cma; do
+                    [ -z "$cn" ] && continue
+                    log "  $repo#$num: no in-window reference, but merged claim-branch PR #$cn (merged $cma) is the delivery — out-of-window fallback"
+                    delivery="$cn|$cu"
+                    matches=("$delivery")
+                    nmatches=${#matches[@]}
+                done < <(printf '%s' "$claim_merged" | jq -r '.[] | [.number,.url,.mergedAt] | @tsv' 2>/dev/null)
+            fi
+        fi
+
         if [ "$nmatches" -eq 0 ]; then
             log "  $repo#$num: no merged PR references it — leave open"
             continue

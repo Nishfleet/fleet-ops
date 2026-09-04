@@ -1008,6 +1008,19 @@ devin_bw=$(jq -r '.bench_window_s' "$devin_lf")
 [[ "$devin_hc" == "quota_bench" ]] || fail "writer: Devin health_class expected quota_bench, got $devin_hc"
 [[ "$devin_bw" == "2100" ]] || fail "writer: Devin bench_window_s expected 2100, got $devin_bw"
 
+# 9b-transport-gate: probe AND pi both ABSENT must fail-OPEN (skip the gate),
+# not read as transport-down. GitHub CI runners have neither
+# /home/nish/.local/bin/pi-transport-check nor .../pi, so a down-reading made
+# every bench writer return 1 and went red on main from #3235 onward (run
+# 33899911568: 'writer: Devin mark_seat_quota_bench expected rc=0, got 1').
+# Same live Devin text, both bins pointed at a nonexistent path.
+set +e
+bash -c 'source "$0"; load_seat_caps; PI_TRANSPORT_CHECK="$4"; PI_BIN="$4"; mark_seat_quota_bench "$1" "$2" "$3"' \
+    "$lib" "devin" "swe-1-7" "$devin_err" "$scratch/no-such-transport-probe" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "transport gate: probe AND pi absent -> fail-open, writer must succeed (rc=$rc)"
+
 # 9b-mimo: OpenCode free-tier FreeUsageLimitError (HTTP 429, no reset window).
 # Stage 1 matches 'rate limit exceeded'; stage 2a (no 'resets in' / 'retry-after'
 # text) fails; stage 2b (hard-cap keyword) must now match FreeUsageLimitError so
@@ -3303,6 +3316,11 @@ bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
 
+# fleet-ops#3125: product picks route by the rolling PR-yield ledger
+# (product_order=yield); ties break by class; scout picks stay free-first.
+# Hosted here (no workflow edit).
+bash "$here/seat-lib-yield-order.test.sh" || fail "seat-lib-yield-order tests failed"
+
 # fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
 # privacy guard test, because workers cannot edit .github/workflows.
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
@@ -3436,3 +3454,25 @@ grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
 grep -q "UNUSABLE (quota_bench" "$PI_PACKET_STATE/watch.log" \
   && fail "1409-fold: per-seat UNUSABLE line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
 ok "1409-fold: seat_usable per-seat UNUSABLE/'benched until' folded into one summary (0 leaked)"
+
+# --- fleet-ops#3250: seat-yield ledger loading --------------------------------
+SEAT_YIELD_JSON_TEST="$scratch/seat-yield-test.json"
+cat >"$SEAT_YIELD_JSON_TEST" <<'JSON'
+{
+  "devin/glm-5-2": {"yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false},
+  "opencode/mimo-v2.5-free": {"yield": 0.5, "sessions": 3, "pr_count": 0, "provisional": true}
+}
+JSON
+
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; [[ -n "${SEAT_YIELD[devin/glm-5-2]:-}" ]]' "$lib" \
+  || fail "load_seat_yield: must populate SEAT_YIELD from exporter JSON"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for devin glm-5-2' "$lib" \
+  | grep -qE '^0\.25$' \
+  || fail "seat_yield_for devin/glm-5-2 must return 0.25"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for opencode mimo-v2.5-free' "$lib" \
+  | grep -qE '^0\.5$' \
+  || fail "seat_yield_for opencode/mimo-v2.5-free must return 0.5"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for unknown missing' "$lib" \
+  | grep -qE '^0\.5$' \
+  || fail "seat_yield_for unknown/missing must default to 0.5"
+ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"

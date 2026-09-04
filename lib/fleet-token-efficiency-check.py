@@ -302,6 +302,12 @@ def _is_test_path(path: Path, include_tests: bool) -> bool:
 def _file_findings(path: Path, include_tests: bool) -> list[str]:
     if _is_self(path) or _is_test_path(path, include_tests):
         return []
+    # fleet-ops#3125/#3263: extensions/ are Pi provider plugin sources
+    # (TS model registries), not prompt assemblers. Their maxTokens values
+    # are the model's declared output limit for pi's registry, not an output
+    # cap on prompt assembly — the anti-patterns below do not apply.
+    if "extensions" in path.parts:
+        return []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:

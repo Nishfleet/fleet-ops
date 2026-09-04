@@ -405,6 +405,16 @@ check_comment_junk() {
   done < "$manifest"
 }
 
+# fleet-ops#3263: Pi provider extensions (template/extensions/**) are
+# installed as file COPIES, not symlinks. A symlink into the deploy-clone
+# working tree resolves their relative import `../seat-health.ts` against the
+# repo tree, where that sibling does not live -> runtime import failure on
+# every extension load (proven: Bun and Node both resolve relative imports
+# against the symlink's real path). A copy keeps resolution on the live
+# extensions dir, where seat-health.ts lives. Same decoupling the
+# seat-caps.json copy gets (fleet-ops#2910).
+is_extension_src() { case $1 in template/extensions/*) return 0;; *) return 1;; esac; }
+
 process_entry() {
   local src=$1 dest=$2 skip=$3
   local repo why=""
@@ -491,7 +501,23 @@ process_entry() {
     # config from the git working tree so only this install step — with its
     # cap-downgrade guard above — can update it. rm -f first so a prior
     # symlink dest is replaced by the copy, not written through.
-    if [[ "$src" == config/seat-caps.json ]]; then
+    # template/extensions/** get the same copy semantics (fleet-ops#3263):
+    # the providers import ../seat-health.ts relative to their own file, and
+    # a repo-tree symlink would resolve that against a nonexistent sibling.
+    if [[ "$src" == config/seat-caps.json ]] || is_extension_src "$src"; then
+        # fleet-ops#3125/#3262: when the cap map changes, reset learned AIMD
+        # state so a stale learned cap / bench from the old config never pins
+        # a raised declared floor or ceiling (e.g. devin hard_ceiling removal
+        # + model ceilings). The pre-install dest differs from the repo copy
+        # only on a real change (this install step refuses cap downgrades
+        # above), so an idempotent `install.sh` run is a no-op.
+        if [[ "$src" == config/seat-caps.json && -f "$dest" ]] && ! cmp -s "$dest" "$repo"; then
+            learned="$HOME/.local/state/pi-packet/learned-caps.json"
+            if [[ -f "$learned" ]]; then
+                mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+                echo "reset learned-caps.json (seat-caps.json changed on deploy)"
+            fi
+        fi
         rm -f "$dest"
         install -D -m 0644 "$repo" "$dest"
     else

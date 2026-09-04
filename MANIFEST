@@ -6,6 +6,8 @@ systemd/pi-scout@.timer /home/nish/.config/systemd/user/pi-scout@.timer
 systemd/pi-scout-repair@.service /home/nish/.config/systemd/user/pi-scout-repair@.service
 systemd/pi-packet@.service /home/nish/.config/systemd/user/pi-packet@.service
 systemd/pi-packet-failed@.service /home/nish/.config/systemd/user/pi-packet-failed@.service
+systemd/pi-packet-logrotate.service /home/nish/.config/systemd/user/pi-packet-logrotate.service
+systemd/pi-packet-logrotate.timer /home/nish/.config/systemd/user/pi-packet-logrotate.timer
 systemd/siterep-deploy.service /home/nish/.config/systemd/user/siterep-deploy.service
 systemd/siterep-deploy.timer /home/nish/.config/systemd/user/siterep-deploy.timer
 systemd/siterep-deploy-verify.service /home/nish/.config/systemd/user/siterep-deploy-verify.service
@@ -68,6 +70,8 @@ bin/siterep-deploy-rollback /home/nish/.local/bin/siterep-deploy-rollback
 bin/siterep-uptime /home/nish/.local/bin/siterep-uptime
 prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
+prompts/worker-blocks/d1-gate-integrity.md /home/nish/.pi/agent/prompts/worker-blocks/d1-gate-integrity.md
+prompts/worker-blocks/geo-aeo.md /home/nish/.pi/agent/prompts/worker-blocks/geo-aeo.md
 prompts/intake-repair.md /home/nish/.pi/agent/prompts/intake-repair.md
 prompts/scout.md /home/nish/.pi/agent/prompts/scout.md
 prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
@@ -76,6 +80,7 @@ prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-rep
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 config/repo-privacy.json /home/nish/.local/state/pi-packet/repo-privacy.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
+config/logrotate.conf /home/nish/.config/logrotate.conf
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # fleet-ops#1399: rate-limit the OnFailure Telegram page so it only fires
@@ -294,6 +299,13 @@ lib/guard_cursor_packet.py /home/nish/.local/lib/pi-packet/guard_cursor_packet.p
 bin/guard_cursor_packet_hook.py /home/nish/.cursor/hooks/guard_cursor_packet.py
 template/cursor-hooks.json /home/nish/.cursor/hooks.json
 template/cursor-rules/fleet-packet-verdict.mdc /home/nish/.cursor/rules/fleet-packet-verdict.mdc
+# fleet-ops#3263: bring the devin/cursor Pi provider extensions under fleet-ops
+# management. install.sh keeps the live ~/.pi/agent/extensions/
+# <provider>/index.ts converged to the repo copy (drifting live edits were
+# the 2026-09-04 30-min packet kill). Timeouts live in the repo and are
+# pinned by tests/provider-timeout.test.sh to stay >= 0.9 x PI_HANG_TIMEOUT_S.
+template/extensions/devin-provider/index.ts /home/nish/.pi/agent/extensions/devin-provider/index.ts
+template/extensions/cursor-provider/index.ts /home/nish/.pi/agent/extensions/cursor-provider/index.ts
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
@@ -642,12 +654,6 @@ config/repo-visibility.json /home/nish/.local/state/pi-packet/repo-visibility.js
 # meter-check evidence within minutes of first active draw. Heartbeat-tier1
 # block 25.
 bin/fleet-straitly-ds4-pro-canary /home/nish/.local/bin/fleet-straitly-ds4-pro-canary
-# fleet-ops#1178: volume front-of-ladder canary (led-2026-08-27-worker-lane-order).
-# Fail-loud if volume_providers_in_order is missing/wrong, a volume provider
-# is dark, cursor sneaks into the volume prefix, or seat-lib lacks the
-# volume_seats bucket. Observe-to-open when xai-oauth is in models.json but
-# unwired. Heartbeat-tier1 block 33.
-bin/fleet-volume-lane-order-canary /home/nish/.local/bin/fleet-volume-lane-order-canary
 # fleet-ops#1245: GEO/AEO measurement + owned-content lock. Parks
 # Reddit/community and digital-PR as Nish-reserved, locks brand gate to
 # preview-then-autonomous, llms.txt to developer-docs-only. Heartbeat-tier1

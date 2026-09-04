@@ -1567,3 +1567,146 @@ with tempfile.TemporaryDirectory() as td:
 PY
 
 ok "fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected} emitted (missing/legit/wrong/unparseable)"
+
+# =========================================================================
+# 17. fleet-ops#3250: per-seat rolling last-20 issue-work session PR yield.
+# =========================================================================
+python3 - "$exporter" "$scratch" <<'PY' || fail "seat-yield logic failed"
+import importlib.util, json, sys, time
+from pathlib import Path
+
+exporter, scratch = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+sessions = Path(scratch) / "sessions"
+sessions.mkdir(parents=True, exist_ok=True)
+m.SESSIONS_DIR = sessions
+m.SEAT_YIELD_JSON = Path(scratch) / "seat-yield.json"
+m.SEAT_YIELD_CACHE = Path(scratch) / "seat-yield-cache.json"
+m.SEAT_CAPS_DEFAULT = Path(scratch) / "seat-caps.json"
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+
+Path(m.SEAT_CAPS_DEFAULT).write_text(json.dumps({
+    "providers": {
+        "devin": {
+            "cap": 4,
+            "models": {"glm-5-2": 3, "swe-1-7": 4}
+        },
+        "opencode": {
+            "cap": 3,
+            "models": {
+                "mimo-v2.5-free": 1,
+                "nemotron-3.5-lightning-free": 1
+            }
+        },
+        "bai": {
+            "cap": 0,
+            "models": {"deepseek-v4-flash": 0}
+        }
+    }
+}))
+
+def session(provider, model, ts, has_pr):
+    issue = f"pi-issue-{provider}-{model.replace('/', '-')}"
+    d = sessions / issue
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"2026-09-04T{ts}.jsonl"
+    final_text = (
+        "https://github.com/Nishfleet/0509/pull/1234" if has_pr
+        else "No PR produced by this session"
+    )
+    content = [{"type": "text", "text": final_text}]
+    base = f'2026-09-04T{ts}Z'
+    lines = [
+        json.dumps({"type": "session", "version": 3, "timestamp": base, "id": f"{issue}-{ts}"}),
+        json.dumps({"type": "model_change", "provider": provider, "modelId": model, "timestamp": base}),
+        json.dumps({"type": "message", "message": {"role": "assistant", "content": content}, "timestamp": base}),
+    ]
+    path.write_text("\n".join(lines))
+    return path
+
+# devin/glm-5-2: 5 sessions, some with PR -> provisional 0.5 (<20)
+for i in range(5):
+    session("devin", "glm-5-2", f"00:00:{i:02d}", i % 2 == 0)
+
+# opencode/mimo-v2.5-free: exactly 20 sessions, 5 with PR -> 0.25
+for i in range(20):
+    session("opencode", "mimo-v2.5-free", f"01:00:{i:02d}", i % 4 == 0)
+
+# devin/swe-1-7: 25 sessions; last 20 (i>=5) all have PR -> 1.0
+for i in range(25):
+    session("devin", "swe-1-7", f"02:00:{i:02d}", i >= 5)
+
+result = m._compute_seat_yield()
+
+# JSON sidecar must be written and parseable.
+sy_path = Path(m.SEAT_YIELD_JSON)
+assert sy_path.exists(), "seat-yield.json sidecar not written"
+j = json.loads(sy_path.read_text())
+
+# devin/glm-5-2: provisional 0.5, sessions<20
+assert "devin/glm-5-2" in result
+assert result["devin/glm-5-2"]["yield"] == 0.5
+assert result["devin/glm-5-2"]["sessions"] == 5
+assert result["devin/glm-5-2"]["provisional"] is True
+assert j["devin/glm-5-2"]["yield"] == 0.5
+print("OK: devin/glm-5-2 provisional 0.5 for <20 sessions")
+
+# opencode/mimo-v2.5-free: 20 sessions, 5 PR, 15 no-PR -> 0.25
+assert "opencode/mimo-v2.5-free" in result
+assert result["opencode/mimo-v2.5-free"]["yield"] == 0.25
+assert result["opencode/mimo-v2.5-free"]["sessions"] == 20
+assert result["opencode/mimo-v2.5-free"]["pr_count"] == 5
+assert result["opencode/mimo-v2.5-free"]["no_pr_count"] == 15
+assert result["opencode/mimo-v2.5-free"]["provisional"] is False
+print("OK: opencode/mimo-v2.5-free rolling-20 yield 0.25")
+
+# devin/swe-1-7: 25 sessions, last-20 all PR -> 1.0
+assert "devin/swe-1-7" in result
+assert result["devin/swe-1-7"]["yield"] == 1.0
+assert result["devin/swe-1-7"]["pr_count"] == 20
+assert result["devin/swe-1-7"]["provisional"] is False
+print("OK: devin/swe-1-7 last-20 all PR -> 1.0")
+
+# opencode/nemotron-3.5-lightning-free: cap>0 but no sessions -> 0.5
+assert "opencode/nemotron-3.5-lightning-free" in result
+assert result["opencode/nemotron-3.5-lightning-free"]["yield"] == 0.5
+assert result["opencode/nemotron-3.5-lightning-free"]["sessions"] == 0
+assert result["opencode/nemotron-3.5-lightning-free"]["provisional"] is True
+print("OK: idle cap-map seat gets provisional 0.5")
+
+# cap=0 bai must not be in result
+assert "bai/deepseek-v4-flash" not in result
+print("OK: cap=0 bai/deepseek-v4-flash excluded from yield")
+
+# _emit_seat_yield produces valid prom lines.
+lines = []
+m._emit_seat_yield(lines, result)
+out = "\n".join(lines)
+assert "# HELP fleet_seat_yield" in out
+assert "# TYPE fleet_seat_yield gauge" in out
+assert "# HELP fleet_sessions_no_pr_total" in out
+assert 'fleet_seat_yield{seat="devin/glm-5-2"} 0.500000' in out
+assert 'fleet_seat_yield{seat="opencode/mimo-v2.5-free"} 0.250000' in out
+assert 'fleet_seat_yield{seat="devin/swe-1-7"} 1.000000' in out
+assert 'fleet_sessions_no_pr_total{seat="opencode/mimo-v2.5-free"} 15' in out
+assert out.count("# HELP fleet_seat_yield") == 1
+assert out.count("# HELP fleet_sessions_no_pr_total") == 1
+print("OK: _emit_seat_yield HELP/TYPE once and per-seat series")
+
+# _parse_session_file handles bare string content and missing PR.
+no_pr_path = session("devin", "glm-5-2", "04:00:00", False)
+parsed = m._parse_session_file(no_pr_path)
+assert parsed["has_pr_url"] is False
+assert parsed["seat"] == "devin/glm-5-2"
+print("OK: _parse_session_file extracts seat and has_pr_url")
+
+# _extract_text returns only text objects, not reasoning blocks.
+assert m._extract_text("plain string") == "plain string"
+assert m._extract_text([{"type": "text", "text": "a"}, {"type": "thinking", "thinking": "b"}]) == "a"
+print("OK: _extract_text handles string and filters thinking blocks")
+PY
+
+ok "fleet-ops#3250: seat-yield ledger, JSON sidecar, and prom output"

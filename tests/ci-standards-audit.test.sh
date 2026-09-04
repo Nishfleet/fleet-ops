@@ -164,6 +164,12 @@ echo "OK: ci-standards-audit.mjs fixtures and pure functions"
 # workflow step.
 bash "$here/p14-unstubbed-unit-verify.test.sh"
 
+# fleet-ops#3237: pi transport self-heal regression test. Proves the
+# pi-transport-self-heal wrapper re-creates the bin symlink via npm rebuild,
+# falls back to npm install@pinned, and only escalates when the package itself
+# is broken. Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/pi-transport-self-heal.test.sh"
+
 # fleet-ops#566: P14 verify-command is an explicit list. Workers cannot push
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
