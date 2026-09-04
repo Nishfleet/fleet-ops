@@ -312,9 +312,15 @@ ok "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh is pinned in the P14 re
 # as dirty-worktree-audit, fleet-ops#787) and add this named pin so a
 # future drop of the host line cannot park the test on known_orphans to
 # silence the generic $bad[] message — it would fail by name here first.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly\.test\.sh"?' \
+# fleet-ops#3244 (PR #3334): rule-enforcement now hosts the spawn-guard
+# nested suite (spawn-guard.test.sh) which itself hosts stash-readonly and
+# the sudo-write drill; the pin follows the new two-level host chain.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/spawn-guard\.test\.sh"?' \
   "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
+  || fail "rule-enforcement.test.sh must bash-invoke spawn-guard.test.sh (fleet-ops#308)"
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly\.test\.sh"?' \
+  "$here/spawn-guard.test.sh" \
+  || fail "spawn-guard.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
 [[ -n "${reachable[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \
   || fail "fleet-spawn-guard-stash-readonly.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#308)"
 [[ -z "${known_orphan_set[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \
