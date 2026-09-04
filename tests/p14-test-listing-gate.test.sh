@@ -696,4 +696,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-umbrella-exclusio
   || fail "pi-intake-tick-umbrella-exclusion.test.sh must not be a known orphan (fleet-ops#3295)"
 ok "pi-intake-tick-umbrella-exclusion.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3295)"
 
+# fleet-ops#1520: hard-pin the host line for curator-journal-cap in
+# ci-standards-audit so a future refactor that drops it is caught by
+# name. The live dump was fixed in memory-compound#9; this test is the
+# fleet-ops class lock. Hosted from tests/ci-standards-audit.test.sh
+# (already listed in ci.yml) because the worker App cannot push
+# .github/workflows/**. Parking it on known_orphans to silence the
+# generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/curator-journal-cap\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke curator-journal-cap.test.sh (fleet-ops#1520)"
+[[ -n "${reachable[curator-journal-cap.test.sh]:-}" ]] \
+  || fail "curator-journal-cap.test.sh must be hosted by a listed test (fleet-ops#1520)"
+[[ -z "${known_orphan_set[curator-journal-cap.test.sh]:-}" ]] \
+  || fail "curator-journal-cap.test.sh must not be a known orphan (fleet-ops#1520)"
+ok "curator-journal-cap.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#1520)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
