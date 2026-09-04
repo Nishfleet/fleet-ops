@@ -21,8 +21,8 @@
     {
       "id": "sr-switched-on-proven",
       "source": "global-standing-rules.md: Switched on and proven, or it is not done (Nish, 2026-08-18)",
-      "mechanism": "Senior conference criterion: new unit/timer/workflow PRs must link one real end-to-end run",
-      "proof": "fleet-ops#378",
+      "mechanism": "Senior conference criterion: new unit/timer/workflow PRs must link one real end-to-end run. Narrower mechanized slice for rebuild/masking paths: bin/fleet-rebuild-verify-check rejects a diff touching the rebuild manifest, unit-masking config, or rebuild scripts/runbook/test without a run-proof: line or a Verification: run cue (fleet-ops#3191, closes the fleet-ops#3141 class where a manifest edit slipped past prove-one-run-check).",
+      "proof": "fleet-ops#378; bin/fleet-rebuild-verify-check; tests/fleet-rebuild-verify-check.test.sh; prompts/worker.md; fleet-ops#3191",
       "status": "queued(#378)",
       "queued_since": "2026-08-26"
     },

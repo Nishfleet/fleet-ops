@@ -1500,3 +1500,70 @@ print("OK: _read_never_released missing ledger dir returns empty signal (no cras
 PY
 
 ok "fleet-ops#2712 + #2752: provider-level 402 collapse and never-released skips future-walled seats"
+
+# =========================================================================
+# fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected}
+# The exporter reads the last close-duplicates summary's closes_by_label and
+# emits four labelled series. cross_repo and protected must stay 0; only
+# cross_repo=false,protected=false may increment. Missing/unparseable file
+# emits all four as 0 (family always present, absent rule stays quiet).
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "close-duplicates metric emission failed"
+import importlib.util, json, os, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+# 1. Missing file -> all four series 0, family present.
+with tempfile.TemporaryDirectory() as td:
+    m.CLOSE_DUP_JSON = Path(td) / "missing.json"
+    lines = []
+    m._emit_close_duplicates(lines)
+    out = "\n".join(lines)
+    assert "fleet_close_duplicates_closes_total" in out, out
+    assert out.count("# HELP fleet_close_duplicates_closes_total") == 1, out
+    assert out.count("# TYPE fleet_close_duplicates_closes_total") == 1, out
+    for cr, pr in [("false","false"),("false","true"),("true","false"),("true","true")]:
+        assert f'fleet_close_duplicates_closes_total{{cross_repo="{cr}",protected="{pr}"}} 0' in out, out
+    print("OK: missing file -> 4 series all 0, HELP/TYPE once")
+
+# 2. A summary with a legit same-repo close (cross_repo=false,protected=false=1)
+#    and a WRONG cross-repo close (cross_repo=true,protected=false=1) is
+#    emitted faithfully so the alert can fire on the wrong close.
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "close-duplicates.json"
+    p.write_text(json.dumps({
+        "closed": 2,
+        "closes_by_label": {
+            "cross_repo=false,protected=false": 1,
+            "cross_repo=false,protected=true": 0,
+            "cross_repo=true,protected=false": 1,
+            "cross_repo=true,protected=true": 0,
+        },
+    }))
+    m.CLOSE_DUP_JSON = p
+    lines = []
+    m._emit_close_duplicates(lines)
+    out = "\n".join(lines)
+    assert 'cross_repo="false",protected="false"} 1' in out, out
+    assert 'cross_repo="true",protected="false"} 1' in out, out
+    assert 'cross_repo="false",protected="true"} 0' in out, out
+    assert 'cross_repo="true",protected="true"} 0' in out, out
+    print("OK: summary with a wrong cross-repo close is emitted faithfully (alert can fire)")
+
+# 3. Unparseable file -> all four 0 (no crash).
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "bad.json"
+    p.write_text("{not json")
+    m.CLOSE_DUP_JSON = p
+    lines = []
+    m._emit_close_duplicates(lines)
+    out = "\n".join(lines)
+    assert 'cross_repo="false",protected="false"} 0' in out, out
+    print("OK: unparseable file -> 4 series all 0 (no crash)")
+PY
+
+ok "fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected} emitted (missing/legit/wrong/unparseable)"

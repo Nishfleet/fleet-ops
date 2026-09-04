@@ -2658,6 +2658,63 @@ _DQ_GAUGES = (
 )
 
 
+# --- close-duplicates close guard (fleet-ops#3161) ------------------------
+# The heartbeat writes lib/issue-file.py close-duplicates summary to
+# $FLEET_HEARTBEAT_LOG_DIR/close-duplicates.json every tick. We emit the
+# per-tick close count by label so an alert can fire the instant a
+# cross-repo or protected (critical-path / owner-authored) issue is closed.
+# Both labelled series must stay 0; only cross_repo=false,protected=false
+# may increment. The family is always emitted (zeros when the file is
+# missing) so FleetCloseDuplicatesClosesAbsent never false-fires on a
+# skipped tick.
+CLOSE_DUP_JSON = Path(
+    os.environ.get(
+        "FLEET_CLOSE_DUPLICATES_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/close-duplicates.json",
+    )
+)
+HELP_CD = (
+    "# HELP fleet_close_duplicates_closes_total Duplicate issues auto-closed "
+    "by fleet-issue-file close-duplicates in the last run, by label "
+    "(fleet-ops#3161). cross_repo and protected must always be 0; an alert "
+    "on either > 0 catches a wrong close of a cross-repo or protected issue."
+)
+TYPE_CD = "# TYPE fleet_close_duplicates_closes_total gauge"
+_CLOSE_DUP_LABELS = (
+    ("false", "false"),
+    ("false", "true"),
+    ("true", "false"),
+    ("true", "true"),
+)
+
+
+def _emit_close_duplicates(lines):
+    """Append fleet_close_duplicates_closes_total{cross_repo,protected}.
+
+    Reads the last close-duplicates summary's closes_by_label map. Never
+    raises: a missing/unparseable file emits all four series as 0 so the
+    family is always present and the absent rule stays quiet.
+    """
+    counts = {f"cross_repo={cr},protected={pr}": 0 for cr, pr in _CLOSE_DUP_LABELS}
+    try:
+        data = json.loads(CLOSE_DUP_JSON.read_text(encoding="utf-8"))
+        raw = data.get("closes_by_label") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if k in counts and isinstance(v, (int, float)):
+                    counts[k] = int(v)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_CD)
+    lines.append(TYPE_CD)
+    for cr, pr in _CLOSE_DUP_LABELS:
+        lines.append(
+            f'fleet_close_duplicates_closes_total{{cross_repo="{cr}",protected="{pr}"}} '
+            f"{counts[f'cross_repo={cr},protected={pr}']}"
+        )
+
+
 def _emit_deploy_quality(lines):
     """Append the fleet_deployment_* family from lib/fleet-deploy-quality.py.
 
@@ -3198,6 +3255,10 @@ def main():
     # degrades to NaN + up 0 (see _emit_deploy_quality) and never fails
     # the exporter oneshot.
     _emit_deploy_quality(lines)
+
+    # --- close-duplicates close guard (fleet-ops#3161) ---
+    # Per-tick close count by label; cross_repo and protected must stay 0.
+    _emit_close_duplicates(lines)
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)
