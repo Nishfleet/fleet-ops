@@ -30,12 +30,14 @@
 #   - probe failure -> the extension re-anchors usable_at from the real
 #     HTTP response (fresh wall); the seat stays walled until that window
 #     passes and the next comeback is owed. A corpse reclassification
-#     (seat_dead=true, health_class=corpse) is terminal, EXCEPT the
-#     prober-created no-wall corpse (failure_mode=comeback_never_released,
-#     no wall clock), which gets a second-chance re-probe (fleet-ops#3156):
-#     on success it is unwalled (transitions out of corpse), on failure it
-#     is explicitly retired immediately. Other corpse classes still respect
-#     the 6h grace window before physical retirement.
+#     (seat_dead=true, health_class=corpse) is terminal, EXCEPT a no-wall
+#     corpse (no usable_at/bench_until clock). No-wall corpses get a
+#     bounded re-probe schedule (fleet-ops#3188): re-probed every
+#     CORPSE_REPROBE_INTERVAL_S (default 6h), up to
+#     CORPSE_MAX_FAILED_REPROBES (default 4) failures before explicit
+#     retirement. On a successful re-probe the seat is unwalled (transitions
+#     out of corpse); on a failed re-probe the extension may write a real
+#     HTTP response (wall clock or healthy), which is respected.
 #
 # Loud backstop (fleet-ops#2421): after the sweep, if walled seats still
 # hold EXPIRED wall clocks AND nothing was released this run, the release
@@ -51,14 +53,15 @@
 # and test__ fixtures (provider == "test") are never probed. Corpse seats
 # (seat_dead=true) are normally never probed either: they carry no comeback
 # clock (fleet-ops#2415) and FleetDeadCredentialSeats owns the still-live
-# credentials_bad class. fleet-ops#3156 CARVES OUT the one recoverable
-# subclass — a PROBER-created no-wall corpse (failure_mode
-# comeback_never_released / source comeback_release_corpse, no wall clock)
-# gets a single second-chance re-probe: on success it is unwalled
-# (transitions OUT of corpse), on failure it is explicitly retired at once
-# instead of sitting through the full grace window. Only that subclass is
-# re-probed; other corpse sources and any corpse still owed a comeback
-# (future wall) keep the terminal/hold behavior below. fleet-ops#2716: a
+# credentials_bad class. fleet-ops#3188 CARVES OUT the recoverable no-wall
+# corpse class — any corpse (regardless of source or failure_mode) with no
+# usable_at/bench_until clock gets a bounded re-probe schedule: re-probed
+# every CORPSE_REPROBE_INTERVAL_S, up to CORPSE_MAX_FAILED_REPROBES
+# failures, before explicit retirement. On success it is unwalled (transitions
+# OUT of corpse); on a failed re-probe the extension may reclassify the
+# ledger to a real response (wall clock or healthy), which is respected.
+# Corpses still owed a comeback clock (future wall) keep the terminal/hold
+# behavior below. fleet-ops#2716: a
 # corpse that has aged past the
 # corpse grace window (CORPSE_GRACE_S, default 6h) is PHYSICALLY retired
 # out of the live roster here — seat-caps.json retiring the slug (cap 0 +
@@ -145,7 +148,17 @@ SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
 # corpse reclassification recover via a healthy observation (seat-lib
 # clears a corpse on a successful probe) before the ledger is retired.
 CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
+# fleet-ops#3188: bounded re-probe schedule for corpses with no wall clock.
+# A corpse (seat_dead=true, health_class=corpse) with no usable_at/bench_until
+# is re-probed every CORPSE_REPROBE_INTERVAL_S (default 6h, matching grace).
+# On success: unwall (transition out of corpse). On failure: continue schedule.
+# After CORPSE_MAX_FAILED_REPROBES (default 4 = 24h) failed re-probes, retire.
+# This replaces the fleet-ops#3156 narrow one-time exception for prober-created
+# corpses with a general bounded schedule for ALL no-wall corpses.
+CORPSE_REPROBE_INTERVAL_S="${FLEET_SEAT_COMEBACK_CORPSE_REPROBE_INTERVAL_S:-21600}"
+CORPSE_MAX_FAILED_REPROBES="${FLEET_SEAT_COMEBACK_CORPSE_MAX_FAILED_REPROBES:-4}"
 NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
+# fleet-ops#3188: track per-corpse failed re-probe count in state.
 # fleet-ops#2661: the provider-wide overload wall reuses the learned-caps
 # mechanism a lib/seat-lib.sh provides (_record_learned_cap,_seat_now_epoch);
 # source it so the wall write lives in ONE canonical place, not a third copy.
@@ -218,9 +231,9 @@ wall_end_of() {
 # --- state (per-seat last probe time + cumulative counters) ---------------
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
-        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{},"corpse_reprobes":{}}'
     else
-        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{},"corpse_reprobes":{}}'
     fi
 }
 
@@ -702,6 +715,13 @@ main() {
         [[ -n "$ofk" ]] || continue
         OWN_FAIL["$ofk"]="$ofv"
     done < <(jq -r '(.own_failures // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
+    # fleet-ops#3188: load per-corpse failed re-probe tracking.
+    declare -A CORPSE_REPROBES=()
+    local crk crv
+    while IFS=$'\t' read -r crk crv; do
+        [[ -n "$crk" ]] || continue
+        CORPSE_REPROBES["$crk"]="$crv"
+    done < <(jq -r '(.corpse_reprobes // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
     # fleet-ops#2716: one dated retirement dir per sweep, next to the live
     # ledger dir (dirname of the ledger), so a sweep that retires several
     # corpses lands them all in one audit dir.
@@ -758,67 +778,77 @@ main() {
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
         # A corpse is terminal (fleet-ops#2327/#2415): no usable_at comeback
-        # clock, FleetDeadCredentialSeats owns the still-live credentials_bad
-        # class. Never probed here. fleet-ops#2716: it is also RETIRED here —
-        # a corpse ledger must not stay in the live roster forever (the
-        # commandcode/minimax/m3-free case: seat-caps.json retired the slug
-        # in #2708 but the ledger survived). retire_corpse physically moves
-        # it once its observed_at has aged past the corpse grace window.
+        # clock. fleet-ops#2716: it is also RETIRED here once its observed_at
+        # has aged past the corpse grace window. fleet-ops#3188: a no-wall
+        # corpse is NOT parked forever; it gets a bounded re-probe schedule
+        # (see below) while wall-holding corpses keep the original grace hold.
         if [[ "$dead" == "true" ]]; then
-            if retire_corpse "$p" "$m" "$f"; then
-                continue
-            fi
-            # fleet-ops#3156: a no-wall corpse (prober-created, failure_mode
-            # "comeback_never_released") gets a second-chance re-probe instead
-            # of sitting idle for the full 6h grace. A successful re-probe
-            # unwalls it (transitions out of corpse); a failed re-probe is
-            # explicit terminal retirement. Corpses with a future wall or from
-            # another source keep the original grace behavior.
-            local _cwe _cwall_end _cfm _csrc
+            # fleet-ops#3188: bounded re-probe schedule for ALL no-wall corpses.
+            # A corpse (seat_dead=true, health_class=corpse) with no
+            # usable_at/bench_until gets re-probed every
+            # CORPSE_REPROBE_INTERVAL_S (default 6h). On success: unwall.
+            # On failure: if the seat-health extension reclassified the ledger
+            # (real HTTP response -> wall clock or healthy), respect that; if
+            # it is still a corpse, increment the failed re-probe count. After
+            # CORPSE_MAX_FAILED_REPROBES (default 4 = 24h) failed re-probes,
+            # force-retire. Corpses WITH a wall clock keep the original grace
+            # behavior.
+            local _cwall_end _cwe
             _cwall_end=$(wall_end_of "$f")
             _cwe=$(ts_epoch "$_cwall_end")
-            _cfm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
-            _csrc=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
-            if [[ -z "$_cwe" && ( "$_cfm" == "comeback_never_released" || "$_csrc" == "comeback_release_corpse" ) ]]; then
-                log "corpse re-probe $p/$m: no wall, second-chance re-probe (fleet-ops#3156)"
-                if probe_seat "$p" "$m"; then
-                    ((probed++)) || true
-                    reset_overload_strikes "$p"
-                    # A successful probe clears the organ streak too.
-                    OWN_FAIL["$base"]="0"
-                    if unwall_seat "$p" "$m" "$f"; then
-                        ((released_this_run++)) || true
-                    fi
-                else
-                    ((probed++)) || true
-                    # Failed second-chance re-probe. The probe ran through
-                    # pi --print, which triggers the seat-health extension —
-                    # the extension may have reclassified the corpse DURING
-                    # the probe (fleet-ops#3179: a 402 quota_exhausted
-                    # response re-wrote the ledger with health_class
-                    # quota_exhausted, seat_dead=false, usable_at 24h in the
-                    # future). In that race the ledger is NO LONGER a corpse:
-                    # the seat has a comeback clock from the extension and
-                    # will be re-probed when that wall expires. Force-retire
-                    # only when the ledger is STILL a corpse (the extension
-                    # did not write — e.g. a timeout with no HTTP response).
-                    # Without this check, retire_corpse sees a non-corpse
-                    # file, returns 1, and the log says "retire failed — held"
-                    # even though the seat was reclassified, not held.
-                    local _post_hc _post_dead
-                    _post_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
-                    _post_dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
-                    if [[ "$_post_hc" == "corpse" && "$_post_dead" == "true" ]]; then
-                        if retire_corpse "$p" "$m" "$f" 1; then
-                            log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
-                        else
-                            log "corpse re-probe $p/$m: retire failed — held"
+            if [[ -z "$_cwe" ]]; then
+                # No wall clock — this corpse is eligible for bounded re-probes.
+                local _last_reprobe="${last_probe["$base"]:-0}"
+                if (( _last_reprobe == 0 )) || (( now - _last_reprobe >= CORPSE_REPROBE_INTERVAL_S )); then
+                    log "corpse re-probe $p/$m: no wall, bounded re-probe (fleet-ops#3188, interval=${CORPSE_REPROBE_INTERVAL_S}s)"
+                    if probe_seat "$p" "$m"; then
+                        ((probed++)) || true
+                        reset_overload_strikes "$p"
+                        # A successful probe clears the organ streak too.
+                        OWN_FAIL["$base"]="0"
+                        if unwall_seat "$p" "$m" "$f"; then
+                            ((released_this_run++)) || true
+                            log "corpse $p/$m: unwall successful, transitioned out of corpse (fleet-ops#3188)"
                         fi
+                        # No longer a no-wall corpse; drop the re-probe state.
+                        unset 'CORPSE_REPROBES["$base"]'
                     else
-                        log "corpse re-probe $p/$m: extension reclassified to health_class=$_post_hc seat_dead=$_post_dead during probe — no longer a corpse, walled by extension (fleet-ops#3179)"
+                        ((probed++)) || true
+                        # The probe failed, but the seat-health extension may
+                        # have written a real response (e.g. 402/429 with a
+                        # wall, or 200 healthy). Re-read the ledger before
+                        # treating this as a failed re-probe (fleet-ops#3179).
+                        local _post_hc _post_dead
+                        _post_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+                        _post_dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+                        if [[ "$_post_hc" != "corpse" || "$_post_dead" != "true" ]]; then
+                            log "corpse $p/$m: extension reclassified to health_class=$_post_hc seat_dead=$_post_dead during re-probe — no longer a no-wall corpse (fleet-ops#3179/#3188)"
+                            unset 'CORPSE_REPROBES["$base"]'
+                        else
+                            # Still a corpse: increment failed re-probe count.
+                            local _fail_count=$(( ${CORPSE_REPROBES["$base"]:-0} + 1 ))
+                            CORPSE_REPROBES["$base"]="$_fail_count"
+                            log "corpse $p/$m: re-probe failed (failed_reprobes=$_fail_count / max=${CORPSE_MAX_FAILED_REPROBES})"
+                            if (( _fail_count >= CORPSE_MAX_FAILED_REPROBES )); then
+                                log "corpse $p/$m: max failed re-probes reached, retiring (fleet-ops#3188)"
+                                if retire_corpse "$p" "$m" "$f" 1; then
+                                    log "corpse $p/$m: retired after ${CORPSE_MAX_FAILED_REPROBES} failed re-probes"
+                                    unset 'CORPSE_REPROBES["$base"]'
+                                else
+                                    log "corpse $p/$m: retire failed — held"
+                                fi
+                            fi
+                        fi
                     fi
+                    last_probe["$base"]="$(now_epoch)"
+                else
+                    log "corpse $p/$m: no wall, re-probe not due yet (${now} - ${_last_reprobe} = $(( now - _last_reprobe ))s < ${CORPSE_REPROBE_INTERVAL_S}s)"
                 fi
-                last_probe["$base"]="$(now_epoch)"
+            else
+                # Corpse has a wall clock — keep original grace behavior.
+                if retire_corpse "$p" "$m" "$f"; then
+                    continue
+                fi
             fi
             continue
         fi
@@ -1062,16 +1092,23 @@ main() {
         own_json+="$(jq -nc --arg k "$of" --argjson v "${OWN_FAIL[$of]}" '{key:$k,value:$v}'),"
     done
     own_json="${own_json%,}"
+    local corpse_reprobes_json="" crk
+    for crk in "${!CORPSE_REPROBES[@]}"; do
+        corpse_reprobes_json+="$(jq -nc --arg k "$crk" --argjson v "${CORPSE_REPROBES[$crk]}" '{key:$k,value:$v}'),"
+    done
+    corpse_reprobes_json="${corpse_reprobes_json%,}"
     save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
         --argjson pt "$probed_total" --argjson rt "$released_total" \
         --argjson wt "$WALLS_TOTAL" --argjson ct "$CORPSE_TOTAL" \
         --argjson rr "$RETIRED_TOTAL" \
         --argjson os "[$strikes_json]" \
         --argjson own "[$own_json]" \
+        --argjson cr "[$corpse_reprobes_json]" \
         '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt,
           walls_total: $wt, corpse_total: $ct, retired_total: $rr,
           overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries),
-          own_failures: ($own | from_entries)}')"
+          own_failures: ($own | from_entries),
+          corpse_reprobes: ($cr | from_entries)}')"
 
     # The fleet-ops#2421 loud check: walled seats still hold expired wall
     # clocks AND nothing was released this run -> the release path did not
