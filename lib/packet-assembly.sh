@@ -268,9 +268,9 @@ packet_inbound_email_usage() {
         return 1
     fi
     printf '### Inbound customer email (last %s days): %s message(s) in %s\n' "$days" "$n" "$dir"
-    printf 'Subject/from lines (truncated):\n'
+    printf 'Subject/from lines:\n'
     find "$dir" -maxdepth 1 -type f -newermt "@$cutoff" \( -name '*.eml' \) \
-        2>/dev/null | head -10 | while read -r f; do
+        2>/dev/null | while read -r f; do
         printf -- '- %s: ' "$(basename "$f")"
         sed -n 's/^Subject: //p' "$f" | head -1
     done
