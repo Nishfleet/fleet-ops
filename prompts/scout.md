@@ -56,7 +56,7 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
 
-For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, and recent merged PRs. Candidates for `0509` must be grounded in one of those items; if a candidate is purely code-shaped and not research-shaped, drop it.
+For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it.
 
 ### A. Live product signals (FIRST — spend most effort here)
 
@@ -82,6 +82,27 @@ Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspect
    Deep-dive runs that gate production user flows.
 
 4. **SEO / sitemap / conversion** — mismatches between what we tell Google to crawl and what users see.
+
+### A.5 Money-path walk candidates (0509, from the Usage block)
+
+The RESEARCH CONTEXT **Usage** block carries a `Money-path walk` section: fresh
+mobile + desktop sessions driving `/search -> result -> pricing -> signup start`
+with screenshot paths under `evidence:`. Turn EACH walk finding into a candidate,
+carrying the walk's `evidence: <screenshot path>` verbatim in the issue body and
+capping walk-sourced candidates at **4** per run. A walk finding that is a
+`429` (rate limit) on a shared-VPS IP should be noted as such in the candidate
+body, not filed as a hard outage unless a real session reproduces it.
+
+### A.6 Usage citation (required for every 0509 candidate)
+
+Every `0509` candidate's `source:` line MUST cite exactly one of: a line from
+the RESEARCH CONTEXT **Usage** block (cloudflare analytics, lp_run_audit,
+/search query log, inbound email, or a money-path walk finding), or a
+Nish-authored issue (`source: nish#<n>`). A code-shaped candidate whose
+`source:` cites none of these is **dropped** — the scout files what customers
+actually see, not work invented from code inspection alone. If the Usage block
+reports every source empty, drop every usage-uncited candidate and rely on
+your own market-signal / money-path-walk observations.
 
 ### B. Stale or conflicting PRs (SECOND)
 
@@ -185,5 +206,11 @@ Print one line per action:
 - `filed #N: <title> [scout-candidate|agent-ready|unlabeled]`
 - `skipped: <reason>` for rejected dupes or missing termination
 - `supply: ready_count=<before> filed=<k> labeled=<m>`
+- Scout self-score (fleet-ops#3149): print exactly
+  `scout-yield: filed=<n> merged_14d=<m>` — filed = issues filed this run;
+  merged_14d = how many of them had a closing PR merged within 14 days, from
+  `gh pr list -R Nishfleet/<repo> --state merged --json body,mergedAt` and
+  `gh issue view <N> -R Nishfleet/<repo> --json closedAt,number`. Print it even
+  when both are 0 so the journal and the exporter graph the trend.
 
 Exit 0.
