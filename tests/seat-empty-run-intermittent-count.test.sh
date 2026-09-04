@@ -63,7 +63,7 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Test isolation: pin the empty-run ceiling low so the park fires in a few
-# iterations. Production default is 10 (fleet-ops#2627).
+# iterations. Production default is 3 (fleet-ops#3046).
 export EMPTY_RUN_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 # The DEFAULT empty-run count window is 2 h (7200 s) — leave it at the

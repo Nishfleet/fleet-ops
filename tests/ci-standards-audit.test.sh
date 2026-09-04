@@ -459,6 +459,15 @@ bash "$here/fleet-empty-run-burst-canary.test.sh"
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-empty-run-clobber-park.test.sh"
 
+# fleet-ops#3046: the EMPTY_RUN_FAILURE_CEILING default was 10, but the
+# 2h count-merge window reset the count before it reached 10, so the live
+# nemotron-3-ultra-free loop (9 empty runs in 2h on fleet-ops-2778) never
+# parked. The fix lowers the default to 3 so the park fires on the 3rd
+# no-op in the SAME 2h window. This test asserts the production default
+# (no env override) is exactly 3 and the park engages on the 3rd no-op.
+# Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/seat-empty-run-ceiling-default.test.sh"
+
 # fleet-ops#2759: intake prioritization effectiveness metric (precedence-band
 # product-first hold -> product merge lift). Hosted here so P14 runs it
 # without a workflow-file edit (the worker App cannot push

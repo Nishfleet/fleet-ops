@@ -27,7 +27,7 @@
 # A stale marker means seat-health.ts produced a healthy observation after
 # the bench expired (the recovery signal) — fall through to the ledger and
 # start a fresh count. The chronic-no-op park uses a lower ceiling
-# (EMPTY_RUN_FAILURE_CEILING, default 10, vs SEAT_FAILURE_CEILING=20) so a
+# (EMPTY_RUN_FAILURE_CEILING, default 3, vs SEAT_FAILURE_CEILING=20) so a
 # free-lane no-op'er parks within a following 2h window, not after ~5h.
 #
 # This test proves, end to end against the live wrapper:
@@ -79,7 +79,7 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Test isolation: pin the empty-run ceiling low so we can prove the park
-# fires in a few iterations. Production default is 10 (fleet-ops#2627).
+# fires in a few iterations. Production default is 3 (fleet-ops#3046).
 export EMPTY_RUN_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 export EMPTY_RUN_MARKER_FRESH_S=1800
