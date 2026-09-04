@@ -81,6 +81,12 @@ export PACKET_TRANSFORMATION_DIR="$scratch/agent-state/0509-transformation"
 export PACKET_NORTH_STAR_FILE="$scratch/tooling/nish-vault/north-star.md"
 export PACKET_GH="$fake_gh"
 
+# Hermetic usage/walk seams (fleet-ops#3149): tests must not touch the real CF
+# token, the network, or a browser. Each empty source must DROP, never fail
+# assembly.
+export PACKET_CF_FILE="$scratch/no-cf.env"
+export PACKET_MONEY_PATH_WALK=0
+
 source "$repo_root/lib/packet-assembly.sh"
 
 packet="$scratch/packet.md"
@@ -88,7 +94,7 @@ packet_assemble_0509_scout "$repo_root/prompts/scout.md" 0509 "$packet" || fail 
 
 [[ -f "$packet" ]] || fail "packet file was not written"
 
-# 1. All four sections present.
+# 1. All four research sections present.
 grep -q '## Market signal' "$packet" || fail "packet missing market signal section"
 grep -q '## Transformation campaign state' "$packet" || fail "packet missing category research section"
 grep -q '## North-star rule' "$packet" || fail "packet missing north-star section"
@@ -96,6 +102,22 @@ grep -q '## Recent merged PR titles' "$packet" || fail "packet missing recent PR
 grep -q 'TARGET REPO: Nishfleet/0509' "$packet" || fail "packet missing TARGET line"
 grep -q 'RESEARCH CONTEXT' "$packet" || fail "packet missing research context header"
 ok "packet assembly includes all four research sections and TARGET line"
+
+# 1b. Usage block (fleet-ops#3149): header present; empty sources DROP with a
+# marker and the all-empty NOTE, and never fail assembly.
+grep -q '## Usage (live product telemetry' "$packet" || fail "packet missing usage block header"
+grep -q '### Money-path walk: skipped (PACKET_MONEY_PATH_WALK=0)' "$packet" \
+  || fail "walk must be skipped (not fail) when PACKET_MONEY_PATH_WALK=0"
+grep -q 'no CF token file at' "$packet" || fail "missing CF token must leave a drop marker, not fail assembly"
+grep -q 'every usage source is empty' "$packet" || fail "all-usage-empty NOTE must appear when every source drops"
+ok "usage block assembles and drops empty sources without failing"
+
+# 1c. Prompt contract (fleet-ops#3149): usage citation, money-path walk, and
+# scout self-score must be present in the scout prompt.
+grep -q 'scout-yield' "$repo_root/prompts/scout.md" || fail "scout prompt missing scout-yield self-score"
+grep -q 'A.5 Money-path walk' "$repo_root/prompts/scout.md" || fail "scout prompt missing money-path walk subsection"
+grep -q 'A.6 Usage citation' "$repo_root/prompts/scout.md" || fail "scout prompt missing usage citation rule"
+ok "scout prompt carries usage citation, money-path walk, and scout-yield"
 
 # 2. Stale market signal (> 36h) returns 1.
 stale_dir="$scratch/stale-signal"

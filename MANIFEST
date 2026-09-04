@@ -107,6 +107,7 @@ bin/guard_shared_file_collision_hook.py /home/nish/.claude/hooks/guard_shared_fi
 lib/blind-audit-panel.py /home/nish/.local/lib/pi-packet/blind-audit-panel.py
 lib/manual-seam-lens.py /home/nish/.local/lib/pi-packet/manual-seam-lens.py
 lib/packet-assembly.sh /home/nish/.local/lib/pi-packet/packet-assembly.sh
+lib/scout-money-path-walk.mjs /home/nish/.local/lib/pi-packet/scout-money-path-walk.mjs
 # fleet-ops#383: join helper for the rule-enforcement canary step.
 lib/rule-enforcement.py /home/nish/.local/lib/pi-packet/rule-enforcement.py
 # fleet-ops#515: session-close lint for "every finding gets queued".
