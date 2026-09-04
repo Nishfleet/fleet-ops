@@ -166,6 +166,9 @@ systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.sl
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
+# fleet-ops#3111: self-healing transport check. Installs into ~/.local/bin so
+# pi-transport-check.service can repair a clobbered pi symlink without a human.
+bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 # fleet-ops#1204: ExecStopPost salvage — bank a dying worker's dirty
 # worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
 bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree

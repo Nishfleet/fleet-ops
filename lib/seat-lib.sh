@@ -60,6 +60,80 @@ SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
 # fleet-ops#457: quality-weighted routing overlay. Missing scoreboard =
 # no cuts (do not brick pick_seat). Over-threshold lanes lose heavy work.
 QUALITY_ROUTING_JSON="${QUALITY_ROUTING_JSON:-$HOME/.local/state/pi-packet/quality-routing.json}"
+
+# fleet-ops#3111: transport-down marker shared with pi-transport-check. A seat
+# bench writer that sees a dead transport writes ONE marker here, not a per-seat
+# ledger, so a broken pi does not poison every seat's consecutive_failure_count.
+TRANSPORT_DOWN_MARKER="$STATE_DIR/transport-down.json"
+
+# True (0) if the pi transport is healthy. Fail-open: assume healthy when the
+# cheap check cannot run (do not starve the fleet on a transient probe failure).
+# This is intentionally cheap: it runs during every bench write, so it must not
+# add a network call or a long-lived process.
+_transport_is_healthy() {
+    # If the canonical transport-down marker exists, the ladder is already
+    # known to be broken; do not re-probe and do not write per-seat benches.
+    if [[ -f "$TRANSPORT_DOWN_MARKER" ]]; then
+        return 1
+    fi
+    if [[ ! -e "$PI_BIN" ]] || [[ ! -x "$PI_BIN" ]]; then
+        return 1
+    fi
+    local ver first
+    if ! ver="$(timeout 10 "$PI_BIN" --version 2>&1)"; then
+        return 1
+    fi
+    first="$(printf '%s\n' "$ver" | head -n 1)"
+    [[ "$first" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# Write the single transport-down marker and emit the counter metric. Returns 0.
+_transport_down_marker() {
+    local now
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    if [[ ! -f "$TRANSPORT_DOWN_MARKER" ]]; then
+        if jq -nc --arg now "$now" '{down_at:$now, observed_at:$now}' > "$TRANSPORT_DOWN_MARKER.tmp" 2>/dev/null; then
+            mv -f "$TRANSPORT_DOWN_MARKER.tmp" "$TRANSPORT_DOWN_MARKER"
+        fi
+    else
+        local down_at
+        down_at="$(jq -r '.down_at // ""' "$TRANSPORT_DOWN_MARKER" 2>/dev/null || true)"
+        [[ -n "$down_at" ]] || down_at="$now"
+        if jq -nc --arg down "$down_at" --arg now "$now" '{down_at:$down, observed_at:$now}' > "$TRANSPORT_DOWN_MARKER.tmp" 2>/dev/null; then
+            mv -f "$TRANSPORT_DOWN_MARKER.tmp" "$TRANSPORT_DOWN_MARKER"
+        fi
+    fi
+    _emit_transport_down_metric
+}
+
+# Increment the fleet_transport_down_total counter in the existing textfile
+# collector pattern (mirrors _emit_failure_ceiling_metric).
+_emit_transport_down_metric() {
+    local out="${FLEET_TRANSPORT_DOWN_PROM:-$STATE_DIR/fleet-transport-down.prom}"
+    local dir
+    dir="$(dirname "$out")"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    local tmp="$out.$$.$RANDOM.tmp"
+    local current=0
+    if [[ -f "$out" ]]; then
+        current="$(grep -E '^fleet_transport_down_total ' "$out" 2>/dev/null | tail -n 1 | awk '{print $2}' || echo 0)"
+        [[ "$current" =~ ^[0-9]+$ ]] || current=0
+    fi
+    current=$((current + 1))
+    {
+        echo "# HELP fleet_transport_down_total Count of worker runs where the pi transport was down (fleet-ops#3111)."
+        echo "# TYPE fleet_transport_down_total counter"
+        echo "fleet_transport_down_total $current"
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    if [[ -z "${FLEET_TRANSPORT_DOWN_PROM:-}" && "$STATE_DIR" == "$HOME/.local/state/pi-packet" ]]; then
+        local pub="/var/lib/prometheus/node-exporter/fleet-transport-down.prom"
+        if [[ -d "$(dirname "$pub")" && -w "$(dirname "$pub")" ]]; then
+            cp "$out" "$pub" 2>/dev/null || true
+        fi
+    fi
+}
 QUALITY_SCOREBOARD_JSON="${QUALITY_SCOREBOARD_JSON:-$HOME/workspaces/agent-state/quality-scoreboard/snapshot.json}"
 QUALITY_ROUTING_PY="${QUALITY_ROUTING_PY:-$HOME/.local/lib/pi-packet/quality-routing.py}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
@@ -3226,6 +3300,11 @@ mark_seat_spawn_fail() {
     local p="$1" m="$2" reason="${3:-spawn_etimeout}"
     local path
     path=$(seat_ledger_path "$p" "$m")
+    if ! _transport_is_healthy; then
+        _transport_down_marker
+        seat_log "spawn-fail: transport down, NOT marking $p/$m — charged to transport"
+        return 1
+    fi
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
     local tmp="$path.spawn.$$.$RANDOM.tmp"
     local now_utc

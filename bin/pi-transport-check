@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+# Self-healing transport integrity check for the pi coding agent.
+#
+# Fails loud if the package (cli.js) is broken. If cli.js is healthy but the
+# ~/.local/bin/pi binary has been clobbered (regular file, missing symlink, etc.),
+# backs up the bad file, runs `npm rebuild -g @earendil-works/pi-coding-agent`
+# to re-create the npm bin symlink, and re-runs the check. If rebuild does not
+# repair, falls through to `npm install -g @earendil-works/pi-coding-agent@<pin>`.
+#
+# After a successful repair, sweeps any per-seat bench markers written during the
+# transport-down window so a dead pi cannot poison pick_seat.
+#
+# This script is the ExecStart of pi-transport-check.service (owned by the pi
+# package) and is installed from fleet-ops/bin/pi-transport-check.
+set -euo pipefail
+
+CLI_PATH="${1:-$HOME/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js}"
+PI_BIN="${2:-$HOME/.local/bin/pi}"
+STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-$HOME/workspaces/agent-state/lanes/seats}"
+MIN_SIZE=300
+BACKUP_DIR="$STATE_DIR/pi-bin-clobbered"
+TRANSPORT_DOWN_MARKER="$STATE_DIR/transport-down.json"
+
+fail() {
+    echo "PI-TRANSPORT-CORRUPT: $*" >&2
+    exit 1
+}
+
+ok() {
+    local size="$1" version="$2"
+    echo "PI-TRANSPORT-OK size=$size version=$version"
+}
+
+log() {
+    echo "pi-transport-check: $*" >&2
+}
+
+# Resolve and validate the package cli.js.
+probe_cli() {
+    local resolved
+    resolved="$(readlink -f -- "$CLI_PATH" 2>/dev/null || true)"
+    [[ -n "$resolved" && -f "$resolved" ]] || { echo "cli.js missing or not a regular file (resolved $CLI_PATH)"; return 1; }
+    local first
+    first="$(head -n 1 -- "$resolved" 2>/dev/null || true)"
+    [[ "$first" == "#!/usr/bin/env node" ]] || { echo "cli.js first line was '$first'"; return 1; }
+    local size
+    size="$(stat -c %s -- "$resolved" 2>/dev/null || echo 0)"
+    (( size >= MIN_SIZE )) || { echo "cli.js size $size < $MIN_SIZE"; return 1; }
+    printf '%s\t%s\n' "$size" "$resolved"
+    return 0
+}
+
+# Check the pi binary is present and executable.
+probe_bin() {
+    [[ -e "$PI_BIN" ]] || { echo "pi binary missing"; return 1; }
+    [[ -x "$PI_BIN" ]] || { echo "pi binary not executable"; return 1; }
+    return 0
+}
+
+# Run `pi --version` and print the first line if it is bare semver.
+probe_version() {
+    local ver
+    if ! ver="$(timeout 30 "$PI_BIN" --version 2>&1)"; then
+        echo "pi --version exited nonzero"
+        return 1
+    fi
+    local first
+    first="$(printf '%s\n' "$ver" | head -n 1)"
+    if ! [[ "$first" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "pi --version first line '$first' is not a bare semver"
+        return 1
+    fi
+    printf '%s\n' "$first"
+    return 0
+}
+
+# Full probe. Sets SIZE and VERSION on success.
+probe() {
+    local cli_out size resolved
+    if ! cli_out="$(probe_cli)"; then
+        printf '%s\n' "$cli_out" >&2
+        return 1
+    fi
+    size="${cli_out%%$'\t'*}"
+    resolved="${cli_out##*$'\t'}"
+
+    if ! probe_bin >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local version
+    if ! version="$(probe_version)"; then
+        return 1
+    fi
+
+    SIZE="$size"
+    VERSION="$version"
+    return 0
+}
+
+backup_bad_bin() {
+    mkdir -p "$BACKUP_DIR"
+    local ts
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    local dest="$BACKUP_DIR/pi-$ts"
+    if [[ -e "$PI_BIN" ]]; then
+        mv -f -- "$PI_BIN" "$dest"
+        log "backed up bad pi bin to $dest"
+    fi
+}
+
+record_transport_down() {
+    mkdir -p "$STATE_DIR"
+    local now
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ ! -f "$TRANSPORT_DOWN_MARKER" ]]; then
+        if jq -nc --arg now "$now" '{down_at:$now, observed_at:$now}' > "$TRANSPORT_DOWN_MARKER.tmp" 2>/dev/null; then
+            mv -f "$TRANSPORT_DOWN_MARKER.tmp" "$TRANSPORT_DOWN_MARKER"
+            log "recorded transport-down marker at $now"
+        fi
+    else
+        # Refresh the observed_at so the marker stays current while we are down.
+        local down_at
+        down_at="$(jq -r '.down_at // ""' "$TRANSPORT_DOWN_MARKER" 2>/dev/null || true)"
+        [[ -n "$down_at" ]] || down_at="$now"
+        if jq -nc --arg down "$down_at" --arg now "$now" '{down_at:$down, observed_at:$now}' > "$TRANSPORT_DOWN_MARKER.tmp" 2>/dev/null; then
+            mv -f "$TRANSPORT_DOWN_MARKER.tmp" "$TRANSPORT_DOWN_MARKER"
+        fi
+    fi
+}
+
+clear_transport_down() {
+    if [[ -f "$TRANSPORT_DOWN_MARKER" ]]; then
+        rm -f -- "$TRANSPORT_DOWN_MARKER"
+        log "cleared transport-down marker"
+    fi
+}
+
+# Remove any per-seat bench markers written during the transport-down window.
+# This only covers the window recorded by the marker (from the first check failure
+# to the successful recovery). Old incident markers can be cleared by hand.
+sweep_dead_window_benches() {
+    [[ -d "$LEDGER_DIR" ]] || return 0
+    [[ -f "$TRANSPORT_DOWN_MARKER" ]] || return 0
+    local down_at
+    down_at="$(jq -r '.down_at // ""' "$TRANSPORT_DOWN_MARKER" 2>/dev/null || true)"
+    [[ -n "$down_at" ]] || return 0
+    local down_s recovered_s
+    down_s="$(date -u -d "$down_at" +%s 2>/dev/null || echo 0)"
+    recovered_s="$(date -u +%s)"
+    (( down_s > 0 )) || return 0
+
+    local f observed obs_s
+    while IFS= read -r -d '' f; do
+        observed="$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)"
+        [[ -n "$observed" ]] || continue
+        obs_s="$(date -u -d "$observed" +%s 2>/dev/null || echo 0)"
+        if (( obs_s >= down_s && obs_s <= recovered_s )); then
+            rm -f -- "$f"
+            log "swept dead-window bench: $f (observed_at=$observed)"
+        fi
+    done < <(find "$LEDGER_DIR" -maxdepth 1 -type f -name '*__*.json' ! -name '*.spawn-bench.json' -print0 2>/dev/null)
+
+    while IFS= read -r -d '' f; do
+        observed="$(jq -r '.written_at // ""' "$f" 2>/dev/null || true)"
+        [[ -n "$observed" ]] || continue
+        obs_s="$(date -u -d "$observed" +%s 2>/dev/null || echo 0)"
+        if (( obs_s >= down_s && obs_s <= recovered_s )); then
+            rm -f -- "$f"
+            log "swept dead-window spawn-bench marker: $f (written_at=$observed)"
+        fi
+    done < <(find "$LEDGER_DIR" -maxdepth 1 -type f -name '*__*.spawn-bench.json' -print0 2>/dev/null)
+}
+
+# Read the pinned version from the installed package package.json.
+pinned_version() {
+    local pkg_json
+    pkg_json="$(dirname "$CLI_PATH")/../package.json"
+    pkg_json="$(readlink -f -- "$pkg_json" 2>/dev/null || true)"
+    if [[ -n "$pkg_json" && -f "$pkg_json" ]]; then
+        jq -r '.version // ""' "$pkg_json" 2>/dev/null || true
+    fi
+}
+
+# npm rebuild re-creates the bin symlinks for an installed global package.
+try_npm_rebuild() {
+    log "running npm rebuild -g @earendil-works/pi-coding-agent"
+    npm rebuild -g @earendil-works/pi-coding-agent >/dev/null 2>&1
+}
+
+# If rebuild is not enough, reinstall the same pinned version.
+try_npm_install_pinned() {
+    local version
+    version="$(pinned_version)"
+    if [[ -n "$version" ]]; then
+        log "running npm install -g @earendil-works/pi-coding-agent@$version"
+        npm install -g "@earendil-works/pi-coding-agent@$version" >/dev/null 2>&1
+    fi
+}
+
+# Last resort: reinstall whatever the registry considers the same major line.
+try_npm_install_latest() {
+    log "running npm install -g @earendil-works/pi-coding-agent"
+    npm install -g @earendil-works/pi-coding-agent >/dev/null 2>&1
+}
+
+try_repair() {
+    log "transport down; attempting self-heal"
+    record_transport_down
+    if [[ -e "$PI_BIN" ]]; then
+        backup_bad_bin
+    fi
+
+    if try_npm_rebuild && probe_bin >/dev/null 2>&1; then
+        log "npm rebuild restored the pi binary"
+        return 0
+    fi
+
+    try_npm_install_pinned
+    if probe_bin >/dev/null 2>&1; then
+        log "npm install (pinned) restored the pi binary"
+        return 0
+    fi
+
+    try_npm_install_latest
+    if probe_bin >/dev/null 2>&1; then
+        log "npm install (latest) restored the pi binary"
+        return 0
+    fi
+
+    return 1
+}
+
+main() {
+    local SIZE VERSION
+    if probe; then
+        clear_transport_down
+        ok "$SIZE" "$VERSION"
+        exit 0
+    fi
+
+    # cli.js must be healthy for any self-heal to be safe.
+    if ! probe_cli >/dev/null 2>&1; then
+        fail "package cli.js is broken; package-level repair required"
+    fi
+
+    if try_repair; then
+        if probe; then
+            sweep_dead_window_benches
+            clear_transport_down
+            ok "$SIZE" "$VERSION"
+            exit 0
+        fi
+    fi
+
+    fail "self-heal failed; package-level repair required"
+}
+
+main "$@"
