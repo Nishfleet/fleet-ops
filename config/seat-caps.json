@@ -223,8 +223,11 @@
     "cursor",
     "xai-oauth"
   ],
-  "keystone_only_providers": [
-    "cursor"
+  "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor stays cap 1 concurrent; senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere.",
+  "senior_seats_in_order": [
+    "cursor/cursor-grok-4.6-high",
+    "xai-oauth/grok-4.6",
+    "openrouter/deepseek/deepseek-v4-flash-0731"
   ],
   "cursor_overage": {
     "_comment": "fleet-ops#1167: $400 extra-usage opens ONLY after included usage exhausts (Nish 2026-08-27). Target ~$16/day spent (floor, not ceiling) on keystone/senior-review/Weekly-Review. Overage model is cursor-grok-4.6-high \u2014 Nish named it as the cheapest strong Cursor model; this worker cannot read Cursor's live per-model price sheet without dashboard auth, so the pin is the directed slug, not a re-derived ranking. included_exhausted is flipped by a meter check (never guessed). #1177/#1179 own the enforcement-matrix rows for the $400 floor and sequencing.",
