@@ -100,8 +100,8 @@ cursor_cap=$(jq -r '.providers.cursor.cap // empty' "$caps")
 if jq -e '.free_providers_in_order | index("cursor")' "$caps" >/dev/null; then
   fail "cursor must not be in free_providers_in_order"
 fi
-if ! jq -e '.keystone_only_providers | index("cursor")' "$caps" >/dev/null; then
-  fail "cursor must be in keystone_only_providers (fleet-ops#1167)"
+if ! jq -e '.senior_seats_in_order[0] == "cursor/cursor-grok-4.6-high"' "$caps" >/dev/null; then
+  fail "senior_seats_in_order must start with cursor/cursor-grok-4.6-high (fleet-ops#3121)"
 fi
 
 overage_model=$(jq -r '.cursor_overage.overage_model // empty' "$caps")
