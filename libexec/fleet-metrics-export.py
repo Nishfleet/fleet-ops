@@ -418,6 +418,40 @@ READY_GH_TIMEOUT = 45
 QUEUE_CACHE = PR_CACHE_DIR / "queue-composition-cache.json"
 ALL_AGENT_READY_CACHE = PR_CACHE_DIR / "all-agent-ready-cache.json"
 
+# --- Seat yield ledger (fleet-ops#3250) ---
+# Pi issue-work sessions live here. Only pi-issue-* directories carry product
+# work; scout/canary/audit roles use other dirs and keep their own routing.
+SESSIONS_DIR = Path(
+    os.environ.get("FLEET_SESSIONS_DIR", str(Path.home() / ".pi" / "agent" / "sessions"))
+)
+# Per-file parse cache so re-export ticks are cheap; keyed on file mtime seconds.
+SEAT_YIELD_CACHE = PR_CACHE_DIR / "seat-yield-sessions-cache.json"
+# JSON sidecar consumed by lib/seat-lib.sh pick_seat. Not a new organ; just a
+# state file written by the existing fleet-metrics-export tick.
+SEAT_YIELD_JSON = Path(
+    os.environ.get(
+        "FLEET_SEAT_YIELD_JSON",
+        str(Path.home() / ".local" / "state" / "pi-packet" / "seat-yield.json"),
+    )
+)
+SEAT_YIELD_WINDOW = 20
+SEAT_YIELD_PROVISIONAL = 0.5
+# Final assistant text contains a Nishfleet PR URL (http/s optional).
+PR_URL_RE = re.compile(
+    r"(?:https?://)?github\.com/Nishfleet/[^/\s\"]+/pull/\d+", re.IGNORECASE
+)
+HELP_SY = (
+    "# HELP fleet_seat_yield Rolling last-20 issue-work sessions PR yield "
+    "per seat (0..1). Seats with <20 sessions report a provisional 0.5 "
+    "yield so new seats are tried (fleet-ops#3250)."
+)
+TYPE_SY = "# TYPE fleet_seat_yield gauge"
+HELP_SNPR = (
+    "# HELP fleet_sessions_no_pr_total Number of issue-work sessions in the "
+    "last-20 window that did not produce a PR URL, per seat (fleet-ops#3250)."
+)
+TYPE_SNPR = "# TYPE fleet_sessions_no_pr_total gauge"
+
 # Self-maintenance repo set (fleet-ops#1136). PR-tunable; never hardcoded in
 # the classifier. Default ["fleet-ops"] when the file is missing/unparseable
 # (fleet-ops IS the tooling/control-plane repo — there is no separate
@@ -749,6 +783,205 @@ def _write_cache(path, data):
         os.replace(tmp, path)
     except OSError as exc:
         print(f"cache write {path}: {exc}", file=sys.stderr)
+
+
+def _extract_text(content):
+    """Flatten assistant message content to plain text.
+
+    Content may be a raw string or a list of objects. Only text objects
+    are extracted; reasoning/thinking blocks are ignored.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content or []:
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "".join(parts)
+
+
+def _parse_session_file(path):
+    """Return {seat, timestamp, has_pr_url} for a pi-issue session .jsonl.
+
+    Seat is taken from the first model_change event; the timestamp is the
+    session start time. A session counts as PR-producing if the final
+    assistant message text contains a Nishfleet PR URL.
+    """
+    session_ts = None
+    model_seat = None
+    last_assistant_line = None
+    fallback_ts = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                if session_ts is None and re.search(r'"type"\s*:\s*"session"', line):
+                    try:
+                        data = json.loads(line)
+                        session_ts = data.get("timestamp")
+                        # id is a fallback sort key; timestamps should be unique
+                        # enough, but a stable id prevents ties.
+                        fallback_ts = data.get("id", "")
+                    except json.JSONDecodeError:
+                        pass
+                    continue
+                if model_seat is None and re.search(r'"type"\s*:\s*"model_change"', line):
+                    try:
+                        data = json.loads(line)
+                        provider = data.get("provider")
+                        model = data.get("modelId")
+                        if provider and model:
+                            model_seat = f"{provider}/{model}"
+                    except json.JSONDecodeError:
+                        pass
+                    continue
+                if re.search(r'"role"\s*:\s*"assistant"', line):
+                    last_assistant_line = line
+    except OSError:
+        return None
+    if not model_seat:
+        return None
+    has_pr = False
+    if last_assistant_line:
+        try:
+            data = json.loads(last_assistant_line)
+            msg = data.get("message") or {}
+            content = msg.get("content")
+            text = _extract_text(content)
+            if PR_URL_RE.search(text):
+                has_pr = True
+        except json.JSONDecodeError:
+            pass
+    ts_epoch = _parse_iso_utc(session_ts) if session_ts else None
+    if ts_epoch is None:
+        # If we cannot parse the ISO timestamp, keep ordering stable by falling
+        # back to 0. This is rare (malformed session line) and safe: a bogus
+        # session floats to the start of the window and is quickly evicted.
+        ts_epoch = 0
+    return {
+        "seat": model_seat,
+        "timestamp": ts_epoch,
+        "has_pr_url": has_pr,
+    }
+
+
+def _compute_seat_yield():
+    """Compute per-seat rolling last-20 issue-work session PR yield.
+
+    Scans FLEET_SESSIONS_DIR/pi-issue-*/**/*.jsonl, caches per-file results
+    by mtime, and returns {seat: {yield, sessions, pr_count, provisional}}.
+    Also writes the JSON sidecar used by lib/seat-lib.sh pick_seat.
+    """
+    sessions_dir = Path(SESSIONS_DIR)
+    if not sessions_dir.is_dir():
+        return {}
+
+    cache = {}
+    try:
+        data, _age = _read_cache(SEAT_YIELD_CACHE)
+        if isinstance(data, dict) and data.get("v") == 1:
+            cache = data.get("entries") or {}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    new_cache = {}
+    sessions = []
+    for path in sessions_dir.glob("pi-issue-*/*.jsonl"):
+        try:
+            mtime_s = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        key = str(path)
+        cached = cache.get(key)
+        if isinstance(cached, dict) and cached.get("mtime_s") == mtime_s:
+            entry = {
+                "seat": cached["seat"],
+                "timestamp": cached["timestamp"],
+                "has_pr_url": cached["has_pr_url"],
+            }
+        else:
+            entry = _parse_session_file(path)
+            if entry is None:
+                continue
+        new_cache[key] = {
+            "mtime_s": mtime_s,
+            "seat": entry["seat"],
+            "timestamp": entry["timestamp"],
+            "has_pr_url": entry["has_pr_url"],
+        }
+        sessions.append(entry)
+
+    try:
+        _write_cache(SEAT_YIELD_CACHE, {"v": 1, "entries": new_cache})
+    except OSError:
+        pass
+
+    # Group by seat, then fold in the cap-map allowlist so new/idle seats get
+    # a provisional 0.5 entry in the JSON/metrics.
+    by_seat = {}
+    for e in sessions:
+        by_seat.setdefault(e["seat"], []).append(e)
+
+    known_caps = _seat_caps_model_cap_map()
+    if known_caps:
+        for seat, cap in known_caps.items():
+            if cap > 0 and seat not in by_seat:
+                by_seat[seat] = []
+
+    result = {}
+    for seat, entries in by_seat.items():
+        entries.sort(key=lambda x: x["timestamp"], reverse=True)
+        window = entries[:SEAT_YIELD_WINDOW]
+        total = len(window)
+        pr_count = sum(1 for e in window if e["has_pr_url"])
+        no_pr = total - pr_count
+        if total < SEAT_YIELD_WINDOW:
+            y = SEAT_YIELD_PROVISIONAL
+            provisional = True
+        else:
+            y = pr_count / total if total > 0 else 0.0
+            provisional = False
+        result[seat] = {
+            "yield": y,
+            "sessions": total,
+            "pr_count": pr_count,
+            "no_pr_count": no_pr,
+            "provisional": provisional,
+        }
+
+    try:
+        _atomic_write(SEAT_YIELD_JSON, json.dumps(result, sort_keys=True))
+    except OSError as exc:
+        print(f"seat-yield json write: {exc}", file=sys.stderr)
+
+    return result
+
+
+def _emit_seat_yield(lines, seat_yield):
+    """Append fleet_seat_yield and fleet_sessions_no_pr_total families.
+
+    The two metric families share the same per-seat loop. HELP/TYPE are
+    emitted once per family so the node_exporter textfile stays parseable.
+    """
+    if not seat_yield:
+        return
+    lines.append("")
+    lines.append(HELP_SY)
+    lines.append(TYPE_SY)
+    lines.append("")
+    lines.append(HELP_SNPR)
+    lines.append(TYPE_SNPR)
+    for seat in sorted(seat_yield):
+        y = seat_yield[seat]
+        lbl = _prom_label(seat)
+        lines.append(f'fleet_seat_yield{{seat="{lbl}"}} {y["yield"]:.6f}')
+        lines.append(
+            f'fleet_sessions_no_pr_total{{seat="{lbl}"}} {y["no_pr_count"]}'
+        )
 
 
 _GH_FETCHED_THIS_RUN = False
@@ -3314,6 +3547,14 @@ def main():
         lines.append(HELP_KHB)
         lines.append(TYPE_KHB)
         lines.append(f"fleet_keystone_routing_heartbeat_seconds {k_mtime:.3f}")
+
+    # --- Seat yield ledger (fleet-ops#3250) ---
+    # Computed from the agent's own pi-issue session files. Per-seat rolling
+    # last-20-sessions PR yield; new/idle seats get a provisional 0.5 yield
+    # so they are tried, not starved. Emits the family and writes a JSON
+    # sidecar for lib/seat-lib.sh pick_seat to consume.
+    seat_yield = _compute_seat_yield()
+    _emit_seat_yield(lines, seat_yield)
 
     # --- Truth staleness (fleet-ops#1137) ---
     # Read the staleness checker's cached results and re-export as Prometheus
