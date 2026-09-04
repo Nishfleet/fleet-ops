@@ -28,6 +28,7 @@ PROBE="${PI_TRANSPORT_CHECK:-/home/nish/.local/bin/pi-transport-check}"
 STATE_DIR="${PI_TRANSPORT_HEAL_STATE:-/home/nish/.local/state/pi-packet}"
 SEAT_LEDGER_DIR="${SEAT_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
 QUARANTINE_BASE="${SEAT_LEDGER_DIR}-bench-poisoned-pi-transport"
+TRANSPORT_DOWN_MARKER="${SEAT_TRANSPORT_DOWN_MARKER:-$STATE_DIR/transport-down.json}"
 
 log()  { printf '%s\n' "$*" >&2; }
 healed(){ printf 'PI-TRANSPORT-HEALED %s\n' "$1"; }
@@ -40,19 +41,81 @@ run_probe() { "$PROBE" >/dev/null 2>&1; }
 # (seats-bench-poisoned-pi-transport-<ts>/). Best-effort: a sweep failure
 # never fails the heal (the transport is already back). A healthy observation
 # (health_class=healthy) is NEVER swept — it is real.
+#
+# fleet-ops#3238: only sweep benches whose written_at/observed_at falls between
+# the transport-down marker's first_observed_at and the recovery time. If the
+# marker is missing or unreadable, fall back to the previous broad sweep so
+# recovery is never blocked by a stale marker.
 sweep_poisoned_benches() {
 	local stamp="$1"
 	[[ -d "$SEAT_LEDGER_DIR" ]] || return 0
+
 	local q="$QUARANTINE_BASE-$stamp"
 	mkdir -p "$q" 2>/dev/null || return 0
+
+	local window_start="" window_end=""
+	local have_window=0
+	if [[ -f "$TRANSPORT_DOWN_MARKER" ]]; then
+		local transport_state first_obs last_obs
+		transport_state=$(jq -r '.transport // ""' "$TRANSPORT_DOWN_MARKER" 2>/dev/null || true)
+		if [[ "$transport_state" == "down" ]]; then
+			first_obs=$(jq -r '.first_observed_at // ""' "$TRANSPORT_DOWN_MARKER" 2>/dev/null || true)
+			last_obs=$(jq -r '.observed_at // ""' "$TRANSPORT_DOWN_MARKER" 2>/dev/null || true)
+			window_start="${first_obs:-$last_obs}"
+			if [[ -n "$window_start" ]]; then
+				have_window=1
+				window_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+			fi
+		fi
+	fi
+
 	local f moved=0 cls
+	local ts ts_epoch start_epoch end_epoch
 	while IFS= read -r -d '' f; do
 		cls=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
 		[[ "$cls" == "healthy" || -z "$cls" ]] && continue
+
+		if (( have_window )); then
+			# Timestamp order: spawn-bench marker has written_at; ledger has
+			# observed_at; otherwise fall back to bench_until/usable_at. If
+			# none of those exist, the file is too old/foreign to risk moving.
+			ts=$(jq -r '(.written_at // .observed_at // .bench_until // .usable_at // "")' "$f" 2>/dev/null || true)
+			[[ -z "$ts" ]] && continue
+
+			ts_epoch=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+			start_epoch=$(date -u -d "$window_start" +%s 2>/dev/null || echo 0)
+			end_epoch=$(date -u -d "$window_end" +%s 2>/dev/null || echo 0)
+			[[ "$ts_epoch" =~ ^[0-9]+$ && "$ts_epoch" -gt 0 ]] || continue
+			[[ "$start_epoch" =~ ^[0-9]+$ && "$start_epoch" -gt 0 ]] || continue
+			[[ "$end_epoch" =~ ^[0-9]+$ && "$end_epoch" -gt 0 ]] || continue
+
+			if (( ts_epoch < start_epoch || ts_epoch > end_epoch )); then
+				continue
+			fi
+		fi
+
 		if mv "$f" "$q/" 2>/dev/null; then
 			moved=$((moved + 1))
 		fi
 	done < <(find "$SEAT_LEDGER_DIR" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
+
+	if (( have_window )); then
+		# Mark the down window as recovered so the next outage starts a fresh
+		# window and this sweep is not re-run against stale benches.
+		local recovered_at
+		recovered_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+		local marker_tmp="$TRANSPORT_DOWN_MARKER.$$.$RANDOM.tmp"
+		jq -nc \
+			--arg state "recovered" \
+			--arg first "$window_start" \
+			--arg observed "$window_end" \
+			--arg recovered "$recovered_at" \
+			--arg quarantine "$q" \
+			'{transport:$state, first_observed_at:$first, observed_at:$observed, recovered_at:$recovered, quarantine_dir:$quarantine}' \
+			>"$marker_tmp" 2>/dev/null && chmod 0644 "$marker_tmp" 2>/dev/null && mv -f "$marker_tmp" "$TRANSPORT_DOWN_MARKER" 2>/dev/null \
+			|| rm -f "$marker_tmp" 2>/dev/null || true
+	fi
+
 	if (( moved > 0 )); then
 		log "PI-TRANSPORT-HEAL: quarantined $moved poisoned seat bench marker(s) to $q"
 	fi

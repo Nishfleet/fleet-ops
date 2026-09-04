@@ -3530,6 +3530,11 @@ _transport_is_down() {
 # Record one transport-down marker (idempotent per down-window: refreshes the
 # timestamp so a single marker spans the whole outage). Best-effort: a write
 # failure never blocks the caller's fail-open path.
+#
+# fleet-ops#3238: preserve first_observed_at across repeated bench-writer hits
+# so the post-recovery sweep knows the full transport-down window. Reset
+# first_observed_at when the marker is in a recovered/cleared state, otherwise
+# the previous outage window would bleed into the next one.
 _mark_transport_down() {
     local p="$1" m="$2"
     local dir
@@ -3537,9 +3542,21 @@ _mark_transport_down() {
     mkdir -p "$dir" 2>/dev/null || return 0
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local first_observed="$now_utc"
+    if [[ -f "$SEAT_TRANSPORT_DOWN_MARKER" ]]; then
+        local prev_state prev_first
+        prev_state=$(jq -r '.transport // ""' "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null || true)
+        if [[ "$prev_state" == "down" ]]; then
+            prev_first=$(jq -r '.first_observed_at // ""' "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null || true)
+            [[ -n "$prev_first" ]] && first_observed="$prev_first"
+        fi
+    fi
     local tmp="$SEAT_TRANSPORT_DOWN_MARKER.$$.$RANDOM.tmp"
-    jq -nc --arg ts "$now_utc" --arg p "$p" --arg m "$m" \
-        '{transport:"down", observed_at:$ts, last_charged_provider:$p, last_charged_model:$m}' \
+    jq -nc \
+        --arg first "$first_observed" \
+        --arg ts "$now_utc" \
+        --arg p "$p" --arg m "$m" \
+        '{transport:"down", first_observed_at:$first, observed_at:$ts, last_charged_provider:$p, last_charged_model:$m}' \
         >"$tmp" 2>/dev/null && chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null \
         || rm -f "$tmp" 2>/dev/null || true
     seat_log "transport-down: $p/$m run charged to TRANSPORT, not the seat (pi-transport-check failed) — no per-seat bench written (fleet-ops#3111)"

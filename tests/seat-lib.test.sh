@@ -3463,3 +3463,7 @@ SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; s
   | grep -qE '^0\.5$' \
   || fail "seat_yield_for unknown/missing must default to 0.5"
 ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
+
+# fleet-ops#3238: transport-down gate + self-heal sweep window.
+# This test is in its own file to keep the main seat-lib.test.sh readable.
+bash "$here/seat-transport-down.test.sh"
