@@ -263,12 +263,7 @@ if ! is_uint "$CLAIMED"; then
     exit 0
 fi
 
-RATIO_LINE=$(sed -nE 's/^fleet_scout_effectiveness_ratio\{repo="0509"\} *([0-9.]+).*/\1/p' "$PROM" | head -n 1)
-if ! awk -v a="$RATIO_LINE" 'BEGIN { exit !(a ~ /^[0-9]*\.?[0-9]+$/) }'; then
-    loud "SCOUT-LEAK-WATCHER-BROKEN" "ratio gauge missing or unparseable: '$RATIO_LINE'"
-    exit 1
-fi
-RATIO="$RATIO_LINE"
+RATIO=$(read_float fleet_scout_effectiveness_ratio) || exit 1
 
 # ============================================================================
 # Fire gate — the same expression as the ScoutEffectivenessLow alert:
