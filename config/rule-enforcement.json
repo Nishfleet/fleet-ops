@@ -658,29 +658,29 @@
     {
       "id": "led-2026-08-27-d1-prod-migrations",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations",
-      "mechanism": "Prompt gate: prompts/worker.md and prompts/scout.md void the 2026-08-27 \"do it right now?\" D1 prod migration decision and require the senior process from the final 2026-08-27 process amendment (strong lane plan, independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish). tests/fleet-d1-migration-senior-process.test.sh locks the prompt needles.",
-      "proof": "prompts/worker.md; prompts/scout.md; tests/fleet-d1-migration-senior-process.test.sh; fleet-ops#906; fleet-ops#908",
+      "mechanism": "Prompt gate: prompts/worker-blocks/d1-gate-integrity.md and prompts/scout.md void the 2026-08-27 \"do it right now?\" D1 prod migration decision and require the senior process from the final 2026-08-27 process amendment (strong lane plan, independent senior blind-review, verified backup, concrete rollback, apply + live verification, text Nish). tests/fleet-d1-migration-senior-process.test.sh locks the prompt needles.",
+      "proof": "prompts/worker-blocks/d1-gate-integrity.md; prompts/scout.md; tests/fleet-d1-migration-senior-process.test.sh; fleet-ops#906; fleet-ops#908",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-correction",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 CORRECTION",
-      "mechanism": "Prompt gate: prompts/worker.md and prompts/scout.md require the D1 prod migration senior process (SQL classification, verified backup, concrete rollback, independent senior blind-review and approval, apply + live verification, text Nish) and void the 2026-08-27 \"do it right now\" decision; tests/fleet-d1-migration-senior-process.test.sh locks the needles.",
-      "proof": "prompts/worker.md; prompts/scout.md; tests/fleet-d1-migration-senior-process.test.sh",
+      "mechanism": "Prompt gate: prompts/worker-blocks/d1-gate-integrity.md and prompts/scout.md require the D1 prod migration senior process (SQL classification, verified backup, concrete rollback, independent senior blind-review and approval, apply + live verification, text Nish) and void the 2026-08-27 \"do it right now\" decision; tests/fleet-d1-migration-senior-process.test.sh locks the needles.",
+      "proof": "prompts/worker-blocks/d1-gate-integrity.md; prompts/scout.md; tests/fleet-d1-migration-senior-process.test.sh",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-decided",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 DECIDED (plain-language re-ask, informed)",
-      "mechanism": "CI drill tests/fleet-d1-prod-migration-grant.test.sh asserts prompts/worker.md keeps the D1 schema rule (expand/contract, rollback-before-data, one phase per PR, banned DROP/NOT NULL without DEFAULT, real integration test, no stale API names). The vacation grant is time-bound through 2026-09-08 and supersedes the earlier same-day void/correction rows.",
-      "proof": "tests/fleet-d1-prod-migration-grant.test.sh; prompts/worker.md; config/rule-enforcement.json; fleet-ops#907",
+      "mechanism": "CI drill tests/fleet-d1-prod-migration-grant.test.sh asserts prompts/worker-blocks/d1-gate-integrity.md keeps the D1 schema rule (expand/contract, rollback-before-data, one phase per PR, banned DROP/NOT NULL without DEFAULT, real integration test, no stale API names). The vacation grant is time-bound through 2026-09-08 and supersedes the earlier same-day void/correction rows.",
+      "proof": "tests/fleet-d1-prod-migration-grant.test.sh; prompts/worker-blocks/d1-gate-integrity.md; config/rule-enforcement.json; fleet-ops#907",
       "status": "enforced"
     },
     {
       "id": "led-2026-08-27-d1-prod-migrations-process-amendment",
       "source": "decisions-ledger.md: 2026-08-27 | D1 prod migrations \u2014 process amendment (Nish, same conversation)",
-      "mechanism": "CI drill tests/fleet-d1-prod-migration-process.test.sh asserts prompts/worker.md keeps the D1 prod migration execution rule (senior process gate, never single-agent apply, independent senior blind-review, blocked-on: senior-conference). On encountering a prod D1 migration task, workers block themselves and route to senior-conference instead of applying alone.",
-      "proof": "tests/fleet-d1-prod-migration-process.test.sh; prompts/worker.md; fleet-ops#908",
+      "mechanism": "CI drill tests/fleet-d1-prod-migration-process.test.sh asserts prompts/worker-blocks/d1-gate-integrity.md keeps the D1 prod migration execution rule (senior process gate, never single-agent apply, independent senior blind-review, blocked-on: senior-conference). On encountering a prod D1 migration task, workers block themselves and route to senior-conference instead of applying alone.",
+      "proof": "tests/fleet-d1-prod-migration-process.test.sh; prompts/worker-blocks/d1-gate-integrity.md; fleet-ops#908",
       "status": "enforced"
     },
     {
@@ -742,8 +742,8 @@
     {
       "id": "led-2026-08-27-geo-aeo-fleet-executes-measurement-owned-content-",
       "source": "decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish",
-      "mechanism": "Heartbeat GEO/AEO canary (fleet-geo-aeo-canary): config/geo-aeo-policy.json locks allowed_tactics to measurement + owned-content and parks reddit-community / digital-pr; brand gate is preview-then-autonomous (approved_surfaces need Nish preview); llms.txt is developer-docs-only; worker.md names the parked tactics; bin/ and systemd/ fail loud on Reddit-API / PRAW / HARO posting machinery. Observe-to-close via the rule-coverage join on a real heartbeat tick.",
-      "proof": "bin/fleet-geo-aeo-canary; lib/geo-aeo.py; config/geo-aeo-policy.json; prompts/worker.md; tests/fleet-geo-aeo.test.sh; fleet-heartbeat-tier1 block 34; fleet-ops#1245",
+      "mechanism": "Heartbeat GEO/AEO canary (fleet-geo-aeo-canary): config/geo-aeo-policy.json locks allowed_tactics to measurement + owned-content and parks reddit-community / digital-pr; brand gate is preview-then-autonomous (approved_surfaces need Nish preview); llms.txt is developer-docs-only; worker-blocks/geo-aeo.md names the parked tactics; bin/ and systemd/ fail loud on Reddit-API / PRAW / HARO posting machinery. Observe-to-close via the rule-coverage join on a real heartbeat tick.",
+      "proof": "bin/fleet-geo-aeo-canary; lib/geo-aeo.py; config/geo-aeo-policy.json; prompts/worker-blocks/geo-aeo.md; tests/fleet-geo-aeo.test.sh; fleet-heartbeat-tier1 block 34; fleet-ops#1245",
       "status": "enforced"
     },
     {

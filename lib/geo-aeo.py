@@ -9,8 +9,9 @@ Gates (fail-loud, exit 1):
   1. Policy file exists, parses, and locks allowed_tactics, parked_tactics,
      brand_gate, and llms_txt to the ledger values.
   2. parked_tactics never appear in allowed_tactics.
-  3. prompts/worker.md still names the parked tactics, the brand gate,
-     and the llms.txt skip.
+  3. prompts/worker-blocks/geo-aeo.md (the fragment intake assembles into
+     0509/geo packets, fleet-ops#3247) still names the parked tactics, the
+     brand gate, and the llms.txt skip.
   4. Every grants[] row is Nish-dated and names a parked tactic.
   5. Every approved_surfaces[] row carries nish_preview_approved=true
      and a YYYY-MM-DD date.
@@ -297,6 +298,8 @@ def default_paths() -> tuple[Path, Path, Path]:
     worker = Path(os.environ["FLEET_GEO_AEO_WORKER"]) if os.environ.get(
         "FLEET_GEO_AEO_WORKER"
     ) else _first_file(
+        checkout / "prompts/worker-blocks/geo-aeo.md",
+        Path.home() / ".pi/agent/prompts/worker-blocks/geo-aeo.md",
         checkout / "prompts/worker.md",
         Path.home() / ".pi/agent/prompts/worker.md",
     )
@@ -305,7 +308,7 @@ def default_paths() -> tuple[Path, Path, Path]:
     if policy is None:
         policy = checkout / "config/geo-aeo-policy.json"
     if worker is None:
-        worker = checkout / "prompts/worker.md"
+        worker = checkout / "prompts/worker-blocks/geo-aeo.md"
     return policy, worker, scan_root
 
 
