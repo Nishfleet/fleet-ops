@@ -81,7 +81,7 @@ ok "no-agent-names REJECT plus user-facing flag is clean"
 rm -f "$sessions/no-agent-names-reject-flagged.jsonl"
 
 # --- 3. prompts/worker.md must forbid explaining a REJECT as test data -------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1052' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1052 (prompt-side lock for no-agent-names REJECT walk-past)"

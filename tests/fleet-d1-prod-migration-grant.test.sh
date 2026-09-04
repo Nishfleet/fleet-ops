@@ -14,7 +14,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/prompts/worker-0509-migrations.md"
 matrix="$repo_root/config/rule-enforcement.json"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

@@ -57,14 +57,20 @@
       "proof": [
         ".github/workflows/ci.yml",
         ".github/workflows/auto-revert.yml",
-        "prompts/worker.md"
+        "prompts/worker.md",
+        "prompts/worker-0509-migrations.md",
+        "prompts/worker-0509-gate-integrity.md",
+        "prompts/worker-geo-aeo.md"
       ],
       "units": [
         "pi-issue@.service",
         "pi-packet@.service"
       ],
       "prompts": [
-        "worker.md"
+        "worker.md",
+        "worker-0509-migrations.md",
+        "worker-0509-gate-integrity.md",
+        "worker-geo-aeo.md"
       ],
       "bypass_checks": [
         "builder_ci_and_auto_revert"

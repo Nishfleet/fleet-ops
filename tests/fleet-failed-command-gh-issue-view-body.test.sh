@@ -119,7 +119,7 @@ ok "valid gh issue view --comments success is not flagged (contrast with #1055)"
 rm -f "$sessions/gh-issue-view-comments-ok.jsonl"
 
 # --- 4. prompts/worker.md cites fleet-ops#1055 (prompt-side lock) ------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1055' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1055 (prompt-side lock)"

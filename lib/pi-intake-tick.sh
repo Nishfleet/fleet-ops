@@ -217,6 +217,27 @@ blocked_filter() {
     return 1
 }
 
+# fleet-ops#3120: conditionally append repo-specific worker prompt blocks.
+# The worker prompt itself is small (≤80 lines). Extra blocks are appended
+# by intake only when the issue context demands them, so most packets stay
+# under the 12 KB non-0509 budget and 0509 packets stay under 20 KB.
+PROMPT_DIR=$(dirname "$WORKER_PROMPT")
+conditional_worker_blocks() {
+    local repo="$1" title="$2" body="$3" labels="$4"
+    if [[ "$repo" == "0509" ]]; then
+        if printf '%s%s' "$title" "$body" | grep -qi 'migrations/'; then
+            cat "$PROMPT_DIR/worker-0509-migrations.md" 2>/dev/null || true
+        fi
+        if printf '%s%s' "$title" "$body" | grep -qi '\.github/'; then
+            cat "$PROMPT_DIR/worker-0509-gate-integrity.md" 2>/dev/null || true
+        fi
+    fi
+    # GEO/AEO block is driven by the geo/aeo label, not free-text matches.
+    if printf '%s' "$labels" | grep -qiE '"(geo|aeo)"'; then
+        cat "$PROMPT_DIR/worker-geo-aeo.md" 2>/dev/null || true
+    fi
+}
+
 # Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
 # 0509's required-verifier-integrity gate blocks any PR that touches a
 # protected verifier/deploy file unless a repo admin posts an exact
@@ -812,10 +833,14 @@ blocked-on: nish-decision" 2>/dev/null || true
         echo "issue $N: claim comment skipped (gh secondary rate limit after 3 retries: $comment_out)" >&2
     fi
 
-    # Write the worker packet so pi-issue-run can pick its own seat at run time
+    # Write the worker packet so pi-issue-run can pick its own seat at run time.
+    # fleet-ops#3120: append repo-specific conditional blocks after the small
+    # base prompt, not inside it, so the static prompt stays under 80 lines and
+    # the per-packet size stays under 12 KB (non-0509) / 20 KB (0509).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
     {
         cat "$WORKER_PROMPT"
+        conditional_worker_blocks "$REPO" "$title" "$body" "${labels[$i]}"
         echo
         echo "TARGET: repo $FULL issue $N unit pi-issue-${REPO}-${N}"
     } > "$packet_path"

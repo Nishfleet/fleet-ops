@@ -302,7 +302,7 @@ ok "live #965: still-dirty slug leaves all leftover duplicates open"
 # citation next to #965, the #975 citation next to #970, and the #980
 # citation next to #975 — all are siblings in the 01a03dee leftover-
 # duplicate pile (fleet-ops#951).
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 grep -q 'fleet-ops#965' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#965 (prompt-side lock for the leftover 01a03dee duplicate)"
 ok "worker.md cites fleet-ops#965"

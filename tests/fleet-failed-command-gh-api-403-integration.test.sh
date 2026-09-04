@@ -171,7 +171,7 @@ ok "HTTP 404 walk-past continues to be flagged (contrast with #1253)"
 rm -f "$sessions/gh-api-404-contrast.jsonl"
 
 # --- 7. prompts/worker.md cites fleet-ops#1253 (prompt-side lock) ---------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1253' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1253 (prompt-side lock)"

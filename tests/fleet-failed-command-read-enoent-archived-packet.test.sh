@@ -148,7 +148,7 @@ ok "cause prose alone (no failure named) is still flagged even when the archived
 rm -f "$sessions/read-enoent-cause-prose-only.jsonl"
 
 # --- 4. worker.md cites fleet-ops#1059 (prompt-side lock) -------------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1059' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1059 (prompt-side lock for the archived-packet read-ENOENT class)"

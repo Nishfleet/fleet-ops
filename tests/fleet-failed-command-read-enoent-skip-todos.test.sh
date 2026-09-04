@@ -117,7 +117,7 @@ ok "live #958 positive: skip-then-todos shape plus later named flag is clean"
 rm -f "$sessions/read-enoent-skip-todos-flagged.jsonl"
 
 # --- 3. worker.md cites fleet-ops#958 (prompt-side lock) -------------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#958' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#958 (prompt-side lock for the live skip-then-todos ENOENT shape)"

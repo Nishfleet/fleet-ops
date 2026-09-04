@@ -215,7 +215,7 @@ ok "live #1003: gh --json + python3 KeyError: 'comments' walked past is flagged"
 rm -f "$sessions/python-traceback-gh-json-comments.jsonl"
 
 # --- 6. worker.md cites fleet-ops#957 (prompt-side lock) ----------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#957' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#957 (prompt-side lock for the live Python traceback shape)"

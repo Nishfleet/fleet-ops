@@ -92,6 +92,12 @@
       "cadence": "30min",
       "source": "repo"
     },
+    "fleet-landing-watch.timer": {
+      "reason": "Fleet landing watch — Nish 2026-09-04 while away; every 6h sanity pass",
+      "classification": "scheduled",
+      "cadence": "6h",
+      "source": "user-config"
+    },
     "fleet-metrics-export.timer": {
       "reason": "Fleet Prometheus metrics export — 5-min cadence for metrics freshness; piggybacks git-mirror-update and waste-ledger. Metrics are an aggregate snapshot with no single upstream event; 5-min cadence is the scrape interval floor",
       "classification": "scheduled",

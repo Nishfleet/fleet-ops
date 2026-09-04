@@ -218,7 +218,7 @@ rm -f "$sessions/ls-nomatch-exempt-vs-1061.jsonl"
 # --- 5. worker.md cites fleet-ops#1061 (prompt-side lock) -------------------
 # The prompt is the standing-rule contract for the next worker; dropping
 # the #1061 citation is a regression even if the drill still passes.
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#1061' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#1061 (prompt-side lock for the live compound-ls Permission-denied shape)"

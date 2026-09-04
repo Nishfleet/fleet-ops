@@ -327,7 +327,7 @@ ok "live #972: still-dirty slug leaves all seven leftover duplicates open"
 # next to it, the #967 citation next to #972, and the #977 citation
 # next to #967 — all are siblings in the 01a03e61 leftover-duplicate
 # pile (fleet-ops#951).
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 grep -q '#972' "$worker" \
   || fail "prompts/worker.md must carry the #972 citation next to the #958 read-ENOENT citation"
 grep -q 'fleet-ops#958, #972' "$worker" \

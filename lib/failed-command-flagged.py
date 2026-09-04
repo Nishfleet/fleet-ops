@@ -567,8 +567,9 @@ A `bin/fleet-no-agent-names-check` REJECT (exit 1 with
 while debugging fleet-ops#926; the test file contains example attribution
 strings, so the tool correctly REJECTED, but the next turn said "Good - this is
 testing the tool's behavior..." and moved on. That prose does NOT name the
-failure. The prompt-side lock in `prompts/worker.md` forbids explaining a
-no-agent-names REJECT as test data; the dedicated regression test
+failure and tries to explain it away as test data. The prompt (and detector
+source) lock forbids explaining a no-agent-names REJECT as test data; the
+dedicated regression test
 `tests/fleet-failed-command-no-agent-names-reject.test.sh` pins the shape
 (fleet-ops#1052). A `bin/fleet-failed-command-flagged` invocation
 (`FLEET_FAILED_COMMAND_SESSIONS=/tmp`, `FLEET_FAILED_COMMAND_FILE_ISSUES=0`)
@@ -601,6 +602,35 @@ command: the call never executed.
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
       [--window-hours 24] [--grace-minutes 20]
+
+Live case law (moved here from prompts/worker.md, fleet-ops#3120):
+  Live stale-path case (fleet-ops#1097): `cat tooling/fleet-ops/bin/fleet-failed-command-flagged` -> `cat: <path>: No such file or directory` + exit 1 (cat ENOENT is never a no-match probe) — name it.
+  Live racing-cd case (fleet-ops#1217): `cd /tmp/fleet-ops-fresh-1165 2>/dev/null && ls` racing an in-flight clone -> `(no output) Command exited with code 1` — name it.
+  Live read-ENOENT case (fleet-ops#953): `read` -> `ENOENT: no such file or directory, access '<path>'` isError=true; thinking-only recovery or "Now I have the full picture" does not discharge — name it.
+  Live stale-checkout read-ENOENT case (fleet-ops#1001): `read /home/nish/workspaces/fleet-ops-sync/bin/fleet-escalation-canary` -> ENOENT (stale checkout); `ls ~/.local/bin/*canary*` returning the canonical symlink does not discharge — name it.
+  Live read-ENOENT skip-then-todos case (fleet-ops#958): ENOENT then thinking-only turns (find/skip/"full picture") then first user-facing text bundled with todo toolCalls, none naming the failure — same class as #953 — name it.
+  Live archived-packet read-ENOENT case (fleet-ops#1059): `read /home/nish/.local/state/pi-issues/fleet-ops-938.in` (archived to ARCHIVED-fleet-ops-938.in-<ts>) -> ENOENT; "The file was archived" names the CAUSE not the FAILURE — name it.
+  Live read-ENOENT leftover-duplicate drain (fleet-ops#958, #972, #967, #977): #972, #967, #977 are leftover duplicates of #958; citation chain (#972, #967, #977) must carry every sibling.
+  Live stale-rg salvage-scan read-ENOENT case (fleet-ops#1255): `read /home/nish/workspaces/fleet-ops-rg/bin/salvage-secret-scan` -> ENOENT (stale checkout; canonical is fleet-ops-sync) — name it.
+  Live stale-checkout failed-command-flagged read-ENOENT case (fleet-ops#1100): `read /home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged` -> ENOENT (canonical is fleet-ops-deploy-clone) — name it.
+  Live read-EISDIR case (fleet-ops#1170, fleet-ops#1243): `read` -> `EISDIR: illegal operation on a directory, read` isError=true (#1170 sessions dir, #1243 0509-work/e2e/fixtures dir, walked past with "printStackTrace threshold") — name it.
+  Live Python-traceback case (fleet-ops#957, #966): `python3 -c` -> `KeyError: 'input_domain'` (or fleet-ops#1003 sibling `KeyError: 'comments'` from `gh issue view --json | python3 -c`) + exit 1; #1003/#1019 drain locked under tests/fleet-failed-command-observe-duplicate-1003.test.sh; #966, #971 are leftover duplicates of #957 — name it.
+  Live hyphenated-module case (fleet-ops#937): `python3 -c "from <hyphenated_name> import"` -> `ModuleNotFoundError: No module named '<hyphenated_name>'` + exit 1 — name it.
+  Live PEM-deserialize case (fleet-ops#1174): `python3 - <<'PY'` calling `load_pem_private_key` on `NISHFLEET_PEM_EOF` -> `ValueError: Could not deserialize key data` + exit 1 — name it.
+  Live edit-unmatch case (fleet-ops#1053): `edit` -> `Found N occurrences of the text in <path>. The text must be unique.` (e.g. AUDITOR-LOG.md) — name it.
+  Live no-op edit case (fleet-ops#1139): `edit` -> `No changes made to <path>. The replacement produced identical content.`; "The text is already the same" names the CAUSE not the FAILURE — name it.
+  Live edit-array-unmatch case (fleet-ops#1173): multi-edit variant `Could not find edits[0] in <path>.` — name it.
+  Live edit-schema-validation case (fleet-ops#1286): `edit` -> `Validation failed for tool "edit": - path: must have required properties path` isError=true; "The edit tool requires the path field" names the CAUSE not the FAILURE — name it.
+  Live edit-unmatch leftover-duplicate drain (fleet-ops#965, #970, #975, #980): 01a03dee pile locked under tests/fleet-failed-command-observe-duplicate-open.test.sh; citation chain (#965, #970, #975, #980) must carry every sibling.
+  Live cherry-pick-empty case (fleet-ops#1065): `git cherry-pick <sha>` -> exit 1 `The previous cherry-pick is now empty, possibly due to conflict resolution.` (no `fatal:`) — name it.
+  Live compound-ls Permission-denied case (fleet-ops#1061): compound `;`-chain where downstream `ls <path>` -> `Permission denied`, tail silenced (bash exits 1 not 2) — name it.
+  Live git-branch-force leftover-duplicate drain (fleet-ops#849, #985): 01a04105 pile locked under tests/fleet-failed-command-observe-duplicate-git-branch-force.test.sh; citation chain must carry #985 next to #849.
+  Live empty-tool-name case (fleet-ops#1242): malformed Pi toolCall empty name -> `Tool  not found` (two spaces; isError=true) — name it.
+  Live gh-pr-view-merged case (fleet-ops#1244): UNPIPED `gh pr view <N> --json mergedAt,merged` -> `Unknown JSON field: "merged"` + exit 1 (isError=true); thinking-only + silent `--json title,state` retry does not name it. Piped `2>&1 | head` sibling is #1193 (isError=false, stays clean); do not add `Unknown JSON field` to REAL_ERR_RE for isError=false.
+  Live edit-unmatch cat-append case (fleet-ops#1140): `edit /home/nish/workspaces/agent-state/READY-WORK.md` -> `Could not find the exact text in <path>` isError=true, recovered by `bash cat >>` append of SAME path — still a swallowed failure (recovery not a flag) — name it.
+  Live gh-json-graphql-recovery case (fleet-ops#1142): `gh issue view 1003 -R Nishfleet/fleet-ops --comments --json author,body,createdAt | python3 -c "...d['comments']..."` -> `KeyError: 'comments'` + exit 1, recovered by `gh api graphql` with thinking-only note — GraphQL success does not discharge the KeyError — name it.
+  Live typo-est-sh case (fleet-ops#1254): `bash tests/fleet-failed-command-edit-unmatch.est.sh` (truncated .test.sh typo) -> `bash: ...: No such file or directory` + exit 127 isError=true, no prior harness block — real swallowed failure (#677 127-ENOENT exemption needs a prior block; a typo is not a probe) — name it.
+  Live detector-bin-exit case (fleet-ops#1220): `bin/fleet-failed-command-flagged` (`FLEET_FAILED_COMMAND_SESSIONS=/tmp`, `FLEET_FAILED_COMMAND_FILE_ISSUES=0`) -> `findings=N` + `LOUD [FAILED-COMMAND-SWALLOWED]` + exit 1 isError=true — detector's contract is to exit 1 on findings (not a probe); FAILED-COMMAND-SWALLOWED lines name OTHER sessions; thinking-only "the detector is working" + grep does not name it — name it.
 """
 from __future__ import annotations
 

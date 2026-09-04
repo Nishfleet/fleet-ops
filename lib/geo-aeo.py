@@ -9,8 +9,9 @@ Gates (fail-loud, exit 1):
   1. Policy file exists, parses, and locks allowed_tactics, parked_tactics,
      brand_gate, and llms_txt to the ledger values.
   2. parked_tactics never appear in allowed_tactics.
-  3. prompts/worker.md still names the parked tactics, the brand gate,
-     and the llms.txt skip.
+  3. prompts/worker.md (or the conditional worker-geo-aeo.md block it
+     includes) still names the parked tactics, the brand gate, and the
+     llms.txt skip.
   4. Every grants[] row is Nish-dated and names a parked tactic.
   5. Every approved_surfaces[] row carries nish_preview_approved=true
      and a YYYY-MM-DD date.
@@ -187,13 +188,15 @@ def check_surfaces(surfaces: Any) -> list[str]:
     return errors
 
 
-def check_worker(path: Path) -> list[str]:
-    if not path.is_file():
-        return [f"worker prompt missing: {path}"]
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return [f"worker prompt unreadable: {path}: {exc}"]
+def check_worker(*paths: Path) -> list[str]:
+    text = ""
+    for path in paths:
+        if not path.is_file():
+            return [f"worker prompt missing: {path}"]
+        try:
+            text += path.read_text(encoding="utf-8") + "\n"
+        except OSError as exc:
+            return [f"worker prompt unreadable: {path}: {exc}"]
     missing = [needle for needle in WORKER_NEEDLES if needle not in text]
     if missing:
         return [f"worker.md missing GEO/AEO needles: {missing}"]
@@ -240,7 +243,14 @@ def run_check(
         data = {}
     else:
         errors.extend(check_policy(data))
-    errors.extend(check_worker(worker_path))
+    # fleet-ops#3120: the GEO/AEO block is conditional, so the canary reads
+    # the base worker.md plus its optional sibling block when present.
+    worker_paths = [worker_path]
+    if worker_path.name == "worker.md":
+        block = worker_path.parent / "worker-geo-aeo.md"
+        if block.is_file():
+            worker_paths.append(block)
+    errors.extend(check_worker(*worker_paths))
     errors.extend(check_scan(scan_root))
     if errors:
         for err in errors:

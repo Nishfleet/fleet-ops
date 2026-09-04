@@ -315,7 +315,7 @@ ok "live #1003: still-dirty slug leaves both leftover duplicates open"
 # sibling; this file adds the #1003 / #1019 citation next to it for
 # the leftover-duplicate drain, and pins the #1019 sibling in the
 # 01a041a5 pile (a 2-issue pile, not the 6-issue 01a03e38 pile).
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 grep -q '#1003' "$worker" \
   || fail "prompts/worker.md must carry the #1003 citation next to the #957 python-traceback citation"
 grep -q '#1019' "$worker" \

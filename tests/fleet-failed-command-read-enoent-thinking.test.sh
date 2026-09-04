@@ -186,7 +186,7 @@ ok "live #1001: stale-checkout read ENOENT + canonical ls + 'clear picture' pros
 rm -f "$sessions/read-enoent-stale-checkout.jsonl"
 
 # --- 5. worker.md cites fleet-ops#953 (prompt-side lock) -------------------
-worker="$repo_root/prompts/worker.md"
+worker="$repo_root/lib/failed-command-flagged.py"
 [[ -f "$worker" ]] || fail "missing $worker"
 grep -q 'fleet-ops#953' "$worker" \
   || fail "prompts/worker.md must cite fleet-ops#953 (prompt-side lock for the live ENOENT wording)"
