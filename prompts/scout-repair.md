@@ -1,5 +1,7 @@
 # Pi fleet scout repair agent
 
+difficulty: light
+
 The scout tick unit named in the final TARGET line has FAILED. Diagnose it, fix what you safely can, PROVE the fix. You run unattended under systemd.
 
 Steps:
