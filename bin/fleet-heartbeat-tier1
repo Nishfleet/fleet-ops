@@ -1168,38 +1168,8 @@ fi
 # ============================================================================
 # 6b. LIFECYCLE-LABEL UNLABELED OPEN ISSUES (fleet-ops#376)
 # ============================================================================
-# Named reason for this sweep: intake's ExecCondition / list is
-# `-l agent-ready`. An issue filed with no lifecycle label never enters
-# the queue (live: #290/#304/#308 sat OPEN unlabeled while the
-# conference-gate re-land died around them). The GitHub App has no
-# webhooks, so there is no event to subscribe to. Heartbeat's existing
-# 30-minute timer is the observer; this is not a new schedule.
-relabeled=0
-lifecycle_rc=0
-LIFECYCLE_BIN="${FLEET_LIFECYCLE_SWEEP:-/home/nish/.local/bin/lifecycle-label-sweep}"
-if require_manifest_helper "$LIFECYCLE_BIN"; then
-    log "6b. lifecycle-label-sweep starting"
-    lifecycle_repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_REPOS_JSON")
-    lifecycle_out=""
-    if lifecycle_out=$(LIFECYCLE_SWEEP_REPOS="$lifecycle_repos" \
-        LIFECYCLE_SWEEP_LOCKDIR="${XDG_RUNTIME_DIR}/lifecycle-label-sweep" \
-        LIFECYCLE_SWEEP_INTAKE_JSON="$INTAKE_REPOS_JSON" \
-        "$LIFECYCLE_BIN"); then
-        log "6b. lifecycle-label-sweep done: $lifecycle_out"
-        relabeled=$(printf '%s' "$lifecycle_out" | sed -n 's/.*relabeled=\([0-9][0-9]*\).*/\1/p')
-        relabeled=${relabeled:-0}
-    else
-        log "6b. lifecycle-label-sweep FAILED — next tick retries"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — MANIFEST dest; silent skip disabled the lifecycle-label sweep (fleet-ops#485)"
-        lifecycle_rc=1
-    else
-        log "6b. lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — skip (not installed)"
-    fi
-fi
+# MOVED to fleet-github-state-sweep (event-driven) by fleet-ops#3128.
+# The heartbeat timer is now host-local-only and runs every 60 minutes.
 
 # ============================================================================
 # 7. DEGRADED-LANE REPORT (fleet-ops#63)
@@ -1620,30 +1590,7 @@ fi
 # ============================================================================
 # 19. MERGED-PR OBSERVE-TO-CLOSE (fleet-ops#1435)
 # ============================================================================
-# The mechanical prevention for the "forgotten close trailer" class: a
-# merged PR that references an open #<N> but omits `Closes #<N>` leaves the
-# issue OPEN and the heartbeat re-queues it forever (PR #1429 merged the
-# #1135 work but left #1135 cycling through 5+ claim/release rounds). This
-# step closes an open agent-in-progress/critical-path issue once a merged PR
-# has shipped its work and no open PR / live worker / claim branch remains.
-# Close is gated behind FLEET_MERGED_PR_CLOSE_OK=1 so only the production
-# heartbeat closes against the live repo; a found candidate is normal
-# operation (it closes), so only a helper crash (rc >= 2) fails the tick.
-MERGED_PR_CLOSE_BIN="${FLEET_MERGED_PR_CLOSE:-/home/nish/.local/bin/fleet-merged-pr-close}"
-merged_pr_close_rc=0
-if [ -x "$MERGED_PR_CLOSE_BIN" ]; then
-    log "19. merged-pr observe-to-close starting"
-    if MERGED_PR_CLOSE_REPOS="$(printf '%s\n' "$claim_repos")" \
-        FLEET_MERGED_PR_CLOSE_OK=1 \
-        "$MERGED_PR_CLOSE_BIN" 2>>"$TICK_LOG"; then
-        log "19. merged-pr observe-to-close complete"
-    else
-        merged_pr_close_rc=$?
-        log "19. merged-pr observe-to-close rc=$merged_pr_close_rc — helper did not exit clean"
-    fi
-else
-    log "19. merged-pr-close helper missing at $MERGED_PR_CLOSE_BIN — skip (not installed; re-run ./install.sh)"
-fi
+# MOVED to fleet-github-state-sweep (event-driven) by fleet-ops#3128.
 
 # ============================================================================
 # 20. INTERVENTIONS-ELIMINATED SESSION-CLOSE LINT (fleet-ops#526)
@@ -1671,35 +1618,7 @@ fi
 # ============================================================================
 # 21. DUPLICATE-ISSUE DRAIN (fleet-ops#2762)
 # ============================================================================
-# Every tick, drain the same-problem duplicate backlog the filing gate
-# (fleet-ops#1212) identifies but never closes. The sweep clusters open
-# issues by title+body token overlap; for each duplicate cluster the oldest
-# open issue stays canonical and the remaining agent-ready members close
-# with a `duplicate-of` comment. agent-in-progress / agent-blocked /
-# red-on-main members get the marker comment only (merged by reference, no
-# close) so no active work or Nish-gated item is touched. Capped per run.
-# Fail-closed: FLEET_CLOSE_DUPLICATES_OK=1 is set only here, so one-off
-# tests cannot phantom-close real issues. rc 0 always (best-effort drain);
-# only a helper crash (rc >= 2) trips the unit.
-ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-/home/nish/.local/bin/fleet-issue-file}"
-close_duplicates_rc=0
-if [ -x "$ISSUE_FILE_BIN" ]; then
-    log "21. duplicate-issue drain starting"
-    # Fail-closed: only the production heartbeat closes (fleet-ops#820 class).
-    if FLEET_CLOSE_DUPLICATES_OK=1 "$ISSUE_FILE_BIN" close-duplicates --output-json "$LOG_DIR/close-duplicates.json"; then
-        log "21. duplicate-issue drain complete"
-    else
-        close_duplicates_rc=$?
-        if [ "$close_duplicates_rc" -ge 2 ]; then
-            log "21. duplicate-issue drain CRASHED (rc=$close_duplicates_rc)"
-        else
-            log "21. duplicate-issue drain complete (rc=$close_duplicates_rc)"
-            close_duplicates_rc=0
-        fi
-    fi
-else
-    log "21. fleet-issue-file missing at $ISSUE_FILE_BIN — skip (not installed; re-run ./install.sh)"
-fi
+# MOVED to fleet-github-state-sweep (event-driven) by fleet-ops#3128.
 
 # ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
@@ -2642,36 +2561,7 @@ fi
 # 43. LOOSE-ENDS CANARY — "Nothing sits half-done, and no question dies
 # unanswered" (fleet-ops#528, sr-nothing-half-done, Nish 2026-08-20)
 # ============================================================================
-# Three detection classes share one classifier so a single observer drains
-# the backlog without a pager storm:
-#   1. Unanswered QUESTIONS.md rows (OPEN or HOLD past return date).
-#   2. Half-done worker PRs (open MERGEABLE, >24h, no auto-merge armed).
-#   3. Stale worktrees (dirty-or-idle >24h, no live worker unit).
-# Observe-to-open: a finding without an open ticket is filed (capped per
-# tick). Observe-to-close: a previously filed slug that is no longer a
-# finding gets a `resolved-at:` comment on a green tick; a later tick
-# with that marker closes the issue. rc 0 = tick green with findings
-# (alarm, fleet-ops#1116); rc 1 = watcher broken (loud, tick stays
-# green); rc >= 2 = crash (heartbeat fails loud).
-LOOSE_ENDS_CANARY_BIN="${FLEET_LOOSE_ENDS_CANARY:-/home/nish/.local/bin/fleet-loose-ends-canary}"
-loose_ends_canary_rc=0
-if require_manifest_helper "$LOOSE_ENDS_CANARY_BIN"; then
-    log "43. loose-ends canary starting"
-    if "$LOOSE_ENDS_CANARY_BIN"; then
-        log "43. loose-ends canary complete"
-    else
-        loose_ends_canary_rc=$?
-        log "43. loose-ends canary FAILED (rc=$loose_ends_canary_rc) — sr-nothing-half-done detector broken; unit will land in --state=failed"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "loose-ends canary missing at $LOOSE_ENDS_CANARY_BIN — MANIFEST dest; silent skip disabled the sr-nothing-half-done check (fleet-ops#528)"
-        loose_ends_canary_rc=1
-    else
-        log "43. loose-ends canary missing at $LOOSE_ENDS_CANARY_BIN — skip (not installed)"
-    fi
-fi
+# MOVED to fleet-github-state-sweep (event-driven) by fleet-ops#3128.
 
 # ============================================================================
 # 44. EMPTY-RUN BURST CANARY (fleet-ops#2666)
@@ -2740,7 +2630,7 @@ fi
 # ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -2764,9 +2654,6 @@ if [ "$undersat_rc" -ne 0 ]; then
 fi
 if [ "${claim_reconcile_rc:-0}" -ne 0 ]; then
     exit "${claim_reconcile_rc}"
-fi
-if [ "${lifecycle_rc:-0}" -ne 0 ]; then
-    exit "${lifecycle_rc}"
 fi
 if [ "$low_water_rc" -ne 0 ]; then
     exit "$low_water_rc"
@@ -2896,14 +2783,6 @@ fi
 if [ "${tailscale_localapi_canary_rc:-0}" -ne 0 ]; then
     exit "$tailscale_localapi_canary_rc"
 fi
-# loose-ends: only propagate when the helper CRASHED (rc >= 2). exit 1
-# means "watcher broken / MANIFEST dest missing" — already loud via
-# HELPER-MISSING; landing the unit in --state=failed every 15 min for
-# it is the trip-loop we are fixing (fleet-ops#1116). rc>=2 = real
-# crash (python import fail, classifier exception) — propagate.
-if [ "${loose_ends_canary_rc:-0}" -ge 2 ]; then
-    exit "$loose_ends_canary_rc"
-fi
 # empty-run burst: only propagate when the helper CRASHED (rc >= 2).
 # exit 1 means "watcher broken / samples inconsistent" — already loud via
 # LOUD [EMPTY-BURST-WATCHER-BROKEN] and the canary auto-files; landing the
@@ -2956,13 +2835,6 @@ fi
 if [ "${debug_playbook_rc:-0}" -ge 2 ]; then
     exit "$debug_playbook_rc"
 fi
-# merged-pr observe-to-close: only propagate when the helper CRASHED
-# (rc >= 2). A found candidate is normal operation — the helper closes the
-# issue with evidence; landing the unit in --state=failed for doing its
-# observe-to-close job is a trip-loop (fleet-ops#1116 pattern).
-if [ "${merged_pr_close_rc:-0}" -ge 2 ]; then
-    exit "$merged_pr_close_rc"
-fi
 # interventions-eliminated: only propagate when the helper CRASHED (rc >= 2).
 # exit 1 means "the same correction recurred a third time" — already
 # loud + auto-filed + observe-to-close-drained; landing the unit in
@@ -2970,12 +2842,6 @@ fi
 # (fleet-ops#1116).
 if [ "${interventions_eliminated_rc:-0}" -ge 2 ]; then
     exit "$interventions_eliminated_rc"
-fi
-# duplicate-issue drain: only propagate when the helper CRASHED (rc >= 2).
-# rc 0 = drained (possibly zero); the drain is best-effort and never trips
-# the unit for finding duplicates (fleet-ops#1116 pattern).
-if [ "${close_duplicates_rc:-0}" -ge 2 ]; then
-    exit "$close_duplicates_rc"
 fi
 # unjustified-wait: only propagate when the helper CRASHED (rc >= 2).
 # exit 1 means "TOP GEAR invariant violated" — already loud + auto-

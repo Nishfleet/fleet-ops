@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# fleet-github-state-sweep — event-driven GitHub-state sections that moved
+# out of fleet-heartbeat-tier1 (fleet-ops#3128).
+#
+# gh-webhook-receiver fires this service on issues/pull_request events.
+# It runs the four read-only/close-on-signal helpers that used to be polled
+# every 30 minutes inside fleet-heartbeat:
+#   - lifecycle-label-sweep
+#   - fleet-merged-pr-close
+#   - fleet-issue-file close-duplicates
+#   - fleet-loose-ends-canary
+#
+# Each helper is responsible for its own rate limits and fail-closed gates.
+# This script only orchestrates: set the canonical environment, run the
+# helpers, and return non-zero only on a real crash (rc >= 2). rc 1 from
+# helpers is their normal observe-to-close / alarm signal and is swallowed.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+INTAKE_JSON="${FLEET_GITHUB_STATE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+[ -f "$INTAKE_JSON" ] || { echo "FATAL: intake-repos.json missing: $INTAKE_JSON" >&2; exit 2; }
+jq empty "$INTAKE_JSON" >/dev/null 2>&1 || { echo "FATAL: invalid JSON: $INTAKE_JSON" >&2; exit 2; }
+
+REPOS=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_JSON" | tr '\n' ' ')
+[ -n "$REPOS" ] || { echo "FATAL: no repos in $INTAKE_JSON" >&2; exit 2; }
+
+LOG_DIR="${FLEET_GITHUB_STATE_LOG_DIR:-/home/nish/.local/state/fleet-github-state-sweep}"
+mkdir -p "$LOG_DIR"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+log() {
+    printf '[%s] [fleet-github-state-sweep] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+require() {
+    local path="$1"
+    if [ -x "$path" ]; then
+        return 0
+    fi
+    log "helper missing at $path — skip"
+    return 1
+}
+
+overall_rc=0
+
+# --- lifecycle-label-sweep --------------------------------------------------
+LIFECYCLE_BIN="${FLEET_LIFECYCLE_SWEEP:-/home/nish/.local/bin/lifecycle-label-sweep}"
+if require "$LIFECYCLE_BIN"; then
+    log "lifecycle-label-sweep starting"
+    if LIFECYCLE_SWEEP_REPOS="$(printf '%s\n' "$REPOS" | tr ' ' '\n')" \
+       LIFECYCLE_SWEEP_INTAKE_JSON="$INTAKE_JSON" \
+       LIFECYCLE_SWEEP_LOCKDIR="${XDG_RUNTIME_DIR}/lifecycle-label-sweep" \
+       "$LIFECYCLE_BIN"; then
+        log "lifecycle-label-sweep done"
+    else
+        log "lifecycle-label-sweep FAILED — next event retries"
+        overall_rc=1
+    fi
+fi
+
+# --- merged-pr observe-to-close ---------------------------------------------
+MERGED_PR_CLOSE_BIN="${FLEET_MERGED_PR_CLOSE:-/home/nish/.local/bin/fleet-merged-pr-close}"
+if require "$MERGED_PR_CLOSE_BIN"; then
+    log "merged-pr observe-to-close starting"
+    if MERGED_PR_CLOSE_REPOS="$(printf '%s\n' "$REPOS" | tr ' ' '\n')" \
+       MERGED_PR_CLOSE_INTAKE_JSON="$INTAKE_JSON" \
+       FLEET_MERGED_PR_CLOSE_OK=1 \
+       MERGED_PR_CLOSE_TRIAGE="$TRIAGE" \
+       "$MERGED_PR_CLOSE_BIN" 2>>"$LOG_DIR/merged-pr-close.log"; then
+        log "merged-pr observe-to-close done"
+    else
+        _rc=$?
+        if [ "$_rc" -ge 2 ]; then
+            log "merged-pr observe-to-close CRASHED (rc=$_rc)"
+            overall_rc=$_rc
+        else
+            log "merged-pr observe-to-close done (rc=$_rc)"
+        fi
+    fi
+fi
+
+# --- duplicate-issue drain --------------------------------------------------
+ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-/home/nish/.local/bin/fleet-issue-file}"
+if require "$ISSUE_FILE_BIN"; then
+    log "duplicate-issue drain starting"
+    if FLEET_CLOSE_DUPLICATES_OK=1 \
+       FLEET_INTAKE_REPOS_JSON="$INTAKE_JSON" \
+       LOG_DIR="$LOG_DIR" \
+       "$ISSUE_FILE_BIN" close-duplicates --output-json "$LOG_DIR/close-duplicates.json"; then
+        log "duplicate-issue drain done"
+    else
+        _rc=$?
+        if [ "$_rc" -ge 2 ]; then
+            log "duplicate-issue drain CRASHED (rc=$_rc)"
+            overall_rc=$_rc
+        else
+            log "duplicate-issue drain done (rc=$_rc)"
+        fi
+    fi
+fi
+
+# --- loose-ends canary ------------------------------------------------------
+LOOSE_ENDS_BIN="${FLEET_LOOSE_ENDS_CANARY:-/home/nish/.local/bin/fleet-loose-ends-canary}"
+if require "$LOOSE_ENDS_BIN"; then
+    log "loose-ends canary starting"
+    if FLEET_LOOSE_ENDS_INTAKE="$INTAKE_JSON" \
+       FLEET_LOOSE_ENDS_REPOS="$(printf '%s\n' "$REPOS" | tr ' ' ',')" \
+       FLEET_HEARTBEAT_TRIAGE="$TRIAGE" \
+       "$LOOSE_ENDS_BIN"; then
+        log "loose-ends canary done"
+    else
+        _rc=$?
+        if [ "$_rc" -ge 2 ]; then
+            log "loose-ends canary CRASHED (rc=$_rc)"
+            overall_rc=$_rc
+        else
+            log "loose-ends canary done (rc=$_rc)"
+        fi
+    fi
+fi
+
+log "done"
+
+# Emit a lightweight Prometheus heartbeat so the absent() rule can tell when
+# this service has not been fired by gh-webhook-receiver (fleet-ops#3128).
+PROM_FILE="/var/lib/prometheus/node-exporter/fleet-github-state-sweep.prom"
+PROM_DIR=$(dirname "$PROM_FILE")
+mkdir -p "$PROM_DIR"
+now=$(date +%s)
+{
+    printf '# HELP fleet_github_state_sweep_last_run_seconds Epoch seconds of the last fleet-github-state-sweep run.\n'
+    printf '# TYPE fleet_github_state_sweep_last_run_seconds gauge\n'
+    printf 'fleet_github_state_sweep_last_run_seconds %s\n' "$now"
+} > "${PROM_FILE}.tmp"
+mv "${PROM_FILE}.tmp" "$PROM_FILE"
+
+exit "$overall_rc"

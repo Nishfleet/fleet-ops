@@ -106,6 +106,13 @@ HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, 
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
 
+HELP_WORKTREES = "# HELP fleet_worktrees_live Number of live agent worktree directories under /home/nish/workspaces/agent-worktrees (fleet-ops#3128)."
+TYPE_WORKTREES = "# TYPE fleet_worktrees_live gauge"
+HELP_HB_CPU = "# HELP fleet_heartbeat_cpu_seconds_total Cumulative CPU seconds for fleet-heartbeat.service (fleet-ops#3128)."
+TYPE_HB_CPU = "# TYPE fleet_heartbeat_cpu_seconds_total counter"
+HELP_TIMERS_TOTAL = "# HELP fleet_timers_total Number of active fleet/pi timers (fleet-ops#3128)."
+TYPE_TIMERS_TOTAL = "# TYPE fleet_timers_total gauge"
+
 # Self-observation metrics (Task 2). All stdlib; gh is cached to <=1 call/30min.
 HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing 24h."
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
@@ -539,6 +546,42 @@ def _timer_active(unit):
     except (OSError, subprocess.TimeoutExpired):
         return 0
     return 1 if r.stdout.strip() == "active" else 0
+
+
+def _read_worktrees():
+    """Return the number of live worktrees under the canonical root.
+
+    Counts directories that contain a .git file (worktree pointer) or .git
+    directory (bare checkout). This is the live `fleet_worktrees_live` gauge.
+    """
+    root = Path("/home/nish/workspaces/agent-worktrees")
+    if not root.is_dir():
+        return None
+    n = 0
+    for p in root.iterdir():
+        if p.is_dir() and (p / ".git").exists():
+            n += 1
+    return n
+
+
+def _read_heartbeat_cpu():
+    """Return fleet-heartbeat.service CPU time in seconds, or None."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "show", "fleet-heartbeat.service", "--property=CPUUsageNSec"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={**os.environ, "XDG_RUNTIME_DIR": XDG},
+        )
+        if r.returncode != 0:
+            return None
+        m = re.search(r"CPUUsageNSec=(\d+)", r.stdout)
+        if m:
+            return int(m.group(1)) / 1_000_000_000
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
 
 
 def _read_seat():
@@ -2721,6 +2764,22 @@ def main():
         lines.append(
             f'fleet_timer_active{{timer="{unit}"}} {_timer_active(unit)}'
         )
+    lines.append("")
+    lines.append(HELP_TIMERS_TOTAL)
+    lines.append(TYPE_TIMERS_TOTAL)
+    lines.append(f"fleet_timers_total {len(timers)}")
+    _worktrees = _read_worktrees()
+    if _worktrees is not None:
+        lines.append("")
+        lines.append(HELP_WORKTREES)
+        lines.append(TYPE_WORKTREES)
+        lines.append(f"fleet_worktrees_live {_worktrees}")
+    _hb_cpu = _read_heartbeat_cpu()
+    if _hb_cpu is not None:
+        lines.append("")
+        lines.append(HELP_HB_CPU)
+        lines.append(TYPE_HB_CPU)
+        lines.append(f"fleet_heartbeat_cpu_seconds_total {_hb_cpu}")
     lines.append("")
     lines.append(HELP_HEALTH)
     lines.append(TYPE_HEALTH)

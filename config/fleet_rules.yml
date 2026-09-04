@@ -39,6 +39,28 @@ groups:
           summary: "fleet metrics textfile missing"
           description: "fleet.prom is gone from the node-exporter textfile dir."
 
+      # fleet-ops#3128: new organs — event-driven GitHub-state sweep,
+      # logrotate timer, and worktree reaper metric visibility.
+      - alert: FleetLogrotateTimerStale
+        expr: absent(fleet_timer_last_trigger_seconds{timer="fleet-logrotate.timer"}) or (time() - fleet_timer_last_trigger_seconds{timer="fleet-logrotate.timer"}) > 7200
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet-logrotate.timer has not fired in 2+ hours"
+          description: "logrotate is not running; ~/.local/state/pi-packet/watch.log may grow unbounded. Check systemctl --user status fleet-logrotate.timer."
+
+      - alert: FleetWorktreesMetricAbsent
+        expr: absent(fleet_worktrees_live)
+        for: 10m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet_worktrees_live metric missing"
+          description: "fleet-metrics-export is not emitting the worktree count; the worktree reaper may be blind. Check systemctl --user status fleet-metrics-export.timer."
+
       - alert: FleetCompletionCanaryAbsent
         expr: absent(fleet_chain_open)
         for: 3h
@@ -880,6 +902,18 @@ groups:
         annotations:
           summary: "GitHub push-channel synthetic canary has not gone green in 15+ minutes"
           description: "Repair worker: gh-webhook-canary.timer has not fired a successful probe in 15+ minutes (three missed 5-min cycles). The push channel is provably broken — either gh-webhook-receiver.service is dead, the local receiver cannot be reached (tunnel down, secret file missing, or 127.0.0.1:8088 unbound), or the canary timer itself is dead. First check `systemctl --user status gh-webhook-canary.timer` and journalctl -u gh-webhook-canary. Then `curl http://127.0.0.1:8088/healthz`. Then read the gh-webhook-canary-deadman triage file at ~/.local/state/pi-packet/alert-repair-triage.md for the dead-man’s own diagnostic. fleet-ops#1464."
+
+      # fleet-ops#3128: gh-webhook-receiver starts fleet-github-state-sweep on
+      # issues/pull_request events; the sweep writes this last-run heartbeat.
+      - alert: FleetGithubStateSweepStale
+        expr: absent(fleet_github_state_sweep_last_run_seconds) or (time() - fleet_github_state_sweep_last_run_seconds) > 7200
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "fleet-github-state-sweep has not run in 2+ hours"
+          description: "gh-webhook-receiver is not firing the GitHub-state sweep, or the sweep service is failing. Check systemctl --user status fleet-github-state-sweep.service and the receiver journal. fleet-ops#3128."
 
   - name: fleet_grok_token_refresh_supply
     rules:

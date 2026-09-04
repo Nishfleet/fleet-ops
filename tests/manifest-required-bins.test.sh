@@ -66,7 +66,6 @@ helpers = {
     "BLOCKED_BIN=": "blocked-reconcile",
     "UNDERSAT_BIN=": "undersaturation",
     "CLAIM_BIN=": "claim-reconcile",
-    "LIFECYCLE_BIN=": "lifecycle-label-sweep",
     "LOW_WATER_BIN=": "low-water-mark",
     "AUDITOR_BIN=": "senior-auditor panel",
     "REDPR_BIN=": "red-pr-repair",
@@ -97,7 +96,7 @@ PY
 wiring_rc=$?
 set -e
 [[ "$wiring_rc" -eq 0 ]] || fail "one or more heartbeat helpers do not call require_manifest_helper or loud HELPER-MISSING"
-ok "all thirteen MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
+ok "all twelve MANIFEST heartbeat helpers call require_manifest_helper and loud HELPER-MISSING"
 
 # --- 3-5. extract the real function and prove the three outcomes -----------
 extract_fn() {

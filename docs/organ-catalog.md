@@ -24,7 +24,10 @@ cheaper than building, because prose bans lose to urgency at decision time.
 
 | Job class | Existing owner | Unit / mechanism | Ref |
 |---|---|---|---|
-| Fleet heartbeat / liveness | fleet-heartbeat | `fleet-heartbeat.timer` | #468 |
+| Fleet heartbeat / liveness | fleet-heartbeat | `fleet-heartbeat.timer` (60 min, host-local) | #468, #3128 |
+| GitHub-state sweep (event-driven) | fleet-github-state-sweep | `fleet-github-state-sweep.service`, fired by gh-webhook-receiver | #3128 |
+| Logrotate (watch.log) | fleet-logrotate | `fleet-logrotate.timer` | #3128 |
+| Worktree reaper | fleet-worktree-reaper | `fleet-worktree-reaper.timer` + `pull_request/closed` webhook | #2227, #2637, #3128 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
 | Resilience drill | fleet-resilience-drill | `fleet-resilience-drill.timer` | #1010 |

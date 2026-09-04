@@ -1,0 +1,14 @@
+[Unit]
+Description=Hourly logrotate for pi-packet watch.log (fleet-ops#3128)
+# Named reason: watch.log is append-only and grows quickly when seats are
+# busy; logrotate itself is size-triggered, but the timer must run often
+# enough that a >10 MB burst does not sit unrotated for a full day.
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=60
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

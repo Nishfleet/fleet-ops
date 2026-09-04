@@ -86,10 +86,22 @@
       "cadence": "2min",
       "source": "repo"
     },
-    "fleet-heartbeat.timer": {
-      "reason": "Orchestrator continuity across interactive-session restarts — event notifications die with sessions; this timer survives every session exit",
+    "fleet-landing-watch.timer": {
+      "reason": "Temporary fleet landing watch — Nish 2026-09-04 while away. Measure packet landing + product proof, one Telegram line via hermes. Retire when proven_sent=true for 7d.",
       "classification": "scheduled",
-      "cadence": "30min",
+      "cadence": "6h",
+      "source": "user-config"
+    },
+    "fleet-heartbeat.timer": {
+      "reason": "Orchestrator continuity across interactive-session restarts — event notifications die with sessions; this timer survives every session exit. fleet-ops#3128: dropped from 30min to 60min because GitHub-state sections moved to event-driven fleet-github-state-sweep; heartbeat now covers host-local work only.",
+      "classification": "scheduled",
+      "cadence": "60min",
+      "source": "repo"
+    },
+    "fleet-logrotate.timer": {
+      "reason": "Hourly logrotate for ~/.local/state/pi-packet/watch.log — logrotate is size-triggered (10 MB, keep 5); the timer is the cadence floor that catches a >10 MB burst before it sits for a full day (fleet-ops#3128).",
+      "classification": "scheduled",
+      "cadence": "hourly",
       "source": "repo"
     },
     "fleet-metrics-export.timer": {
@@ -459,7 +471,7 @@
       "source": "repo"
     },
     "fleet-worktree-reaper.timer": {
-      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227 + #2637) — Mode A: claim/issue-<N> + merged PR. Mode B: issue-<short>-<N> PATH + dispatch-ledger terminal entry + HEAD on origin. Either mode's full gate chain must pass (no live worker, clean tree, work preserved on origin). Catches worker churn within one waking window; fail-safe (dry-run capable, gh failure skips repo, missing ledger fails closed), cheap (git + one gh pr list per repo + one git ls-remote per Mode B candidate).",
+      "reason": "Daily orphan agent-worktree GC (fleet-ops#2227 + #2637) — also fired by gh-webhook-receiver on pull_request/closed events (fleet-ops#3128). Mode A: claim/issue-<N> + merged PR. Mode B: issue-<short>-<N> PATH + dispatch-ledger terminal entry + HEAD on origin. Either mode's full gate chain must pass (no live worker, clean tree, work preserved on origin). Catches worker churn within one waking window; fail-safe (dry-run capable, gh failure skips repo, missing ledger fails closed), cheap (git + one gh pr list per repo + one git ls-remote per Mode B candidate).",
       "classification": "scheduled",
       "cadence": "daily",
       "source": "repo"

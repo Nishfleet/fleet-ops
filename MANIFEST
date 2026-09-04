@@ -61,6 +61,8 @@ config/prometheus.yml /etc/prometheus/prometheus.yml
 # fleet-ops#1010: organ registry consumed by bin/fleet-organ-heartbeat-check.
 # Lives next to the rules so the verify drill + PR gate can read it in-repo.
 config/fleet-organs.json /home/nish/.local/state/pi-packet/fleet-organs.json
+# fleet-ops#3128: user-level logrotate config for ~/.local/state/pi-packet/watch.log.
+config/logrotate.conf /home/nish/.config/logrotate.conf
 bin/siterep-live-canary /home/nish/.local/bin/siterep-live-canary
 bin/siterep-deploy /home/nish/.local/bin/siterep-deploy
 bin/siterep-deploy-verify /home/nish/.local/bin/siterep-deploy-verify
@@ -492,6 +494,15 @@ systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/sys
 bin/fleet-worktree-reaper /home/nish/.local/bin/fleet-worktree-reaper
 systemd/fleet-worktree-reaper.service /home/nish/.config/systemd/user/fleet-worktree-reaper.service
 systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktree-reaper.timer
+# fleet-ops#3128: event-driven GitHub-state sweep. Fired by gh-webhook-receiver
+# on issues and pull_request events; takes the GitHub-state load out of
+# fleet-heartbeat (which now only runs host-local sections every 60 min).
+bin/fleet-github-state-sweep /home/nish/.local/bin/fleet-github-state-sweep
+systemd/fleet-github-state-sweep.service /home/nish/.config/systemd/user/fleet-github-state-sweep.service
+# fleet-ops#3128: user logrotate timer for ~/.local/state/pi-packet/watch.log.
+# logrotate is size-triggered (10 MB, keep 5); the timer just runs it hourly.
+systemd/fleet-logrotate.service /home/nish/.config/systemd/user/fleet-logrotate.service
+systemd/fleet-logrotate.timer /home/nish/.config/systemd/user/fleet-logrotate.timer
 # fleet-ops#455 + #1463: eleven-plane resilience drill + keystone dead-man
 # pings + tailscaled Restart=always. The five #1463 failure-class planes
 # (queue_freeze, pipeline_red, boundary_delivery, band_floor,

@@ -161,7 +161,9 @@ body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "3: valid issues/labeled/agent-ready got $status; body=$body_resp"
 echo "$body_resp" | grep -q '"dispatched": "pi-intake@fleet-ops.service"' \
     || fail "3: dispatched unit not in response: $body_resp"
-ok "3: valid issues/labeled/agent-ready → pi-intake@fleet-ops.service (DRY=1)"
+echo "$body_resp" | grep -q 'fleet-github-state-sweep.service' \
+    || fail "3: sweep unit not in extra list: $body_resp"
+ok "3: valid issues/labeled/agent-ready → pi-intake + fleet-github-state-sweep (DRY=1)"
 
 # --- 4: tampered body → 401 ---
 body_tampered='{"action":"closed"}'
@@ -236,13 +238,14 @@ grep -q 'fleet_gh_webhook_receiver_last_green_seconds' "$GH_WEBHOOK_RECEIVER_PRO
     || fail "9: prom file missing heartbeat metric"
 ok "9: receiver wrote heartbeat prom file"
 
-# --- 10: prom counter advanced for each successful dispatch (2 in this
-# test: the issues/labeled/agent-ready + the workflow_run/completed/success).
+# --- 10: prom counter advanced for each successful dispatch (3 in this
+# test: issues/labeled/agent-ready now fires both pi-intake@fleet-ops and
+# fleet-github-state-sweep, plus workflow_run/completed/success).
 # Tampered bodies and ignored events do NOT increment — they fail before
 # the dispatcher runs.
-grep -E '^fleet_gh_webhook_receiver_dispatch_total 2$' "$GH_WEBHOOK_RECEIVER_PROM" \
-    || fail "10: dispatch counter != 2 (expected exactly the two successful events): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
-ok "10: dispatch counter advanced for every dispatched event (2 verified + dispatched)"
+grep -E '^fleet_gh_webhook_receiver_dispatch_total 3$' "$GH_WEBHOOK_RECEIVER_PROM" \
+    || fail "10: dispatch counter != 3 (expected 3 dispatches): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
+ok "10: dispatch counter advanced for every dispatched event (3 verified + dispatched)"
 
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true

@@ -1,0 +1,15 @@
+[Unit]
+Description=Event-driven GitHub-state sweep (fleet-ops#3128)
+# gh-webhook-receiver fires this service on issues and pull_request events.
+# It runs the four GitHub-state helpers that moved out of fleet-heartbeat so
+# the heartbeat timer can stay host-local and run every 60 minutes.
+# Bound burst: a webhook storm must not fan an unbounded number of sweeps.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-github-state-sweep
+Environment="PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/nish"
+Environment="XDG_RUNTIME_DIR=/run/user/1000"

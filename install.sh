@@ -333,6 +333,29 @@ remove_stale_scout_prom_mode_dropin() {
     fi
 }
 
+# fleet-ops#3128: refuse to install while any MANIFEST user-dest directory
+# contains a .bak file. These are leftover hot-patch / rename debris that
+# hide real files from the live install and break unit lookups. They must be
+# removed before install continues.
+bak_sibling_guard() {
+  local src dest dir bak fail=0
+  while read -r src dest || [ -n "$src" ]; do
+    [ -z "$src" ] && continue
+    case "$src" in '#'*) continue ;; esac
+    if [ "$do_user_install" = 0 ] && [ "$do_user_check" = 0 ]; then
+      continue
+    fi
+    dest_is_system "$dest" && continue
+    dir=$(dirname "$dest")
+    for bak in "$dir"/*.bak; do
+      [ -e "$bak" ] || continue
+      echo "REFUSE: .bak sibling exists: $bak (fleet-ops#3128)" >&2
+      fail=1
+    done
+  done < "$manifest"
+  return "$fail"
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -504,6 +527,9 @@ process_entry() {
 # newline (fleet-ops#1443: fleet-asset-census.timer was never installed
 # because MANIFEST ended mid-line). The `|| [ -n "$src" ]` guard catches
 # that last unterminated line so every MANIFEST entry is processed.
+if ! bak_sibling_guard; then
+  exit 1
+fi
 while read -r src dest || [ -n "$src" ]; do
   [ -z "$src" ] && continue
   # Skip whole-line comment lines (first token is '#' with no leading path).

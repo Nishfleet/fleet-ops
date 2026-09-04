@@ -1,5 +1,5 @@
 [Unit]
-Description=Fleet orchestrator heartbeat (every 30 min, off-peak minute :17)
+Description=Fleet orchestrator heartbeat (every 60 min, host-local, off-peak :17)
 # Named reason: orchestrator continuity across interactive-session restarts;
 # event notifications die with sessions. The previous watcher/cron was
 # session-bound and died 4x today on session hops. This timer is owned by
@@ -8,11 +8,14 @@ Description=Fleet orchestrator heartbeat (every 30 min, off-peak minute :17)
 #
 # Off-peak minute :17 — picked to avoid the cluster of fleet timers firing
 # at :00, :13, :15, :23, :38, :39, :43, :48, :52 (observed live at
-# `systemctl --user list-timers` on 2026-08-25). Minute :17 of every half
-# hour (17 and 47 past) sits in the gap.
+# `systemctl --user list-timers` on 2026-08-25). :17 of each hour sits in
+# the gap.
+# fleet-ops#3128: timer dropped from 30 min to 60 min because the GitHub-state
+# sections (lifecycle, merged-pr, close-duplicates, loose-ends) moved to the
+# event-driven fleet-github-state-sweep. Heartbeat now covers host-local work.
 
 [Timer]
-OnCalendar=*:17/30
+OnCalendar=*:17
 RandomizedDelaySec=60
 Persistent=true
 AccuracySec=15s

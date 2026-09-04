@@ -583,3 +583,10 @@ printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s 
     "$reaped" "$reaped_a" "$reaped_b" "$reaped_c" \
     "$skipped_live" "$skipped_unmerged" "$skipped_dirty" \
     "$skipped_notpushed" "$skipped_notterminal" "$skipped_young" "$skipped_nogit" "$failed"
+
+# fleet-ops#3128: prune stale worktree admin entries in every parent repo. This
+# removes the dead .git/worktrees/* bookkeeping that `worktree remove` leaves
+# behind and that blocks a later `git worktree list`.
+for parent in "${parents[@]}"; do
+    git -C "$parent" worktree prune 2>/dev/null || true
+done

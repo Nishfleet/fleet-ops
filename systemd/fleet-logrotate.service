@@ -1,0 +1,15 @@
+[Unit]
+Description=Rotate pi-packet watch.log (fleet-ops#3128)
+# Runs the user logrotate(8) instance against the config at
+# ~/.config/logrotate.conf. This is the canonical rotation path for
+# ~/.local/state/pi-packet/watch.log (10 MB, keep 5).
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/mkdir -p /home/nish/.local/state/logrotate
+ExecStart=/usr/sbin/logrotate -s /home/nish/.local/state/logrotate/state /home/nish/.config/logrotate.conf
+Environment="PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/nish"
+
+[Install]
+WantedBy=default.target

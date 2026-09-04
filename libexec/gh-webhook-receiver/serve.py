@@ -20,11 +20,17 @@ Event → unit dispatch (event from X-GitHub-Event; action/label from body)
 ==========================================================================
 
 issues, action=labeled, label=agent-ready
-        → start pi-intake@<repo>.service
+        → start pi-intake@<repo>.service AND fleet-github-state-sweep.service
 issues, action=labeled, label=pipeline-red
-        → start fleet-deploy-check.service
+        → start fleet-deploy-check.service AND fleet-github-state-sweep.service
 issues, action=opened, label=agent-ready
-        → start pi-intake@<repo>.service   (race-safe: the tick will dedupe)
+        → start pi-intake@<repo>.service AND fleet-github-state-sweep.service
+issues, action=reopened/unlabeled/closed
+        → start fleet-github-state-sweep.service
+pull_request, action=opened/synchronize/reopened
+        → start fleet-github-state-sweep.service
+pull_request, action=closed
+        → start fleet-worktree-reaper.service AND fleet-github-state-sweep.service
 workflow_run, action=completed, conclusion=success
         → start fleet-deploy-check.service
 ping    → no-op (200)
@@ -199,6 +205,17 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
             return "fleet-deploy-check.service", "workflow_run/completed/success → fleet-deploy-check"
         return "", f"workflow_run: ignored (action={action}, conclusion={conclusion})"
 
+    if event == "pull_request":
+        if not repo or not REPO_RE.match(repo):
+            return "", f"pull_request: bad repo {repo!r}"
+        if enrolled is not None and repo not in enrolled:
+            return "", f"pull_request: {repo!r} not enrolled in intake-repos.json"
+        if action in ("opened", "synchronize", "reopened"):
+            return "fleet-github-state-sweep.service", f"pull_request/{action} → fleet-github-state-sweep"
+        if action == "closed":
+            return "fleet-worktree-reaper.service", f"pull_request/closed → fleet-worktree-reaper + fleet-github-state-sweep"
+        return "", f"pull_request: ignored (action={action})"
+
     return "", f"unknown event: {event!r}"
 
 
@@ -345,6 +362,7 @@ def _make_handler(secret: bytes):
 
             action = label = repo = conclusion = ""
             issue_number = ""
+            pr_number = ""
             try:
                 payload = json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -361,19 +379,44 @@ def _make_handler(secret: bytes):
                     conclusion = str(
                         ((payload.get("workflow_run") or {}).get("conclusion")) or ""
                     )
+                elif event == "pull_request":
+                    pr = payload.get("pull_request") or {}
+                    pr_number = str(pr.get("number", "") or "")
 
             unit, reason = dispatch(event, action, label, repo, conclusion, DRY,
                                     _State.enrolled)
-            if unit:
-                rc, err = fire_unit(unit, DRY)
-                _State.record(unit, rc, event)
+
+            # Event-driven GitHub-state sweep and worktree reaper
+            # (fleet-ops#3128). These run in addition to the primary dispatch
+            # so the heartbeat can drop its GitHub-state polling sections.
+            extra_units: list[str] = []
+            if event == "issues" and repo and REPO_RE.match(repo) \
+                    and (_State.enrolled is None or repo in _State.enrolled):
+                extra_units.append("fleet-github-state-sweep.service")
+            elif event == "pull_request" and action == "closed" \
+                    and repo and REPO_RE.match(repo) \
+                    and (_State.enrolled is None or repo in _State.enrolled):
+                extra_units.append("fleet-github-state-sweep.service")
+
+            all_units = ([unit] if unit else []) + extra_units
+
+            if all_units:
+                first = all_units[0]
+                results: list[dict] = []
+                for u in all_units:
+                    rc, err = fire_unit(u, DRY)
+                    _State.record(u, rc, event)
+                    results.append({"unit": u, "rc": rc, "err": err})
                 _log.info(
-                    "DISPATCH event=%s delivery=%s repo=%s issue=%s "
-                    "action=%s label=%s unit=%s rc=%d reason=%s err=%s",
-                    event, delivery, repo, issue_number, action, label, unit, rc, reason, err,
+                    "DISPATCH event=%s delivery=%s repo=%s issue=%s pr=%s "
+                    "action=%s label=%s units=%s reason=%s results=%s",
+                    event, delivery, repo, issue_number, pr_number, action, label,
+                    ",".join(all_units), reason, results,
                 )
                 body_out = json.dumps({
-                    "received": True, "dispatched": unit, "rc": rc,
+                    "received": True,
+                    "dispatched": first,
+                    "extra": all_units[1:],
                     "delivery": delivery,
                 }).encode("utf-8")
                 self.send_response(200)
