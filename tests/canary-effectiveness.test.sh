@@ -13,6 +13,8 @@
 #      attribute to the right organ and do not cross-contaminate.
 #   3. Empty window still emits fleet_canary_effectiveness_last_run_seconds
 #      (organ heartbeat) + per-organ zeros including effectiveness_ratio.
+#   3b. --self-test drill injects a fault and proves the full pipeline
+#      detects it (caught=1, ratio=1.0) — fleet-ops#3047.
 #   4. Fixture with canary failure → GH bug within 24h = caught; incident
 #      without prior failure = missed; ratio = caught/(caught+missed).
 #   5. MANIFEST installs the helper + the exporter drop-in (no new timer).
@@ -212,6 +214,32 @@ grep -q 'fleet_canary_effectiveness_ratio{organ="siterep-live-canary"} 0.000000'
 grep -q 'fleet_canary_last_failure_seconds{organ="0509-surface-probe"} 1788343200' "$FLEET_CANARY_EFF_OUT" \
   || fail "0509 last_failure wrong: $(grep 'last_failure.*0509' "$FLEET_CANARY_EFF_OUT" || echo missing)"
 ok "fixture: caught/missed attribution across gauge + unit signatures"
+
+# =========================================================================
+# 3b. Self-test drill: inject a fault and prove the emitter detects it
+# (fleet-ops#3047). The live exporter showed caught=0 across all organs
+# because the 30d incident window exceeds the ~7d retention of
+# Prometheus/journald, so every real incident predates the earliest
+# observable canary failure and is honestly unclassifiable. The self-test
+# injects a classifiable fault (failure at T0, bug 1h later in the same
+# product repo) and proves the full compute_all -> export_prom pipeline
+# classifies it as caught. This is the drill that proves the guard fires.
+# =========================================================================
+selftest_out="$scratch/selftest.stdout"
+selftest_err="$scratch/selftest.stderr"
+python3 "$helper" --self-test >"$selftest_out" 2>"$selftest_err" \
+  || fail "self-test exited nonzero: $(cat "$selftest_err")"
+grep -q "SELF-TEST OK: injected fault detected (caught=1, ratio=1.0)" "$selftest_out" \
+  || fail "self-test did not report OK: $(cat "$selftest_out") $(cat "$selftest_err")"
+# The self-test must NOT touch the real node-exporter path.
+if [[ -f /var/lib/prometheus/node-exporter/fleet-canary-effectiveness.prom ]]; then
+  # Confirm it wrote to a temp dir, not the real path (mtime unchanged
+  # is not assertable here; instead verify the self-test stdout has no
+  # "wrote /var/lib" line).
+  ! grep -q "wrote /var/lib/prometheus" "$selftest_err" \
+    || fail "self-test must not write the real node-exporter path"
+fi
+ok "self-test: injected fault detected end-to-end (caught=1, ratio=1.0)"
 
 # =========================================================================
 # 4. MANIFEST + drop-in + no new timer
