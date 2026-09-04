@@ -319,13 +319,19 @@ json.dump({"status":"success","data":{"alerts":[
 PY
 rc=$(run_bin "2026-08-27T15:00:00Z")  # 20 min after firing > 10 min clock
 [[ "$rc" == "0" ]] || fail "dispatch stall rc=$rc stderr=$(cat "$scratch/err.log")"
-grep -q 'fleet_chain_stalled{plane="alert-repair",hop="dispatch"} 1' "$scratch/fleet-chains.prom" \
-  || fail "expected dispatch stall; prom=$(cat "$scratch/fleet-chains.prom")"
+# fleet-ops#3226: the redispatch succeeded (DISPATCH line written), so the
+# dispatch hop DRAINED this tick. The stalled metric must be 0, not 1 —
+# counting a successful drain as stalled fires FleetChainStalled for a
+# chain that already advanced to run.
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
+  || fail "dispatch stall redispatched → stalled must be 0 (drain happened); prom=$(cat "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
+  || fail "dispatch stall redispatched → open must be 0 (chain advanced to run); prom=$(cat "$scratch/fleet-chains.prom")"
 grep -q 'dispatch AMX_ALERT_1_LABEL_alertname=SystemUnitFailed' "$scratch/dispatch.log" \
   || fail "real dispatch stall must AMX-redispatch; log=$(cat "$scratch/dispatch.log")"
 grep -q 'REDISPATCH alertname=SystemUnitFailed' "$scratch/actions.log" \
   || fail "missing REDISPATCH receipt"
-ok "firing SystemUnitFailed past 10 min → AMX redispatch"
+ok "firing SystemUnitFailed past 10 min → AMX redispatch drains dispatch hop (stalled=0)"
 
 # --- 5. Watchdog ignored -----------------------------------------------------
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
@@ -701,9 +707,12 @@ PY
 rc=$(run_bin "2026-08-29T19:07:00Z")
 [[ "$rc" == "0" ]] || fail "9c tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
 
-# The chain must be at hop=dispatch (not verify), waiting for a fresh worker.
-grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 1' "$scratch/fleet-chains.prom" \
-  || fail "9c tick-2: re-fire must be at hop=dispatch (stale disp cleared), got: $(grep -E 'hop="(dispatch|verify)"' "$scratch/fleet-chains.prom")"
+# The chain must NOT be at verify (the stale dispatch was cleared). The
+# redispatch succeeded (DISPATCH line written), so the dispatch hop DRAINED
+# — fleet-ops#3226: open{dispatch}=0 (chain advanced to run), not 1. The
+# dispatcher invocation below proves the chain was at dispatch and acted on.
+grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9c tick-2: re-fire redispatched → open dispatch must be 0 (drained, fleet-ops#3226), got: $(grep -E 'hop="(dispatch|verify)"' "$scratch/fleet-chains.prom")"
 grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
   || fail "9c tick-2: verify must be 0 (no stale unit pin), got: $(grep verify "$scratch/fleet-chains.prom")"
 
@@ -856,6 +865,50 @@ assert d.get("detail", {}).get("alertname") == "DeployBlockedStuck", d
 assert d.get("detail", {}).get("hop") == "dispatch", d
 PY
 ok "dispatch hop closes on DISPATCH line, not rc=0 (fleet-ops#3190)"
+
+# --- 9e-drain. successful dispatch redispatch drains the hop metric (fleet-ops#3226) --
+# Bug: a dispatch-hop stall was redispatched successfully (DISPATCH line
+# written, unit spawned), but the canary still exported
+# chain_stalled{dispatch}=1 and chain_open{dispatch}=1 on the SAME tick.
+# The dispatch hop had already drained — the chain advanced to run — but
+# the metric counted it as still stalled at dispatch. This fired
+# FleetChainStalled for a drain that already happened (live:
+# DeployBlockedStuck redispatch 13:22:13Z, chain_stalled_total went 0->1
+# at hop=dispatch while the unit was already running). Fix: a successful
+# redispatch at hop=dispatch decrements open_hops/stalled_hops — the
+# stop-reason terminal paths already did this; the redispatch path did not.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-09-04T13:10:45Z",
+   "labels":{"alertname":"DeployBlockedStuck"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# Tick 1: firing 690s (13:10:45 -> 13:22:13) > 600s CLOCK_DISPATCH, no
+# DISPATCH -> hop=dispatch stalled -> redispatch rc=0, DISPATCH line
+# written -> ladder="redispatch". The dispatch hop DRAINED.
+rc=$(run_bin "2026-09-04T13:22:13Z")
+[[ "$rc" == "0" ]] || fail "9e-drain tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+# The redispatch must have happened (DISPATCH line + REDISPATCH receipt).
+grep -q '] DISPATCH alertname=DeployBlockedStuck' "$scratch/actions.log" \
+  || fail "9e-drain tick-1: dispatcher must write DISPATCH line; log=$(cat "$scratch/actions.log")"
+grep -q 'REDISPATCH alertname=DeployBlockedStuck' "$scratch/actions.log" \
+  || fail "9e-drain tick-1: missing REDISPATCH receipt"
+# MUST NOT escalate on tick 1 — the redispatch gets a chance to run.
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  && fail "9e-drain tick-1: must not write STOP-REASON on successful redispatch"
+# fleet-ops#3226: the dispatch hop DRAINED — stalled and open must be 0,
+# not 1. Counting a successful drain as stalled fires FleetChainStalled
+# for a chain that already advanced to run.
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9e-drain: stalled{dispatch} must be 0 (drain happened, fleet-ops#3226); prom=$(grep dispatch "$scratch/fleet-chains.prom")"
+grep -q 'fleet_chain_open{plane="alert-repair",hop="dispatch"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9e-drain: open{dispatch} must be 0 (chain advanced to run); prom=$(grep dispatch "$scratch/fleet-chains.prom")"
+ok "successful dispatch redispatch drains the hop metric (stalled=0, open=0) (fleet-ops#3226)"
 
 # --- 9f. redispatch no-op at hop=run escalates (fleet-ops#2247) ----------------
 # Same class, hop=run: the redispatched unit died without resolving the alert.

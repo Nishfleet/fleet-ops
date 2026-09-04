@@ -1774,6 +1774,20 @@ def main() -> int:
                 if hop == "verify" and state.get("verify_deadline_ts"):
                     deadline_dt = now + timedelta(seconds=VERIFY_DEADLINE)
                     state["verify_deadline_ts"] = iso(deadline_dt)
+                # fleet-ops#3226: a successful redispatch at hop=dispatch
+                # DRAINED the dispatch hop — take_ladder wrote a DISPATCH
+                # line and spawned a unit, so the chain advanced from
+                # dispatch to run. Counting it as still open+stalled at
+                # dispatch on the same tick fires FleetChainStalled for a
+                # drain that already happened (live: DeployBlockedStuck
+                # redispatch 13:22:13Z, chain_stalled_total went 0->1 at
+                # hop=dispatch while the unit was already running). Decrement
+                # both counters; the next tick classifies the chain at
+                # hop=run and counts it there. The stop-reason terminal
+                # paths above already do this same decrement.
+                if action == "redispatch" and hop == "dispatch":
+                    open_hops[hop] -= 1
+                    stalled_hops[hop] -= 1
                 save_chain_state(name, state)
                 laddered_this_tick += 1
             else:
