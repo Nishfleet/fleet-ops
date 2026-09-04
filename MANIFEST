@@ -297,6 +297,13 @@ lib/guard_cursor_packet.py /home/nish/.local/lib/pi-packet/guard_cursor_packet.p
 bin/guard_cursor_packet_hook.py /home/nish/.cursor/hooks/guard_cursor_packet.py
 template/cursor-hooks.json /home/nish/.cursor/hooks.json
 template/cursor-rules/fleet-packet-verdict.mdc /home/nish/.cursor/rules/fleet-packet-verdict.mdc
+# fleet-ops#3263: bring the devin/cursor Pi provider extensions under fleet-ops
+# management. install.sh keeps the live ~/.pi/agent/extensions/
+# <provider>/index.ts converged to the repo copy (drifting live edits were
+# the 2026-09-04 30-min packet kill). Timeouts live in the repo and are
+# pinned by tests/provider-timeout.test.sh to stay >= 0.9 x PI_HANG_TIMEOUT_S.
+template/extensions/devin-provider/index.ts /home/nish/.pi/agent/extensions/devin-provider/index.ts
+template/extensions/cursor-provider/index.ts /home/nish/.pi/agent/extensions/cursor-provider/index.ts
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
