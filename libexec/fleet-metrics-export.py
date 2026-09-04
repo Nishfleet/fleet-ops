@@ -69,7 +69,7 @@ HELP_AGE = "# HELP fleet_pi_seat_health_age_seconds Seconds since the Pi seat wa
 TYPE_AGE = "# TYPE fleet_pi_seat_health_age_seconds gauge"
 HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
 TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
-HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667)."
+HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of enrolled (model cap>0) seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667, fleet-ops#3301)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
 HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat; health_class=credentials_bad means re-auth may help, health_class=corpse means the seat is terminal and must be retired from config/seat-caps.json (fleet-ops#1445, fleet-ops#2667)."
 TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
@@ -638,11 +638,20 @@ def _read_dead_credentials():
     EITHER field so the terminal class is visible, and carry health_class /
     failure_mode through to the caller for the per-seat series.
 
+    fleet-ops#3301: only ENROLLED seats (model cap>0 in seat-caps.json) count.
+    A cap=0 row is never picked, so a 401 on it is not a re-auth action — the
+    2026-09-04T16:30Z snapshot paged FleetDeadCredentialSeats on
+    opencode/hy3-free and opencode/x-preview-f-free, both already retired at
+    cap=0, while the control seat (ling-3.0-flash-fin-free) was healthy. Fail
+    open (count all) when seat-caps.json is unreadable so a genuinely dead
+    enrolled seat still alerts.
+
     Returns (count, [ {provider, model, http_status, health_class,
     failure_mode}, ... ]). Always a (count, list) pair — never raises on a
     missing/unreadable ledger.
     """
     seats = []
+    caps = _seat_caps_model_cap_map()
     if not SEAT_LEDGER.is_dir():
         return 0, seats
     try:
@@ -663,9 +672,15 @@ def _read_dead_credentials():
                 data.get("failure_mode"),
             ):
                 continue
+            provider = data.get("provider", "") or ""
+            model = data.get("model", "") or ""
+            if caps is not None:
+                cap = caps.get(f"{provider}/{model}", 0)
+                if not (isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0):
+                    continue
             seats.append({
-                "provider": data.get("provider", ""),
-                "model": data.get("model", ""),
+                "provider": provider,
+                "model": model,
                 "http_status": data.get("http_status"),
                 "health_class": data.get("health_class") or "",
                 "failure_mode": data.get("failure_mode") or "",
