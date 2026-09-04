@@ -91,6 +91,9 @@ bin/research-before-build-check /home/nish/.local/bin/research-before-build-chec
 bin/fleet-rebuild-verify-check /home/nish/.local/bin/fleet-rebuild-verify-check
 # fleet-ops#1250: claim-step bounce for build-shaped issues with no Prior art.
 bin/prior-art-claim-check /home/nish/.local/bin/prior-art-claim-check
+# fleet-ops#3111: self-heal the pi transport (npm rebuild) on the existing
+# pi-transport-check unit. Wired as ExecStart via the drop-in below.
+bin/pi-transport-self-heal /home/nish/.local/bin/pi-transport-self-heal
 # fleet-ops#523: token-efficiency gate for custom prompt assemblers.
 bin/fleet-token-efficiency-check /home/nish/.local/bin/fleet-token-efficiency-check
 lib/fleet-token-efficiency-check.py /home/nish/.local/lib/pi-packet/fleet-token-efficiency-check.py
@@ -560,6 +563,9 @@ systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config
 # (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
 # pure environment override, not new machinery.
 systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/camofox-browser.service.d/tmpdir.conf
+# fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
+# pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
+systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
 systemd/escalation-daily-sweep.service /home/nish/.config/systemd/user/escalation-daily-sweep.service
 systemd/escalation-daily-sweep.timer /home/nish/.config/systemd/user/escalation-daily-sweep.timer
 # fleet-ops#2677 + #2773: bounded-file maintainer for the escalation

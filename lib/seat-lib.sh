@@ -403,7 +403,74 @@ load_seat_caps() {
         [[ "$obench" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT["$p"]="$obench"
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.overload_bench_default_s // $v["503_bench_default_s"] // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
+    # fleet-ops#3111: expire-to-default for stale cap=0 seats. A stale cap=0
+    # seat (intentional_cap_zero="stale") has a dated reason — "2026-08-28
+    # re-audition: endpoint 404". The 2026-09-03 incident showed stale seats
+    # lingering at cap=0 for weeks with nobody re-auditioning them (groq sat
+    # since 2026-08-28, inferx since 2026-08-28, orcarouter since 2026-08-27)
+    # while the fleet starved. After SEAT_CAP_ZERO_STALE_TTL_S (default 14d),
+    # a stale cap=0 seat is automatically re-admitted at cap=1 so pick_seat
+    # re-probes it on the next cycle — if the external condition cleared, the
+    # seat is back; if it did not, the bench writers re-wall it and the
+    # operator re-dates the reason. A seat with no parseable date in its
+    # reason is NOT expired (we don't know when it was marked stale — expiring
+    # it immediately would break the #1432 classification tests). Intentional
+    # cap=0 seats (dead_decoy, money_only, corpse) are NEVER expired — they
+    # are by-design. Tests set SEAT_CAP_ZERO_STALE_EXPIRE=0 to disable.
+    _expire_stale_cap0_seats
+
     _seat_caps_loaded=1
+    return 0
+}
+
+# fleet-ops#3111: expire stale cap=0 seats to a default cap so pick_seat
+# re-probes them after SEAT_CAP_ZERO_STALE_TTL_S. Reads the reason date from
+# the SEAT_PROVIDER_REASON / model-level reason; if older than the TTL (or no
+# date), bumps the cap to SEAT_CAP_ZERO_STALE_DEFAULT (default 1). Idempotent:
+# re-running load_seat_caps re-evaluates against the current time. Best-effort
+# logging so the operator sees which seats expired.
+SEAT_CAP_ZERO_STALE_TTL_S="${SEAT_CAP_ZERO_STALE_TTL_S:-1209600}"  # 14 days
+SEAT_CAP_ZERO_STALE_DEFAULT="${SEAT_CAP_ZERO_STALE_DEFAULT:-1}"
+SEAT_CAP_ZERO_STALE_EXPIRE="${SEAT_CAP_ZERO_STALE_EXPIRE:-1}"
+
+_expire_stale_cap0_seats() {
+    (( ${SEAT_CAP_ZERO_STALE_EXPIRE:-1} )) || return 0
+    (( ${#SEAT_CAP_ZERO_CLASS_STALE[@]} > 0 )) || return 0
+    local now_s ttl default
+    now_s=$(date -u +%s)
+    ttl="${SEAT_CAP_ZERO_STALE_TTL_S:-1209600}"
+    default="${SEAT_CAP_ZERO_STALE_DEFAULT:-1}"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=1209600
+    [[ "$default" =~ ^[0-9]+$ ]] || default=1
+    local key reason date_s cap
+    for key in "${!SEAT_CAP_ZERO_CLASS_STALE[@]}"; do
+        # Only expire seats still at cap=0.
+        cap="${SEAT_PROVIDER_CAP[$key]:-}"
+        # Model-level key (contains "/"): check SEAT_MODEL_CAP.
+        if [[ "$key" == */* ]]; then
+            cap="${SEAT_MODEL_CAP[$key]:-}"
+        fi
+        [[ "$cap" == "0" ]] || continue
+        reason="${SEAT_PROVIDER_REASON[$key]:-}"
+        # Extract the first YYYY-MM-DD from the reason. No date -> SKIP (we
+        # don't know when it was marked stale; expiring immediately would
+        # break the #1432 classification tests and re-probe seats that may
+        # still be genuinely broken).
+        date_s=0
+        if [[ "$reason" =~ ([0-9]{4})-([0-9]{2})-([0-9]{2}) ]]; then
+            date_s=$(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}" +%s 2>/dev/null || echo 0)
+        else
+            continue  # undated — don't expire
+        fi
+        if (( date_s > 0 && now_s - date_s >= ttl )); then
+            if [[ "$key" == */* ]]; then
+                SEAT_MODEL_CAP[$key]="$default"
+            else
+                SEAT_PROVIDER_CAP[$key]="$default"
+            fi
+            seat_log "cap0-stale-expire: $key stale cap=0 expired (age=$((now_s - date_s))s; reason dated ${BASH_REMATCH[0]}) -> re-admitted at cap=$default for re-probe (fleet-ops#3111)"
+        fi
+    done
     return 0
 }
 
@@ -3222,8 +3289,67 @@ is_spawn_etimeout() {
     return 1
 }
 
+# --- transport-down gate (fleet-ops#3111) -----------------------------------
+# When the pi transport itself is down (clobbered bin, broken cli.js), EVERY
+# run fails with the same empty/no-op/rc=124 shape and would be charged to the
+# SEAT by the bench writers below — poisoning every seat with 24h benches
+# while the fault is the transport, not any seat. The 2026-09-03 incident
+# starved the fleet for 33h this way: consecutive_failure_count hit 43/23/20
+# and pick_seat stayed NO USABLE SEAT even after the bin was restored, because
+# the benches had to be quarantined by hand.
+#
+# Gate: every bench writer first asks _transport_is_down. If the transport is
+# down, it writes NOTHING per-seat and instead records one transport-down
+# marker (the run is charged to transport, never to the seat). On transport
+# recovery the pi-transport-self-heal wrapper sweeps poisoned benches; this
+# gate ensures no NEW ones are written while the bin is clobbered.
+#
+# Fail-open: if pi-transport-check is unavailable or
+# PI_SEAT_LIB_CHECK_TRANSPORT=0 (tests), the gate is skipped so benching is
+# not suppressed on a box without the probe. The probe is the existing guard
+# (cli.js shebang+size+--version); a cheap `pi --version` semver test is the
+# fallback when the probe bin is absent.
+SEAT_TRANSPORT_DOWN_MARKER="${SEAT_TRANSPORT_DOWN_MARKER:-$STATE_DIR/transport-down.json}"
+PI_SEAT_LIB_CHECK_TRANSPORT="${PI_SEAT_LIB_CHECK_TRANSPORT:-1}"
+
+_transport_is_down() {
+    (( ${PI_SEAT_LIB_CHECK_TRANSPORT:-1} )) || return 1
+    local probe="${PI_TRANSPORT_CHECK:-/home/nish/.local/bin/pi-transport-check}"
+    if [[ -x "$probe" ]]; then
+        "$probe" >/dev/null 2>&1 || return 0
+        return 1
+    fi
+    # Fallback: a bare `pi --version` semver test (cheap, no probe bin needed).
+    local pi_bin="${PI_BIN:-/home/nish/.local/bin/pi}" ver
+    ver="$(timeout 30 "$pi_bin" --version 2>/dev/null | head -n1 || true)"
+    if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Record one transport-down marker (idempotent per down-window: refreshes the
+# timestamp so a single marker spans the whole outage). Best-effort: a write
+# failure never blocks the caller's fail-open path.
+_mark_transport_down() {
+    local p="$1" m="$2"
+    local dir
+    dir=$(dirname "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null || echo "$STATE_DIR")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local tmp="$SEAT_TRANSPORT_DOWN_MARKER.$$.$RANDOM.tmp"
+    jq -nc --arg ts "$now_utc" --arg p "$p" --arg m "$m" \
+        '{transport:"down", observed_at:$ts, last_charged_provider:$p, last_charged_model:$m}' \
+        >"$tmp" 2>/dev/null && chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null \
+        || rm -f "$tmp" 2>/dev/null || true
+    seat_log "transport-down: $p/$m run charged to TRANSPORT, not the seat (pi-transport-check failed) — no per-seat bench written (fleet-ops#3111)"
+    return 0
+}
+
 mark_seat_spawn_fail() {
     local p="$1" m="$2" reason="${3:-spawn_etimeout}"
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -3418,6 +3544,7 @@ EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-3}"  # default 3 (vs gen
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -3758,6 +3885,7 @@ is_quota_cap_error() {
 # jq/rename failure).
 mark_seat_quota_bench() {
     local p="$1" m="$2" text="${3:-}"
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -3932,6 +4060,7 @@ is_overload_error() {
 # jq/rename failure).
 mark_seat_overload_bench() {
     local p="$1" m="$2" text="${3:-}"
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -4027,6 +4156,7 @@ mark_seat_overload_bench() {
 # "retry after Ns" or "resets in N" window we use it.
 mark_seat_hang_bench() {
     local p="$1" m="$2" text="${3:-}"
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
