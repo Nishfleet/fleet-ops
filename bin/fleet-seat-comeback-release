@@ -791,12 +791,31 @@ main() {
                     fi
                 else
                     ((probed++)) || true
-                    # Failed second-chance re-probe: the seat is confirmed
-                    # terminal. Retire it immediately (no 6h grace).
-                    if retire_corpse "$p" "$m" "$f" 1; then
-                        log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
+                    # Failed second-chance re-probe. The probe ran through
+                    # pi --print, which triggers the seat-health extension —
+                    # the extension may have reclassified the corpse DURING
+                    # the probe (fleet-ops#3179: a 402 quota_exhausted
+                    # response re-wrote the ledger with health_class
+                    # quota_exhausted, seat_dead=false, usable_at 24h in the
+                    # future). In that race the ledger is NO LONGER a corpse:
+                    # the seat has a comeback clock from the extension and
+                    # will be re-probed when that wall expires. Force-retire
+                    # only when the ledger is STILL a corpse (the extension
+                    # did not write — e.g. a timeout with no HTTP response).
+                    # Without this check, retire_corpse sees a non-corpse
+                    # file, returns 1, and the log says "retire failed — held"
+                    # even though the seat was reclassified, not held.
+                    local _post_hc _post_dead
+                    _post_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+                    _post_dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+                    if [[ "$_post_hc" == "corpse" && "$_post_dead" == "true" ]]; then
+                        if retire_corpse "$p" "$m" "$f" 1; then
+                            log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
+                        else
+                            log "corpse re-probe $p/$m: retire failed — held"
+                        fi
                     else
-                        log "corpse re-probe $p/$m: retire failed — held"
+                        log "corpse re-probe $p/$m: extension reclassified to health_class=$_post_hc seat_dead=$_post_dead during probe — no longer a corpse, walled by extension (fleet-ops#3179)"
                     fi
                 fi
                 last_probe["$base"]="$(now_epoch)"
