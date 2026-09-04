@@ -176,6 +176,51 @@ env4["FLEET_DQ_MERGED"] = f"{scratch}/merged4.json"
 p4 = m.compute(env4)
 near(p4["latency_p95"], 100.0)
 print("OK: incomplete deployment excluded from latency (not counted as 0)")
+
+# 4b. fleet-ops#3136 hangover: a merge that waited through a DEPLOY-BLOCKED
+#     episode then a later green must NOT enter the latency p95. That class
+#     is DeployBlockedStuck. Counting it after the episode ends is why
+#     DeploymentLatencyHigh stayed red for 24h+ after the clone was live
+#     (live 2026-09-04: p95 97594s of 460 samples, 411 blocked-span;
+#     the 50 clean samples p95'd at 327s). A later clean merge of 100s
+#     is the only remaining sample -> p95 100, alert would clear.
+pathlib.Path(f"{scratch}/hangover-merged.json").write_text(json.dumps([
+    {"number": 10, "mergedAt": "2026-09-02T10:00:00Z"},  # hangover, 8h wait
+    {"number": 11, "mergedAt": "2026-09-02T12:00:00Z"},  # hangover, 6h wait
+    {"number": 12, "mergedAt": "2026-09-02T17:48:20Z"},  # clean, 100s
+]))
+pathlib.Path(f"{scratch}/hangover-journal.log").write_text(
+    "[2026-09-02T10:00:01Z] [fleet-deploy-check] origin/main moved a -> b — invoking sanctioned deploy\n"
+    "[2026-09-02T10:00:02Z] [fleet-ops-deploy] LOUD [DEPLOY-BLOCKED] merge-to-live blocked at /x: dirty tracked files\n"
+    "[2026-09-02T12:00:01Z] [fleet-deploy-check] origin/main moved b -> c — invoking sanctioned deploy\n"
+    "[2026-09-02T12:00:02Z] [fleet-ops-deploy] LOUD [DEPLOY-BLOCKED] merge-to-live blocked at /x: dirty tracked files\n"
+    "[2026-09-02T17:50:00Z] [fleet-deploy-check] origin/main moved c -> d — invoking sanctioned deploy\n"
+)
+env_h = dict(env)
+env_h["FLEET_DQ_MERGED"] = f"{scratch}/hangover-merged.json"
+env_h["FLEET_DQ_JOURNAL"] = f"{scratch}/hangover-journal.log"
+env_h["FLEET_DQ_CACHE_DIR"] = f"{scratch}/cache-hangover"
+p_h = m.compute(env_h)
+near(p_h["latency_p95"], 100.0)
+assert p_h["latency_samples"] == 1, p_h["latency_samples"]
+near(p_h["blocked_duration"], 0.0, 1e-4)
+print("OK: blocked-span hangover excluded from latency p95 (fleet-ops#3136)")
+
+# 4c. fleet-ops#3136 idle-tick clear: after restoring the clone to main the
+#     next cycle logs "origin/main unchanged — nothing to do". That is a
+#     successful gate. Without parsing it, blocked_duration ages off the
+#     last DEPLOY-BLOCKED line and DeployBlockedStuck re-fires.
+pathlib.Path(f"{scratch}/idle-clear.log").write_text(
+    "[2026-09-04T08:44:24Z] [fleet-deploy-check] origin/main moved a -> b — invoking sanctioned deploy\n"
+    "[2026-09-04T08:44:25Z] [fleet-ops-deploy] LOUD [DEPLOY-BLOCKED] merge-to-live blocked at /x: checkout on 'claim/issue-3132' not main\n"
+    "[2026-09-04T08:46:27Z] [fleet-deploy-check] origin/main unchanged (HEAD=abc) — nothing to do\n"
+)
+env_c = dict(env)
+env_c["FLEET_DQ_JOURNAL"] = f"{scratch}/idle-clear.log"
+env_c["FLEET_DQ_CACHE_DIR"] = f"{scratch}/cache-idle"
+p_c = m.compute(env_c)
+near(p_c["blocked_duration"], 0.0, 1e-4)
+print("OK: idle-tick 'nothing to do' ends the blocked episode (fleet-ops#3136)")
 PY
 ok "compute() deterministic fixture math"
 
