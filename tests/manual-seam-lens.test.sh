@@ -171,6 +171,7 @@ cat >"$scratch/auditor/auditor.log" <<'LOG'
 2026-09-01T15:08:00Z 5. CAATCH-ALL sweep: (1) user failed: 1 → reset→0 (fleet-heartbeat, fixed); (2) system failed: 0 — quiet; tick 2026-09-01T18:12:38Z.
 2026-09-01T15:09:00Z **NEW GAP caught this round (wrong-assumption class — stale registry):** the previous blind-audit run 2026-09-01T20:56:31Z uncovered that fleet-ops-deploy-clone.
 2026-09-01T15:10:00Z This is EXACTLY the stale-state class AGENTS.md warns about: "the 2026-08-23 'fleet is PA' STATE' text went stale after the 2026-08-25/26 restoration at 2026-09-01T20:56:31Z".
+2026-09-01T15:11:00Z 7. **Cooldown NOT cleared** — root cause is fixed (the script metric now advances on SKIP, the alert cleared in <30s after the force-refresh) but observe-to-close requires 2 consecutive canary ticks of zero FleetGrokTokenRefreshStale.
 LOG
 
 python3 "$lens" collect \
@@ -182,7 +183,7 @@ jq -e '.candidates | length == 1' "$scratch/auditor/collected.json" >/dev/null \
   || fail "auditor bullets must be filtered, only the hand seam stays; got $(jq '.candidates | length' "$scratch/auditor/collected.json"): $(cat "$scratch/auditor/collected.json")"
 jq -e '[.candidates[].seam] | index("hand-repaired a /tmp symlink")' "$scratch/auditor/collected.json" >/dev/null \
   || fail "hand seam dropped while filtering auditor bullets"
-jq -e '[.candidates[].seam | select(test("Confer-with-peers|AUTO-REVERT HALT|Live hot-patch|wrong-assumption|WRITER-SIDE dedupe|Precedence-band canary|CAATCH-ALL|NEW GAP caught|stale-state class"))] | length == 0' "$scratch/auditor/collected.json" >/dev/null \
+jq -e '[.candidates[].seam | select(test("Confer-with-peers|AUTO-REVERT HALT|Live hot-patch|wrong-assumption|WRITER-SIDE dedupe|Precedence-band canary|CAATCH-ALL|NEW GAP caught|stale-state class|Cooldown"))] | length == 0' "$scratch/auditor/collected.json" >/dev/null \
   || fail "auditor bullet slipped through: $(jq -r '[.candidates[].seam] | join("|")' "$scratch/auditor/collected.json")"
 ok "auditor report bullets filtered from actions-log (fleet-ops#2706)"
 

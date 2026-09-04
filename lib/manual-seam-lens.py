@@ -49,6 +49,12 @@ ESCALATION_LOG_RE = re.compile(
     r"|\*\*Summoning trip:\*\*"
     r"|\*\*Root cause(?:\s*\(same class|\s*\(worked-example)?"
     r"|\*\*For you \(Nish\):\*\*"
+    # stop-judge cooldown verdict (fleet-ops#2925): every closeout's numbered
+    # "Fixes applied this turn" checklist ends with the cooldown bullet
+    # ("N. **Cooldown NOT cleared** — ..."). It is the automated
+    # stop-judge/seat-health machinery's verdict, tracked to close by the
+    # observe-to-clear READY-WORK items, not a manual hand operation.
+    r"|\*\*Cooldown(?: NOT)? cleared\*\*"
     r"|\*\*NEW development this trip"
     r"|\*\*Re-queue(?:\s*\(halted item\))?:\*\*"
     r"|\*\*Re-queue:\*\*"
