@@ -17,14 +17,18 @@
 # directory.
 #
 # Cases:
-#   Mode A (existing):
+#   Mode A (existing + fleet-ops#3023 CLOSED extension):
 #     1. merged + terminal + clean        -> REAPED-A
 #     2. merged + terminal + dirty        -> SKIPPED (left in place)
 #     3. merged + LIVE worker             -> SKIPPED (never touch a live cycle)
-#     4. NOT merged + terminal + clean    -> SKIPPED (no merged PR)
-#     5. gh merged query fails for a repo -> SKIPPED (fail safe, never blind)
+#     4. NOT merged + terminal + clean    -> SKIPPED (no merged/closed PR)
+#     5. gh closed query fails for a repo -> SKIPPED (fail safe, never blind)
 #     6. worktree on a non-claim branch   -> REAPED-C (Mode C catch-all, fleet-ops#2774)
 #     7. --dry-run                        -> reports, deletes nothing
+#    25. CLOSED + terminal + clean + OLD  -> REAPED-A (closed)  [fleet-ops#3023]
+#    26. CLOSED + terminal + clean + YOUNG-> SKIP-A closed-too-young [fleet-ops#3023]
+#    27. CLOSED + terminal + dirty + old  -> SKIP dirty (common gate) [fleet-ops#3023]
+#    28. CLOSED + LIVE worker             -> SKIP live (common gate) [fleet-ops#3023]
 #
 #   Mode B (fleet-ops#2637):
 #     9.  pi-issue path + ledger-terminal + pushed + clean -> REAPED-B
@@ -102,10 +106,34 @@ add_claim_worktree() {
     printf 'claim/issue-%s\n' "$n" >>"$scratch/gh-state/${parent_base}.merged"
 }
 
-# --- fake gh: answers `gh pr list -R <owner/repo> --state merged` ---------
-# The reaper only uses `gh pr list --state merged --json headRefName`. The
-# fake returns the merged set for the repo named on -R, or exits 1 to
-# simulate a gh failure (case 5).
+# add_closed_claim_worktree <parent> <wt-root> <N> [<dirty>] [<old>]
+# Creates a worktree at <wt-root>/issue-<parent-basename>-<N> on
+# claim/issue-<N>, and registers <N> as CLOSED (not merged) in the fake
+# gh state — the orphan shape Mode A now reaps after the age gate
+# (fleet-ops#3023). old=1 sets the directory mtime 2 days ago so the
+# default 24h age gate passes.
+add_closed_claim_worktree() {
+    local parent="$1" wroot="$2" n="$3" dirty="${4:-0}" old="${5:-0}"
+    local parent_base; parent_base=$(basename "$parent")
+    local wt="$wroot/issue-${parent_base}-${n}"
+    git -C "$parent" worktree add -q -B "claim/issue-${n}" "$wt" 2>/dev/null
+    if [ "$dirty" = 1 ]; then
+        printf 'uncommitted\n' >"$wt/dirty.txt"
+    fi
+    # Register CLOSED (not merged) PR for this claim branch.
+    printf 'claim/issue-%s\n' "$n" >>"$scratch/gh-state/${parent_base}.closed"
+    if [ "$old" = 1 ]; then
+        touch -d '2 days ago' "$wt" 2>/dev/null || true
+    fi
+}
+
+# --- fake gh: answers `gh pr list -R <owner/repo> --state closed` ----------
+# The reaper queries `gh pr list --state closed --json headRefName,state`,
+# which returns both MERGED and CLOSED PRs (a merged PR has state=MERGED
+# inside the closed set). The fake reads per-repo .merged and .closed
+# marker files and emits a combined JSON array with the state field, so
+# Mode A can split MERGED (reap immediately) from CLOSED (reap after the
+# age gate, fleet-ops#3023). A .fail marker simulates a gh failure (case 5).
 cat >"$scratch/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -116,18 +144,18 @@ while [ $# -gt 0 ]; do
         *) shift ;;
     esac
 done
-# repo is OWNER/REPO; the merged file is keyed by repo basename.
+# repo is OWNER/REPO; the state files are keyed by repo basename.
 base="${repo##*/}"
-state="$GH_STATE_DIR/${base}.merged"
 if [ -f "$GH_STATE_DIR/${base}.fail" ]; then
     exit 1
 fi
-if [ -f "$state" ]; then
-    # Emit JSON array of {headRefName} for each merged claim branch.
-    jq -R -s 'split("\n") | map(select(length>0)) | map({headRefName: .})' "$state"
-else
-    echo '[]'
-fi
+merged_file="$GH_STATE_DIR/${base}.merged"
+closed_file="$GH_STATE_DIR/${base}.closed"
+merged_json='[]'
+closed_json='[]'
+[ -f "$merged_file" ] && merged_json=$(jq -R -s 'split("\n")|map(select(length>0))|map({headRefName:.,state:"MERGED"})' "$merged_file")
+[ -f "$closed_file" ] && closed_json=$(jq -R -s 'split("\n")|map(select(length>0))|map({headRefName:.,state:"CLOSED"})' "$closed_file")
+jq -n --argjson m "$merged_json" --argjson c "$closed_json" '$m + $c'
 FAKE
 chmod +x "$scratch/bin/gh"
 
@@ -563,6 +591,68 @@ out_ns=$("$bin" --root "$wroot" --no-summary-file 2>&1) || true
 ok "case24: --no-summary-file disables summary write"
 
 rm -f "$summary_out"
+
+# =====================================================================
+# Mode A CLOSED extension (fleet-ops#3023): a claim/issue-<N> worktree
+# whose PR is CLOSED (not merged) is an orphan Mode A previously skipped
+# forever (claim/issue-* is always tagged Mode A, never Mode C). Mode A
+# now reaps CLOSED claims after the age gate, with the same terminal +
+# clean gates. These cases prove the matching orphan is collected.
+# =====================================================================
+
+# --- 25. CLOSED + terminal + clean + OLD -> REAPED-A (closed) ---------------
+add_closed_claim_worktree "$parent_a" "$wroot" 700 0 1
+out_cl1=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/issue-fleet-ops-700" ] \
+    || fail "case25: CLOSED+terminal+clean+old should be REAPED-A (closed); output: $out_cl1"
+echo "$out_cl1" | grep -q "issue-fleet-ops-700: REAPED-A (claim/issue-700, closed)" \
+    || fail "case25: expected REAPED-A (closed) tag; output: $out_cl1"
+ok "case25: CLOSED + terminal + clean + old REAPED-A (closed)"
+
+# --- 26. CLOSED + terminal + clean + YOUNG -> SKIP-A closed-too-young -------
+add_closed_claim_worktree "$parent_a" "$wroot" 701 0 0
+out_cl2=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-701" ] \
+    || fail "case26: young CLOSED worktree must NOT be reaped; output: $out_cl2"
+echo "$out_cl2" | grep -q "issue-fleet-ops-701: SKIP-A closed-too-young" \
+    || fail "case26: expected SKIP-A closed-too-young; output: $out_cl2"
+ok "case26: CLOSED + YOUNG SKIP-A closed-too-young"
+# Age it and reap to clean up.
+touch -d '2 days ago' "$wroot/issue-fleet-ops-701" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 27. CLOSED + terminal + dirty + old -> SKIP dirty (common gate) --------
+add_closed_claim_worktree "$parent_a" "$wroot" 702 1 1
+out_cl3=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-702" ] \
+    || fail "case27: dirty CLOSED worktree must NOT be reaped; output: $out_cl3"
+echo "$out_cl3" | grep -q "issue-fleet-ops-702: SKIP dirty" \
+    || fail "case27: expected SKIP dirty (common gate); output: $out_cl3"
+ok "case27: CLOSED + dirty SKIP dirty"
+# Clean the dirty file and reap to clean up.
+rm -f "$wroot/issue-fleet-ops-702/dirty.txt" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 28. CLOSED + LIVE worker -> SKIP live (common gate) --------------------
+add_closed_claim_worktree "$parent_a" "$wroot" 703 0 1
+printf 'running\n' >"$scratch/live/pi-issue@fleet-ops-703.service"
+out_cl4=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-703" ] \
+    || fail "case28: live-worker CLOSED worktree must NOT be reaped; output: $out_cl4"
+echo "$out_cl4" | grep -q "issue-fleet-ops-703: SKIP live worker" \
+    || fail "case28: expected SKIP live worker (common gate); output: $out_cl4"
+ok "case28: CLOSED + LIVE worker SKIP live"
+rm -f "$scratch/live/pi-issue@fleet-ops-703.service" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 29. summary JSON carries reaped_a_closed (fleet-ops#3023) --------------
+add_closed_claim_worktree "$parent_a" "$wroot" 704 0 1
+summary_out_cl="$(mktemp -t wt-reaper-summary-cl.XXXXXX)"
+"$bin" --root "$wroot" --summary-file "$summary_out_cl" >/dev/null 2>&1 || true
+jq -e '.reaped_a_closed >= 1' "$summary_out_cl" >/dev/null 2>&1 \
+    || fail "case29: summary JSON reaped_a_closed should be >=1; content: $(cat "$summary_out_cl")"
+ok "case29: summary JSON carries reaped_a_closed"
+rm -f "$summary_out_cl"
 
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
