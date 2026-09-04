@@ -597,9 +597,12 @@ if (( out_bytes < OUT_MIN )); then
     # theory a single 0B stdout was a provider hiccup on a healthy seat;
     # without the bench an intake re-spawn re-picked the same no-op'ing
     # seat and burned 8 runs/2h on straitly/deepseek-v4-pro (#1298).
-    # fleet-ops#2343: flat 900s no-op cooldown (mark_seat_empty_run), not
-    # the escalating #1408 ladder — a provider no-op is not a wall.
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, flat cooldown) and re-seating in-process"
+    # fleet-ops#2343: flat 900s no-op cooldown for low counts
+    # (mark_seat_empty_run), not the escalating #1408 ladder from count=1 —
+    # a provider no-op is not a wall. fleet-ops#3077: tiered escalation above
+    # EMPTY_RUN_ESCALATION_THRESHOLD (default 4) so a chronic no-op'er gets
+    # progressively longer benches instead of re-entering every 900s.
+    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, tiered cooldown) and re-seating in-process"
     if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
         seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
     else

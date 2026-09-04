@@ -3400,14 +3400,37 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # window without no-op'ing — the real recovery signal — so the count
 # resets. spawn_fail keeps the 30-min window (spawn storms are clustered;
 # a 2 h window would let a long-ago spawn_fail inflate a fresh empty-run
-# count). The bench itself is still the FLAT 900 s cooldown (fleet-ops#2343
-# — no ladder); only the COUNT-accumulation window widens, so the
-# failure-ceiling park can engage for a chronic intermittent no-op'er
-# without re-introducing the bench ladder that churned healthy seats.
+# count). The bench is FLAT 900 s at/below EMPTY_RUN_ESCALATION_THRESHOLD
+# (fleet-ops#2343 — no ladder from count=1) and escalates above it
+# (fleet-ops#3077 — chronic no-op'ers get longer benches); only the
+# COUNT-accumulation window widens, so the failure-ceiling park can engage
+# for a chronic intermittent no-op'er without re-introducing the bench
+# ladder that churned healthy seats.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn-fail count-merge window (see comment above)
 EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-7200}"  # 2 h — empty-run count-merge window (fleet-ops#2934); matches waste.empty_runs_last_2h
 EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-10}"  # default 10 (vs generic 20) parks chronic no-op seats faster
+# fleet-ops#3077: tiered escalation ABOVE a threshold count. The flat 900s
+# cooldown (fleet-ops#2343) is kept for low counts — a healthy seat with 1-3
+# intermittent no-ops in 2h still gets the gentle 15-min bench (the #2343
+# concern: the old 900->1800->3600->7200 ladder from count=1 churned healthy
+# seats). But a CHRONIC no-op'er (count > threshold) re-entered rotation every
+# 900s and burned the queue — live 2026-09-03: opencode/nemotron-3-ultra-free
+# produced 12 empty runs in 2h on fleet-ops#2913, count=5 with flat 900s, the
+# seat re-released immediately. Above the threshold the bench escalates
+# (doubling per count over the threshold, capped at EMPTY_RUN_ESCALATION_CAP_S)
+# so a chronic no-op'er spends progressively longer out of rotation before the
+# failure-ceiling park (24h) fires at EMPTY_RUN_FAILURE_CEILING. The threshold
+# is set ABOVE the #2343 intermittent-no-op range (3 in 2h) so healthy seats
+# are unaffected; only seats that no-op > threshold times in a 2h window
+# escalate. Defaults: threshold=4, cap=3600s (1h).
+#   count 1-4: flat 900s  (healthy/intermittent — #2343 preserved)
+#   count 5:  1800s       (30 min — chronic, first escalation step)
+#   count 6:  3600s       (1h — cap)
+#   count 7-9: 3600s      (1h — cap held)
+#   count >=10: 86400s    (24h park — failure ceiling, unchanged)
+EMPTY_RUN_ESCALATION_THRESHOLD="${EMPTY_RUN_ESCALATION_THRESHOLD:-4}"
+EMPTY_RUN_ESCALATION_CAP_S="${EMPTY_RUN_ESCALATION_CAP_S:-3600}"
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -3457,10 +3480,30 @@ mark_seat_empty_run() {
         [[ "$ledger_count" -gt "$prev_count" ]] && prev_count="$ledger_count"
     fi
     local merged_count=$((prev_count + 1))
-    # fleet-ops#2343: FLAT no-op cooldown — no count ladder (the #1408
-    # escalation churned healthy seats; a provider no-op is not a wall).
-    local backoff
-    backoff="$EMPTY_RUN_BACKOFF_S"
+    # fleet-ops#2343: FLAT no-op cooldown for low counts — no count ladder
+    # from count=1 (the #1408 escalation churned healthy seats; a provider
+    # no-op is not a wall). fleet-ops#3077: TIERED escalation ABOVE the
+    # threshold only — a chronic no-op'er (count > threshold) gets a longer
+    # bench so it stops re-entering rotation every 900s and burning the queue.
+    # Below the threshold the bench stays flat at EMPTY_RUN_BACKOFF_S, so a
+    # healthy seat with 1-3 intermittent no-ops in 2h is unaffected (the
+    # #2343 concern). Above the threshold the bench doubles per count-over-
+    # threshold, capped at EMPTY_RUN_ESCALATION_CAP_S (default 1h), so a
+    # chronic no-op'er trends toward the failure-ceiling park instead of
+    # churning at flat 900s for 5+ more cycles.
+    local backoff threshold esc_count
+    threshold="${EMPTY_RUN_ESCALATION_THRESHOLD:-4}"
+    [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=4
+    if (( merged_count <= threshold )); then
+        backoff="$EMPTY_RUN_BACKOFF_S"
+    else
+        # _escalated_backoff does (count-1) doublings, so pass
+        # (merged_count - threshold + 1) to get one doubling at the first
+        # count above the threshold (count=5, threshold=4 -> 1 doubling ->
+        # 1800s), two at the second (3600s), etc.
+        esc_count=$(( merged_count - threshold + 1 ))
+        backoff=$(_escalated_backoff "$EMPTY_RUN_BACKOFF_S" "$esc_count" "${EMPTY_RUN_ESCALATION_CAP_S:-3600}")
+    fi
     # fleet-ops#2627: park past the EMPTY_RUN_FAILURE_CEILING (default 10,
     # lower than SEAT_FAILURE_CEILING=20) using the marker-carried count that
     # survives the healthy clobber. Without this override, the chronic no-op
