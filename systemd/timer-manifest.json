@@ -499,6 +499,12 @@
       "classification": "scheduled",
       "cadence": "15min",
       "source": "repo"
+    },
+    "fable-fleet-check.timer": {
+      "reason": "3-hourly fable-fleet health check (01,04,07,10,13,16,19,22:15 UTC) — product-side watcher, installed 2026-09-04 by hand outside the repo deploy; adopted into the manifest to close the #1460 shape-lock gap",
+      "classification": "scheduled",
+      "cadence": "3h",
+      "source": "user-config"
     }
   }
 }
