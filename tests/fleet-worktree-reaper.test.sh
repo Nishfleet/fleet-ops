@@ -62,6 +62,8 @@
 #    36. summary JSON carries salvaged/salvage_attempts/salvage_candidates
 #    37. Mode B + ledger-terminal + dirty + STALE + unpushed -> SALVAGE-BANKED
 #        + REAPED-B (the pushed wip ref is the head-on-origin proof)
+#    38. ARCHIVED repo + dirty + STALE + push fails -> SALVAGE-BANKED-LOCAL
+#        + REAPED-C (read-only origin can never take the bank)
 #
 #   16. MANIFEST + unit files present    -> install rail intact
 set -euo pipefail
@@ -149,6 +151,18 @@ cat >"$scratch/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 repo=""
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+    # gh repo view <owner/repo> --json isArchived -q .isArchived
+    # A <basename>.archived marker under GH_STATE_DIR makes the repo
+    # report archived (Mode D local-bank path, fleet-ops#3023).
+    rbase="${3##*/}"
+    if [ -f "$GH_STATE_DIR/${rbase}.archived" ]; then
+        printf 'true\n'
+    else
+        printf 'false\n'
+    fi
+    exit 0
+fi
 while [ $# -gt 0 ]; do
     case "$1" in
         -R) repo="$2"; shift 2 ;;
@@ -824,6 +838,40 @@ out_db=$("$bin" --root "$wroot" 2>&1) || true
 echo "$out_db" | grep -q "issue-fleet-ops-811: REAPED-B" \
     || fail "case37: expected REAPED-B tag; output: $out_db"
 ok "case37: Mode B ledger-terminal stale dirty SALVAGE-BANKED + REAPED-B"
+
+# --- 38. ARCHIVED repo + dirty + STALE + push fails -> local bank reaps ---
+# On an archived repo the push can never land (read-only origin), so the
+# local wip ref the helper leaves in the parent clone is the maximal
+# possible preservation — and it must be verified before the reap.
+printf '1\n' >"$GH_STATE_DIR/proj-x.archived"
+add_modec_worktree "$parent_b" "$wroot" "fix-branch-900" "fix/mode-d-900" 0 1 0
+touch -d '20 days ago' "$wroot/fix-branch-900"
+printf '1\n' >"$FAKE_SALVAGE_DIR/fix-branch-900.no-push"
+out_arch=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/fix-branch-900" ] \
+    || fail "case38: archived-repo stale dirty orphan should be locally banked + REAPED-C; output: $out_arch"
+echo "$out_arch" | grep -q "fix-branch-900: SALVAGE-BANKED-LOCAL" \
+    || fail "case38: expected SALVAGE-BANKED-LOCAL tag; output: $out_arch"
+echo "$out_arch" | grep -q "fix-branch-900: REAPED-C" \
+    || fail "case38: expected REAPED-C tag; output: $out_arch"
+# The local bank must exist in the parent clone.
+git -C "$parent_b" for-each-ref 'refs/heads/wip/wfr-fix-branch-900-*' \
+    | grep -q . \
+    || fail "case38: local banked wip ref missing in parent; output: $out_arch"
+ok "case38: archived repo local bank SALVAGE-BANKED-LOCAL + REAPED-C"
+# And the mirror-image: same shape on a LIVE repo must NOT reap — a
+# push that never landed is not a bank.
+rm -f "$GH_STATE_DIR/proj-x.archived"
+add_modec_worktree "$parent_b" "$wroot" "fix-branch-901" "fix/mode-d-901" 0 1 0
+touch -d '20 days ago' "$wroot/fix-branch-901"
+printf '1\n' >"$FAKE_SALVAGE_DIR/fix-branch-901.no-push"
+out_live=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/fix-branch-901" ] \
+    || fail "case38b: live-repo push-failed salvage must NOT reap; output: $out_live"
+echo "$out_live" | grep -q "fix-branch-901: salvage not on origin" \
+    || fail "case38b: expected 'salvage not on origin'; output: $out_live"
+ok "case38b: live repo + push-failed salvage keeps the worktree"
+rm -f "$FAKE_SALVAGE_DIR/fix-branch-901.no-push"
 
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \

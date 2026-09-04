@@ -115,7 +115,13 @@
 #   3. PROOF:  the pushed ref must appear in a fresh `git ls-remote
 #              origin` — the helper's own log line is never trusted.
 #              A quarantined or push-failed salvage stays local-only
-#              and the worktree is kept.
+#              and the worktree is kept. EXCEPTION — archived repos:
+#              `gh repo view --json isArchived` is checked once per
+#              parent; on an archived repo the push can NEVER land, so
+#              the local wip ref the helper leaves in the parent clone
+#              is the maximal possible preservation, and its existence
+#              is verified the same way (SALVAGE-BANKED-LOCAL). Any
+#              other push failure keeps the pushed-bank requirement.
 #   4. GATES:  a banked worktree then flows through its normal mode
 #              gates — Mode A still needs a terminal PR, Mode B a
 #              terminal ledger entry. The pushed wip ref satisfies the
@@ -406,10 +412,13 @@ worktree_age_seconds() {
 # is kept. The wfr-<basename> unit name keeps ledger records clear of
 # real pi-issue units (Mode B's terminality check reads unit names).
 salvage_and_bank() {
-    local wt="$1"
+    local wt="$1" parent_archived="${2:-0}"
     command -v "$SALVAGE_BIN" >/dev/null 2>&1 || return 1
     local base unit ts br out rc
-    base="${wt##*/}"
+    # Unit name is the ROOT-relative path so nested worktrees cannot
+    # collide (e.g. candidates/<run>/candidate-1 appears under many
+    # parents — basename alone would collide on the wip ref name).
+    base="${wt#"$ROOT"/}"
     unit="wfr-$(printf '%s' "$base" | tr -c 'A-Za-z0-9:_.-' '_')"
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     br="wip/${unit}-${ts}"
@@ -427,12 +436,21 @@ salvage_and_bank() {
         log "  $wt: salvage helper exited rc=$rc — kept"
         return 1
     fi
-    # The bank must be PROVEN on origin: a fresh ls-remote of the exact
-    # ref the helper was told to create. Local-only salvage (secret
-    # quarantine, push failure) leaves the work preserved locally in the
-    # parent's wip/ ref but is not enough to delete the tree.
+    # The bank must be PROVEN: a fresh ls-remote of the exact ref the
+    # helper was told to create — the helper's own log line is never
+    # trusted.
     if git -C "$wt" ls-remote --exit-code origin "refs/heads/${br}" >/dev/null 2>&1; then
         log "  $wt: SALVAGE-BANKED $br on origin"
+        return 0
+    fi
+    # Archived remote: the push can NEVER land (read-only), so the local
+    # wip ref the helper leaves in the parent clone is the maximal
+    # possible preservation. Verify the ref exists, then the bank counts.
+    # On a live repo, a missing pushed ref (quarantine, transient push
+    # failure, no permission) keeps the worktree.
+    if [ "$parent_archived" = "1" ] \
+       && git -C "$wt" rev-parse --verify --quiet "refs/heads/${br}" >/dev/null 2>&1; then
+        log "  $wt: SALVAGE-BANKED-LOCAL $br (archived repo — origin is read-only)"
         return 0
     fi
     log "  $wt: salvage not on origin (quarantined or push failed) — kept"
@@ -559,6 +577,16 @@ for parent in "${parents[@]}"; do
         awk -F'\t' '$1=="CLOSED"{print $2}' "$combined" >"$closed_set" 2>/dev/null || true
     fi
 
+    # Per-parent archived flag (Mode D): an archived repo can never
+    # accept a salvage push — the local wip ref is the maximal possible
+    # bank there. gh failure or any non-"true" answer => not archived
+    # (pushed-bank requirement stays; fail safe).
+    parent_archived=0
+    if [ "$("$GH" repo view "$owner_repo" --json isArchived -q '.isArchived' 2>/dev/null)" = "true" ]; then
+        parent_archived=1
+        log "repo $owner_repo: ARCHIVED — salvage banks local-only (origin read-only)"
+    fi
+
     # Build the per-parent origin SHA cache once (Mode B + C share it).
     # One `git ls-remote origin` per parent; every worktree under this
     # parent checks HEAD against the cached set. Fail-closed: if the
@@ -614,7 +642,7 @@ for parent in "${parents[@]}"; do
                     log "  $path: DRY-SALVAGE-CAND ($branch, mode=$mode, age=${age_s}s)"
                 elif [ "$salvage_attempts" -lt "$SALVAGE_LIMIT" ]; then
                     salvage_attempts=$((salvage_attempts + 1))
-                    if salvage_and_bank "$path"; then
+                    if salvage_and_bank "$path" "$parent_archived"; then
                         salvaged=$((salvaged + 1))
                         wt_banked=1
                         # A banked tree should now be clean (the helper
