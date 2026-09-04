@@ -80,7 +80,24 @@ main() {
     fi
 
     votes=$(votes_json)
-    pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
+
+    # fleet-ops#3121: a PASS vote whose reason carries the required keywords
+    # (duplicate / north-star) but NO repo-specific evidence — an issue
+    # number (#123), a file path (bin/foo, lib/bar.py), or a URL — is
+    # keyword-only compliance, not a judgement. Exclude it from the PASS
+    # count and log the downgrade so the operator sees which votes were
+    # rejected. The candidate stays PENDING (fails closed) until a PASS
+    # vote with real evidence lands or 2-of-3 FAIL discard it.
+    local evidence_re='#[0-9]+|[a-zA-Z0-9_.-]+/[a-zA-Z0-9_./-]+|https?://'
+    pass=$(printf '%s\n' "$votes" | jq --arg re "$evidence_re" \
+        '[.[] | select(.verdict == "PASS" and (.reason | test($re)))] | length')
+    local rejected
+    rejected=$(printf '%s\n' "$votes" | jq -r --arg re "$evidence_re" \
+        '[.[] | select(.verdict == "PASS" and (.reason | test($re) | not)) | "\(.role): PASS rejected — reason has keywords but no repo-specific evidence (no issue number, path, or URL)"] | join("\n")')
+    if [ -n "$rejected" ]; then
+        log "$repo/#$candidate: $rejected"
+    fi
+
     fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
     reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
 

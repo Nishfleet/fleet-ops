@@ -410,4 +410,123 @@ grep -q 'no usable seat' "$scratch/scenario8.err" \
 [[ ! -s "$calls" ]] || fail "scenario8: pi must NOT be called on a walled lane (calls=$(cat "$calls"))"
 ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate stays PENDING, no escalation storm)"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault"
+# -----------------------------------------------------------------------------
+# Scenario 9: fleet-ops#3121. All straitly seats are walled (quota_exhausted/
+# 402 — a money wall). resolve_seat straitly must fall back to the next usable
+# capable seat from the ordered fallback list (xai-oauth/grok-4.6 first, then
+# openrouter/deepseek-v4-flash-0731), NOT fail the unit. Never a fail-loop on
+# a money wall. The auditor runs on the fallback seat and writes a real vote.
+# -----------------------------------------------------------------------------
+reset_state
+export AUDIT_STATE_DIR="$state_dir"
+fallback_lib="$scratch/seat-lib-fallback.sh"
+cat >"$fallback_lib" <<'LIB'
+# shellcheck shell=bash
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+load_seat_caps() { :; }
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' straitly deepseek/deepseek-v4-pro
+  printf '%s\t%s\t-\t1\n' straitly gpt-5.6-sol
+  printf '%s\t%s\t-\t1\n' xai-oauth grok-4.6
+  printf '%s\t%s\t-\t1\n' openrouter deepseek/deepseek-v4-flash-0731
+  printf '%s\t%s\t-\t1\n' devin glm-5-2
+}
+class_of() {
+  case "$1" in
+    straitly|minimax) printf 'metered\n' ;;
+    xai-oauth|devin|cursor|cline|ollama) printf 'prepaid-quota\n' ;;
+    *) printf 'free\n' ;;
+  esac
+}
+model_cap() { printf '1\n'; }
+seat_usable() {
+  # Every straitly seat is walled (402 money wall).
+  if [[ "$1" == "straitly" ]]; then return 1; fi
+  return 0
+}
+seat_ledger_path() { printf '%s/%s__%s.json\n' "/dev/null" "$1" "$2"; }
+LIB
+
+unset PI_SEAT_HEALTH_LEDGER_DIR
+set +e
+PI_PACKET_SEAT_LIB="$fallback_lib" \
+PI_RESPONSE=$'PASS\nNo duplicate of #41; advances north star; see bin/pi-audit-run.' \
+  bash "$bin" 'demo--50--straitly' >"$scratch/scenario9.out" 2>"$scratch/scenario9.err"
+rc9=$?
+set -e
+
+[[ "$rc9" == 0 ]] || fail "scenario9: straitly fallback must exit 0, got $rc9 ($(cat "$scratch/scenario9.err"))"
+[[ -f "$state_dir/demo/50/straitly.vote" ]] \
+  || fail "scenario9: vote must be written on fallback seat ($(cat "$scratch/scenario9.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/50/straitly.vote") == "PASS" ]] \
+  || fail "scenario9: verdict should be PASS"
+# pi must have been called with xai-oauth/grok-4.6 (first in the fallback list).
+[[ -s "$calls" ]] || fail "scenario9: pi was never called (calls empty)"
+call_line=$(head -n1 "$calls")
+call_prov=$(printf '%s\n' "$call_line" | cut -f1)
+call_mod=$(printf '%s\n' "$call_line" | cut -f2)
+[[ "$call_prov" == "xai-oauth" ]] \
+  || fail "scenario9: provider was '$call_prov' (expected 'xai-oauth' — first fallback); call_line='$call_line'"
+[[ "$call_mod" == "grok-4.6" ]] \
+  || fail "scenario9: model was '$call_mod' (expected 'grok-4.6'); call_line='$call_line'"
+ok "scenario9: all straitly walled -> falls back to xai-oauth/grok-4.6, writes PASS vote (fleet-ops#3121)"
+
+# -----------------------------------------------------------------------------
+# Scenario 10: fleet-ops#3121. All straitly seats walled AND xai-oauth/grok-4.6
+# walled (cap=0 / money wall) -> falls back to openrouter/deepseek-v4-flash-0731
+# (second in the ordered list). Never a fail-loop on a money wall.
+# -----------------------------------------------------------------------------
+reset_state
+: >"$calls"
+export AUDIT_STATE_DIR="$state_dir"
+fallback_lib2="$scratch/seat-lib-fallback2.sh"
+cat >"$fallback_lib2" <<'LIB'
+# shellcheck shell=bash
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+load_seat_caps() { :; }
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' straitly deepseek/deepseek-v4-pro
+  printf '%s\t%s\t-\t1\n' xai-oauth grok-4.6
+  printf '%s\t%s\t-\t1\n' openrouter deepseek/deepseek-v4-flash-0731
+  printf '%s\t%s\t-\t1\n' devin glm-5-2
+}
+class_of() {
+  case "$1" in
+    straitly|minimax|openrouter) printf 'metered\n' ;;
+    xai-oauth|devin) printf 'prepaid-quota\n' ;;
+    *) printf 'free\n' ;;
+  esac
+}
+model_cap() {
+  # xai-oauth/grok-4.6 is cap=0 (money wall, Nish-reserved).
+  if [[ "$1" == "xai-oauth" ]]; then printf '0\n'; else printf '1\n'; fi
+}
+seat_usable() {
+  if [[ "$1" == "straitly" ]]; then return 1; fi
+  return 0
+}
+seat_ledger_path() { printf '%s/%s__%s.json\n' "/dev/null" "$1" "$2"; }
+LIB
+
+set +e
+PI_PACKET_SEAT_LIB="$fallback_lib2" \
+PI_RESPONSE=$'PASS\nNo duplicate of #42; advances north star; see lib/seat-lib.sh.' \
+  bash "$bin" 'demo--51--straitly' >"$scratch/scenario10.out" 2>"$scratch/scenario10.err"
+rc10=$?
+set -e
+
+[[ "$rc10" == 0 ]] || fail "scenario10: second fallback must exit 0, got $rc10 ($(cat "$scratch/scenario10.err"))"
+[[ -f "$state_dir/demo/51/straitly.vote" ]] \
+  || fail "scenario10: vote must be written on second fallback ($(cat "$scratch/scenario10.err"))"
+call_line=$(head -n1 "$calls")
+call_prov=$(printf '%s\n' "$call_line" | cut -f1)
+call_mod=$(printf '%s\n' "$call_line" | cut -f2)
+[[ "$call_prov" == "openrouter" ]] \
+  || fail "scenario10: provider was '$call_prov' (expected 'openrouter' — second fallback); call_line='$call_line'"
+[[ "$call_mod" == "deepseek/deepseek-v4-flash-0731" ]] \
+  || fail "scenario10: model was '$call_mod' (expected 'deepseek/deepseek-v4-flash-0731'); call_line='$call_line'"
+ok "scenario10: straitly + xai-oauth walled -> falls back to openrouter/deepseek-v4-flash-0731 (fleet-ops#3121)"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, senior fallback drains money wall (fleet-ops#3121)"

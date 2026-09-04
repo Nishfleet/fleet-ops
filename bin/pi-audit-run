@@ -199,6 +199,31 @@ find_any_capable_seat() {
     return 1
 }
 
+# fleet-ops#3121: when every straitly seat is walled (quota_exhausted/402 —
+# a money wall, Nish-reserved), resolve to the next usable capable seat from
+# seat-caps instead of failing the unit. The ordered fallback is
+# xai-oauth/grok-4.6 first, then openrouter/deepseek-v4-flash-0731, then any
+# usable capable seat. Never a fail-loop on a money wall: a walled money seat
+# is not charged to the candidate, and the panel convenes on a live seat so
+# the 110-candidate backlog drains instead of wedging forever.
+AUDIT_SENIOR_FALLBACK_SEATS="${AUDIT_SENIOR_FALLBACK_SEATS:-xai-oauth:grok-4.6 openrouter:deepseek/deepseek-v4-flash-0731}"
+find_senior_fallback_seat() {
+    local entry p m
+    for entry in $AUDIT_SENIOR_FALLBACK_SEATS; do
+        p="${entry%%:*}"
+        m="${entry#*:}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        seat_is_poison "$p" "$m" 2>/dev/null && continue
+        log "senior fallback: resolved to $p/$m (fleet-ops#3121)"
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    log "senior fallback: ordered list exhausted; trying any capable seat"
+    find_any_capable_seat
+}
+
 resolve_free_role() {
     local seat
     if seat=$(find_free_seat); then
@@ -243,7 +268,19 @@ resolve_seat() {
                         printf '%s\t%s\n' "$p" "$m"
                         return 0
                     done < <(enumerate_seats)
-                    log "no usable straitly seat (default deepseek-v4-pro unavailable)"
+                    # fleet-ops#3121: every straitly seat is walled
+                    # (quota_exhausted/402 — a money wall, Nish-reserved).
+                    # Resolve to the next usable capable seat from seat-caps
+                    # (xai-oauth/grok-4.6 first, then openrouter/deepseek-v4-
+                    # flash-0731, then any capable seat) instead of failing
+                    # the unit. Never a fail-loop on a money wall.
+                    log "no usable straitly seat (default deepseek-v4-pro unavailable); trying senior fallback (fleet-ops#3121)"
+                    local seat
+                    if seat=$(find_senior_fallback_seat); then
+                        printf '%s\n' "$seat"
+                        return 0
+                    fi
+                    log "no usable seat for straitly role (all fallbacks walled)"
                     return 1
                 fi
             fi

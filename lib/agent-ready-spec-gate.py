@@ -52,6 +52,11 @@ REQUEUE_ALLOWLIST = (
     "bin/fleet-heartbeat-tier1",
     # StartLimitBurst reap: same re-queue, not first admission
     "bin/pi-issue-failed-reap",
+    # fleet-ops#3121: owner-authored bypass — the auditor applies agent-ready
+    # straight to spec-carrying owner issues, but only after calling the
+    # spec-gate (issue_passes_spec_gate). Not a first-admission path; the
+    # gate is the quality bar the panel would otherwise enforce.
+    "bin/fleet-heartbeat-auditor",
 )
 
 MATRIX_ID = "led-work-supply-agent-ready"

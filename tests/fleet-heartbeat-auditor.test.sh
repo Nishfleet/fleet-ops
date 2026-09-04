@@ -79,6 +79,9 @@ case "$*" in
   *"issue list"*"-l scout-candidate"*)
     # fleet-ops#2766: auditor now asks for number,labels. Lines may be
     # bare "N" (no discarded) or "N\tdiscarded" (dual-label leftover).
+    # fleet-ops#3121: auditor also asks for author,createdAt. Lines may
+    # carry "N\tdiscarded\tauthor\tcreatedAt" (4 fields) for bypass/stale
+    # tests; older 1-2 field lines default author="" createdAt="".
     if [[ -f "${CANDIDATES:-/dev/nonexistent}" ]]; then
       jq -R -s -c '
         split("\n")
@@ -90,7 +93,9 @@ case "$*" in
                 labels: (if ($p|length) > 1 and $p[1] == "discarded"
                          then [{name:"scout-candidate"},{name:"discarded"}]
                          else [{name:"scout-candidate"}]
-                         end)
+                         end),
+                author: {login: (if ($p|length) > 2 then $p[2] else "" end)},
+                createdAt: (if ($p|length) > 3 then $p[3] else "" end)
               }
           )
       ' "${CANDIDATES:-/dev/null}"
@@ -180,6 +185,10 @@ export FLEET_HEARTBEAT_TRIAGE="$triage"
 export AUDIT_STATE_DIR="$state_dir"
 export AUDIT_PENDING_AGE_S=1
 export AUDIT_TALLY_BIN="$tally_bin"
+# fleet-ops#3121: owner-authored bypass + scout-stale drain.
+export AUDIT_OWNER_LOGIN="nish3451"
+export AUDIT_SCOUT_STALE_AGE_S=604800
+OWNER_LOGIN="nish3451"
 export CANDIDATES="$scratch/candidates"
 export ACTIVE_UNITS="$scratch/active_units"
 export FAILED_UNITS="$scratch/failed_units"
@@ -256,9 +265,9 @@ ok "scenario2: active audit unit is not re-started; missing ones are"
 reset_state
 printf '42\n' >"$CANDIDATES"
 : >"$ACTIVE_UNITS"
-write_vote demo 42 devin PASS "clear user impact; no duplicate; aligns with north star"
-write_vote demo 42 free-glm-5-3 PASS "unique; beats customer edge AI; no duplicate"
-write_vote demo 42 straitly PASS "north star fit; no duplication"
+write_vote demo 42 devin PASS "clear user impact; no duplicate of #41; aligns with north star (bin/pi-audit-run)"
+write_vote demo 42 free-glm-5-3 PASS "unique; beats customer edge AI; no duplicate; see bin/fleet-heartbeat-auditor"
+write_vote demo 42 straitly PASS "north star fit; no duplication; references #42"
 
 run_auditor
 
@@ -283,8 +292,8 @@ write_vote demo 43 straitly FAIL "vague termination command"
 
 # Reset and run directly with tally fake to assert the edit command.
 rm -rf "$state_dir"/demo/43
-write_vote demo 43 devin PASS "north star; no duplicates"
-write_vote demo 43 free-glm-5-3 PASS "customer edge; unique"
+write_vote demo 43 devin PASS "north star; no duplicates; fixes bin/pi-audit-run"
+write_vote demo 43 free-glm-5-3 PASS "customer edge; unique; references #43"
 write_vote demo 43 straitly FAIL "vague termination command"
 
 set +e
@@ -302,8 +311,8 @@ reset_state
 : >"$GH_CALLS"
 printf '%s\n' 'please look at this' >"$scratch/nospec-body.txt"
 export GH_ISSUE_BODY="$scratch/nospec-body.txt"
-write_vote demo 99 devin PASS "north star; no duplicates"
-write_vote demo 99 free-glm-5-3 PASS "customer edge; unique"
+write_vote demo 99 devin PASS "north star; no duplicates; references #99"
+write_vote demo 99 free-glm-5-3 PASS "customer edge; unique; see bin/pi-audit-tally"
 
 set +e
 AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 99 >"$scratch/tally_nospec" 2>&1
@@ -550,6 +559,143 @@ for role in devin free-glm-5-3 straitly; do
       || fail "scenario13: live candidate 42 missing start for $role ($(cat "$calls"))"
 done
 ok "scenario13: discarded+scout-candidate dual-label healed; live candidate still audited (fleet-ops#2766)"
+
+# ============================================================================
+# Scenario 14: fleet-ops#3121 — owner-authored issue with a spec bypasses the
+# panel straight to agent-ready. No pi-audit@ units started. One gh issue edit
+# removes scout-candidate and adds agent-ready. The spec-gate is the quality
+# bar the panel enforces, so a spec-carrying owner issue is pre-qualified.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"; : >"$calls"
+# Format: "N\thas_discarded\tauthor\tcreatedAt" (4 tab-separated fields).
+# 301 is owner-authored with a spec-carrying body (default fake gh body has
+# termination:/accept: which passes the spec-gate).
+printf '301\tfalse\t%s\t%s\n' "$OWNER_LOGIN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+unset GH_ISSUE_BODY  # default fake gh body carries a spec
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario14: must exit 0, got $env_rc ($env_out)"
+# Must add agent-ready and remove scout-candidate.
+grep -q 'add-label agent-ready' "$GH_CALLS" \
+    || fail "scenario14: must add agent-ready ($(cat "$GH_CALLS"))"
+grep -q 'remove-label scout-candidate' "$GH_CALLS" \
+    || fail "scenario14: must remove scout-candidate ($(cat "$GH_CALLS"))"
+# Must NOT start any pi-audit@ units — the panel is bypassed.
+if grep -qE '^start pi-audit@demo--301--' "$calls"; then
+    fail "scenario14: must not start audit units for owner-bypass (calls=$(cat "$calls"))"
+fi
+ok "scenario14: owner-authored + spec-carrying -> bypass panel, agent-ready (fleet-ops#3121)"
+
+# ============================================================================
+# Scenario 15: fleet-ops#3121 — owner-authored issue WITHOUT a spec falls
+# through to the panel (spec-gate refused). The panel still convenes.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"; : >"$calls"
+printf '302\tfalse\t%s\t%s\n' "$OWNER_LOGIN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+# Body with no spec — spec-gate refuses.
+printf 'please look at this\n' >"$scratch/nospec-body.txt"
+export GH_ISSUE_BODY="$scratch/nospec-body.txt"
+
+run_auditor
+unset GH_ISSUE_BODY
+
+[[ "$env_rc" == 0 ]] || fail "scenario15: must exit 0, got $env_rc ($env_out)"
+# Must NOT add agent-ready — spec-gate refused, falls through to panel.
+if grep -q 'add-label agent-ready' "$GH_CALLS"; then
+    fail "scenario15: must not add agent-ready when spec-gate refused ($(cat "$GH_CALLS"))"
+fi
+# Panel units MUST start — the panel convenes.
+for role in devin free-glm-5-3 straitly; do
+  grep -qx "start pi-audit@demo--302--$role.service" "$calls" \
+      || fail "scenario15: missing panel start for $role ($(cat "$calls"))"
+done
+ok "scenario15: owner-authored without spec -> panel convenes (fleet-ops#3121)"
+
+# ============================================================================
+# Scenario 16: fleet-ops#3121 — scout-candidate older than 7 days with no PASS
+# vote is marked scout-stale and drops scout-candidate. The queue reflects
+# reality instead of re-trying forever.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"; : >"$calls"
+# 401 is 8 days old, author is NOT the owner, no PASS vote on disk.
+# Format: "N\thas_discarded\tauthor\tcreatedAt" (4 tab-separated fields).
+old_ts=$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)
+printf '401\tfalse\tauthor1\t%s\n' "$old_ts" >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario16: must exit 0, got $env_rc ($env_out)"
+grep -q 'add-label scout-stale' "$GH_CALLS" \
+    || fail "scenario16: must add scout-stale ($(cat "$GH_CALLS"))"
+grep -q 'remove-label scout-candidate' "$GH_CALLS" \
+    || fail "scenario16: must remove scout-candidate ($(cat "$GH_CALLS"))"
+# Must NOT start audit units for the stale candidate.
+if grep -qE '^start pi-audit@demo--401--' "$calls"; then
+    fail "scenario16: must not start audit units for stale candidate (calls=$(cat "$calls"))"
+fi
+ok "scenario16: scout-candidate >7d with no PASS -> scout-stale drain (fleet-ops#3121)"
+
+# ============================================================================
+# Scenario 17: fleet-ops#3121 — scout-candidate older than 7 days WITH a PASS
+# vote is NOT marked stale (the panel convened and at least one auditor
+# approved). The candidate continues through the normal panel flow.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"; : >"$calls"
+old_ts=$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)
+printf '402\tfalse\tauthor1\t%s\n' "$old_ts" >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+# Write a PASS vote so the candidate is not stale.
+write_vote demo 402 devin PASS "north star; no duplicate; references #402"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario17: must exit 0, got $env_rc ($env_out)"
+if grep -q 'add-label scout-stale' "$GH_CALLS"; then
+    fail "scenario17: must NOT mark scout-stale when a PASS vote exists ($(cat "$GH_CALLS"))"
+fi
+# Panel units for the missing roles should still start.
+grep -qx 'start pi-audit@demo--402--free-glm-5-3.service' "$calls" \
+    || fail "scenario17: missing panel start for free-glm-5-3 ($(cat "$calls"))"
+grep -qx 'start pi-audit@demo--402--straitly.service' "$calls" \
+    || fail "scenario17: missing panel start for straitly ($(cat "$calls"))"
+ok "scenario17: scout-candidate >7d WITH a PASS vote -> not stale, panel continues (fleet-ops#3121)"
+
+# ============================================================================
+# Scenario 18: fleet-ops#3121 — evidence gate. A PASS vote whose reason has
+# the required keywords (duplicate/north-star) but NO repo-specific evidence
+# (no issue number, file path, or URL) is keyword-only compliance and must
+# NOT count toward the 2-of-3 admission threshold. The candidate stays PENDING.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+# 2 PASS votes with keyword-only reasons (no #issue, no path, no URL).
+# 1 FAIL vote. Without the evidence gate, 2 PASS >= 2 would admit. With the
+# gate, both PASS votes are rejected (0 effective PASS), so no admission.
+write_vote demo 501 devin PASS "north star; no duplicates"
+write_vote demo 501 free-glm-5-3 PASS "customer edge; unique; no duplicate"
+write_vote demo 501 straitly FAIL "vague"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 501 >"$scratch/tally_ev.out" 2>&1
+tally_rc=$?
+set -e
+[[ "$tally_rc" == 0 ]] || fail "scenario18: tally exit $tally_rc ($(cat "$scratch/tally_ev.out"))"
+# Must NOT add agent-ready — both PASS votes rejected by evidence gate.
+if grep -q 'add-label agent-ready' "$GH_CALLS"; then
+    fail "scenario18: must not admit on keyword-only PASS ($(cat "$GH_CALLS"))"
+fi
+# The tally log must mention the evidence-gate rejection.
+grep -q 'PASS rejected' "$scratch/tally_ev.out" \
+    || fail "scenario18: tally must log PASS rejected ($(cat "$scratch/tally_ev.out"))"
+ok "scenario18: keyword-only PASS (no evidence) -> not counted, no admission (fleet-ops#3121)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \

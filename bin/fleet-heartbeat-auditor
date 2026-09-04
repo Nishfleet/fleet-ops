@@ -41,6 +41,12 @@ TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTB
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 TALLY_BIN="${AUDIT_TALLY_BIN:-/home/nish/.local/bin/pi-audit-tally}"
 PENDING_AGE_S="${AUDIT_PENDING_AGE_S:-2400}"
+# fleet-ops#3121: scout-candidate older than this with no PASS vote is
+# marked scout-stale and drops scout-candidate so the queue reflects reality.
+SCOUT_STALE_AGE_S="${AUDIT_SCOUT_STALE_AGE_S:-604800}"
+# fleet-ops#3121: owner-authored issues bypass the panel straight to
+# agent-ready when the body passes the spec-gate. The owner login.
+OWNER_LOGIN="${AUDIT_OWNER_LOGIN:-nish3451}"
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -80,15 +86,19 @@ scout_candidates() {
     # fleet-ops#2766: fetch labels too so discarded+scout-candidate dual-
     # labeled leftovers (from the pre-#2766 requeue loop) can be skipped
     # and healed without burning the per-tick start cap on dead work.
+    # fleet-ops#3121: fetch author + createdAt so owner-authored issues can
+    # bypass the panel, and stale candidates (>7d, no PASS) can be drained.
     local repo="$1"
     local out
-    out=$("$GH" issue list -R "Nishfleet/$repo" -l scout-candidate --state open --json number,labels --limit 200 2>&1) || {
+    out=$("$GH" issue list -R "Nishfleet/$repo" -l scout-candidate --state open --json number,labels,author,createdAt --limit 200 2>&1) || {
         log "$repo: scout-candidate list gh FAILED: $out"
         return 1
     }
-    # Emit "number\thas_discarded" so the caller can skip terminal rejects.
-    # labels defaults to [] so older fixtures / partial JSON still parse.
-    printf '%s\n' "$out" | jq -r '.[] | "\(.number)\t\([(.labels // [])[].name] | index("discarded") != null)"'
+    # Emit "number\thas_discarded\tauthor\tcreatedAt" so the caller can skip
+    # terminal rejects, bypass owner-authored issues, and drain stale ones.
+    # labels/author/createdAt default so older fixtures / partial JSON parse.
+    printf '%s\n' "$out" | jq -r \
+        '.[] | "\(.number)\t\([(.labels // [])[].name] | index("discarded") != null)\t\(.author.login // "")\t\(.createdAt // "")"'
 }
 
 unit_name() {
@@ -260,16 +270,128 @@ heal_discarded_scout() {
     return 0
 }
 
+# fleet-ops#3121: spec-gate helper — mirrors bin/pi-audit-tally. An issue
+# body carrying a machine-checkable spec (termination:/accept:/required:/
+# metric:) passes; everything else is refused. Used by the owner-authored
+# bypass so a Nish issue without a spec still goes through the panel.
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1"
+    local py
+    py=$(spec_gate_py)
+    [ -f "$py" ] || { log "SPEC-GATE missing at $py — refuse bypass (fail closed)"; return 1; }
+    printf '%s' "$body" | python3 "$py" check-body >/dev/null
+}
+
+# fleet-ops#3121: owner-authored admission bypass. An issue whose author is
+# the owner (nish3451) AND whose body passes the spec-gate goes straight to
+# agent-ready — no three-senior panel. Nish filed 217 issues by hand that
+# waited behind the same panel; the spec-gate is the quality bar the panel
+# enforces, so a spec-carrying owner issue is pre-qualified. Log one line
+# per bypass so the degradation is visible. Fail-open on gh blip.
+owner_bypass_admit() {
+    local repo="$1" candidate="$2"
+    local issue_json body
+    issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null) || {
+        log "$repo/#$candidate: owner-bypass — cannot fetch issue body; deferring to panel"
+        return 1
+    }
+    body=$(printf '%s' "$issue_json" | jq -r '.body // ""')
+    if ! issue_passes_spec_gate "$body"; then
+        log "$repo/#$candidate: owner-bypass — spec-gate refused (no spec); deferring to panel"
+        return 1
+    fi
+    log "$repo/#$candidate: OWNER-BYPASS — author=$OWNER_LOGIN, spec-gate passed; admitting straight to agent-ready (fleet-ops#3121)"
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" \
+            --remove-label scout-candidate --add-label agent-ready >/dev/null 2>&1; then
+        log "$repo/#$candidate: OWNER-BYPASS gh issue edit FAILED — retry next tick"
+        return 1
+    fi
+    rm -f "$(pending_stamp "$repo" "$candidate")" 2>/dev/null || true
+    return 0
+}
+
+# fleet-ops#3121: a scout-candidate older than SCOUT_STALE_AGE_S (default 7
+# days) with no PASS vote from the panel is marked scout-stale and loses
+# scout-candidate so the queue reflects reality. The panel never convened
+# for the 110-candidate backlog because straitly was a 402 wall; after the
+# resolve_seat fix the panel can convene, but candidates that are already
+# past 7 days with zero PASS votes are drained rather than re-tried forever.
+candidate_has_pass_vote() {
+    local repo="$1" candidate="$2" dir v
+    dir="$STATE_DIR/$repo/$candidate"
+    [ -d "$dir" ] || return 1
+    shopt -s nullglob
+    local files=("$dir"/*.vote)
+    shopt -u nullglob
+    [ "${#files[@]}" -gt 0 ] || return 1
+    for v in "${files[@]}"; do
+        [ "$(jq -r '.verdict // ""' "$v" 2>/dev/null || printf '')" = "PASS" ] && return 0
+    done
+    return 1
+}
+
+age_s() {
+    # Seconds between now and an ISO-8601 UTC timestamp. Empty/invalid -> 0.
+    local created="$1" now then_s
+    [ -n "$created" ] || { echo 0; return; }
+    now=$(date -u +%s)
+    then_s=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+    [ "$then_s" -gt 0 ] 2>/dev/null || { echo 0; return; }
+    printf '%s\n' $(( now - then_s ))
+}
+
+mark_scout_stale() {
+    local repo="$1" candidate="$2"
+    log "$repo/#$candidate: SCOUT-STALE — older than ${SCOUT_STALE_AGE_S}s with no PASS vote; draining (fleet-ops#3121)"
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" \
+            --remove-label scout-candidate --add-label scout-stale >/dev/null 2>&1; then
+        log "$repo/#$candidate: SCOUT-STALE gh issue edit FAILED — retry next tick"
+        return 1
+    fi
+    rm -f "$(pending_stamp "$repo" "$candidate")" 2>/dev/null || true
+    return 0
+}
+
 main() {
     local repo
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
-        local candidate has_discarded
-        while IFS=$'\t' read -r candidate has_discarded; do
+        local candidate has_discarded author created
+        while IFS=$'\t' read -r candidate has_discarded author created; do
             [ -n "$candidate" ] || continue
             if [ "$has_discarded" = "true" ]; then
                 heal_discarded_scout "$repo" "$candidate" || true
                 continue
+            fi
+            # fleet-ops#3121: owner-authored + spec-carrying -> bypass panel.
+            if [ "$author" = "$OWNER_LOGIN" ]; then
+                if owner_bypass_admit "$repo" "$candidate"; then
+                    continue
+                fi
+                # spec-gate refused or gh blip -> fall through to panel.
+            fi
+            # fleet-ops#3121: stale drain — >7d with no PASS vote.
+            local cs
+            cs=$(age_s "$created")
+            if [ "$cs" -ge "$SCOUT_STALE_AGE_S" ] 2>/dev/null; then
+                if ! candidate_has_pass_vote "$repo" "$candidate"; then
+                    mark_scout_stale "$repo" "$candidate" || true
+                    continue
+                fi
             fi
             process_candidate "$repo" "$candidate" || true
         done < <(scout_candidates "$repo" 2>/dev/null || true)
