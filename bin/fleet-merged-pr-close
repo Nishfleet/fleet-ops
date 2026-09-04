@@ -2,15 +2,32 @@
 # fleet-merged-pr-close — observe-to-close an open issue that a merged PR
 # shipped but forgot to close (fleet-ops#1435).
 #
-# The class: a merged PR that references an open issue by #<N> (in its title
-# or body) but omits the `Closes #<N>` trailer leaves that issue OPEN and
-# the heartbeat keeps re-queuing it — a worker is dispatched again to re-do
-# already-merged work (the live #1135 accident: PR #1429 merged the work on
-# 2026-08-28 but omitted `Closes #1135`, so #1135 cycled through 5+
-# claim/release rounds before the mistake was noticed).
+# The class: a merged PR that delivers an open issue but ships without the
+# `Closes #<N>` trailer leaves that issue OPEN and the heartbeat keeps
+# re-queuing it — a worker is dispatched again to re-do already-merged work
+# (the live #1135 accident: PR #1429 merged the work on 2026-08-28 but
+# omitted `Closes #1135`, so #1135 cycled through 5+ claim/release rounds
+# before the mistake was noticed).
 #
-# No existing heartbeat tier closed it: tier1 §3 / claim-reconcile release
-# claims but never close issues; observe-to-close is gated to the
+# DELIVERY RULES (fleet-ops#3231): observe-to-close may close an issue ONLY
+# when a merged PR is an explicit delivery for it:
+#   (a) the PR head branch is claim/issue-<N> — the worker delivery PR, or
+#   (b) the PR body carries an explicit `Closes|Fixes|Resolves #N` trailer.
+# A bare reference — a title/prose/body mention, a `blocked-on:` line, a
+# comment, quoted text — is NOT a fix and never closes; it is comment-only
+# ('PR #M mentions this issue; not closing'). This is the direct lesson of
+# PR #3205 (2026-09-04): it closed the #3161 packet only, but observe-to-
+# close read every `blocked-on: #N` / prose mention it carried as a delivery
+# and wrongly closed the Nish-endorsed critical-path packets #3140 and
+# #3146. A mention is not a fix.
+#
+# Protected issues — any open issue labelled critical-path or authored by
+# the repo owner (nish3451) — are ALWAYS comment-only, even on a real
+# delivery, the same rule close-duplicates follows (fleet-ops#3161); they
+# stay open until their own delivery PR merges and closes them.
+#
+# No existing heartbeat tier closes issues: tier1 §3 / claim-reconcile
+# release claims but never close issues; observe-to-close is gated to the
 # findings-queued signal class. This detector is the mechanical prevention:
 # once a merged PR has shipped the work, the issue is closed with evidence.
 #
@@ -27,29 +44,36 @@
 #      can close the delivered issue. claim-reconcile owns cleaning the branch.
 #   3. Skip if a live pi-issue worker is running for that issue (actively
 #      being worked).
-#   4. List merged PRs in the last MERGED_PR_CLOSE_WINDOW_DAYS (default 7).
-#      If exactly one references the issue (#<N>, <repo>#<N>) in its title
-#      or body, the work is presumed delivered — close it with a comment
-#      citing the merged PR URL and the verification (the fleet merge queue
-#      only merges when every required check is green).
-#      If MORE than one merged PR references the issue, the signal is
-#      ambiguous — LOUD SKIP, defer to a human, never close.
+#   4. List merged PRs in the last MERGED_PR_CLOSE_WINDOW_DAYS (default 7)
+#      and classify each reference to the issue as a DELIVERY ((a) claim
+#      branch, (b) explicit Closes/Fixes/Resolves trailer) or a MENTION
+#      (anything else — comment-only, never close).
+#      - exactly one delivery → close it (reason=claim-branch|closes-trailer)
+#      - more than one delivery → signal is ambiguous — LOUD SKIP, defer to
+#        a human, never close.
+#      - mentions only, no delivery → comment 'PR #M mentions this issue;
+#        not closing' (deduped), never close.
+#      - protected issue (critical-path label or nish3451-authored) →
+#        comment-only even on a delivery, never close.
 #
-# Observe-to-close is opt-in via FLEET_MERGED_PR_CLOSE_OK=1 (mirrors
-# FLEET_FINDINGS_QUEUED_OK_TO_CLOSE, fleet-ops#820). The close path is
-# destructive against the live repo, so only the production heartbeat —
-# which sets the flag — is trusted to close. A test or one-off invocation
-# with a mocked gh that sees a merged PR reference must not close the live
-# issue, so the default is close-OFF.
+# The close/comment actions are gated behind FLEET_MERGED_PR_CLOSE_OK=1
+# (mirrors FLEET_FINDINGS_QUEUED_OK_TO_CLOSE, fleet-ops#820): only the
+# production heartbeat — which sets the flag — writes to the live repo.
+# A test or one-off invocation with a mocked gh must not touch live issues,
+# so the default is OFF. Per-tick close counts by reason are written to the
+# summary JSON (MERGED_PR_CLOSE_SUMMARY) that libexec/fleet-metrics-export.py
+# turns into fleet_observe_to_close_total{reason}.
 #
 # Environment seams (tests override all of these):
 #   MERGED_PR_CLOSE_REPOS          newline-separated owner/name list
 #   MERGED_PR_CLOSE_INTAKE_JSON    default repo list (intake-repos.json)
 #   FLEET_MERGED_PR_CLOSE_OK       0 (default — close OFF) / 1 (heartbeat
-#                                  opts in; required to actually close)
+#                                  opts in; required to actually comment/close)
 #   MERGED_PR_CLOSE_WINDOW_DAYS    default 7
 #   MERGED_PR_CLOSE_NOW            ISO-8601 UTC clock (window edge)
 #   MERGED_PR_CLOSE_TRIAGE         triage file for LOUD (default heartbeat)
+#   MERGED_PR_CLOSE_SUMMARY        summary JSON path (metric source; default
+#                                  heartbeat log dir merged-pr-close.json)
 #   GH                             gh binary
 #
 # Exit 0 on a clean sweep, a gated-off pass, or after closing candidates.
@@ -68,6 +92,11 @@ OK_TO_CLOSE="${FLEET_MERGED_PR_CLOSE_OK:-0}"
 WINDOW_DAYS="${MERGED_PR_CLOSE_WINDOW_DAYS:-7}"
 NOW_ISO="${MERGED_PR_CLOSE_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 TRIAGE="${MERGED_PR_CLOSE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+# Summary JSON consumed by libexec/fleet-metrics-export.py -> the
+# fleet_observe_to_close_total{reason} family (fleet-ops#3231). Mirrors the
+# close-duplicates.json contract: written every tick, exported per-reason,
+# bare-mention and protected must stay 0 (an alert fires otherwise).
+SUMMARY_FILE="${MERGED_PR_CLOSE_SUMMARY:-/home/nish/.local/state/fleet-heartbeat/merged-pr-close.json}"
 INTAKE_JSON="${MERGED_PR_CLOSE_INTAKE_JSON:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json}"
 # fleet-ops#2462: per-issue state dir for reclaiming the reclaim-count and
 # systemic-failure markers on close. Matches the path used by
@@ -153,14 +182,62 @@ references_issue() {
         | grep -Eq "(^|[^0-9A-Za-z])([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#${n}([^0-9A-Za-z]|$)"
 }
 
+# trailer_delivery TEXT N — does TEXT carry an explicit `Closes|Fixes|Resolves
+# #N` trailer for issue N (fleet-ops#3231)? This is the ONLY body signal that
+# may close an issue: a bare mention (prose, `blocked-on:` line, comment,
+# quoted text) is comment-only. Matches GitHub's closing-keyword family
+# (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved),
+# exact-number bounded (#1135 must not match #11352), and requires a
+# whitespace gap between the keyword and the reference so "Closes#1135"
+# (not a GitHub form) does not match.
+trailer_delivery() {
+    local text="$1" n="$2"
+    printf '%s' "$text" \
+        | grep -Eiq "(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+#${n}([^0-9A-Za-z]|$)"
+}
+
+existing_comment() {
+    local repo="$1" n="$2" marker="$3"
+    "$GH" issue view "$n" -R "$repo" --json comments --jq '.[]?.body // empty' 2>/dev/null \
+        | grep -Fq "$marker"
+}
+
+# post_note REPO N URL PRNUM MODE — comment-only path (fleet-ops#3231).
+# MODE=mention: 'PR #M mentions this issue; not closing'. MODE=protected:
+# the issue is critical-path/owner-authored so even a delivery is not
+# auto-closed. Comments are deduped per (issue, PR) so an hourly tick cannot
+# spam the thread; a dedup-scan failure posts once (comment is harmless).
+post_note() {
+    local repo="$1" n="$2" murl="$3" mnum="$4" mode="$5"
+    local marker
+    if [ "$mode" = "protected" ]; then
+        marker="observe-to-close (fleet-ops#1435): issue is protected (critical-path label or owner-authored) and is never auto-closed; merged PR ${murl} (#${mnum}) is not closing it."
+    else
+        marker="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) mentions this issue; not closing (a mention is not a fix)."
+    fi
+    if existing_comment "$repo" "$n" "$murl"; then
+        log "  $repo#$n: note for PR #$mnum already posted — skip"
+        return 0
+    fi
+    if ! "$GH" issue comment "$n" -R "$repo" --body "$marker" >/dev/null 2>&1; then
+        loud "MERGED-PR-CLOSE-ERE" "$repo#$n: gh issue comment failed — will retry next tick"
+        return 1
+    fi
+    log "  $repo#$n: NOTE (mode=$mode) posted for merged PR #$mnum"
+}
+
 log "merged-pr observe-to-close starting (close=${OK_TO_CLOSE}, window=${WINDOW_DAYS}d)"
 scanned=0
 candidates=0
 closed=0
+closes_claim=0
+closes_trailer=0
 skipped_live=0
 skipped_open_pr=0
 skipped_branch=0
 skipped_ambiguous=0
+skipped_mention=0
+skipped_protected=0
 
 while IFS= read -r repo; do
     [ -z "$repo" ] && continue
@@ -176,9 +253,10 @@ while IFS= read -r repo; do
         continue
     fi
 
-    # Open issues carrying agent-in-progress or critical-path.
+    # Open issues carrying agent-in-progress or critical-path (author needed
+    # for the owner-authored protection, fleet-ops#3231).
     if ! list_json=$("$GH" issue list -R "$repo" --state open \
-        --json number,title,labels,body --limit 500 2>/dev/null); then
+        --json number,title,labels,body,author --limit 500 2>/dev/null); then
         loud "MERGED-PR-CLOSE-GH" "$repo: gh issue list failed — skip (next tick retries)"
         continue
     fi
@@ -193,7 +271,7 @@ while IFS= read -r repo; do
     fi
     if ! in_window=$(printf '%s' "$merged_json" | jq -r --arg ws "$window_start" '
         [ .[] | select((.mergedAt // "") != "") | select(.mergedAt >= $ws)
-          | [.number, .title, (.body // ""), .url, (.headRefName // "")] | @tsv ] | .[]' 2>/dev/null); then
+          | [.number, (.title | gsub("\n"; " ")), ((.body // "") | gsub("\n"; " ")), .url, (.headRefName // "")] | @tsv ] | .[]' 2>/dev/null); then
         loud "MERGED-PR-CLOSE-BROKEN" "$repo: jq window filter failed — skip (next tick retries)"
         continue
     fi
@@ -244,54 +322,118 @@ while IFS= read -r repo; do
             continue
         fi
 
-        # 4. How many merged PRs in the window reference this issue?
-        #    A merged PR whose head branch is claim/issue-<N> is the delivery
-        #    PR (fleet-ops#1672: a passing body mention in an unrelated PR
-        #    created false ambiguity and kept a delivered issue stuck open).
-        #    Prefer the claim-branch PR as the single delivery; treat every
-        #    other reference as a passing mention.
-        matches=()
-        delivery=""
+        # 4. Classify every merged PR in the window that bears on this issue
+        #    into DELIVERIES (the only closers) vs MENTIONS (comment-only).
+        #    observe-to-close may close ONLY when a merged PR is an explicit
+        #    delivery (fleet-ops#3231): (a) its head branch is
+        #    claim/issue-<N> — the worker delivery PR (fleet-ops#1672), or (b)
+        #    its body carries an explicit `Closes|Fixes|Resolves #N` trailer.
+        #    A bare reference — a title/prose/body mention, a `blocked-on:`
+        #    line, a comment, quoted text — is NOT a fix and never closes; it
+        #    is comment-only ('PR #M mentions this issue; not closing'). This
+        #    is the direct lesson of PR #3205, which closed #3140/#3146 by
+        #    merely mentioning them (fleet-ops#3231).
+        author=$(printf '%s' "$row" | jq -r '.author.login // ""' 2>/dev/null)
+        deliveries=()
+        mentions=()
         while IFS=$'\t' read -r mnum mtitle mbody murl mhead; do
             [ -z "$mnum" ] && continue
             if [ "$mhead" = "claim/issue-${num}" ]; then
-                delivery="$mnum|$murl"
-            fi
-            if references_issue "$mtitle" "$num" || references_issue "$mbody" "$num"; then
-                matches+=("$mnum|$murl")
+                deliveries+=("$mnum|$murl|claim-branch")
+            elif trailer_delivery "$mbody" "$num"; then
+                deliveries+=("$mnum|$murl|closes-trailer")
+            elif references_issue "$mtitle" "$num" || references_issue "$mbody" "$num"; then
+                mentions+=("$mnum|$murl")
             fi
         done <<< "$in_window"
 
-        # The claim-branch PR is authoritative: it is the delivery, so a
-        # passing mention elsewhere cannot make the signal ambiguous.
-        if [ -n "$delivery" ]; then
-            matches=("$delivery")
+        # Protected issues (critical-path label or nish3451-authored) are
+        # ALWAYS comment-only — even on a real delivery — the same rule
+        # close-duplicates follows (fleet-ops#3161). #3140/#3146 are the live
+        # lesson: Nish-endorsed critical-path packets wrongly closed by a
+        # bare mention stay open until their own delivery PR closes them.
+        protected=0
+        if printf '%s' "$labels_json" \
+            | jq -e 'map(.name) | index("critical-path") != null' >/dev/null 2>&1; then
+            protected=1
+        fi
+        if [ "${author:-}" = "nish3451" ]; then
+            protected=1
         fi
 
-        nmatches=${#matches[@]}
-        if [ "$nmatches" -eq 0 ]; then
-            log "  $repo#$num: no merged PR references it — leave open"
+        if [ "$protected" = "1" ]; then
+            if [ "${#deliveries[@]}" -gt 0 ]; then
+                mp=$(printf '%s\n' "${deliveries[0]}")
+                mnum="${mp%%|*}"
+                murl="${mp#*|}"; murl="${murl%%|*}"
+                if [ "$OK_TO_CLOSE" = "1" ]; then
+                    post_note "$repo" "$num" "$murl" "$mnum" protected
+                else
+                    log "  $repo#$num: PROTECTED-delivery candidate (merged PR #$mnum) but FLEET_MERGED_PR_CLOSE_OK != 1 — no write"
+                fi
+                skipped_protected=$((skipped_protected + 1))
+            elif [ "${#mentions[@]}" -gt 0 ]; then
+                mp=$(printf '%s\n' "${mentions[0]}")
+                mnum="${mp%%|*}"
+                murl="${mp#*|}"
+                if [ "$OK_TO_CLOSE" = "1" ]; then
+                    post_note "$repo" "$num" "$murl" "$mnum" protected
+                else
+                    log "  $repo#$num: PROTECTED-mention candidate (merged PR #$mnum) but FLEET_MERGED_PR_CLOSE_OK != 1 — no write"
+                fi
+                skipped_protected=$((skipped_protected + 1))
+            else
+                log "  $repo#$num: protected issue, no merged PR references it — leave open (never auto-close)"
+            fi
             continue
         fi
-        if [ "$nmatches" -gt 1 ]; then
-            loud "MERGED-PR-CLOSE-AMBIGUOUS" "$repo#$num: $nmatches merged PRs reference it — SKIP, defer to human (${matches[*]})"
+
+        ndel=${#deliveries[@]}
+        if [ "$ndel" -eq 0 ]; then
+            nmentions=${#mentions[@]}
+            if [ "$nmentions" -eq 0 ]; then
+                log "  $repo#$num: no merged PR references it — leave open"
+                continue
+            fi
+            # Bare mention(s) with no explicit delivery -> comment-only,
+            # never close (fleet-ops#3231: a mention is not a fix). The PR
+            # merely talking about the issue is not evidence the work shipped.
+            mp=$(printf '%s\n' "${mentions[0]}")
+            mnum="${mp%%|*}"
+            murl="${mp#*|}"
+            if [ "$OK_TO_CLOSE" = "1" ]; then
+                post_note "$repo" "$num" "$murl" "$mnum" mention
+            else
+                log "  $repo#$num: MENTION-only candidate (merged PR #$mnum) but FLEET_MERGED_PR_CLOSE_OK != 1 — no write"
+            fi
+            skipped_mention=$((skipped_mention + 1))
+            continue
+        fi
+        if [ "$ndel" -gt 1 ]; then
+            loud "MERGED-PR-CLOSE-AMBIGUOUS" "$repo#$num: $ndel merged PRs deliver it — SKIP, defer to human (${deliveries[*]})"
             skipped_ambiguous=$((skipped_ambiguous + 1))
             continue
         fi
 
         # Exactly one merged PR delivered this issue. Close it (gated).
         candidates=$((candidates + 1))
-        mp=$(printf '%s\n' "${matches[0]}")
+        mp=$(printf '%s\n' "${deliveries[0]}")
         mnum="${mp%%|*}"
-        murl="${mp#*|}"
+        rest="${mp#*|}"
+        murl="${rest%%|*}"
+        reason="${rest#*|}"
         ts="$NOW_ISO"
 
         if [ "$OK_TO_CLOSE" != "1" ]; then
-            log "  $repo#$num: CANDIDATE (merged PR #$mnum) but FLEET_MERGED_PR_CLOSE_OK != 1 — close skipped"
+            log "  $repo#$num: CANDIDATE (merged PR #$mnum, reason=$reason) but FLEET_MERGED_PR_CLOSE_OK != 1 — close skipped"
             continue
         fi
 
-        comment="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) references this issue but shipped without a \`Closes #${num}\` trailer, so this issue stayed open and kept re-queuing. The work is delivered (the fleet merge queue only merges with every required check green — that is the verification) and no open PR, live worker, or claim branch remains for this issue, so the heartbeat closes it at ${ts}."
+        if [ "$reason" = "claim-branch" ]; then
+            comment="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) shipped this issue from the claim/issue-${num} branch. The work is delivered (the fleet merge queue only merges with every required check green — that is the verification) and no open PR, live worker, or claim branch remains for this issue, so the heartbeat closes it at ${ts}."
+        else
+            comment="observe-to-close (fleet-ops#1435): merged PR ${murl} (#${mnum}) ships this issue with an explicit \`Closes #${num}\` trailer. The work is delivered (the fleet merge queue only merges with every required check green — that is the verification) and no open PR, live worker, or claim branch remains for this issue, so the heartbeat closes it at ${ts}."
+        fi
 
         if ! "$GH" issue close "$num" -R "$repo" --comment "$comment" >/dev/null 2>&1; then
             loud "MERGED-PR-CLOSE-ERR" "$repo#$num: gh issue close failed — will retry next tick"
@@ -305,9 +447,28 @@ while IFS= read -r repo; do
         rm -f "$_rc_clear_file" "$_sys_clear_file" 2>/dev/null || true
 
         closed=$((closed + 1))
-        log "  $repo#$num: CLOSED (delivered by merged PR #$mnum) -- reset reclaim-count + systemic marker"
+        if [ "$reason" = "claim-branch" ]; then
+            closes_claim=$((closes_claim + 1))
+        else
+            closes_trailer=$((closes_trailer + 1))
+        fi
+        log "  $repo#$num: CLOSED (delivered by merged PR #$mnum via $reason) -- reset reclaim-count + systemic marker"
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
-log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous"
+# Per-tick summary for the exporter: fleet_observe_to_close_total{reason}.
+# bare-mention and protected are never incremented by this code — they are
+# emitted as 0 so an alert fires if a regression ever closes on a mention or
+# closes a protected issue (fleet-ops#3231). Missing/unparseable summary
+# degrades to all-zero in the exporter.
+if [ -n "$SUMMARY_FILE" ] \
+    && mkdir -p "$(dirname "$SUMMARY_FILE")" 2>/dev/null; then
+    cat >"$SUMMARY_FILE" <<EOF
+{"_meta":{"ts":"$NOW_ISO","tool":"fleet-merged-pr-close"},"closed":$closed,"closes_by_reason":{"claim-branch":$closes_claim,"closes-trailer":$closes_trailer,"bare-mention":0,"protected":0}}
+EOF
+else
+    log "WARN: could not write summary $SUMMARY_FILE"
+fi
+
+log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed(claim=$closes_claim,trailer=$closes_trailer) skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous skipped_mention=$skipped_mention skipped_protected=$skipped_protected"
 exit 0

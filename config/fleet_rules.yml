@@ -1182,3 +1182,21 @@ groups:
         annotations:
           summary: "close-duplicates closed a cross-repo or protected issue (fleet-ops#3161)"
           description: "fleet_close_duplicates_closes_total{cross_repo=\"true\"} or {protected=\"true\"} is > 0: the duplicate sweep closed an issue it must only comment on (cross-repo canonical, critical-path label, or nish3451-authored). Both series must stay 0. Check the last close-duplicates.json and the tick log dup-cluster review lines."
+      - alert: FleetObserveToCloseWrongClose
+        expr: fleet_observe_to_close_total{reason="bare-mention"} > 0 or fleet_observe_to_close_total{reason="protected"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "observe-to-close closed a mentioned or protected issue (fleet-ops#3231)"
+          description: "fleet_observe_to_close_total{reason=\"bare-mention\"} or {reason=\"protected\"} is > 0: observe-to-close closed an issue it must only comment on (a mere PR mention without a Closes trailer or claim branch, or a critical-path/owner-authored issue). Both series must stay 0 — only claim-branch and closes-trailer may increment. This is the PR #3205 regression class: #3140/#3146 were closed by a bare mention. Check the last merged-pr-close.json and the tick log."
+      - alert: FleetObserveToCloseAbsent
+        expr: absent(fleet_observe_to_close_total{reason="claim-branch"})
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "observe-to-close metric family vanished"
+          description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."
