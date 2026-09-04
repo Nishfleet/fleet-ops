@@ -58,3 +58,10 @@ grep -q 'fleet-failed-command-flagged' "$worker" || fail "pointer to the session
 ok "core failed-command rule, no-match-probe exception, and lint pointer all present"
 
 echo "worker-prompt-size-ceiling: PASS"
+
+# fleet-ops#3248 (child of #3120): tight byte-size guard for the rendered
+# worker packet. This file is listed in ci.yml, so hosting the tight
+# sibling here avoids a new workflow line (workers cannot edit
+# .github/workflows/ci.yml). The tight guard takes over once the prompt
+# trim lands; this loose 32 KB ceiling stays as the backstop.
+bash "$here/worker-packet-size.test.sh"

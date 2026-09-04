@@ -3476,3 +3476,22 @@ SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; s
   | grep -qE '^0\.5$' \
   || fail "seat_yield_for unknown/missing must default to 0.5"
 ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
+
+# --- fleet-ops#3272: watch.log rotation (seat_log journal fallback) ----------
+# tests/watch-log-rotation.test.sh locks lib/seat-lib.sh's seat_log: it
+# writes to watch.log when a logrotate conf is present and falls back to
+# the journal when it is absent. ci.yml lists this file, so the drill runs
+# here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation drill failed"
+ok "3272: seat_log writes to watch.log with logrotate and falls back to journal"
+
+# --- fleet-ops#3263: devin/cursor provider timeout gate ---------------------
+# tests/provider-timeout.test.sh locks the managed devin-provider and
+# cursor-provider Pi extensions under template/extensions/ + MANIFEST, and
+# pins each provider's spawnSync timeout >= 0.9 x PI_HANG_TIMEOUT_S so the
+# provider is never killed by the pi hang watchdog. ci.yml lists this file,
+# so the drill runs here instead of a new workflow line (workers cannot
+# edit .github/workflows/ci.yml).
+bash "$here/provider-timeout.test.sh" || fail "provider-timeout drill failed"
+ok "3263: devin/cursor provider extensions managed + timeouts >= 0.9 x watchdog"

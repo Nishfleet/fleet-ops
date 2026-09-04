@@ -308,13 +308,20 @@ ok "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh is pinned in the P14 re
 # main ("1 test file(s) are neither in ci.yml, hosted by a listed test,
 # live/destructive, nor a known orphan: fleet-spawn-guard-stash-readonly.test.sh").
 # That P14 failure is what auto-revert watches, so every merge to main was
-# reverted. Host it from rule-enforcement.test.sh (same nested-CI pattern
-# as dirty-worktree-audit, fleet-ops#787) and add this named pin so a
-# future drop of the host line cannot park the test on known_orphans to
-# silence the generic $bad[] message — it would fail by name here first.
+# reverted. Originally hosted directly from rule-enforcement.test.sh (same
+# nested-CI pattern as dirty-worktree-audit, fleet-ops#787). PR #3334
+# (fleet-ops#3244) consolidated the stash-readonly and sudo-write drills
+# under a new spawn-guard.test.sh wrapper hosted from rule-enforcement.test.sh,
+# moving the direct host line for fleet-spawn-guard-stash-readonly.test.sh
+# into spawn-guard.test.sh. This named pin was not updated at the time,
+# so the grep against rule-enforcement.test.sh went red on the next push
+# to main (fleet-ops#3291). The pin now targets spawn-guard.test.sh, the
+# actual host, so a future drop of the host line cannot park the test on
+# known_orphans to silence the generic $bad[] message — it would fail by
+# name here first.
 grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly\.test\.sh"?' \
-  "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
+  "$here/spawn-guard.test.sh" \
+  || fail "spawn-guard.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
 [[ -n "${reachable[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \
   || fail "fleet-spawn-guard-stash-readonly.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#308)"
 [[ -z "${known_orphan_set[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \

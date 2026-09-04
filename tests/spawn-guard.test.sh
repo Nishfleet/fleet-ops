@@ -20,3 +20,12 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 bash "$here/fleet-spawn-guard-stash-readonly.test.sh"
 bash "$here/fleet-spawn-guard-sudo-write.test.sh"
+# fleet-ops#3111: static lint pinning the test-side of the same class — no
+# test file may install/cp/ln/mv/tee/redirect a file into the real
+# ~/.local/bin / ~/.local/lib/node_modules / ~/.pi. The 2026-09-03 incident
+# was a worker stubbing a binary via `sudo install ... /dev/null
+# /home/nish/.local/bin/pi`, clobbering the pi symlink and starving the
+# fleet for 33h. The live spawn-guard blocks the runtime shape; this lint
+# blocks the test-source shape. Hosted here (not a new ci.yml line) so the
+# worker token does not need workflow scope.
+bash "$here/tests-no-local-bin-clobber.test.sh"
