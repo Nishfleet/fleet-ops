@@ -453,6 +453,15 @@ bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 # .github/workflows/**).
 bash "$here/fleet-ops-2462-claim-cap.test.sh"
 
+# fleet-ops#3310: infra deaths (rc=124/143, spawnSync ETIMEDOUT, no-seat,
+# hard-ceiling near timeout) increment a .infra-death counter, NOT the
+# .reclaim-count WORK cap; the WORK cap advances a .prefer-class ladder
+# (prepaid -> metered -> senior) before blocking with
+# blocked-on: orchestrator-seat-exhaustion. Hosts the 11-test gate so P14
+# covers it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/fleet-ops-3310-infra-death-class-switch.test.sh"
+
 # fleet-ops#2666: 0B-stdout empty-run burst on healthy seats — the 2h
 # burst signal the #902 24h waste-ratio gauge masks (2026-09-01 12:48Z-
 # 14:11Z: empty_runs_last_2h 0 -> 6 on minimax/MiniMax-M3 + openrouter/

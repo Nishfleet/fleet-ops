@@ -254,19 +254,51 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # counted by pi-issue-run on success; every failed re-claim (this path)
     # increments the counter. When the count reaches the cap, intake escalates
     # the issue instead of re-claiming. A successful PR open resets it.
-    _rc_file="$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count"
-    _rc_prev=0
-    if [[ -f "$_rc_file" ]]; then
-        _rc_prev=$(cat "$_rc_file" 2>/dev/null || echo 0)
-        _rc_prev=${_rc_prev//[^0-9]/}
-        _rc_prev=${_rc_prev:-0}
+    #
+    # fleet-ops#3310: infra deaths (rc=124/143, spawnSync ETIMEDOUT, no-seat,
+    # hard-ceiling near timeout) do NOT increment the reclaim-count WORK cap —
+    # they increment a separate .infra-death counter instead. A provider storm
+    # that kills every seat must not exhaust the work cap and park the issue
+    # for a senior conference that never runs. pi-issue-run writes the
+    # .last-death-class marker on each failure; consume + clear it here.
+    _death_class_file="$ATTEMPTS_DIR/pi-issue-${instance}.last-death-class"
+    _death_class=""
+    if [[ -f "$_death_class_file" ]]; then
+        _death_class=$(cat "$_death_class_file" 2>/dev/null || true)
+        _death_class=${_death_class//[^a-z-]/}
+        rm -f "$_death_class_file" 2>/dev/null || true
     fi
-    _rc_new=$(( _rc_prev + 1 ))
-    if printf '%s' "$_rc_new" > "$_rc_file" 2>/dev/null; then
-        log "incremented reclaim-count to $_rc_new for $instance (was $_rc_prev)"
-        log_to_triage "RECLAIM-COUNT-INCREMENTED" "instance=$instance count=$_rc_new"
+    _rc_file="$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count"
+    if [[ "$_death_class" == "infra" ]]; then
+        # Infra death: bump the infra-death counter, leave the WORK cap alone.
+        _infra_file="$ATTEMPTS_DIR/pi-issue-${instance}.infra-death"
+        _infra_prev=0
+        if [[ -f "$_infra_file" ]]; then
+            _infra_prev=$(cat "$_infra_file" 2>/dev/null || echo 0)
+            _infra_prev=${_infra_prev//[^0-9]/}
+            _infra_prev=${_infra_prev:-0}
+        fi
+        _infra_new=$(( _infra_prev + 1 ))
+        if printf '%s' "$_infra_new" > "$_infra_file" 2>/dev/null; then
+            log "infra-death (not reclaim-count) for $instance: infra-death=$_infra_new (was $_infra_prev) — WORK cap untouched (fleet-ops#3310)"
+            log_to_triage "INFRA-DEATH-INCREMENTED" "instance=$instance infra_death=$_infra_new reclaim_count_unchanged=yes"
+        else
+            log "WARN: could not write infra-death $_infra_file"
+        fi
     else
-        log "WARN: could not write reclaim-count $_rc_file"
+        _rc_prev=0
+        if [[ -f "$_rc_file" ]]; then
+            _rc_prev=$(cat "$_rc_file" 2>/dev/null || echo 0)
+            _rc_prev=${_rc_prev//[^0-9]/}
+            _rc_prev=${_rc_prev:-0}
+        fi
+        _rc_new=$(( _rc_prev + 1 ))
+        if printf '%s' "$_rc_new" > "$_rc_file" 2>/dev/null; then
+            log "incremented reclaim-count to $_rc_new for $instance (was $_rc_prev)"
+            log_to_triage "RECLAIM-COUNT-INCREMENTED" "instance=$instance count=$_rc_new"
+        else
+            log "WARN: could not write reclaim-count $_rc_file"
+        fi
     fi
 
     # fleet-ops#2462: systemic-failure detection. When the issue has failed
@@ -331,6 +363,11 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
     # stale cap or systemic marker from a prior failure cycle.
     rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count" 2>/dev/null || true
     rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.systemic" 2>/dev/null || true
+    # fleet-ops#3310: clear the work-cap class switch + infra-death counter +
+    # death-class marker on close so a re-opened issue starts clean.
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.prefer-class" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.infra-death" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.last-death-class" 2>/dev/null || true
     log "reset reclaim-count + cleared systemic marker for $instance (issue closed)"
     log_to_triage "CLAIM-CLOSED-RESET" "instance=$instance repo=$repo_slug"
 else

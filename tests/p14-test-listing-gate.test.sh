@@ -379,6 +379,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2462-claim-cap\.test\.
   || fail "fleet-ops-2462-claim-cap.test.sh must not be a known orphan (fleet-ops#2462)"
 ok "fleet-ops-2462-claim-cap.test.sh is pinned in the P14 reachable set (fleet-ops#2462)"
 
+# fleet-ops#3310: hard-pin the host line for fleet-ops-3310-infra-death-class-switch.
+# Same shape as the #2462 pin above: the test landed without a ci.yml listing
+# and is hosted from tests/ci-standards-audit.test.sh (already in P14). This
+# named pin is class-prevention so a future drop of the host line cannot park
+# the test on known_orphans to silence the generic $bad[] message.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-3310-infra-death-class-switch\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-ops-3310-infra-death-class-switch.test.sh (fleet-ops#3310)"
+[[ -n "${reachable[fleet-ops-3310-infra-death-class-switch.test.sh]:-}" ]] \
+  || fail "fleet-ops-3310-infra-death-class-switch.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#3310)"
+[[ -z "${known_orphan_set[fleet-ops-3310-infra-death-class-switch.test.sh]:-}" ]] \
+  || fail "fleet-ops-3310-infra-death-class-switch.test.sh must not be a known orphan (fleet-ops#3310)"
+ok "fleet-ops-3310-infra-death-class-switch.test.sh is pinned in the P14 reachable set (fleet-ops#3310)"
+
 # fleet-ops#2475 (PR #2193 follow-up): hard-pin the host line for
 # unit-escalation-write-pi-issue-exclusion. The test landed on main in this
 # PR without a ci.yml listing and was hosted from tests/ci-standards-audit.test.sh
