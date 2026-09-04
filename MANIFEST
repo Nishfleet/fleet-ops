@@ -311,6 +311,7 @@ bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 # fleet-ops#543: agent-ready spec-gate. First admission (sweep + tally)
 # refuses a body without termination:/accept:/required:/metric:.
+# fleet-ops#3309: check-size bounces >2 live required: lines at claim time.
 lib/agent-ready-spec-gate.py /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write

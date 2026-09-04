@@ -139,6 +139,8 @@ D1_GATE_BODY_NEEDLES="${PI_INTAKE_D1_GATE_BODY_NEEDLES:-migrations/
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
 # fleet-ops#1250: claim-step prior-art gate. Tests override the path.
 PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
+# fleet-ops#3309: claim-step size bounce. Tests override the path.
+SPEC_GATE_PY="${AGENT_READY_SPEC_GATE:-}"
 # PRECEDENCE_BAND_LIB may be overridden by tests. Checkout fallback so a
 # worktree run still loads the sibling lib before install.sh copies it.
 PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
@@ -153,6 +155,15 @@ if [[ ! -d "$WORKER_BLOCKS_DIR" ]]; then
     _blocks_fallback="$_tick_dir/../prompts/worker-blocks"
     if [[ -d "$_blocks_fallback" ]]; then
         WORKER_BLOCKS_DIR="$(cd "$_blocks_fallback" && pwd)"
+    fi
+fi
+if [[ -z "$SPEC_GATE_PY" ]]; then
+    if [[ -f "$_tick_dir/agent-ready-spec-gate.py" ]]; then
+        SPEC_GATE_PY="$_tick_dir/agent-ready-spec-gate.py"
+    elif [[ -f "$_tick_dir/../lib/agent-ready-spec-gate.py" ]]; then
+        SPEC_GATE_PY="$_tick_dir/../lib/agent-ready-spec-gate.py"
+    else
+        SPEC_GATE_PY="$HOME/.local/lib/pi-packet/agent-ready-spec-gate.py"
     fi
 fi
 [[ -f "$PRECEDENCE_BAND_LIB" ]] || {
@@ -177,6 +188,10 @@ precedence_band_pending_starvation_clear
 
 if [[ ! -x "$PRIOR_ART_BIN" ]]; then
     echo "pi-intake-tick: prior-art-claim-check missing at $PRIOR_ART_BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$SPEC_GATE_PY" ]]; then
+    echo "pi-intake-tick: agent-ready-spec-gate missing at $SPEC_GATE_PY" >&2
     exit 1
 fi
 
@@ -759,6 +774,32 @@ blocked-on: nish-decision" 2>/dev/null || true
     fi
     if (( bounce_rc != 0 )); then
         echo "prior-art-claim-check bounce failed for issue $N (rc=$bounce_rc): $bounce_out" >&2
+        exit 1
+    fi
+
+    # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
+    # and must not push a claim branch. Struck-through lines do not count.
+    # Umbrella-labeled issues are exempt (tracking parents, never claimable).
+    comments=$(gh issue view "$N" -R "$FULL" --json comments --jq '[.comments[]?.body // empty] | join("\n")' 2>/dev/null) || {
+        echo "issue $N ($title): skipped-comments-unreadable"
+        continue
+    }
+    _size_dir=$(mktemp -d)
+    printf '%s' "$body" >"$_size_dir/body"
+    printf '%s' "$comments" >"$_size_dir/comments"
+    set +e
+    size_out=$(python3 "$SPEC_GATE_PY" check-size --body "$_size_dir/body" --comments "$_size_dir/comments" --labels "${labels[$i]:-}" 2>&1)
+    size_rc=$?
+    set -e
+    rm -rf "$_size_dir"
+    if (( size_rc == 1 )); then
+        echo "issue $N ($title): skipped-oversized"
+        gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-blocked 2>/dev/null || true
+        gh issue comment "$N" -R "$FULL" --body "$size_out" 2>/dev/null || true
+        continue
+    fi
+    if (( size_rc != 0 )); then
+        echo "agent-ready-spec-gate check-size failed for issue $N (rc=$size_rc): $size_out" >&2
         exit 1
     fi
 
