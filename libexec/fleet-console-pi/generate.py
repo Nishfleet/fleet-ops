@@ -420,6 +420,20 @@ def collect_running_pi():
         return _unknown(src, SEAT_STALE_S, f"seat file unreadable: {e}",
                         explain=explain)
     health = data.get("health_class")
+    # fleet-ops#3111: a stale observation is UNKNOWN, never "healthy". The
+    # 2026-09-03 incident left this tile green on a 2-day-old observation
+    # while the transport was down 33h. Use the file's observed_at (not
+    # time.time()) and render unknown when it is older than SEAT_STALE_S or
+    # absent — the underlying health_class is not trustworthy past 30 min.
+    obs_raw = data.get("observed_at")
+    obs_epoch = None
+    if isinstance(obs_raw, str):
+        try:
+            obs_epoch = int(time.mktime(time.strptime(
+                obs_raw.replace("Z", "+00:00")[:19], "%Y-%m-%dT%H:%M:%S")))
+        except ValueError:
+            obs_epoch = None
+    stale = obs_epoch is None or (time.time() - obs_epoch) > SEAT_STALE_S
     try:
         units = [n for n in _running_units() if _invokes_pi_print(n)]
     except Exception as e:
@@ -432,11 +446,18 @@ def collect_running_pi():
         note_extra = f"proc count failed: {str(e)[:80]}"
     else:
         note_extra = None
+    if stale:
+        age_s = -1 if obs_epoch is None else int(time.time() - obs_epoch)
+        note = (f"seat UNKNOWN — health observation stale ({age_s}s old; "
+                f"last class {health}, {data.get('provider')}/{data.get('model')})")
+        if note_extra:
+            note = note + "; " + note_extra
+        return _unknown(src, SEAT_STALE_S, note, explain=explain)
     note = f"seat {health} ({data.get('provider')}/{data.get('model')})"
     if note_extra:
         note = note + "; " + note_extra
     return _tile(
-        src, SEAT_STALE_S, True, time.time(),
+        src, SEAT_STALE_S, True, obs_epoch,
         count=len(units), proc_count=proc_count, unit_count=len(units),
         units=units[:20],
         health_class=health,

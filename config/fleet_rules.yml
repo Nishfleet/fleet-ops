@@ -79,6 +79,33 @@ groups:
           summary: "Pi seat unhealthy for 30+ minutes"
           description: "pi-seat-health.json reports a non-healthy seat class."
 
+      # fleet-ops#3111: a stale pi-seat-health.json is UNKNOWN, never "healthy".
+      # The 2026-09-03 incident left the console tile green on a 2-day-old
+      # observation while the transport was down 33h. -1 = no observation at all.
+      - alert: FleetPiSeatHealthStale
+        expr: fleet_pi_seat_health_age_seconds == -1 or fleet_pi_seat_health_age_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "Pi seat health observation is stale or absent (>30 min)"
+          description: "pi-seat-health.json has not been refreshed in over 30 minutes (or is absent/unparseable, age=-1). The console 'seat healthy' tile is NOT trustworthy while this fires — treat the seat as UNKNOWN, never healthy. Check pi-transport-check (journalctl --user -u pi-transport-check) and the seat-health extension. fleet-ops#3111."
+
+      # fleet-ops#3111: stale cap=0 seats need re-audition. seat-lib
+      # auto-expires them to cap=1 after 14d, but sustained > 0 here means
+      # seats are lingering at cap=0 past their re-audition date — the
+      # 2026-09-03 incident showed groq/inferx/orcarouter sitting for weeks.
+      - alert: FleetSeatCap0Stale
+        expr: fleet_seat_cap0_stale_total > 0
+        for: 1h
+        labels:
+          severity: info
+          service: fleet
+        annotations:
+          summary: "stale cap=0 seats need re-audition or will auto-expire"
+          description: "One or more seats are at cap=0 with intentional_cap_zero=stale — they have a dated re-audition reason and have not been re-probed. seat-lib auto-expires them to cap=1 after 14d (SEAT_CAP_ZERO_STALE_TTL_S); this alert fires 1h after the first stale seat appears so the operator can re-audition BEFORE the auto-expiry (probe the seat live; if it works, restore the cap; if not, re-date the reason). The per-seat fleet_seat_cap0_stale series names each seat with its age_seconds. fleet-ops#3111."
+
       - alert: FleetDeadCredentialSeats
         expr: fleet_pi_seat_dead_credential_total > 0
         for: 5m

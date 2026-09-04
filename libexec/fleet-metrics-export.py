@@ -60,6 +60,13 @@ HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0.
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
 HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
+# fleet-ops#3111: a stale pi-seat-health.json must read as UNKNOWN, never
+# "healthy". The 2026-09-03 incident left the console tile saying "seat
+# healthy" from a 2-day-old observation while the transport was down 33h.
+# Age in seconds since observed_at; absent/unparseable -> -1 (UNKNOWN). The
+# alert rule fires >1800 (30 min) so a stale feed can never mask an outage.
+HELP_AGE = "# HELP fleet_pi_seat_health_age_seconds Seconds since the Pi seat was last observed (-1 if the observation is absent/unparseable). fleet-ops#3111."
+TYPE_AGE = "# TYPE fleet_pi_seat_health_age_seconds gauge"
 HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
 TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
 HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667)."
@@ -102,6 +109,17 @@ HELP_HCAP0 = "# HELP fleet_seat_healthy_cap0_total Number of seats whose ledger 
 TYPE_HCAP0 = "# TYPE fleet_seat_healthy_cap0_total gauge"
 HELP_HCAP0P = "# HELP fleet_seat_healthy_cap0 1 for each healthy-but-parked seat (health_class=healthy, seat_dead=false, model cap=0) so the repair worker knows which cap to restore (fleet-ops#2738)."
 TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
+# fleet-ops#3111: stale cap=0 seats (intentional_cap_zero="stale") that have
+# not been re-auditioned. The 2026-09-03 incident showed groq/inferx/orcarouter
+# lingering at cap=0 for weeks while the fleet starved. The age is parsed from
+# the first YYYY-MM-DD in the reason; -1 if no date (undated = expires first).
+# seat-lib's _expire_stale_cap0_seats re-admits them at cap=1 after 14d; this
+# metric makes them visible BEFORE the expiry so the operator can re-audition
+# or re-date the reason.
+HELP_SC0T = "# HELP fleet_seat_cap0_stale_total Number of cap=0 seats classified stale (intentional_cap_zero=stale) — need re-audition or will auto-expire to cap=1 after 14d (fleet-ops#3111)."
+TYPE_SC0T = "# TYPE fleet_seat_cap0_stale_total gauge"
+HELP_SC0 = "# HELP fleet_seat_cap0_stale 1 for each stale cap=0 seat, with age_seconds since the reason date (-1 if undated) so the repair worker knows which to re-audition first (fleet-ops#3111)."
+TYPE_SC0 = "# TYPE fleet_seat_cap0_stale gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -2274,6 +2292,70 @@ def _read_healthy_cap0():
     return len(seats), seats
 
 
+def _read_cap0_stale():
+    """Stale cap=0 seats (intentional_cap_zero=stale) with age from the reason date.
+
+    fleet-ops#3111: a stale cap=0 seat has a dated reason ("2026-08-28
+    re-audition: endpoint 404"). The 2026-09-03 incident showed groq, inferx,
+    and orcarouter lingering at cap=0 for weeks while the fleet starved.
+    seat-lib's _expire_stale_cap0_seats re-admits them at cap=1 after 14d;
+    this metric makes them visible BEFORE the expiry so the operator can
+    re-audition or re-date the reason. Age is seconds since the first
+    YYYY-MM-DD in the reason; -1 if undated (undated = expires first).
+
+    Returns (count, [ {provider, model, age_seconds} ]).
+    """
+    seats = []
+    data = None
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+            break
+        except (OSError, json.JSONDecodeError):
+            continue
+    if not isinstance(data, dict):
+        return 0, []
+    now = int(time.time())
+    providers = data.get("providers", {})
+    if not isinstance(providers, dict):
+        return 0, []
+
+    def _age_from_reason(reason):
+        if not isinstance(reason, str):
+            return -1
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", reason)
+        if not m:
+            return -1
+        try:
+            ds = int(time.mktime(time.strptime(
+                f"{m.group(1)}-{m.group(2)}-{m.group(3)}", "%Y-%m-%d")))
+            return now - ds
+        except ValueError:
+            return -1
+
+    for prov, pv in providers.items():
+        if isinstance(pv, dict):
+            icz = pv.get("intentional_cap_zero", "")
+            cap = pv.get("cap", 0)
+            if icz == "stale" and cap == 0:
+                seats.append({
+                    "provider": prov, "model": "",
+                    "age_seconds": _age_from_reason(pv.get("reason", "")),
+                })
+            models = pv.get("models", {})
+            if isinstance(models, dict):
+                for model, mv in models.items():
+                    if isinstance(mv, dict):
+                        micz = mv.get("intentional_cap_zero", "")
+                        mcap = mv.get("cap", 0)
+                        if micz == "stale" and mcap == 0:
+                            seats.append({
+                                "provider": prov, "model": model,
+                                "age_seconds": _age_from_reason(mv.get("reason", "")),
+                            })
+    return len(seats), seats
+
+
 # fleet-ops#2638: SEAT_DEAD_CONSECUTIVE_THRESHOLD mirror — the bash writer
 # (lib/seat-lib.sh) corpses quota_cap at this count; the prober
 # (bin/fleet-seat-comeback-release) corpses the same way on the overload/
@@ -2789,6 +2871,16 @@ def main():
         lines.append(
             f"fleet_pi_seat_observed_seconds {observed_epoch}"
         )
+    # fleet-ops#3111: seat-health age. A stale feed (>30 min) is UNKNOWN, never
+    # "healthy". -1 when observed_at is absent/unparseable so the alert rule can
+    # distinguish "no data" from "fresh". Drives FleetPiSeatHealthStale.
+    age = -1
+    if observed_epoch is not None:
+        age = int(time.time()) - observed_epoch
+    lines.append("")
+    lines.append(HELP_AGE)
+    lines.append(TYPE_AGE)
+    lines.append(f"fleet_pi_seat_health_age_seconds {age}")
     # fleet-ops#1445: surface dead-credential seats once per tick as a distinct
     # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403);
     # the total gauge drives the alert rule and the per-seat series names each
@@ -2902,6 +2994,27 @@ def main():
         )
         lines.append(
             f'fleet_seat_healthy_cap0{{seat="{_seat_label}"}} 1'
+        )
+    # fleet-ops#3111: stale cap=0 seats. A stale cap=0 seat
+    # (intentional_cap_zero=stale) has a dated reason and should be
+    # re-auditioned; seat-lib auto-expires it to cap=1 after 14d. This metric
+    # surfaces them BEFORE the expiry so the operator can re-audition or
+    # re-date the reason. age_seconds=-1 means undated (expires first).
+    _sc0_n, _sc0 = _read_cap0_stale()
+    lines.append("")
+    lines.append(HELP_SC0T)
+    lines.append(TYPE_SC0T)
+    lines.append(f"fleet_seat_cap0_stale_total {_sc0_n}")
+    lines.append("")
+    lines.append(HELP_SC0)
+    lines.append(TYPE_SC0)
+    for _s in _sc0:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _age = int(_s.get("age_seconds", -1))
+        lines.append(
+            f'fleet_seat_cap0_stale{{seat="{_seat_label}",age_seconds="{_age}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)
