@@ -404,6 +404,11 @@ bash "$here/sgscan.test.sh"
 # them without a workflow-file edit.
 bash "$here/fleet-loose-ends-canary.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
+
+# fleet-ops#3263 (PR #3304): devin/cursor provider extension + spawnSync
+# timeout gate. Hosted here so P14 runs it without a workflow-file edit
+# (workers cannot push .github/workflows/**).
+bash "$here/provider-timeout.test.sh"
 bash "$here/unit-escalation-write-retry-absorb.test.sh"
 bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
 # fleet-ops#2399 added unit-escalation-write-journal-evidence.test.sh (ledger

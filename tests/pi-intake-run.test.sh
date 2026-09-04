@@ -135,3 +135,18 @@ bash "$here/pi-intake-tick-claim-set-e-guard.test.sh"
 # ci.yml lists this file, so the drill runs here instead of a new
 # workflow line (workers cannot edit .github/workflows/ci.yml).
 bash "$here/pi-intake-tick-protected-verifier-vacation.test.sh"
+
+# --- 12. fleet-ops#3247 repo-conditional worker prompt blocks (CI hook) --
+# tests/pi-intake-tick-repo-conditional-blocks.test.sh locks the
+# conditional D1/gate-integrity + GEO/AEO prompt-block assembly in
+# lib/pi-intake-tick.sh (packet-write time). ci.yml lists this file, so
+# the drill runs here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-repo-conditional-blocks.test.sh"
+
+# --- 13. fleet-ops#3248 worker packet size ceiling (CI hook) ------------
+# tests/worker-packet-size.test.sh locks the rendered worker packet
+# (worker.md + TARGET line, assembled as lib/pi-intake-tick.sh writes it)
+# to <=12 KB non-0509 / <=20 KB 0509. ci.yml lists this file, so the
+# drill runs here instead of a new workflow line.
+bash "$here/worker-packet-size.test.sh"

@@ -3299,6 +3299,10 @@ bash "$here/fleet-failed-command-compound-ls-permission-denied.test.sh" || fail 
 # that test's header. Not a 1157 change of behaviour; it unblocks P14.
 bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 
+# fleet-ops#3272 (PR #3299): pi-packet watch.log logrotate shape + seat-lib
+# journal fallback. Hosted here (seat-lib journal fallback is in lib/seat-lib.sh).
+bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation tests failed"
+
 # Leftovers on origin/main that would fail this PR's listing gate.
 bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
 bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
