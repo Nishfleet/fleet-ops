@@ -3339,6 +3339,14 @@ bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests fa
 # already-listed seat-lib test to bring the gate back green.
 bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
 
+# fleet-ops#3072: scout + scout-repair prompts must classify as light so
+# pi-scout-run sets need_capable=0 and pick_seat can use healthy commodity
+# lanes. Without the difficulty: light marker the task_weight heuristic
+# false-positives on prompt boilerplate and locks the scout out of every
+# capable seat when devin/xai-oauth/minimax/straitly are full or walled.
+# Hosted here (workers cannot add a ci.yml line).
+bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty tests failed"
+
 # fleet-ops#1362 (fleet-ops#1964): tests/seat-failure-ceiling.test.sh is the park-
 # past-failure-ceiling regression test landed on main in #2003 that was never
 # wired into ci.yml. Host it here from this already-listed seat-lib test so the
