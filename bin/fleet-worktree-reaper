@@ -422,11 +422,15 @@ salvage_and_bank() {
     unit="wfr-$(printf '%s' "$base" | tr -c 'A-Za-z0-9:_.-' '_')"
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     br="wip/${unit}-${ts}"
+    # On an archived repo the push is a doomed ~30s network round-trip;
+    # PI_SALVAGE_NO_PUSH skips it — the helper still does the branch
+    # handling, secret scan, commit, local ref, and ledger record.
     set +e
     out=$(PI_SALVAGE_WORKDIR="$wt" \
           PI_SALVAGE_UNIT="$unit" \
           PI_SALVAGE_NOW="$ts" \
           PI_SALVAGE_PACKET="" \
+          PI_SALVAGE_NO_PUSH="$parent_archived" \
           FLEET_DISPATCH_LEDGER="$LEDGER" \
           "$SALVAGE_BIN" 2>&1)
     rc=$?

@@ -1,5 +1,5 @@
 [Unit]
-Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227 + #2637)
+Description=Orphan agent-worktree reaper — daily GC (fleet-ops#2227 + #2637 + #3023)
 # Named reason for this schedule (vault: "a schedule needs a named reason"):
 # worktree accumulation is a monotonic growth invariant with no event signal.
 # A merged claim leaves its ~440MB worktree behind silently; only a periodic
@@ -22,9 +22,11 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/nish
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-worktree-reaper'
 # A full sweep over ~1200 worktrees + one gh pr list per repo + one
-# git ls-remote per Mode B candidate is bounded well under five minutes
-# in practice (the 2026-09-01 dry-run completed in ~25s wall).
-TimeoutStartSec=10min
+# git ls-remote per parent is ~5min wall; Mode D (fleet-ops#3023) adds
+# up to --salvage-limit bank attempts (~5-15s each on a live push,
+# ~2s on an archived-repo local bank). 30min covers the scan plus a
+# full 50-attempt salvage pass with headroom.
+TimeoutStartSec=30min
 # Never restart: the timer is the retry. A failed reaper escalates via the
 # global drop-in, not via Restart=.
 Restart=no

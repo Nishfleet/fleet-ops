@@ -246,13 +246,15 @@ unit="${PI_SALVAGE_UNIT:?need PI_SALVAGE_UNIT}"
 ts="${PI_SALVAGE_NOW:?need PI_SALVAGE_NOW}"
 br="wip/${unit}-${ts}"
 base="${wt##*/}"
-printf '%s\n' "$wt" >>"${FAKE_SALVAGE_DIR:?need FAKE_SALVAGE_DIR}/invoked"
+printf '%s|%s\n' "$wt" "${PI_SALVAGE_NO_PUSH:-0}" \
+    >>"${FAKE_SALVAGE_DIR:?need FAKE_SALVAGE_DIR}/invoked"
 git -C "$wt" add -A -- . >/dev/null 2>&1
 git -C "$wt" -c user.email=fleet-salvage@localhost -c user.name=fleet-salvage \
     commit -q -m "salvage: bank uncommitted work for unit ${unit}" >/dev/null 2>&1 || true
 git -C "$wt" branch -f "$br" HEAD >/dev/null 2>&1 || true
 status=local
-if [ ! -f "$FAKE_SALVAGE_DIR/${base}.no-push" ]; then
+if [ "${PI_SALVAGE_NO_PUSH:-0}" != "1" ] \
+   && [ ! -f "$FAKE_SALVAGE_DIR/${base}.no-push" ]; then
     if git -C "$wt" push -q origin "HEAD:refs/heads/${br}" >/dev/null 2>&1; then
         status=pushed
     fi
@@ -858,6 +860,10 @@ echo "$out_arch" | grep -q "fix-branch-900: REAPED-C" \
 git -C "$parent_b" for-each-ref 'refs/heads/wip/wfr-fix-branch-900-*' \
     | grep -q . \
     || fail "case38: local banked wip ref missing in parent; output: $out_arch"
+# The reaper must pass PI_SALVAGE_NO_PUSH=1 to the helper on an archived
+# repo — the push is a doomed network round-trip the helper should skip.
+grep -q 'fix-branch-900|1' "$FAKE_SALVAGE_DIR/invoked" \
+    || fail "case38: helper should be called with PI_SALVAGE_NO_PUSH=1 on an archived repo; invoked: $(cat "$FAKE_SALVAGE_DIR/invoked" 2>/dev/null)"
 ok "case38: archived repo local bank SALVAGE-BANKED-LOCAL + REAPED-C"
 # And the mirror-image: same shape on a LIVE repo must NOT reap — a
 # push that never landed is not a bank.

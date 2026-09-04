@@ -21,6 +21,9 @@
 # Environment (tests):
 #   PI_SALVAGE_WORKDIR, PI_SALVAGE_UNIT, PI_SALVAGE_PACKET, PI_SALVAGE_NOW
 #   PI_SALVAGE_REMOTE (default origin), PI_SALVAGE_SKIP_SGSCAN
+#   PI_SALVAGE_NO_PUSH (default 0; 1 = bank locally, skip the push —
+#      for callers that already know the remote cannot accept it, e.g.
+#      the worktree reaper on an archived repo, fleet-ops#3023)
 #   PI_SALVAGE_SCAN (optional helper; exit 0 clean, 1 quarantine)
 #   FLEET_DISPATCH_LEDGER, AGENT_STATE, PI_SALVAGE_GC_ROOT, PI_SALVAGE_GC_MAX_AGE_S
 #
@@ -315,6 +318,11 @@ cmd_salvage() {
     salvage_status="local"
     if [[ "$secret" -eq 1 ]]; then
         salvage_status="quarantined"
+    elif [[ "${PI_SALVAGE_NO_PUSH:-0}" == "1" ]]; then
+        # Caller already knows the remote cannot take the push (e.g. the
+        # reaper on an archived repo, fleet-ops#3023) — skip the doomed
+        # network round-trip; the local bank is the whole preservation.
+        log "push skipped unit=$unit branch=$branch — local-only bank requested"
     elif git -C "$workdir" remote get-url "$REMOTE" >/dev/null 2>&1; then
         if GIT_TERMINAL_PROMPT=0 git -C "$workdir" push \
             --force-with-lease="refs/heads/${branch}:" \
