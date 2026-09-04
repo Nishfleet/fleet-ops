@@ -1569,6 +1569,59 @@ PY
 ok "fleet-ops#3161: fleet_close_duplicates_closes_total{cross_repo,protected} emitted (missing/legit/wrong/unparseable)"
 
 # =========================================================================
+# fleet-ops#3312: fleet_nish_decision_rejected_total
+# The exporter reads the last blocked-reconcile sweep summary's
+# rejected_nish_decisions count. Missing/unparseable files emit 0 so the
+# family is always present; a real summary with a rejected count emits it.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "blocked-reconcile metric emission failed"
+import importlib.util, json, os, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+# 1. Missing file -> 0, family present.
+with tempfile.TemporaryDirectory() as td:
+    m.BLOCKED_QUEUE_JSON = Path(td) / "missing.json"
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert "fleet_nish_decision_rejected_total" in out, out
+    assert out.count("# HELP fleet_nish_decision_rejected_total") == 1, out
+    assert out.count("# TYPE fleet_nish_decision_rejected_total") == 1, out
+    assert "fleet_nish_decision_rejected_total 0" in out, out
+    print("OK: missing file -> 0, HELP/TYPE once")
+
+# 2. A real summary with rejected_nish_decisions=3 emits 3.
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "blocked-queue.json"
+    p.write_text(json.dumps({"count": 1, "rejected_nish_decisions": 3}))
+    m.BLOCKED_QUEUE_JSON = p
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert "fleet_nish_decision_rejected_total 3" in out, out
+    print("OK: summary with 3 rejected nish lines emits 3")
+
+# 3. Unparseable file -> 0 (no crash).
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "bad.json"
+    p.write_text("{not json")
+    m.BLOCKED_QUEUE_JSON = p
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert "fleet_nish_decision_rejected_total 0" in out, out
+    print("OK: unparseable file -> 0 (no crash)")
+PY
+
+ok "fleet-ops#3312: fleet_nish_decision_rejected_total emitted (missing/legit/unparseable)"
+
+# =========================================================================
 # 17. fleet-ops#3250: per-seat rolling last-20 issue-work session PR yield.
 # =========================================================================
 python3 - "$exporter" "$scratch" <<'PY' || fail "seat-yield logic failed"

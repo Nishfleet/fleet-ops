@@ -234,8 +234,11 @@ Steps:
    blocked-on: Nishfleet/<repo>#<n>
    blocked-on: nish-decision
 
-   One line per dependency. Use `nish-decision` when the blocker is a Nish
-   call (money, privacy, security, legal, product direction, deploy). Prose
+   One line per dependency. Use `nish-decision` only when the blocker is a
+   Nish call about money, legal, product direction, or customer data.
+   Anything else (including privacy, security, deploy, tooling, or
+   operational choices) goes to `blocked-on: orchestrator` with the
+   `needs-orchestrator` label so the orchestrator triages it. Prose
    `#n` mentions are ignored — without `blocked-on:` the issue sits on the
    desk-triage list until a human answers. blocked-reconcile verifies each
    blocker live: CLOSED `owner/repo#n` issues resolve; a later comment that

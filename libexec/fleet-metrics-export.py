@@ -2973,6 +2973,21 @@ _DQ_GAUGES = (
 )
 
 
+# --- blocked-reconcile nish-decision lint (fleet-ops#3312) -----------------
+# blocked-reconcile writes its last sweep summary to
+# /home/nish/.local/state/fleet-heartbeat/blocked-queue.json. We export the
+# count of rejected `blocked-on: nish-decision` lines that were rewritten to
+# `blocked-on: orchestrator` and labelled `needs-orchestrator`.
+BLOCKED_QUEUE_JSON = Path(
+    os.environ.get(
+        "FLEET_BLOCKED_QUEUE_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/blocked-queue.json",
+    )
+)
+HELP_NBR = "# HELP fleet_nish_decision_rejected_total Number of `blocked-on: nish-decision` lines rejected and rewritten to `blocked-on: orchestrator` in the last blocked-reconcile sweep (fleet-ops#3312)."
+TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
+
+
 # --- close-duplicates close guard (fleet-ops#3161) ------------------------
 # The heartbeat writes lib/issue-file.py close-duplicates summary to
 # $FLEET_HEARTBEAT_LOG_DIR/close-duplicates.json every tick. We emit the
@@ -3001,6 +3016,26 @@ _CLOSE_DUP_LABELS = (
     ("true", "false"),
     ("true", "true"),
 )
+
+
+def _emit_blocked_reconcile(lines):
+    """Append fleet_nish_decision_rejected_total.
+
+    Reads the last blocked-reconcile sweep summary. A missing or
+    unparseable file emits 0 so the metric family is always present.
+    """
+    count = 0
+    try:
+        data = json.loads(BLOCKED_QUEUE_JSON.read_text(encoding="utf-8"))
+        raw = data.get("rejected_nish_decisions")
+        if isinstance(raw, (int, float)):
+            count = int(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_NBR)
+    lines.append(TYPE_NBR)
+    lines.append(f"fleet_nish_decision_rejected_total {count}")
 
 
 def _emit_close_duplicates(lines):
@@ -3609,6 +3644,10 @@ def main():
     # degrades to NaN + up 0 (see _emit_deploy_quality) and never fails
     # the exporter oneshot.
     _emit_deploy_quality(lines)
+
+    # --- blocked-reconcile nish-decision lint (fleet-ops#3312) ---
+    # Per-sweep count of rejected `blocked-on: nish-decision` lines.
+    _emit_blocked_reconcile(lines)
 
     # --- close-duplicates close guard (fleet-ops#3161) ---
     # Per-tick close count by label; cross_repo and protected must stay 0.
