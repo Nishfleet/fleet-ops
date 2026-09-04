@@ -3347,6 +3347,47 @@ pick_seat() {
     fi
 
     local chosen="" chosen_p="" chosen_m=""
+    # fleet-ops#3310: work-cap class switch. When the reclaim-count WORK cap
+    # fires on real (non-infra) failures, intake advances a per-issue
+    # .prefer-class file and pi-issue-run exports PI_PICK_PREFER_CLASS so the
+    # next pick tries a different seat CLASS first (prepaid -> metered ->
+    # senior). Reuses pick_seat's existing class buckets + the #3121 senior
+    # ladder; falls through to the normal ladder when the preferred class has
+    # no usable seat so a depleted class does not stall the work item.
+    local prefer_class="${PI_PICK_PREFER_CLASS:-}"
+    if [[ -n "$prefer_class" ]]; then
+        case "$prefer_class" in
+            prepaid)
+                if (( ${#prepaid_seats[@]} > 0 )); then
+                    chosen=$(_rr_pick "$STATE_DIR/prepaid-rr.idx" "${prepaid_seats[@]}")
+                    chosen_p="${chosen%%$'\t'*}"
+                    _record_prepaid_pick "$chosen_p"
+                    seat_log "pick_seat: PREFER-CLASS prepaid -> $chosen (fleet-ops#3310 work-cap class switch)"
+                fi
+                ;;
+            metered)
+                if (( ${#metered_seats[@]} > 0 )); then
+                    chosen="${metered_seats[0]}"
+                    seat_log "pick_seat: PREFER-CLASS metered -> $chosen (fleet-ops#3310 work-cap class switch)"
+                fi
+                ;;
+            senior)
+                # fleet-ops#3121 senior_seats_in_order ladder. Forward-
+                # compatible: when #3121 lands (SEAT_SENIOR_ORDER +
+                # find_senior_seat), this picks a senior seat; until then it
+                # falls through to the normal ladder (no senior order loaded).
+                if [[ -n "${SEAT_SENIOR_ORDER:-}" ]] && declare -F find_senior_seat >/dev/null 2>&1; then
+                    local _sn
+                    _sn=$(find_senior_seat "$need_capable" "$tried_file" 2>/dev/null || true)
+                    if [[ -n "$_sn" ]]; then
+                        chosen="$_sn"
+                        seat_log "pick_seat: PREFER-CLASS senior -> $chosen (fleet-ops#3310 work-cap class switch)"
+                    fi
+                fi
+                ;;
+        esac
+    fi
+    if [[ -z "$chosen" ]]; then
     if _is_keystone_class "$difficulty"; then
         if (( ${#prepaid_seats[@]} > 0 )); then
             chosen="${prepaid_seats[0]}"
@@ -3376,6 +3417,7 @@ pick_seat() {
         _record_prepaid_pick "$chosen_p"
     elif (( ${#metered_seats[@]} > 0 )); then
         chosen="${metered_seats[0]}"
+    fi
     fi
     if [[ -n "$chosen" ]]; then
         record_seat_selection "${chosen%%$'\t'*}" "${chosen#*$'\t'}" "$difficulty"

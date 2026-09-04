@@ -674,6 +674,17 @@ for i in "${!numbers[@]}"; do
     # A successful PR open resets the counter so a legitimately-fixed issue is
     # never permanently locked out. Checked before the git fetch / ls-remote
     # for zero network cost.
+    #
+    # fleet-ops#3310: the WORK cap now advances a per-issue .prefer-class
+    # ladder (prepaid -> metered -> senior) BEFORE blocking. Each rung forces
+    # the next claim onto a different seat CLASS (pi-issue-run reads
+    # .prefer-class and exports PI_PICK_PREFER_CLASS so pick_seat tries that
+    # class first). The reclaim-count is RESET when a rung advances so the
+    # new class gets a fresh MAX_RECLAIMS budget. Only when the ladder is
+    # exhausted (senior already tried) does intake block with
+    # blocked-on: orchestrator. Infra deaths (rc=124/143,
+    # ETIMEDOUT, no-seat, hard-ceiling near timeout) never reach here — they
+    # increment .infra-death, not .reclaim-count (pi-issue-failed-reap).
     _rc_now_epoch=$(date -u +%s)
     _reclaim_count_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
     _rc_current=0
@@ -683,12 +694,45 @@ for i in "${!numbers[@]}"; do
         _rc_current=${_rc_current:-0}
     fi
     if (( _rc_current >= MAX_RECLAIMS )); then
-        echo "issue $N ($title): skipped-max-reclaims (count=$_rc_current >= $MAX_RECLAIMS) - escalating to agent-blocked" >&2
-        gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
-        gh issue comment "$N" -R "$FULL" --body "fleet-ops#2462: issue $N has been re-claimed $_rc_current times (cap=$MAX_RECLAIMS). Every usable seat has failed with provider errors; re-claiming would starve the seat pool. Escalating to senior conference for review.
+        _prefer_class_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.prefer-class"
+        _cur_prefer=""
+        if [[ -f "$_prefer_class_file" ]]; then
+            _cur_prefer=$(cat "$_prefer_class_file" 2>/dev/null || true)
+            _cur_prefer=${_cur_prefer//[^a-z-]/}
+        fi
+        # Advance the ladder. Empty/absent -> prepaid; prepaid -> metered;
+        # metered -> senior; senior -> BLOCKED (ladder exhausted).
+        case "$_cur_prefer" in
+            "")
+                printf 'prepaid' >"$_prefer_class_file" 2>/dev/null || true
+                printf '1' >"$_reclaim_count_file" 2>/dev/null || true
+                echo "issue $N ($title): work-cap-class-switch -> prepaid (reclaim-count=$_rc_current reset to 1, fleet-ops#3310)"
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: work cap hit (reclaim-count=$_rc_current). Switching next claim to a prepaid seat class before blocking." 2>/dev/null || true
+                ;;
+            prepaid)
+                printf 'metered' >"$_prefer_class_file" 2>/dev/null || true
+                printf '1' >"$_reclaim_count_file" 2>/dev/null || true
+                echo "issue $N ($title): work-cap-class-switch -> metered (reclaim-count=$_rc_current reset to 1, fleet-ops#3310)"
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: work cap hit on prepaid class. Switching next claim to a metered seat class before blocking." 2>/dev/null || true
+                ;;
+            metered)
+                printf 'senior' >"$_prefer_class_file" 2>/dev/null || true
+                printf '1' >"$_reclaim_count_file" 2>/dev/null || true
+                echo "issue $N ($title): work-cap-class-switch -> senior (reclaim-count=$_rc_current reset to 1, fleet-ops#3310)"
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: work cap hit on metered class. Switching next claim to a senior-review seat before blocking." 2>/dev/null || true
+                ;;
+            senior|*)
+                # Ladder exhausted: every class has been tried and failed.
+                # Block for orchestrator review (not nish-decision — the
+                # senior conference is the orchestrator's job, fleet-ops#3310).
+                echo "issue $N ($title): skipped-max-reclaims (count=$_rc_current >= $MAX_RECLAIMS, class ladder exhausted at $_cur_prefer) - escalating to agent-blocked" >&2
+                gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: issue $N exhausted the work-cap class ladder (prepaid -> metered -> senior, reclaim-count=$_rc_current on each). Every seat class failed with real work errors; re-claiming would starve the seat pool. Escalating to orchestrator for senior-conference review.
 
-blocked-on: nish-decision" 2>/dev/null || true
-        continue
+blocked-on: orchestrator" 2>/dev/null || true
+                continue
+                ;;
+        esac
     fi
 
     # fleet-ops#2462: systemic-failure skip. When every usable seat fails

@@ -48,15 +48,36 @@ grep -qF 'skipped-max-reclaims' "$tick" \
     || fail "skipped-max-reclaims skip message not found in tick"
 grep -qF '_rc_current >= MAX_RECLAIMS' "$tick" \
     || fail "claim count comparison (>= MAX_RECLAIMS) not found in tick"
-ok "Test 3: tick skips re-claiming when count >= MAX_RECLAIMS"
+ok "Test 3: tick skips re-claiming when count >= MAX_RECLAIMS (ladder exhausted)"
 
 # === Test 4: tick escalates to agent-blocked on skip ===
+# fleet-ops#3310: the block only fires after the class ladder is exhausted
+# (senior rung). The blocked-on line is now 'orchestrator'
+# (the senior conference is the orchestrator's job), not 'nish-decision'.
 grep -qF 'agent-blocked' "$tick" \
     || { grep -q 'add-label agent-blocked' "$tick" \
         || fail "tick does not label agent-blocked on max-reclaims skip"; }
-grep -qF 'blocked-on: nish-decision' "$tick" \
-    || fail "tick does not emit blocked-on: nish-decision on max-reclaims skip"
-ok "Test 4: tick escalates to agent-blocked with blocked-on line"
+grep -qF 'blocked-on: orchestrator' "$tick" \
+    || fail "tick does not emit blocked-on: orchestrator on ladder-exhausted skip (fleet-ops#3310)"
+ok "Test 4: tick escalates to agent-blocked with blocked-on: orchestrator (ladder exhausted, fleet-ops#3310)"
+
+# === Test 3b: fleet-ops#3310 work-cap class ladder ===
+# The WORK cap advances a .prefer-class ladder (prepaid -> metered -> senior)
+# BEFORE blocking, resetting reclaim-count to 1 on each advance. This proves
+# the ladder rungs + the reset are present.
+grep -qF 'work-cap-class-switch -> prepaid' "$tick" \
+    || fail "fleet-ops#3310: work-cap-class-switch -> prepaid rung not found"
+grep -qF 'work-cap-class-switch -> metered' "$tick" \
+    || fail "fleet-ops#3310: work-cap-class-switch -> metered rung not found"
+grep -qF 'work-cap-class-switch -> senior' "$tick" \
+    || fail "fleet-ops#3310: work-cap-class-switch -> senior rung not found"
+grep -qF 'pi-issue-${REPO}-${N}.prefer-class' "$tick" \
+    || fail "fleet-ops#3310: .prefer-class file path not found in tick"
+# The reset-to-1 must happen on each advance (3 occurrences for 3 rungs).
+_rc_reset_count=$(grep -c "printf '1' >\"\$_reclaim_count_file\"" "$tick" || true)
+(( _rc_reset_count >= 3 )) \
+    || fail "fleet-ops#3310: reclaim-count reset-to-1 on class advance not found 3x (got $_rc_reset_count)"
+ok "Test 3b: work-cap class ladder (prepaid -> metered -> senior) advances before blocking, resets reclaim-count (fleet-ops#3310)"
 
 # === Test 5: tick allows claims when count < MAX_RECLAIMS ===
 # The reclaim-count file is only written on the claim+spawned path (after
