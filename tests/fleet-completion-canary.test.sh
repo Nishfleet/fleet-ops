@@ -173,6 +173,20 @@ if printf '%s\n' "$@" | grep -qx -- '--print-seat'; then
   exit 0
 fi
 echo "dispatch AMX_ALERT_1_LABEL_alertname=${AMX_ALERT_1_LABEL_alertname:-} AMX_STATUS=${AMX_STATUS:-} AMX_RECEIVER=${AMX_RECEIVER:-}" >>"$log"
+# Mirror the real alert-repair-dispatch: write a DISPATCH line to
+# actions.log so fleet-completion-canary sees the dispatch hop's observed
+# terminal state (fleet-ops#3190). DISPATCHER_SKIP=1 simulates a skip
+# (skip-list/class-park/claim-held/wedged) — rc=0, NO DISPATCH line.
+if [ "${DISPATCHER_SKIP:-0}" = "1" ]; then
+  echo "SKIP alertname=${AMX_ALERT_1_LABEL_alertname:-} (simulated skip)" >>"$log"
+  exit 0
+fi
+actions="${FLEET_COMPLETION_ACTIONS_LOG:-}"
+if [ -n "$actions" ] && [ -n "${AMX_ALERT_1_LABEL_alertname:-}" ]; then
+  ts="${FLEET_COMPLETION_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  unit="alert-repair-${AMX_ALERT_1_LABEL_alertname}-$(echo "$ts" | tr -d ':-' | sed 's/Z$//')"
+  echo "[$ts] DISPATCH alertname=${AMX_ALERT_1_LABEL_alertname} unit=$unit seat=devin/glm-5-2 reason=healthy packet=/x rc=0" >>"$actions"
+fi
 exit 0
 FAKE
 chmod +x "$scratch/dispatcher"
@@ -742,14 +756,15 @@ grep -q "dispatch AMX_ALERT_1_LABEL_alertname=FailedCollect" "$scratch/dispatch.
 
 ok "--collect failed unit → hop=run via journal fallback, not verify false-success (fleet-ops#2100)"
 
-# --- 9e. redispatch no-op at hop=dispatch escalates, not parks (fleet-ops#2247) --
+# --- 9e. redispatch no-op escalates, not parks (fleet-ops#2247) --
 # Bug: a dispatch/run redispatch returns rc=0 (the dispatcher spawned an async
 # unit), and take_ladder parked the chain at ladder="redispatch" forever.
 # Subsequent ticks returned "already" — no STOP-REASON, no senior-conference
 # escalation — so FleetMainRed sat stuck through endless rc=0 redispatches
 # that never turned main green. Fix: a STILL-stalled chain that was already
 # redispatched fails loud (STOP-REASON) instead of returning "already".
-# Two-tick repro: tick 1 redispatches (rc=0); tick 2 still firing -> escalate.
+# Two-tick repro: tick 1 redispatches (rc=0, DISPATCH line written); tick 2
+# the unit is dead, hop=run stalled -> escalate.
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 : >"$scratch/dispatch.log"
 : >"$scratch/actions.log"
@@ -762,7 +777,8 @@ json.dump({"status":"success","data":{"alerts":[
 ]}}, open(sys.argv[1],"w"))
 PY
 # Tick 1: firing 20 min (02:25:56 -> 02:46:00) > 10 min CLOCK_DISPATCH, no
-# DISPATCH -> hop=dispatch stalled -> redispatch rc=0 -> ladder="redispatch".
+# DISPATCH -> hop=dispatch stalled -> redispatch rc=0, DISPATCH line written
+# -> ladder="redispatch".
 rc=$(run_bin "2026-08-30T02:46:00Z")
 [[ "$rc" == "0" ]] || fail "9e tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
 grep -q "dispatch AMX_ALERT_1_LABEL_alertname=FleetMainRed" "$scratch/dispatch.log" \
@@ -774,13 +790,13 @@ grep -q 'REDISPATCH alertname=FleetMainRed' "$scratch/actions.log" \
   && fail "9e tick-1: must not write STOP-REASON on first redispatch (give worker a chance)"
 disp1=$(wc -l < "$scratch/dispatch.log")
 
-# Tick 2: alert STILL firing (no DISPATCH line reached actions.log — the
-# redispatched worker did not resolve the alert). hop=dispatch still stalled.
-# Before the fix: take_ladder returned "already", no STOP-REASON, dispatcher
-# NOT invoked again, chain stuck forever. After the fix: STOP-REASON written,
-# senior-conference escalation, no second redispatch.
+# Tick 2: alert STILL firing. The DISPATCH line from tick 1 is now in
+# actions.log, so classify sees disp_ts and the dead unit -> hop=run.
+# now=03:47:00 -> age since dispatch 02:46:00 = 3660s > 3600s CLOCK_RUN ->
+# hop=run stalled. prev_ladder="redispatch" -> STOP-REASON, no second
+# redispatch.
 : >"$scratch/dispatch.log"   # reset to detect a (forbidden) second redispatch
-rc=$(run_bin "2026-08-30T03:07:00Z")
+rc=$(run_bin "2026-08-30T03:47:00Z")
 [[ "$rc" == "0" ]] || fail "9e tick-2 rc=$rc stderr=$(cat "$scratch/err.log")"
 [[ -f "$scratch/STOP-REASON.json" ]] \
   || fail "9e tick-2: redispatch no-op must write STOP-REASON (escalate, not park)"
@@ -793,7 +809,53 @@ PY
 if grep -q '^dispatch AMX' "$scratch/dispatch.log"; then
   fail "9e tick-2: must NOT redispatch again on a no-op (escalate instead); log=$(cat "$scratch/dispatch.log")"
 fi
-ok "redispatch no-op at hop=dispatch escalates via STOP-REASON, not parks (fleet-ops#2247)"
+ok "redispatch no-op escalates via STOP-REASON, not parks (fleet-ops#2247)"
+
+# --- 9e-skip. dispatch hop closes on DISPATCH line, not rc=0 (fleet-ops#3190) --
+# Bug: a dispatcher skip (skip-list, class-park, claim-held, all-seats-wedged,
+# no-spawn) returns rc=0 WITHOUT writing a DISPATCH line. take_ladder counted
+# that rc=0 as progress (ladder="redispatch"), but no DISPATCH line ever
+# arrived, so classify kept returning hop=dispatch and the chain never
+# advanced — chain_stalled_total went 0->1 while the hop stayed open (live:
+# DeployBlockedStuck redispatch rc=0 on openrouter/deepseek-v4-flash-0731).
+# Fix: the dispatch hop closes on observed terminal state (DISPATCH line in
+# actions.log), not on redispatch exit code. A skip (rc=0, no DISPATCH line)
+# escalates immediately — there is no worker to give a chance to.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-08-30T02:25:56Z",
+   "labels":{"alertname":"DeployBlockedStuck"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# Tick 1: firing 20 min > 10 min CLOCK_DISPATCH, no DISPATCH -> hop=dispatch
+# stalled -> redispatch with DISPATCHER_SKIP=1 -> rc=0, NO DISPATCH line ->
+# STOP-REASON (no worker spawned, nothing to give a chance to).
+rc=$(DISPATCHER_SKIP=1 run_bin "2026-08-30T02:46:00Z")
+[[ "$rc" == "0" ]] || fail "9e-skip tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q "dispatch AMX_ALERT_1_LABEL_alertname=DeployBlockedStuck" "$scratch/dispatch.log" \
+  || fail "9e-skip tick-1: dispatcher must be invoked; log=$(cat "$scratch/dispatch.log")"
+# No DISPATCH line in actions.log (the dispatcher skipped). REDISPATCH is
+# the canary's own receipt, not a dispatcher DISPATCH line.
+if grep -q '] DISPATCH alertname=DeployBlockedStuck' "$scratch/actions.log"; then
+  fail "9e-skip tick-1: dispatcher skip must NOT write a DISPATCH line; log=$(cat "$scratch/actions.log")"
+fi
+# STOP-REASON must be written on tick 1 (no worker spawned -> no chance to
+# give; the dispatch hop did not reach terminal state).
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "9e-skip tick-1: dispatcher skip (rc=0, no DISPATCH) must write STOP-REASON (fleet-ops#3190)"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("reason") == "alert-repair-stalled", f"reason={d.get('reason')!r}"
+assert d.get("detail", {}).get("alertname") == "DeployBlockedStuck", d
+assert d.get("detail", {}).get("hop") == "dispatch", d
+PY
+ok "dispatch hop closes on DISPATCH line, not rc=0 (fleet-ops#3190)"
 
 # --- 9f. redispatch no-op at hop=run escalates (fleet-ops#2247) ----------------
 # Same class, hop=run: the redispatched unit died without resolving the alert.
