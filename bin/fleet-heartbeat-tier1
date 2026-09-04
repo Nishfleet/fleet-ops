@@ -1686,7 +1686,11 @@ close_duplicates_rc=0
 if [ -x "$ISSUE_FILE_BIN" ]; then
     log "21. duplicate-issue drain starting"
     # Fail-closed: only the production heartbeat closes (fleet-ops#820 class).
-    if FLEET_CLOSE_DUPLICATES_OK=1 "$ISSUE_FILE_BIN" close-duplicates --output-json "$LOG_DIR/close-duplicates.json"; then
+    # FLEET_CLOSE_DUPLICATES_REVIEW_LOG points dup-cluster review lines
+    # (clusters > CLUSTER_CLOSE_MAX, comment-only) into this tick log so a
+    # human/senior can see which large clusters were left open (fleet-ops#3161).
+    if FLEET_CLOSE_DUPLICATES_OK=1 FLEET_CLOSE_DUPLICATES_REVIEW_LOG="$TICK_LOG" \
+        "$ISSUE_FILE_BIN" close-duplicates --output-json "$LOG_DIR/close-duplicates.json"; then
         log "21. duplicate-issue drain complete"
     else
         close_duplicates_rc=$?

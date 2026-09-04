@@ -1144,3 +1144,12 @@ groups:
         annotations:
           summary: "deployment-quality metrics computation failed or vanished"
           description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."
+      - alert: FleetCloseDuplicatesWrongClose
+        expr: fleet_close_duplicates_closes_total{cross_repo="true"} > 0 or fleet_close_duplicates_closes_total{protected="true"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "close-duplicates closed a cross-repo or protected issue (fleet-ops#3161)"
+          description: "fleet_close_duplicates_closes_total{cross_repo=\"true\"} or {protected=\"true\"} is > 0: the duplicate sweep closed an issue it must only comment on (cross-repo canonical, critical-path label, or nish3451-authored). Both series must stay 0. Check the last close-duplicates.json and the tick log dup-cluster review lines."
