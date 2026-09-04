@@ -305,6 +305,15 @@ bash "$here/fleet-deploy-quality.test.sh"
 # Hermetic (fake gh, no gh/prometheus/systemd).
 bash "$here/fleet-issue-file-close-duplicates.test.sh"
 
+# fleet-ops#3161: regression test for the primary-signal floor + cross-repo
+# canonical bug that closed 18 issues incl. two Nish-endorsed critical-path
+# packets as score=1.00 dups of an unrelated 0509 CI issue. Hosted here
+# (same shape as the #2902 host above) so P14 runs it without a workflow
+# edit. The named pin in tests/p14-test-listing-gate.test.sh is the
+# class-prevention so a future drop of this host line fails by name.
+# Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-close-duplicates-regression-3161.test.sh"
+
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in
