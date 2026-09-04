@@ -56,8 +56,8 @@
 #   5. cross-check: a successful `gh api graphql` comments query with
 #      no prior KeyError stays clean (locking #1142 must not collapse
 #      into "every graphql comments query is a failure").
-#   6. worker.md cites fleet-ops#1142 and the live `gh issue view 1003`
-#      + `gh api graphql` wording (prompt-side lock).
+#   6. lib/failed-command-flagged.py cites fleet-ops#1142 and the live `gh issue view 1003`
+#      + `gh api graphql` wording (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1142
 #      (detector-side lock).
 #   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
@@ -171,15 +171,15 @@ count=$(jq '.findings | length' <<<"$report")
 ok "successful gh api graphql with no prior KeyError stays clean (contrast with #1142)"
 rm -f "$sessions/graphql-only-clean.jsonl"
 
-# --- 6. prompts/worker.md cites fleet-ops#1142 (prompt-side lock) -----------
+# --- 6. prompts/lib/failed-command-flagged.py cites fleet-ops#1142 (detector-side lock: case list moved to lib, fleet-ops#3246) -----------
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1142' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1142 (prompt-side lock)"
-grep -q 'gh issue view 1003' "$worker" \
-  || fail "prompts/worker.md must name the live 'gh issue view 1003' wording"
-grep -q 'gh api graphql' "$worker" \
-  || fail "prompts/worker.md must name the live 'gh api graphql' recovery wording"
-ok "worker.md cites fleet-ops#1142 and the live gh --json + graphql wording"
+grep -q 'fleet-ops#1142' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1142 (detector-side lock: case list moved to lib, fleet-ops#3246)"
+grep -q 'gh issue view 1003' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'gh issue view 1003' wording"
+grep -q 'gh api graphql' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'gh api graphql' recovery wording"
+ok "lib/failed-command-flagged.py cites fleet-ops#1142 and the live gh --json + graphql wording"
 
 # --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1142 -------
 grep -q 'fleet-ops#1142' "$lib" \

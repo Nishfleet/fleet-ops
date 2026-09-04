@@ -63,8 +63,8 @@
 #      and `Command exited with code 1` inside the 200-char snippet
 #      -> finding (pins the ValueError wording the live 200-char
 #      cutoff drops).
-#   6. worker.md cites fleet-ops#1174 and the live wording
-#      (prompt-side lock).
+#   6. lib/failed-command-flagged.py cites fleet-ops#1174 and the live wording
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1174
 #      (detector-side lock).
 #   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
@@ -190,17 +190,17 @@ grep -q 'Command exited with code 1' <<<"$snippet" \
 ok "compact traceback keeps Could not deserialize key data inside the snippet"
 rm -f "$sessions/pem-deserialize-compact.jsonl"
 
-# --- 6. prompts/worker.md cites fleet-ops#1174 (prompt-side lock) ----------
+# --- 6. prompts/lib/failed-command-flagged.py cites fleet-ops#1174 (detector-side lock: case list moved to lib, fleet-ops#3246) ----------
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1174' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1174 (prompt-side lock)"
-grep -q 'load_pem_private_key' "$worker" \
-  || fail "prompts/worker.md must name the live load_pem_private_key wording"
-grep -q 'Could not deserialize key data' "$worker" \
-  || fail "prompts/worker.md must name the live Could not deserialize key data wording"
-grep -q 'NISHFLEET_PEM_EOF' "$worker" \
-  || fail "prompts/worker.md must name the live NISHFLEET_PEM_EOF env-via-heredoc cause-prose"
-ok "worker.md cites fleet-ops#1174 and the live load_pem / deserialize / heredoc wording"
+grep -q 'fleet-ops#1174' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1174 (detector-side lock: case list moved to lib, fleet-ops#3246)"
+grep -q 'load_pem_private_key' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live load_pem_private_key wording"
+grep -q 'Could not deserialize key data' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live Could not deserialize key data wording"
+grep -q 'NISHFLEET_PEM_EOF' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live NISHFLEET_PEM_EOF env-via-heredoc cause-prose"
+ok "lib/failed-command-flagged.py cites fleet-ops#1174 and the live load_pem / deserialize / heredoc wording"
 
 # --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1174 ------
 grep -q 'fleet-ops#1174' "$lib" \

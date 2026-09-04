@@ -62,7 +62,7 @@
 #      -> clean.
 #   4. user-facing cause prose that names the other checkout, without
 #      naming ENOENT / failed, is still a finding (anti-exemption).
-#   5. worker.md cites fleet-ops#1255 (prompt-side lock).
+#   5. lib/failed-command-flagged.py cites fleet-ops#1255 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#1255.
 #   7. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
@@ -171,19 +171,19 @@ count=$(jq '.findings | length' <<<"$report")
 ok "other-checkout cause prose alone (no failure named) is still flagged"
 rm -f "$sessions/read-enoent-stale-rg-cause-prose.jsonl"
 
-# --- 5. worker.md cites fleet-ops#1255 and fleet-ops#1100 (prompt-side lock) ---
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#1255 and fleet-ops#1100 (detector-side lock: case list moved to lib, fleet-ops#3246) ---
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1255' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1255 (prompt-side lock for the stale-rg salvage-scan read-ENOENT class)"
-grep -q 'fleet-ops#1100' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1100 (prompt-side lock for the stale-checkout read-ENOENT class)"
-grep -q 'salvage-secret-scan' "$worker" \
-  || fail "prompts/worker.md must name salvage-secret-scan so workers flag the live #1255 path"
-grep -q 'fleet-ops-rg' "$worker" \
-  || fail "prompts/worker.md must name fleet-ops-rg so workers flag the live #1255 stale-checkout shape"
-grep -q 'fleet-failed-command-flagged' "$worker" \
-  || fail "prompts/worker.md must name fleet-failed-command-flagged so workers flag the live #1100 stale-checkout shape"
-ok "worker.md cites fleet-ops#1255, fleet-ops#1100 and the live stale-checkout paths"
+grep -q 'fleet-ops#1255' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1255 (detector-side lock for the stale-rg salvage-scan read-ENOENT class)"
+grep -q 'fleet-ops#1100' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1100 (detector-side lock for the stale-checkout read-ENOENT class)"
+grep -q 'salvage-secret-scan' "$lib" \
+  || fail "lib/failed-command-flagged.py must name salvage-secret-scan so workers flag the live #1255 path"
+grep -q 'fleet-ops-rg' "$lib" \
+  || fail "lib/failed-command-flagged.py must name fleet-ops-rg so workers flag the live #1255 stale-checkout shape"
+grep -q 'fleet-failed-command-flagged' "$lib" \
+  || fail "lib/failed-command-flagged.py must name fleet-failed-command-flagged so workers flag the live #1100 stale-checkout shape"
+ok "lib/failed-command-flagged.py cites fleet-ops#1255, fleet-ops#1100 and the live stale-checkout paths"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#1255 and fleet-ops#1100 ---
 grep -q 'fleet-ops#1255' "$lib" \

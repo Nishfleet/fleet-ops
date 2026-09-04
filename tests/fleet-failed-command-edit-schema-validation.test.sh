@@ -63,8 +63,8 @@
 #   3. same shape plus later unrelated user-facing prose that does NOT
 #      name the failure -> still a finding.
 #   4. same shape plus a later user-facing flag -> clean.
-#   5. worker.md cites fleet-ops#1286 and the schema-validation wording
-#      (prompt-side lock).
+#   5. lib/failed-command-flagged.py cites fleet-ops#1286 and the schema-validation wording
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#1286
 #      (detector-side lock, forbids a "schema validation is benign"
 #      exemption).
@@ -179,16 +179,16 @@ count=$(jq '.findings | length' <<<"$report")
 ok "edit schema validation plus later user-facing flag is clean"
 rm -f "$sessions/edit-schema-flagged.jsonl"
 
-# --- 5. worker.md cites fleet-ops#1286 (prompt-side lock) ------------------
-grep -q 'fleet-ops#1286' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1286 (prompt-side lock for the edit schema-validation shape)"
-grep -q 'must have required properties path' "$worker" \
-  || fail "prompts/worker.md must name the live 'must have required properties path' wording so workers flag it"
-grep -q 'Validation failed for tool "edit"' "$worker" \
-  || fail "prompts/worker.md must name the live 'Validation failed for tool \"edit\"' heading so workers flag it"
-grep -q 'The edit tool requires the path field' "$worker" \
-  || fail "prompts/worker.md must name the live #1286 thinking-only recovery text so workers know it is not a flag"
-ok "worker.md cites fleet-ops#1286, the schema-validation wording, and the thinking-only recovery"
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#1286 (detector-side lock: case list moved to lib, fleet-ops#3246) ------------------
+grep -q 'fleet-ops#1286' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1286 (detector-side lock for the edit schema-validation shape)"
+grep -q 'must have required properties path' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'must have required properties path' wording so workers flag it"
+grep -q 'Validation failed for tool "edit"' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'Validation failed for tool \"edit\"' heading so workers flag it"
+grep -q 'The edit tool requires the path field' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1286 thinking-only recovery text so workers know it is not a flag"
+ok "lib/failed-command-flagged.py cites fleet-ops#1286, the schema-validation wording, and the thinking-only recovery"
 
 # --- 6. lib/failed-command-flagged.py cites fleet-ops#1286 ----------------
 # The lib docstring is the standing-rule contract for the next detector
