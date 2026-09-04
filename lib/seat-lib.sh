@@ -3518,13 +3518,16 @@ _transport_is_down() {
         "$probe" >/dev/null 2>&1 || return 0
         return 1
     fi
-    # Fallback: a bare `pi --version` semver test (cheap, no probe bin needed).
-    local pi_bin="${PI_BIN:-/home/nish/.local/bin/pi}" ver
-    ver="$(timeout 30 "$pi_bin" --version 2>/dev/null | head -n1 || true)"
-    if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        return 1
-    fi
-    return 0
+    # Fleet-ops#3111 contract: "benching is not suppressed on a box without
+    # the probe." Probe ABSENT -> health is undeterminable, not down —
+    # fail-open, unconditionally. The old `pi --version` fallback here broke
+    # that contract: every P14 test stubs PI_BIN with a fake pi whose
+    # --version is not semver, so CI judged the transport DOWN and every
+    # bench writer went silent (red on main from #3235 through #3335, run
+    # 33901937578: pi-issue-run-noop-bench "per-seat ledger missing"). The
+    # probe is what protects real boxes (it detects a clobbered cli.js — the
+    # #3238 incident); a box without the probe has no gate and no lie.
+    return 1
 }
 
 # Record one transport-down marker (idempotent per down-window: refreshes the

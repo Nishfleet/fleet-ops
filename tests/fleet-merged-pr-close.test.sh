@@ -27,7 +27,9 @@
 #   - no agent-in-progress / critical-path label -> not scanned
 #   - a live pi-issue worker -> skip (actively being worked)
 #   - more than one merged PR DELIVERS the issue -> AMBIGUOUS LOUD skip
-#   - merged PR outside the 7-day window -> no reference -> leave open
+#   - merged PR outside the 7-day window -> no reference -> leave open, UNLESS
+#     the delivery is a merged claim/issue-<N> branch PR, probed directly as
+#     out-of-window delivery evidence (fleet-ops#820)
 #   - reference matcher is exact-number: #11352 / claim/issue-1135 do not
 #     match issue 1135
 #   - mention notes are deduped per (issue, PR) across ticks
@@ -81,6 +83,11 @@ case "$1" in
     case "$2" in
       list)
         case "$*" in
+          *"--head claim/issue"*"--state merged"*)
+            # Out-of-window delivery fallback probe (fleet-ops#820).
+            cat "$FAKE_DIR/claimmerged.json"
+            exit 0
+            ;;
           *"--state merged"*)
             cat "$FAKE_DIR/merged.json"
             exit 0
@@ -160,10 +167,12 @@ run() {
 }
 
 set_fixtures() {
-    # $1 = list.json content, $2 = merged.json content, $3 = openpr.json
+    # $1 = list.json content, $2 = merged.json content, $3 = openpr.json,
+    # $4 = claimmerged.json (out-of-window delivery probe, default [])
     printf '%s' "$1" >"$scratch/list.json"
     printf '%s' "$2" >"$scratch/merged.json"
     printf '%s' "${3:-[]}" >"$scratch/openpr.json"
+    printf '%s' "${4:-[]}" >"$scratch/claimmerged.json"
     printf '%s' '{"message":"Not Found"}' >"$scratch/ref.json"
     : >"$scratch/closes.log"
     : >"$scratch/comments.log"
@@ -314,6 +323,36 @@ out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
 grep -q 'no merged PR references it' <<<"$out" || fail "out-of-window should leave open: $out"
 [[ -s "$scratch/closes.log" ]] && fail "out-of-window must not close: $(cat "$scratch/closes.log")"
 ok "merged PR outside window -> no reference, issue left open"
+
+# --- Case 8b: out-of-window merged CLAIM-branch PR is the delivery (fleet-ops#820) ---
+# The in-window scan finds nothing, but a merged PR on the claim/issue-<N>
+# head branch is unambiguous delivery evidence even outside the window. The
+# window edge only moves forward, so without this fallback the issue re-claims
+# forever (a worker cannot close it; only this ledger can).
+set_fixtures \
+  '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
+  '[]' \
+  '[]' \
+  '[{"number":1429,"title":"feat: x","url":"https://url/1429","mergedAt":"2026-07-01T00:22:21Z"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'out-of-window fallback' <<<"$out" || fail "out-of-window fallback must log: $out"
+grep -q 'CLOSED' <<<"$out" || fail "out-of-window claim delivery must close: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "out-of-window fallback must call gh issue close 1135: $(cat "$scratch/closes.log")"
+grep -q 'https://url/1429' "$scratch/closes.log" || fail "fallback close comment must cite the delivery PR URL: $(cat "$scratch/closes.log")"
+ok "out-of-window merged claim-branch PR -> close via fallback"
+
+# --- Case 8b-bad: no claim-branch merged PR -> fallback stays silent, no close ---
+# Safety mirror: an out-of-window reference with NO claim-branch delivery must
+# still leave the issue open (the probe must never fabricate a delivery).
+set_fixtures \
+  '[{"number":1135,"title":"t","labels":[{"name":"agent-in-progress"}],"body":"b"}]' \
+  '[]' \
+  '[]' \
+  '[]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'no merged PR references it' <<<"$out" || fail "no claim-branch delivery must leave open: $out"
+[[ -s "$scratch/closes.log" ]] && fail "no claim-branch delivery must not close: $(cat "$scratch/closes.log")"
+ok "no claim-branch merged PR -> fallback leaves issue open"
 
 # --- Case 9: reference matcher is exact-number (no false positives) ---
 # A PR body mentioning #11352 or claim/issue-1135 must NOT count as a
