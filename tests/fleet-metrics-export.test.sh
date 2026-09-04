@@ -406,11 +406,18 @@ JSON
 cat >"$SEAT_LEDGER_OVERRIDE/bai__deepseek-v4-flash.json" <<'JSON'
 {"provider":"bai","model":"deepseek-v4-flash","http_status":200,"health_class":"healthy","seat_dead":false,"observed_at":"2026-09-02T01:00:00.000Z","failure_mode":"credentials_bad","consecutive_failure_count":0}
 JSON
+# Hermetic seat-caps so _read_dead_credentials enrollment is deterministic
+# (live config has hy3-free at cap=0; this fixture enrolls it so the #2667
+# corpse still counts). fleet-ops#3301 pins the cap=0 exclusion separately.
+SEAT_CAPS_OVERRIDE="$scratch/seat-caps-deadcred.json"
+cat >"$SEAT_CAPS_OVERRIDE" <<'JSON'
+{"providers":{"xai-oauth":{"cap":1,"models":{"grok-4.5":1}},"opencode":{"cap":3,"models":{"hy3-free":1,"muse-spark-1.2-contributor-free":1}},"devin":{"cap":1,"models":{"glm-5-2":0}},"bai":{"cap":1,"models":{"deepseek-v4-flash":1}}}}
+JSON
 
-python3 - "$exporter" "$OUT_OVERRIDE" "$DETAIL_STUB" "$SM_CONFIG_OVERRIDE" "$SEAT_LEDGER_OVERRIDE" <<'PY' || fail "main() emission failed"
+python3 - "$exporter" "$OUT_OVERRIDE" "$DETAIL_STUB" "$SM_CONFIG_OVERRIDE" "$SEAT_LEDGER_OVERRIDE" "$SEAT_CAPS_OVERRIDE" <<'PY' || fail "main() emission failed"
 import importlib.util, json, os, sys, types
 from pathlib import Path
-exporter, out_path, detail_stub, sm_cfg, seat_ledger = sys.argv[1:6]
+exporter, out_path, detail_stub, sm_cfg, seat_ledger, seat_caps = sys.argv[1:7]
 spec = importlib.util.spec_from_file_location("fme", exporter)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -420,6 +427,8 @@ m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
 m.SEAT_HEALTH = Path("/nonexistent/seat.json")
 m.SEAT_LEDGER = Path(seat_ledger)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
 m.HC_URL_FILE = Path("/nonexistent/hc.url")
 m.ACTIONS_LOG = Path("/nonexistent/actions.log")
 m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
@@ -482,9 +491,10 @@ assert 'fleet_pi_seat_dead_credential{seat="xai-oauth__grok-4.5",http_status="40
 # "corpse" so the reader knows re-auth cannot help and the row must be retired.
 assert 'fleet_pi_seat_dead_credential{seat="opencode__hy3-free",http_status="401",health_class="corpse"} 1' in body, body
 # fleet-ops#2667: neither the non-credential corpse nor the live seat with a
-# stale failure_mode may be counted.
-assert "muse-spark" not in body, body
-assert 'seat="bai__deepseek-v4-flash"' not in body, body
+# stale failure_mode may be counted. Pin the dead-credential SERIES, not the
+# whole body — fleet_seat_yield also names muse-spark (live sessions).
+assert 'fleet_pi_seat_dead_credential{seat="opencode__muse-spark-1.2-contributor-free"' not in body, body
+assert 'fleet_pi_seat_dead_credential{seat="bai__deepseek-v4-flash"' not in body, body
 # fleet-ops#2738: the healthy devin/glm-5-2 seed ledger legitimately appears
 # in the new fleet_seat_healthy_cap0 series (it is healthy + cap 0 in the
 # real repo config). The dead-credential intent is that it does not appear
@@ -1710,3 +1720,69 @@ print("OK: _extract_text handles string and filters thinking blocks")
 PY
 
 ok "fleet-ops#3250: seat-yield ledger, JSON sidecar, and prom output"
+
+# =========================================================================
+# fleet-ops#3301: cap=0 credentials_bad corpses do not page as dead-cred.
+# Lived 2026-09-04T16:30Z: FleetDeadCredentialSeats fired on
+# opencode/hy3-free and opencode/x-preview-f-free (both already cap=0 in
+# seat-caps.json) while the control seat (ling-3.0-flash-fin-free, cap>0)
+# was healthy. A 401 on a retired slug is not a re-auth action.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "3301 dead-cred enrollment filter failed"
+import importlib.util, json, os, sys, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+scratch = Path(tempfile.mkdtemp(prefix="deadcred-3301-"))
+ledger = scratch / "seats"
+ledger.mkdir()
+(ledger / "opencode__hy3-free.json").write_text(json.dumps({
+    "provider": "opencode", "model": "hy3-free", "http_status": 401,
+    "health_class": "corpse", "seat_dead": True,
+    "failure_mode": "credentials_bad", "usable_at": None,
+}))
+(ledger / "opencode__x-preview-f-free.json").write_text(json.dumps({
+    "provider": "opencode", "model": "x-preview-f-free", "http_status": 401,
+    "health_class": "corpse", "seat_dead": True,
+    "failure_mode": "credentials_bad", "usable_at": None,
+}))
+(ledger / "xai-oauth__grok-4.5.json").write_text(json.dumps({
+    "provider": "xai-oauth", "model": "grok-4.5", "http_status": 401,
+    "health_class": "credentials_bad", "seat_dead": True,
+    "failure_mode": "credentials_bad", "usable_at": None,
+}))
+caps = scratch / "seat-caps.json"
+caps.write_text(json.dumps({
+    "providers": {
+        "opencode": {
+            "cap": 3,
+            "models": {
+                "hy3-free": {"cap": 0, "intentional_cap_zero": "corpse"},
+                "x-preview-f-free": {"cap": 0, "intentional_cap_zero": "stale"},
+                "ling-3.0-flash-fin-free": 1,
+            },
+        },
+        "xai-oauth": {"cap": 1, "models": {"grok-4.5": 1}},
+    }
+}))
+m.SEAT_LEDGER = ledger
+m.SEAT_CAPS_DEFAULT = caps
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+n, seats = m._read_dead_credentials()
+assert n == 1, f"enrolled dead-cred must be 1 (xai-oauth), got {n}: {seats}"
+assert seats[0]["provider"] == "xai-oauth" and seats[0]["model"] == "grok-4.5", seats
+ids = {(s["provider"], s["model"]) for s in seats}
+assert ("opencode", "hy3-free") not in ids, "cap=0 hy3-free must not page"
+assert ("opencode", "x-preview-f-free") not in ids, "cap=0 x-preview-f-free must not page"
+print("OK: cap=0 credentials_bad corpses excluded from dead-cred total (fleet-ops#3301)")
+# Fail-open: unreadable caps still count every dead-cred seat so a genuine
+# enrolled 401 cannot go silent.
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/missing-caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/missing-caps-2.json")
+n2, seats2 = m._read_dead_credentials()
+assert n2 == 3, f"fail-open must count all 3 dead-cred seats, got {n2}: {seats2}"
+print("OK: unreadable seat-caps fail-open counts all dead-cred seats (fleet-ops#3301)")
+PY
+
+ok "fleet-ops#3301: cap=0 dead-cred corpses excluded; unreadable caps fail-open"
