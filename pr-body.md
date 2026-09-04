@@ -1,77 +1,41 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+## Summary
 
-## Why
+observe-to-close (`bin/fleet-merged-pr-close`, fleet-ops#1435) treated **any** merged PR that merely referenced an open issue by `#N` (in title **or** body) as the delivery and closed it. On 2026-09-04 PR #3205 implemented #3161 only, but its body carried prose references to `fleet-ops#3140 and #3146` (they had `blocked-on: #3161` upstream) — so the detector read those bare mentions as two more deliveries and wrongly closed both Nish-endorsed critical-path packets. **A mention is not a fix.**
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+Root cause: the delivery signal was "any reference", too weak. The fix narrows closing to explicit deliveries only, decouples mentions from closes, and protects Nish-critical issues.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+### Change
 
-## Scope
+- **Close only on an explicit delivery.** observe-to-close now closes an issue **only** when a merged PR is a delivery for it: (a) its head branch is `claim/issue-<N>`, or (b) its body carries an explicit `Closes|Fixes|Resolves #N` trailer (case-insensitive, exact-number bounded, whitespace gap required). `reason=claim-branch | closes-trailer`.
+- **A bare reference never closes.** A title/prose mention, a `blocked-on:` line, a comment, or quoted text is **comment-only**: a deduped `PR #M mentions this issue; not closing (a mention is not a fix)` note, never a close.
+- **Protected issues are always comment-only**, even on a real delivery — any issue labelled `critical-path` or authored by `nish3451` (the same rule close-duplicates follows, fleet-ops#3161). This is what would have saved #3140/#3146. They stay open until their own delivery PR merges and closes them.
+- **Metric + alert tripwire.** Per-tick `closes_by_reason` summary is written by the detector and exported as `fleet_observe_to_close_total{reason}` (legal: `claim-branch`, `closes-trailer`; `bare-mention` and `protected` must stay 0). New rules `FleetObserveToCloseWrongClose` (critical: fires if a mention- or protected-close ever recurs) and `FleetObserveToCloseAbsent` (warning).
+- **Latent newline-split fix.** The merged-PR window projection normalizes embedded newlines in titles/bodies before TSV flattening, so a real multi-line `Closes #N` trailer (always on its own final line) is read on one row instead of being split across rows and corrupted. This was silently present before; the trailer path makes it load-bearing.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+### Mechanical prevention
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+A regression-replay test in `tests/fleet-merged-pr-close.test.sh` replays **PR #3205 vs issues #3140/#3146/#3161** and proves **only 3161 closes**: 3140/3146 get the protected note and stay open. Additional cases prove a bare mention / `blocked-on:` line never closes, protected issues never close even on a claim-branch delivery, and mention notes are deduped across ticks. The metric/alert tripwire fires if the wrong-close class ever recurs.
 
 ## Verification
 
+Failing first (old behavior) then passing (fixed), on the hermetic mock: `bash tests/fleet-merged-pr-close.test.sh` -> `all fleet-merged-pr-close cases passed` (exit 0). The regression case asserts `issue close 3161` present and `issue close 3140`/`issue close 3146` ABSENT from the mock close log, plus the protected notes posted.
+
+- `bash tests/fleet-metrics-export.test.sh` -> `fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)` (exit 0).
+- `promtool check rules config/fleet_rules.yml` -> `SUCCESS: 81 rules found` (exit 0).
+- `sgscan --base origin/main` -> `No new security findings.` (exit 0).
+- `bin/fleet-organ-heartbeat-check gate` -> `OK: organ-heartbeat invariant holds (touched organs: gh-rate-limit, metrics-export)` (exit 0).
+- `bin/fleet-token-efficiency-check`, `bin/fleet-no-agent-names-check`, `bin/fleet-wipe-lessons-check scan` -> all `OK` (exit 0).
+- Live E2E of the actual binary against the real repo in close-OFF (non-destructive) mode -> `merged-pr observe-to-close done: scanned=12 candidates=0 closed=0 ... skipped_protected=1`, exit 0. It classified the delivered critical-path packet #3229 as `PROTECTED-delivery candidate ... no write` — the old binary would have closed it today.
+
+run-proof: live transcript, `timeout 180 env MERGED_PR_CLOSE_REPOS=Nishfleet/fleet-ops MERGED_PR_CLOSE_SUMMARY=/tmp/mpc-live-summary.json MERGED_PR_CLOSE_TRIAGE=/tmp/mpc-live-triage.md ./bin/fleet-merged-pr-close` -> exit 0; key lines:
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+[2026-09-04T15:13:18Z] [fleet-merged-pr-close]   Nishfleet/fleet-ops#3229: PROTECTED-delivery candidate (merged PR #3233) but FLEET_MERGED_PR_CLOSE_OK != 1 — no write
+[2026-09-04T15:13:18Z] [fleet-merged-pr-close] merged-pr observe-to-close done: scanned=12 candidates=0 closed=0 ... skipped_mention=0 skipped_protected=1
 ```
+summary written: `{"closes_by_reason":{"claim-branch":0,"closes-trailer":0,"bare-mention":0,"protected":0}}`.
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+Notes: `crgate` exists but is not signed in on this host (CodeRabbit auth needs a paid account — out of scope), so the local AI-review gate was skipped; `sgscan` (the defensive gate) passed clean.
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+loose-ends-canary: pr:nishfleet/fleet-ops#3231 stale-worker-pr (armed on open)
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #3231
