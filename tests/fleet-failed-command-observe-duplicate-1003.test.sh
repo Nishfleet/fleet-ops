@@ -316,13 +316,13 @@ ok "live #1003: still-dirty slug leaves both leftover duplicates open"
 # the leftover-duplicate drain, and pins the #1019 sibling in the
 # 01a041a5 pile (a 2-issue pile, not the 6-issue 01a03e38 pile).
 worker="$repo_root/prompts/worker.md"
-grep -q '#1003' "$worker" \
-  || fail "prompts/worker.md must carry the #1003 citation next to the #957 python-traceback citation"
-grep -q '#1019' "$worker" \
-  || fail "prompts/worker.md must carry the #1019 citation (leftover-duplicate sibling of #1003 in the 01a041a5 pile)"
-grep -q 'fleet-failed-command-observe-duplicate-1003.test.sh' "$worker" \
-  || fail "prompts/worker.md must name the leftover-duplicate test file for the 01a041a5 pile"
-ok "worker.md cites #1003, #1019, and names the leftover-duplicate test file"
+grep -q '#1003' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #1003 citation next to the #957 python-traceback citation"
+grep -q '#1019' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #1019 citation (leftover-duplicate sibling of #1003 in the 01a041a5 pile)"
+grep -q 'fleet-failed-command-observe-duplicate-1003.test.sh' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the leftover-duplicate test file for the 01a041a5 pile"
+ok "lib/failed-command-flagged.py cites #1003, #1019, and names the leftover-duplicate test file"
 grep -q '#1003, #1019' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #1003 and #1019 next to #957 / #966"
 grep -q 'fleet-failed-command-observe-duplicate-1003.test.sh' "$lib" \
