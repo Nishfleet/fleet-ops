@@ -142,7 +142,11 @@
       "max_probe_ceiling": 5,
       "quota_bench_default_s": 900,
       "models": {
-        "hy3-free": 1,
+        "hy3-free": {
+          "cap": 0,
+          "intentional_cap_zero": "corpse",
+          "reason": "2026-09-04 re-audition (fleet-ops#2667): `pi --print --provider opencode --model hy3-free PONG` returned HTTP 401 ModelError \"Model hy3-free is not supported\". Control probe `pi --print --provider opencode --model nemotron-3-ultra-free PONG` returned PONG. cap flipped 1 -> 0 with intentional_cap_zero=corpse. No billing sibling hy3 in Pi's opencode catalog."
+        },
         "mimo-v2.5-free": 1,
         "nemotron-3.5-lightning-free": 1,
         "nemotron-3-ultra-free": 1,
