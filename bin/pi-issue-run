@@ -257,7 +257,7 @@ while true; do
 
 # First attempt: no exclusions. Subsequent attempts (after a restart) carry
 # the previously-tried seats in $tried_file; pick_seat excludes them all.
-seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
+seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" "issue" || true)
 if [[ -z "$seat" ]]; then
     # The tried file does not exist on the first attempt; the `2>/dev/null`
     # on `tr` does not suppress a failed redirection, so test before reading.

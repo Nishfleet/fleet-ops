@@ -66,7 +66,12 @@
       "cap": 2,
       "class": "metered",
       "models": {
-        "MiniMax-M3": 2
+        "MiniMax-M3": {
+          "cap": 2,
+          "issue_cap": 0,
+          "issue_cap_probe_restore": true,
+          "issue_cap_reason": "2026-09-04 fleet-ops#3122 Nish: 429 token plan reached (live probe 07:06Z). Issue-work cap 0 with probe-restore: when the existing seat probe observes HTTP 200 the hold lifts and the normal cap 2 governs. The seat itself is high-yield (80-90%), so this is a quota wall, not a yield problem."
+        }
       }
     },
     "ollama": {
@@ -87,7 +92,11 @@
       "models": {
         "deepseek/deepseek-v4-flash": 2,
         "minimax/minimax-m3-free": {"cap": 0, "intentional_cap_zero": "corpse"},
-        "poolside/laguna-s-2.1-free": 1
+        "poolside/laguna-s-2.1-free": {
+          "cap": 1,
+          "issue_cap": 0,
+          "issue_cap_reason": "2026-09-04 fleet-ops#3122 seed: rolling last-20 issue-session PR yield ~0% (43 sessions / 1 PR = 2% per the 2026-09-04 evaluation). Zero-yield seat — cap issue work at 0; the rolling-yield gate keeps it out anyway; scout/canary/audit still route to it. Not a corpse: the free lane works fine (PONG), it just produces no PRs."
+        }
       },
       "_comment_2667": "2026-09-02 fleet-ops#2667 (retire-or-re-auth audit of the 4 seats reported as credentials_bad): commandcode/deepseek/deepseek-v4-flash re-probed live -> HTTP 400 {\"code\":\"BAD_REQUEST\",\"type\":\"invalid_request_error\"} 'You have insufficient credits to make this request'. That is a MONEY wall on a metered slug \u2014 not a credential fault and not a dead slug \u2014 confirmed by the control probe poolside/laguna-s-2.1-free returning PONG on the same provider in the same window. The seat carries no seat_dead ledger entry (no commandcode__deepseek_deepseek-v4-flash.json in /home/nish/workspaces/agent-state/lanes/seats), so it is not inflating the dead-credential count. Cap deliberately LEFT at 2: fleet-ops#1890 is open and owns the credit exhaustion, and _comment_1350 kept the row warm 'for when its credits recover'. Topping up credits is Nish-only spend, so no agent can clear it. Do not flip this row without closing #1890. 2026-09-02 fleet-ops#2785 re-verification (this ticket; alert fired 04:20:34Z, the 04:17:42Z HTTP 401 escalated a corpse ledger the quarantine path retired): live probes 18:36-19:12Z on commandcode/deepseek/deepseek-v4-flash return HTTP 400 insufficient-credits (n=4) in the same window the control probe poolside/laguna-s-2.1-free returns PONG rc=0 -> the commandcode credential is LIVE and the slug is still the #1890 money wall; no seat_dead ledger entry exists for the seat, so it does not inflate the dead-credential count (fresh exporter run 19:12Z: fleet_pi_seat_dead_credential_total 0). Cap stays 2. Nothing to re-auth (credential live), nothing to retire (money wall, Nish-only spend).",
       "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 5 simultaneous pi --print --provider commandcode --model minimax/minimax-m3-free 'reply PONG' probes, all rc=0 + PONG, zero 429, p95 ~3.5s (n=5: 3.1/3.1/3.4/3.5/3.1s). Measured tolerance >=5 on the free m3 lane; cap raised 2->4, max_probe_ceiling 4->6, m3-free 1->2. NOTE: deepseek/deepseek-v4-flash returned HTTP 400 'insufficient credits' on 2026-08-29 (paid slug \u2014 no cost field in models.json \u2014 credit-exhausted); filed as a separate issue, pre-existing and out of scope here. The free m3-free + laguna lanes carry the raised cap; deepseek-v4-flash stays at model cap 2 for when its credits recover.",
@@ -140,7 +149,11 @@
       "quota_bench_default_s": 900,
       "models": {
         "hy3-free": { "cap": 0, "intentional_cap_zero": "corpse" },
-        "mimo-v2.5-free": 1,
+        "mimo-v2.5-free": {
+          "cap": 1,
+          "issue_cap": 0,
+          "issue_cap_reason": "2026-09-04 fleet-ops#3122 seed: rolling last-20 issue-session PR yield 0% (8 sessions / 0 PR per the 2026-09-04 evaluation; 25 sessions / 0 PR in the full corpus). Zero-yield seat — cap issue work at 0; the rolling-yield gate keeps it out anyway; scout/canary/audit still route to it."
+        },
         "nemotron-3.5-lightning-free": 1,
         "nemotron-3-ultra-free": 1,
         "deepseek-v4-flash-free": { "cap": 0, "intentional_cap_zero": "stale" },
@@ -205,7 +218,10 @@
       "models": {
         "deepseek/deepseek-v4-pro": 2
       },
-      "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' \u2014 approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol stays orchestration-only (never a worker); qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule)."
+      "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' \u2014 approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol stays orchestration-only (never a worker); qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule).",
+      "issue_cap": 0,
+      "issue_cap_probe_restore": true,
+      "issue_cap_reason": "2026-09-04 fleet-ops#3122 Nish: 402 credit exhausted (live probe 07:05Z). Issue-work cap 0 with probe-restore: when the existing seat probe observes HTTP 200 the hold lifts and the normal cap 2 governs; the next non-200 observation re-engages it. Scout/canary/audit keep the seat."
     }
   },
   "volume_providers_in_order": [

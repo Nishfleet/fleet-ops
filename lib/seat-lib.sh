@@ -45,6 +45,31 @@ ATTEMPTS_DIR="$STATE_DIR/attempts"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
 LOG_FILE="$STATE_DIR/watch.log"
 
+# fleet-ops#3122 yield ledger (rolling last-20-sessions PR yield per seat).
+# Computed from pi session files (default ~/.pi/agent/sessions/pi-issue-*; a
+# session's "yield" = 1 when its final text carries a merged/open PR URL). The
+# ledger is recomputed at most once per PI_YIELD_LEDGER_TTL_S and cached at
+# $STATE_DIR/yield-ledger.json so pick_seat never re-scans the session corpus
+# per pick. The fleet-metrics-export tick force-refreshes the same cache, so a
+# quiet fleet (no picks) still exports fresh fleet_seat_yield{seat}.
+PI_SESSIONS_DIR="${PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+PI_YIELD_LEDGER="${PI_YIELD_LEDGER:-$STATE_DIR/yield-ledger.json}"
+PI_YIELD_LEDGER_TTL_S="${PI_YIELD_LEDGER_TTL_S:-600}"
+# A seat is yield-gated for issue work when its rolling yield over its last
+# PI_YIELD_MIN_SESSIONS (or more, capped at the guard window) sessions is below
+# PI_YIELD_GATE_PCT. Seats with fewer than PI_YIELD_MIN_SESSIONS sessions are
+# never gated (no signal yet — fleet-ops#3122 keeps nemotron pickable at 16
+# sessions until it accumulates a 20-session window).
+PI_YIELD_MIN_SESSIONS="${PI_YIELD_MIN_SESSIONS:-20}"
+PI_YIELD_GATE_PCT="${PI_YIELD_GATE_PCT:-30}"
+# fleet-ops#3122 probe-restore freshness: an issue-work cap hold with
+# issue_cap_probe_restore=true lifts when the seat's live health ledger shows a
+# fresh HTTP-200 healthy observation (health_class=healthy, http_status=200,
+# observed within the window). "The existing seat probe" (seat-health on any
+# pick, fleet-seat-comeback-release on a wall expiry) writes that entry; the
+# hold re-engages on the next non-200 observation.
+PI_HOLD_RESTORE_FRESH_S="${PI_HOLD_RESTORE_FRESH_S:-43200}"
+
 MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 # Per-seat health ledger (authority). Written atomically by the pi
 # seat-health extension (one file per provider+model). Read-only here:
@@ -251,6 +276,13 @@ load_seat_caps() {
     SEAT_PROVIDER_REASON=()
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
+    # fleet-ops#3122: issue-work cap hold. Present on a provider/model row as
+    # `issue_cap` (cap used for ISSUE-work picks only; scout/canary/audit keep
+    # the normal cap). `issue_cap_probe_restore=true` lifts the hold while the
+    # live health ledger shows a fresh HTTP-200 healthy observation.
+    SEAT_ISSUE_CAP=()
+    SEAT_ISSUE_CAP_REASON=()
+    SEAT_ISSUE_CAP_PROBE_RESTORE=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_VOLUME_ORDER=""
@@ -289,9 +321,10 @@ load_seat_caps() {
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
     local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
+    local icap icap_reason icap_probe
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz icap icap_probe icap_reason; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
@@ -303,12 +336,12 @@ load_seat_caps() {
         [[ "$max_probe" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_MAX_PROBE["$p"]="$max_probe"
         [[ "$hard" == "true" ]] && SEAT_PROVIDER_HARD_CEILING["$p"]=1
         [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
-        # fleet-ops#1432: classification of cap=0 seats (intentional vs stale).
-        # fleet-ops#2435: "corpse" joins the intentional set — a model whose
-        # ledger is seat_dead (terminal "corpse" class, no comeback clock)
-        # is retired, never re-auditioned, so its cap-0 skip classifies as
-        # intentional (by design), not stale (re-audit when the external
-        # condition clears).
+        # fleet-ops#3122: provider-level issue-work hold (e.g. straitly/*). The
+        # hold cap applies to ISSUE picks only; the normal provider/model cap
+        # still governs scout/canary/audit routing.
+        [[ "$icap" =~ ^[0-9]+$ ]] && SEAT_ISSUE_CAP["$p"]="$icap"
+        [[ "$icap_probe" == "true" ]] && SEAT_ISSUE_CAP_PROBE_RESTORE["$p"]=1
+        [[ -n "$icap_reason" ]] && SEAT_ISSUE_CAP_REASON["$p"]="$icap_reason"
         if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
             SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p"]="$icz"
         elif [[ "$icz" == "stale" ]]; then
@@ -323,9 +356,9 @@ load_seat_caps() {
     # provider_quota_bench_default returns 0 (no default, writer fails open).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.issue_cap // "") else "" end), (if ($v|type)=="object" then ($v.issue_cap_probe_restore // false) else false end), (if ($v|type)=="object" then ($v.issue_cap_reason // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    while IFS=$'\t' read -r p m cap class; do
+    while IFS=$'\x1f\n' read -r p m cap class icap icap_probe icap_reason; do
         [[ -n "$p" && -n "$m" ]] || continue
         # Models map may be a bare number (cap) or an object {cap, class}.
         # Per-model class is an override for a free lane inside a mixed
@@ -338,6 +371,12 @@ load_seat_caps() {
             mcap=$(jq -r '.cap // 0' <<<"$cap" 2>/dev/null)
             [[ "$mcap" =~ ^[0-9]+$ ]] && SEAT_MODEL_CAP["$p/$m"]="$mcap"
         fi
+        # fleet-ops#3122: model-level issue-work hold (e.g.
+        # minimax/MiniMax-M3). Mirrors the provider-level row below; the model
+        # row wins when both are present.
+        [[ "$icap" =~ ^[0-9]+$ ]] && SEAT_ISSUE_CAP["$p/$m"]="$icap"
+        [[ "$icap_probe" == "true" ]] && SEAT_ISSUE_CAP_PROBE_RESTORE["$p/$m"]=1
+        [[ -n "$icap_reason" ]] && SEAT_ISSUE_CAP_REASON["$p/$m"]="$icap_reason"
         if [[ -n "$class" ]]; then
             [[ "$class" == "subscription" ]] && class="prepaid-quota"
             SEAT_MODEL_CLASS["$p/$m"]="$class"
@@ -357,7 +396,7 @@ load_seat_caps() {
         fi
     # Same bare-number guard as the providers loop: .value.models on a bare
     # number crashes jq before `// {}` can rescue it, emptying all model caps.
-    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end), (if (.value|type)=="object" then (.value.issue_cap // "") else "" end), (if (.value|type)=="object" then (.value.issue_cap_probe_restore // false) else false end), (if (.value|type)=="object" then (.value.issue_cap_reason // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
@@ -2225,6 +2264,216 @@ _rr_pick() {
 #   plus a stdout-derived count via the return value (the number of
 #   excluded seats, written to stdout as a single integer).
 # Side effects: none on disk; reads the ledger directory only.
+# ---------------------------------------------------------------------------
+# fleet-ops#3122: rolling last-20-sessions PR yield ledger.
+#
+# The yield ledger answers "what does this seat actually produce?" from the
+# session files pi already writes (default ~/.pi/agent/sessions/pi-issue-*). A
+# session yields 1 when its final text carries a Nishfleet PR URL — the same
+# sessions->PR mapping the 2026-09-04 evaluation used to measure poolside 2%,
+# mimo 0%, nemotron 19% vs deepseek 65% / glm-5-2 70% / grok-4.6 86%.
+#
+# Per seat we keep the last PI_YIELD_MIN_SESSIONS (default 20) sessions and
+# report the PR share. pick_seat (role=issue) skips a seat whose window is at
+# least the minimum AND whose yield is below PI_YIELD_GATE_PCT (default 30%);
+# scout/canary/audit picks never gate, so a yield-gated seat stays usable for
+# those roles. The ledger is cached at $PI_YIELD_LEDGER with a
+# PI_YIELD_LEDGER_TTL_S expiry; the fleet-metrics-export tick force-refreshes
+# the same cache so fleet_seat_yield{seat} stays fresh on a quiet fleet.
+#
+# JSON shape: { "generated_at": <epoch>, "sessions_total": N,
+#               "no_pr_total": N,
+#               "seats": { "provider/model": { "sessions": N, "pr": N,
+#                   "window": N, "yield": <0..1> } } }
+#   window = min(sessions, PI_YIELD_MIN_SESSIONS) — the rolling guard window.
+#   yield  = pr / window (0 when window == 0).
+
+_yield_ledger_fresh() {
+    [[ -f "$PI_YIELD_LEDGER" ]] || return 1
+    local mt now age ttl
+    mt=$(stat -c %Y "$PI_YIELD_LEDGER" 2>/dev/null || echo 0)
+    [[ "$mt" =~ ^[0-9]+$ && "$mt" -gt 0 ]] || return 1
+    now=$(now_s)
+    ttl="${PI_YIELD_LEDGER_TTL_S:-600}"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=600
+    age=$(( now - mt ))
+    (( age >= 0 && age < ttl ))
+}
+
+# Scan the session corpus and write the ledger to $1. The seat is the FIRST
+# model_change (the spawn seat), the final text is the last non-empty text part
+# of any kind (assistant message or tool result), and a PR is a Nishfleet pull
+# URL in that final text.
+_yield_scan_py() {
+    local out="$1" root="$2"
+    [[ -n "$out" ]] || return 1
+    [[ -z "$root" ]] && root="$PI_SESSIONS_DIR"
+    python3 - "$out" "$root" <<'PY' 2>/dev/null || return 1
+import json, os, re, sys, time
+from collections import defaultdict
+
+out = sys.argv[1]
+sessions_root = sys.argv[2]
+PR_RE = re.compile(r"github\.com/Nishfleet/[A-Za-z0-9_.-]+/pull/[0-9]+")
+MIN_SESSIONS = int(os.environ.get("PI_YIELD_MIN_SESSIONS", "20") or 20)
+
+
+def last_text(parts):
+    t = ""
+    if isinstance(parts, str):
+        return parts
+    for p in parts or []:
+        if isinstance(p, str):
+            if p.strip():
+                t = p
+        elif isinstance(p, dict) and p.get("type") == "text":
+            v = p.get("text") or ""
+            if v.strip():
+                t = v
+    return t
+
+
+# seat -> {"sessions": int, "pr_win": int (PRs in last MIN_SESSIONS), "flags": deque[int]}
+seats = defaultdict(lambda: {"sessions": 0, "pr_win": 0, "flags": []})
+sessions_total = 0
+no_pr_total = 0
+if sessions_root and os.path.isdir(sessions_root):
+    try:
+        dirs = sorted(d for d in os.listdir(sessions_root)
+                      if d.startswith("pi-issue-"))
+    except OSError:
+        dirs = []
+    for d in dirs:
+        dpath = os.path.join(sessions_root, d)
+        if not os.path.isdir(dpath):
+            continue
+        try:
+            files = sorted(f for f in os.listdir(dpath) if f.endswith(".jsonl"))
+        except OSError:
+            continue
+        for fn in files:
+            fp = os.path.join(dpath, fn)
+            seat = None
+            text = ""
+            try:
+                with open(fp, errors="replace") as fh:
+                    for line in fh:
+                        try:
+                            e = json.loads(line)
+                        except Exception:
+                            continue
+                        t = e.get("type")
+                        if t == "model_change":
+                            if seat is None:
+                                pr = e.get("provider")
+                                mo = e.get("modelId")
+                                if pr and mo:
+                                    seat = f"{pr}/{mo}"
+                        elif t == "message" and (e.get("message") or {}).get("role") == "assistant":
+                            txt = last_text((e.get("message") or {}).get("content", []))
+                            if txt:
+                                text = txt
+                        elif t == "toolResult":
+                            txt = last_text(e.get("content", []))
+                            if txt:
+                                text = txt
+            except OSError:
+                continue
+            if not seat:
+                continue
+            sessions_total += 1
+            is_pr = 1 if PR_RE.search(text) else 0
+            r = seats[seat]
+            r["sessions"] += 1
+            if not is_pr:
+                no_pr_total += 1
+            # rolling window: slide the last MIN_SESSIONS flags
+            r["flags"].append(is_pr)
+            r["pr_win"] += is_pr
+            if len(r["flags"]) > MIN_SESSIONS:
+                r["pr_win"] -= r["flags"].pop(0)
+
+out_data = {"generated_at": int(time.time()), "sessions_total": sessions_total,
+            "no_pr_total": no_pr_total, "seats": {}}
+for seat, r in seats.items():
+    w = min(r["sessions"], MIN_SESSIONS)
+    out_data["seats"][seat] = {
+        "sessions": r["sessions"],
+        "pr": r["pr_win"],
+        "window": w,
+        "yield": round(r["pr_win"] / w, 4) if w else 0,
+    }
+with open(out, "w") as fh:
+    json.dump(out_data, fh)
+PY
+}
+
+# Emit the yield ledger JSON, refreshing it when stale. Fetch path for both
+# pick_seat (lazy, TTL-guarded) and the fleet-metrics-export tick
+# (force-refresh through the same function). Refresh writes atomically
+# (temp + rename) so a concurrent reader never sees a half-written file.
+seat_yield_ledger() {
+    if _yield_ledger_fresh; then
+        cat "$PI_YIELD_LEDGER" && return 0
+    fi
+    mkdir -p "$(dirname "$PI_YIELD_LEDGER")"
+    local tmp="${PI_YIELD_LEDGER}.tmp.$$"
+    command -v python3 >/dev/null 2>&1 || {
+        cat "$PI_YIELD_LEDGER" 2>/dev/null || printf '%s' '{"seats":{},"no_pr_total":0,"sessions_total":0}'
+        return 0
+    }
+    if _yield_scan_py "$tmp" "$PI_SESSIONS_DIR"; then
+        mv -f "$tmp" "$PI_YIELD_LEDGER" 2>/dev/null || true
+        cat "$PI_YIELD_LEDGER" && return 0
+    fi
+    # scan failed — degrade to the last good ledger rather than fail open
+    cat "$PI_YIELD_LEDGER" 2>/dev/null || printf '%s' '{"seats":{},"no_pr_total":0,"sessions_total":0}'
+    return 0
+}
+
+# 0 (gated) when the seat's rolling yield over >= PI_YIELD_MIN_SESSIONS
+# sessions is below PI_YIELD_GATE_PCT; 1 otherwise (insufficient data,
+# healthy yield, or unparseable ledger).
+seat_yield_gated() {
+    local p="$1" m="$2"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    local min_sess="${PI_YIELD_MIN_SESSIONS:-20}" min_pct="${PI_YIELD_GATE_PCT:-30}"
+    [[ "$min_sess" =~ ^[0-9]+$ ]] || min_sess=20
+    [[ "$min_pct" =~ ^[0-9]+$ ]] || min_pct=30
+    local data window pr
+    data=$(seat_yield_ledger 2>/dev/null | jq -r --arg s "$p/$m" '.seats[$s] // empty' 2>/dev/null)
+    [[ -n "$data" ]] || return 1
+    window=$(jq -r '.window // 0' <<<"$data" 2>/dev/null || true)
+    pr=$(jq -r '.pr // 0' <<<"$data" 2>/dev/null || true)
+    [[ "$window" =~ ^[0-9]+$ && "$pr" =~ ^[0-9]+$ ]] || return 1
+    (( window >= min_sess )) || return 1
+    # yield% = pr/window*100 ; gated when < threshold
+    local ypct
+    ypct=$(awk -v pr="$pr" -v w="$window" 'BEGIN { printf "%d", (100 * pr) / w }' 2>/dev/null || echo 0)
+    (( ypct < min_pct ))
+}
+
+# 0 when the seat's live health ledger shows a FRESH HTTP-200 healthy
+# observation — the "existing seat probe saw HTTP 200" restore signal for
+# issue_cap_probe_restore holds (fleet-ops#3122). Anything else (missing,
+# stale, non-200, non-healthy) keeps the hold engaged.
+_seat_ledger_healthy_200() {
+    local p="$1" m="$2" f hc st obs
+    f=$(seat_ledger_path "$p" "$m")
+    [[ -f "$f" ]] || return 1
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    st=$(jq -r '.http_status // 0' "$f" 2>/dev/null || true)
+    obs=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "healthy" && "$st" == "200" && -n "$obs" ]] || return 1
+    local obs_e now window
+    obs_e=$(date -u -d "$obs" +%s 2>/dev/null || echo 0)
+    [[ "$obs_e" =~ ^[0-9]+$ && "$obs_e" -gt 0 ]] || return 1
+    now=$(now_s)
+    window="${PI_HOLD_RESTORE_FRESH_S:-43200}"
+    [[ "$window" =~ ^[0-9]+$ ]] || window=43200
+    (( now - obs_e < window ))
+}
+
 declare -A _EXCLUDED_CACHE_ER=()
 declare -A _EXCLUDED_CACHE_EL=()
 _EXCLUDED_CACHE_KEY=""
@@ -2377,7 +2626,7 @@ _seat_is_dead() {
 }
 
 # Pick a different seat than the failed one(s).
-# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty] [privacy:public|private]
+# Args: fail_provider fail_model [need_capable:1|0] [tried_seats_file] [difficulty] [privacy:public|private] [role:issue]
 # The tried_seats_file (optional) lists all already-tried "provider/model" pairs
 # (one per line); all are excluded. If not given, only fail_provider/fail_model
 # is excluded.
@@ -2390,9 +2639,18 @@ _seat_is_dead() {
 # only free seats available returns rc=1 instead of leaking to a free lane.
 # Dispatch wrappers derive this from config/repo-privacy.json via repo_privacy
 # / packet_repo.
+# role (optional, fleet-ops#3122): "issue" (pi-issue-run) applies the
+# issue-cap hold and the rolling-yield gate; any other value (scout, audit,
+# repair, tests) leaves those controls off so held/yield-gated seats stay
+# usable for scout/canary/audit roles.
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
     local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
+    # role (7th arg, default "" = not issue work): pi-issue-run passes
+    # "issue". Only role=="issue" applies the issue-cap hold and the
+    # rolling-yield gate — scout/canary/audit picks keep every seat (a
+    # yield-gated or held seat stays usable for those roles). fleet-ops#3122.
+    local role="${7:-}"
     # privacy (6th arg, default "public"): "private" excludes every free-class
     # seat — the free-tier privacy line (vault 2026-08-18, fleet-ops#520). Free
     # lanes train on prompts, so private-repo or sensitive work must route to
@@ -2548,6 +2806,11 @@ pick_seat() {
     # skip is genuinely cheap — the per-seat detail adds nothing.
     local _notcap_n=0 _qban_n=0
     local -a _notcap_sample=()
+    # fleet-ops#3122: issue-work-only skips (config issue-cap holds + the
+    # rolling-yield gate) — same flood pattern as the #1297/#1449/#1624
+    # summaries: N per-seat lines collapsed into ONE per-pick line each.
+    local _issue_cap0_n=0 _yield_gated_n=0
+    local -a _issue_cap0_sample=() _yield_gated_sample=()
 
     local p m free capable p_cap m_cap p_active m_active class eff_cap
     # `free` is emitted by enumerate_seats for parity with the legacy contract;
@@ -2609,6 +2872,33 @@ pick_seat() {
             # Model explicitly capped at 0 in the map (e.g. devin/glm-5-2:0).
             seat_log "seat $p/$m skipped (model cap=0)"
             continue
+        fi
+        # fleet-ops#3122: ISSUE-work-only controls. Role-scoped: pi-issue-run
+        # passes role="issue"; scout/canary/audit picks (the default) never
+        # apply the issue-cap hold or the rolling-yield gate, so a
+        # yield-gated seat "stays usable for scout/canary/audit roles". Both
+        # skips are folded into one summary line per pick (issue-held /
+        # yield-gated) so a 20-seat fleet never floods watch.log per seat.
+        if [[ "$role" == "issue" ]]; then
+            local icap
+            icap="${SEAT_ISSUE_CAP[$p/$m]:-${SEAT_ISSUE_CAP[$p]:-$m_cap}}"
+            if [[ "${SEAT_ISSUE_CAP_PROBE_RESTORE[$p/$m]:-${SEAT_ISSUE_CAP_PROBE_RESTORE[$p]:-0}}" == "1" ]] \
+               && _seat_ledger_healthy_200 "$p" "$m"; then
+                # The existing seat probe observed HTTP 200 -> the quota hold
+                # lifts; the normal cap governs until the next non-200
+                # observation re-engages it (straitly/minimax, fleet-ops#3122).
+                icap="$m_cap"
+            fi
+            if [[ "$icap" =~ ^[0-9]+$ && "$icap" -eq 0 ]]; then
+                _issue_cap0_n=$((_issue_cap0_n + 1))
+                _issue_cap0_sample+=("$p/$m")
+                continue
+            fi
+            if seat_yield_gated "$p" "$m"; then
+                _yield_gated_n=$((_yield_gated_n + 1))
+                _yield_gated_sample+=("$p/$m")
+                continue
+            fi
         fi
         if ! provider_has_credential "$p"; then
             # provider_has_credential already logged the rejection reason.
@@ -2812,6 +3102,36 @@ pick_seat() {
             _nc_sample_str=$(printf '%s\n' "${_nc_sorted[@]}" | paste -sd, -)
         fi
         seat_log "pick_seat: filtered-static $((_notcap_n + _qban_n)) seats (not-capable: $_notcap_n; quality-ban: $_qban_n) [${_nc_sample_str}]"
+    fi
+
+    # fleet-ops#3122: ONE summary line per pick for the ISSUE-work-only
+    # skips. issue-held = config issue-cap holds (seed rows + quota walls);
+    # yield-gated = the rolling last-20-sessions PR-yield gate. Same
+    # fold pattern as the summaries above; format is stable ("yield-gated N
+    # seats [sample]") so a future grep can pin the count.
+    if (( _issue_cap0_n > 0 )); then
+        local _ic_sorted=()
+        if (( ${#_issue_cap0_sample[@]} > 0 )); then
+            mapfile -t _ic_sorted < <(printf '%s\n' "${_issue_cap0_sample[@]}" | sort | uniq)
+            _ic_sorted=("${_ic_sorted[@]:0:6}")
+        fi
+        local _ic_sample_str=""
+        if (( ${#_ic_sorted[@]} > 0 )); then
+            _ic_sample_str=$(printf '%s\n' "${_ic_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: issue-held ${_issue_cap0_n} seats [${_ic_sample_str}]"
+    fi
+    if (( _yield_gated_n > 0 )); then
+        local _yg_sorted=()
+        if (( ${#_yield_gated_sample[@]} > 0 )); then
+            mapfile -t _yg_sorted < <(printf '%s\n' "${_yield_gated_sample[@]}" | sort | uniq)
+            _yg_sorted=("${_yg_sorted[@]:0:6}")
+        fi
+        local _yg_sample_str=""
+        if (( ${#_yield_gated_sample[@]} > 0 )); then
+            _yg_sample_str=$(printf '%s\n' "${_yg_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: yield-gated ${_yield_gated_n} seats [${_yg_sample_str}]"
     fi
 
     if [[ -n "$SEAT_FREE_ORDER" ]] && (( ${#free_seats[@]} > 0 )); then

@@ -392,6 +392,32 @@ SEAT_CAPS_DEFAULT = Path(
 SEAT_CAPS_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/seat-caps.json"
 )
+# fleet-ops#3122: per-seat rolling PR-yield ledger and its owner. The ledger
+# is computed by lib/seat-lib.sh (seat_yield_ledger, single implementation,
+# cached in the pi-packet state dir). This exporter force-refreshes through
+# the SAME bash function so fleet_seat_yield{seat} / fleet_sessions_no_pr_total
+# stay fresh even when no worker has picked a seat recently, then reads the
+# JSON it wrote. FLEET_YIELD_LEDGER / FLEET_SEAT_LIB override for tests.
+YIELD_LEDGER = Path(
+    os.environ.get(
+        "FLEET_YIELD_LEDGER",
+        "/home/nish/.local/state/pi-packet/yield-ledger.json",
+    )
+)
+SEAT_LIB_SH = os.environ.get(
+    "FLEET_SEAT_LIB", "/home/nish/.local/lib/pi-packet/seat-lib.sh"
+)
+# fleet_seat_yield gauge family (fleet-ops#3122). The gate itself: a seat
+# whose rolling last-20 issue-session PR yield is < PI_YIELD_GATE_PCT (30%)
+# is skipped for issue work (label gated=1); it stays usable for
+# scout/canary/audit. The total gauge is the accept-criterion numerator
+# driver (sessions-with-PR / sessions >= 75% over the next 3 days).
+HELP_YIELD = "# HELP fleet_seat_yield Rolling last-20-session PR yield per seat from pi session files (fleet-ops#3122). ratio = PR sessions / window sessions; gated=1 means pick_seat skips the seat for issue work (yield below the threshold at >= min sessions)."
+TYPE_YIELD = "# TYPE fleet_seat_yield gauge"
+HELP_NOPR = "# HELP fleet_sessions_no_pr_total Count of pi issue sessions whose final text carries no Nishfleet PR URL (fleet-ops#3122)."
+TYPE_NOPR = "# TYPE fleet_sessions_no_pr_total gauge"
+HELP_SESS = "# HELP fleet_sessions_total Count of pi issue sessions in the yield ledger corpus (fleet-ops#3122)."
+TYPE_SESS = "# TYPE fleet_sessions_total gauge"
 READY_CACHE = PR_CACHE_DIR / "ready-work-cache.json"
 READY_GH_TIMEOUT = 45
 
@@ -2272,6 +2298,61 @@ def _read_healthy_cap0():
     except OSError:
         return 0, []
     return len(seats), seats
+
+
+def _read_seat_yield():
+    """Per-seat rolling PR yield from the shared yield ledger (fleet-ops#3122).
+
+    The ledger is owned by lib/seat-lib.sh (seat_yield_ledger): a single
+    session-scan implementation writes it, TTL-guarded. This exporter first
+    force-refreshes through the SAME bash function (so a quiet fleet still
+    exports fresh yield) and reads the JSON it wrote; on any refresh/parse
+    failure it falls back to the existing cache and finally to an empty
+    ledger (the family degrades, never fails the tick — same policy as
+    _emit_deploy_quality).
+
+    Returns (seats, sessions_total, no_pr_total):
+      seats: list of {"seat": "provider/model"|(sanitised), "sessions": int,
+                      "pr": int, "window": int, "yield": float}
+      gated: derived in the emitter from window/pr + local thresholds.
+    """
+    cache = YIELD_LEDGER
+    refreshed = False
+    if SEAT_LIB_SH and os.path.isfile(SEAT_LIB_SH):
+        try:
+            r = subprocess.run(
+                ["bash", "-c",
+                 f'source "{SEAT_LIB_SH}" >/dev/null 2>&1; seat_yield_ledger'],
+                capture_output=True, text=True, timeout=90,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                refreshed = True
+        except (OSError, subprocess.TimeoutExpired):
+            refreshed = False
+    if not refreshed:
+        # fall back to whatever the last refresh wrote
+        try:
+            cache = YIELD_LEDGER
+        except OSError:
+            pass
+    try:
+        data = json.loads(cache.read_text())
+    except (OSError, json.JSONDecodeError):
+        return [], 0, 0
+    seats = data.get("seats") or {}
+    out = []
+    for seat, row in seats.items():
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "seat": seat,
+            "sessions": int(row.get("sessions") or 0),
+            "pr": int(row.get("pr") or 0),
+            "window": int(row.get("window") or 0),
+            "yield": float(row.get("yield") or 0.0),
+        })
+    out.sort(key=lambda r: r["seat"])
+    return out, int(data.get("sessions_total") or 0), int(data.get("no_pr_total") or 0)
 
 
 # fleet-ops#2638: SEAT_DEAD_CONSECUTIVE_THRESHOLD mirror — the bash writer
