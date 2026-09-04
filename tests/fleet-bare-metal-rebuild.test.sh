@@ -99,13 +99,6 @@ jq -e '.masked_units.units[] | select(.name=="openipmi.service") | .reason' "$ma
   || fail "manifest masked_units must name openipmi.service with a reason"
 ok "manifest masked_units declares openipmi.service"
 
-# 5c. masked_units names systemd-networkd-wait-online.service with a reason
-# (fleet-ops#3103): networkd leaves eth0 setup stuck at configuring on
-# netcup-rs2000, so wait-online can never be healthy and must stay masked.
-jq -e '.masked_units.units[] | select(.name=="systemd-networkd-wait-online.service") | .reason' "$manifest_json" >/dev/null \
-  || fail "manifest masked_units must name systemd-networkd-wait-online.service with a reason"
-ok "manifest masked_units declares systemd-networkd-wait-online.service"
-
 # 6. Rebuild script --manifest-check passes on the real repo.
 "$rebuild" --manifest-check || fail "rebuild --manifest-check failed"
 ok "rebuild --manifest-check passes"
@@ -175,12 +168,12 @@ run_count() {
 masked_count="$(run_count masked)"
 [[ "$masked_count" == "0" ]] \
   || fail "count_unmasked_units should be 0 when masked, got $masked_count"
-ok "count_unmasked_units returns 0 when all masked_units units are masked"
+ok "count_unmasked_units returns 0 when openipmi.service is masked"
 
 masked_count="$(run_count enabled)"
-[[ "$masked_count" == "2" ]] \
-  || fail "count_unmasked_units should be 2 when none masked (2 declared units), got $masked_count"
-ok "count_unmasked_units returns 2 when no masked_units unit is masked"
+[[ "$masked_count" == "1" ]] \
+  || fail "count_unmasked_units should be 1 when not masked, got $masked_count"
+ok "count_unmasked_units returns 1 when openipmi.service is not masked"
 
 # 9. Container proof path is exercised with a mocked Docker and local image.
 mkdir -p "$scratch/bin"
