@@ -31,6 +31,9 @@
 #   --deadline MIN         Dispatch deadline in minutes (default 90). The
 #                          completion canary re-dispatches entries still open
 #                          past this deadline whose unit is dead/missing.
+#                          Also sets RuntimeMaxSec=<MIN>min so a Type=simple
+#                          unit self-terminates at that budget instead of
+#                          holding hop=run open (fleet-ops#3328).
 #   --provider NAME        Provider of the dispatched seat (recorded in the
 #                          dispatch ledger; used for re-dispatch seat rotation).
 #                          If omitted, parsed from the COMMAND when it is
@@ -247,6 +250,12 @@ if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
     cmd+=(--property="ExecStopPost=${salvage_bin}")
     cmd+=(--property=TimeoutStopSec=180)
 fi
+# CLOCK_RUN / dispatch-plane deadline is a kill, not just a ledger field.
+# Type=simple (systemd-run default) honours RuntimeMaxSec; a hung pi worker
+# then SIGTERMs at the budget instead of sitting ActiveState=active forever
+# (live fleet-ops#3328: alert-repair-FleetMainRed-20260904T161106Z had no
+# cap and held hop=run past 70 min). TimeoutStopSec=180 still covers salvage.
+cmd+=(--property="RuntimeMaxSec=${deadline_min}min")
 
 # --- Dispatch ledger: copy the packet into agent-state BEFORE building the --
 # StandardInput property (fleet-ops#1009). (a) the unit reads the durable

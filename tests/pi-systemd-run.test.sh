@@ -33,7 +33,8 @@ printf '%s\n' "$out" | grep -qv 'nohup' || fail "dry-run must not mention nohup:
 ok "dry-run is systemd-run --user --collect --no-block"
 printf '%s\n' "$out" | grep -q 'ExecStopPost=' || fail "dry-run must set ExecStopPost (fleet-ops#1204): $out"
 printf '%s\n' "$out" | grep -q 'TimeoutStopSec=180' || fail "dry-run must set TimeoutStopSec=180: $out"
-ok "dry-run wires ExecStopPost salvage"
+printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=90min' || fail "dry-run must set RuntimeMaxSec from default --deadline 90 (fleet-ops#3328): $out"
+ok "dry-run wires ExecStopPost salvage + RuntimeMaxSec"
 
 # --- 2. --stdin becomes StandardInput=file: --------------------------------
 pkt="$(mktemp)"
@@ -221,6 +222,22 @@ set -e
 [[ ! -s "$scratch2/sr.log" ]] || fail "dry-run must not call systemd-run"
 [[ ! -f "$LEDGER" ]] || fail "dry-run must not write ledger"
 ok "dry-run accepts --deadline/--provider/--model/--chain-id/--hop (fleet-ops#1009)"
+# fleet-ops#3328: --deadline must become RuntimeMaxSec so the unit dies at
+# the budget instead of holding hop=run. Re-run the same dry-run and read
+# stdout (the previous block discarded it).
+out="$(SYSTEMD_RUN="$scratch2/fake-systemd-run" \
+SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 \
+AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" \
+FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+  "$bin" --dry-run --unit testunit --stdin "$pkt" \
+    --deadline 30 --provider devin --model glm-5-2 \
+    --chain-id chain-x --hop 0 \
+    -- pi --print --provider devin --model glm-5-2)"
+printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=30min' \
+  || fail "--deadline 30 must set RuntimeMaxSec=30min (fleet-ops#3328): $out"
+ok "--deadline 30 wires RuntimeMaxSec=30min (fleet-ops#3328)"
 
 # --- 8. real dispatch: ledger append + packet copy + provider parse --------
 : > "$scratch2/sr.log"

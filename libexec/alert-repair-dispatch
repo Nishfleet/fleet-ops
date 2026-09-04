@@ -696,6 +696,11 @@ def main():
         "pi-systemd-run",
         "--unit", unit,
         "--stdin", str(packet),
+        # CLOCK_RUN is 3600s (packet 11). --deadline drives RuntimeMaxSec so
+        # the unit self-terminates at the run-hop budget instead of holding
+        # fleet_chain_stalled{hop=run} open (fleet-ops#3328). pi-systemd-run's
+        # default 90 min is the dispatch-plane orphan window, not this hop.
+        "--deadline", "60",
         "--",
         "pi", "--print",
         "--provider", provider,
