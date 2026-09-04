@@ -9,6 +9,7 @@
 #       runs with no net runway increase below the 12h buffer => escalate.
 #   (b) pi-scout@ crashes (exit!=0) on a provider wall (503 overload,
 #       429 quota/FreeUsageLimitError, INFERENCE_CAP_ERROR, out-of-credits,
+#       insufficient credits / insufficient_user_quota / purchase more credits,
 #       opencode 404 "Provider returned error") every run on the same repo.
 #       N consecutive wall-crashes are structurally equivalent to green-and-
 #       empty futility — a bench/seat famine, not a work crash. The OnFailure
@@ -309,6 +310,8 @@ EOF
 # Patterns that indicate a bench/provider wall, not a work crash:
 #   - 503 overloaded_error (Anthropic-style provider overload)
 #   - 429 + FreeUsageLimitError / quota_cap / out-of-credits
+#   - 400 insufficient credits / insufficient_user_quota / purchase more credits
+#     (commandcode + b.ai money walls; live 2026-09-04T18:00Z/19:00Z)
 #   - INFERENCE_CAP_ERROR (the literal error name)
 #   - 404 Provider returned error (opencode corpse pattern — the model
 #     itself is gone, the provider returns 404)
@@ -329,7 +332,7 @@ EOF
 # wins over its benign prefix (the notify+503 combo), so wall is checked
 # first; a line is only demoted when it carries neither wall evidence nor
 # benign machinery text.
-PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Devin exited'
+PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Devin exited'
 # Benign pi-machinery / systemd lifecycle lines that always accompany a scout
 # run in the unit journal. Not fault evidence; must not demote a wall crash.
 BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'

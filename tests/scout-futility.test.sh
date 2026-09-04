@@ -960,6 +960,47 @@ rm -f "$state/0509.state"
   || fail "scenario17m: unaffiliated JSON continuation must still demote, got consecutive_wall='$(state_field consecutive_wall 0509)'"
 ok "scenario17m: unaffiliated JSON continuation still demotes"
 
+# Scenario 17n: live 2026-09-04 commandcode/b.ai credit-exhausted journals
+# are wall-class. PROVIDER_WALL_PATTERNS had out-of-credits/quota_cap but
+# not the live strings (`insufficient credits`, `purchase more credits`,
+# `insufficient_user_quota`), so consecutive_wall stayed 0, the #2351
+# dedupe gate never opened, and every scout 400 -> repair 400 crash wrote
+# a fresh STOP-REASON (live 18:00:54Z on b.ai + 19:00:11Z on commandcode
+# deepseek-v4-flash). Pin both production lines against a production-mixed
+# journal (EXTLOAD-OK / PACKET-VERDICT / systemd lifecycle).
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf 'EXTLOAD-OK extension=bash-spawn-hook guard=tool_call depth_max=1 ceiling=2800/3000 wrangler_deploy_guard=0509\n'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '400: {"message":"You have insufficient credits to make this request. Please purchase more credits to continue using the service.","type":"invalid_request_error","code":"BAD_REQUEST"}\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+    printf 'pi-scout@fleet-ops.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17n: commandcode insufficient-credits journal must be wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+# Second pin: the b.ai 18:00:54Z line (insufficient_user_quota).
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '400: {"error":{"message":"insufficient_user_quota","type":"invalid_request_error"}}\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+} >"$scratch/journalctl-body.txt"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "2" ]] \
+  || fail "scenario17n: insufficient_user_quota journal must increment consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17n: live insufficient-credits / insufficient_user_quota journals are wall-class"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
