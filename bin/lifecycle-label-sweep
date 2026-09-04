@@ -45,6 +45,8 @@
 #       "— decided question was re-asked", and the body carries
 #       `signal: decisions-ledger/<slug>`
 #       → observe-to-close  (detector observe-to-close, no work left)
+#   umbrella label already present
+#       → nish-reserved  (fleet-ops#3295: tracking parent, not claimable)
 #   gap-audit topic label already present
 #       → agent-ready  (already judged by the blind-audit panel)
 #   repo is Nishfleet/fleet-ops (control-plane)
@@ -438,10 +440,23 @@ while IFS= read -r repo; do
             continue
         fi
 
+        # fleet-ops#3295: umbrella-labeled issues are tracking parents, not
+        # claimable work (label desc: "tracking parent; not claimable").
+        # Exclude them from the agent-ready default AND from scout-candidate
+        # admission so the sweep does not make them intake-visible. Without
+        # this, the sweep defaults every unlabeled open issue to agent-ready
+        # (fleet-ops) / scout-candidate (product), intake dispatches a worker
+        # on the tracker, the worker finds no implementable work, and dies —
+        # a pure dead-seat loop (live #3128: 6 claims in one day). nish-reserved
+        # is the lifecycle label for "agents must not claim", matching the
+        # umbrella label's semantics. The guard runs before gap-audit because
+        # umbrella means "not claimable" regardless of any other topic label.
+        if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="umbrella")' >/dev/null 2>&1; then
+            label="nish-reserved"
         # gap-audit leftovers already passed the blind-audit panel (#402).
         # That is a gate, so they become agent-ready rather than re-queued
         # for scout admission.
-        if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
+        elif printf '%s' "$labels_json" | jq -e '.[] | select(.name=="gap-audit")' >/dev/null 2>&1; then
             label="agent-ready"
         else
             label=$(classify "$title" "$repo" "$issue_body")
