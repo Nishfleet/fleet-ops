@@ -77,12 +77,16 @@ if grep -E '^bin/weekly-fleet-review ' "$manifest"; then
 fi
 ok "(b) MANIFEST ships units+prompt and no new bin/"
 
-# (c) ExecStart is the proven runner
+# (c) ExecStart is the proven runner, plus the model-discovery pre-pass
 grep -q '^ExecStart=/home/nish/.local/bin/agent-cron-run weekly-fleet-review$' "$svc" \
   || fail "service ExecStart must invoke agent-cron-run weekly-fleet-review"
+grep -q '^ExecStartPre=/home/nish/.local/libexec/fleet-weekly-review/model-discovery.py$' "$svc" \
+  || fail "service must run the model-discovery pre-pass (fleet-ops#3321)"
 grep -q 'Restart=on-failure' "$svc" \
   || fail "service must Restart=on-failure so a transient 429 re-seats"
-ok "(c) ExecStart is agent-cron-run weekly-fleet-review"
+grep -Fxq "libexec/fleet-weekly-review/model-discovery.py /home/nish/.local/libexec/fleet-weekly-review/model-discovery.py" "$manifest" \
+  || fail "MANIFEST must ship libexec/fleet-weekly-review/model-discovery.py"
+ok "(c) ExecStart is agent-cron-run weekly-fleet-review + model-discovery pre-pass"
 
 # (d) timer shape — post-maintenance, Sunday 04:30 IST
 grep -q '^# Named reason:' "$timer" \

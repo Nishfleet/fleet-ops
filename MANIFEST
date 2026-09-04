@@ -957,5 +957,8 @@ systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-
 # (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;
 # heartbeat metric + absent() rule. Not an alert.
 libexec/fleet-baseline-delta.py /home/nish/.local/libexec/fleet-baseline-delta.py
+# fleet-ops#3321: WFR model discovery pre-pass. Runtime output is the
+# model-candidates.json in the live pi-packet state directory.
+libexec/fleet-weekly-review/model-discovery.py /home/nish/.local/libexec/fleet-weekly-review/model-discovery.py
 systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service
 systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer

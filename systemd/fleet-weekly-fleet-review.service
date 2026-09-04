@@ -20,6 +20,10 @@ Environment=WORKDIR=/home/nish
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
+# fleet-ops#3321: weekly model discovery pre-pass. Runs last30days, fetches
+# models.dev and OpenRouter catalogs, and writes the live candidate list.
+# This is part of the existing WFR unit; no new organ is added.
+ExecStartPre=/home/nish/.local/libexec/fleet-weekly-review/model-discovery.py
 ExecStart=/home/nish/.local/bin/agent-cron-run weekly-fleet-review
 Restart=on-failure
 RestartSec=900
