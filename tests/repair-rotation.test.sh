@@ -158,6 +158,23 @@ for p in prompts/intake-repair.md prompts/scout-repair.md; do
 done
 ok "intake-repair.md and scout-repair.md classify 429 as a lane fault and rotate"
 
+# --- invariant 4: scout-repair clears a wedged unit before restart ----------
+# fleet-ops#3078: a scout whose pi process hung stays in `activating (start)`.
+# `systemctl start` on an already-activating unit blocks indefinitely, dead-
+# locking the repair unit. The scout-repair prompt MUST check for and stop a
+# wedged unit before calling `systemctl start`, and MUST wrap the start in a
+# timeout so a future wedge cannot deadlock the repair unit.
+f="$repo_root/prompts/scout-repair.md"
+grep -qi 'is-active.*pi-scout@' "$f" \
+  || fail "scout-repair.md must check is-active before systemctl start (fleet-ops#3078 wedge deadlock)"
+grep -qi 'systemctl.*stop.*pi-scout@' "$f" \
+  || fail "scout-repair.md must stop a wedged unit before restarting (fleet-ops#3078)"
+grep -qi 'timeout.*systemctl.*start.*pi-scout@' "$f" \
+  || fail "scout-repair.md must wrap systemctl start in a timeout (fleet-ops#3078 deadlock prevention)"
+grep -qi 'activating' "$f" \
+  || fail "scout-repair.md must name the activating state as the wedge signal (fleet-ops#3078)"
+ok "scout-repair.md clears a wedged unit and wraps start in a timeout (fleet-ops#3078)"
+
 # fleet-ops#138: the intake-repair wrapper also routes through pick_seat.
 # The worker GitHub App cannot add a workflow step, so this test rides
 # along inside the already-wired repair-rotation job.
