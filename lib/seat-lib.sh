@@ -66,13 +66,51 @@ HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
 
+# Runtime probe for the systemd-cat fallback (fleet-ops#3272).
+_SEAT_SYSTEMD_CAT="$(command -v systemd-cat 2>/dev/null || true)"
+
+# Decide whether the durable log goes to the watch.log file or to the journal.
+# File is used when the user-level logrotate config is present (so the file is
+# kept small), or when the LOG_FILE is not the production watch.log (i.e., a
+# test harness has set PI_PACKET_STATE to a scratch dir). Otherwise fall back
+# to systemd-cat so the log lands in journald's own rotation instead of an
+# unbounded flat file.
+_seat_log_uses_file() {
+    if [[ -n "${SEAT_LOG_FORCE_FILE:-}" ]]; then
+        return 0
+    fi
+    local logrotate_conf="${SEAT_LOGROTATE_CONF:-$HOME/.config/logrotate.conf}"
+    if [[ -f "$logrotate_conf" ]]; then
+        return 0
+    fi
+    local prod_state="$HOME/.local/state/pi-packet"
+    case "$LOG_FILE" in
+        "$prod_state"/*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 seat_log() {
     local line ts
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     printf -v line '[%s] %s\n' "$ts" "$*"
-    # Durable audit trail in watch.log. Also emit to stderr so systemd's
-    # journal / `systemctl status` shows the reason (fleet-ops#342).
-    printf '%s' "$line" >>"$LOG_FILE"
+    if _seat_log_uses_file; then
+        # Durable audit trail in watch.log. logrotate is the rotation owner
+        # when ~/.config/logrotate.conf is present (fleet-ops#3272).
+        printf '%s' "$line" >>"$LOG_FILE"
+    elif [[ -n "$_SEAT_SYSTEMD_CAT" ]]; then
+        # No user logrotate: avoid an unbounded flat file by writing to the
+        # systemd journal. 'journalctl -t pi-packet' reads the seat log.
+        printf '%s' "$line" | "$_SEAT_SYSTEMD_CAT" --identifier=pi-packet --priority=info 2>/dev/null || \
+            printf '%s' "$line" >>"$LOG_FILE"
+    else
+        # Final fallback: still append to the file even if unrotated, because
+        # losing the audit trail is worse than an unbounded log on a host
+        # that somehow has no journal and no logrotate.
+        printf '%s' "$line" >>"$LOG_FILE"
+    fi
+    # Also emit to stderr so systemd's journal / `systemctl status` shows the
+    # reason (fleet-ops#342).
     printf '%s' "$line" >&2
 }
 

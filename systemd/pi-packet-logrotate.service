@@ -1,0 +1,18 @@
+[Unit]
+Description=Rotate pi-packet watch.log with logrotate (fleet-ops#3272)
+# Named reason: pi-packet watch.log grows monotonically with every seat
+# selection call (104 MB observed unrotated before this rotation). A
+# size-based logrotate bound keeps the active log under 10 MB and retains
+# 5 compressed back copies.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+# logrotate maintains a user-writable state file so it does not need root.
+ExecStartPre=-/bin/mkdir -p /home/nish/.local/state/logrotate
+ExecStart=/usr/sbin/logrotate --state /home/nish/.local/state/logrotate/state /home/nish/.config/logrotate.conf
+TimeoutStartSec=1min
+Restart=no

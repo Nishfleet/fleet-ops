@@ -125,6 +125,7 @@
       "units": [
         "fleet-heartbeat.service",
         "pi-packet@.service",
+        "pi-packet-logrotate.service",
         "memory-index-autocompact.service"
       ],
       "prompts": [
