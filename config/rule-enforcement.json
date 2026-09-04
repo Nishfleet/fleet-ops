@@ -21,10 +21,9 @@
     {
       "id": "sr-switched-on-proven",
       "source": "global-standing-rules.md: Switched on and proven, or it is not done (Nish, 2026-08-18)",
-      "mechanism": "Senior conference criterion: new unit/timer/workflow PRs must link one real end-to-end run",
-      "proof": "fleet-ops#378",
-      "status": "queued(#378)",
-      "queued_since": "2026-08-26"
+      "mechanism": "PR-body receipt gate plus heartbeat canary: every worker PR must carry Verification: run-cues or a run-proof: line; the canary scans recent nishfleet-worker PRs on enrolled repos and auto-files a skip; the watch fails loud when gh/python/helper is broken. The inner loop stays agentic (no bin/exec-review dispatcher).",
+      "proof": "bin/fleet-exec-review-canary; lib/exec-review-receipt.py; tests/fleet-exec-review-canary.test.sh; prompts/worker.md; fleet-heartbeat-tier1 block 26; fleet-ops#537",
+      "status": "enforced"
     },
     {
       "id": "sr-findings-queued",
@@ -339,9 +338,8 @@
       "id": "sr-all-functions-mechanical",
       "source": "global-standing-rules.md: All functions mechanical (Nish, 2026-08-25)",
       "mechanism": "Blind-audit manual-seam lens hunts hand-performed actions; remaining prose still unenforced",
-      "proof": "fleet-ops#377",
-      "status": "queued(#377)",
-      "queued_since": "2026-08-26"
+      "proof": "fleet-ops#377; bin/fleet-blind-audit; prompts/blind-audit.md",
+      "status": "advisory(senior: blind-audit lens exists but prose coverage is incomplete; remaining manual-seam actions not yet mechanically observable)"
     },
     {
       "id": "sr-agent-agnostic",
@@ -383,7 +381,7 @@
       "source": "global-standing-rules.md: Everything is mechanical — failures included (Nish, 2026-08-26 — NON-NEGOTIABLE)",
       "mechanism": "Conference rejects failure-fixes that ship no prevention mechanism; detector→queue is #362",
       "proof": "fleet-ops#366; fleet-ops#362",
-      "status": "queued(#366)",
+      "status": "queued(#362)",
       "queued_since": "2026-08-26"
     },
     {
@@ -403,10 +401,9 @@
     {
       "id": "led-senior-conference",
       "source": "decisions-ledger.md: 2026-08-26 | serious builds get the senior conference",
-      "mechanism": "Panel verdict as a required check; automerge waits",
-      "proof": "fleet-ops#223",
-      "status": "queued(#223)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Panel verdict as a required check; automerge waits; senior conference gate in prompts/senior-conference.md with two blind POVs and verdicts (MECHANICAL-INSTEAD, EXCEPTION-APPROVED, NISH-RESERVED)",
+      "proof": "fleet-ops#223; bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit",
+      "status": "enforced"
     },
     {
       "id": "led-capacity-measured",
@@ -433,10 +430,9 @@
     {
       "id": "led-blind-audit",
       "source": "decisions-ledger.md: 2026-08-26 | recurring blind audit",
-      "mechanism": "fleet-blind-audit unit+timer exist; cadence still depends on an empty board",
+      "mechanism": "fleet-blind-audit unit+timer exist; cadence fixed to fire on schedule regardless of board state (fleet-ops#378)",
       "proof": "bin/fleet-blind-audit; systemd/fleet-blind-audit.timer; fleet-ops#378",
-      "status": "queued(#378)",
-      "queued_since": "2026-08-26"
+      "status": "enforced"
     },
     {
       "id": "led-escalation-coverage",
@@ -574,18 +570,16 @@
     {
       "id": "led-mechanical-fix",
       "source": "decisions-ledger.md: 2026-08-26 | every failure gets a mechanical fix",
-      "mechanism": "Conference rejects failure-fixes with no prevention mechanism",
-      "proof": "fleet-ops#366",
-      "status": "queued(#366)",
-      "queued_since": "2026-08-26"
+      "mechanism": "Conference rejects failure-fixes with no prevention mechanism; detector→queue is #362; mechanical-fix rule requires a prevention mechanism (detector, gate, regression test, or observe-to-close wiring) in the same PR",
+      "proof": "fleet-ops#366; fleet-ops#362; prompts/worker.md (mechanical-fix rule)",
+      "status": "enforced"
     },
     {
       "id": "led-everything-mechanical",
       "source": "decisions-ledger.md: 2026-08-26 | EVERYTHING mechanical",
       "mechanism": "Blind-audit manual-seam lens; second occurrence of a hand action requires a mechanism",
-      "proof": "fleet-ops#377",
-      "status": "queued(#377)",
-      "queued_since": "2026-08-26"
+      "proof": "fleet-ops#377; bin/fleet-blind-audit; prompts/blind-audit.md",
+      "status": "advisory(senior: blind-audit lens exists but prose coverage is incomplete; remaining manual-seam actions not yet mechanically observable)"
     },
     {
       "id": "led-enforcement-mechanical",
@@ -639,10 +633,9 @@
     {
       "id": "led-cursor-grok-re-admitted",
       "source": "decisions-ledger.md: 2026-08-27 | cursor grok-4.6 heavy re-admitted",
-      "mechanism": "Cursor grok-4.6 re-admitted to heavy lanes per dated decision; seat-caps row + routing must reflect it",
-      "proof": "decisions-ledger 2026-08-27; config/seat-caps.json",
-      "status": "queued(#437)",
-      "queued_since": "2026-08-27"
+      "mechanism": "Cursor grok-4.6 re-admitted to heavy lanes per dated decision; seat-caps row + routing reflects it (cursor/cursor-grok-4.6-high cap=1 in prepaid-quota class)",
+      "proof": "decisions-ledger 2026-08-27; config/seat-caps.json providers.cursor.models.cursor-grok-4.6-high",
+      "status": "enforced"
     },
     {
       "id": "led-straitly-ds4-pro-workers",

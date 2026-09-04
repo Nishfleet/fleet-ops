@@ -682,7 +682,7 @@ cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
       "mechanism": "not yet",
       "proof": "fleet-ops#1",
       "status": "queued(#1)",
-      "queued_since": "2026-08-26"
+      "queued_since": "2026-08-18"
     }
   ]
 }
