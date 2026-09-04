@@ -139,6 +139,10 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
+# fleet-ops#3125: issue work is PRODUCT work — pick_seat orders candidates
+# by the rolling PR-yield ledger when seat-caps product_order is "yield".
+export PI_PICK_ROLE=product
+
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # fleet-ops#1378: no-op in-process retry limit. A provider no-op (pi exits 0
 # with < OUT_MIN stdout) and a verdict-based empty run (tools=0, no final
