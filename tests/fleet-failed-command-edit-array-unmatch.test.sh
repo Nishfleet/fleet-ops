@@ -142,14 +142,14 @@ count=$(jq '.findings | length' <<<"$report")
 ok "single-edit 'Could not find the exact text' continues to be flagged (contrast with #1173)"
 rm -f "$sessions/edit-single-unmatch-contrast.jsonl"
 
-# --- 6. prompts/worker.md cites fleet-ops#1173 (prompt-side lock) -----------
+# --- 6. prompts/lib/failed-command-flagged.py cites fleet-ops#1173 (detector-side lock: case list moved to lib, fleet-ops#3246) -----------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1173' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1173 (prompt-side lock)"
-grep -q "edits\[0\]" "$worker" \
-  || fail "prompts/worker.md must name the live 'edits[0]' wording"
-ok "worker.md cites fleet-ops#1173 and the 'edits[0]' live wording"
+grep -q 'fleet-ops#1173' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1173 (detector-side lock: case list moved to lib, fleet-ops#3246)"
+grep -q "edits\[0\]" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'edits[0]' wording"
+ok "lib/failed-command-flagged.py cites fleet-ops#1173 and the 'edits[0]' live wording"
 
 # --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1173 -------
 grep -q 'fleet-ops#1173' "$lib" \
