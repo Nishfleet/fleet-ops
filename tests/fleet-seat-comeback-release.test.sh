@@ -75,6 +75,20 @@ BIN="$repo_root/bin/fleet-seat-comeback-release"
 # keystone-routing, pi-issue-run-*).
 export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
 
+# fleet-ops#3366: the bin now calls load_seat_caps to detect intentionally
+# retired slugs (cap 0 + intentional_cap_zero=corpse). Without a
+# SEAT_CAPS_JSON override, load_seat_caps would read the LIVE
+# ~/.local/state/pi-packet/seat-caps.json — which marks several test seats
+# (e.g. opencode/hy3-free, opencode/muse-spark-1.2-contributor-free) as
+# intentional corpses, causing the #3366 guard to fire on them and break
+# the existing test assertions. Point SEAT_CAPS_JSON at a non-existent path
+# so load_seat_caps returns 1 (no caps file) and the
+# SEAT_CAP_ZERO_CLASS_INTENTIONAL map stays empty — the guard never fires
+# on the synthetic test seats. The #3366 guard is exercised by its own
+# dedicated test section below (18a/18b) which sets a SEAT_CAPS_JSON with
+# a retired slug.
+export SEAT_CAPS_JSON="/dev/null/nonexistent-seat-caps.json"
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -1505,4 +1519,162 @@ else
     ok "18d: SKIP seat-health.ts backoff pin (extension not installed at $EXT_PATH) (fleet-ops#3176)"
 fi
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176)"
+# --- 19. fleet-ops#3366: seat-caps.json retired-slug guard -----------------
+# The lived oscillation (opencode/mimo-v2.5-free): the prober corpsed the
+# seat at count>=25, the #3156 second-chance re-probe failed, the corpse was
+# retired to seats-corpse-retired-<ts>/ — but the slug stayed cap=1 in
+# seat-caps.json, so the router kept re-picking the seat, the extension
+# re-created a fresh ledger, and the bin re-probed → re-failed → re-corpseed
+# → re-retired every ~15-30min. The count climbed 26→27→28→29→30 across
+# cycles (journalctl 2026-09-04). The fix: the bin now calls load_seat_caps
+# and checks SEAT_CAP_ZERO_CLASS_INTENTIONAL before probing. A slug marked
+# intentional_cap_zero=corpse is skipped; if its ledger is a corpse, it is
+# force-retired immediately (no re-probe, no grace wait). These tests use a
+# dedicated SEAT_CAPS_JSON fixture with a retired slug; the rest of the test
+# suite sets SEAT_CAPS_JSON to a non-existent path so the guard never fires.
+
+# 19a. a corpse ledger for a slug retired as intentional_cap_zero=corpse in
+#      seat-caps.json is force-retired immediately — NO second-chance re-probe
+#      is fired (the #3156 path is bypassed). This is the core fix: the slug
+#      is already declared dead in config, so re-probing it only restarts the
+#      oscillation. The corpse leaves the live roster, retired_total=1.
+SEAT_CAPS_3366="$TMPD/seat-caps-3366.json"
+cat > "$SEAT_CAPS_3366" <<'EOF'
+{"ram_gb_per_worker":1.5,"org_reserve":2,"target_concurrent":25,"providers":{"opencode":{"cap":3,"class":"free","models":{"mimo-v2.5-free":{"cap":0,"intentional_cap_zero":"corpse"},"nemotron-3-ultra-free":1}}},"free_providers_in_order":["opencode"],"prepaid_providers_in_order":[]}
+EOF
+rm -rf "$TMPD/seats19" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats19"
+cat > "$TMPD/seats19/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":30}
+EOF
+set +e
+SEAT_CAPS_JSON="$SEAT_CAPS_3366" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats19" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state19a.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom19a.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret19a.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "19a: retired-slug corpse sweep must exit 0, got $rc ($(cat "$TMPD/ret19a.err"))"
+# The corpse must be force-retired WITHOUT a re-probe — the healthy stub
+# (pi-tool-ok) must NOT have been invoked. If it had been invoked, the
+# #3156 path would have unwalled the corpse (released_total=1). Instead
+# retired_total=1 and released_total=0.
+grep -q "skip.*intentionally retired\|force-retiring corpse\|RETIRED opencode/mimo-v2.5-free.*intentionally retired" "$TMPD/ret19a.err" \
+  || fail "19a: must log the #3366 retired-slug guard: $(cat "$TMPD/ret19a.err")"
+# CRITICAL: no "corpse re-probe" line — the #3156 second-chance re-probe
+# must NOT fire for a retired slug.
+grep -q "corpse re-probe opencode/mimo-v2.5-free" "$TMPD/ret19a.err" \
+  && fail "19a: retired-slug corpse must NOT get a second-chance re-probe (#3366 guard must preempt #3156): $(cat "$TMPD/ret19a.err")" || true
+# CRITICAL: no "probing" line — the probe must not even fire.
+grep -q "probing opencode/mimo-v2.5-free" "$TMPD/ret19a.err" \
+  && fail "19a: retired-slug corpse must NOT be probed at all (#3366 guard): $(cat "$TMPD/ret19a.err")" || true
+[[ ! -e "$TMPD/seats19/opencode__mimo-v2.5-free.json" ]] \
+  || fail "19a: retired-slug corpse must leave the live roster: $(ls "$TMPD/seats19")"
+[[ -f "$TMPD/seats-corpse-retired-$NOW_ISO/opencode__mimo-v2.5-free.json" ]] \
+  || fail "19a: retired corpse must land in the dated retirement dir: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom19a.prom" \
+  || fail "19a: prom retired_total must be 1: $(cat "$TMPD/prom19a.prom")"
+grep -q "^fleet_seat_comeback_release_released_total 0$" "$TMPD/prom19a.prom" \
+  || fail "19a: prom released_total must be 0 (no re-probe, no unwall): $(cat "$TMPD/prom19a.prom")"
+ok "19a: corpse ledger for a seat-caps.json retired slug is force-retired without re-probe (fleet-ops#3366)"
+
+# 19b. a NON-DEAD ledger for a slug retired as intentional_cap_zero=corpse
+#      is skipped silently — no probe, no re-bench, no release. This is the
+#      fresh-ledger case: the extension just wrote a new ledger for the slug
+#      (the router picked it before the cap-0 config propagated). The guard
+#      skips it so the bin does not restart the oscillation; the cap-0 skip
+#      in pick_seat will stop the router from re-picking it on the next
+#      cycle, and the ledger will age out.
+rm -rf "$TMPD/seats19" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats19"
+cat > "$TMPD/seats19/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:55:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-30T12:30:00Z","bench_until":null,"consecutive_failure_count":3}
+EOF
+set +e
+SEAT_CAPS_JSON="$SEAT_CAPS_3366" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats19" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state19b.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom19b.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret19b.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "19b: retired-slug non-dead sweep must exit 0, got $rc ($(cat "$TMPD/ret19b.err"))"
+grep -q "skip opencode/mimo-v2.5-free.*intentionally retired" "$TMPD/ret19b.err" \
+  || fail "19b: must log the #3366 skip for a retired slug: $(cat "$TMPD/ret19b.err")"
+grep -q "probing opencode/mimo-v2.5-free" "$TMPD/ret19b.err" \
+  && fail "19b: retired-slug non-dead seat must NOT be probed (#3366 guard): $(cat "$TMPD/ret19b.err")" || true
+# The ledger must be UNTOUCHED (no re-bench, no unwall, no corpse).
+health=$(jq -r '.health_class' "$TMPD/seats19/opencode__mimo-v2.5-free.json")
+[[ "$health" == "rate_limited" ]] \
+  || fail "19b: retired-slug non-dead ledger must be untouched (health_class still rate_limited, got $health)"
+count=$(jq -r '.consecutive_failure_count' "$TMPD/seats19/opencode__mimo-v2.5-free.json")
+[[ "$count" == "3" ]] \
+  || fail "19b: retired-slug non-dead ledger count must be untouched (still 3, got $count)"
+grep -q "^fleet_seat_comeback_release_released_total 0$" "$TMPD/prom19b.prom" \
+  || fail "19b: prom released_total must be 0: $(cat "$TMPD/prom19b.prom")"
+grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom19b.prom" \
+  || fail "19b: prom retired_total must be 0: $(cat "$TMPD/prom19b.prom")"
+ok "19b: non-dead ledger for a seat-caps.json retired slug is skipped silently (no probe, no re-bench, fleet-ops#3366)"
+
+# 19c. dry-run: a retired-slug corpse is previewed for force-retirement, the
+#      ledger is NOT moved. A retired-slug non-dead seat is previewed as
+#      skipped. Dry-run must not touch the ledger or state.
+rm -rf "$TMPD/seats19" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats19"
+cat > "$TMPD/seats19/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":30}
+EOF
+out=$(SEAT_CAPS_JSON="$SEAT_CAPS_3366" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats19" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state19c.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom19c.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" --dry-run 2>&1)
+grep -q "DRY-RUN: would retire opencode/mimo-v2.5-free.*intentionally retired" <<<"$out" \
+  || fail "19c: dry-run must preview force-retirement of the retired-slug corpse: $out"
+grep -q "corpse re-probe opencode/mimo-v2.5-free" <<<"$out" \
+  && fail "19c: dry-run must NOT preview a re-probe for a retired slug: $out" || true
+# Dry-run must not touch the ledger.
+[[ -f "$TMPD/seats19/opencode__mimo-v2.5-free.json" ]] \
+  || fail "19c: dry-run must not move the corpse ledger"
+[[ ! -d "$TMPD/seats-corpse-retired-$NOW_ISO" ]] \
+  || fail "19c: dry-run must not create a retirement dir"
+ok "19c: dry-run previews force-retirement of a retired-slug corpse without acting (fleet-ops#3366)"
+
+# 19d. a non-retired slug in the same seat-caps.json is NOT affected by the
+#      guard — it gets the normal #3156 second-chance re-probe. Proves the
+#      guard only fires on intentional_cap_zero=corpse, not on every cap-0
+#      or every slug in the file.
+rm -rf "$TMPD/seats19" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats19"
+cat > "$TMPD/seats19/opencode__nemotron-3-ultra-free.json" << 'EOF'
+{"provider":"opencode","model":"nemotron-3-ultra-free","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":25}
+EOF
+set +e
+SEAT_CAPS_JSON="$SEAT_CAPS_3366" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats19" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state19d.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom19d.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret19d.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "19d: non-retired slug sweep must exit 0, got $rc ($(cat "$TMPD/ret19d.err"))"
+# nemotron-3-ultra-free is cap=1 (NOT retired) in the fixture — it MUST get
+# the normal #3156 second-chance re-probe. With the healthy stub it unwalls.
+grep -q "corpse re-probe opencode/nemotron-3-ultra-free: no wall, second-chance re-probe" "$TMPD/ret19d.err" \
+  || fail "19d: non-retired slug must get the normal #3156 re-probe (guard must NOT fire): $(cat "$TMPD/ret19d.err")"
+grep -q "UNWALLED opencode/nemotron-3-ultra-free" "$TMPD/ret19d.err" \
+  || fail "19d: non-retired slug must be unwalled by the healthy re-probe: $(cat "$TMPD/ret19d.err")"
+grep -q "^fleet_seat_comeback_release_released_total 1$" "$TMPD/prom19d.prom" \
+  || fail "19d: prom released_total must be 1: $(cat "$TMPD/prom19d.prom")"
+ok "19d: non-retired slug in the same seat-caps.json gets the normal #3156 re-probe (guard is scoped to intentional_cap_zero=corpse only, fleet-ops#3366)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + seat-caps.json retired-slug guard (fleet-ops#3366)"

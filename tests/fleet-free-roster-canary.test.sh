@@ -417,21 +417,34 @@ grep -q 'bin/fleet-free-roster-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-free-roster-canary"
 ok "scenario12: heartbeat-tier1 wires the canary, fail-loud on gate, MANIFEST installs it"
 
-# --- 13. production lock: mimo-v2.5-free stay-wired (fleet-ops#640) ---------
-# The class prevention for "auditioned free slug silently dropped": a later
-# PR that removes mimo-v2.5-free from the allowlist without a dated bench
-# reason fails this lock. Billing slugs (mimo-v2.5, xiaomi/mimo-v2.5) must
-# not ride in on the free row.
-jq -e '.providers.opencode.models["mimo-v2.5-free"] > 0' \
-    "$repo_root/config/seat-caps.json" >/dev/null \
-  || fail "scenario13: production seat-caps must allowlist opencode/mimo-v2.5-free (fleet-ops#640)"
+# --- 13. production lock: mimo-v2.5-free retired-as-corpse (fleet-ops#640/#3366) ---
+# Originally wired at cap=1 (fleet-ops#640). Retired as corpse on 2026-09-05
+# (fleet-ops#3366): the slug is chronically 429 FreeUsageLimitError, and the
+# comeback-release prober oscillated corpse→retire→re-create→re-probe every
+# ~15-30min because the slug stayed cap>0. The lock is now "stay-retired":
+# the row must be present (not silently dropped) with cap=0 and
+# intentional_cap_zero=corpse, so the cap-0 skip stops the router from
+# re-picking the dead slug. Billing slugs (mimo-v2.5, xiaomi/mimo-v2.5)
+# must not ride in on the free row.
+mimo_val=$(jq -r '.providers.opencode.models["mimo-v2.5-free"] // "missing"' \
+    "$repo_root/config/seat-caps.json")
+[[ "$mimo_val" != "missing" ]] \
+  || fail "scenario13: production seat-caps must retain opencode/mimo-v2.5-free row (fleet-ops#640/#3366)"
+mimo_cap=$(jq -r '.providers.opencode.models["mimo-v2.5-free"] | if type == "object" then .cap else . end' \
+    "$repo_root/config/seat-caps.json")
+mimo_icz=$(jq -r '.providers.opencode.models["mimo-v2.5-free"] | if type == "object" then .intentional_cap_zero else "" end' \
+    "$repo_root/config/seat-caps.json")
+[[ "$mimo_cap" == "0" ]] \
+  || fail "scenario13: opencode/mimo-v2.5-free must be cap=0 (retired corpse, fleet-ops#3366), got cap=$mimo_cap"
+[[ "$mimo_icz" == "corpse" ]] \
+  || fail "scenario13: opencode/mimo-v2.5-free must have intentional_cap_zero=corpse (retired, fleet-ops#3366), got '$mimo_icz'"
 while IFS= read -r k; do
   lk="${k,,}"
   if [[ "$lk" == *mimo* ]] && [[ "$lk" != "mimo-v2.5-free" ]]; then
     fail "scenario13: production opencode allowlists a non-free mimo slug: $k"
   fi
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
-ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slug"
+ok "scenario13: production seat-caps keep mimo-v2.5-free retired as corpse (cap=0, intentional_cap_zero=corpse) and no billing mimo slug (fleet-ops#640/#3366)"
 
 # --- 14. production lock: x-preview-f-free stay-benched (fleet-ops#811) ----
 # The class prevention for "auditioned free slug silently unwired after a
