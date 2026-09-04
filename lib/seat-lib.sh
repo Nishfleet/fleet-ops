@@ -62,6 +62,9 @@ SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
 QUALITY_ROUTING_JSON="${QUALITY_ROUTING_JSON:-$HOME/.local/state/pi-packet/quality-routing.json}"
 QUALITY_SCOREBOARD_JSON="${QUALITY_SCOREBOARD_JSON:-$HOME/workspaces/agent-state/quality-scoreboard/snapshot.json}"
 QUALITY_ROUTING_PY="${QUALITY_ROUTING_PY:-$HOME/.local/lib/pi-packet/quality-routing.py}"
+# fleet-ops#3250: per-seat rolling PR-yield ledger, written by
+# libexec/fleet-metrics-export.py. pick_seat loads it once per call.
+SEAT_YIELD_JSON="${SEAT_YIELD_JSON:-$HOME/.local/state/pi-packet/seat-yield.json}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
@@ -253,6 +256,11 @@ SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
 _quality_routing_loaded=0
 declare -A QUALITY_HEAVY_BAN=()
 
+# fleet-ops#3250: per-seat rolling PR-yield ledger. Loaded once per pick so
+# downstream gating has fresh data; missing/stale -> empty -> 0.5 fallback.
+_seat_yield_loaded=0
+declare -A SEAT_YIELD=()
+
 load_quality_routing() {
     QUALITY_HEAVY_BAN=()
     _quality_routing_loaded=1
@@ -273,6 +281,38 @@ load_quality_routing() {
     done < <(python3 "$py" heavy-bans \
         --thresholds "$QUALITY_ROUTING_JSON" \
         --scoreboard "${QUALITY_SCOREBOARD_JSON:-}" 2>/dev/null || true)
+}
+
+# fleet-ops#3250: load the per-seat rolling PR-yield ledger written by the
+# metrics exporter. Fail-open: a missing/unparseable JSON leaves SEAT_YIELD
+# empty and every seat falls back to the 0.5 provisional yield.
+load_seat_yield() {
+    SEAT_YIELD=()
+    _seat_yield_loaded=1
+    [[ -f "$SEAT_YIELD_JSON" ]] || return 0
+    [[ -s "$SEAT_YIELD_JSON" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    local seat y _sessions _provisional
+    while IFS=$'\t' read -r seat y _sessions _provisional; do
+        [[ -n "$seat" ]] || continue
+        SEAT_YIELD["$seat"]="$y"
+    done < <(
+        jq -r 'to_entries[]
+               | [ .key,
+                   (.value.yield // 0.5 | tostring),
+                   (.value.sessions // 0 | tostring),
+                   (.value.provisional // true | tostring) ]
+               | @tsv' "$SEAT_YIELD_JSON" 2>/dev/null || true
+    )
+}
+
+# Return the yield for a seat (0..1, default 0.5 for unknown/new seats).
+# Echoes nothing and returns 1 if the seat argument is empty.
+seat_yield_for() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
+    echo "${SEAT_YIELD[$p/$m]:-0.5}"
 }
 
 load_seat_caps() {
@@ -2511,6 +2551,9 @@ pick_seat() {
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
+    # fleet-ops#3250: read the PR-yield ledger written by fleet-metrics-export.
+    # The data is not used for gating in this issue; that lands in #3251.
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
 
     if _is_keystone_class "$difficulty"; then
         need_capable=1

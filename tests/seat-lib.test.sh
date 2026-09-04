@@ -3436,3 +3436,25 @@ grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
 grep -q "UNUSABLE (quota_bench" "$PI_PACKET_STATE/watch.log" \
   && fail "1409-fold: per-seat UNUSABLE line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
 ok "1409-fold: seat_usable per-seat UNUSABLE/'benched until' folded into one summary (0 leaked)"
+
+# --- fleet-ops#3250: seat-yield ledger loading --------------------------------
+SEAT_YIELD_JSON_TEST="$scratch/seat-yield-test.json"
+cat >"$SEAT_YIELD_JSON_TEST" <<'JSON'
+{
+  "devin/glm-5-2": {"yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false},
+  "opencode/mimo-v2.5-free": {"yield": 0.5, "sessions": 3, "pr_count": 0, "provisional": true}
+}
+JSON
+
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; [[ -n "${SEAT_YIELD[devin/glm-5-2]:-}" ]]' "$lib" \
+  || fail "load_seat_yield: must populate SEAT_YIELD from exporter JSON"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for devin glm-5-2' "$lib" \
+  | grep -qE '^0\.25$' \
+  || fail "seat_yield_for devin/glm-5-2 must return 0.25"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for opencode mimo-v2.5-free' "$lib" \
+  | grep -qE '^0\.5$' \
+  || fail "seat_yield_for opencode/mimo-v2.5-free must return 0.5"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for unknown missing' "$lib" \
+  | grep -qE '^0\.5$' \
+  || fail "seat_yield_for unknown/missing must default to 0.5"
+ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
