@@ -41,6 +41,11 @@
 # Environment seams (tests override every of these):
 #   FLEET_LOOSE_ENDS_LIB             default lib/loose-ends.py
 #   FLEET_LOOSE_ENDS_QUESTIONS       default vault QUESTIONS.md
+#   FLEET_LOOSE_ENDS_CANONICAL_QUESTIONS_DIR
+#       default $HOME/workspaces/tooling/nish-vault/_system/shared-memory
+#       FILE=1 against a QUESTIONS.md outside this dir is treated as
+#       FILE=0 for auto-file of question/expired-hold findings
+#       (fleet-ops#1670 / #1596: a scratch-fixture run filed "Back again").
 #   FLEET_LOOSE_ENDS_WORKTREES_ROOT  default ~/workspaces/agent-worktrees
 #   FLEET_LOOSE_ENDS_INTAKE          default config/intake-repos.json
 #   FLEET_LOOSE_ENDS_PRS_FILE        skip live gh when set (JSON array)
@@ -72,6 +77,7 @@ ISSUE_FILE="${FLEET_ISSUE_FILE:-$_canon_repo/bin/fleet-issue-file}"
 
 LIB="${FLEET_LOOSE_ENDS_LIB:-$_canon_repo/lib/loose-ends.py}"
 QUESTIONS="${FLEET_LOOSE_ENDS_QUESTIONS:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/QUESTIONS.md}"
+CANONICAL_Q_DIR="${FLEET_LOOSE_ENDS_CANONICAL_QUESTIONS_DIR:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory}"
 WORKTREES_ROOT="${FLEET_LOOSE_ENDS_WORKTREES_ROOT:-$HOME/workspaces/agent-worktrees}"
 INTAKE="${FLEET_LOOSE_ENDS_INTAKE:-$_canon_repo/config/intake-repos.json}"
 PRS_FILE="${FLEET_LOOSE_ENDS_PRS_FILE:-}"
@@ -448,15 +454,44 @@ fi
 findings_total=$(( ${#nag_findings[@]} + ${#pr_findings[@]} + ${#wt_findings[@]} ))
 log "totals: nag=${#nag_findings[@]} prs=${#pr_findings[@]} worktrees=${#wt_findings[@]}"
 
+# fleet-ops#1670 / #1596: a FILE=1 test run against a scratch QUESTIONS.md
+# whose row text was the fixture "Back again" filed a live GitHub issue.
+# Classification and observe-to-close still run; only auto-file of
+# question/expired-hold findings is refused when the ledger is not the
+# vault file. The heartbeat always uses the default canonical path.
+allow_file_questions=1
+if [[ "$FILE_ISSUES" == "1" ]]; then
+    questions_real=$(readlink -f "$QUESTIONS" 2>/dev/null || true)
+    canon_real=$(readlink -f "$CANONICAL_Q_DIR" 2>/dev/null || true)
+    if [[ -z "$questions_real" || -z "$canon_real" || ! -f "$questions_real" ]]; then
+        allow_file_questions=0
+    else
+        case "$questions_real" in
+            "$canon_real"|"$canon_real"/*) allow_file_questions=1 ;;
+            *) allow_file_questions=0 ;;
+        esac
+    fi
+    if [[ "$allow_file_questions" -eq 0 ]]; then
+        loud "LOOSE-ENDS-NONCANONICAL-FILE" \
+            "QUESTIONS=$QUESTIONS is outside canonical $CANONICAL_Q_DIR; FILE=1 treated as 0 for question auto-file (fleet-ops#1670/#1596)"
+    fi
+fi
+
 open_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    # fleet-ops#1596: `--json number,body,comments` 504s when one open
+    # issue carries a thousand-comment duplicate storm. Dedup and the
+    # slug extract read the body; comments are fetched per drain
+    # candidate via `gh issue view` below. `gh issue list --help` has
+    # no comments-last / comment-cap flag.
     set +e
     open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 \
-        --json number,body,comments 2>/dev/null || echo "[]")
+        --json number,body 2>"$scratch/list.err")
+    list_rc=$?
     set -e
     open_json="${open_json:-[]}"
-    if ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
-        log "WARN: gh issue list produced no JSON"
+    if [[ "$list_rc" -ne 0 ]] || ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "WARN: gh issue list failed rc=$list_rc $(tr '\n' ' ' <"$scratch/list.err"); observe-to-open/close skips this tick"
         open_json="[]"
     fi
 fi
@@ -492,6 +527,11 @@ ${marker}
 filed=0
 file_one() {
     local kind="$1" slug="$2" payload="$3" reason="$4"
+    if [[ "$kind" == "open-question" || "$kind" == "expired-hold" ]] \
+        && [[ "$allow_file_questions" -eq 0 ]]; then
+        log "file skipped (non-canonical QUESTIONS.md) slug=$slug"
+        return 0
+    fi
     [[ "$filed" -lt "$CAP" ]] || { log "file cap reached ($CAP); deferring $slug"; return 0; }
     local title="fix(loose-ends): $kind — $slug"
     local body="The loose-ends canary (fleet-ops#528, sr-nothing-half-done) found a half-done artifact.
@@ -579,7 +619,22 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
             log "observe: $slug still a finding (#$num) — skip"
             continue
         fi
-        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$irow")
+        # Comments are not on the bulk list (fleet-ops#1596 HTTP 504).
+        # Fetch them only for drain candidates, and treat a failed view
+        # as empty so a comment-storm issue can still get resolved-at.
+        comments_blob=""
+        set +e
+        view_json=$("$GH" issue view "$num" -R "$ISSUE_REPO" \
+            --json comments 2>"$scratch/view.err")
+        view_rc=$?
+        set -e
+        if [[ "$view_rc" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"$view_json"; then
+            comments_blob=$(jq -r '(.comments // []) | map(.body // "") | join("\n")' \
+                <<<"$view_json")
+        else
+            log "WARN: gh issue view comments failed for #$num (rc=$view_rc); treating comments as empty"
+        fi
+        blob="$body"$'\n'"$comments_blob"
         marker="resolved-at: signal: rule-enforcement/sr-nothing-half-done"
         if grep -Fq -- "$marker" <<<"$blob"; then
             if [[ "$CLOSE_ISSUES" == "1" ]] && [[ "$closed" -lt "$CAP" ]]; then
