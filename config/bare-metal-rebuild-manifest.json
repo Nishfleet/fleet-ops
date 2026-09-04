@@ -163,15 +163,11 @@
     ]
   },
   "masked_units": {
-    "description": "System units that must be masked on this host because they can never reach a healthy state: the hardware they drive is absent (e.g. IPMI on a VPS) or networkd never finalizes their condition (e.g. systemd-networkd-wait-online). Masking at provision time stops the unit re-entering failed state and paging SystemUnitFailed every alert cycle. apply_rebuild masks each; live_check verifies each is masked so drift is caught. fleet-ops#2122, fleet-ops#3103.",
+    "description": "System units that must be masked on this host because the hardware they drive is absent (e.g. IPMI on a VPS). Masking at provision time stops the unit re-entering failed state and paging SystemUnitFailed every alert cycle. apply_rebuild masks each; live_check verifies each is masked so drift is caught. fleet-ops#2122. Note: systemd-networkd-wait-online.service must NOT be listed here - it can be healthy (fleet-ops#3103).",
     "units": [
       {
         "name": "openipmi.service",
         "reason": "netcup-rs2000 is a VPS with no IPMI BMC; the unit can never start and re-enters failed state, paging SystemUnitFailed every cycle."
-      },
-      {
-        "name": "systemd-networkd-wait-online.service",
-        "reason": "On netcup-rs2000 the netplan-generated networkd config leaves eth0 Setup stuck in 'configuring' forever, so systemd-networkd-wait-online can never reach its online condition and exits 1 (Result=exit-code, failed) even though the host is online (eth0 routable, default route present). The wait-online unit serves no purpose here and its repeated failure pages SystemUnitFailed every alert cycle (fleet-ops#3103)."
       }
     ]
   },
