@@ -6,6 +6,8 @@ systemd/pi-scout@.timer /home/nish/.config/systemd/user/pi-scout@.timer
 systemd/pi-scout-repair@.service /home/nish/.config/systemd/user/pi-scout-repair@.service
 systemd/pi-packet@.service /home/nish/.config/systemd/user/pi-packet@.service
 systemd/pi-packet-failed@.service /home/nish/.config/systemd/user/pi-packet-failed@.service
+systemd/pi-packet-logrotate.service /home/nish/.config/systemd/user/pi-packet-logrotate.service
+systemd/pi-packet-logrotate.timer /home/nish/.config/systemd/user/pi-packet-logrotate.timer
 systemd/siterep-deploy.service /home/nish/.config/systemd/user/siterep-deploy.service
 systemd/siterep-deploy.timer /home/nish/.config/systemd/user/siterep-deploy.timer
 systemd/siterep-deploy-verify.service /home/nish/.config/systemd/user/siterep-deploy-verify.service
@@ -76,6 +78,7 @@ prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-rep
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 config/repo-privacy.json /home/nish/.local/state/pi-packet/repo-privacy.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
+config/logrotate.conf /home/nish/.config/logrotate.conf
 lib/seat-lib.sh /home/nish/.local/lib/pi-packet/seat-lib.sh
 lib/heartbeat-watchman.sh /home/nish/.local/lib/pi-packet/heartbeat-watchman.sh
 # fleet-ops#1399: rate-limit the OnFailure Telegram page so it only fires

@@ -194,6 +194,12 @@
       "cadence": "hourly",
       "source": "repo"
     },
+    "pi-packet-logrotate.timer": {
+      "reason": "Size-based rotation of pi-packet watch.log — seat-selection lines accumulate on every pick and the log was 104 MB unrotated; 10-min cadence bounds growth and logrotate keeps 5 compressed back copies",
+      "classification": "scheduled",
+      "cadence": "10min",
+      "source": "repo"
+    },
     "pi-intake@.timer": {
       "reason": "Template timer for pi-intake instances — instantiated per repo by intake-reconcile",
       "classification": "template",
