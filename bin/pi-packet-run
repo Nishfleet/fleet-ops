@@ -51,6 +51,10 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
+# fleet-ops#3125: packet work is PRODUCT work — pick_seat orders candidates
+# by the rolling PR-yield ledger when seat-caps product_order is "yield".
+export PI_PICK_ROLE=product
+
 OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-256}"
 
 [[ $# -ge 4 ]] || { echo "pi-packet-run: need 4 args: packet workdir fail_prov fail_model" >&2; exit 1; }
