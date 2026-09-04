@@ -118,6 +118,22 @@ MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # path when it is sourced live, so behavior is unchanged.
 ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
+# fleet-ops#3247: repo-conditional worker prompt blocks. The D1 schema +
+# gate-integrity block ships only for 0509 (ideally only when the issue body
+# names migrations/ or .github/); the GEO/AEO block ships only when the issue
+# carries a geo/aeo label. Assembled at packet-write below so non-0509 and
+# non-geo packets stay lean. Overridable for tests; checkout fallback so a
+# worktree run resolves the fragments before install.sh copies them.
+WORKER_BLOCKS_DIR="${PI_INTAKE_WORKER_BLOCKS_DIR:-/home/nish/.pi/agent/prompts/worker-blocks}"
+D1_GATE_INTEGRITY_BLOCK="d1-gate-integrity.md"
+GEO_AEO_BLOCK="geo-aeo.md"
+# Repo that receives the D1 + gate-integrity block. Overridable for tests.
+D1_GATE_REPO="${PI_INTAKE_D1_GATE_REPO:-0509}"
+# When non-empty, the D1 + gate-integrity block is further gated on the issue
+# body naming one of these substrings (newline-separated). Empty = always
+# append for the D1_GATE_REPO (the core requirement). Overridable for tests.
+D1_GATE_BODY_NEEDLES="${PI_INTAKE_D1_GATE_BODY_NEEDLES:-migrations/
+.github/}"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
@@ -129,6 +145,15 @@ PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/prec
 _tick_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ ! -f "$PRECEDENCE_BAND_LIB" && -f "$_tick_dir/precedence-band.sh" ]]; then
     PRECEDENCE_BAND_LIB="$_tick_dir/precedence-band.sh"
+fi
+# Checkout fallback for the worker-blocks dir (same pattern as
+# PRECEDENCE_BAND_LIB above): a worktree run resolves the fragments from the
+# repo checkout before install.sh symlinks them into ~/.pi/agent/prompts.
+if [[ ! -d "$WORKER_BLOCKS_DIR" ]]; then
+    _blocks_fallback="$_tick_dir/../prompts/worker-blocks"
+    if [[ -d "$_blocks_fallback" ]]; then
+        WORKER_BLOCKS_DIR="$(cd "$_blocks_fallback" && pwd)"
+    fi
 fi
 [[ -f "$PRECEDENCE_BAND_LIB" ]] || {
     echo "pi-intake-tick: precedence-band lib missing: $PRECEDENCE_BAND_LIB" >&2
@@ -280,6 +305,42 @@ protected_verifier_vacation_filter() {
         done
     fi
     return 1
+}
+
+# fleet-ops#3247: repo-conditional worker prompt blocks. Two helpers decide
+# whether a conditional fragment is appended to the packet at write time:
+#   d1_gate_integrity_needed: repo == D1_GATE_REPO (0509) AND, when
+#     D1_GATE_BODY_NEEDLES is non-empty, the issue body names at least one
+#     needle (migrations/ or .github/). Returns 0 = append, 1 = skip.
+#   geo_aeo_needed: the issue labels include a name containing "geo" or "aeo"
+#     (case-insensitive). Returns 0 = append, 1 = skip.
+# Both are pure functions of ($REPO, $body, labels_json) — no side effects, no
+# network — so the bash drill in the regression test can reproduce them
+# verbatim without a live gh/systemd environment.
+d1_gate_integrity_needed() {
+    # $1 = issue body. Uses $REPO from the tick scope.
+    local body="$1"
+    [[ "$REPO" == "$D1_GATE_REPO" ]] || return 1
+    # No body needles configured = always append for the D1 gate repo.
+    [[ -n "$D1_GATE_BODY_NEEDLES" ]] || return 0
+    local needle
+    while IFS= read -r needle; do
+        [[ -n "$needle" ]] || continue
+        if printf '%s' "$body" | grep -qF -- "$needle"; then
+            return 0
+        fi
+    done <<<"$D1_GATE_BODY_NEEDLES"
+    return 1
+}
+
+geo_aeo_needed() {
+    # $1 = labels JSON array (from gh issue list --json labels), e.g.
+    # [{"name":"agent-ready",...},{"name":"geo",...}]. Returns 0 when any
+    # label name contains "geo" or "aeo" (case-insensitive).
+    local labels_json="${1:-}"
+    [[ -n "$labels_json" ]] || return 1
+    printf '%s' "$labels_json" | jq -e \
+        'any(.[]?; (.name // "") | test("geo|aeo"; "i"))' >/dev/null 2>&1
 }
 
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
@@ -812,10 +873,27 @@ blocked-on: nish-decision" 2>/dev/null || true
         echo "issue $N: claim comment skipped (gh secondary rate limit after 3 retries: $comment_out)" >&2
     fi
 
-    # Write the worker packet so pi-issue-run can pick its own seat at run time
+    # Write the worker packet so pi-issue-run can pick its own seat at run time.
+    # fleet-ops#3247: append repo-conditional blocks AFTER the base prompt so
+    # D1 + gate-integrity ships only for 0509 (ideally only when the body names
+    # migrations/ or .github/) and GEO/AEO ships only for geo/aeo-labelled
+    # issues. Non-0509 / non-geo packets stay lean. A missing fragment file is
+    # non-fatal: the packet is still written with the base prompt + TARGET line
+    # so the worker runs rather than not at all (same fail-open posture as the
+    # keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
     {
         cat "$WORKER_PROMPT"
+        if d1_gate_integrity_needed "$body" \
+            && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then
+            echo
+            cat "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK"
+        fi
+        if geo_aeo_needed "${labels[$i]}" \
+            && [[ -f "$WORKER_BLOCKS_DIR/$GEO_AEO_BLOCK" ]]; then
+            echo
+            cat "$WORKER_BLOCKS_DIR/$GEO_AEO_BLOCK"
+        fi
         echo
         echo "TARGET: repo $FULL issue $N unit pi-issue-${REPO}-${N}"
     } > "$packet_path"
