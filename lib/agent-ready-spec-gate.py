@@ -43,6 +43,10 @@ FIELD_RE = re.compile(
 FIRST_ADMISSION = (
     "bin/lifecycle-label-sweep",
     "bin/pi-audit-tally",
+    # fleet-ops#3121: owner-authored admission bypass applies agent-ready
+    # directly (no three-seat panel) after running the spec gate on the
+    # issue body — a first-admission path, same class as pi-audit-tally.
+    "bin/fleet-heartbeat-auditor",
 )
 
 REQUEUE_ALLOWLIST = (
