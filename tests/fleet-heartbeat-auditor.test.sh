@@ -79,6 +79,9 @@ case "$*" in
   *"issue list"*"-l scout-candidate"*)
     # fleet-ops#2766: auditor now asks for number,labels. Lines may be
     # bare "N" (no discarded) or "N\tdiscarded" (dual-label leftover).
+    # fleet-ops#3121: an optional third field "N\t<author>" lets the
+    # owner-authored admission-bypass be exercised (author != nish3451
+    # for every other candidate).
     if [[ -f "${CANDIDATES:-/dev/nonexistent}" ]]; then
       jq -R -s -c '
         split("\n")
@@ -90,7 +93,10 @@ case "$*" in
                 labels: (if ($p|length) > 1 and $p[1] == "discarded"
                          then [{name:"scout-candidate"},{name:"discarded"}]
                          else [{name:"scout-candidate"}]
-                         end)
+                         end),
+                author: (if ($p|length) > 1 and $p[1] != "discarded" then {login:$p[1]}
+                         elif ($p|length) > 2 then {login:$p[2]}
+                         else {login:"someone-else"} end)
               }
           )
       ' "${CANDIDATES:-/dev/null}"
@@ -227,7 +233,7 @@ printf '42\n' >"$CANDIDATES"
 run_auditor
 
 [[ "$env_rc" == 0 ]] || fail "scenario1: must exit 0, got $env_rc ($env_out)"
-for role in devin free-glm-5-3 straitly; do
+for role in devin free-glm senior; do
   grep -qx "start pi-audit@demo--42--$role.service" "$calls" \
       || fail "scenario1: missing start for $role ($(cat "$calls"))"
 done
@@ -244,10 +250,10 @@ run_auditor
 
 grep -qx 'start pi-audit@demo--42--devin.service' "$calls" \
     && fail "scenario2: devin unit should not be restarted"
-grep -qx 'start pi-audit@demo--42--free-glm-5-3.service' "$calls" \
-    || fail "scenario2: free-glm-5-3 should be started"
-grep -qx 'start pi-audit@demo--42--straitly.service' "$calls" \
-    || fail "scenario2: straitly should be started"
+grep -qx 'start pi-audit@demo--42--free-glm.service' "$calls" \
+    || fail "scenario2: free-glm should be started"
+grep -qx 'start pi-audit@demo--42--senior.service' "$calls" \
+    || fail "scenario2: senior should be started"
 ok "scenario2: active audit unit is not re-started; missing ones are"
 
 # ============================================================================
@@ -256,9 +262,9 @@ ok "scenario2: active audit unit is not re-started; missing ones are"
 reset_state
 printf '42\n' >"$CANDIDATES"
 : >"$ACTIVE_UNITS"
-write_vote demo 42 devin PASS "clear user impact; no duplicate; aligns with north star"
-write_vote demo 42 free-glm-5-3 PASS "unique; beats customer edge AI; no duplicate"
-write_vote demo 42 straitly PASS "north star fit; no duplication"
+write_vote demo 42 devin PASS "clear user impact; no duplicate; aligns with north star; see bin/pi-audit-run"
+write_vote demo 42 free-glm PASS "unique; beats customer edge AI; no duplicate (#12)"
+write_vote demo 42 senior PASS "north star fit; no duplication; fixes https://github.com/Nishfleet/demo/pull/1"
 
 run_auditor
 
@@ -275,17 +281,17 @@ ok "scenario3: 3 PASS -> tally runs, no new unit starts"
 # Scenario 4: 2 PASS 1 FAIL -> admit (2-of-3)
 # ============================================================================
 reset_state
-write_vote demo 43 devin PASS "north star; no duplicates"
-write_vote demo 43 free-glm-5-3 PASS "customer edge; unique"
-write_vote demo 43 straitly FAIL "vague termination command"
+write_vote demo 43 devin PASS "north star; no duplicates; see config/seat-caps.json"
+write_vote demo 43 free-glm PASS "customer edge; unique (#20)"
+write_vote demo 43 senior FAIL "vague termination command"
 
 # Run the real tally with a fake gh that captures add/remove labels.
 
 # Reset and run directly with tally fake to assert the edit command.
 rm -rf "$state_dir"/demo/43
-write_vote demo 43 devin PASS "north star; no duplicates"
-write_vote demo 43 free-glm-5-3 PASS "customer edge; unique"
-write_vote demo 43 straitly FAIL "vague termination command"
+write_vote demo 43 devin PASS "north star; no duplicates; see config/seat-caps.json"
+write_vote demo 43 free-glm PASS "customer edge; unique (#20)"
+write_vote demo 43 senior FAIL "vague termination command"
 
 set +e
 AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 43 >"$scratch/tally_out" 2>&1
@@ -302,8 +308,8 @@ reset_state
 : >"$GH_CALLS"
 printf '%s\n' 'please look at this' >"$scratch/nospec-body.txt"
 export GH_ISSUE_BODY="$scratch/nospec-body.txt"
-write_vote demo 99 devin PASS "north star; no duplicates"
-write_vote demo 99 free-glm-5-3 PASS "customer edge; unique"
+write_vote demo 99 devin PASS "north star; no duplicates; see bin/foo"
+write_vote demo 99 free-glm PASS "customer edge; unique (#5)"
 
 set +e
 AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 99 >"$scratch/tally_nospec" 2>&1
@@ -320,13 +326,37 @@ grep -q 'issue comment' "$GH_CALLS" || fail "scenario4b: must comment the refusa
 ok "scenario4b: 2-of-3 PASS without a spec → refused (spec-gate)"
 
 # ============================================================================
+# Scenario 4c: 2-of-3 PASS but keyword-only reason (no repo-specific evidence:
+# no issue number, path, or URL) -> refuse agent-ready (fleet-ops#3121). The
+# candidate body passes the spec gate; the refusal is purely the evidence
+# gate — keyword-only compliance is not a judgement.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+write_vote demo 98 devin PASS "north star; no duplicates"
+write_vote demo 98 free-glm PASS "customer edge; unique"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 98 >"$scratch/tally_noevid" 2>&1
+tally_rc=$?
+set -e
+[[ "$tally_rc" == 0 ]] || fail "scenario4c: tally exit $tally_rc ($(cat "$scratch/tally_noevid"))"
+grep -q 'EVIDENCE-REFUSED' "$scratch/tally_noevid" \
+  || fail "scenario4c: must log EVIDENCE-REFUSED ($(cat "$scratch/tally_noevid"))"
+if grep -q 'add-label agent-ready' "$GH_CALLS"; then
+  fail "scenario4c: must not add agent-ready ($(cat "$GH_CALLS"))"
+fi
+grep -q 'issue comment' "$GH_CALLS" || fail "scenario4c: must comment the refusal"
+ok "scenario4c: 2-of-3 PASS keyword-only reason -> refused (evidence gate)"
+
+# ============================================================================
 # Scenario 5: 2 FAIL 1 PASS -> discard
 # ============================================================================
 reset_state
 : >"$GH_CALLS"
 write_vote demo 44 devin FAIL "duplicate of #1; no north star"
-write_vote demo 44 free-glm-5-3 FAIL "parity work only"
-write_vote demo 44 straitly PASS "ok"
+write_vote demo 44 free-glm FAIL "parity work only"
+write_vote demo 44 senior PASS "ok"
 
 set +e
 AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 44 >"$scratch/tally_out2" 2>&1
@@ -343,7 +373,7 @@ ok "scenario5: 2 FAIL 1 PASS -> tally edits labels and comments (discard)"
 reset_state
 : >"$GH_CALLS"
 write_vote demo 45 devin PASS "ok"
-write_vote demo 45 free-glm-5-3 FAIL "no duplicates mention"
+write_vote demo 45 free-glm FAIL "no duplicates mention"
 
 set +e
 AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 45 >"$scratch/tally_out3" 2>&1
@@ -371,7 +401,7 @@ ok "scenario7: stale pending candidate -> AUDITOR-PANEL-PENDING loud finding"
 # ============================================================================
 # Scenario 8: failed unit (StartLimitBurst exhausted) -> reset-failed + start
 # ============================================================================
-# The 2026-08-26 incident: pi-audit@...--free-glm-5-3 and --devin sat
+# The 2026-08-26 incident: pi-audit@...--free-glm and --devin sat
 # failed after two seat faults. systemd would not start them again for
 # an hour. The next tick must clear the burst and start, so a recovered
 # seat is used instead of waiting out StartLimitIntervalSec.
@@ -379,12 +409,12 @@ reset_state
 printf '47\n' >"$CANDIDATES"
 : >"$ACTIVE_UNITS"
 printf 'pi-audit@demo--47--devin.service\n' >"$FAILED_UNITS"
-printf 'pi-audit@demo--47--free-glm-5-3.service\n' >>"$FAILED_UNITS"
+printf 'pi-audit@demo--47--free-glm.service\n' >>"$FAILED_UNITS"
 
 run_auditor
 
 [[ "$env_rc" == 0 ]] || fail "scenario8: must exit 0, got $env_rc ($env_out)"
-for role in devin free-glm-5-3; do
+for role in devin free-glm; do
   unit="pi-audit@demo--47--$role.service"
   grep -qx "reset-failed $unit" "$calls" \
       || fail "scenario8: missing reset-failed for $role ($(cat "$calls"))"
@@ -395,10 +425,10 @@ for role in devin free-glm-5-3; do
   [[ -n "$reset_line" && -n "$start_line" && "$reset_line" -lt "$start_line" ]] \
       || fail "scenario8: reset-failed must precede start for $role (calls=$(cat "$calls"))"
 done
-grep -qx 'start pi-audit@demo--47--straitly.service' "$calls" \
-    || fail "scenario8: inactive straitly must still be started"
-grep -q 'reset-failed pi-audit@demo--47--straitly.service' "$calls" \
-    && fail "scenario8: inactive straitly must not be reset-failed"
+grep -qx 'start pi-audit@demo--47--senior.service' "$calls" \
+    || fail "scenario8: inactive senior must still be started"
+grep -q 'reset-failed pi-audit@demo--47--senior.service' "$calls" \
+    && fail "scenario8: inactive senior must not be reset-failed"
 ok "scenario8: failed pi-audit units get reset-failed then start; inactive ones only start"
 
 # ============================================================================
@@ -417,10 +447,10 @@ grep -q 'reset-failed pi-audit@demo--48--devin.service' "$calls" \
     && fail "scenario9: voted failed unit must not be reset-failed ($(cat "$calls"))"
 grep -q 'start pi-audit@demo--48--devin.service' "$calls" \
     && fail "scenario9: voted failed unit must not be started"
-grep -qx 'start pi-audit@demo--48--free-glm-5-3.service' "$calls" \
-    || fail "scenario9: missing vote still starts free-glm-5-3"
-grep -qx 'start pi-audit@demo--48--straitly.service' "$calls" \
-    || fail "scenario9: missing vote still starts straitly"
+grep -qx 'start pi-audit@demo--48--free-glm.service' "$calls" \
+    || fail "scenario9: missing vote still starts free-glm"
+grep -qx 'start pi-audit@demo--48--senior.service' "$calls" \
+    || fail "scenario9: missing vote still starts senior"
 ok "scenario9: failed unit with a vote on disk is left alone"
 
 # ============================================================================
@@ -502,14 +532,14 @@ reset_state
 printf '201\n202\n' >"$CANDIDATES"
 : >"$ACTIVE_UNITS"
 printf 'pi-audit@demo--201--devin.service\n' >"$FAILED_UNITS"
-printf 'pi-audit@demo--201--free-glm-5-3.service\n' >>"$FAILED_UNITS"
+printf 'pi-audit@demo--201--free-glm.service\n' >>"$FAILED_UNITS"
 # Lower the cap so the missing units (6 of them) cannot all start.
 export AUDIT_TICK_MAX_START=1
 run_auditor
 unset AUDIT_TICK_MAX_START
 
-# devin + free-glm-5-3 for 201 are RECOVERED (not counted against cap).
-# 201 straitly + 202 devin + 202 free-glm-5-3 + 202 straitly are
+# devin + free-glm for 201 are RECOVERED (not counted against cap).
+# 201 senior + 202 devin + 202 free-glm + 202 senior are
 # MISSING and subject to the cap of 1: only one of those 4 starts.
 # Total: 2 (recovered) + 1 (capped) = 3 starts.
 n_starts=$(grep -c '^start ' "$calls" || true)
@@ -517,8 +547,8 @@ n_starts=$(grep -c '^start ' "$calls" || true)
     || fail "scenario12: expected 3 starts (2 recovered + 1 cap), got $n_starts (calls=$(cat "$calls"))"
 grep -qx 'start pi-audit@demo--201--devin.service' "$calls" \
     || fail "scenario12: 201 devin should be reset-failed + start (no cap hit)"
-grep -qx 'start pi-audit@demo--201--free-glm-5-3.service' "$calls" \
-    || fail "scenario12: 201 free-glm-5-3 should be reset-failed + start (no cap hit)"
+grep -qx 'start pi-audit@demo--201--free-glm.service' "$calls" \
+    || fail "scenario12: 201 free-glm should be reset-failed + start (no cap hit)"
 ok "scenario12: failed-unit recovery bypasses the per-tick cap (no wedge starvation)"
 
 # ============================================================================
@@ -545,11 +575,36 @@ if grep -E 'start pi-audit@demo--1140--' "$calls"; then
     fail "scenario13: must not start audit units for discarded leftover (calls=$(cat "$calls"))"
 fi
 # Live candidate 42 still gets its three units started.
-for role in devin free-glm-5-3 straitly; do
+for role in devin free-glm senior; do
   grep -qx "start pi-audit@demo--42--$role.service" "$calls" \
       || fail "scenario13: live candidate 42 missing start for $role ($(cat "$calls"))"
 done
 ok "scenario13: discarded+scout-candidate dual-label healed; live candidate still audited (fleet-ops#2766)"
+
+# ============================================================================
+# Scenario 14: owner-authored candidate (nish3451) whose body passes the
+# agent-ready spec gate goes STRAIGHT to agent-ready — no three-seat panel
+# started, one OWNER-BYPASS log line. Author must be nish3451 AND the spec
+# gate must pass; anything else falls through to the panel.
+# ============================================================================
+reset_state
+printf '201\tnish3451\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+: >"$GH_CALLS"
+: >"$calls"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario14: must exit 0, got $env_rc ($env_out)"
+# No panel units may start for a bypassed candidate.
+if grep -qE '^start ' "$calls"; then
+  fail "scenario14: owner-bypass must not start panel units ($(cat "$calls"))"
+fi
+grep -q 'remove-label scout-candidate' "$GH_CALLS" || fail "scenario14: did not remove scout-candidate ($(cat "$GH_CALLS"))"
+grep -q 'add-label agent-ready' "$GH_CALLS" || fail "scenario14: did not add agent-ready ($(cat "$GH_CALLS"))"
+printf '%s\n' "$env_out" | grep -q 'OWNER-BYPASS' \
+  || fail "scenario14: must log one OWNER-BYPASS line ($env_out)"
+ok "scenario14: nish3451-authored + spec gate PASS -> agent-ready without panel"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \

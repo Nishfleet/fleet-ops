@@ -2,15 +2,17 @@
 # tests/pi-audit-run.test.sh
 #
 # fleet-ops#776: pi-audit senior auditor panel units fail when:
-#   1. straitly seat fallback prints a literal "\t" instead of a real tab,
-#      so provider and model are the malformed string "straitly\tgpt-5.6-sol".
+#   1. the senior role's seat ladder fallback prints a literal "\t" instead
+#      of a real tab, so provider and model are a malformed single string.
 #   2. an auditor returns a FAIL/PASS reason missing the required duplicate
 #      or north-star keywords, causing pi-audit-run to exit 1 and the
 #      systemd unit to exhaust StartLimitBurst.
 #
 # This test exercises the full pi-audit-run binary with stubbed gh, pi, and
-# seat-lib. It proves the straitly fallback emits a real tab-separated
-# provider/model pair and that an incomplete reason is padded, not rejected.
+# seat-lib. It proves the senior ladder emits a real tab-separated
+# provider/model pair (walled first entry falls through to the next), that
+# an incomplete reason is padded not rejected, and that a fully-walled lane
+# is a lane fault (exit 0, no vote).
 
 set -euo pipefail
 
@@ -111,8 +113,11 @@ class_of() {
 model_cap() { printf '1\n'; }
 
 seat_usable() {
-  # Force the straitly default off and the fallback gpt-5.6-sol on.
-  if [[ "$1" == "straitly" && "$2" == "deepseek/deepseek-v4-pro" ]]; then
+  # fleet-ops#3121: within the senior ladder (seat-caps senior_seats_in_order)
+  # the FIRST usable seat wins. Make cursor (first entry) unusable so the
+  # resolver falls through to the second ladder entry xai-oauth/grok-4.6 —
+  # proving "walled role resolves to its fallback" inside the ladder.
+  if [[ "$1" == "cursor" ]]; then
     return 1
   fi
   return 0
@@ -161,30 +166,31 @@ export AUDIT_STATE_DIR="$state_dir"
 export PI_CALLS="$calls"
 
 # -----------------------------------------------------------------------------
-# Scenario 1: straitly fallback emits a real tab and the right provider/model.
+# Scenario 1: the senior role (replaces dead straitly) resolves to the first
+# usable seat in senior_seats_in_order. cursor (first entry) is walled, so the
+# resolver falls through to the second ladder entry xai-oauth/grok-4.6.
 # -----------------------------------------------------------------------------
 reset_state() { rm -rf "$state_dir"; mkdir -p "$state_dir"; rm -f "$calls"; }
 
 reset_state
 PI_RESPONSE=$'FAIL\nThe candidate is not a duplicate and advances the north star.' \
-  bash "$bin" 'demo--42--straitly' >"$scratch/scenario1.out" 2>"$scratch/scenario1.err" || true
+  bash "$bin" 'demo--42--senior' >"$scratch/scenario1.out" 2>"$scratch/scenario1.err" || true
 
-[[ -f "$state_dir/demo/42/straitly.vote" ]] \
-  || fail "scenario1: no straitly vote written ($(cat "$scratch/scenario1.err"))"
-[[ $(jq -r '.verdict' "$state_dir/demo/42/straitly.vote") == "FAIL" ]] \
+[[ -f "$state_dir/demo/42/senior.vote" ]] \
+  || fail "scenario1: no senior vote written ($(cat "$scratch/scenario1.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/42/senior.vote") == "FAIL" ]] \
   || fail "scenario1: verdict should be FAIL"
 
 # The pi stub records the provider/model it was called with.
 [[ -s "$calls" ]] || fail "scenario1: pi was never called"
 call_line=$(head -n1 "$calls")
-# With the bug, this line would be "straitly\tgpt-5.6-sol\tstraitly\tgpt-5.6-sol".
 call_prov=$(printf '%s\n' "$call_line" | cut -f1)
 call_mod=$(printf '%s\n' "$call_line" | cut -f2)
-[[ "$call_prov" == "straitly" ]] \
-  || fail "scenario1: provider was '$call_prov' (expected 'straitly'); call_line='$call_line'"
-[[ "$call_mod" == "gpt-5.6-sol" ]] \
-  || fail "scenario1: model was '$call_mod' (expected 'gpt-5.6-sol'); call_line='$call_line'"
-ok "scenario1: straitly fallback calls pi with provider=straitly, model=gpt-5.6-sol"
+[[ "$call_prov" == "xai-oauth" ]] \
+  || fail "scenario1: provider was '$call_prov' (expected 'xai-oauth'); call_line='$call_line'"
+[[ "$call_mod" == "grok-4.6" ]] \
+  || fail "scenario1: model was '$call_mod' (expected 'grok-4.6'); call_line='$call_line'"
+ok "scenario1: senior falls through walled cursor to xai-oauth/grok-4.6, emits real tab-separated provider/model"
 
 # -----------------------------------------------------------------------------
 # Scenario 2: free-glm-5-3 auditor returns FAIL with an incomplete reason;
