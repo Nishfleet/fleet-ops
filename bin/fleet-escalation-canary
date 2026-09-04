@@ -591,7 +591,7 @@ else
             file_item() {
                 local item="$1"
                 local context="$2"
-                local rid issue_n signal title body created create_rc
+                local rid signal title body created create_rc
                 rid=$(jq -r '.id' <<<"$item")
                 signal="signal: rule-enforcement/${rid}"
                 if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$open_json" >/dev/null 2>&1; then
