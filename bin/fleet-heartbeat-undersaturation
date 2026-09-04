@@ -68,6 +68,23 @@ SEAT_LIB_DEFAULT="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
 FLAG="$LOG_DIR/undersaturation.flag"
 THROUGHPUT_STATE="$LOG_DIR/throughput.last"
 
+# fleet-ops#3082: every repair action below spawns pi-based workers (reset-failed
+# pi-issue units, restart intake, alert-repair dispatch all exec pi). If the pi
+# binary itself is broken — Exec format error / 203-EXEC from a truncated or
+# mid-reinstall bundle — no repair can possibly succeed and the wedge loops
+# silently for hours (the 2026-09-03/04 27h full-wedge: pi broke at ~04:35Z,
+# alert-repair units kept dying with "Failed to execute /home/nish/.local/bin/pi:
+# Exec format error", and the undersaturation repair cycled REPAIR->FAIL-LOUD
+# without ever naming the cause). Probe pi once at the repair path; a broken
+# binary is a named, instant fail-loud, not a 27h mystery.
+PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+pi_binary_broken() {
+    if "$PI_BIN" --version >/dev/null 2>&1; then
+        return 1   # executable
+    fi
+    return 0       # missing, not executable, or exec-format error
+}
+
 mkdir -p "$LOG_DIR"
 
 log() {
@@ -393,6 +410,14 @@ elif [ "$ready" -ge "$admit" ] 2>/dev/null \
 fi
 
 if [ "$undersat" -eq 1 ]; then
+    # fleet-ops#3082: a broken pi binary makes every repair action futile (all
+    # spawn pi workers). Fail LOUD with a named cause on the FIRST tick instead
+    # of cycling REPAIR->FAIL-LOUD for hours until a human notices the wedge.
+    if pi_binary_broken; then
+        loud "UNDERSAT-FAIL-LOUD" "work=$work ready=$ready running=$running admit=$admit reason=pi-binary-broken — $PI_BIN not executable; every repair spawns pi workers so the wedge cannot self-heal. Reinstall pi (npm i -g @earendil-works/pi-coding-agent) and re-run."
+        rm -f "$FLAG"
+        exit 1
+    fi
     if [ "$prev_wedged" -eq 1 ]; then
         # Second consecutive undersat tick — repair already ran last tick and
         # the fleet is STILL below the floor. Fail loud; never degrade silently.

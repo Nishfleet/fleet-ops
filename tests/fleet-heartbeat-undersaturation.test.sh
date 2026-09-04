@@ -286,6 +286,18 @@ export FLEET_HEARTBEAT_LOG_DIR="$log_dir"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export PI_PACKET_STATE="$seat_state"
 export CALLS="$calls"
+# fleet-ops#3082: the undersaturation repair probes the pi binary before
+# attempting repair. Point PI_BIN at a working stub so the existing scenarios
+# (which exercise the repair path) are not falsely fail-loud'd on a runner
+# where /home/nish/.local/bin/pi is absent. Scenario 10 overrides this to a
+# broken stub to prove the pi-binary-broken fail-loud.
+pi_bin_fake="$scratch/pi"
+cat >"$pi_bin_fake" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$pi_bin_fake"
+export PI_BIN="$pi_bin_fake"
 export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
 # fleet-ops#1558: pin the admit floor so scenarios do not read live
@@ -629,3 +641,47 @@ export FLEET_UNDERSAT_ADMIT_CEILING=25
 
 ok "undersaturation: stale agent-in-progress label is hygiene, not a wedge (auditor-finding-C)"
 ok "undersaturation: admit-floor below-target is a fault (fleet-ops#1558)"
+
+# ============================================================================
+# Scenario 10 (fleet-ops#3082): the pi binary itself is broken (Exec format
+# error / 203-EXEC from a truncated or mid-reinstall bundle). Every repair
+# action spawns pi-based workers, so repair is futile. The FIRST wedged tick
+# must fail LOUD with reason=pi-binary-broken and attempt NO repair — naming
+# the cause instantly instead of cycling REPAIR->FAIL-LOUD for 27h (the
+# 2026-09-03/04 full-wedge: pi broke at ~04:35Z, alert-repair units kept dying
+# with "Failed to execute /home/nish/.local/bin/pi: Exec format error", and
+# the undersaturation repair never named the cause until a human noticed).
+# ============================================================================
+reset_state
+printf '3\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+: >"$scratch/running_units"            # running=0 -> repair path fires
+: >"$scratch/failed_units"
+# Broken pi stub: exits non-zero (mirrors Exec format error / 203-EXEC).
+pi_broken="$scratch/pi-broken"
+cat >"$pi_broken" <<'FAKE'
+#!/usr/bin/env bash
+echo "Exec format error" >&2
+exit 126
+FAKE
+chmod +x "$pi_broken"
+
+set +e
+env_out=$(SYSTEMCTL="$systemctl_fake" GH="$gh_fake" PI_BIN="$pi_broken" "$bin" 2>&1)
+env_rc=$?
+set -e
+[[ "$env_rc" == 1 ]] \
+    || fail "scenario10: broken-pi tick must exit 1, got $env_rc ($env_out)"
+# Named cause in the triage loud line.
+grep -q 'reason=pi-binary-broken' "$triage" \
+    || fail "scenario10: triage missing reason=pi-binary-broken ($env_out)"
+grep -q 'UNDERSAT-FAIL-LOUD' "$triage" \
+    || fail "scenario10: triage missing UNDERSAT-FAIL-LOUD"
+# No repair actions attempted (futile when pi is broken).
+if grep -qE '^(reset-failed|start) ' "$calls"; then
+    fail "scenario10: broken-pi tick must not repair, but calls=($(cat "$calls"))"
+fi
+# Marker cleared so the post-failure tick starts clean.
+[[ ! -f "$log_dir/undersaturation.flag" ]] \
+    || fail "scenario10: marker must be cleared after broken-pi fail-loud"
+ok "scenario10: broken pi binary -> fail LOUD reason=pi-binary-broken, no repair (fleet-ops#3082)"
